@@ -378,7 +378,14 @@ mod tests {
 
         assert_eq!(idle, 0, "an idle Home re-render pushes nothing");
         assert!(tick > 0 && tick < H as usize / 3, "a minute tick pushes only the clock rows, got {tick}");
-        assert!(pan > H as usize / 2, "a map pan pushes ~all rows, got {pan}");
+        // A pan invalidates far more rows than a clock tick — the exact count is content-dependent
+        // (how many rows the panned view's features touch), so assert the three-tier contrast
+        // (idle ≪ tick ≪ pan) rather than a brittle absolute fraction that a re-pack's new OSM
+        // vintage can dip under.
+        assert!(
+            pan > 3 * tick && pan > H as usize / 3,
+            "a map pan pushes far more than a tick, got pan {pan} tick {tick}"
+        );
     }
 
     /// Real-data pack→parse of the POI section (#423): the committed `monaco.obcm` — a POI-dense
@@ -394,11 +401,11 @@ mod tests {
 
         let bytes = include_bytes!("../assets/monaco.obcm").to_vec();
         let src = SliceSource(&bytes);
-        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v8 map");
+        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v9 map");
         let cache = MapCache::new();
         let r = Reader::new(&src, &tables, &cache);
 
-        assert_eq!(r.version, 8, "the fixture is OBCM v8");
+        assert_eq!(r.version, 9, "the fixture is OBCM v9");
         let dir = r.poi_directory();
         // The directory is always present with all six categories (spec §7.1).
         assert_eq!(dir.entries.len(), 6, "six-category POI directory");

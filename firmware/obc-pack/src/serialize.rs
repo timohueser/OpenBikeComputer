@@ -31,8 +31,11 @@ pub const HEADER_LEN: usize = 40;
 /// One LOD-table entry, `<fIIHI>`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
-/// The OBCM format version byte written into the header (`OBCM_Spec.md` §1).
-pub const OBCM_VERSION: u8 = 8;
+/// The OBCM format version byte written into the header (`OBCM_Spec.md` §1). v9 (epic #533 N2)
+/// carries every §8 byte-level change: the 28-byte nav directory + profile table, 15-byte neighbor
+/// entries (i16 coord deltas + `way_kind`), a `way_kind` byte on edge records, pinned 512-byte nav
+/// chunks, and bin-packed node chunks. The header layout is unchanged (still 40 bytes).
+pub const OBCM_VERSION: u8 = 9;
 
 /// POI category count baked into every v7 map's directory (§7.1). Fixed by the
 /// canonical [`crate::poi::POI_TABLE`]: category ids 1..=6.
@@ -67,32 +70,47 @@ pub const POI_CAT_ENTRY_LEN: usize = 13;
 // the pool bytes and the `POI_HOURS_BLOB_LEN` the directory advertises disagree.
 const _: () = assert!(POI_HOURS_BLOB_LEN == crate::hours::BLOB_LEN, "hours blob length must match hours.rs");
 
-/// The nav directory (§8.1): `index_offset u32, index_node_count u32,
-/// node_chunk_count u32, edge_pool_offset u32, edge_chunk_count u32, chunk_size
-/// u16` — the whole resident footprint of the graph on-device.
-pub const NAV_DIR_LEN: usize = 22;
+/// The v9 nav directory (§8.1): `index_offset u32, index_node_count u32, node_chunk_count u32,
+/// edge_pool_offset u32, edge_chunk_count u32, chunk_size u16, profile_table_offset u32,
+/// profile_count u8, reserved u8` — the graph's resident header (28 bytes; v8 was 22). The profile
+/// table (§8.6) is written immediately after this directory, before the node index.
+pub const NAV_DIR_LEN: usize = 28;
 
-/// Fixed nav chunk capacity (bytes) the packer writes (§8.1), shared by node
-/// chunks and edge-pool chunks. 512 matches the POI convention: a leaf holds a
-/// handful of junction records (~73 B at degree 3) so one chunk read serves one
-/// A* settle, and R4's ~2-slot graph-tile cache stays ≈1 KB.
+/// Fixed nav chunk capacity (bytes) the packer writes (§8.1) — **pinned to 512** in v9 (the reader
+/// rejects any other value): shared by node chunks and edge-pool chunks. A leaf holds a handful of
+/// junction records (~58 B at degree 3) so one chunk read serves one A* settle. The geometry
+/// sections' configurable `chunk_size` (§5) is independent — nav is fixed.
 pub const NAV_CHUNK_SIZE: usize = 512;
 
 /// Fixed prefix of a node record (§8.3): `lat i32, lon i32, node_id u32, degree
 /// u8`; `degree` × [`NAV_NEIGHBOR_LEN`] neighbor entries follow.
 pub const NAV_NODE_FIXED_LEN: usize = 13;
 
-/// One neighbor entry (§8.3): `neighbor_id u32, neighbor_lat i32, neighbor_lon
-/// i32, edge_id u32, cost_m u32`. Coords are inline so A* computes `f = g + h` at
-/// relaxation with no second fetch.
-pub const NAV_NEIGHBOR_LEN: usize = 20;
+/// One v9 neighbor entry (§8.3), 15 bytes: `neighbor_id u32, dlat i16, dlon i16, edge_id u32,
+/// cost_m u16, way_kind u8`. `dlat`/`dlon` are µdeg **deltas from the record's own lat/lon** (N1
+/// guarantees they fit `i16`); `cost_m` is raw ground meters (N1 guarantees ≤ 60 000, fits `u16`);
+/// `way_kind` is N1's packed class byte. Slimmed from v8's 20 bytes (absolute i32 coords + u32
+/// cost, no kind) — the deltas are what shrink the adjacency 25%.
+pub const NAV_NEIGHBOR_LEN: usize = 15;
 
-/// Fixed prefix of an edge record (§8.4): `length_m u32, pt_count u16, anchor_lat
-/// i32, anchor_lon i32`; `pt_count - 1` × `(dlat i16, dlon i16)` deltas follow.
-pub const NAV_EDGE_FIXED_LEN: usize = 14;
+/// Fixed prefix of a v9 edge record (§8.4), 15 bytes: `length_m u32, pt_count u16, way_kind u8,
+/// anchor_lat i32, anchor_lon i32`; `pt_count - 1` × `(dlat i16, dlon i16)` deltas follow. v8 was
+/// 14 bytes (no `way_kind`).
+pub const NAV_EDGE_FIXED_LEN: usize = 15;
+
+/// One §8.6 profile record (`Name [u8;12]`, `highway_mult [u8;32]`, `surface_mult [u8;8]`).
+pub const NAV_PROFILE_LEN: usize = 52;
+
+/// The `Name` field width inside a profile record (§8.6): 12 bytes, `0xFF`-padded UTF-8 (the POI
+/// name convention).
+pub const NAV_PROFILE_NAME_LEN: usize = 12;
+
+/// Profile-count cap (§8.6): the directory's `profile_count` is a `u8` the reader rejects outside
+/// `1..=8`, so a map carries at most eight named profiles.
+pub const NAV_MAX_PROFILES: usize = 8;
 
 /// Degree cap (§8.3). A record must fit one chunk
-/// (`NAV_NODE_FIXED_LEN + 24 × NAV_NEIGHBOR_LEN = 493 ≤ 512`), and real OSM
+/// (`NAV_NODE_FIXED_LEN + 24 × NAV_NEIGHBOR_LEN = 373 ≤ 512`), and real OSM
 /// highway junctions never approach it (a big roundabout is degree ~8). A node
 /// over the cap keeps its first 24 neighbors (adjacency-build order — edge-pool
 /// order, deterministic) and the packer warns; the dropped arcs survive one-way
@@ -102,12 +120,40 @@ pub const NAV_MAX_DEGREE: usize = 24;
 // A cap-degree record must fit one chunk, or `pack_nav_chunk` would drop real junctions.
 const _: () = assert!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN <= NAV_CHUNK_SIZE);
 
+/// Max endpoint-to-endpoint µdeg delta (lat **or** lon) a serialized adjacency piece may span, so
+/// every neighbor entry's `dlat`/`dlon` fits `i16`. Mirrors `nav::MAX_ENDPOINT_DELTA_UDEG` (N1
+/// bounds whole edges to this); the serializer's long-edge split re-checks it because splitting a
+/// densified polyline into ≤ [`NAV_MAX_EDGE_PTS`] pieces can otherwise land a synthetic junction
+/// farther than `i16` from its neighbor. `32 000 < i16::MAX (32 767)` keeps a margin.
+const NAV_MAX_NEIGHBOR_DELTA: i64 = 32_000;
+
+// Every non-empty v9 map carries at least one profile; the packer must never write zero (the
+// reader treats `profile_count == 0` as malformed).
+const _: () = assert!(NAV_MAX_PROFILES <= u8::MAX as usize);
+
 /// Max polyline points of one serialized edge record: the record must never
 /// straddle a chunk boundary (§8.4), so it is bounded by the chunk itself. An edge
-/// whose **densified** polyline is longer is split at a vertex into two edges
-/// joined by a synthetic degree-2 node — routing-neutral, and it keeps the reader
-/// to one chunk-sized read per edge.
+/// whose **densified** polyline is longer (or whose pieces would span more than
+/// [`NAV_MAX_NEIGHBOR_DELTA`]) is split at a vertex into pieces joined by synthetic
+/// degree-2 nodes — routing-neutral, and it keeps the reader to one chunk-sized read
+/// per edge. `(512 − 15) / 4 + 1 = 125`, unchanged from v8 (the +1-byte `way_kind`
+/// head doesn't cross a 4-byte delta boundary).
 pub const NAV_MAX_EDGE_PTS: usize = (NAV_CHUNK_SIZE - NAV_EDGE_FIXED_LEN) / 4 + 1;
+
+/// A per-map routing profile ready to serialize into §8.6: a display name plus the two multiplier
+/// tables in `u8` fixed-point 1/16 (indexed by way-kind's highway class 0..=31 / surface class
+/// 0..=7; `16` = 1.0×, `0` = forbidden). Built + validated in [`crate::config`] (every non-zero
+/// multiplier ≥ 16 so the great-circle A* heuristic stays admissible); the serializer only writes
+/// the bytes. Kept small and `Clone` so the four defaults can be handed around cheaply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavProfile {
+    /// Display name (UTF-8), truncated to [`NAV_PROFILE_NAME_LEN`] bytes on write, `0xFF`-padded.
+    pub name: String,
+    /// Multiplier per highway class (5-bit index, 0..=31). `16` = 1.0×, `0` = forbidden.
+    pub highway: [u8; 32],
+    /// Multiplier per surface class (3-bit index, 0..=7). Same encoding.
+    pub surface: [u8; 8],
+}
 
 /// Largest `chunk_size` (bytes) that keeps every feature within the reader's
 /// [`obc_reader::MAX_FEAT_PTS`] vertex cap. Densest encoding is 8-bit deltas
@@ -696,16 +742,19 @@ fn pack_hours_pool(pool: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
     out
 }
 
-// --- Nav-graph section (v8, spec §8) --------------------------------------------
+// --- Nav-graph section (v9, spec §8) --------------------------------------------
 
-/// One adjacency entry of a junction record (§8.3), with the wire `edge_id`
-/// (pool-relative byte offset) already resolved.
+/// One adjacency entry of a junction record (§8.3), holding the neighbor's **absolute** µdeg coords
+/// (the serializer turns them into `i16` deltas from the owning record at pack time), the resolved
+/// wire `edge_id` (pool-relative byte offset), the edge's ground `cost_m` (written `u16`), and its
+/// `way_kind` class byte.
 struct WireNeighbor {
     id: u32,
     lat: i32,
     lon: i32,
     edge_id: u32,
     cost_m: u32,
+    way_kind: u8,
 }
 
 /// A junction node ready to serialize: absolute µdeg coords, R1's dense id, and
@@ -731,24 +780,11 @@ enum NavTreeNode {
     Branch(Box<[NavTreeNode; 4]>),
 }
 
-impl FlattenTree for NavTreeNode {
-    fn classify(&self) -> TreeNode<'_, NavTreeNode> {
-        match self {
-            NavTreeNode::Leaf(_) => TreeNode::Leaf(self),
-            NavTreeNode::Branch(children) => TreeNode::Branch(children),
-        }
-    }
-    fn pack_leaf(&self, chunk_size: usize) -> Option<(Vec<u8>, usize)> {
-        match self {
-            NavTreeNode::Leaf(points) if !points.is_empty() => Some(pack_nav_chunk(points, chunk_size)),
-            _ => None,
-        }
-    }
-}
-
-/// Pack one §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`,
-/// then one 20-byte entry per neighbor. Coordinates are absolute µdeg, lat first
-/// (the §7.3/§8 record convention, vs the geometry sections' lon-first anchors).
+/// Pack one v9 §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`, then one 15-byte
+/// entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16, way_kind u8`).
+/// Coordinates are absolute µdeg in the head, lat first (the §7.3/§8 record convention); each
+/// neighbor's coord is stored as an `i16` **delta from this record's own lat/lon** (N1's edge
+/// splits guarantee the delta fits), so relaxation reconstructs `neighbor = node + delta` exactly.
 fn pack_nav_record(p: &NavPoint, out: &mut Vec<u8>) {
     out.extend_from_slice(&p.lat.to_le_bytes());
     out.extend_from_slice(&p.lon.to_le_bytes());
@@ -756,33 +792,112 @@ fn pack_nav_record(p: &NavPoint, out: &mut Vec<u8>) {
     debug_assert!(p.neighbors.len() <= NAV_MAX_DEGREE, "degree capped before packing");
     out.push(p.neighbors.len() as u8);
     for n in &p.neighbors {
+        let dlat = n.lat as i64 - p.lat as i64;
+        let dlon = n.lon as i64 - p.lon as i64;
+        debug_assert!(
+            (-NAV_MAX_NEIGHBOR_DELTA..=NAV_MAX_NEIGHBOR_DELTA).contains(&dlat)
+                && (-NAV_MAX_NEIGHBOR_DELTA..=NAV_MAX_NEIGHBOR_DELTA).contains(&dlon),
+            "N1 + the serializer's split guarantee neighbor deltas fit i16 ({dlat},{dlon})"
+        );
+        debug_assert!(n.cost_m <= u16::MAX as u32, "N1 guarantees cost_m ≤ 60 000, fits u16 ({})", n.cost_m);
         out.extend_from_slice(&n.id.to_le_bytes());
-        out.extend_from_slice(&n.lat.to_le_bytes());
-        out.extend_from_slice(&n.lon.to_le_bytes());
+        out.extend_from_slice(&(dlat as i16).to_le_bytes());
+        out.extend_from_slice(&(dlon as i16).to_le_bytes());
         out.extend_from_slice(&n.edge_id.to_le_bytes());
-        out.extend_from_slice(&n.cost_m.to_le_bytes());
+        out.extend_from_slice(&(n.cost_m.min(u16::MAX as u32) as u16).to_le_bytes());
+        out.push(n.way_kind);
     }
 }
 
-/// Pack a leaf's junction records into one `chunk_size`-byte chunk (§8.3): as many
-/// whole records as fit, back-to-back, then `0xFF` padding — whose first byte lands
-/// on the next record's `degree` slot, giving the reader its `0xFF` end sentinel.
-/// Returns `(bytes, dropped)`. `build_nav_tree` splits a leaf before it overflows,
-/// so `dropped` is 0 in practice; the cap is the safety net for co-located
-/// junctions inside the 10-µdeg recursion floor (a cap-degree record alone always
-/// fits — see the `NAV_MAX_DEGREE` const assert).
-fn pack_nav_chunk(points: &[NavPoint], chunk_size: usize) -> (Vec<u8>, usize) {
-    let mut data = Vec::with_capacity(chunk_size);
-    let mut kept = 0usize;
-    for p in points {
-        if data.len() + p.record_len() > chunk_size {
-            break;
+/// Bin-pack the tree's leaves into 512-byte node chunks (§8.3, the v9 optimization). `build_nav_tree`
+/// already split every leaf to ≤ one chunk of records; v8 then gave each leaf its own chunk, wasting
+/// the ~58% of every leaf that didn't fill 512 B. v9 assigns chunk ids **first-fit over the leaves in
+/// BFS emission order**: each leaf's record block is placed in the **first already-open chunk with
+/// room**, opening a new chunk only when none fits — a small leaf therefore back-fills the slack an
+/// earlier large leaf left, which is what lifts the fill rate to ~90 %+ (plain next-fit, considering
+/// only the newest chunk, stalls near ~75 % on real graphs). **Distinct leaves may share a chunk id**,
+/// and because first-fit reaches back to earlier chunks those leaves can be spatially distant — so a
+/// quadtree walk that visits several leaves sharing a chunk decodes that chunk's records once per
+/// leaf, handing a consumer the same junction more than once. The reference consumers (A\* settle
+/// match-by-id, snap best-tracking) are idempotent, so this is the documented §8.3 contract, not a
+/// bug. A single leaf's records never straddle chunks; a pathological leaf larger than one chunk
+/// (co-located junctions past the 10-µdeg split floor) keeps what fits and drops the rest, counted in
+/// `dropped` (the same safety net v8's `pack_nav_chunk` had).
+///
+/// Returns `(index_bytes, node_count, chunk_bytes, chunk_count, dropped)` — the same shape as
+/// [`flatten_tree`], so the directory-writing code is shared. BFS order and the branch/leaf/chunk-id
+/// index encoding are identical to [`flatten_tree`]; only the leaf→chunk assignment differs (many
+/// leaves per chunk instead of one).
+fn flatten_nav_tree(root: &NavTreeNode) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
+    // BFS in enqueue order — children appended contiguously, so a branch's first-child index is the
+    // node count when it is expanded (`child > idx`, the reader's `walk_leaves` invariant).
+    let mut nodes: Vec<&NavTreeNode> = vec![root];
+    let mut first_child: Vec<usize> = vec![0];
+    let mut i = 0;
+    while i < nodes.len() {
+        if let NavTreeNode::Branch(children) = nodes[i] {
+            first_child[i] = nodes.len();
+            for c in children.iter() {
+                nodes.push(c);
+                first_child.push(0);
+            }
         }
-        pack_nav_record(p, &mut data);
-        kept += 1;
+        i += 1;
     }
-    data.resize(chunk_size, 0xFF);
-    (data, points.len() - kept)
+
+    // Each open chunk is built as its own ≤ 512-byte record block; `bins[c]` is chunk `c`'s bytes so
+    // far. First-fit scans them in creation order for the first with room. (Grimsel/monaco pack a few
+    // thousand chunks — the O(leaves × chunks) scan is a blink at pack time.)
+    let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
+    let mut bins: Vec<Vec<u8>> = Vec::new();
+    let mut dropped: usize = 0;
+    for (idx, node) in nodes.iter().enumerate() {
+        let points = match node {
+            NavTreeNode::Branch(_) => {
+                index.push(first_child[idx] as u32 | BRANCH_BIT);
+                continue;
+            }
+            NavTreeNode::Leaf(points) if !points.is_empty() => points,
+            NavTreeNode::Leaf(_) => {
+                index.push(EMPTY_LEAF);
+                continue;
+            }
+        };
+        let leaf_len: usize = points.iter().map(NavPoint::record_len).sum();
+        // First-fit: the first open chunk whose remaining space holds the whole leaf; else a new one.
+        // A leaf larger than a whole chunk can't fit anywhere, so it opens a fresh chunk and drops its
+        // overflow (build_nav_tree makes this effectively impossible).
+        let bin = match bins.iter().position(|b| b.len() + leaf_len <= NAV_CHUNK_SIZE) {
+            Some(c) => c,
+            None => {
+                bins.push(Vec::with_capacity(NAV_CHUNK_SIZE));
+                bins.len() - 1
+            }
+        };
+        index.push((bin as u32) & !BRANCH_BIT);
+        for p in points {
+            if bins[bin].len() + p.record_len() > NAV_CHUNK_SIZE {
+                dropped += 1;
+                continue; // co-located overflow inside one leaf — effectively impossible in real OSM
+            }
+            pack_nav_record(p, &mut bins[bin]);
+        }
+    }
+
+    // Concatenate the bins, each 0xFF-padded to a full chunk (the padding's first byte lands on a
+    // `degree` slot, giving the reader its end-of-chunk sentinel).
+    let chunk_count = bins.len() as u32;
+    let mut chunks: Vec<u8> = Vec::with_capacity(bins.len() * NAV_CHUNK_SIZE);
+    for mut b in bins {
+        b.resize(NAV_CHUNK_SIZE, 0xFF);
+        chunks.extend_from_slice(&b);
+    }
+
+    let mut index_bytes = Vec::with_capacity(index.len() * 4);
+    for v in &index {
+        index_bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    (index_bytes, index.len() as u32, chunks, chunk_count, dropped)
 }
 
 /// Build the node quadtree over the **global bbox** (§8.2), splitting a leaf once
@@ -821,12 +936,14 @@ fn build_nav_tree(points: Vec<NavPoint>, bbox: (i64, i64, i64, i64), chunk_size:
 }
 
 /// A working edge on its way into the pool: endpoints (dense node ids), the
-/// **densified** polyline, and the cost carried into both endpoints' records.
+/// **densified** polyline, the cost carried into both endpoints' records, and the
+/// parent way's `kind` class byte (inherited by every split piece).
 struct WorkEdge {
     a: u32,
     b: u32,
     polyline: Vec<(i32, i32)>,
     cost_m: u32,
+    kind: u8,
 }
 
 /// Densify one nav polyline: insert midpoints on any segment whose lon **or** lat
@@ -843,12 +960,14 @@ fn densify_polyline(pts: &[(i32, i32)]) -> Vec<(i32, i32)> {
     out64.into_iter().map(|(x, y)| (x as i32, y as i32)).collect()
 }
 
-/// Pack one §8.4 edge record: `length_m u32, pt_count u16, anchor_lat i32,
-/// anchor_lon i32`, then `pt_count - 1` × `(dlat i16, dlon i16)`. The polyline is
-/// already densified, so every delta fits.
+/// Pack one v9 §8.4 edge record: `length_m u32, pt_count u16, way_kind u8, anchor_lat i32,
+/// anchor_lon i32`, then `pt_count - 1` × `(dlat i16, dlon i16)`. `length_m` **stays** in v9 (N3
+/// sums it at emit for the displayed distance — weighted `g` is no longer a distance). The polyline
+/// is already densified, so every delta fits.
 fn pack_edge_record(e: &WorkEdge, out: &mut Vec<u8>) {
     out.extend_from_slice(&e.cost_m.to_le_bytes());
     out.extend_from_slice(&(e.polyline.len() as u16).to_le_bytes());
+    out.push(e.kind);
     out.extend_from_slice(&e.polyline[0].1.to_le_bytes()); // anchor lat
     out.extend_from_slice(&e.polyline[0].0.to_le_bytes()); // anchor lon
     for w in e.polyline.windows(2) {
@@ -860,61 +979,119 @@ fn pack_edge_record(e: &WorkEdge, out: &mut Vec<u8>) {
     }
 }
 
-/// Serialize the full nav-graph section (spec §8) at absolute byte `section_offset`:
-/// `[directory][node quadtree index][node chunks][edge pool]`. An empty graph (no
-/// routable ways) writes an empty directory — `index_node_count == 0`, zero
-/// chunks — exactly like an empty POI category; the section is **always present**.
+/// Pack the §8.6 profile table: `profiles.len()` consecutive 52-byte records (`name [u8;12]`,
+/// `highway_mult [u8;32]`, `surface_mult [u8;8]`). The name is UTF-8 truncated to 12 bytes and
+/// `0xFF`-padded (the POI-name convention). `profiles` is `1..=8` (the packer never writes an empty
+/// table; the reader rejects `profile_count` outside that range).
+fn pack_profile_table(profiles: &[NavProfile]) -> Vec<u8> {
+    debug_assert!((1..=NAV_MAX_PROFILES).contains(&profiles.len()), "1..=8 profiles");
+    let mut out = Vec::with_capacity(profiles.len() * NAV_PROFILE_LEN);
+    for p in profiles {
+        let name = p.name.as_bytes();
+        let n = name.len().min(NAV_PROFILE_NAME_LEN);
+        out.extend_from_slice(&name[..n]);
+        out.resize(out.len() + (NAV_PROFILE_NAME_LEN - n), 0xFF); // 0xFF-pad the name field
+        out.extend_from_slice(&p.highway);
+        out.extend_from_slice(&p.surface);
+    }
+    debug_assert_eq!(out.len(), profiles.len() * NAV_PROFILE_LEN);
+    out
+}
+
+/// Serialize the full nav-graph section (spec §8, v9) at absolute byte `section_offset`:
+/// `[directory (28 B)][profile table (§8.6)][node quadtree index][node chunks][edge pool]`. The
+/// **profile table is written immediately after the directory**, before the node index, so even an
+/// empty graph (no routable ways) still carries its profiles; the section is **always present**.
+/// `profiles` is `1..=8` entries (validated in [`crate::config`]).
 ///
-/// Two graph normalizations happen here, on working copies (the caller's
-/// [`NavGraph`] is untouched):
-/// - **Densify + split.** Polylines are densified to the 30 000-µdeg delta bound;
-///   an edge whose record would then overflow one chunk ([`NAV_MAX_EDGE_PTS`]) is
-///   split at a vertex into pieces joined by synthetic degree-2 nodes (each
-///   piece's cost re-measured over its sub-polyline), so **no record straddles a
-///   chunk boundary**.
-/// - **Degree cap.** A node keeps its first [`NAV_MAX_DEGREE`] adjacency entries
-///   (edge-pool order — deterministic); the packer warns on stderr about the rest.
+/// Graph normalizations happen here, on working copies (the caller's [`NavGraph`] is untouched):
+/// - **Densify + split.** Polylines are densified to the 30 000-µdeg segment bound; an edge whose
+///   record would overflow one chunk ([`NAV_MAX_EDGE_PTS`]) **or** whose piece would span more than
+///   [`NAV_MAX_NEIGHBOR_DELTA`] (so its neighbor delta wouldn't fit `i16`) is split at a vertex into
+///   pieces joined by synthetic degree-2 nodes (each piece's cost re-measured over its sub-polyline
+///   and `way_kind` inherited), so **no record straddles a chunk** and **every neighbor delta fits
+///   `i16`**.
+/// - **Degree cap.** A node keeps its first [`NAV_MAX_DEGREE`] adjacency entries (edge-pool order —
+///   deterministic); the packer warns on stderr about the rest.
+/// - **Bin-packed node chunks.** Leaves are first-fit-packed into shared 512-byte chunks
+///   ([`flatten_nav_tree`]) — distinct leaves may reference one chunk.
 ///
-/// Wire `edge_id` = the record's **pool-relative byte offset** (§8.4): the reader
-/// derives `(chunk, offset)` as `id / chunk_size`, `id % chunk_size` with **zero
-/// resident index** — the whole reason this addressing was picked. A self-loop
-/// edge (`a == b`) contributes **one** adjacency entry, not two.
-pub fn serialize_nav_section(graph: &NavGraph, global_bbox: (i64, i64, i64, i64), section_offset: usize) -> Vec<u8> {
-    let empty_dir = |off: usize| {
-        let after = (off + NAV_DIR_LEN) as u32;
-        let mut dir = Vec::with_capacity(NAV_DIR_LEN);
-        dir.extend_from_slice(&after.to_le_bytes()); // index_offset (zero-length)
-        dir.extend_from_slice(&0u32.to_le_bytes()); // index_node_count
-        dir.extend_from_slice(&0u32.to_le_bytes()); // node_chunk_count
-        dir.extend_from_slice(&after.to_le_bytes()); // edge_pool_offset (zero-length)
-        dir.extend_from_slice(&0u32.to_le_bytes()); // edge_chunk_count
-        dir.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes());
-        dir
-    };
+/// Wire `edge_id` = the record's **pool-relative byte offset** (§8.4): the reader derives
+/// `(chunk, offset)` as `id / 512`, `id % 512` with **zero resident index**. A self-loop edge
+/// (`a == b`) contributes **one** adjacency entry, not two.
+pub fn serialize_nav_section(
+    graph: &NavGraph,
+    profiles: &[NavProfile],
+    global_bbox: (i64, i64, i64, i64),
+    section_offset: usize,
+) -> Vec<u8> {
+    let profile_table = pack_profile_table(profiles);
+    // The profile table sits right after the 28-byte directory; the node index (and, for an empty
+    // graph, the zero-length edge pool) start after it.
+    let profile_table_offset = section_offset + NAV_DIR_LEN;
+    let index_offset = profile_table_offset + profile_table.len();
+
+    // Directory writer, shared by the empty and populated paths. `idx_off`/`edge_off` point at the
+    // node index and edge pool; an empty graph passes `index_offset` for both (zero-length regions).
+    let write_dir =
+        |out: &mut Vec<u8>, idx_off: usize, node_count: u32, node_chunks: u32, edge_off: usize, edge_chunks: u32| {
+            out.extend_from_slice(&(idx_off as u32).to_le_bytes()); // index_offset
+            out.extend_from_slice(&node_count.to_le_bytes()); // index_node_count
+            out.extend_from_slice(&node_chunks.to_le_bytes()); // node_chunk_count
+            out.extend_from_slice(&(edge_off as u32).to_le_bytes()); // edge_pool_offset
+            out.extend_from_slice(&edge_chunks.to_le_bytes()); // edge_chunk_count
+            out.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes()); // chunk_size (pinned 512)
+            out.extend_from_slice(&(profile_table_offset as u32).to_le_bytes()); // profile_table_offset
+            out.push(profiles.len() as u8); // profile_count
+            out.push(0u8); // reserved
+            debug_assert_eq!(out.len(), NAV_DIR_LEN);
+        };
+
     if graph.nodes.is_empty() {
-        return empty_dir(section_offset);
+        // Empty graph: 28-byte directory (both regions zero-length, just past the profile table) +
+        // the always-present profile table.
+        let mut out = Vec::with_capacity(NAV_DIR_LEN + profile_table.len());
+        write_dir(&mut out, index_offset, 0, 0, index_offset, 0);
+        out.extend_from_slice(&profile_table);
+        return out;
     }
 
     // R1 assigns dense ids in push order — the serializer indexes `coords` by id.
     debug_assert!(graph.nodes.iter().enumerate().all(|(i, n)| n.id as usize == i), "node ids are dense");
     let mut coords: Vec<(i32, i32)> = graph.nodes.iter().map(|n| n.coord).collect();
 
-    // Densify, then split anything over one chunk's worth of points. Splitting
-    // appends synthetic nodes, so it runs before adjacency is built.
+    // Densify, then split anything over one chunk's worth of points OR whose piece would span more
+    // than the i16-delta bound. Splitting appends synthetic nodes, so it runs before adjacency.
     let mut edges: Vec<WorkEdge> = Vec::with_capacity(graph.edges.len());
     for e in &graph.edges {
         let poly = densify_polyline(&e.polyline);
-        if poly.len() <= NAV_MAX_EDGE_PTS {
-            edges.push(WorkEdge { a: e.a, b: e.b, polyline: poly, cost_m: e.length_m });
+        // Fast path: short polyline whose endpoints (= junctions a,b) already fit the i16 neighbor
+        // delta. N1 guarantees this for real packs, but a hand-built graph (tests) may not, so we
+        // re-check the span here rather than trust it — a violating edge falls into the split loop.
+        let (a, z) = (poly[0], *poly.last().unwrap());
+        let span_ok = (a.0 as i64 - z.0 as i64).abs() <= NAV_MAX_NEIGHBOR_DELTA
+            && (a.1 as i64 - z.1 as i64).abs() <= NAV_MAX_NEIGHBOR_DELTA;
+        if poly.len() <= NAV_MAX_EDGE_PTS && span_ok {
+            edges.push(WorkEdge { a: e.a, b: e.b, polyline: poly, cost_m: e.length_m, kind: e.kind });
             continue;
         }
-        // Walk the long polyline in ≤ NAV_MAX_EDGE_PTS pieces; each interior cut
-        // vertex becomes a synthetic junction. Pieces are re-measured so their
-        // costs sum to (within rounding of) the original.
+        // Walk the long polyline in pieces bounded by BOTH the chunk point-cap and the i16 endpoint
+        // span; each interior cut vertex becomes a synthetic junction. Densify caps each segment to
+        // 30 000 µdeg (< the span bound), so a piece always advances ≥ 1 vertex (termination).
+        // Pieces are re-measured so their costs sum to (within rounding of) the original.
         let mut start = 0usize;
         let mut from = e.a;
         while start < poly.len() - 1 {
-            let end = (start + NAV_MAX_EDGE_PTS - 1).min(poly.len() - 1);
+            let max_end = (start + NAV_MAX_EDGE_PTS - 1).min(poly.len() - 1);
+            let mut end = start + 1;
+            while end < max_end {
+                let dlon = (poly[end + 1].0 as i64 - poly[start].0 as i64).abs();
+                let dlat = (poly[end + 1].1 as i64 - poly[start].1 as i64).abs();
+                if dlon > NAV_MAX_NEIGHBOR_DELTA || dlat > NAV_MAX_NEIGHBOR_DELTA {
+                    break;
+                }
+                end += 1;
+            }
             let piece = poly[start..=end].to_vec();
             let to = if end == poly.len() - 1 {
                 e.b
@@ -924,7 +1101,7 @@ pub fn serialize_nav_section(graph: &NavGraph, global_bbox: (i64, i64, i64, i64)
                 id
             };
             let cost_m = polyline_len_m(&piece);
-            edges.push(WorkEdge { a: from, b: to, polyline: piece, cost_m });
+            edges.push(WorkEdge { a: from, b: to, polyline: piece, cost_m, kind: e.kind });
             from = to;
             start = end;
         }
@@ -959,7 +1136,7 @@ pub fn serialize_nav_section(graph: &NavGraph, global_bbox: (i64, i64, i64, i64)
                 return;
             }
             let (lon, lat) = coords[to as usize];
-            list.push(WireNeighbor { id: to, lat, lon, edge_id, cost_m: e.cost_m });
+            list.push(WireNeighbor { id: to, lat, lon, edge_id, cost_m: e.cost_m, way_kind: e.kind });
         };
         push(e.a, e.b);
         if e.a != e.b {
@@ -977,33 +1154,31 @@ pub fn serialize_nav_section(graph: &NavGraph, global_bbox: (i64, i64, i64, i64)
         .map(|(id, (&(lon, lat), neighbors))| NavPoint { lat, lon, id: id as u32, neighbors })
         .collect();
     let root = build_nav_tree(points, global_bbox, NAV_CHUNK_SIZE);
-    let (index, node_count, chunks, chunk_count, dropped) = flatten_tree(&root, NAV_CHUNK_SIZE);
+    let (index, node_count, chunks, chunk_count, dropped) = flatten_nav_tree(&root);
     if dropped > 0 {
         // Co-located junctions inside the 10-µdeg split floor — effectively
         // impossible in real OSM, but never silent.
         eprintln!("warning: {dropped} nav node record(s) dropped (leaf overflow at the split floor)");
     }
 
-    let index_offset = section_offset + NAV_DIR_LEN;
+    // Layout: [directory][profile table][node index][node chunks][edge pool]. `index_offset` was
+    // fixed above (after the profile table); the edge pool follows the node chunks.
+    debug_assert_eq!(index_offset, section_offset + NAV_DIR_LEN + profile_table.len());
     let edge_pool_offset = index_offset + index.len() + chunks.len();
-    let mut out = Vec::with_capacity(NAV_DIR_LEN + index.len() + chunks.len() + pool.len());
-    out.extend_from_slice(&(index_offset as u32).to_le_bytes());
-    out.extend_from_slice(&node_count.to_le_bytes());
-    out.extend_from_slice(&chunk_count.to_le_bytes());
-    out.extend_from_slice(&(edge_pool_offset as u32).to_le_bytes());
-    out.extend_from_slice(&edge_chunk_count.to_le_bytes());
-    out.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes());
-    debug_assert_eq!(out.len(), NAV_DIR_LEN);
+    let mut out = Vec::with_capacity(NAV_DIR_LEN + profile_table.len() + index.len() + chunks.len() + pool.len());
+    write_dir(&mut out, index_offset, node_count, chunk_count, edge_pool_offset, edge_chunk_count);
+    out.extend_from_slice(&profile_table);
     out.extend_from_slice(&index);
     out.extend_from_slice(&chunks);
     out.extend_from_slice(&pool);
     out
 }
 
-/// The 40-byte OBCM v8 header `<4sBiiiiIBIHII>`: magic, version, bbox stored as
+/// The 40-byte OBCM header `<4sBiiiiIBIHII>`: magic, version (v9), bbox stored as
 /// lat,lon,lat,lon, style offset, lod count, lod-table offset, marker color, the
-/// POI section offset, and (v8) the nav-graph section offset. Shared by both
-/// serializers.
+/// POI section offset, and the nav-graph section offset. The header layout is
+/// unchanged across v8→v9 (all new fields hang off the nav directory). Shared by
+/// both serializers.
 fn header_bytes(
     lod_count: usize,
     marker_color: u16,
@@ -1040,12 +1215,12 @@ fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, 
     table.extend_from_slice(&cc.to_le_bytes());
 }
 
-/// Serialize a pyramid of LOD layers into the full v8 `.obcm` byte stream (header
+/// Serialize a pyramid of LOD layers into the full v9 `.obcm` byte stream (header
 /// field order, LOD table layout, the bbox stored as lat,lon,lat,lon, the POI
 /// section §7, and the trailing nav-graph section §8). `pois` is the deduped
-/// classified POI list and `nav` the routable graph — both **always** get a
-/// section, empty or not. The second return value is the total chunk-overflow
-/// feature drops (see [`pack_chunk`]).
+/// classified POI list, `nav` the routable graph, and `profiles` the `1..=8` routing
+/// profiles (§8.6) — all **always** get a section, empty or not. The second return
+/// value is the total chunk-overflow feature drops (see [`pack_chunk`]).
 pub fn serialize_lods(
     lods: &[LodLayer],
     styles: &[Style],
@@ -1053,6 +1228,7 @@ pub fn serialize_lods(
     global_bbox: (i64, i64, i64, i64),
     pois: &[Poi],
     nav: &NavGraph,
+    profiles: &[NavProfile],
 ) -> (Vec<u8>, usize) {
     let style_data = pack_style_dict(styles);
     let lod_count = lods.len();
@@ -1089,7 +1265,7 @@ pub fn serialize_lods(
     let poi_section_offset = cursor;
     let poi_section = serialize_poi_section(pois, global_bbox, poi_section_offset);
     let nav_section_offset = poi_section_offset + poi_section.len();
-    let nav_section = serialize_nav_section(nav, global_bbox, nav_section_offset);
+    let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset);
 
     let mut out =
         Vec::with_capacity(lod_table_offset + table.len() + payload.len() + poi_section.len() + nav_section.len());
@@ -1136,6 +1312,7 @@ pub fn serialize_lods_streaming<W, F>(
     global_bbox: (i64, i64, i64, i64),
     pois: &[Poi],
     nav: &NavGraph,
+    profiles: &[NavProfile],
     mut build: F,
 ) -> io::Result<(u64, usize)>
 where
@@ -1177,7 +1354,7 @@ where
     w.write_all(&poi_section)?;
     cursor += poi_section.len();
     let nav_section_offset = cursor;
-    let nav_section = serialize_nav_section(nav, global_bbox, nav_section_offset);
+    let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset);
     w.write_all(&nav_section)?;
     cursor += nav_section.len();
 
@@ -1316,12 +1493,19 @@ mod tests {
             }],
         };
 
-        let (reference, ref_dropped) = serialize_lods(&lods, &styles, 0xABCD, bbox, &pois, &nav);
+        // Two profiles so §8.6 is non-trivial and the streaming/in-memory paths must agree on its
+        // bytes as well as the graph's.
+        let profiles = vec![
+            NavProfile { name: "Road".into(), highway: [16; 32], surface: [16; 8] },
+            NavProfile { name: "Gravel".into(), highway: [24; 32], surface: [32; 8] },
+        ];
+
+        let (reference, ref_dropped) = serialize_lods(&lods, &styles, 0xABCD, bbox, &pois, &nav, &profiles);
         assert_eq!(ref_dropped, 0, "nothing overflows in this fixture");
 
         let mut cur = Cursor::new(Vec::new());
         let (total, dropped) =
-            serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, &pois, &nav, |i| {
+            serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, &pois, &nav, &profiles, |i| {
                 (lods[i].root.clone(), lods[i].chunk_size, lods[i].max_mpp)
             })
             .unwrap();

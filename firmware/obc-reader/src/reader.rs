@@ -25,7 +25,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use heapless::Vec;
 
 use crate::byte_io::{ByteSource, Error as IoError};
-use crate::codec::{rd_f32, rd_i32, rd_u16, rd_u32};
+use crate::codec::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32};
 use crate::format::{
     BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_PRIORITY_MASK,
 };
@@ -94,28 +94,48 @@ const POI_SEARCH_HALF_UDEG: i32 = 18_000;
 /// straddles two reads.
 const POI_SCAN_WINDOW: usize = 512;
 
-/// The nav directory (spec §8.1): `index_offset u32, index_node_count u32, node_chunk_count u32,
-/// edge_pool_offset u32, edge_chunk_count u32, chunk_size u16` — the graph's whole resident
-/// footprint (parsed into [`NavDirectory`]).
-const NAV_DIR_LEN: usize = 22;
+/// The v9 nav directory (spec §8.1): `index_offset u32, index_node_count u32, node_chunk_count u32,
+/// edge_pool_offset u32, edge_chunk_count u32, chunk_size u16, profile_table_offset u32,
+/// profile_count u8, reserved u8` — 28 bytes (v8 was 22). Parsed into [`NavDirectory`]; the profile
+/// table it points at is parsed into [`MapTables::profiles`].
+const NAV_DIR_LEN: usize = 28;
+
+/// The fixed nav chunk size (spec §8.1): v9 **pins** it to 512, so [`parse_nav_directory`] rejects
+/// any other value (the geometry sections' configurable chunk size is independent — nav is fixed).
+pub const NAV_CHUNK_SIZE: usize = 512;
 
 /// Fixed prefix of a §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`. The `degree`
 /// byte at record offset 12 doubles as the end-of-chunk sentinel (`0xFF`, mirroring the POI
 /// subtype sentinel — a real degree is capped far below it, spec §8.3).
 pub const NAV_NODE_FIXED_LEN: usize = 13;
 
-/// One §8.3 neighbor entry: `neighbor_id u32, neighbor_lat i32, neighbor_lon i32, edge_id u32,
-/// cost_m u32`. Neighbor coords are inline so A* (R3) computes `f = g + h` at relaxation with no
-/// second fetch.
-pub const NAV_NEIGHBOR_LEN: usize = 20;
+/// One v9 §8.3 neighbor entry, 15 bytes: `neighbor_id u32, dlat i16, dlon i16, edge_id u32,
+/// cost_m u16, way_kind u8`. `dlat`/`dlon` are µdeg deltas from the owning record's own coord
+/// (reconstructed inline so A* computes `f = g + h` at relaxation with no second fetch); `way_kind`
+/// is N1's packed class byte (N3 weights edges by it). v8 was 20 bytes (absolute i32 coords, u32
+/// cost, no kind).
+pub const NAV_NEIGHBOR_LEN: usize = 15;
 
-/// Fixed prefix of a §8.4 edge record: `length_m u32, pt_count u16, anchor_lat i32, anchor_lon
-/// i32`; `pt_count - 1` × `(dlat i16, dlon i16)` deltas follow.
-pub const NAV_EDGE_FIXED_LEN: usize = 14;
+/// Fixed prefix of a v9 §8.4 edge record, 15 bytes: `length_m u32, pt_count u16, way_kind u8,
+/// anchor_lat i32, anchor_lon i32`; `pt_count - 1` × `(dlat i16, dlon i16)` deltas follow. v8 was
+/// 14 bytes (no `way_kind`).
+pub const NAV_EDGE_FIXED_LEN: usize = 15;
 
-/// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1). The packer writes 512;
-/// the cap bounds the caller-owned scratch [`Reader::for_each_nav_node`] requires and R4's
-/// graph-tile cache slots (2 slots × 2 KB stays trivially small next to the map path).
+/// One §8.6 profile record: `name [u8;12]` (0xFF-padded UTF-8), `highway_mult [u8;32]`,
+/// `surface_mult [u8;8]`.
+pub const NAV_PROFILE_LEN: usize = 52;
+
+/// The `Name` field width inside a profile record (§8.6): 12 bytes, `0xFF`-padded.
+pub const NAV_PROFILE_NAME_LEN: usize = 12;
+
+/// Profile-count cap (§8.6): `profile_count` is a `u8` the reader rejects outside `1..=8`, so at
+/// most eight profiles are ever resident.
+pub const NAV_MAX_PROFILES: usize = 8;
+
+/// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1). v9 pins the wire value to
+/// exactly [`NAV_CHUNK_SIZE`] (512), but the caller-owned scratch [`Reader::for_each_nav_node`]
+/// requires and R4's graph-tile cache slots stay sized at this larger bound — **N4 owns the cache
+/// geometry (2 slots × 2 KB); do not shrink it here**.
 pub const NAV_MAX_CHUNK_BYTES: usize = 2048;
 
 /// The per-read window of [`Reader::nav_edge`]'s delta stream, bytes (a multiple of the 4-byte
@@ -344,8 +364,13 @@ pub struct NavDirectory {
     pub edge_pool_offset: usize,
     /// Number of `chunk_size`-byte chunks in the edge pool.
     pub edge_chunk_count: usize,
-    /// Fixed capacity (bytes) of every nav chunk — node chunks and edge-pool chunks alike.
+    /// Fixed capacity (bytes) of every nav chunk — node chunks and edge-pool chunks alike. v9 pins
+    /// this to [`NAV_CHUNK_SIZE`] (512); [`parse_nav_directory`] rejects any other value.
     pub chunk_size: usize,
+    /// Absolute byte offset of the §8.6 profile table (written immediately after this directory).
+    pub profile_table_offset: usize,
+    /// Number of 52-byte profile records at `profile_table_offset` (1..=8; parse rejects otherwise).
+    pub profile_count: usize,
 }
 
 impl NavDirectory {
@@ -387,9 +412,50 @@ impl QuadIndex for NavDirectory {
     }
 }
 
-/// One adjacency entry of a decoded §8.3 junction record. Coordinates are absolute microdegrees;
-/// `edge_id` addresses the §8.4 edge pool ([`Reader::nav_edge`]); `cost_m` is the edge's ground
-/// length in meters (the plain-distance A* cost).
+/// One §8.6 routing profile resident in [`MapTables`]: a display name plus the two multiplier
+/// tables (`u8` fixed-point 1/16, indexed by way-kind's highway class 0..=31 / surface class
+/// 0..=7; `16` = 1.0×, `0` = forbidden). N3 selects one by index and weights each edge by
+/// [`MapProfile::multiplier`]. Parsed by [`parse_nav_profiles`], which clamps any non-zero byte
+/// below 16 up to 16 (defensive — the packer already enforces the admissibility invariant).
+#[derive(Debug, Clone, Copy)]
+pub struct MapProfile {
+    /// Raw name field (0xFF-padded); read via [`MapProfile::name`].
+    name: [u8; NAV_PROFILE_NAME_LEN],
+    /// Name length in bytes (up to the first 0xFF pad).
+    name_len: usize,
+    /// Multiplier per highway class (5-bit index). `16` = 1.0×, `0` = forbidden.
+    pub highway: [u8; 32],
+    /// Multiplier per surface class (3-bit index). Same encoding.
+    pub surface: [u8; 8],
+}
+
+impl MapProfile {
+    /// The profile's display name (UTF-8, trailing `0xFF` padding trimmed); `""` if not valid UTF-8.
+    #[inline]
+    pub fn name(&self) -> &str {
+        core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("")
+    }
+
+    /// Effective edge-weight multiplier for a packed `way_kind` byte, in 1/16 fixed-point:
+    /// `(highway[kind & 31] × surface[kind >> 5]) >> 4` (u32 math). `None` if either class is
+    /// forbidden (a `0` byte) — the edge is not routable under this profile (§8.6).
+    #[inline]
+    pub fn multiplier(&self, way_kind: u8) -> Option<u32> {
+        let mh = self.highway[(way_kind & 0x1F) as usize] as u32;
+        let ms = self.surface[(way_kind >> 5) as usize] as u32;
+        if mh == 0 || ms == 0 {
+            None
+        } else {
+            Some((mh * ms) >> 4)
+        }
+    }
+}
+
+/// One adjacency entry of a decoded §8.3 junction record. Coordinates are absolute microdegrees,
+/// **reconstructed** from the record's own coord + the stored `i16` deltas; `edge_id` addresses the
+/// §8.4 edge pool ([`Reader::nav_edge`]); `cost_m` is the edge's raw ground length in meters (the
+/// unweighted distance — N3 weights it by profile at relaxation); `way_kind` is N1's packed class
+/// byte, the input to profile weighting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavNeighbor {
     pub id: u32,
@@ -397,6 +463,7 @@ pub struct NavNeighbor {
     pub lon: i32,
     pub edge_id: u32,
     pub cost_m: u32,
+    pub way_kind: u8,
 }
 
 /// One §8.3 junction record, borrowed from the chunk scratch for a single
@@ -421,15 +488,19 @@ impl<'a> NavNodeRef<'a> {
         self.neighbors.len() / NAV_NEIGHBOR_LEN
     }
 
-    /// Iterate the adjacency entries in record order.
+    /// Iterate the adjacency entries in record order. Each neighbor's absolute coord is
+    /// reconstructed as `record coord + i16 delta` (cast-free `from_le_bytes` on the slice — the
+    /// #501 alignment rule); `cost_m` widens from the `u16` wire value; `way_kind` is a raw byte.
     #[inline]
     pub fn neighbors(&self) -> impl Iterator<Item = NavNeighbor> + 'a {
-        self.neighbors.chunks_exact(NAV_NEIGHBOR_LEN).map(|e| NavNeighbor {
+        let (base_lat, base_lon) = (self.lat, self.lon);
+        self.neighbors.chunks_exact(NAV_NEIGHBOR_LEN).map(move |e| NavNeighbor {
             id: rd_u32(e, 0),
-            lat: rd_i32(e, 4),
-            lon: rd_i32(e, 8),
-            edge_id: rd_u32(e, 12),
-            cost_m: rd_u32(e, 16),
+            lat: base_lat.wrapping_add(rd_i16(e, 4) as i32),
+            lon: base_lon.wrapping_add(rd_i16(e, 6) as i32),
+            edge_id: rd_u32(e, 8),
+            cost_m: rd_u16(e, 12) as u32,
+            way_kind: e[14],
         })
     }
 }
@@ -657,7 +728,7 @@ fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
         return Err(Error::BadMagic);
     }
     let version = h[4];
-    if version != 8 {
+    if version != 9 {
         return Err(Error::BadVersion);
     }
     // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack).
@@ -698,10 +769,13 @@ pub struct MapTables {
     /// empty, plus the hours-pool offset/count). Parse-only here — exposed via
     /// [`Reader::poi_directory`] for the nearest-N query and the P3 (#443) hours lookup.
     pois: PoiDirectory,
-    /// The parsed nav directory (spec §8.1). Always present in v8 (possibly empty). The graph's
-    /// only resident state — everything else streams via [`Reader::for_each_nav_node`] /
-    /// [`Reader::nav_edge`].
+    /// The parsed nav directory (spec §8.1). Always present in v9 (possibly empty graph). The
+    /// graph's only resident state besides the profile table — everything else streams via
+    /// [`Reader::for_each_nav_node`] / [`Reader::nav_edge`].
     nav: NavDirectory,
+    /// The parsed §8.6 routing profiles (1..=8, always present). RAM: at most 8 × 52 B = 416 B
+    /// resident — the whole profile table stays in `.bss`, exposed via [`Reader::nav_profiles`].
+    profiles: heapless::Vec<MapProfile, NAV_MAX_PROFILES>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
     styles: [Option<Style>; 256],
     /// The backdrop style (bottom of the paint order; see [`Reader::backdrop_style`]), resolved
@@ -755,6 +829,7 @@ impl MapTables {
         let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
         let pois = parse_poi_directory(src, poi_section_offset, total)?;
         let nav = parse_nav_directory(src, nav_section_offset, total)?;
+        let profiles = parse_nav_profiles(src, &nav)?;
         // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
         // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
         let backdrop = styles.iter().filter_map(|s| s.as_ref()).min_by_key(|s| (s.z_index, s.id)).copied();
@@ -763,7 +838,7 @@ impl MapTables {
         // suffices: the counter is the only shared state and only uniqueness matters.
         static GEN: AtomicU32 = AtomicU32::new(0);
         let generation = GEN.fetch_add(1, Ordering::Relaxed) + 1;
-        Ok(MapTables { version, bbox, marker_color, lods, pois, nav, styles, backdrop, generation })
+        Ok(MapTables { version, bbox, marker_color, lods, pois, nav, profiles, styles, backdrop, generation })
     }
 }
 
@@ -1020,11 +1095,19 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// The parsed nav directory (spec §8.1). Always present in v8; `is_empty()` for a map with no
+    /// The parsed nav directory (spec §8.1). Always present in v9; `is_empty()` for a map with no
     /// routable ways.
     #[inline]
     pub fn nav_directory(&self) -> &NavDirectory {
         &self.tables.nav
+    }
+
+    /// The map's §8.6 routing profiles (1..=8, always present even for an empty graph). N5 exposes
+    /// their names on the device; N3 selects one by index and weights edges by
+    /// [`MapProfile::multiplier`].
+    #[inline]
+    pub fn nav_profiles(&self) -> &[MapProfile] {
+        &self.tables.profiles
     }
 
     /// Visit every §8.3 junction record whose quadtree leaf overlaps `view`, in quadtree order —
@@ -1106,8 +1189,9 @@ impl<'a> Reader<'a> {
         self.src.read_at(head_off, &mut head).ok()?;
         let length_m = rd_u32(&head, 0);
         let pt_count = rd_u16(&head, 4) as usize;
-        let anchor_lat = rd_i32(&head, 6);
-        let anchor_lon = rd_i32(&head, 10);
+        // byte 6 is `way_kind` (v9); the anchor shifts to 7/11.
+        let anchor_lat = rd_i32(&head, 7);
+        let anchor_lon = rd_i32(&head, 11);
         if pt_count == 0 {
             return None;
         }
@@ -1213,7 +1297,8 @@ impl<'a> Reader<'a> {
         let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
         let length_m = rd_u32(chunk, within);
         let pt_count = rd_u16(chunk, within + 4) as usize;
-        let anchor = (rd_i32(chunk, within + 10), rd_i32(chunk, within + 6)); // (lon, lat)
+        // byte within+6 is `way_kind` (v9); the anchor shifts to +7 (lat) / +11 (lon).
+        let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7)); // (lon, lat)
         if pt_count == 0 {
             return None;
         }
@@ -1914,12 +1999,13 @@ fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
     }
 }
 
-/// Parse the nav directory (spec §8.1) at `offset` from `src` (file is `total` bytes). Parse-only:
-/// validates the directory scalars, the node index + chunk region, and the edge-pool region lie
-/// in-file, but walks/decodes nothing. The section is always present, so `offset` at/past EOF, a
-/// `chunk_size` of `0` or past [`NAV_MAX_CHUNK_BYTES`], or an out-of-file region is a corrupt
-/// header ⇒ [`Error::BadOffset`]. Every offset/length product is checked (32-bit target) — the
-/// same overflow-guard style as [`parse_lod_table`] / [`parse_poi_directory`].
+/// Parse the v9 nav directory (spec §8.1) at `offset` from `src` (file is `total` bytes).
+/// Parse-only: validates the directory scalars, the node index + chunk region, the edge-pool
+/// region, and the profile-table region lie in-file, but walks/decodes nothing (the profiles
+/// themselves are read by [`parse_nav_profiles`]). The section is always present, so `offset`
+/// at/past EOF, a `chunk_size` other than the pinned 512, a `profile_count` outside `1..=8`, or any
+/// out-of-file region is a corrupt/old file ⇒ [`Error::BadOffset`] (distinct from the v8 file's
+/// [`Error::BadVersion`]). Every offset/length product is checked (32-bit target).
 fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Result<NavDirectory, Error> {
     if offset < HEADER_LEN || offset.checked_add(NAV_DIR_LEN).is_none_or(|end| end > total) {
         return Err(Error::BadOffset);
@@ -1933,9 +2019,30 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         edge_pool_offset: rd_u32(&d, 12) as usize,
         edge_chunk_count: rd_u32(&d, 16) as usize,
         chunk_size: rd_u16(&d, 20) as usize,
+        profile_table_offset: rd_u32(&d, 22) as usize,
+        profile_count: d[26] as usize,
     };
-    // A zero chunk_size would divide-by-zero the edge addressing; the packer always writes 512.
-    if dir.chunk_size == 0 || dir.chunk_size > NAV_MAX_CHUNK_BYTES {
+    // v9 pins the nav chunk size to 512 (§8.1) — a v8 file, or any other value, is rejected. This is
+    // a distinct error from the header's version check, so an old file and a mis-sized v9 file are
+    // told apart.
+    if dir.chunk_size != NAV_CHUNK_SIZE {
+        return Err(Error::BadOffset);
+    }
+    // The profile table is always present with 1..=8 records (§8.6) — a zero or oversize count is a
+    // malformed file, not a degraded one.
+    if dir.profile_count == 0 || dir.profile_count > NAV_MAX_PROFILES {
+        return Err(Error::BadOffset);
+    }
+    // Profile-table region (52 B × count) at `profile_table_offset` must lie in-file.
+    if dir.profile_table_offset < HEADER_LEN {
+        return Err(Error::BadOffset);
+    }
+    let profile_end = dir
+        .profile_count
+        .checked_mul(NAV_PROFILE_LEN)
+        .and_then(|len| dir.profile_table_offset.checked_add(len))
+        .ok_or(Error::BadOffset)?;
+    if profile_end > total {
         return Err(Error::BadOffset);
     }
     // Node index + chunk region: like an empty POI category, an empty graph only needs its
@@ -1964,6 +2071,44 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         return Err(Error::BadOffset);
     }
     Ok(dir)
+}
+
+/// Parse the §8.6 profile table into `MapTables`: `dir.profile_count` (1..=8, already range-checked
+/// by [`parse_nav_directory`]) consecutive 52-byte records at `dir.profile_table_offset`. Each
+/// record's name field is `0xFF`-padded UTF-8; the two multiplier tables are copied verbatim except
+/// that any **non-zero byte below 16 is clamped up to 16** — the admissibility invariant the packer
+/// enforces, re-applied here so a hand-forged file can't hand N3 an inadmissible weight. A read
+/// failure or out-of-file record is a corrupt file ⇒ [`Error::BadOffset`].
+fn parse_nav_profiles(
+    src: &dyn ByteSource,
+    dir: &NavDirectory,
+) -> Result<heapless::Vec<MapProfile, NAV_MAX_PROFILES>, Error> {
+    let mut out = heapless::Vec::new();
+    let mut buf = [0u8; NAV_PROFILE_LEN];
+    for i in 0..dir.profile_count {
+        let off = dir
+            .profile_table_offset
+            .checked_add(i.checked_mul(NAV_PROFILE_LEN).ok_or(Error::BadOffset)?)
+            .ok_or(Error::BadOffset)?;
+        let off = u32::try_from(off).map_err(|_| Error::BadOffset)?;
+        src.read_at(off, &mut buf).map_err(|_| Error::BadOffset)?;
+        let mut name = [0u8; NAV_PROFILE_NAME_LEN];
+        name.copy_from_slice(&buf[0..NAV_PROFILE_NAME_LEN]);
+        // Name length = bytes up to the first 0xFF pad (the §7/§8 name convention).
+        let name_len = name.iter().position(|&b| b == 0xFF).unwrap_or(NAV_PROFILE_NAME_LEN);
+        let mut highway = [0u8; 32];
+        highway.copy_from_slice(&buf[12..44]);
+        let mut surface = [0u8; 8];
+        surface.copy_from_slice(&buf[44..52]);
+        for m in highway.iter_mut().chain(surface.iter_mut()) {
+            if *m != 0 && *m < 16 {
+                *m = 16; // clamp an inadmissible weight up to 1.0× (defensive; the packer forbids it)
+            }
+        }
+        // `push` can't fail: the loop runs `profile_count ≤ NAV_MAX_PROFILES` times (checked above).
+        let _ = out.push(MapProfile { name, name_len, highway, surface });
+    }
+    Ok(out)
 }
 
 /// A snapshot of the [`Reader`]'s streaming counters: chunk-cache hit/miss tally and raw SD-read
@@ -2449,7 +2594,7 @@ mod tests {
     fn synth_header(min_lon: i32, min_lat: i32, max_lon: i32, max_lat: i32, marker: u16) -> [u8; HEADER_LEN] {
         let mut h = [0u8; HEADER_LEN];
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 8;
+        h[4] = 9;
         h[5..9].copy_from_slice(&min_lat.to_le_bytes()); // field order is lat,lon,lat,lon
         h[9..13].copy_from_slice(&min_lon.to_le_bytes());
         h[13..17].copy_from_slice(&max_lat.to_le_bytes());
@@ -2467,7 +2612,7 @@ mod tests {
         assert_eq!(
             got,
             MapHeader {
-                version: 8,
+                version: 9,
                 bbox: BBox { min_lon: -34, min_lat: 12, max_lon: 78, max_lat: 56 },
                 marker_color: 0xBEEF
             }
@@ -2483,7 +2628,7 @@ mod tests {
         h[0..4].copy_from_slice(b"NOPE");
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadMagic));
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 7; // v7 (and earlier) no longer supported — only v8 is read
+        h[4] = 8; // v8 (and earlier) no longer supported — only v9 is read
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadVersion));
     }
 }

@@ -42,11 +42,10 @@ type EdgeKey = (u32, u32, Vec<(i32, i32)>, u8);
 
 /// Default island-pruning threshold: keep every connected component with at least
 /// this many edges (plus the single largest, always). `50` is the epic N1 decision
-/// (grimsel's giant is 5 024 nodes; its second-largest is 20).
-///
-/// TODO(N2): expose this as `routing.min_component_edges` in the packer config +
-/// JSON schema and thread it through here; N1 hard-wires the default.
-const DEFAULT_MIN_COMPONENT_EDGES: usize = 50;
+/// (grimsel's giant is 5 024 nodes; its second-largest is 20). N2 makes it
+/// configurable via `routing.min_component_edges` — the packer threads the config
+/// value through [`build_graph_with`]; [`build_graph`] keeps this default for tests.
+pub const DEFAULT_MIN_COMPONENT_EDGES: usize = 50;
 
 /// Maximum endpoint-to-endpoint lat **or** lon delta (µdeg) an edge may span before
 /// [`build_graph`] splits it. N2 stores each neighbor's coordinate as an `i16` µdeg
@@ -59,9 +58,12 @@ const MAX_ENDPOINT_DELTA_UDEG: i64 = 32_000;
 /// neighbor's cost as a `u16`; `60 000` keeps a margin below `u16::MAX` (65 535).
 const MAX_EDGE_LEN_M: u32 = 60_000;
 
-/// Human-readable highway-class names, indexed by the 5-bit class id (see the
-/// canonical table on [`classify`]). Used by [`format_summary`]'s kinds histogram.
-const HIGHWAY_CLASS_NAMES: [&str; 14] = [
+/// Canonical highway-class names, indexed by the 5-bit class id (see the canonical table on
+/// [`classify`]). Used by [`format_summary`]'s kinds histogram **and** as the profile config's
+/// class keys (§8.6): a `routing.profiles[*].highway` map is keyed by these exact names, resolved
+/// via [`highway_class_index`]. The single source of truth for both the packed byte and the config
+/// vocabulary — mirrored into `OBCM_Spec.md` §8.6.
+pub const HIGHWAY_CLASS_NAMES: [&str; 14] = [
     "cycleway",      // 0
     "path",          // 1
     "track",         // 2
@@ -77,6 +79,23 @@ const HIGHWAY_CLASS_NAMES: [&str; 14] = [
     "primary",       // 12
     "trunk_cycl",    // 13
 ];
+
+/// Canonical surface-class names, indexed by the 3-bit class id (see [`surface_class`]). The other
+/// half of the profile config's class vocabulary — a `routing.profiles[*].surface` map is keyed by
+/// these names, resolved via [`surface_class_index`].
+pub const SURFACE_CLASS_NAMES: [&str; 8] =
+    ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"];
+
+/// Resolve a highway-class name (one of [`HIGHWAY_CLASS_NAMES`]) to its 5-bit class id, or `None`
+/// for an unknown name. The config's profile parser uses this to key its per-class multipliers.
+pub fn highway_class_index(name: &str) -> Option<u8> {
+    HIGHWAY_CLASS_NAMES.iter().position(|&n| n == name).map(|i| i as u8)
+}
+
+/// Resolve a surface-class name (one of [`SURFACE_CLASS_NAMES`]) to its 3-bit class id, or `None`.
+pub fn surface_class_index(name: &str) -> Option<u8> {
+    SURFACE_CLASS_NAMES.iter().position(|&n| n == name).map(|i| i as u8)
+}
 
 /// Map an OSM `highway=*` value to its **highway class** (5-bit, 0..=12). Returns
 /// `None` for a value that carries no class (incl. `motorway`/`motorway_link`, which
@@ -338,6 +357,12 @@ pub(crate) fn polyline_len_m(pts: &[(i32, i32)]) -> u32 {
 /// original) — the same machinery the serializer's long-edge split uses (§8.4), one
 /// level up in the pipeline so N2's slimmed records are valid by construction.
 pub fn build_graph(ways: &[RoutableWay]) -> (NavGraph, NavStats) {
+    build_graph_with(ways, DEFAULT_MIN_COMPONENT_EDGES)
+}
+
+/// [`build_graph`] with the island-pruning threshold supplied by the caller — the packer wires
+/// `routing.min_component_edges` here (N2); [`build_graph`] passes [`DEFAULT_MIN_COMPONENT_EDGES`].
+pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (NavGraph, NavStats) {
     // --- Pass A: touch-count every node across routable ways. ---
     let mut touch: HashMap<i64, u32> = HashMap::new();
     for w in ways {
@@ -381,7 +406,7 @@ pub fn build_graph(ways: &[RoutableWay]) -> (NavGraph, NavStats) {
     }
 
     // --- Pass C: island pruning. ---
-    let (nodes, edges, stats) = prune_islands(nodes, edges, DEFAULT_MIN_COMPONENT_EDGES);
+    let (nodes, edges, stats) = prune_islands(nodes, edges, min_component_edges);
 
     // --- Pass D: split edges to hold N2's i16-delta / u16-cost guarantees. ---
     let mut nodes = nodes;

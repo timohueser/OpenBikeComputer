@@ -9,8 +9,9 @@
 
 use std::collections::BTreeMap;
 
+use obc_pack::config::default_profiles;
 use obc_pack::nav::{Edge, NavGraph, Node};
-use obc_pack::{serialize_lods, LodLayer, Node as GeomNode};
+use obc_pack::{serialize_lods, LodLayer, NavProfile, Node as GeomNode};
 use obc_reader::{MapCache, MapTables, NavNeighbor, Reader, SliceSource};
 
 /// Global bbox `(min_lon, min_lat, max_lon, max_lat)` µdeg — roomy enough that the
@@ -18,35 +19,70 @@ use obc_reader::{MapCache, MapTables, NavNeighbor, Reader, SliceSource};
 /// dense ones.
 const GLOBAL: (i64, i64, i64, i64) = (0, 0, 1_000_000, 1_000_000);
 
-/// Serialize `graph` into a minimal v8 map (one empty geometry leaf, no styles).
+/// Serialize `graph` into a minimal v9 map (one empty geometry leaf, no styles, the four default
+/// routing profiles).
 fn map_with(graph: &NavGraph) -> Vec<u8> {
+    map_with_profiles(graph, &default_profiles())
+}
+
+/// [`map_with`] with an explicit §8.6 profile table.
+fn map_with_profiles(graph: &NavGraph, profiles: &[NavProfile]) -> Vec<u8> {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
-    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph);
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, profiles);
     assert_eq!(dropped, 0);
     bin
 }
 
 /// One decoded junction: coord as the crate's `(lon, lat)` + its adjacency entries.
+#[derive(Clone, PartialEq, Eq)]
 struct Decoded {
     coord: (i32, i32),
     neighbors: Vec<NavNeighbor>,
 }
 
-/// Parse `bytes` and walk the whole nav graph into `id → Decoded`.
+/// Parse `bytes` and walk the whole nav graph into `id → Decoded`. v9 bin-packs node chunks, so
+/// distinct index leaves may share a chunk and the walk can hand the same junction record back more
+/// than once — the documented §8.3 contract. This dedups by id and **asserts every repeat decode is
+/// byte-identical** (the idempotency the reference consumers rely on).
 fn decode_all(bytes: &[u8]) -> BTreeMap<u32, Decoded> {
     let src = SliceSource(bytes);
-    let tables = MapTables::parse(&src).expect("a serialized v8 map parses");
+    let tables = MapTables::parse(&src).expect("a serialized v9 map parses");
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
-    let mut out = BTreeMap::new();
+    let mut out: BTreeMap<u32, Decoded> = BTreeMap::new();
     let mut scratch = [0u8; 512];
     r.for_each_nav_node(&r.bbox, &mut scratch, |n| {
-        let prev = out.insert(n.id, Decoded { coord: (n.lon, n.lat), neighbors: n.neighbors().collect() });
-        assert!(prev.is_none(), "node {} decoded twice", n.id);
+        let d = Decoded { coord: (n.lon, n.lat), neighbors: n.neighbors().collect() };
+        match out.get(&n.id) {
+            Some(prev) => assert!(*prev == d, "node {} decoded twice with different bytes (non-idempotent)", n.id),
+            None => {
+                out.insert(n.id, d);
+            }
+        }
     })
     .expect("nav walk");
     out
+}
+
+/// Node-chunk fill rate + the shared-chunk signature. Walks the whole graph counting **total**
+/// visit callbacks (which double-count records in a chunk shared by multiple visited leaves) and
+/// distinct node ids, and computes `payload / (chunk_count × 512)` where `payload` is the sum of
+/// every distinct record's on-wire size (`13 + 15 × degree`). Returns `(fill_ratio, total_visits,
+/// distinct, chunk_count)`.
+fn nav_fill_and_sharing(bytes: &[u8]) -> (f64, usize, usize, usize) {
+    let src = SliceSource(bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let chunk_count = r.nav_directory().chunk_count;
+    let decoded = decode_all(bytes);
+    let payload: usize = decoded.values().map(|d| 13 + 15 * d.neighbors.len()).sum();
+    let mut total_visits = 0usize;
+    let mut scratch = [0u8; 512];
+    r.for_each_nav_node(&r.bbox, &mut scratch, |_| total_visits += 1).unwrap();
+    let fill = payload as f64 / (chunk_count * 512) as f64;
+    (fill, total_visits, decoded.len(), chunk_count)
 }
 
 /// Fetch edge `edge_id`'s polyline + length through the reader.
@@ -77,7 +113,10 @@ fn four_way_crossing_round_trips_identically() {
         nodes.push(Node { id, coord: end });
         // One interior shape point halfway, nudged off-axis so geometry is distinctive.
         let mid = ((cross.0 + end.0) / 2, (cross.1 + end.1) / 2 + 1_000);
-        edges.push(Edge { a: 0, b: id, polyline: vec![cross, mid, end], length_m: 22_000 + k as u32, kind: 0 });
+        // A distinctive packed way_kind per arm (surface 1 = paved, highway = k) so the kind byte's
+        // round-trip is pinned end-to-end.
+        let kind = (1u8 << 5) | (k as u8);
+        edges.push(Edge { a: 0, b: id, polyline: vec![cross, mid, end], length_m: 22_000 + k as u32, kind });
     }
     let graph = NavGraph { nodes, edges: edges.clone() };
     let bytes = map_with(&graph);
@@ -90,16 +129,20 @@ fn four_way_crossing_round_trips_identically() {
     let center = &decoded[&0];
     assert_eq!(center.neighbors.len(), 4, "the crossing has degree 4");
     for (k, e) in edges.iter().enumerate() {
-        // The crossing's k-th adjacency entry: arm id, its inline coord, the cost.
+        // The crossing's k-th adjacency entry: arm id, its inline coord, the cost, the kind.
         let adj = center.neighbors[k];
         assert_eq!(adj.id, e.b);
-        assert_eq!((adj.lon, adj.lat), graph.nodes[e.b as usize].coord, "inline neighbor coord");
+        // Exact delta reconstruction: the neighbor's stored i16 delta + the record's own coord must
+        // reproduce the neighbor node's absolute coord bit-for-bit.
+        assert_eq!((adj.lon, adj.lat), graph.nodes[e.b as usize].coord, "neighbor coord = node coord + i16 delta");
         assert_eq!(adj.cost_m, e.length_m);
-        // The arm's own single entry points back with the SAME wire edge_id.
+        assert_eq!(adj.way_kind, e.kind, "the packed way_kind survives on the adjacency entry");
+        // The arm's own single entry points back with the SAME wire edge_id AND the same kind.
         let back = &decoded[&e.b].neighbors;
         assert_eq!(back.len(), 1, "an arm end has degree 1");
         assert_eq!(back[0].id, 0);
         assert_eq!(back[0].edge_id, adj.edge_id, "both directions share one pooled edge");
+        assert_eq!(back[0].way_kind, e.kind, "both directions carry the same kind");
         // And the pooled edge round-trips geometry + length exactly.
         let (poly, len) = fetch_edge(&bytes, adj.edge_id);
         assert_eq!(poly, e.polyline, "edge {k} polyline survives byte-exact");
@@ -127,17 +170,21 @@ fn empty_graph_round_trips() {
 #[test]
 fn long_segment_edge_is_densified() {
     let a = (100_000, 100_000);
-    let b = (100_000, 200_000); // 100 000 µdeg of latitude in one hop
+    // 31 000 µdeg of latitude in one hop: the segment exceeds the 30 000 densify threshold, but the
+    // endpoint span (31 000) still fits the i16 neighbor delta, so the edge densifies **without**
+    // splitting into synthetic-node pieces.
+    let b = (100_000, 131_000);
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 11_132, kind: 0 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 3_451, kind: 0 }],
     };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
+    assert_eq!(decoded.len(), 2, "no synthetic split — the endpoints stay within the i16 bound");
     let edge_id = decoded[&0].neighbors[0].edge_id;
     let (poly, len) = fetch_edge(&bytes, edge_id);
 
-    assert_eq!(len, 11_132, "densify never changes the stored length");
+    assert_eq!(len, 3_451, "densify never changes the stored length");
     assert_eq!(*poly.first().unwrap(), a);
     assert_eq!(*poly.last().unwrap(), b);
     assert!(poly.len() > 2, "midpoints were inserted, got {}", poly.len());
@@ -197,7 +244,9 @@ fn absurd_degree_node_is_capped_at_24() {
     let mut nodes = vec![Node { id: 0, coord: hub }];
     let mut edges = Vec::new();
     for k in 1..=30u32 {
-        let end = (500_000 + 1_000 * k as i32, 600_000);
+        // Spokes stay within the i16 endpoint bound of the hub (span ≤ 30 000 µdeg), so no arc is
+        // split — the hub keeps a direct edge to each spoke and the degree cap is what limits it.
+        let end = (500_000 + 1_000 * k as i32, 505_000);
         nodes.push(Node { id: k, coord: end });
         edges.push(Edge { a: 0, b: k, polyline: vec![hub, end], length_m: 100 + k, kind: 0 });
     }
@@ -241,11 +290,12 @@ fn self_loop_gets_one_adjacency_entry() {
 /// point-sized view descends to just its own leaf's chunk (the A* settle shape).
 #[test]
 fn dense_graph_subdivides_and_point_query_descends() {
-    // A 12×12 grid of junctions, each with one arc to its right neighbor: 144
-    // degree-≤2 records ≈ 144 × (13+20..53) B — several 512-byte chunks.
+    // A 12×12 grid of junctions, each with one arc to its right neighbor: 144 degree-≤2 records —
+    // several 512-byte chunks. The 30 000-µdeg step keeps each edge within the i16 endpoint bound
+    // (no synthetic split), so the node count stays exactly 144.
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
-    let at = |gx: i32, gy: i32| (100_000 + gx * 50_000, 100_000 + gy * 50_000);
+    let at = |gx: i32, gy: i32| (100_000 + gx * 30_000, 100_000 + gy * 30_000);
     for gy in 0..12 {
         for gx in 0..12 {
             let id = (gy * 12 + gx) as u32;
@@ -289,4 +339,92 @@ fn dense_graph_subdivides_and_point_query_descends() {
     .unwrap();
     assert!(hit, "the settle-shaped point query finds its junction");
     assert!(visited < 144, "…without decoding the whole graph ({visited} of 144)");
+}
+
+/// The §8.6 profile table round-trips: names, the quantized multipliers, forbidden classes, and the
+/// effective-multiplier formula `(mh × ms) >> 4`.
+#[test]
+fn profile_table_round_trips() {
+    // A tiny graph so the section is populated but trivial; the profiles are the point.
+    let a = (100_000, 100_000);
+    let b = (100_000, 110_000);
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1_113, kind: (3 << 5) | 12 }],
+    };
+    // Profile 0: highway[12] = 4.0× (64), highway[4] forbidden (0), surface[3] = 5.0× (80), rest 1.0×.
+    let mut hw = [16u8; 32];
+    hw[12] = 64;
+    hw[4] = 0;
+    let mut sf = [16u8; 8];
+    sf[3] = 80;
+    let profiles = vec![
+        NavProfile { name: "Speedy".into(), highway: hw, surface: sf },
+        NavProfile { name: "Trail".into(), highway: [24; 32], surface: [32; 8] },
+    ];
+    let bytes = map_with_profiles(&graph, &profiles);
+
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let read = r.nav_profiles();
+    assert_eq!(read.len(), 2, "both profiles resident");
+    assert_eq!(read[0].name(), "Speedy");
+    assert_eq!(read[1].name(), "Trail");
+    assert_eq!(read[0].highway[12], 64);
+    assert_eq!(read[0].highway[4], 0, "forbidden class survives as 0");
+    assert_eq!(read[0].surface[3], 80);
+    // Effective multiplier for way_kind (surface 3, highway 12): (64 × 80) >> 4 = 320.
+    assert_eq!(read[0].multiplier((3 << 5) | 12), Some(320));
+    // A forbidden highway class → not routable under this profile.
+    assert_eq!(read[0].multiplier((3 << 5) | 4), None, "forbidden = not routable");
+    // Profile 1 is uniform 1.5× (24) highway × 2.0× (32) surface: (24 × 32) >> 4 = 48, whatever
+    // the class (here surface 1 / highway 2).
+    assert_eq!(read[1].multiplier((1 << 5) | 2), Some(48));
+    assert_eq!(read.len(), profiles.len());
+}
+
+/// Build a `g × g` grid of well-separated **isolated** 2-node edges (every node degree 1, so a
+/// record is the minimal 28 bytes). Spreading them across the bbox makes the node quadtree
+/// subdivide into many small leaves — the grimsel-like shape where bin-packing wins (v8 would give
+/// each such leaf its own mostly-empty chunk).
+fn grid_graph(g: i32) -> NavGraph {
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut id = 0u32;
+    for gy in 0..g {
+        for gx in 0..g {
+            // Two nodes 400 µdeg apart, one isolated edge per cell; cells ~40 000 µdeg apart.
+            let base_x = 20_000 + gx * 40_000;
+            let base_y = 20_000 + gy * 40_000;
+            let a = (base_x, base_y);
+            let b = (base_x + 400, base_y);
+            nodes.push(Node { id, coord: a });
+            nodes.push(Node { id: id + 1, coord: b });
+            edges.push(Edge { a: id, b: id + 1, polyline: vec![a, b], length_m: 44, kind: 8 });
+            id += 2;
+        }
+    }
+    NavGraph { nodes, edges }
+}
+
+/// v9 bin-packs node chunks (§8.3): distinct index leaves share 512-byte chunks first-fit. Over a
+/// multi-chunk grid this must (a) keep the node-chunk region **≥ 80 % payload** (the headline shrink
+/// — v8 wasted ~58 % to `0xFF` padding), and (b) actually **share** chunks, which shows up as a
+/// whole-graph walk handing some records back more than once (`total_visits > distinct`, the
+/// idempotency contract). Every node still round-trips exactly once by id.
+#[test]
+fn bin_packed_node_chunks_share_and_stay_dense() {
+    let graph = grid_graph(20); // 20×20 cells → 800 degree-1 nodes → several 512-byte chunks
+    let bytes = map_with(&graph);
+    let (fill, total_visits, distinct, chunk_count) = nav_fill_and_sharing(&bytes);
+
+    assert_eq!(distinct, 800, "every junction decodes");
+    assert!(chunk_count > 1, "the grid forces a multi-chunk node tree, got {chunk_count}");
+    assert!(fill >= 0.80, "node-chunk fill rate {:.1}% must clear the 80% floor", fill * 100.0);
+    assert!(
+        total_visits > distinct,
+        "bin-packing must share chunks across leaves (total visits {total_visits} > distinct {distinct})"
+    );
 }
