@@ -40,6 +40,16 @@ pub fn schema_envelope() -> String {
     serde_json::to_string_pretty(&envelope).expect("envelope serializes")
 }
 
+/// A line's stroke style (OBCM v10 style-record flag bit 2). The config value is `"solid"` (the
+/// default) or `"dashed"`; the renderer draws dashes for `Dashed` lines and ignores it for polygons
+/// (#557 only carries the bit end to end — later sub-issues render it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+}
+
 /// The Style Table fields plus the `min_lod` gate (filtered on, not serialized).
 #[derive(Debug, Clone)]
 pub struct FeatureStyle {
@@ -49,12 +59,24 @@ pub struct FeatureStyle {
     pub weight: u8,
     pub priority: u8,
     pub min_lod: usize,
+    /// v10: solid or dashed stroke (style-record flag bit 2).
+    pub line_style: LineStyle,
+    /// v10: optional RGB565 secondary color (flag bit 3 + the trailing u16), parsed like `color`.
+    pub color2: Option<u16>,
 }
 
 impl FeatureStyle {
     /// The serializer's `Style` view (drops `min_lod`).
     pub fn to_style(&self) -> Style {
-        Style { id: self.id, z_index: self.z_index, color: self.color, weight: self.weight, priority: self.priority }
+        Style {
+            id: self.id,
+            z_index: self.z_index,
+            color: self.color,
+            weight: self.weight,
+            priority: self.priority,
+            dashed: self.line_style == LineStyle::Dashed,
+            color2: self.color2,
+        }
     }
 }
 
@@ -176,11 +198,12 @@ impl Config {
     }
 }
 
-/// `{z_index?, color, weight?, priority?, min_lod?}` → `FeatureStyle`, `id` from the
-/// caller. Defaults: z_index 0, weight 1, priority 3, min_lod 0. Each numeric field
-/// is range-checked against its on-wire width: an out-of-range value is a hard error,
-/// not a silent wrap (e.g. `z_index: 200` would pack as `-56` and reorder the paint
-/// stack). Adding a field here (e.g. v6 `line_style`/`color2`)? Extend
+/// `{z_index?, color, weight?, priority?, min_lod?, line_style?, color2?}` → `FeatureStyle`, `id`
+/// from the caller. Defaults: z_index 0, weight 1, priority 3, min_lod 0, line_style `solid`, no
+/// color2. Each numeric field is range-checked against its on-wire width: an out-of-range value is a
+/// hard error, not a silent wrap (e.g. `z_index: 200` would pack as `-56` and reorder the paint
+/// stack). `line_style` is `"solid"`/`"dashed"` (v10 flag bit 2); `color2` is an optional secondary
+/// color parsed exactly like `color` (v10 flag bit 3). Adding a field here? Extend
 /// `schema/config.schema.json` and the `schema_*` tests in the same change.
 fn parse_style(id: u8, v: &Value) -> Result<FeatureStyle, String> {
     let color = v.get("color").map(parse_color).transpose()?.ok_or("style missing `color`")?;
@@ -192,7 +215,21 @@ fn parse_style(id: u8, v: &Value) -> Result<FeatureStyle, String> {
         // Priority is a 2-bit on-wire field; the serializer only writes 1..=4.
         priority: int_field(v, "priority", 1, 4, 3)? as u8,
         min_lod: int_field(v, "min_lod", 0, u8::MAX as i64, 0)? as usize,
+        line_style: parse_line_style(v)?,
+        // `color2` is optional (absent ⇒ `None`); when present it's a `color` in every respect.
+        color2: v.get("color2").map(parse_color).transpose()?,
     })
+}
+
+/// Read the optional `line_style` field: `"solid"` (default) or `"dashed"`. Absent/null ⇒
+/// [`LineStyle::Solid`]; any other value is a descriptive error, not a silent fallback.
+fn parse_line_style(v: &Value) -> Result<LineStyle, String> {
+    match v.get("line_style") {
+        None | Some(Value::Null) => Ok(LineStyle::Solid),
+        Some(Value::String(s)) if s == "solid" => Ok(LineStyle::Solid),
+        Some(Value::String(s)) if s == "dashed" => Ok(LineStyle::Dashed),
+        Some(other) => Err(format!("style `line_style` must be \"solid\" or \"dashed\", got {other}")),
+    }
 }
 
 /// Read an optional integer style field, validating it fits `lo..=hi`. Absent/null ⇒
@@ -569,6 +606,12 @@ mod tests {
         assert_eq!(props["weight"]["default"].as_i64(), Some(parsed.weight as i64));
         assert_eq!(props["priority"]["default"].as_i64(), Some(parsed.priority as i64));
         assert_eq!(props["min_lod"]["default"].as_i64(), Some(parsed.min_lod as i64));
+        // v10: the schema's line_style default ("solid") matches the color-only parse; color2 is
+        // optional (no default) and a color-only style carries none.
+        assert_eq!(props["line_style"]["default"].as_str(), Some("solid"));
+        assert_eq!(parsed.line_style, LineStyle::Solid);
+        assert!(props["color2"].get("default").is_none(), "color2 is optional with no default");
+        assert!(parsed.color2.is_none());
 
         // Global defaults: an empty config must come out as the schema says.
         let cfg = Config::parse("{}").expect("empty config parses");
@@ -614,15 +657,57 @@ mod tests {
         assert_eq!(color[1]["maximum"].as_u64(), Some(65535));
     }
 
+    /// `color2` is the optional secondary color: parsed exactly like `color` (hex string or int),
+    /// referencing the same schema `$def`; absent ⇒ `None`, over-range ⇒ error.
+    #[test]
+    fn schema_color2_parses_like_color() {
+        let schema = embedded_schema();
+        assert_eq!(
+            schema["$defs"]["style"]["properties"]["color2"]["$ref"].as_str(),
+            Some("#/$defs/color"),
+            "color2 reuses the color $def"
+        );
+        assert_eq!(
+            parse_style(1, &serde_json::json!({"color": "0x0001", "color2": "0x8410"})).unwrap().color2,
+            Some(0x8410)
+        );
+        assert_eq!(parse_style(1, &serde_json::json!({"color": "0x0001", "color2": 31})).unwrap().color2, Some(31));
+        assert_eq!(parse_style(1, &serde_json::json!({"color": "0x0001"})).unwrap().color2, None, "absent ⇒ None");
+        assert!(
+            parse_style(1, &serde_json::json!({"color": "0x0001", "color2": "0x12345"})).is_err(),
+            "5 hex digits overflow u16, exactly like color"
+        );
+    }
+
+    /// `line_style` accepts only `"solid"` (default) / `"dashed"`; the schema enum lists exactly
+    /// those, and any other value is a hard parse error.
+    #[test]
+    fn schema_line_style_enum_matches_parser() {
+        let schema = embedded_schema();
+        let enum_vals = schema["$defs"]["style"]["properties"]["line_style"]["enum"].as_array().expect("enum");
+        let names: Vec<&str> = enum_vals.iter().filter_map(Value::as_str).collect();
+        assert_eq!(names, ["solid", "dashed"]);
+        assert_eq!(parse_style(1, &serde_json::json!({"color": "0x1"})).unwrap().line_style, LineStyle::Solid);
+        assert_eq!(
+            parse_style(1, &serde_json::json!({"color": "0x1", "line_style": "solid"})).unwrap().line_style,
+            LineStyle::Solid
+        );
+        assert_eq!(
+            parse_style(1, &serde_json::json!({"color": "0x1", "line_style": "dashed"})).unwrap().line_style,
+            LineStyle::Dashed
+        );
+        assert!(parse_style(1, &serde_json::json!({"color": "0x1", "line_style": "dotted"})).is_err());
+    }
+
     #[test]
     fn schema_declares_exactly_the_parsed_style_fields() {
         let schema = embedded_schema();
         let props = schema["$defs"]["style"]["properties"].as_object().expect("style properties");
         let mut keys: Vec<&str> = props.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        // The exact field set `parse_style` reads. Extending the parser (v6
+        // The exact field set `parse_style` reads. Extending the parser (as v10 did with
         // `line_style`/`color2`) must extend the schema in the same change.
-        assert_eq!(keys, ["color", "min_lod", "priority", "weight", "z_index"]);
+        assert_eq!(keys, ["color", "color2", "line_style", "min_lod", "priority", "weight", "z_index"]);
         assert_eq!(schema["$defs"]["style"]["required"], serde_json::json!(["color"]));
     }
 
@@ -631,7 +716,7 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(crate::serialize::OBCM_VERSION as u64));
-        assert_eq!(env["format_version"].as_u64(), Some(9), "N2 bumps the OBCM format to v9");
+        assert_eq!(env["format_version"].as_u64(), Some(10), "#557 bumps the OBCM format to v10");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 

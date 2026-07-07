@@ -92,7 +92,7 @@ impl DrawTarget for Buf {
 
 // Minimal OBCM fixture.
 
-/// A minimal valid v7 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
+/// A minimal valid v10 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
 /// chunks, an empty POI directory (six empty categories), and an empty hours pool. It renders as a
 /// flat backdrop, so the only non-backdrop pixels come from whatever is drawn on top — making
 /// overlays/markers trivial to detect. `marker` is the header's marker color (pass `0` when ignored).
@@ -105,13 +105,15 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
 pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     // v8 header is 40 bytes; the style table follows immediately.
     let style_off: u32 = 40;
-    // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1, flags=0).
+    // Style table (v10, 8-byte record): count=1, then (id=1, z=0, color=0x001F blue sea, weight=1,
+    // flags=0, color2=0x0000 — solid, no secondary color).
     let mut styles = vec![1u8];
     styles.push(1);
     styles.push(0);
     styles.extend_from_slice(&0x001Fu16.to_le_bytes());
     styles.push(1);
     styles.push(0); // flags byte
+    styles.extend_from_slice(&0x0000u16.to_le_bytes()); // color2 (absent ⇒ 0x0000)
 
     let lod_tab_off = style_off as usize + styles.len();
     let index_off = lod_tab_off + 18; // one 18-byte LOD entry
@@ -174,7 +176,7 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
 
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(9);
+    f.push(10);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }

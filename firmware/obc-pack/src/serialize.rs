@@ -14,7 +14,8 @@
 use std::io::{self, Seek, SeekFrom, Write};
 
 use obc_reader::format::{
-    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_PRIORITY_MASK,
+    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_DASHED_BIT,
+    STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
 };
 
 use crate::nav::{polyline_len_m, NavGraph};
@@ -31,11 +32,12 @@ pub const HEADER_LEN: usize = 40;
 /// One LOD-table entry, `<fIIHI>`.
 pub const LOD_ENTRY_LEN: usize = 18;
 
-/// The OBCM format version byte written into the header (`OBCM_Spec.md` §1). v9 (epic #533 N2)
-/// carries every §8 byte-level change: the 28-byte nav directory + profile table, 15-byte neighbor
-/// entries (i16 coord deltas + `way_kind`), a `way_kind` byte on edge records, pinned 512-byte nav
-/// chunks, and bin-packed node chunks. The header layout is unchanged (still 40 bytes).
-pub const OBCM_VERSION: u8 = 9;
+/// The OBCM format version byte written into the header (`OBCM_Spec.md` §1). v10 (epic #556 #557)
+/// grows the style record 6 → 8 bytes: the flags byte gains a `dashed` bit (bit 2) and a
+/// `color2-present` bit (bit 3), and a trailing `color2` u16 (RGB565 secondary color) is appended.
+/// The header layout is unchanged (still 40 bytes); the geometry, POI, and nav sections are
+/// byte-identical to v9.
+pub const OBCM_VERSION: u8 = 10;
 
 /// POI category count baked into every v7 map's directory (§7.1). Fixed by the
 /// canonical [`crate::poi::POI_TABLE`]: category ids 1..=6.
@@ -209,6 +211,11 @@ pub struct Style {
     pub weight: u8,
     /// Priority 1..=4; clamped to that range on pack.
     pub priority: u8,
+    /// v10: dashed line style (flag bit 2). Ignored for polygons by the renderer.
+    pub dashed: bool,
+    /// v10: optional RGB565 secondary color (flag bit 3 + the trailing u16). `None` ⇒ bit clear and
+    /// `0x0000` on the wire (which the reader ignores — black is a legit color, not a sentinel).
+    pub color2: Option<u16>,
 }
 
 /// f64 lon/lat, rounded to microdegrees and densified here. `rings[0]` is the
@@ -283,21 +290,30 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
     }
 }
 
-/// Pack the style table: `Count(u8)` then, sorted by id, `<BbHBB>` per style with
-/// `flags = (priority-1) & STYLE_PRIORITY_MASK`.
+/// Pack the style table (OBCM v10): `Count(u8)` then, sorted by id, `<BbHBBH>` per style — `id,
+/// z_index, color, weight, flags, color2`. `flags = (priority-1) & STYLE_PRIORITY_MASK`, plus
+/// `STYLE_DASHED_BIT` when `dashed` and `STYLE_HAS_COLOR2_BIT` when `color2` is `Some`. `color2`
+/// writes its RGB565 value when present, else `0x0000` (which the reader ignores, bit 3 being clear).
 pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     let mut styles = styles.to_vec();
     styles.sort_by_key(|s| s.id);
-    let mut data = Vec::with_capacity(1 + styles.len() * 6);
+    let mut data = Vec::with_capacity(1 + styles.len() * 8);
     data.push(styles.len() as u8);
     for s in &styles {
         let priority = (s.priority as i32).clamp(1, 4);
-        let flags = (priority - 1) as u8 & STYLE_PRIORITY_MASK;
+        let mut flags = (priority - 1) as u8 & STYLE_PRIORITY_MASK;
+        if s.dashed {
+            flags |= STYLE_DASHED_BIT;
+        }
+        if s.color2.is_some() {
+            flags |= STYLE_HAS_COLOR2_BIT;
+        }
         data.push(s.id);
         data.push(s.z_index as u8);
         data.extend_from_slice(&s.color.to_le_bytes());
         data.push(s.weight);
         data.push(flags);
+        data.extend_from_slice(&s.color2.unwrap_or(0).to_le_bytes());
     }
     data
 }
@@ -1174,11 +1190,11 @@ pub fn serialize_nav_section(
     out
 }
 
-/// The 40-byte OBCM header `<4sBiiiiIBIHII>`: magic, version (v9), bbox stored as
+/// The 40-byte OBCM header `<4sBiiiiIBIHII>`: magic, version ([`OBCM_VERSION`]), bbox stored as
 /// lat,lon,lat,lon, style offset, lod count, lod-table offset, marker color, the
-/// POI section offset, and the nav-graph section offset. The header layout is
-/// unchanged across v8→v9 (all new fields hang off the nav directory). Shared by
-/// both serializers.
+/// POI section offset, and the nav-graph section offset. The header layout has been
+/// 40 bytes since v8 (v9's and v10's additions hang off the nav directory / style record,
+/// not the header). Shared by both serializers.
 fn header_bytes(
     lod_count: usize,
     marker_color: u16,
@@ -1451,7 +1467,8 @@ mod tests {
         use std::io::Cursor;
 
         let bbox = (0, 0, 1_000_000, 1_000_000);
-        let styles = vec![Style { id: 1, z_index: 0, color: 0x1234, weight: 2, priority: 1 }];
+        let styles =
+            vec![Style { id: 1, z_index: 0, color: 0x1234, weight: 2, priority: 1, dashed: false, color2: None }];
         let lods = vec![
             LodLayer {
                 max_mpp: Some(100.0),
