@@ -1,4 +1,4 @@
-//! The map/ride thread-mode plane (`has_map` builds only) — split out of `main.rs` (issue #351).
+//! The map/ride thread-mode plane (in every build) — split out of `main.rs` (issue #351).
 //!
 //! [`run_app`], the shared backend-agnostic ride loop, plus its loop-only helpers: the sensor-wake
 //! select arm, the GPS power policy, the watchdog cadence, the per-frame render clock, and the
