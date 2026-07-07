@@ -41,17 +41,20 @@
 //! each hop's raw edge `length_m` at emit, not the weighted `g`.
 //!
 //! **Bounded suboptimality, not exactness** (decided 2026-07-06 — range in fixed
-//! memory): the priority is `f = g + ε·h` with ε = [`NAV_EPSILON_NUM`] /
-//! [`NAV_EPSILON_DEN`] = 1.3. The heuristic itself never overestimates the *weighted*
-//! cost — it is the great-circle distance to the goal in the *same*
-//! local-equirectangular metric the packer summed for every edge's `cost_m`, and every
-//! non-forbidden profile multiplier is **≥ 1.0** (packer-enforced + reader-clamped), so
-//! `weighted cost ≥ ground length ≥ great-circle`: `h` stays admissible unchanged. Weighted
-//! A\* therefore returns a path of cost **≤ 1.3× the cheapest route under the selected
-//! profile** (in practice a few percent on road networks). What ε buys is *reach*: plain
-//! A\* explores roughly quadratically with distance and exhausted the fixed table ~1.5 km
-//! out; the goal-greedy inflated search settles a narrow corridor instead, planning
-//! multi-km routes in the same table.
+//! memory): the priority is `f = g + ε·h`, ε an inflation from the [`NAV_EPSILON_LADDER`].
+//! The heuristic itself never overestimates the *weighted* cost — it is the great-circle
+//! distance to the goal in the *same* local-equirectangular metric the packer summed for
+//! every edge's `cost_m`, and every non-forbidden profile multiplier is **≥ 1.0**
+//! (packer-enforced + reader-clamped), so `weighted cost ≥ ground length ≥ great-circle`:
+//! `h` stays admissible unchanged. Weighted A\* therefore returns a path of cost **≤ ε×
+//! the cheapest route under the selected profile**, where ε is **the rung the search
+//! succeeded on** — 1.3× for the first-try success every route used before N8 (a few
+//! percent on road networks in practice), and 2.0× or 3.0× only for a route that *would
+//! otherwise have failed* the tight bound (see the ε-escalation note under [`NAV_EPSILON_LADDER`]).
+//! What ε buys is *reach*: plain A\* explores roughly quadratically with distance and
+//! exhausted the fixed table ~1.5 km out; the goal-greedy inflated search settles a narrow
+//! corridor instead, planning multi-km routes in the same table — and on exhaustion the
+//! ladder climbs to a greedier rung to reach farther still, on the same fixed memory.
 //!
 //! **The planner is resumable** (#499): planning is a [`NavPlanner`] step machine —
 //! snap → search (settles until [`NAV_MISSES_PER_STEP`] cache misses, capped at
@@ -76,15 +79,19 @@
 //! run it when touching the planner or the record decode.
 //!
 //! **No distance cap** (Timo, post-#496): the rider may try to route to *anything*;
-//! the fixed table is the real limit and the attempt is the feedback —
-//! [`NavError::Exhausted`] **is** the "too far for this device" answer. Two accepted
-//! consequences: (1) `h` (`u16` meters, saturating) saturates for very distant goals,
-//! so ordering degrades gracefully toward uniform expansion and the search exhausts —
-//! exactly the intended outcome; (2) a hopeless target burns a **full exhaustion
-//! search** before failing — bounded by the table, and spread across bounded steps,
-//! so the stepping host's loop keeps feeding its watchdog (and rendering, and taking
-//! input — including the cancel) between them; a step-count budget in the stepping
-//! host is the named future lever if the wait annoys.
+//! the fixed table is the real limit and the attempt is the feedback — a
+//! [`NavError::Exhausted`] that has climbed the whole [`NAV_EPSILON_LADDER`] **is** the
+//! "too far for this device" answer. Two accepted consequences: (1) `h` (`u16` meters,
+//! saturating) saturates for very distant goals, so ordering degrades gracefully toward
+//! uniform expansion and the search exhausts — exactly the intended outcome; (2) a
+//! hopeless target now burns **up to three** full exhaustion searches (one per rung)
+//! before failing — each bounded by the table and spread across bounded steps, so the
+//! stepping host's loop keeps feeding its watchdog (and rendering, and taking input —
+//! including the cancel) between them exactly as with one search. That is the ladder's
+//! accepted trade: same watchdog-safe, cancellable posture, a larger constant (≤ 3×) on
+//! the truly-hopeless path, bought so a *reachable-but-far* target that the tight bound
+//! couldn't fit now succeeds. A step-count budget in the stepping host is the named
+//! future lever if the wait annoys.
 
 use heapless::Vec;
 
@@ -99,12 +106,19 @@ use obc_reader::{BBox, NavTileCache, Reader, M_PER_DEG};
 /// not mid-edge (a noted future refinement).
 const SNAP_RADIUS_M: f32 = 250.0;
 
-/// Weighted-A\* heuristic inflation ε as an integer ratio: `f = g + (NUM·h)/DEN`
-/// (= 1.3). Applied on **all** targets — the found path is at most ε× the true
-/// shortest (see the module doc's bounded-suboptimality note, decided 2026-07-06).
-pub const NAV_EPSILON_NUM: u32 = 13;
-/// ε's denominator — see [`NAV_EPSILON_NUM`].
-pub const NAV_EPSILON_DEN: u32 = 10;
+/// The **ε-escalation ladder** (N8, epic #533): weighted-A\* heuristic inflation ε as a sequence
+/// of integer `(num, den)` ratios — `f = g + (num·h)/den`. The search starts at rung 0 (1.3×, the
+/// tight bound every route used before N8) and, **only on [`NavError::Exhausted`]** (the table
+/// filled then the frontier drained — see [`NavPlanner`]), retries greedier: 2.0×, then 3.0×.
+/// Raising ε shifts the frontier ordering toward the goal, so the same fixed table settles a
+/// narrower corridor and reaches farther — trading the optimality bound for range, but **only after
+/// the tight bound has already failed** (a route that plans at 1.3× never escalates, so nothing that
+/// succeeds today gets worse). [`NavError::NoPath`] (disconnected — the frontier drained without the
+/// table ever filling) never escalates: retrying can't connect an island and would triple the
+/// failure latency. The found path is bounded ≤ (the successful rung's ε) × the profile-optimal cost
+/// (the heuristic stays admissible — only the inflation grows; see the module-doc bounded-
+/// suboptimality note).
+pub const NAV_EPSILON_LADDER: [(u32, u32); 3] = [(13, 10), (2, 1), (3, 1)];
 
 /// Search-phase step budget, **by cache misses** (N4, epic #533): a [`NavPlanner::step`] settles
 /// nodes until it has incurred this many [`NavTileCache`] misses, then returns. A miss is the only
@@ -225,11 +239,21 @@ impl NavEntry {
     /// occupied bit clear, so a zeroed slot reads as free.
     const EMPTY: NavEntry = NavEntry { node_id: 0, lon: 0, lat: 0, edge_used: 0, g: 0, h: 0, came_from: 0, meta: 0 };
 
-    /// The weighted-A\* priority `f = g + ε·h` in `u32` (max ≈ 65 535 + 1.3×65 535,
-    /// nowhere near wrapping; saturating for form).
+    /// The weighted-A\* priority `f = g + ε·h` in `u32` for the current rung's ε = `eps_num/eps_den`
+    /// (max ≈ 65 535 + 3.0×65 535, nowhere near wrapping; saturating for form). ε is passed in from
+    /// the owning [`NavScratch`]'s per-search fields rather than a const so the [`NAV_EPSILON_LADDER`]
+    /// retry can re-order the same heap at a greedier ε (N8).
+    ///
+    /// **Zeroed-scratch degradation**: a fresh `.bss`/zeroed [`NavScratch`] has `eps_den == 0`; every
+    /// search re-seeds it (setting a non-zero rung ε) before any heap op calls `f`, but should that
+    /// contract ever break, `f` degrades to plain-Dijkstra ordering (the ε term dropped) rather than
+    /// dividing by zero — the chosen safe branch, asserted at seed time in [`NavPlanner::reseed`].
     #[inline]
-    fn f(&self) -> u32 {
-        (self.g as u32).saturating_add(NAV_EPSILON_NUM * self.h as u32 / NAV_EPSILON_DEN)
+    fn f(&self, eps_num: u32, eps_den: u32) -> u32 {
+        if eps_den == 0 {
+            return self.g as u32;
+        }
+        (self.g as u32).saturating_add(eps_num * self.h as u32 / eps_den)
     }
 
     #[inline]
@@ -319,6 +343,13 @@ pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     /// loops always terminate: below `N` a free slot always exists.
     used: u16,
     heap_len: u16,
+    /// The current search's ε = `eps_num/eps_den` — the [`NAV_EPSILON_LADDER`] rung [`NavEntry::f`]
+    /// orders the heap by. Set by [`NavPlanner::reseed`] at the start of every search attempt
+    /// (`u16` — the ladder's `3.0` fits with room to spare, and keeps the scratch at 26 B/node + the
+    /// two length fields). A zeroed scratch reads `0/0`, which `f` degrades to plain-`g` ordering; it
+    /// is always re-seeded to a real rung before any heap op runs (see [`NavEntry::f`]).
+    eps_num: u16,
+    eps_den: u16,
 }
 
 // Per-target table budget, enforced at compile time: the device table must stay a
@@ -335,7 +366,9 @@ const _: () = assert!(core::mem::size_of::<NavEntry>() == 24, "the slimmed 24-by
 impl<const N: usize> NavScratch<N> {
     pub const fn new() -> Self {
         assert!(N > 0 && N < HEAP_NONE as usize);
-        NavScratch { entries: [NavEntry::EMPTY; N], heap: [0; N], used: 0, heap_len: 0 }
+        // `eps_num`/`eps_den` are `0` here (the `.bss`/zeroed-init contract; `f` degrades safely on
+        // `0/0`) and set to a real [`NAV_EPSILON_LADDER`] rung by the first search's re-seed.
+        NavScratch { entries: [NavEntry::EMPTY; N], heap: [0; N], used: 0, heap_len: 0, eps_num: 0, eps_den: 0 }
     }
 
     /// Allocate a zeroed `NavScratch` **directly on the heap**, never on the stack.
@@ -344,7 +377,8 @@ impl<const N: usize> NavScratch<N> {
     /// first build the whole thing on the stack and then copy it — a silent overflow on a small
     /// stack (the simulator's wasm build). This owns the format crate's private invariant that a
     /// zeroed allocation *is* `new()`: every field is all-zero — `entries` is `[NavEntry::EMPTY;
-    /// N]` (`EMPTY` is the zero entry), `heap` is `[0; N]`, and `used`/`heap_len` are `0`. Adding a
+    /// N]` (`EMPTY` is the zero entry), `heap` is `[0; N]`, `used`/`heap_len` are `0`, and
+    /// `eps_num`/`eps_den` are `0` (re-seeded before use — `f` degrades safely on `0/0`). Adding a
     /// non-zero-default field would break this, so the invariant lives *here*, in the crate that
     /// owns the fields, instead of leaking into every host that heap-allocates one.
     ///
@@ -407,9 +441,10 @@ impl<const N: usize> NavScratch<N> {
     }
 
     fn sift_up(&mut self, mut pos: usize) {
+        let (en, ed) = (self.eps_num as u32, self.eps_den as u32);
         while pos > 0 {
             let parent = (pos - 1) / 2;
-            if self.entries[self.heap[pos] as usize].f() >= self.entries[self.heap[parent] as usize].f() {
+            if self.entries[self.heap[pos] as usize].f(en, ed) >= self.entries[self.heap[parent] as usize].f(en, ed) {
                 break;
             }
             self.heap_swap(pos, parent);
@@ -419,13 +454,18 @@ impl<const N: usize> NavScratch<N> {
 
     fn sift_down(&mut self, mut pos: usize) {
         let len = self.heap_len as usize;
+        let (en, ed) = (self.eps_num as u32, self.eps_den as u32);
         loop {
             let (l, r) = (2 * pos + 1, 2 * pos + 2);
             let mut min = pos;
-            if l < len && self.entries[self.heap[l] as usize].f() < self.entries[self.heap[min] as usize].f() {
+            if l < len
+                && self.entries[self.heap[l] as usize].f(en, ed) < self.entries[self.heap[min] as usize].f(en, ed)
+            {
                 min = l;
             }
-            if r < len && self.entries[self.heap[r] as usize].f() < self.entries[self.heap[min] as usize].f() {
+            if r < len
+                && self.entries[self.heap[r] as usize].f(en, ed) < self.entries[self.heap[min] as usize].f(en, ed)
+            {
                 min = r;
             }
             if min == pos {
@@ -548,8 +588,14 @@ pub struct NavPlanner {
     start_c: (i32, i32),
     goal_id: u32,
     goal_c: (i32, i32),
-    /// Total settles so far — the RTT line's `settles=` figure, and the budget tests' probe.
+    /// Total settles so far — the RTT line's `settles=` figure, and the budget tests' probe. Stays
+    /// **cumulative across [`NAV_EPSILON_LADDER`] rungs** (N8): an escalated plan's `settles` is the
+    /// honest total work over every attempt, not just the last.
     settles: u32,
+    /// The current [`NAV_EPSILON_LADDER`] rung index (N8): `0` = 1.3× at start, bumped on each
+    /// [`NavError::Exhausted`] retry ([`epsilon_used`](Self::epsilon_used) reports it). Never advances
+    /// past the last rung — the final exhaustion fails honestly at 3.0×.
+    rung: usize,
     /// Latched once an insert has failed — the scratch is full (N4 salvage). While set, the search
     /// relaxes only already-tracked nodes (decrease-key); new discoveries are dropped. Distinguishes
     /// the two frontier-drain outcomes: set ⇒ [`NavError::Exhausted`], clear ⇒ [`NavError::NoPath`].
@@ -589,6 +635,7 @@ impl NavPlanner {
             goal_id: 0,
             goal_c: (0, 0),
             settles: 0,
+            rung: 0,
             table_full: false,
             chain_len: 0,
             hop: 0,
@@ -613,6 +660,15 @@ impl NavPlanner {
         self.settles
     }
 
+    /// The ε = `(num, den)` the search is **currently on** — the [`NAV_EPSILON_LADDER`] rung reached
+    /// so far (N8). `(13, 10)` until the first [`NavError::Exhausted`] retry escalates it; after a
+    /// terminal outcome it reads the rung the plan ended on — `(2, 1)` or `(3, 1)` if it escalated,
+    /// still `(13, 10)` for a plain success or a fast [`NavError::NoPath`]. The board's per-phase RTT
+    /// line logs it as `eps=`.
+    pub fn epsilon_used(&self) -> (u32, u32) {
+        NAV_EPSILON_LADDER[self.rung]
+    }
+
     /// The snapped endpoints — `((start_id, start_coord), (goal_id, goal_coord))`, `(lon, lat)`
     /// µdeg; zeroes for an endpoint whose snap phase hasn't run yet. A diagnostic for the
     /// `nav_repro` harness (#501): lets a host run report exactly which graph nodes the plan
@@ -625,6 +681,27 @@ impl NavPlanner {
     fn fail(&mut self, e: NavError) -> Step {
         self.phase = PhaseState::Terminal(Err(e));
         Step::Failed(e)
+    }
+
+    /// (Re)start a search attempt on the caller's scratch at the current [`NAV_EPSILON_LADDER`] rung
+    /// (N8): clear the table, set its ε, drop any latched `table_full`, and re-seed the start node
+    /// (its own predecessor, no edge) into a fresh frontier. Used for the **initial** seed (rung 0)
+    /// and every ε-escalation retry — the snapped endpoints and the warm tile cache are deliberately
+    /// **kept** across retries (the re-walk revisits the same region), and `settles` stays cumulative.
+    /// The seed insert cannot fail on a just-reset `N ≥ 1` table (asserted by `NavScratch::new`), but
+    /// the fallible signature is preserved so a corrupt call site still fails cleanly.
+    fn reseed<const N: usize>(&mut self, scratch: &mut NavScratch<N>) -> Result<(), NavError> {
+        scratch.reset();
+        let (num, den) = NAV_EPSILON_LADDER[self.rung];
+        debug_assert!(den != 0, "an ε rung denominator must be non-zero (NavEntry::f divides by it)");
+        scratch.eps_num = num as u16;
+        scratch.eps_den = den as u16;
+        self.table_full = false;
+        let si = scratch.insert(self.start_id, self.start_c.0, self.start_c.1)?;
+        scratch.entries[si].h = sat16(ground_dist_m(self.start_c, self.goal_c) as u32);
+        scratch.entries[si].came_from = si as u16;
+        scratch.heap_push(si);
+        Ok(())
     }
 
     /// Run **one bounded unit** of planning: one endpoint snap, a miss-budgeted burst of settles
@@ -660,14 +737,10 @@ impl NavPlanner {
                 };
                 self.goal_id = id;
                 self.goal_c = c;
-                // Seed the frontier with the start node (its own predecessor, no edge).
-                let si = match scratch.insert(self.start_id, self.start_c.0, self.start_c.1) {
-                    Ok(si) => si,
-                    Err(e) => return self.fail(e),
-                };
-                scratch.entries[si].h = sat16(ground_dist_m(self.start_c, self.goal_c) as u32);
-                scratch.entries[si].came_from = si as u16;
-                scratch.heap_push(si);
+                // Seed the frontier with the start node at rung 0 (1.3×).
+                if let Err(e) = self.reseed(scratch) {
+                    return self.fail(e);
+                }
                 self.phase = PhaseState::Search;
                 Step::Running
             }
@@ -682,6 +755,17 @@ impl NavPlanner {
                         // Frontier drained. A table that filled ran out of room short of the goal
                         // (Exhausted — the device's "too far"); one that never filled means the goal
                         // is genuinely disconnected/unreachable (NoPath). Preserves the two-tier UX.
+                        if self.table_full && self.rung + 1 < NAV_EPSILON_LADDER.len() {
+                            // ε-escalation retry (N8): the table filled then drained without the goal
+                            // — retry greedier (next rung) on the SAME snapped endpoints + warm tile
+                            // cache, re-seeding a fresh frontier. `settles` stays cumulative; only the
+                            // Exhausted terminal escalates, so a fast NoPath (island) never does.
+                            self.rung += 1;
+                            if let Err(e) = self.reseed(scratch) {
+                                return self.fail(e);
+                            }
+                            return Step::Running; // stay in Search at the greedier ε
+                        }
                         let e = if self.table_full { NavError::Exhausted } else { NavError::NoPath };
                         return self.fail(e);
                     };
