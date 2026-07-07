@@ -16,7 +16,7 @@ use obc_app::{
 use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
 
 mod common;
-use common::{build_min_obcm, keys, Buf, NoFix, ReplayFix};
+use common::{build_min_obcm, build_min_obcm_profiles, keys, Buf, NoFix, ReplayFix};
 
 /// A throwaway default [`Settings`] satisfying [`Ctx`]'s `&mut` borrow. The non-settings screens
 /// under test never touch it, so each call leaks a fresh (non-aliasing) block — fine in a short-lived
@@ -31,6 +31,13 @@ fn leaked_scratch() -> &'static PoiScratch {
     Box::leak(Box::new(PoiScratch::new()))
 }
 
+/// An empty [`NavProfiles`](obc_app::NavProfiles) for the handle `Ctx` — leaked for the same `&'a`
+/// reason as the scratch (a `&NavProfiles::EMPTY` const can't promote to `'static`). The screens
+/// under test aren't the Bike-type screen, so they never read it.
+fn leaked_profiles() -> &'static obc_app::NavProfiles {
+    Box::leak(Box::new(obc_app::NavProfiles::new()))
+}
+
 /// A handle [`Ctx`] over freshly-made state/activity. The Route-menu tests pass a catalog via
 /// [`route_ctx`].
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
@@ -40,6 +47,7 @@ fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
         settings: leaked_settings(),
         routes: &[],
         rides: &[],
+        nav_profiles: leaked_profiles(),
         poi_scratch: leaked_scratch(),
         now_ms: 0,
     }
@@ -47,7 +55,16 @@ fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
 
 /// A handle [`Ctx`] carrying a route catalog, for the Route-menu tests.
 fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'a [RouteSummary]) -> Ctx<'a> {
-    Ctx { state, activity, settings: leaked_settings(), routes, rides: &[], poi_scratch: leaked_scratch(), now_ms: 0 }
+    Ctx {
+        state,
+        activity,
+        settings: leaked_settings(),
+        routes,
+        rides: &[],
+        nav_profiles: leaked_profiles(),
+        poi_scratch: leaked_scratch(),
+        now_ms: 0,
+    }
 }
 
 /// A small synthetic route catalog (names + totals + a unit bbox to center on).
@@ -852,4 +869,73 @@ fn pan_back_recenters_and_back_hold_exits() {
     assert!(matches!(t, Transition::None), "back-hold doesn't open the Menu while panning");
     assert!(st.pan.is_none(), "back-hold exits pan");
     assert_eq!(st.mode, CameraMode::Follow, "exiting resumes Follow");
+}
+
+// The Bike-type setting (routing-v2 N5, #538): the whole-App loop — profiles mirrored from a real
+// parsed map, the setting cycled by gesture, the debounced save fired on leaving the subtree, and
+// the persisted byte surviving a simulated reboot through the shared codec both stores write.
+
+/// Cycle the Bike type on a 4-profile map, leave Settings (the save cue fires), then "reboot":
+/// encode → decode → a fresh App adopts the blob — the selected index survives. The store side is
+/// a trivial file/RRAM write of exactly these bytes, so the codec round-trip *is* the reboot.
+#[test]
+fn bike_type_cycles_and_persists_across_reboot() {
+    let bytes = build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).expect("valid fixture");
+
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+    app.set_nav_profiles(tables.nav_profiles()); // the host's map-load mirror
+    assert_eq!(app.nav_profiles().len(), 4, "all four §8.6 names resident");
+    assert_eq!(app.nav_profiles().name(2), Some("MTB"));
+
+    // Home → Menu → Settings list → the Bike type row (index 2) → its screen.
+    app.apply_gesture(Gesture::BackHold); // → Menu
+    app.apply_gesture(Gesture::Turn(-1)); // compass: one ccw detent to Settings
+    app.apply_gesture(Gesture::Press); // → Settings list
+    app.apply_gesture(Gesture::Turn(2)); // Date & Time → Units → Bike type
+    app.apply_gesture(Gesture::Press); // → Bike type screen
+    assert!(matches!(app.top_screen(), obc_app::Screen::BikeType(_)), "navigated to the Bike type screen");
+
+    // Two detents: Road → Gravel → MTB.
+    app.apply_gesture(Gesture::Turn(1));
+    app.apply_gesture(Gesture::Turn(1));
+    assert_eq!(app.settings().bike_profile_idx, 2, "two detents from Road land on MTB");
+
+    // The save is debounced to leaving the settings subtree (Bike type → Settings list → Menu).
+    assert!(!app.take_settings_dirty(), "no save cue while still inside Settings");
+    app.apply_gesture(Gesture::Back);
+    app.apply_gesture(Gesture::Back); // → Menu (out of the subtree)
+    assert!(app.take_settings_dirty(), "leaving Settings fires the debounced save");
+
+    // Simulated reboot: the persisted blob seeds a fresh App (the boot path of both hosts).
+    let blob = obc_app::settings::encode(app.settings());
+    let restored = obc_app::settings::decode(&blob).expect("clean blob decodes");
+    let mut app2 = App::new_idle(AppState::new(0, 0, 0.05));
+    app2.set_settings(restored);
+    assert_eq!(app2.settings().bike_profile_idx, 2, "the bike profile survives the reboot");
+}
+
+/// A stored index past the loaded map's profile count (a stale setting against a smaller map)
+/// renders **profile 0's name** — the profile the router actually falls back to (N3), so the UI
+/// never names a profile the map doesn't have — and an in-range index renders the map's name.
+/// Pinned through the App's resident mirror, i.e. exactly what the Bike-type row and the overview
+/// label draw.
+#[test]
+fn bike_type_out_of_range_renders_fallback() {
+    let bytes = build_min_obcm_profiles(0, &["Road", "MTB"]);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).expect("valid fixture");
+
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    app.set_nav_profiles(tables.nav_profiles());
+    app.set_settings(Settings { bike_profile_idx: 7, ..Settings::default() }); // stale: map has 2
+
+    let mut label: heapless::String<20> = heapless::String::new();
+    app.nav_profiles().write_label(app.settings().bike_profile_idx, &mut label);
+    assert_eq!(label.as_str(), "Road", "an out-of-range index shows profile 0's name — what routing will use");
+
+    let mut ok: heapless::String<20> = heapless::String::new();
+    app.nav_profiles().write_label(1, &mut ok);
+    assert_eq!(ok.as_str(), "MTB", "an in-range index shows the map's name");
 }

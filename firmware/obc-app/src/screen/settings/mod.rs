@@ -30,6 +30,7 @@ use super::{palette, Ctx, Render, Screen, Transition};
 pub(super) use super::empty_state;
 
 mod add_field;
+mod bike_type;
 mod bluetooth;
 mod datetime;
 mod display;
@@ -40,6 +41,7 @@ mod stats;
 mod units;
 
 pub use add_field::AddFieldScreen;
+pub use bike_type::BikeTypeScreen;
 pub use bluetooth::BluetoothScreen;
 pub use datetime::DateTimeScreen;
 pub use display::DisplayScreen;
@@ -50,7 +52,7 @@ pub use stats::StatsScreen;
 pub use units::UnitsScreen;
 
 /// The Settings list entries, in order. Each row pushes its sub-screen.
-const ITEMS: [&str; 7] = ["Date & Time", "Units", "Stats", "Display", "Power", "Bluetooth", "Reset"];
+const ITEMS: [&str; 8] = ["Date & Time", "Units", "Bike type", "Stats", "Display", "Power", "Bluetooth", "Reset"];
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -70,10 +72,11 @@ impl SettingsScreen {
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::DateTime(DateTimeScreen::new())),
                 1 => Transition::Push(Screen::Units(UnitsScreen::new())),
-                2 => Transition::Push(Screen::Stats(StatsScreen::new())),
-                3 => Transition::Push(Screen::Display(DisplayScreen::new())),
-                4 => Transition::Push(Screen::Power(PowerScreen::new())),
-                5 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
+                2 => Transition::Push(Screen::BikeType(BikeTypeScreen::new())),
+                3 => Transition::Push(Screen::Stats(StatsScreen::new())),
+                4 => Transition::Push(Screen::Display(DisplayScreen::new())),
+                5 => Transition::Push(Screen::Power(PowerScreen::new())),
+                6 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
                 _ => Transition::Push(Screen::Reset(ResetScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu

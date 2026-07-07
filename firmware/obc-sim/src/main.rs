@@ -468,11 +468,11 @@ pub(crate) struct NavPlan {
 }
 
 impl NavPlan {
-    /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest).
-    pub(crate) fn start(req: &obc_app::NavRequest) -> Self {
+    /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest) under bike profile
+    /// `profile_idx` (the rider's [`Settings::bike_profile_idx`](obc_app::Settings), N5 §8.6).
+    pub(crate) fn start(req: &obc_app::NavRequest, profile_idx: u8) -> Self {
         NavPlan {
-            // Profile 0 until N5 threads the rider's bike-type setting (epic #533).
-            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), 0)),
+            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx)),
             // A zeroed heap allocation with no giant stack temp — obc-route owns the "all-zero *is*
             // `new()`" invariant (see `NavScratch::new_boxed`); the sim just asks for one.
             scratch: obc_route::nav::NavScratch::new_boxed(),
@@ -538,8 +538,9 @@ fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Read
     let mut scratch: Box<NavScratch> = NavScratch::new_boxed();
     let mut tiles = obc_reader::NavTileCache::new();
     let mut sink = vec_sink::VecSink::default();
-    // Profile 0 until N5 threads the rider's bike-type setting (epic #533).
-    let outcome = plan_route(reader, req.from, req.to, req.name(), 0, &mut scratch, &mut tiles, &mut sink);
+    // The rider's bike-type setting (N5 §8.6); an out-of-range index falls back to profile 0 in the router.
+    let profile_idx = app.settings().bike_profile_idx;
+    let outcome = plan_route(reader, req.from, req.to, req.name(), profile_idx, &mut scratch, &mut tiles, &mut sink);
     let stats = tiles.stats();
     finish_nav_plan(app, store, outcome, sink.bytes(), stats);
 }
@@ -824,6 +825,8 @@ fn main() {
             let settings = obc_app::settings::Settings { gps_time: false, clock, ..Default::default() };
             app.set_settings(settings);
         }
+        // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label (N5).
+        app.set_nav_profiles(tables.nav_profiles());
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
