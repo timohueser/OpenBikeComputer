@@ -394,10 +394,13 @@ fn fill_butt_quad<D>(
     fill_polygon(target, &quad, &[4], color, w, h, xs);
 }
 
-/// Dash on/off length in screen px for a `weight`-px dashed stroke (`on == off`). **Screen-space and
-/// zoom-independent** — a locked epic decision, no per-style config knob — so the dash rhythm reads
-/// the same at every zoom. Scales gently with weight (thicker stripe ⇒ longer dashes) and clamps to
-/// a legible 4–12 px. The exact numbers are a by-eye call; tune here, see epic #556.
+/// Dash on/off length in screen px for a `weight`-px dashed stroke (`on == off`). **Screen-space,
+/// with no per-style config knob** — the locked epic decision (#556). It's a pure function of the
+/// stroke's *rendered* px width, so a dashed line's rhythm tracks its own thickness: since that width
+/// now ramps with zoom (`weight` is scaled by [`crate::width_scale`] before it reaches here), the dash
+/// period ramps with it — a railway zoomed in gets proportionally longer dashes, not fine
+/// cross-hatching. Scales gently with weight (thicker stripe ⇒ longer dashes) and clamps to a legible
+/// 4–12 px. The exact numbers are a by-eye call; tune here, see epic #556.
 fn dash_len(weight: u32) -> f32 {
     (3 * weight).clamp(4, 12) as f32
 }

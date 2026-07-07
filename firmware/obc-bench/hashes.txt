@@ -1,7 +1,7 @@
-riding=0xbfe363bf0e304400
-riding-rot=0x41bd7616cfdb074c
-mid=0xb29f024bc362dd9b
-mid-rot=0x5b6341219b7d0981
-overview=0xc0ebd4a1a9b884e2
-overview-rot=0x23bb98354fe82f82
-route=0xdd64a6d9c914ed3c
+riding=0x56d9a197e3d0cfe7
+riding-rot=0x8351ed68501a0af6
+mid=0x3071f09bdcd8bbe5
+mid-rot=0x8b3421f22d2e8ef5
+overview=0xf953e5888b2ec1da
+overview-rot=0x0523871bee60349f
+route=0xe26019c8e500f2c0
