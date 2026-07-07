@@ -20,10 +20,12 @@ use super::bike_icons;
 use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
 
-/// Art-pixel scale for the hero bike sprite (33 × 18 art px → 132 × 72 device px).
+/// Art-pixel scale for the hero bike sprite (50 × 30 art px → 200 × 120 device px).
 const BIKE_SCALE: i32 = 4;
-/// Top of the profile-name value row, below the hero bike.
-const VALUE_ROW_Y: i32 = 124;
+/// Top of the hero bike, just under the title bar.
+const BIKE_TOP_Y: i32 = TITLE_BAR_H + 8;
+/// Top of the profile-name selector row, below the hero bike.
+const SELECTOR_ROW_Y: i32 = 198;
 
 /// The Bike type screen. Stateless — the value lives in [`Settings`](crate::Settings) and the name
 /// list in the App's [`NavProfiles`](crate::NavProfiles); the one row is always the cursor.
@@ -71,18 +73,19 @@ impl BikeTypeScreen {
         }
 
         // The *effective* profile: profile 0 when the stored index is out of range on a smaller map
-        // (the router's fallback, N3) — so the hero bike, the value row, and the list all agree.
+        // (the router's fallback, N3) — so the hero bike and the selector name agree.
         let marked = rx.nav_profiles.effective(idx);
         let eff_name = rx.nav_profiles.name(marked).unwrap_or("");
 
         // Hero: the pixel-art bike for the effective profile, matched by name and filling the space
         // under the title bar. A custom profile the matcher doesn't recognise gets the generic bike.
-        bike_icons::draw(cv, bike_icons::for_name(eff_name), w / 2, TITLE_BAR_H + 12, BIKE_SCALE, INK);
+        bike_icons::draw(cv, bike_icons::for_name(eff_name), w / 2, BIKE_TOP_Y, BIKE_SCALE, INK);
 
-        // Value row — the current profile name centred, flanked by left/right arrows so it reads as
-        // "rotate to switch" (the Units screen's affordance). `write_label` shows profile 0's name for
-        // an out-of-range stored index (never a name the map doesn't have).
-        let area = super::row_rect(VALUE_ROW_Y, w, 46);
+        // The one selector row — the current profile name centred in the amber cursor, flanked by
+        // left/right arrows so it reads as "rotate to switch". `write_label` shows profile 0's name
+        // for an out-of-range stored index (never a name the map doesn't have). The bike above *is*
+        // the "which type" cue, so there's no separate list to repeat the names.
+        let area = super::row_rect(SELECTOR_ROW_Y, w, 46);
         super::row_cursor(cv, area, true, false);
         let midy = area.top_left.y + area.size.height as i32 / 2;
         let mut label: heapless::String<20> = heapless::String::new();
@@ -93,22 +96,6 @@ impl BikeTypeScreen {
             cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), INK);
             let bx = area.top_left.x + area.size.width as i32 - 18;
             cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), INK);
-        }
-
-        // The compact profile list below, current row wedge-marked — context for what the map offers
-        // and the "N of M" sense without a separate counter.
-        let mut ry = VALUE_ROW_Y + 64;
-        for i in 0..count {
-            let name = rx.nav_profiles.name(i as u8).unwrap_or("");
-            let selected = i as u8 == marked;
-            let color = if selected { INK } else { SUBTEXT };
-            let x = area.top_left.x + 12;
-            if selected {
-                let my = ry + 9;
-                cv.triangle(Point::new(x, my - 7), Point::new(x, my + 7), Point::new(x + 9, my), INK);
-            }
-            cv.text(name, Point::new(x + 18, ry), Font::Body, TextAlign::Left, color);
-            ry += 30;
         }
     }
 }
