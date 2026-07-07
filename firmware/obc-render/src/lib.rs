@@ -325,7 +325,7 @@ impl MapRenderer {
         self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
         let t_sorted = clock.now_us();
 
-        self.draw_map(target, vp, &color_fn);
+        self.draw_map(target, reader, lod, vp, &color_fn);
         let t_drawn = clock.now_us();
 
         // The clear is a framebuffer write, so it counts toward `draw` even though it ran first.
@@ -339,13 +339,16 @@ impl MapRenderer {
     }
 
     /// Draw the collected, painter-ordered spans into `target`. Polygons fill via even-odd
-    /// scanline; lines stroke via the view-clipped overlay path.
-    fn draw_map<D, F>(&mut self, target: &mut D, vp: &Viewport, color_fn: &F)
+    /// scanline; lines stroke via the view-clipped overlay path — resolving each line's full
+    /// [`Style`](obc_reader::Style) (`dashed`/`color2`) from `reader` via [`Span::style_id`]. `lod`
+    /// is threaded in for the finest-LOD casing/outline gates (#559/#560); polygons ignore both.
+    fn draw_map<D, F>(&mut self, target: &mut D, reader: &Reader, lod: usize, vp: &Viewport, color_fn: &F)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        // Disjoint borrows: spans/geometry read from `frame`, draw scratch written.
+        let _ = lod; // reserved for the finest-LOD casing (#559) / polygon-outline (#560) gates.
+                     // Disjoint borrows: spans/geometry read from `frame`, draw scratch written.
         let Self { frame, draw } = self;
         for span in frame.spans() {
             let ring_start = span.ring_start as usize;
@@ -358,9 +361,24 @@ impl MapRenderer {
             match span.kind {
                 Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, &mut draw.screen, &mut draw.xs),
                 Kind::Line => {
-                    // Lines use only the exterior ring.
+                    // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;
+                    // `color2` quantizes through `color_fn` exactly like the primary. A missing
+                    // style (never collected) falls back to today's solid stroke.
                     let n = ring_lens.first().copied().unwrap_or(0);
-                    draw_line(target, vp, &pts[..n], color, span.weight.max(1) as u32, &mut draw.screen, &mut draw.xs);
+                    let style = reader.style(span.style_id);
+                    let dashed = style.is_some_and(|s| s.dashed);
+                    let color2 = style.and_then(|s| s.color2).map(color_fn);
+                    draw_line(
+                        target,
+                        vp,
+                        &pts[..n],
+                        color,
+                        span.weight.max(1) as u32,
+                        dashed,
+                        color2,
+                        &mut draw.screen,
+                        &mut draw.xs,
+                    );
                 }
             }
         }
