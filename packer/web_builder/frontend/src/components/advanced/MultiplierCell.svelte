@@ -2,8 +2,12 @@
     // One multiplier cell in a profile grid: a numeric input floored at the
     // schema minimum (>= 1.0) plus a per-cell "forbidden" toggle. A cell is
     // either explicit (its own value) or inheriting the profile default — the
-    // latter renders muted. Sub-minimum entries can't commit; they raise a hint.
+    // latter renders muted. Valid values commit live while typing; an invalid
+    // entry (sub-minimum, empty, NaN) never reaches the model — it's reverted
+    // on blur/Enter with the hint from checkMultiplier (the single copy of
+    // the packer-mirroring admissibility message).
     import type { Multiplier } from "../../lib/config/model";
+    import { checkMultiplier } from "../../lib/config/profiles";
 
     let {
         value,
@@ -25,22 +29,27 @@
 
     const forbidden = $derived(value === "forbidden");
 
-    function commit(e: Event & { currentTarget: HTMLInputElement }) {
-        const raw = e.currentTarget.value;
-        const v = parseFloat(raw);
-        if (!Number.isFinite(v) || v < min) {
-            onhint(
-                `“${label}”: a multiplier below ${min.toFixed(1)} breaks the router's ` +
-                    "shortest-path guarantee — every non-zero weight must stay ≥ 1.0 so the " +
-                    "great-circle A* heuristic remains admissible. Use “forbidden” to exclude " +
-                    "the class instead.",
-            );
-            // Revert the field to the model value so the sub-minimum entry never sticks.
-            e.currentTarget.value = String(value);
-            return;
+    /** Live path (per keystroke): commit a valid value as it's typed; leave
+     * anything else alone so an in-progress edit (a cleared field, "0." mid
+     * entry) isn't stomped — the settle path below deals with it. */
+    function liveCommit(e: Event & { currentTarget: HTMLInputElement }) {
+        const v = parseFloat(e.currentTarget.value);
+        if (checkMultiplier(v, min).ok) {
+            onhint(null);
+            onset(v);
         }
-        onhint(null);
-        onset(v);
+    }
+
+    /** Settle path (blur/Enter): an invalid entry raises the admissibility
+     * hint and the field reverts to the model value, so a sub-minimum
+     * multiplier can never stick. */
+    function settle(e: Event & { currentTarget: HTMLInputElement }) {
+        const v = parseFloat(e.currentTarget.value);
+        const { ok, hint } = checkMultiplier(v, min);
+        if (!ok) {
+            onhint(`“${label}”: ${hint}`);
+            e.currentTarget.value = String(value);
+        }
     }
 </script>
 
@@ -64,7 +73,8 @@
             step="0.05"
             value={typeof value === "number" ? value : min}
             title={explicit ? "Explicit multiplier" : "Inheriting the profile default"}
-            oninput={commit}
+            oninput={liveCommit}
+            onchange={settle}
         />
         <button
             type="button"

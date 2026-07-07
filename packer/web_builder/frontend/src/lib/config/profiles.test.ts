@@ -4,7 +4,6 @@ import {
     addProfile,
     cellValue,
     checkMultiplier,
-    clampMultiplier,
     clearCell,
     displayProfiles,
     ensureRouting,
@@ -112,20 +111,21 @@ describe("setCell / clearCell", () => {
 
 describe("multiplier validation", () => {
     it("rejects a sub-minimum value with an admissibility hint", () => {
-        const r = checkMultiplier(0.5, PS);
+        const r = checkMultiplier(0.5, PS.multiplierMin);
         expect(r.ok).toBe(false);
         expect(r.hint).toMatch(/admissible/);
         expect(r.hint).toMatch(/shortest-path/);
     });
 
-    it("accepts a value at or above the minimum", () => {
-        expect(checkMultiplier(1.0, PS).ok).toBe(true);
-        expect(checkMultiplier(5.5, PS).ok).toBe(true);
+    it("rejects a non-number (cleared field) without the scary message", () => {
+        const r = checkMultiplier(NaN, PS.multiplierMin);
+        expect(r.ok).toBe(false);
+        expect(r.hint).toMatch(/number/);
     });
 
-    it("clamps a raw number up to the minimum", () => {
-        expect(clampMultiplier(0.2, PS)).toBe(1.0);
-        expect(clampMultiplier(2.5, PS)).toBe(2.5);
+    it("accepts a value at or above the minimum", () => {
+        expect(checkMultiplier(1.0, PS.multiplierMin).ok).toBe(true);
+        expect(checkMultiplier(5.5, PS.multiplierMin).ok).toBe(true);
     });
 });
 
