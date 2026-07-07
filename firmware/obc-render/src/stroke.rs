@@ -159,6 +159,9 @@ pub(crate) struct Stroker<'a, D: DrawTarget> {
     color: D::Color,
     /// Stroke width in px, already `.max(1)`-clamped by [`Stroker::new`].
     weight: u32,
+    /// When set ([`Stroker::stroke_dashed`]), each flushed run rasterises as screen-space dashes
+    /// instead of a solid stroke. Off by default, so [`Stroker::stroke`] is byte-for-byte unchanged.
+    dashed: bool,
     /// View rectangle grown by the stroke width ([`Stroker::new`]), as `(xmin, ymin, xmax, ymax)`.
     clip: (f32, f32, f32, f32),
     w: i32,
@@ -182,7 +185,7 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         let m = weight as f32 + 2.0; // clip margin ≥ half-width, so edge strokes still paint in
         let clip = (-m, -m, w as f32 + m, h as f32 + m);
         run.clear();
-        Self { target, run, xs, color, weight, clip, w, h }
+        Self { target, run, xs, color, weight, dashed: false, clip, w, h }
     }
 
     /// Clip a projected overlay polyline to the view and stroke the on-screen runs
@@ -212,6 +215,19 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         });
         self.flush_run();
         drawn
+    }
+
+    /// Like [`Stroker::stroke`] but rasterises the on-screen runs as **dashes** ([`walk_dashes`]):
+    /// the whole simplify → clip → run-accumulation pipeline is reused unchanged (so off-screen
+    /// dashes cost nothing — clip-before-dash), and only [`Stroker::flush_run`] diverges once the
+    /// `dashed` flag is set. Dash phase resets at each run (each clip re-entry), the accepted v1
+    /// "crawl" during pans (epic #556).
+    pub(crate) fn stroke_dashed<I>(&mut self, points: I) -> usize
+    where
+        I: IntoIterator<Item = Point>,
+    {
+        self.dashed = true;
+        self.stroke(points)
     }
 
     /// Clip one committed segment `a`→`b` to the view and append it to the current run, flushing
@@ -256,7 +272,9 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     /// `Circle` path measured ~10× a span stroke even at 2 px, so the split sits at 1 px, not 2.
     fn flush_run(&mut self) {
         if self.run.len() >= 2 {
-            if self.weight <= 1 {
+            if self.dashed {
+                self.flush_run_dashed();
+            } else if self.weight <= 1 {
                 let _ = Polyline::new(self.run)
                     .into_styled(PrimitiveStyle::with_stroke(self.color, self.weight))
                     .draw(self.target);
@@ -283,26 +301,40 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         self.run.clear();
     }
 
+    /// Rasterise the accumulated run as **screen-space dashes** in `self.color` ([`walk_dashes`],
+    /// `on == off == `[`dash_len`]). Reuses everything up to here unchanged (simplify → clip → run),
+    /// so a dashed line is *cheaper* than a solid one — off-screen dashes are already clipped away
+    /// and no run is walked twice. The on-intervals emit with **butt ends, no joint/cap discs**:
+    /// dashes are short and straight, so the notch a disc would fill is invisible, and skipping them
+    /// halves the fill cost and keeps the stripe edges crisp. Called only from [`Stroker::flush_run`]
+    /// (run length already `>= 2`); `flush_run` clears the run afterwards.
+    fn flush_run_dashed(&mut self) {
+        let dash = dash_len(self.weight);
+        let hw = (self.weight / 2) as f32;
+        let weight = self.weight;
+        // Reborrow disjoint fields so `walk_dashes` may read `run` while the emit closure writes the
+        // target/scratch — the closure captures locals, never `self`.
+        let target = &mut *self.target;
+        let xs = &mut *self.xs;
+        let color = self.color;
+        let (w, h) = (self.w, self.h);
+        walk_dashes(self.run, dash, |a, b| {
+            if a == b {
+                return; // an on-interval that rounded onto a single pixel
+            }
+            if weight <= 1 {
+                let _ = Polyline::new(&[a, b]).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
+            } else {
+                fill_butt_quad(target, a, b, hw, color, w, h, xs);
+            }
+        });
+    }
+
     /// Lay down one segment of a thick stroke as a filled rectangle (swept ±`hw` px along its
-    /// perpendicular) via [`fill_polygon`] — a convex quad, so every row has exactly two crossings.
-    /// A zero-length segment is left to the joint/cap disc. Spans round **outward** (see
-    /// `fill_polygon`), so adjacent quads and joint discs overlap by ≤1 px and leave no hairline
-    /// crack.
+    /// perpendicular). Thin wrapper over [`fill_butt_quad`], sharing the quad math with the dash
+    /// path. A zero-length segment is left to the joint/cap disc.
     fn fill_thick_segment(&mut self, a: Point, b: Point, hw: f32) {
-        let (ax, ay, bx, by) = (a.x as f32, a.y as f32, b.x as f32, b.y as f32);
-        let (dx, dy) = (bx - ax, by - ay);
-        let len = libm::sqrtf(dx * dx + dy * dy);
-        if len < 1e-3 {
-            return;
-        }
-        let (nx, ny) = (-dy / len * hw, dx / len * hw); // perpendicular × half-width
-        let quad = [
-            round_pt(ax + nx, ay + ny),
-            round_pt(bx + nx, by + ny),
-            round_pt(bx - nx, by - ny),
-            round_pt(ax - nx, ay - ny),
-        ];
-        fill_polygon(self.target, &quad, &[4], self.color, self.w, self.h, self.xs);
+        fill_butt_quad(self.target, a, b, hw, self.color, self.w, self.h, self.xs);
     }
 
     /// Fill a solid disc of radius `r` px at `(cx, cy)` as horizontal spans — one
@@ -327,27 +359,141 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     }
 }
 
+/// Lay down one thick-stroke segment as a filled rectangle (swept ±`hw` px along its perpendicular)
+/// via [`fill_polygon`] — a convex quad, so every row has exactly two crossings. **Butt ends** (no
+/// end caps): both the solid stroke's per-segment fill ([`Stroker::fill_thick_segment`], which caps
+/// via separate joint discs) and the dash path reuse this. A zero-length segment draws nothing.
+/// Spans round **outward** (see `fill_polygon`), so adjacent quads overlap by ≤1 px, no hairline
+/// crack.
+#[allow(clippy::too_many_arguments)]
+fn fill_butt_quad<D>(
+    target: &mut D,
+    a: Point,
+    b: Point,
+    hw: f32,
+    color: D::Color,
+    w: i32,
+    h: i32,
+    xs: &mut Vec<f32, MAX_CROSSINGS>,
+) where
+    D: DrawTarget,
+{
+    let (ax, ay, bx, by) = (a.x as f32, a.y as f32, b.x as f32, b.y as f32);
+    let (dx, dy) = (bx - ax, by - ay);
+    let len = libm::sqrtf(dx * dx + dy * dy);
+    if len < 1e-3 {
+        return;
+    }
+    let (nx, ny) = (-dy / len * hw, dx / len * hw); // perpendicular × half-width
+    let quad = [
+        round_pt(ax + nx, ay + ny),
+        round_pt(bx + nx, by + ny),
+        round_pt(bx - nx, by - ny),
+        round_pt(ax - nx, ay - ny),
+    ];
+    fill_polygon(target, &quad, &[4], color, w, h, xs);
+}
+
+/// Dash on/off length in screen px for a `weight`-px dashed stroke (`on == off`). **Screen-space and
+/// zoom-independent** — a locked epic decision, no per-style config knob — so the dash rhythm reads
+/// the same at every zoom. Scales gently with weight (thicker stripe ⇒ longer dashes) and clamps to
+/// a legible 4–12 px. The exact numbers are a by-eye call; tune here, see epic #556.
+fn dash_len(weight: u32) -> f32 {
+    (3 * weight).clamp(4, 12) as f32
+}
+
+/// Walk an already-clipped, screen-space polyline `run` and emit each **"on" dash interval** as a
+/// `(start, end)` point pair to `emit`, using `on == off == dash` px of **arc length**. The phase
+/// accumulates across the run's segments (so dashes read continuously through a bend) and starts at
+/// 0 — i.e. it resets per run, per clip re-entry ([`Stroker::stroke_dashed`]). An on-interval that
+/// spans a vertex is emitted as two pieces (one per segment); the pure arc-length math lives here so
+/// it can be unit-tested apart from any draw target.
+fn walk_dashes<F>(run: &[Point], dash: f32, mut emit: F)
+where
+    F: FnMut(Point, Point),
+{
+    let period = 2.0 * dash;
+    let mut phase = 0.0_f32; // arc position within [0, period); carries across segments
+    for seg in run.windows(2) {
+        let (a, b) = (seg[0], seg[1]);
+        let (ax, ay) = (a.x as f32, a.y as f32);
+        let (dx, dy) = ((b.x - a.x) as f32, (b.y - a.y) as f32);
+        let len = libm::sqrtf(dx * dx + dy * dy);
+        if len < 1e-3 {
+            continue; // degenerate segment; phase untouched
+        }
+        let (ux, uy) = (dx / len, dy / len); // unit direction
+        let mut t = 0.0_f32; // distance along this segment
+        while t < len {
+            let on = phase < dash;
+            // Distance to the next on/off boundary, clamped to what's left of the segment. Always
+            // > 0 (phase ∈ [0, period), so both `dash - phase` and `period - phase` are positive),
+            // so `t` strictly advances — no stall.
+            let remain = if on { dash - phase } else { period - phase };
+            let step = remain.min(len - t);
+            if on {
+                let p0 = round_pt(ax + ux * t, ay + uy * t);
+                let p1 = round_pt(ax + ux * (t + step), ay + uy * (t + step));
+                emit(p0, p1);
+            }
+            t += step;
+            phase += step;
+            if phase >= period {
+                phase -= period;
+            }
+        }
+    }
+}
+
 /// Project and stroke one map line (its exterior ring) — the draw phase's `Kind::Line` arm, and the
-/// single point where per-feature line styling (dashes, casing) will branch later. Uses the same
-/// view-clipped stroke as the route/breadcrumb overlays.
+/// single point where per-feature line styling branches on the resolved [`Style`](obc_reader::Style)
+/// (`dashed` + optional device-quantized `color2`):
+///
+/// - **solid, no `color2`** → today's single stroke, byte-for-byte unchanged (the zero-cost path).
+/// - **solid + `color2`** → still a single solid stroke here; casing is a separate finest-LOD pass
+///   (#559), so `draw_line` itself never double-strokes for casing.
+/// - **dashed, no `color2`** → dashes in `color`, transparent gaps (admin borders).
+/// - **dashed + `color2`** → **railway stripe**: a full solid base in `color2`, then dashes in
+///   `color` on top → alternating segments. Re-projects for the second pass (cheap vs. buffering).
+///
+/// Uses the same view-clipped stroke as the route/breadcrumb overlays.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_line<D>(
     target: &mut D,
     vp: &Viewport,
     pts: &[(i32, i32)],
     color: D::Color,
     weight: u32,
+    dashed: bool,
+    color2: Option<D::Color>,
     screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
     xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
 {
-    let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-    Stroker::new(target, screen, xs, color, weight, vp.w as i32, vp.h as i32).stroke(projected);
+    let (w, h) = (vp.w as i32, vp.h as i32);
+    match (dashed, color2) {
+        // Solid (with or without color2 — casing is #559's job, not draw_line's). Unchanged path.
+        (false, _) => {
+            let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
+            Stroker::new(target, screen, xs, color, weight, w, h).stroke(projected);
+        }
+        (true, None) => {
+            let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
+            Stroker::new(target, screen, xs, color, weight, w, h).stroke_dashed(projected);
+        }
+        (true, Some(c2)) => {
+            let base = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
+            Stroker::new(target, screen, xs, c2, weight, w, h).stroke(base);
+            let dashes = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
+            Stroker::new(target, screen, xs, color, weight, w, h).stroke_dashed(dashes);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{joint_disc_cos2, simplify, turn_is_sharp, within_eps};
+    use super::{dash_len, joint_disc_cos2, simplify, turn_is_sharp, walk_dashes, within_eps};
     use embedded_graphics::prelude::Point;
     use heapless::Vec;
 
@@ -358,6 +504,20 @@ mod tests {
             let _ = out.push(p);
         });
         out
+    }
+
+    /// Collect the on-dash intervals [`walk_dashes`] emits for `run` at on/off length `dash`.
+    fn dashes(run: &[Point], dash: f32) -> Vec<(Point, Point), 64> {
+        let mut out = Vec::new();
+        walk_dashes(run, dash, |a, b| {
+            let _ = out.push((a, b));
+        });
+        out
+    }
+
+    /// Arc length of an axis-aligned or straight `a → b`.
+    fn seg_len((a, b): (Point, Point)) -> f32 {
+        libm::sqrtf(((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)) as f32)
     }
 
     #[test]
@@ -400,6 +560,61 @@ mod tests {
         assert!(out.len() <= 3, "staircase should collapse to ~the endpoints, kept {}", out.len());
         assert_eq!(out.first(), pts.first(), "keeps the start");
         assert_eq!(out.last(), pts.last(), "keeps the end");
+    }
+
+    #[test]
+    fn dash_len_scales_with_weight_and_clamps() {
+        assert_eq!(dash_len(1), 4.0, "thin: 3 clamps up to the 4 px floor");
+        assert_eq!(dash_len(2), 6.0, "rail weight: 3×2");
+        assert_eq!(dash_len(4), 12.0, "hits the ceiling exactly");
+        assert_eq!(dash_len(9), 12.0, "clamps down to the 12 px ceiling");
+    }
+
+    #[test]
+    fn walk_dashes_alternates_on_off_from_the_run_start() {
+        // A straight 20 px run at dash 4 ⇒ period 8: on [0,4], off, on [8,12], off, on [16,20].
+        // The run always *starts* with an "on" dash (phase resets to 0 at the clip entry point).
+        let out = dashes(&[Point::new(0, 0), Point::new(20, 0)], 4.0);
+        assert_eq!(
+            &out[..],
+            &[
+                (Point::new(0, 0), Point::new(4, 0)),
+                (Point::new(8, 0), Point::new(12, 0)),
+                (Point::new(16, 0), Point::new(20, 0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn walk_dashes_resets_phase_per_call() {
+        // "Reset per run" = the walker is stateless across calls: a run that doesn't start at the
+        // origin still opens with a dash at its first point (the clip re-entry always paints).
+        let out = dashes(&[Point::new(5, 5), Point::new(9, 5)], 4.0);
+        assert_eq!(&out[..], &[(Point::new(5, 5), Point::new(9, 5))], "one full dash from the entry point");
+    }
+
+    #[test]
+    fn walk_dashes_carries_phase_across_a_vertex() {
+        // An L-bend where a single "on" dash straddles the corner: arc 0..4 with a vertex at arc 3.
+        // It must split into a 3 px piece on the first arm and a 1 px piece on the second — meeting
+        // at the vertex — with the *off* gap that follows continuing seamlessly on the second arm.
+        let run = [Point::new(0, 0), Point::new(3, 0), Point::new(3, 3)];
+        let out = dashes(&run, 4.0);
+        assert_eq!(out.len(), 2, "the vertex-straddling dash splits into two pieces");
+        assert_eq!(out[0], (Point::new(0, 0), Point::new(3, 0)), "first arm up to the vertex");
+        assert_eq!(out[1], (Point::new(3, 0), Point::new(3, 1)), "continues onto the second arm");
+        assert_eq!(out[0].1, out[1].0, "the two pieces meet at the vertex — no gap, no overlap");
+        let on_total: f32 = out.iter().map(|&p| seg_len(p)).sum();
+        assert!((on_total - 4.0).abs() < 1e-3, "the split preserves the 4 px on-length, got {on_total}");
+    }
+
+    #[test]
+    fn walk_dashes_ignores_degenerate_segments() {
+        // A repeated vertex (a zero-length segment) leaves the phase untouched — the dash rhythm is
+        // identical to the same run without the duplicate point (clip/simplify can hand us these).
+        let with_dup = dashes(&[Point::new(0, 0), Point::new(10, 0), Point::new(10, 0), Point::new(20, 0)], 4.0);
+        let without = dashes(&[Point::new(0, 0), Point::new(10, 0), Point::new(20, 0)], 4.0);
+        assert_eq!(&with_dup[..], &without[..]);
     }
 
     #[test]

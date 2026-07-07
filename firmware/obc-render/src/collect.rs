@@ -262,6 +262,7 @@ impl FrameScratch {
                                 kind: f.kind,
                                 z,
                                 weight,
+                                style_id: stub.style_id,
                                 color,
                                 pt_start,
                                 ring_start,
@@ -273,6 +274,7 @@ impl FrameScratch {
                             kind: Kind::Line,
                             z,
                             weight,
+                            style_id: stub.style_id,
                             color,
                             pt_start,
                             ring_start,
@@ -401,14 +403,22 @@ const _: () = assert!(core::mem::size_of::<Slot>() == core::mem::size_of::<Span>
 ///
 /// Offsets are `u16` (not `usize`) to keep the struct to 14 bytes — thousands are buffered at
 /// coarse zoom. The frame buffers they index are asserted `<= u16::MAX` at the buffer constants.
+/// `style_id` fills what was a spare padding byte (the `u8` fields pack against the `u16`s), so the
+/// draw loop can re-resolve the full [`Style`](obc_reader::Style) — `dashed`/`color2` — via the
+/// reader's hot `O(1)` style table without widening `Span`.
 #[derive(Clone, Copy)]
 pub(crate) struct Span {
     pub(crate) kind: Kind,
     pub(crate) z: i8,
     pub(crate) weight: u8,
+    pub(crate) style_id: u8,
     pub(crate) color: u16,
     pub(crate) pt_start: u16,
     pub(crate) ring_start: u16,
     pub(crate) ring_count: u16,
     pub(crate) seq: u16,
 }
+
+// `style_id` must land in the spare byte, not grow the struct — thousands are buffered per frame and
+// `MCU_RENDERER_BYTES` budgets `MAX_SPANS * size_of::<Span>()`.
+const _: () = assert!(core::mem::size_of::<Span>() == 14, "Span must stay 14 bytes");
