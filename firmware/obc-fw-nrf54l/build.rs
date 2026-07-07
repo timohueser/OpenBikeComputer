@@ -98,23 +98,18 @@ fn main() {
 
     // The FLPR drives the panel on every build (issue #173), so the memory carve + the RISC-V blob
     // are always emitted below. Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature
-    // is enabled — used for the `ble`/`has_nav` gates below.
+    // is enabled — used for the `ble`/`has_nav` gate below.
 
-    // The map plane compiles into **every** build (issue #270): map + BLE now coexist in one image —
-    // the `ble` build streams the map *and* serves the companion link, both driving the shared SD +
+    // The map plane compiles into **every** build (issue #270): map + BLE coexist in one image — the
+    // `ble` build streams the map *and* serves the companion link, both driving the shared SD +
     // settings store, so the old text-only BLE status UI is retired. The `nrf-mem` caps are trimmed
     // (PR #421) so the combined resident set fits the 256 KB DK; the budget assert in main.rs is the
-    // binding check. `has_map` stays a cfg (rather than deleting it) so the map-plane seam remains
-    // greppable and a future no-map variant can flip it back off in this one place.
-    let has_map = true;
-    println!("cargo:rustc-check-cfg=cfg(has_map)");
-    if has_map {
-        println!("cargo:rustc-cfg=has_map");
-    }
+    // binding check. The map path is unconditional — `has_nav` (below) is the only build-shape cfg,
+    // and it keys purely on `ble`.
 
-    // The on-device POI router (epic #116, R4) — `has_map` minus the `ble` build. Its two `.bss`
-    // statics (`NavScratch` ~10.2 KB + `NavTileCache` ~4.1 KB) don't fit next to the BLE stack on
-    // the 256 KB DK: with them the combined image's stack region lands at ~33.9 KB, ~1.9 KB
+    // The on-device POI router (epic #116, R4) — present on every build **except** `ble`. Its two
+    // `.bss` statics (`NavScratch` ~10.2 KB + `NavTileCache` ~4.1 KB) don't fit next to the BLE stack
+    // on the 256 KB DK: with them the combined image's stack region lands at ~33.9 KB, ~1.9 KB
     // **below** the ~35.8 KB measured deep-render peak — a silent on-glass overflow — and the
     // acceptance-neutral `nrf-mem` trims are exhausted (PR #496's RAM table). A 256 KB-DK
     // artifact, the same compile-time-fact pattern as main.rs's `MAP_RESIDENT`/`BLE_RESIDENT`
@@ -122,7 +117,7 @@ fn main() {
     // ride loop still drains a create-route request and answers the generic failure tier
     // ("Couldn't find a route."), so the POI confirm never hangs.
     let ble = env::var_os("CARGO_FEATURE_BLE").is_some();
-    let has_nav = has_map && !ble;
+    let has_nav = !ble;
     println!("cargo:rustc-check-cfg=cfg(has_nav)");
     if has_nav {
         println!("cargo:rustc-cfg=has_nav");

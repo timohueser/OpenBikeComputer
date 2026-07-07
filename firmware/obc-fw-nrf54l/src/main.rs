@@ -136,9 +136,8 @@ mod ls021_flpr;
 mod input_plane;
 //   - The **map plane**: the cfg-selected `MapDisplay` handle the ride loop drives the panel through.
 mod map_plane;
-// The map/ride thread-mode plane: `run_app` + its loop-only helpers. In every build now (#270); on
+// The map/ride thread-mode plane: `run_app` + its loop-only helpers. In every build (#270); on
 // `ble` builds it runs joined with the BLE stack, both driving the shared SD + settings store.
-#[cfg(has_map)]
 mod ride;
 // Persistent device settings over on-chip RRAM (the SD-independent settings store); boot-load +
 // save-on-dirty are wired in `run_app`.
@@ -181,7 +180,6 @@ use core::mem::MaybeUninit;
 use embassy_nrf::gpio::{Input, Pull};
 use embassy_nrf::interrupt;
 use embassy_nrf::interrupt::{InterruptExt, Priority};
-#[cfg(has_map)]
 use embassy_nrf::wdt;
 // The shared GPS/altimeter I²C bus — real-sensor build only.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
@@ -192,18 +190,13 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 // The async `Mutex` guards the shared SD + settings store ([`SharedStore`], every build) — a lock
 // held across an `.await` (the ride loop holds it across a whole map render).
 use embassy_sync::mutex::Mutex;
-// The map/ride half of obc-app lives only on `has_map` builds (the `ble` DK build compiles the map
-// plane out); the shared `InputPlane` is every build's.
+// The map/ride half of obc-app, alongside the shared `InputPlane`.
 use obc_app::InputPlane;
-#[cfg(has_map)]
 use obc_app::{App, AppState};
 use obc_platform::{ButtonInput, RowDiff, FRAME_H, FRAME_W};
-#[cfg(has_map)]
 use obc_reader::{MapCache, MapTables};
-#[cfg(has_map)]
 use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
-#[cfg(has_map)]
 use obc_route::RouteCache;
 
 // LS021 FLPR backend: the resident-framebuffer `DisplayDriver` backend + its launch, and the
@@ -317,8 +310,8 @@ const NAV_RESIDENT: usize = core::mem::size_of::<obc_route::NavScratch>()
 const NAV_RESIDENT: usize = 0;
 /// The BLE stack's residents (`ble::RESIDENT_BYTES`: the MPSL handle + SDC memory block + TrouBLE's
 /// host arena + its global packet pool + the CRACEN RNG); zero without the feature. Keeping both terms
-/// in one sum is what makes "`ble` + map don't fit on 256 KB" a *compile-time* fact: when the LM20
-/// relaxes `has_map` in build.rs, both planes land here and this assert arbitrates.
+/// in one sum is what makes "`ble` + map don't fit on 256 KB" a *compile-time* fact: the map plane is
+/// unconditional, so on the `ble` build both planes land here and this assert arbitrates.
 #[cfg(feature = "ble")]
 const BLE_RESIDENT: usize = ble::RESIDENT_BYTES;
 #[cfg(not(feature = "ble"))]
@@ -351,21 +344,17 @@ static mut ROW_DIFF: RowDiff<FRAME_H> = RowDiff::new();
 /// `ptr::write` into the reserved region): the ~45 KB `App` (incl. the ~30 KB renderer scratch) and the
 /// ~20 KB cache must never form on the 256 KB part's small stack. [`MapCache::new`](obc_reader::MapCache)
 /// is an all-zero `MaybeUninit::zeroed`, so writing it is a `.bss` memset.
-#[cfg(has_map)]
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// The immutable map tables (header scalars + style table + LOD pyramid), parsed **once at boot** into
 /// `.bss` and borrowed by every per-frame [`Reader`]. Resident so the per-frame render reader carries
 /// no styles/LODs of its own — no per-frame style-table SD read, no ~4 KB parse stack spike on the deep
 /// render path (the lever that kept that path inside the 256 KB stack).
-#[cfg(has_map)]
 static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
-#[cfg(has_map)]
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache, placed in `.bss` and built in place like [`MAP_CACHE`]
 /// ([`RouteCache::new`](obc_route::RouteCache) is an all-zero `MaybeUninit::zeroed`). The session-long
 /// cache spares a redraw of the unchanged route + the matcher's per-fix decode from re-reading `.obcr`
 /// geometry off the card every frame.
-#[cfg(has_map)]
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
 /// The on-device router's fixed A* table (epic #116, R4): ~10 kB of open-addressed node slots +
 /// heap, in `.bss` (`NavScratch::new()` is `const` and all-zero → a memset), **never** a local —
@@ -444,7 +433,6 @@ async fn spawn_ble_stack(
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
 /// coarse-ish 2 mpp shows a town-scale overview rather than a tight patch.
-#[cfg(has_map)]
 const INIT_MPP: f32 = 2.0;
 
 /// Heartbeat-only idle for an unrecoverable bring-up failure: blink LED0 forever rather than panic —
@@ -870,9 +858,7 @@ async fn main(_spawner: Spawner) {
         // up above, before the card), so instead of failing silently we put an **undismissable**
         // fault screen on glass, then heartbeat-idle. (SharedStore keeps an Option seam for a future
         // card-less variant where BLE config/bond/diagnostics still serve.)
-        #[cfg(has_map)]
-        let Some(mut storage) = storage
-        else {
+        let Some(mut storage) = storage else {
             defmt::error!("SD: no card / mount failed — showing the NO SD CARD fault screen, then heartbeat idle");
             show_boot_fault(&mut display, obc_app::BootFault::NoCard).await;
             idle_blink(&mut led).await
@@ -882,13 +868,11 @@ async fn main(_spawner: Spawner) {
         // resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the app's Route
         // menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB `Catalog`
         // never sits on `main`'s stack beneath the long-lived ride loop.)
-        #[cfg(has_map)]
         storage.open_map();
 
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
         // SAFETY: sole owner of MAP_CACHE; single executor → no aliasing.
-        #[cfg(has_map)]
         let map_cache: &MapCache = unsafe { init_static(core::ptr::addr_of_mut!(MAP_CACHE), MapCache::new()) };
 
         // Parse the OBCM **header + style table + LOD pyramid once at boot** into the resident
@@ -901,7 +885,6 @@ async fn main(_spawner: Spawner) {
         // ends with this block, so the loop can rebuild a fresh source each redraw AND reconcile the card
         // (`&mut storage`) between frames.
         // SAFETY: sole owner of MAP_TABLES; single executor → no aliasing; written exactly once here.
-        #[cfg(has_map)]
         let map_tables: &MapTables = unsafe {
             let Some(init_src) = storage.map_source() else {
                 defmt::error!("SD: no .obcm map in card root — showing the NO MAP fault screen, then heartbeat idle");
@@ -924,7 +907,6 @@ async fn main(_spawner: Spawner) {
                 }
             }
         };
-        #[cfg(has_map)]
         let (cam_lon, cam_lat) = {
             let b = map_tables.bbox;
             info!(
@@ -940,13 +922,11 @@ async fn main(_spawner: Spawner) {
         // selecting an entry opens the Map at that route's start and streams its geometry into the render
         // + the map-matcher.
         // SAFETY: sole owner of APP; `init_idle` fully initialises it before the `&mut` below reads it.
-        #[cfg(has_map)]
         let app: &mut App = unsafe {
             let slot = core::ptr::addr_of_mut!(APP) as *mut App;
             App::init_idle(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
-        #[cfg(has_map)]
         {
             ride::load_routes(&mut storage, app);
             ride::load_rides(&mut storage, app);
@@ -962,7 +942,6 @@ async fn main(_spawner: Spawner) {
         // Place the decoded-route-geometry cache in `.bss`, built in place (a zeroed
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary — like `MAP_CACHE`).
         // SAFETY: sole owner of ROUTE_CACHE; single map plane → no aliasing.
-        #[cfg(has_map)]
         let route_cache: &RouteCache = unsafe { init_static(core::ptr::addr_of_mut!(ROUTE_CACHE), RouteCache::new()) };
 
         // The router's A* table + graph-tile cache (epic #116, R4), placed in `.bss` and built in
@@ -980,7 +959,7 @@ async fn main(_spawner: Spawner) {
             // request and reads it only while its plan bookkeeping is active.
             planner: unsafe { &mut *core::ptr::addr_of_mut!(NAV_PLANNER) },
         };
-        #[cfg(all(has_map, not(has_nav)))]
+        #[cfg(not(has_nav))]
         let nav = ride::NavBuffers;
 
         // The persistent settings store: takes the `RRAMC` peripheral, reads/writes the blob in the
@@ -1000,7 +979,6 @@ async fn main(_spawner: Spawner) {
         // `try_new` re-adopts it if the config matches (ours is constant, so it does). A foreign
         // config (e.g. an older image's) can't be adopted or fed — log it and run unfed: the stale
         // period fires once and the next boot starts clean.
-        #[cfg(has_map)]
         let wdt_handle = {
             let mut cfg = wdt::Config::default();
             cfg.timeout_ticks = ride::WDT_TIMEOUT_TICKS;
@@ -1085,10 +1063,10 @@ async fn main(_spawner: Spawner) {
         // seam; the loop drives present through it with no further `#[cfg]`. `cam_center` is threaded
         // only on the `synth` build (the host feed + the real GPS stream absolute positions, so they need
         // no synthetic-loop centre).
-        #[cfg(all(has_map, any(feature = "debug-uart", not(feature = "synth"))))]
+        #[cfg(any(feature = "debug-uart", not(feature = "synth")))]
         let app_fut =
             ride::run_app(display, app, shared_store, map_tables, map_cache, route_cache, nav, &mut led, wdt_handle);
-        #[cfg(all(has_map, not(feature = "debug-uart"), feature = "synth"))]
+        #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
         let app_fut = ride::run_app(
             display,
             app,

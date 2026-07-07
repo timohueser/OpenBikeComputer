@@ -57,9 +57,7 @@ const OVL_W: u16 = 16;
 /// timings (µs) the RTT log + the VCOM telemetry carry.
 pub(crate) struct FramePresent {
     pub(crate) ok: bool,
-    // Read by the ride loop's telemetry/log lines only — the status build presents text frames
-    // whose stats are all `default()`, so it never looks.
-    #[cfg_attr(not(has_map), allow(dead_code))]
+    // Read by the ride loop's telemetry/log lines only.
     pub(crate) stats: RenderStats,
     pub(crate) render_us: u64,
     pub(crate) push_us: u64,
@@ -139,9 +137,7 @@ impl MapDisplay {
 
     /// The live encoder hold-progress from the shared input plane (0.0–1.0). Fed to the map render
     /// so the in-screen confirm fills (the factory-Reset bar) track the hold — `App`'s own input
-    /// plane isn't driven on the two-plane firmware, so without this the bar never fills. (The
-    /// status build has no in-screen fills, so only the ride loop calls it.)
-    #[cfg_attr(not(has_map), allow(dead_code))]
+    /// plane isn't driven on the two-plane firmware, so without this the bar never fills.
     #[inline(always)]
     pub(crate) fn hold_progress(&self) -> f32 {
         self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
@@ -150,7 +146,6 @@ impl MapDisplay {
     /// Whether a hold is **charging** right now — either button down, its long-press not yet fired.
     /// The pre-fire window the ride loop defers expensive map redraws in, so the bulge keeps its
     /// cadence instead of waiting out a 150–300 ms map frame mid-charge.
-    #[cfg_attr(not(has_map), allow(dead_code))]
     #[inline(always)]
     pub(crate) fn hold_charging(&self) -> bool {
         self.input_plane.lock(|c| {
@@ -162,7 +157,6 @@ impl MapDisplay {
     /// Cancel any in-flight hold on the shared input plane — rung by the ride loop after a gesture
     /// changed the screen stack ([`App::take_hold_cancel`](obc_app::App::take_hold_cancel)), so a
     /// long-press charging over the *old* top can't complete onto the new one (issue #480).
-    #[cfg_attr(not(has_map), allow(dead_code))]
     #[inline(always)]
     pub(crate) fn cancel_holds(&self) {
         self.input_plane.lock(|c| c.borrow_mut().cancel_holds());
@@ -334,9 +328,7 @@ impl MapDisplay {
     }
 
     /// Terminal FLPR-down state (#349): [`MAX_CONSEC_RELAUNCHES`] relaunches failed. The ride loop
-    /// checks this each pass and drops to the heartbeat idle. (The status build never calls it —
-    /// there, a degraded display just freezes the glass while BLE keeps serving.)
-    #[cfg_attr(not(has_map), allow(dead_code))]
+    /// checks this each pass and drops to the heartbeat idle.
     #[inline(always)]
     pub(crate) fn degraded(&self) -> bool {
         self.degraded
