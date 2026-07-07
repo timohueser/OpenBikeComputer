@@ -470,12 +470,11 @@ pub(crate) struct NavPlan {
 impl NavPlan {
     /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest).
     pub(crate) fn start(req: &obc_app::NavRequest) -> Self {
-        // SAFETY: `NavScratch::new()` writes only zero bytes, so a zeroed allocation *is* the
-        // initialized value.
-        let scratch: Box<obc_route::nav::NavScratch> = unsafe { Box::new_zeroed().assume_init() };
         NavPlan {
             planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name())),
-            scratch,
+            // A zeroed heap allocation with no giant stack temp — obc-route owns the "all-zero *is*
+            // `new()`" invariant (see `NavScratch::new_boxed`); the sim just asks for one.
+            scratch: obc_route::nav::NavScratch::new_boxed(),
             tiles: obc_reader::NavTileCache::new(),
             sink: vec_sink::VecSink::default(),
         }
@@ -532,8 +531,10 @@ fn finish_nav_plan(
 /// commit — scripted flows don't need frame-interleaved stepping.
 fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Reader, req: &obc_app::NavRequest) {
     use obc_route::nav::{plan_route, NavScratch};
-    // SAFETY: see `NavPlan::start` — all-zero is the initialized value.
-    let mut scratch: Box<NavScratch> = unsafe { Box::new_zeroed().assume_init() };
+    // Zeroed heap allocation, no giant stack temp (invariant owned by `NavScratch::new_boxed`).
+    // The `NavScratch` annotation pins the default `NAV_MAX_NODES` table (an assoc-fn call can't
+    // infer the struct's const-generic default the way a type in position does).
+    let mut scratch: Box<NavScratch> = NavScratch::new_boxed();
     let mut tiles = obc_reader::NavTileCache::new();
     let mut sink = vec_sink::VecSink::default();
     let outcome = plan_route(reader, req.from, req.to, req.name(), &mut scratch, &mut tiles, &mut sink);

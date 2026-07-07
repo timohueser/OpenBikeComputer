@@ -29,9 +29,10 @@ use obc_app::{AltimeterSource, LocationSource};
 use obc_platform::debug_link::{format_fix, parse_telemetry, Telemetry};
 use obc_replay::{BaroSensor, GpxPlayer, Track};
 
-/// How long a "hold" button keeps the edge down before releasing — past the device's ~500 ms
-/// long-press threshold, so the recogniser fires Hold / BackHold.
-const HOLD_MS: u64 = 700;
+/// How long a "hold" button keeps the edge down before releasing — comfortably past the device's
+/// long-press threshold, so the recogniser fires Hold / BackHold. Derived from the app's own
+/// [`obc_app::DEFAULT_HOLD_MS`] so it can't drift if that threshold is ever retuned.
+const HOLD_MS: u64 = obc_app::DEFAULT_HOLD_MS as u64 + 200;
 
 /// What the serial reader thread sends up to the UI.
 enum HostEvent {

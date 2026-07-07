@@ -28,6 +28,12 @@
 
 #![no_std]
 
+// `alloc` is opt-in (off on the device, which places every nav buffer in `.bss`): it only
+// backs the heap-boxed constructors a std host — the simulator — uses to keep a large
+// zero-initialised `NavScratch` off its (small, on wasm) stack. See `NavScratch::new_boxed`.
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 pub mod byte_io;
 pub mod climb;
 pub mod climb_profile;

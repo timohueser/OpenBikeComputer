@@ -96,3 +96,7 @@ critical-section = { version = "1.1", features = ["std"] }
 # registers `driver_std` on the host. Dev-only, so the MCU lib build never pulls it — there the
 # board's embassy-nrf driver is the one linked.
 embassy-time = { version = "0.5.1", features = ["std"] }
+
+# The reader's RGB565→device-64 quantizer, so the framebuffer test can pin the panel-plane pack
+# against it exhaustively (the two implement the same quantization and must never drift).
+obc-reader = { path = "../obc-reader" }
