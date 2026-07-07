@@ -12,8 +12,9 @@
 //!
 //! The FLPR owns the panel outright (whole-frame scan per push → no shared bus), so the map plane
 //! pushes both the clean frame and the bulge itself; the input plane only recognises gestures. The
-//! seam it goes through, [`DisplayDriver`], is the deliberate panel-swap point (a follow-up PR moves
-//! it into obc-platform and makes the simulator the second backend).
+//! seam it goes through, [`DisplayDriver`](obc_platform::DisplayDriver), lives in obc-platform and is
+//! the deliberate panel-swap point — the simulator is its second backend, so the abstraction stays
+//! honest off-device too.
 //!
 //! The one piece shared with the input plane is the `&'static BlockingMutex<…, RefCell<InputPlane>>`
 //! handle both take as a parameter (constructed and owned by `main`): the input plane advances the
@@ -29,12 +30,11 @@ use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::InputPlane;
 // `Band` is the frame-absolute draw view the map plane's `present_overlay` drawer paints the
 // hold bulge into.
-use obc_platform::{Band, FbDevice64};
+use obc_platform::{Band, DisplayDriver, FbDevice64, OverlayRegion, FRAME_H, FRAME_W};
 use obc_render::RenderStats;
 
 #[cfg(feature = "com-hw")]
 use crate::com_hw::HwCom;
-use crate::display::{DisplayDriver, OverlayRegion, FRAME_H, FRAME_W};
 use crate::ls021_flpr::{relaunch_flpr, Ls021Flpr};
 
 // The hold-bulge's right-edge overlay **columns**. Both bulges erupt from the right screen edge ≤12 px

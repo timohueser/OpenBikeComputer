@@ -2,9 +2,13 @@
 //!
 //! The desktop counterpart to the firmware's main loop: each frame it polls the
 //! [`SimLocationSource`], advances the shared [`obc_app::App`], renders the
-//! firmware-identical path into a [`Framebuffer`], and blits that buffer to a GPU
-//! texture at integer scale (nearest-neighbor, so the pixel grid stays crisp). The
-//! firmware does the same with a real GPS driver and the LS021B7DD02 panel.
+//! firmware-identical path into the [`Present`] backend's resident device-64 frame, pushes it
+//! through the [`obc_platform::DisplayDriver`] seam (the same seam the firmware presents through),
+//! and blits the reconstructed texture to a GPU texture at integer scale (nearest-neighbor, so the
+//! pixel grid stays crisp). The firmware does the same with a real GPS driver and the LS021B7DD02
+//! panel. Because the GUI now goes through the device-64 backend, the interactive window shows the
+//! panel's true 64-colour gamut; `--true-color` (the un-quantized reference) stays on the headless
+//! `--png` path.
 //!
 //! The second "Controls" viewport (the simulated GPS fix + emulated encoder) lives
 //! in [`panel`]; its zoom / formatting helpers live in [`units`].
@@ -12,14 +16,15 @@
 use std::path::Path;
 
 use eframe::egui;
+use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::{App, AppState, Button, CameraMode, Dirty, Fix, InputClock, RideClock, Sensors, SettingsStore};
+use obc_platform::{DisplayDriver, FbDevice64};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 use obc_route::{RouteIndex, RouteReader};
 
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
 use crate::device_input::DeviceInput;
-use crate::framebuffer::Framebuffer;
 use crate::present::Present;
 use crate::rides::RideStore;
 use crate::routes::RouteStore;
@@ -141,15 +146,14 @@ struct SimGui {
     /// each settings change so they survive a relaunch.
     settings_store: FileSettingsStore,
     loc: SimLocationSource,
-    fb: Framebuffer,
-    /// The self-diffing present backend: diffs each rendered frame against a per-row hash store,
-    /// pushes only the changed spans into its own buffer (uploaded to the texture), and runs an
-    /// exact-diff oracle. Its [`stats`](Present::stats) feed the panel.
+    /// The simulator's [`obc_platform::DisplayDriver`] backend: the app renders the whole frame into
+    /// its resident device-64 plane ([`fb_mut`](DisplayDriver::fb_mut)), then [`present`] self-diffs
+    /// it (pushing only the changed spans into the uploaded texture) under an exact-diff oracle. Its
+    /// [`stats`](Present::stats) feed the panel.
     present: Present,
     dev_w: u32,
     dev_h: u32,
     scale: u32,
-    true_color: bool,
     /// Saved display calibration (egui points per millimetre), or `None` until the
     /// user calibrates. Loaded from / written to [`crate::calib`].
     points_per_mm: Option<f32>,
@@ -269,12 +273,10 @@ impl SimGui {
             tracks,
             settings_store,
             loc,
-            fb: Framebuffer::new(args.width, args.height),
             present: Present::new(args.width, args.height),
             dev_w: args.width,
             dev_h: args.height,
             scale: args.scale,
-            true_color: args.true_color,
             points_per_mm,
             physical,
             physical_resize_pending: physical,
@@ -361,12 +363,12 @@ impl SimGui {
         }
     }
 
-    /// Run the shared app for one frame into the framebuffer, then upload it.
+    /// Run the shared app for one frame into the backend's device-64 frame, present it through the
+    /// seam, then upload the reconstructed texture.
     fn render_to_texture(&mut self, ctx: &egui::Context) {
         // Reuse the session-long cache (see the field doc) so the "Map SD" stats mirror glass.
         let map_src = SliceSource(&self.bytes);
         let reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
-        let tc = self.true_color;
 
         // Feed the host→app BLE seam (epic #447): the control panel's injected link state, pushed
         // every frame exactly as the board's ride loop feeds its `ble::state` snapshot. Cheap and
@@ -504,23 +506,27 @@ impl SimGui {
         }
 
         // Time the whole frame draw into `render_us` (`obc-render` is clockless, so the host
-        // fills it; the device uses the DWT cycle counter).
+        // fills it; the device uses the DWT cycle counter). Render the whole frame straight into the
+        // backend's resident device-64 plane — the device's own color path (`Rgb565` → device-64
+        // pack), exactly as the firmware's map plane draws into its `FbDevice64`.
         let t0 = web_time::Instant::now();
-        let mut stats =
-            self.app.render_frame(&mut self.fb, &reader, route.as_ref(), self.dev_w as f32, self.dev_h as f32, |c| {
-                crate::color_of(c, tc)
-            });
+        let (dev_w, dev_h) = (self.dev_w, self.dev_h);
+        let mut fbdev = FbDevice64::new(self.present.fb_mut(), dev_w, dev_h);
+        let mut stats = self.app.render_frame(&mut fbdev, &reader, route.as_ref(), dev_w as f32, dev_h as f32, |c| {
+            Rgb565::from(RawU16::new(c))
+        });
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
         // Drain the shared dirty signal for the stats readout (the sim always redraws, so this
         // doesn't gate drawing).
         self.last_dirty = self.app.take_dirty();
 
-        // Present through the self-diffing backend: it pushes only the changed spans into its own
-        // buffer and hands that back. Uploading *it* — reconstructed from partial pushes, not a
-        // whole-frame copy — means a diff bug shows as a stale row on glass, not just a failed assert.
-        let presented = self.present.present(self.fb.as_rgb888());
-        let image = egui::ColorImage::from_rgb([self.dev_w as usize, self.dev_h as usize], presented);
+        // Present through the seam: the backend self-diffs the resident frame and pushes only the
+        // changed spans into its reconstructed texture (under the exact-diff oracle). Uploading *that*
+        // — not a whole-frame copy — means a diff bug shows as a stale row on glass, not just a failed
+        // assert. The async seam completes synchronously on the host, driven by a minimal block-on.
+        pollster::block_on(self.present.present(None));
+        let image = egui::ColorImage::from_rgb([dev_w as usize, dev_h as usize], self.present.texture());
         let opts = egui::TextureOptions::NEAREST;
         match &mut self.texture {
             Some(t) => t.set(image, opts),
