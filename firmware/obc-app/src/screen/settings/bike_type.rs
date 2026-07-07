@@ -58,8 +58,8 @@ impl BikeTypeScreen {
 
         // The single value row — the current profile name centred, flanked by left/right arrows so it
         // reads as "rotate to switch" (the Units screen's affordance). The name resolves against the
-        // loaded map; an out-of-range index (a stale setting on a smaller map) shows the honest
-        // `Profile N` fallback, since routing will fall back to profile 0.
+        // loaded map; an out-of-range index (a stale setting on a smaller map) shows **profile 0's
+        // name** — the profile routing actually falls back to (N3), never a name the map doesn't have.
         let area = super::row_rect(LIST_TOP + 8, w, 50);
         super::row_cursor(cv, area, true, false);
         let midy = area.top_left.y + area.size.height as i32 / 2;
@@ -82,10 +82,13 @@ impl BikeTypeScreen {
             super::empty_state(cv, w, h, "No map profiles", "Load a map to pick a bike type");
             return;
         }
+        // The wedge marks the *effective* profile — for an out-of-range stored index that is
+        // profile 0 (the router's fallback), keeping the list consistent with the value row above.
+        let marked = rx.nav_profiles.effective(idx);
         let mut ry = LIST_TOP + 96;
         for i in 0..count {
             let name = rx.nav_profiles.name(i as u8).unwrap_or("");
-            let selected = i as u8 == idx;
+            let selected = i as u8 == marked;
             let color = if selected { INK } else { SUBTEXT };
             let x = area.top_left.x + 12;
             if selected {

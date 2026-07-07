@@ -13,9 +13,10 @@
 //! cost is only the names (≤ 8 × 12 B), never the routing weights.
 //!
 //! The selected profile is a bare index ([`Settings::bike_profile_idx`](crate::Settings)); an index
-//! past the loaded map's profile count resolves to profile 0 at plan time (N3) and renders the
-//! [`write_label`](NavProfiles::write_label) fallback (`Profile N`) so a stale device setting reads
-//! honestly instead of showing a name the router won't use.
+//! past the loaded map's profile count resolves to profile 0 at plan time (N3), and
+//! [`write_label`](NavProfiles::write_label) renders **profile 0's name** for it — the profile the
+//! router will actually use — so a stale device setting reads honestly instead of showing a name
+//! the router won't act on.
 
 use core::fmt::Write;
 
@@ -88,17 +89,37 @@ impl NavProfiles {
         self.names.get(idx as usize).map(|s| s.as_str())
     }
 
-    /// Write profile `idx`'s **display label** into `out`: the map's name when the index is in range
-    /// and non-empty, else the generic `Profile N` fallback (`N` = the stored index) — so an
-    /// out-of-range or unnamed profile still reads as something, never blank, and never a name the
-    /// router won't actually use. The truthful-fallback rule of #538.
+    /// The profile index the router will **actually route under** for stored index `idx`: `idx`
+    /// when in range, else `0` — mirroring N3's locked out-of-range fallback in obc-route's
+    /// `ProfileMult::resolve`, so the UI and the search can never disagree about which profile is
+    /// in effect. Only meaningful against a non-empty table (a map is loaded); callers gate on
+    /// [`is_empty`](NavProfiles::is_empty).
+    pub fn effective(&self, idx: u8) -> u8 {
+        if (idx as usize) < self.names.len() {
+            idx
+        } else {
+            0
+        }
+    }
+
+    /// Write the **display label** for stored index `idx` into `out` — always the name of the
+    /// profile the router will *actually use* (the truthful-label rule of #538: the rider is never
+    /// shown a name routing won't act on). In range: that profile's name. **Out of range against a
+    /// non-empty table: profile 0's name** — N3's router fallback — never a made-up `Profile N`
+    /// that names a profile the map doesn't have. The generic `Profile N` appears only when there
+    /// is no name to show: an empty table (no map loaded / a fresh boot) or a blank stored name field.
     pub fn write_label<const N: usize>(&self, idx: u8, out: &mut heapless::String<N>) {
-        match self.name(idx) {
+        if self.names.is_empty() {
+            let _ = write!(out, "Profile {idx}");
+            return;
+        }
+        let eff = self.effective(idx);
+        match self.name(eff) {
             Some(name) if !name.is_empty() => {
                 let _ = out.push_str(name);
             }
             _ => {
-                let _ = write!(out, "Profile {idx}");
+                let _ = write!(out, "Profile {eff}");
             }
         }
     }
@@ -120,27 +141,31 @@ fn fit_name(name: &str) -> &str {
 mod tests {
     use super::*;
 
-    /// The display label: an in-range name renders verbatim; an out-of-range index renders the
-    /// `Profile N` fallback (the truthful-fallback rule — the rider isn't shown a name routing won't
-    /// use). Exercised without a map by driving `write_label` off a hand-built set.
+    /// The display label always names the profile the router will actually use (the truthful-label
+    /// rule of #538): in range → that profile's name; out of range against a non-empty table →
+    /// **profile 0's name** (N3's router fallback), never a `Profile N` the map doesn't have; the
+    /// generic `Profile N` only when the table is empty (no map loaded).
     #[test]
     fn label_in_range_then_fallback() {
         let mut p = NavProfiles::new();
         assert!(p.is_empty(), "no map → empty, inert");
-        // No map loaded: every index is the fallback.
+        // No map loaded: only here is the generic label shown (there is no profile-0 name to use).
         let mut buf: heapless::String<24> = heapless::String::new();
         p.write_label(0, &mut buf);
         assert_eq!(buf.as_str(), "Profile 0", "empty set → generic label");
 
-        // Two named profiles: in-range renders the name, past-the-end renders the fallback.
+        // Two named profiles: in-range renders the name; past-the-end renders **profile 0's name**,
+        // exactly what the router routes under for that stored index.
         p.names.push(heapless::String::try_from("Road").unwrap()).unwrap();
         p.names.push(heapless::String::try_from("MTB").unwrap()).unwrap();
         assert_eq!(p.len(), 2);
         assert_eq!(p.name(0), Some("Road"));
         assert_eq!(p.name(1), Some("MTB"));
         assert_eq!(p.name(2), None, "past the profile count");
+        assert_eq!(p.effective(1), 1, "in range → itself");
+        assert_eq!(p.effective(2), 0, "out of range → the router's profile-0 fallback");
 
-        for (idx, want) in [(0u8, "Road"), (1, "MTB"), (2, "Profile 2"), (9, "Profile 9")] {
+        for (idx, want) in [(0u8, "Road"), (1, "MTB"), (2, "Road"), (9, "Road")] {
             let mut b: heapless::String<24> = heapless::String::new();
             p.write_label(idx, &mut b);
             assert_eq!(b.as_str(), want, "idx {idx} label");

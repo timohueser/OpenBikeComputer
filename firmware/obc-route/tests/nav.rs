@@ -872,17 +872,27 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
 /// N5's acceptance ride (#538): over the **real re-packed grimsel map** (the sim's committed v9
 /// asset, shipping the default Road/Gravel/MTB/Touring table), the same endpoints planned under
 /// Road (profile 0) vs MTB (profile 2) produce **different polylines** — the profile weights
-/// genuinely steer the search, end-to-end through the same `plan_route` both hosts call. The
-/// endpoints are a pinned pair from a deterministic sweep of the map's own nav nodes (two junctions
-/// ~2.4 km apart) where the paved-vs-track choice
-/// diverges; the raw lengths differ too (the road detour is shorter for Road, the track for MTB),
+/// genuinely steer the search, end-to-end through the same `plan_route` both hosts call. The raw
+/// lengths differ too (by ~2.8 km — the paved detour Road prefers vs the direct track MTB takes),
 /// so the assert can't pass on emit jitter.
+///
+/// The endpoints are a pinned pair from a deterministic sweep of the map's own nav nodes, chosen
+/// **inside the canonical grimsel extract bbox** (`8.15034,46.48261,8.46007,46.72070` — see
+/// `obc-sim/assets/README.md`'s provenance rules; the header bbox is always somewhat wider than
+/// the extract, so pinning against the extract bbox is what survives a re-pack). Verified
+/// divergent on **both** the currently-committed fixture and the canonical re-pack of PR #549
+/// (identical road/mtb lengths, 8 867 m / 6 051 m, on the two packs), so the test stays green
+/// whichever lands first — and verified under **both** `NAV_MAX_NODES` sizes (the default 1536
+/// host table and the `nrf-mem` 768 one this test gets under `--all-features` feature
+/// unification), so both plans stay well inside the small table. A future re-pack from a newer
+/// OSM snapshot could still move the graph enough to need a re-pin — the sweep in this PR's
+/// description is the recipe.
 #[test]
 fn road_vs_mtb_diverge_over_grimsel() {
     let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/grimsel.obcm"))
         .expect("grimsel.obcm fixture present");
-    let from = (8_175_487, 46_733_020);
-    let to = (8_148_471, 46_744_115);
+    let from = (8_169_610, 46_694_536);
+    let to = (8_217_309, 46_706_261);
 
     let (road, obcr_road, _) = plan_p(&bytes, from, to, "Road", 0);
     let (mtb, obcr_mtb, _) = plan_p(&bytes, from, to, "MTB", 2);

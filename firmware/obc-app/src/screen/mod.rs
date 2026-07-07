@@ -186,7 +186,7 @@ pub struct Render<'a, 'd> {
     /// hold-to-delete footer from it (epic #447, P7).
     pub rides: &'a [RideSummary],
     /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen draws
-    /// the selected profile's name (or a `Profile N` fallback for a stale index) and the created-route
+    /// the selected profile's name (a stale index renders profile 0's — the router's fallback) and the created-route
     /// overview labels itself with it. Resident in the App because these frames draw without a
     /// `Reader` on the board.
     pub nav_profiles: &'a crate::NavProfiles,

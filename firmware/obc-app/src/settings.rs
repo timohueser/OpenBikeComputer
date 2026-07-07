@@ -636,7 +636,7 @@ pub struct Settings {
     /// the planner is constructed with it ([`NavPlanner::new`](obc_route::NavPlanner)). Stored as a
     /// bare `u8` because the profile table is the map's, not the device's: a map with fewer profiles
     /// than this index falls back to profile 0 **at plan time** (guaranteed in the router, N3) and the
-    /// UI renders the fallback label so the rider isn't lied to (see
+    /// UI renders profile 0's name for it so the rider isn't lied to (see
     /// [`NavProfiles`](crate::NavProfiles)). Not range-clamped on decode for that reason — the value
     /// only means anything against a map. **Device-only** (a bike type is picked on the device), so
     /// [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default **0**.
@@ -836,8 +836,8 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         map_clock: b[MAP_CLOCK_OFF] != 0,
         map_scale_bar: b[SCALE_BAR_OFF] != 0,
         // The v8 routing-profile index: stored verbatim, **not** range-clamped here — an index past
-        // the loaded map's profile count is resolved to profile 0 at plan time (N3) and shown with a
-        // fallback label in the UI (see the field doc), so a stale index is never a decode failure.
+        // the loaded map's profile count is resolved to profile 0 at plan time (N3) and shown as
+        // profile 0's name in the UI (see the field doc), so a stale index is never a decode failure.
         bike_profile_idx: b[PROFILE_OFF],
     };
     s.sanitize();
