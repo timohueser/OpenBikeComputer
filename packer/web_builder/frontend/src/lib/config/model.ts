@@ -19,11 +19,35 @@ export interface StyleDef {
     [key: string]: unknown;
 }
 
+/** One routing edge-weight multiplier: a number >= 1.0 or the string "forbidden".
+ * The bounds and the "forbidden" sentinel are owned by obc-pack's schema
+ * ($defs/multiplier) — this type just mirrors the two-variant shape. */
+export type Multiplier = number | "forbidden";
+
+/** One bike profile (routing §8.6): a display name, a `default` multiplier for
+ * unlisted classes, and per-class overrides keyed by the schema's class-name
+ * enums. `highway`/`surface` are sparse — an absent class inherits `default`. */
+export interface NavProfile {
+    name: string;
+    default?: Multiplier;
+    highway?: Record<string, Multiplier>;
+    surface?: Record<string, Multiplier>;
+}
+
+/** The `routing` config section (owned by obc-pack; see `obc-pack schema`). */
+export interface RoutingConfig {
+    min_component_edges?: number;
+    profiles: NavProfile[];
+}
+
 export interface PackConfig {
     lods: LodTier[];
     features: Record<string, Record<string, StyleDef>>;
     marker: { color: string | number };
     chunk_size?: number;
+    // Bike-type routing profiles (§8.6). Absent ⇒ the packer bakes in its four
+    // shipped defaults; the profile editor materializes it on first edit.
+    routing?: RoutingConfig;
 }
 
 export interface Preset {
@@ -110,6 +134,9 @@ export function buildConfigForSubmit(
         marker: config.marker,
     };
     if (config.chunk_size != null) out.chunk_size = config.chunk_size;
+    // Routing profiles ride through untouched (validated by the packer). Absent
+    // ⇒ the binary bakes in its four shipped defaults, so CLI parity holds.
+    if (config.routing) out.routing = deepCopy(config.routing);
     for (const cat of Object.keys(config.features)) {
         for (const name of Object.keys(config.features[cat])) {
             if (disabledSet.has(`${cat}/${name}`)) continue;

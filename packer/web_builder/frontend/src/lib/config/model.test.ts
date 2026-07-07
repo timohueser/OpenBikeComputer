@@ -84,6 +84,30 @@ describe("buildConfigForSubmit", () => {
         expect(out.strippedKeys).toEqual([]);
     });
 
+    it("carries the routing section through to the submitted config", () => {
+        const { config } = normalizeConfig({
+            ...sampleConfig,
+            routing: {
+                min_component_edges: 40,
+                profiles: [{ name: "Road", default: 3, highway: { steps: "forbidden" } }],
+            },
+        });
+        const out = buildConfigForSubmit(config, [], mockSchema).config;
+        expect(out.routing).toEqual({
+            min_component_edges: 40,
+            profiles: [{ name: "Road", default: 3, highway: { steps: "forbidden" } }],
+        });
+        // …and it's a copy, not an alias into the working config.
+        out.routing!.profiles[0].name = "Mutated";
+        expect(config.routing!.profiles[0].name).toBe("Road");
+    });
+
+    it("omits routing entirely when the config has none (CLI-default parity)", () => {
+        const { config } = normalizeConfig(sampleConfig);
+        const out = buildConfigForSubmit(config, [], mockSchema).config;
+        expect("routing" in out).toBe(false);
+    });
+
     it("preserves feature key order (style IDs are document order)", () => {
         // Build a config whose keys would re-sort alphabetically if mishandled.
         const cfg = normalizeConfig({

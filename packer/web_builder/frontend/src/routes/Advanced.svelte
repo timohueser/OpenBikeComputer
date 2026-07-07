@@ -3,6 +3,7 @@
     import CategoryRail from "../components/advanced/CategoryRail.svelte";
     import LodTiers from "../components/advanced/LodTiers.svelte";
     import OutputTab from "../components/advanced/OutputTab.svelte";
+    import ProfilesTab from "../components/advanced/ProfilesTab.svelte";
     import StyleTable from "../components/advanced/StyleTable.svelte";
     import { api } from "../lib/api/client";
     import { API_BASE } from "../lib/constants";
@@ -10,7 +11,7 @@
     import type { Preset, SchemaEnvelope } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
 
-    let tab = $state<"features" | "lods" | "output">("features");
+    let tab = $state<"features" | "lods" | "routing" | "output">("features");
     let activeCat = $state("");
     let catalog = $state<{ keys: Record<string, string[]> }>({ keys: {} });
     let schema = $state<SchemaEnvelope | null>(null);
@@ -155,6 +156,9 @@
         <button type="button" class:active={tab === "lods"} onclick={() => (tab = "lods")}>
             Detail levels
         </button>
+        <button type="button" class:active={tab === "routing"} onclick={() => (tab = "routing")}>
+            Bike profiles
+        </button>
         <button type="button" class:active={tab === "output"} onclick={() => (tab = "output")}>
             Output
         </button>
@@ -180,6 +184,8 @@
         </div>
     {:else if tab === "lods"}
         <LodTiers />
+    {:else if tab === "routing"}
+        <ProfilesTab {schema} />
     {:else}
         <OutputTab {schema} />
     {/if}
