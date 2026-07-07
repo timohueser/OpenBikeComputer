@@ -49,7 +49,7 @@
 //!   GPIO on the P2 header") — no soldering on current board revisions. The panel's logic wants
 //!   3–5 V, so the DK I/O rail is raised from its 1.8 V default to **3.3 V** (VDDM, also in the
 //!   Board Configurator — HW guide §2.2.1). The display path presents through the board-agnostic
-//!   `DisplayDriver` seam (`display::mod`), so the rendering stack never couples to the panel.
+//!   `DisplayDriver` seam (`obc_platform::display`), so the rendering stack never couples to the panel.
 //!   (SERIAL00 / SPIM00 — the only 32 MHz instance — is now unused; the FLPR needs no SPI bus.)
 //!
 //! ## microSD SPIM — map/route/track storage
@@ -125,10 +125,10 @@ mod com_hw;
 // double-consume error.
 #[cfg(all(feature = "com-hw", feature = "debug-uart"))]
 compile_error!("`com-hw` and `debug-uart` both claim P1.04/P1.05 — the hardware-COM build is the production low-power path, not the host-feed dev build");
+// The LS021/FLPR panel — this crate's `obc_platform::DisplayDriver` backend (the impl is folded in
+// at the bottom of the module), the single screen-write interface the map plane drives through
+// (`fb_mut` + `present`). The seam itself + the other backend (the simulator) live in obc-platform.
 mod ls021_flpr;
-// The board's display-driver seam — the single screen-write interface both panels implement, so the
-// map plane drives either through one path (`fb_mut` + `present`).
-mod display;
 // The two-plane display machinery both backends share (issue #351), one module per plane. `main`
 // constructs the panels and spawns the tasks; the planes live here.
 //   - The **input plane**: the high-priority input/overlay task + the gesture channel, and their
@@ -169,7 +169,6 @@ compile_error!(
 );
 
 use defmt::info;
-use display::{FRAME_H, FRAME_W};
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::{bind_interrupts, peripherals, spim};
@@ -198,7 +197,7 @@ use embassy_sync::mutex::Mutex;
 use obc_app::InputPlane;
 #[cfg(has_map)]
 use obc_app::{App, AppState};
-use obc_platform::{ButtonInput, RowDiff};
+use obc_platform::{ButtonInput, RowDiff, FRAME_H, FRAME_W};
 #[cfg(has_map)]
 use obc_reader::{MapCache, MapTables};
 #[cfg(has_map)]
