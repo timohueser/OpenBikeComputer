@@ -361,38 +361,44 @@ Here is the central problem. A dense view holds far more geometry than the fixed
 
 Two mechanisms work together to solve this within the memory and time budget.
 
-**Skip, don't decode.** Each feature's style carries a 2-bit **priority** (1 = keep first … 4 = drop first). When the reader walks a chunk, it checks a feature's priority *before* touching its coordinates. If this isn't the feature we want right now, it advances past the bytes with pure offset arithmetic — no coordinate math, no buffer writes.
+**Priority, and cheap skipping.** Each feature's style carries a 2-bit **priority** (1 = keep first … 4 = drop first) — the axis the drop decision turns on. And a feature is cheap to *step over*: its header is a fixed 12 bytes, so the reader can advance past a feature it doesn't want with pure offset arithmetic — no coordinate math, no buffer writes. That skip primitive is what lets the collector touch a chunk's bytes selectively: past features whose style isn't drawn at all, and — the payoff below — straight to the handful of *winners* it must re-decode.
 
 <figure class="fig">
-<svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells tagged by priority. During the pass for priority 1, only priority-1 features are decoded; the rest are skipped by advancing the read pointer.">
-  <text class="d-tag" x="20" y="24">Pass for priority 1 — decode P1, skip the rest</text>
+<svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells. Pass B seeks straight to the winning features by their stored byte offsets, skipping everything in between by advancing the read pointer.">
+  <text class="d-tag" x="20" y="24">Pass B — seek straight to each winner by its stored offset</text>
   <!-- byte stream cells -->
   <g font-family="var(--mono)">
     <!-- cell template: x width 78, y 52 h 46 -->
-    <rect x="24"  y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="63" y="84" text-anchor="middle">P1</text>
-    <rect x="110" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="149" y="84" text-anchor="middle">P3 skip</text>
-    <rect x="196" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="235" y="84" text-anchor="middle">P4 skip</text>
-    <rect x="282" y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="321" y="84" text-anchor="middle">P1</text>
-    <rect x="368" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="407" y="84" text-anchor="middle">P2 skip</text>
-    <rect x="454" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="493" y="84" text-anchor="middle">P3 skip</text>
-    <rect x="540" y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="579" y="84" text-anchor="middle">P1</text>
+    <rect x="24"  y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="63" y="84" text-anchor="middle">win</text>
+    <rect x="110" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="149" y="84" text-anchor="middle">skip</text>
+    <rect x="196" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="235" y="84" text-anchor="middle">skip</text>
+    <rect x="282" y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="321" y="84" text-anchor="middle">win</text>
+    <rect x="368" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="407" y="84" text-anchor="middle">skip</text>
+    <rect x="454" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="493" y="84" text-anchor="middle">skip</text>
+    <rect x="540" y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="579" y="84" text-anchor="middle">win</text>
     <rect x="626" y="56" width="70" height="46" rx="6" class="d-muted" /><text class="d-sub" x="661" y="84" text-anchor="middle">end</text>
   </g>
   <!-- read head -->
-  <text class="d-sub" x="24" y="126">read head advances →</text>
+  <text class="d-sub" x="24" y="126">read head jumps offset → offset →</text>
   <line class="d-stroke" x1="24" y1="118" x2="696" y2="118" style="stroke:#cf6a2a;stroke-dasharray:2 5" />
-  <text class="d-sub" x="24" y="150" style="font-size:11px">decoded features (coral) cost coordinate math; skipped ones cost only a pointer add.</text>
+  <text class="d-sub" x="24" y="150" style="font-size:11px">re-decoded winners (coral) cost coordinate math; the features between them cost only a pointer add.</text>
 </svg>
-<figcaption>A feature header is 12 bytes; skipping is pure offset arithmetic. So scanning a chunk four times — once per priority level — is cheap, because each scan only <i>decodes</i> the quarter of features it's responsible for.</figcaption>
+<figcaption>A feature header is 12 bytes, so skipping is pure offset arithmetic. Pass A saved each winner's byte offset in its stub, so pass B seeks straight to it — re-decoding only the survivors, never re-scanning the whole chunk.</figcaption>
 </figure>
 
-**The multi-pass.** The renderer makes four passes over the visible chunks, priority 1 first. Each pass fills the buffers with every visible feature *at that level, across all chunks*, before the next pass begins. So when the buffers saturate, whatever is left undrawn is — by construction — the lowest priority, wherever it lived.
+**Stub-select.** The global-priority drop is easy to state and hard to do cheaply, because the device streams chunks off the SD card through a cache that holds **one** at a time. An earlier design made four passes over the visible chunks — one per priority level — filling the buffers level by level. That kept the guarantee, but it re-read every visible chunk *four times*; the one-slot cache absorbed none of it, so a wide view cost `4 × N` chunk reads off SPI SD and the frame crawled. The fix (issue #564) splits **selection** from **geometry**:
 
 ```rust
-for level in 1..=4u8 {
-    self.collect_level(reader, lod, level, view, stats);
-}
+let candidates = self.collect_stubs(reader, lod, view, &vis_mask, stats); // pass A
+let winners    = self.select(reader);                                     // RAM only
+self.decode_winners(reader, lod, view, winners, stats);                   // pass B
 ```
+
+- **Pass A** walks each visible chunk **once**, decoding every drawn feature just far enough to get its bounding box, and records a fixed-size *stub* — style, chunk, byte offset, vertex count — but keeps **no geometry**. When the stub buffer fills, the lowest-priority stub is evicted, so it always holds the best candidates.
+- **Select** is pure RAM: sort the stubs by priority and admit them greedily against the exact point/span budget. Drops are strictly lowest-priority-first, *globally* — the same guarantee as before, now with the exact vertex cost of every candidate known before a single coordinate is copied.
+- **Pass B** walks the chunks once more and re-decodes only the **winners**, seeking straight to each by the byte offset its stub saved, and writes their geometry into the frame buffers. Only chunks that own a winner are re-read.
+
+A feature that survives is decoded twice (cheap, in RAM); a chunk is fetched at most twice instead of four times, so the SD traffic that dominates a wide frame roughly halves. The stubs live in the same buffer the spans end up in — a stub is sized to fit a span slot — so the split costs no extra RAM.
 
 <figure class="fig">
 <svg viewBox="0 0 720 330" role="img" aria-label="Four priority lanes feed a fixed frame buffer in order. Priority 1, 2 and 3 fit; the buffer saturates partway through priority 4, so the remaining priority-4 features are dropped.">
@@ -440,7 +446,7 @@ for level in 1..=4u8 {
   <text class="d-sub" x="540" y="256" style="font-size:11px">priority 4 fit — exactly</text>
   <text class="d-sub" x="540" y="272" style="font-size:11px">the right things to lose</text>
 </svg>
-<figcaption>Because passes run low-number-first and each fills the buffers before the next starts, saturation drops strictly by priority across <i>all</i> chunks. Each feature matches exactly one level, so its coordinates are decoded only once per frame even though the chunks are walked four times.</figcaption>
+<figcaption>Select admits stubs priority-1 first, so when the budget saturates the undrawn remainder is strictly the lowest priority, across <i>all</i> chunks. Only the survivors' geometry is ever built — a dropped feature cost only its stub, never a copied vertex.</figcaption>
 </figure>
 
 Every kept feature becomes a 14-byte **span** — a compact draw record that says *what* and *where* without copying the geometry again ([`Span`](src:firmware/obc-render/src/collect.rs)):
@@ -458,14 +464,14 @@ struct Span {
 }
 ```
 
-Thousands of spans can be buffered at coarse zoom, so they're kept small (`u16` offsets, not `usize`). The "walk the tree four times" cost is paid only on the cheap index data; the expensive decode is still strictly once-per-feature.
+Thousands of spans can be buffered at coarse zoom, so they're kept small (`u16` offsets, not `usize`). The two chunk walks cost little on their own — the leaf walk reads only the cheap index — and the expensive part, copying vertices into the frame buffers, happens once, for the winners alone.
 
 ## 5 · Painter's order
 
 With the visible features collected, the renderer sorts the spans — not the geometry, just the little records — into back-to-front draw order:
 
 ```rust
-self.frame.spans.sort_unstable_by_key(|s| (s.z, s.seq));
+self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
 ```
 
 Each style carries a `z_index`; sea draws under land draws under forest draws under roads. Ties break on `seq`, the order the feature was collected in — a stable, allocation-free tiebreak so the result is deterministic. Note that **priority and z-index are different axes**: priority decides *whether* a feature survives the memory budget; z-index decides *where in the stack* the survivors are painted.

@@ -180,13 +180,21 @@ impl Clock for NoopClock {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
     pub lod: usize,
-    /// Quadtree leaves overlapping the viewport this frame (uncapped).
+    /// Quadtree leaves overlapping the viewport this frame (uncapped). Counted once — the
+    /// stub-select collect's pass A walks the leaves a single time (see [`collect`](crate::collect)).
     pub chunks_visited: usize,
     pub features_tried: usize,
     pub features_drawn: usize,
     pub features_dropped: usize,
     pub points_tried: usize,
     pub points_drawn: usize,
+    /// Stub-select accounting (issue #564). `stub_evictions`: pass-A stub-buffer overflows where a
+    /// higher-priority candidate displaced the lowest-priority resident stub (only under span
+    /// saturation). `chunks_refetched`: chunks pass B re-read because they owned an admitted winner
+    /// — so `map_chunk_misses ≈ chunks_visited + chunks_refetched`, versus `4 × chunks_visited` for
+    /// the old level-major collector.
+    pub stub_evictions: u32,
+    pub chunks_refetched: u32,
     /// Active-route overlay this frame: chunks decoded (bbox met the viewport), total points across
     /// them, and how many were *actually* stroked after the view clip + subpixel simplify. The route
     /// carries **no LOD**, so `route_points` climbs as you zoom out of a long route while
@@ -198,10 +206,12 @@ pub struct RenderStats {
     pub span_utilization: f32,
     pub point_utilization: f32,
     pub ring_utilization: f32,
-    /// Streamed-map cache accounting for this frame. The `Reader` re-walks the visible chunks once
-    /// per priority level; `map_chunk_hits` are passes served from a resident cache slot,
-    /// `map_chunk_misses` the ones that read from SD. `map_sd_reads` / `map_bytes_read` are the raw
-    /// source overhead (index blocks + chunk fills). Hit rate is `hits / (hits + misses)`.
+    /// Streamed-map cache accounting for this frame. Stub-select touches each visible chunk once in
+    /// pass A and once more in pass B only if it owns a winner (`chunks_refetched`), so
+    /// `map_chunk_misses ≈ chunks_visited + chunks_refetched`. `map_chunk_hits` are fetches served
+    /// from a resident cache slot (e.g. a chunk's later winners in pass B), `map_chunk_misses` the
+    /// ones that read from SD. `map_sd_reads` / `map_bytes_read` are the raw source overhead (index
+    /// blocks + chunk fills). Hit rate is `hits / (hits + misses)`.
     pub map_chunk_hits: u32,
     pub map_chunk_misses: u32,
     pub map_sd_reads: u32,
@@ -312,7 +322,7 @@ impl MapRenderer {
         stats.map_bytes_read = after.bytes_read.wrapping_sub(before.bytes_read);
         let t_collected = clock.now_us();
 
-        self.frame.spans.sort_unstable_by_key(|s| (s.z, s.seq));
+        self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
         let t_sorted = clock.now_us();
 
         self.draw_map(target, vp, &color_fn);
@@ -337,7 +347,7 @@ impl MapRenderer {
     {
         // Disjoint borrows: spans/geometry read from `frame`, draw scratch written.
         let Self { frame, draw } = self;
-        for span in frame.spans.iter() {
+        for span in frame.spans() {
             let ring_start = span.ring_start as usize;
             let pt_start = span.pt_start as usize;
             let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
