@@ -43,8 +43,10 @@ const MAX_ZOOM: f32 = 1e4;
 const DEFAULT_BG_RGB565: u16 = 0x2104;
 
 /// Stroke width (px) of the active-route overlay — bold enough to out-weigh the heaviest base road
-/// (3 px), and sized so a direction chevron sits *inside* the line at riding zoom.
-const ROUTE_WEIGHT: u32 = 11;
+/// (3 px), and sized so a direction chevron sits *inside* the line at riding zoom. `pub` so the
+/// render benchmark's route scene pins its stroke weight to this exact value (re-exported as
+/// [`crate::screen::ROUTE_WEIGHT`]).
+pub const ROUTE_WEIGHT: u32 = 11;
 
 /// Colour of the route direction chevrons — white, for contrast over the magenta route line. Drawn
 /// only at riding zoom (see [`CHEVRON_MAX_MPP`]).

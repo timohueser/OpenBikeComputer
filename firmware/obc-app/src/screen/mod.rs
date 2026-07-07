@@ -50,7 +50,7 @@ mod warning;
 pub use climb::ClimbScreen;
 pub use home::HomeScreen;
 pub use list::window_start;
-pub use map::MapScreen;
+pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use menu::MenuScreen;
 pub use nav_route::{needle_region, NavConfirmScreen, NavFailScreen, NavPlanningScreen};
 pub use passkey::PasskeyScreen;

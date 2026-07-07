@@ -8,6 +8,9 @@ description = "Host render benchmark harness + CI pixel-hash tripwire over the r
 [dependencies]
 obc-reader = { path = "../obc-reader" }
 obc-render = { path = "../obc-render" }
+# The app owns the route-overlay draw params; the route scene imports the stroke colour + weight
+# from here so the bench can't silently drift from what the Map screen actually draws.
+obc-app = { path = "../obc-app" }
 # `Framebuffer565` — the same RGB565 DrawTarget the banded device path renders into.
 obc-platform = { path = "../obc-platform" }
 # The deterministic bench fixture (`build_bench_map`) the committed frame hashes are computed over.
