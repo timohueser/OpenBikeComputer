@@ -997,6 +997,10 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
 /// unification), so both plans stay well inside the small table. A future re-pack from a newer
 /// OSM snapshot could still move the graph enough to need a re-pin — the sweep in this PR's
 /// description is the recipe.
+// Reads the real grimsel fixture from disk, which Miri's default isolation forbids (and the 6.5 MB
+// parse is glacial under Miri anyway) — skip it there. The UB tripwire this suite exists for is the
+// §8 record decode over the synthetic writer→reader fixtures, which stay in the Miri run.
+#[cfg_attr(miri, ignore)]
 #[test]
 fn road_vs_mtb_diverge_over_grimsel() {
     let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/grimsel.obcm"))
