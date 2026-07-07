@@ -659,6 +659,10 @@ pub struct FeatureRef<'a> {
     points: &'a [(i32, i32)],
     ring_lens: &'a [usize],
     bbox: BBox,
+    /// Byte offset of this feature's header within its chunk — what [`Reader::decode_feature_at`]
+    /// needs to re-decode exactly this feature in a later pass without re-walking the whole chunk
+    /// (the renderer's two-phase collect, issue #564). Always `< chunk_size ≤ MAX_CHUNK_BYTES`.
+    offset: usize,
 }
 
 impl<'a> FeatureRef<'a> {
@@ -667,6 +671,13 @@ impl<'a> FeatureRef<'a> {
     #[inline]
     pub fn bbox(&self) -> BBox {
         self.bbox
+    }
+
+    /// Byte offset of this feature's header within its chunk (see the field). Hand this back to
+    /// [`Reader::decode_feature_at`] to re-decode just this feature.
+    #[inline]
+    pub fn offset(&self) -> usize {
+        self.offset
     }
 
     /// The exterior ring's vertices.
@@ -1548,6 +1559,55 @@ impl<'a> Reader<'a> {
         };
         decode_chunk_into(chunk, node, points, ring_lens, should_decode, visit);
     }
+
+    /// Decode exactly the feature at byte `offset` within chunk `cid` of `lod`, into the caller's
+    /// `points`/`ring_lens` scratch, returning its [`FeatureRef`]. The renderer's two-phase collect
+    /// (issue #564) uses this in pass B to re-materialize a *winning* feature's geometry — one it
+    /// selected in pass A by a lightweight stub ([`FeatureRef::offset`]) — without re-decoding the
+    /// rest of the chunk.
+    ///
+    /// `node` is the leaf bbox [`Reader::for_each_chunk`] yields for `cid` (the per-feature anchor
+    /// base). `offset` came from a [`FeatureRef::offset`] earlier this frame, but it is still
+    /// validated against the chunk length and the `0xFF` end-marker, so a stale/corrupt offset
+    /// yields `None`, never a panic or an out-of-chunk read. Fetches the chunk through the same
+    /// cache as the full walk, so consecutive calls for one `cid` (pass B visits a chunk's winners
+    /// together) hit the resident slot instead of re-reading it.
+    ///
+    /// # Reentrancy
+    ///
+    /// Same rule as [`Reader::for_each_feature_filtered`]: this borrows the internal cache for the
+    /// fetch + decode. Call it from a [`Reader::for_each_chunk`] visit callback (which holds no
+    /// cache borrow) — as pass B does — but not from inside a `for_each_feature*` callback, which
+    /// still holds the borrow.
+    pub fn decode_feature_at<'p, const P: usize, const R: usize>(
+        &self,
+        lod: usize,
+        cid: u32,
+        offset: usize,
+        node: &BBox,
+        points: &'p mut Vec<(i32, i32), P>,
+        ring_lens: &'p mut Vec<usize, R>,
+    ) -> Option<FeatureRef<'p>> {
+        let l = self.tables.lods.get(lod)?;
+        let (start, end) = l.chunk_range(cid)?;
+        if end > self.src.len() as usize {
+            return None;
+        }
+        let len = end - start;
+        // Same corrupt-chunk guards as the full walk, plus the offset must land inside the chunk.
+        if len > MAX_CHUNK_BYTES || offset >= len {
+            return None;
+        }
+        let mut cache = self.cache.borrow_mut();
+        let loc = cache.load_chunk(self.src, lod as u8, cid, start as u32, len).ok()?;
+        let chunk = match loc {
+            ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
+            ChunkLoc::Scratch => &cache.scratch[..len],
+        };
+        // The `FeatureRef` borrows `points`/`ring_lens` (its coordinates are copied there), not the
+        // cache bytes, so it outlives the `cache` borrow dropped at return.
+        decode_one_feature(chunk, offset, node, points, ring_lens).map(|(fref, _)| fref)
+    }
 }
 
 /// A decoded POI record's scalar fields, before the (lazy) name decode — the value
@@ -1649,7 +1709,11 @@ impl Bounds {
 }
 
 /// Walk a single chunk's bytes, decoding each feature into the shared `points`/`ring_lens` buffers
-/// (cleared and refilled per feature) and handing a [`FeatureRef`] to `visit`.
+/// (cleared and refilled per feature) and handing a [`FeatureRef`] to `visit`. A feature whose
+/// style `should_decode` rejects is skipped without decoding — its geometry bytes are advanced past
+/// with no coordinate math ([`skip_ring`] mirrors [`read_ring`]'s offset arithmetic exactly, so the
+/// two stay byte-for-byte in sync). Accepted features decode through [`decode_one_feature`], the
+/// same path [`Reader::decode_feature_at`] takes, so a feature decodes identically either way.
 fn decode_chunk_into<const P: usize, const R: usize>(
     chunk: &[u8],
     node: &BBox,
@@ -1659,7 +1723,6 @@ fn decode_chunk_into<const P: usize, const R: usize>(
     mut visit: impl FnMut(FeatureRef),
 ) {
     let cs = chunk.len();
-    let anchor_base = (node.min_lon, node.min_lat);
     let mut off = 0usize;
 
     while off + 12 <= cs {
@@ -1667,21 +1730,17 @@ fn decode_chunk_into<const P: usize, const R: usize>(
             break;
         }
         let style_id = chunk[off];
-        let ext_pt_count = rd_u16(chunk, off + 1) as usize;
-        let ax = rd_i32(chunk, off + 3);
-        let ay = rd_i32(chunk, off + 7);
-        let flags = chunk[off + 11];
-        off += 12;
 
-        let is_16 = flags & FEATURE_FLAG_16BIT != 0;
-        let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
-        let has_holes = flags & FEATURE_FLAG_HOLES != 0;
-        let dsize = if is_16 { 2 } else { 1 };
-
-        // Skip path: the caller doesn't want this style this pass, so advance
-        // past the geometry without decoding. `skip_ring` mirrors `read_ring`'s
-        // offset arithmetic exactly — the two must stay byte-for-byte in sync.
+        // Skip path: the caller doesn't want this style this pass, so advance past the geometry
+        // without decoding (read only the header fields the skip needs).
         if !should_decode(style_id) {
+            let ext_pt_count = rd_u16(chunk, off + 1) as usize;
+            let flags = chunk[off + 11];
+            let is_16 = flags & FEATURE_FLAG_16BIT != 0;
+            let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
+            let has_holes = flags & FEATURE_FLAG_HOLES != 0;
+            let dsize = if is_16 { 2 } else { 1 };
+            off += 12;
             off = skip_ring(chunk, off, ext_pt_count, false, dsize);
             if is_poly && has_holes {
                 off = for_each_hole(chunk, off, |c, o, hpc| skip_ring(c, o, hpc, true, dsize));
@@ -1689,32 +1748,75 @@ fn decode_chunk_into<const P: usize, const R: usize>(
             continue;
         }
 
-        let anchor = (anchor_base.0 + ax, anchor_base.1 + ay);
-
-        points.clear();
-        ring_lens.clear();
-        let mut bounds = Bounds::new();
-
-        off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, points, &mut bounds);
-        let _ = ring_lens.push(points.len());
-
-        if is_poly && has_holes {
-            off = for_each_hole(chunk, off, |c, o, hpc| {
-                let before = points.len();
-                let o = read_ring(c, o, hpc, anchor, is_16, dsize, true, points, &mut bounds);
-                let _ = ring_lens.push(points.len() - before);
-                o
-            });
+        match decode_one_feature(chunk, off, node, points, ring_lens) {
+            Some((fref, next)) => {
+                visit(fref);
+                off = next;
+            }
+            // A `0xFF` end-marker or a header that runs off the chunk end stops the walk.
+            None => break,
         }
+    }
+}
 
-        visit(FeatureRef {
-            style_id,
-            kind: if is_poly { Kind::Polygon } else { Kind::Line },
-            points,
-            ring_lens,
-            bbox: bounds.to_bbox(),
+/// Decode the single feature whose 12-byte header starts at `off` in `chunk`, into `points`/
+/// `ring_lens` (cleared first), returning its [`FeatureRef`] (borrowing those buffers, with
+/// [`FeatureRef::offset`] set to `off`) plus the offset just past it. `None` if `off` leaves no room
+/// for a header or lands on the `0xFF` end-marker — so it is safe to call with an untrusted `off`
+/// (issue #564's pass-B re-decode hands back a `FeatureRef::offset` from earlier this frame). `node`
+/// gives the leaf's min corner, the per-feature anchor base. This is the exact decode
+/// [`decode_chunk_into`] runs, so a feature decodes byte-for-byte identically whether it comes from
+/// the full-chunk walk or from [`Reader::decode_feature_at`].
+fn decode_one_feature<'b, const P: usize, const R: usize>(
+    chunk: &[u8],
+    off: usize,
+    node: &BBox,
+    points: &'b mut Vec<(i32, i32), P>,
+    ring_lens: &'b mut Vec<usize, R>,
+) -> Option<(FeatureRef<'b>, usize)> {
+    if off + 12 > chunk.len() || chunk[off] == 0xFF {
+        return None;
+    }
+    let feat_off = off;
+    let style_id = chunk[off];
+    let ext_pt_count = rd_u16(chunk, off + 1) as usize;
+    let ax = rd_i32(chunk, off + 3);
+    let ay = rd_i32(chunk, off + 7);
+    let flags = chunk[off + 11];
+    let mut off = off + 12;
+
+    let is_16 = flags & FEATURE_FLAG_16BIT != 0;
+    let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
+    let has_holes = flags & FEATURE_FLAG_HOLES != 0;
+    let dsize = if is_16 { 2 } else { 1 };
+
+    let anchor = (node.min_lon + ax, node.min_lat + ay);
+
+    points.clear();
+    ring_lens.clear();
+    let mut bounds = Bounds::new();
+
+    off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, points, &mut bounds);
+    let _ = ring_lens.push(points.len());
+
+    if is_poly && has_holes {
+        off = for_each_hole(chunk, off, |c, o, hpc| {
+            let before = points.len();
+            let o = read_ring(c, o, hpc, anchor, is_16, dsize, true, points, &mut bounds);
+            let _ = ring_lens.push(points.len() - before);
+            o
         });
     }
+
+    let fref = FeatureRef {
+        style_id,
+        kind: if is_poly { Kind::Polygon } else { Kind::Line },
+        points,
+        ring_lens,
+        bbox: bounds.to_bbox(),
+        offset: feat_off,
+    };
+    Some((fref, off))
 }
 
 /// Walk a polygon's hole list: read the 1-byte hole count at `off`, then per hole read its `u16`
