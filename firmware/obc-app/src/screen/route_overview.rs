@@ -214,8 +214,8 @@ impl RouteOverviewScreen {
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
 /// N5), drawn under the DISTANCE row on the length-only page in the same caption-left/value-right
-/// shape. A stale/out-of-range index shows the honest `Profile N` fallback (see
-/// [`NavProfiles::write_label`](crate::NavProfiles)).
+/// shape. A stale/out-of-range index shows **profile 0's name** — the profile the router actually
+/// fell back to for this plan (see [`NavProfiles::write_label`](crate::NavProfiles)).
 fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render) {
     let mut name: heapless::String<20> = heapless::String::new();
     rx.nav_profiles.write_label(rx.settings.bike_profile_idx, &mut name);

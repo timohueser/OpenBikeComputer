@@ -917,9 +917,10 @@ fn bike_type_cycles_and_persists_across_reboot() {
 }
 
 /// A stored index past the loaded map's profile count (a stale setting against a smaller map)
-/// renders the honest `Profile N` fallback — matching the router's own profile-0 fallback (N3) —
-/// and an in-range index renders the map's name. Pinned through the App's resident mirror, i.e.
-/// exactly what the Bike-type row and the overview label draw.
+/// renders **profile 0's name** — the profile the router actually falls back to (N3), so the UI
+/// never names a profile the map doesn't have — and an in-range index renders the map's name.
+/// Pinned through the App's resident mirror, i.e. exactly what the Bike-type row and the overview
+/// label draw.
 #[test]
 fn bike_type_out_of_range_renders_fallback() {
     let bytes = build_min_obcm_profiles(0, &["Road", "MTB"]);
@@ -932,7 +933,7 @@ fn bike_type_out_of_range_renders_fallback() {
 
     let mut label: heapless::String<20> = heapless::String::new();
     app.nav_profiles().write_label(app.settings().bike_profile_idx, &mut label);
-    assert_eq!(label.as_str(), "Profile 7", "an out-of-range index shows the generic fallback");
+    assert_eq!(label.as_str(), "Road", "an out-of-range index shows profile 0's name — what routing will use");
 
     let mut ok: heapless::String<20> = heapless::String::new();
     app.nav_profiles().write_label(1, &mut ok);
