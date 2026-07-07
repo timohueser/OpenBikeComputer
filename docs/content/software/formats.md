@@ -68,7 +68,7 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ### The file, front to back
 
-An OBCM file (current version **8**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
+An OBCM file (current version **9**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
 
 <figure class="fig">
 <svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 40-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section and a navigation-graph section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
@@ -140,7 +140,7 @@ Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Because the in
 The 40-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (8), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
+<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (9), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
   <text class="d-tag" x="20" y="24">The 40-byte header, byte by byte</text>
 
   <!-- field names -->
@@ -155,7 +155,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
   <text class="d-sub" x="597" y="50" text-anchor="middle" style="fill:#a9501c">POI off</text>
   <text class="d-sub" x="597" y="62" text-anchor="middle" style="fill:#a9501c;font-size:9px">→ §7</text>
   <text class="d-sub" x="657" y="50" text-anchor="middle" style="fill:#2c5230">Nav off</text>
-  <text class="d-sub" x="657" y="62" text-anchor="middle" style="fill:#2c5230;font-size:9px">→ §8 (v8)</text>
+  <text class="d-sub" x="657" y="62" text-anchor="middle" style="fill:#2c5230;font-size:9px">→ §8 nav</text>
 
   <!-- ruler fields (15 px / byte) -->
   <g stroke="#20301d" stroke-width="1">
@@ -181,7 +181,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
   </g>
   <!-- value + byte ranges -->
   <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">8</text>
+  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">9</text>
   <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
   <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
   <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
@@ -194,7 +194,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. A few small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; a <b>POI-section offset</b> (coral) and, appended by <b>v8</b>, a <b>navigation-graph offset</b> (teal) sit at the tail — the growth that carried the header from 32 → 36 → 40 bytes. Neither tail offset is ever zero — both sections are always present, empty or not. <b>v8's only header change</b> was appending that last offset; the earlier fields never move, so a v7 reader that stops at byte 36 still parses everything it knew.</figcaption>
+<figcaption>Fixed offsets, no surprises. A few small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; a <b>POI-section offset</b> (coral) and, appended by <b>v8</b>, a <b>navigation-graph offset</b> (teal) sit at the tail — the growth that carried the header from 32 → 36 → 40 bytes. Neither tail offset is ever zero — both sections are always present, empty or not. <b>v8's only header change</b> was appending that last offset; the earlier fields never move, so a v7 reader that stops at byte 36 still parses everything it knew. <b>v9</b> reworked the nav section's internals (below) but left the header untouched — only the version byte ticked to <code>9</code>.</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is six bytes:
@@ -537,55 +537,62 @@ The pool's exact layout — the leading `count`, the blob byte order, the flag b
 
 ### The navigation graph: a routable network
 
-Everything so far is geometry you *look at*. Version **8** added a section for geometry you *travel* — a **routable graph** the device runs A\* over, so a rider can [pick a POI and get a route to it](../architecture/#on-device-routing-the-router-seam) with no phone and no pre-planning. Highways in the map are drawn but carry no *topology* — a road is just a styled polyline, with no notion of what connects to what. The [packer builds the graph](../packer-routing/#building-the-navigation-graph) from the OSM node ids highways *share*: junction **nodes** joined by **edges** whose interiors hold no junctions. This section is that graph on disk, at the very tail of the file.
+Everything so far is geometry you *look at*. Version **8** added a section for geometry you *travel* — a **routable graph** the device runs A\* over, so a rider can [pick a POI and get a route to it](../architecture/#on-device-routing-the-router-seam) with no phone and no pre-planning. Highways in the map are drawn but carry no *topology* — a road is just a styled polyline, with no notion of what connects to what. The [packer builds the graph](../packer-routing/#building-the-navigation-graph) from the OSM node ids highways *share*: junction **nodes** joined by **edges** whose interiors hold no junctions. This section is that graph on disk, at the very tail of the file. Version **9** kept that shape but made routing *bike-type-aware* — each edge now carries a **way-kind** byte and the section opens with a small **profile table** — and slimmed the records so a chunk holds more of the graph (details below).
 
 Its shape is set by one hard fact: the device has **no room for a node-id → offset table**. A real region has millions of graph elements; an index over all of them can't stay resident. So the section is arranged for the only access pattern that fits RAM — **spatial re-fetch**. A node lives in a leaf of a quadtree over the same global bbox, and each junction record carries its neighbours' coordinates *inline*.
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="The navigation-graph section, four parts in file order. A 22-byte nav directory — the graph's entire resident footprint — points at a node quadtree (the same flat u32 encoding as an LOD, over the header bbox), which points at variable-length junction records packed into chunks, and separately at a deduplicated edge pool addressed by byte offset. One junction record is exploded to show it stores its own coordinate and dense id, then a list of neighbour entries, each carrying the neighbour's id, its coordinate inline, the connecting edge id, and the edge cost in metres.">
+<svg viewBox="0 0 720 256" role="img" aria-label="The version 9 navigation-graph section, five parts in file order. A 28-byte nav directory — the graph's resident footprint — is followed by a profile table of one to eight 52-byte bike profiles, then a node quadtree (the same flat u32 encoding as an LOD, over the header bbox), then variable-length junction records bin-packed into 512-byte chunks so distinct leaves may share a chunk, and separately a deduplicated edge pool addressed by byte offset. One junction record is exploded to show it stores its own coordinate and dense id, then a list of 15-byte neighbour entries, each carrying the neighbour's id, its coordinate inline, the connecting edge id, the edge cost in metres, and the edge's way-kind byte.">
   <defs>
     <marker id="aN1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">§8 — directory · node quadtree · junction records · edge pool</text>
+  <text class="d-tag" x="20" y="22">§8 (v9) — directory · profile table · node quadtree · junction records · edge pool</text>
 
   <!-- directory -->
-  <rect class="d-panel-2" x="24" y="48" width="150" height="66" rx="9" />
-  <text class="d-label" x="40" y="66" style="font-size:11px">nav directory</text>
-  <text class="d-sub" x="40" y="82"  style="font-size:9px">22 B — the whole</text>
-  <text class="d-sub" x="40" y="95"  style="font-size:9px">resident footprint</text>
-  <text class="d-sub" x="40" y="108" style="font-size:9px">offsets · counts · chunk size</text>
+  <rect class="d-panel-2" x="24" y="42" width="140" height="64" rx="9" />
+  <text class="d-label" x="38" y="60" style="font-size:11px">nav directory</text>
+  <text class="d-sub" x="38" y="76"  style="font-size:9px">28 B — resident</text>
+  <text class="d-sub" x="38" y="89"  style="font-size:9px">offsets · counts</text>
+  <text class="d-sub" x="38" y="102" style="font-size:9px">chunk size · profiles</text>
+
+  <!-- profile table (v9) -->
+  <line class="d-flow" x1="166" y1="74" x2="196" y2="74" marker-end="url(#aN1)" />
+  <rect class="d-water" x="200" y="48" width="128" height="52" rx="9" stroke="#3c6b39" stroke-width="1.2" />
+  <text class="d-label" x="264" y="70" text-anchor="middle" style="fill:#fff;font-size:10.5px">profile table</text>
+  <text class="d-sub" x="264" y="86" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">1..8 × 52 B · always present</text>
 
   <!-- quadtree -->
-  <line class="d-flow" x1="176" y1="81" x2="212" y2="81" marker-end="url(#aN1)" />
-  <rect class="d-panel" x="218" y="56" width="120" height="50" rx="9" />
-  <text class="d-label" x="278" y="78" text-anchor="middle" style="font-size:10.5px">node quadtree</text>
-  <text class="d-sub" x="278" y="94" text-anchor="middle" style="font-size:9px">flat u32 · §4 · header bbox</text>
+  <line class="d-flow" x1="330" y1="74" x2="360" y2="74" marker-end="url(#aN1)" />
+  <rect class="d-panel" x="364" y="50" width="118" height="48" rx="9" />
+  <text class="d-label" x="423" y="70" text-anchor="middle" style="font-size:10px">node quadtree</text>
+  <text class="d-sub" x="423" y="86" text-anchor="middle" style="font-size:8.5px">flat u32 · §4 · header bbox</text>
 
   <!-- junction chunks -->
-  <line class="d-flow" x1="340" y1="81" x2="376" y2="81" marker-end="url(#aN1)" />
-  <rect class="d-water" x="382" y="56" width="130" height="50" rx="9" stroke="#3c6b39" stroke-width="1.2" />
-  <text class="d-label" x="447" y="76" text-anchor="middle" style="fill:#fff;font-size:10.5px">junction records</text>
-  <text class="d-sub" x="447" y="92" text-anchor="middle" style="fill:#dfe6e0;font-size:9px">variable · in 512 B chunks</text>
+  <line class="d-flow" x1="484" y1="74" x2="514" y2="74" marker-end="url(#aN1)" />
+  <rect class="d-water" x="518" y="50" width="178" height="48" rx="9" stroke="#3c6b39" stroke-width="1.2" />
+  <text class="d-label" x="607" y="68" text-anchor="middle" style="fill:#fff;font-size:10px">junction records</text>
+  <text class="d-sub" x="607" y="84" text-anchor="middle" style="fill:#dfe6e0;font-size:8px">variable · bin-packed in 512 B chunks</text>
+  <text class="d-sub" x="607" y="114" text-anchor="middle" style="font-size:8px;fill:#a9501c">bin-packed — leaves may share a chunk</text>
 
   <!-- edge pool (separate offset) -->
-  <line class="d-flow" x1="99" y1="114" x2="99" y2="150" marker-end="url(#aN1)" />
-  <rect class="d-muted" x="24" y="152" width="150" height="46" rx="9" stroke="#3c6b39" stroke-width="1.2" />
-  <text class="d-label" x="40" y="172" style="font-size:10.5px">edge pool</text>
-  <text class="d-sub" x="40" y="188" style="font-size:9px">polylines · own offset · fetched at emit</text>
-  <text class="d-sub" x="182" y="176" style="font-size:8.5px;fill:#a9501c">edge id = pool-relative byte offset</text>
-  <text class="d-sub" x="182" y="189" style="font-size:8.5px">(chunk = id / 512) — zero index bytes</text>
+  <line class="d-flow" x1="94" y1="106" x2="94" y2="140" marker-end="url(#aN1)" />
+  <rect class="d-muted" x="24" y="142" width="150" height="46" rx="9" stroke="#3c6b39" stroke-width="1.2" />
+  <text class="d-label" x="38" y="162" style="font-size:10.5px">edge pool</text>
+  <text class="d-sub" x="38" y="178" style="font-size:9px">polylines · own offset · fetched at emit</text>
+  <text class="d-sub" x="184" y="166" style="font-size:8.5px;fill:#a9501c">edge id = pool-relative byte offset</text>
+  <text class="d-sub" x="184" y="179" style="font-size:8.5px">(chunk = id / 512) — zero index bytes</text>
 
   <!-- explode one junction record -->
-  <line x1="382" y1="106" x2="392" y2="150" stroke="#9aa884" stroke-width="1.1" />
-  <line x1="512" y1="106" x2="700" y2="150" stroke="#9aa884" stroke-width="1.1" />
-  <rect class="d-hot" x="392" y="152" width="308" height="86" rx="10" style="fill:#f8efe4" />
-  <text class="d-tag" x="408" y="170" style="fill:#a9501c">one junction record</text>
-  <text class="d-sub" x="408" y="188" style="font-size:9.5px">lat · lon · dense id · degree</text>
-  <text class="d-sub" x="408" y="204" style="font-size:9.5px">then <b>degree</b> × neighbour (20 B each):</text>
-  <text class="d-sub" x="420" y="220" style="font-size:9px" font-family="var(--mono)">nbr id · nbr lat,lon · edge id · cost m</text>
-  <text class="d-sub" x="420" y="232" style="font-size:8.5px;fill:#a9501c">the neighbour's coord is INLINE — no second fetch for h</text>
+  <line x1="518" y1="98" x2="410" y2="150" stroke="#9aa884" stroke-width="1.1" />
+  <line x1="696" y1="98" x2="700" y2="150" stroke="#9aa884" stroke-width="1.1" />
+  <rect class="d-hot" x="392" y="150" width="308" height="96" rx="10" style="fill:#f8efe4" />
+  <text class="d-tag" x="408" y="168" style="fill:#a9501c">one junction record — 13 + 15 × degree B</text>
+  <text class="d-sub" x="408" y="186" style="font-size:9.5px">lat · lon · dense id · degree</text>
+  <text class="d-sub" x="408" y="202" style="font-size:9.5px">then <b>degree</b> × neighbour (15 B each):</text>
+  <text class="d-sub" x="420" y="218" style="font-size:8.5px" font-family="var(--mono)">nbr id · nbr lat,lon · edge id · cost m · way-kind</text>
+  <text class="d-sub" x="420" y="234" style="font-size:8px;fill:#a9501c">coord INLINE (no fetch for h) · way-kind drives the profile weight</text>
 </svg>
-<figcaption>The whole section's resident cost is a <b>22-byte directory</b>: two offsets, three counts, one chunk size. Everything else streams. The <b>node quadtree</b> is byte-for-byte the same flat-<code>u32</code> encoding as an <a href="#the-quadtree-index">LOD index</a> — same branch-bit, same empty-leaf sentinel, built over the <b>same global bbox from the header</b> — so the reader walks it with the identical leaf-walk. Its leaves point at <b>junction records</b>, packed into the same 512-byte chunks (variable-length here, so <code>0xFF</code>-padding is the end-of-chunk sentinel). Each record stores its own coordinate and dense id, then its adjacency: one 20-byte entry per neighbour holding the neighbour's <b>coordinate inline</b>, the connecting edge's id, and its cost in metres. The <b>edge pool</b> — the actual polylines — sits behind its own offset and is touched <i>only when a route is emitted</i>; an edge is addressed by a <b>byte offset into the pool</b>, so there's no edge-id table to keep resident either.</figcaption>
+<figcaption>The whole section's resident cost is a <b>28-byte directory</b>: two data offsets, three counts, the pinned <b>512 B</b> chunk size, and the profile table's offset and count. Right behind it sits the <b>profile table</b> — 1–8 bike profiles, always present, [covered on the packer page](../packer-routing/#weighting-the-graph-bike-profiles). The <b>node quadtree</b> is byte-for-byte the same flat-<code>u32</code> encoding as an <a href="#the-quadtree-index">LOD index</a> — same branch-bit, same empty-leaf sentinel, built over the <b>same global bbox from the header</b> — so the reader walks it with the identical leaf-walk. Its leaves point at <b>junction records</b>, packed into 512-byte chunks (variable-length here, so <code>0xFF</code>-padding is the end-of-chunk sentinel). v9 <b>bin-packs</b> those leaves first-fit, so a half-full leaf no longer wastes a whole chunk — one consequence is that <b>distinct leaves may share a chunk</b>, and a walk decodes a shared chunk once per leaf, so the reader is written to be <b>idempotent</b>. Each record stores its own coordinate and dense id, then its adjacency: one <b>15-byte</b> entry per neighbour holding the neighbour's <b>coordinate inline</b>, the connecting edge's id, its cost in metres, and the edge's <b>way-kind</b> byte — the class the router weights by. The <b>edge pool</b> — the actual polylines — sits behind its own offset and is touched <i>only when a route is emitted</i>; an edge is addressed by a <b>byte offset into the pool</b>, so there's no edge-id table to keep resident either.</figcaption>
 </figure>
 
 Why store the neighbour's coordinate twice — once in its own record, once in every record that points at it? Because that redundancy is exactly what makes the router cheap. A\* settling a node needs, for each neighbour, the straight-line distance to the goal (the heuristic `h`). With the coordinate inline, that number falls straight out of the record already in hand — no chase to the neighbour's own record just to read where it is. **One quadtree descent, one chunk read, then relax every neighbour from bytes already decoded.**
@@ -639,20 +646,21 @@ Why store the neighbour's coordinate twice — once in its own record, once in e
   <rect class="d-hot" x="520" y="60" width="180" height="150" rx="10" style="fill:#f8efe4" />
   <text class="d-sub" x="536" y="84" style="font-size:9.5px">for each neighbour, from bytes</text>
   <text class="d-sub" x="536" y="98" style="font-size:9.5px">already in hand:</text>
-  <text class="d-sub" x="536" y="120" style="font-family:var(--mono);font-size:9px">g' = g + cost_m</text>
-  <text class="d-sub" x="536" y="138" style="font-family:var(--mono);font-size:9px">h  = gc_dist(nbr, goal)</text>
-  <text class="d-sub" x="536" y="156" style="font-family:var(--mono);font-size:9px;fill:#a9501c">f  = g' + ε·h   (ε = 1.3)</text>
-  <text class="d-sub" x="536" y="182" style="font-size:8.5px">the neighbour's coord is inline,</text>
-  <text class="d-sub" x="536" y="195" style="font-size:8.5px">so <b>h</b> needs zero extra fetches</text>
+  <text class="d-sub" x="536" y="118" style="font-family:var(--mono);font-size:9px">g' = g + cost_m · w</text>
+  <text class="d-sub" x="536" y="134" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">w  = profile(way_kind)</text>
+  <text class="d-sub" x="536" y="150" style="font-family:var(--mono);font-size:9px">h  = gc_dist(nbr, goal)</text>
+  <text class="d-sub" x="536" y="166" style="font-family:var(--mono);font-size:9px;fill:#a9501c">f  = g' + ε·h</text>
+  <text class="d-sub" x="536" y="186" style="font-size:8px">coord inline → <b>h</b> needs zero fetches;</text>
+  <text class="d-sub" x="536" y="197" style="font-size:8px">way-kind inline → <b>w</b> needs none either</text>
 
   <!-- edge-pool footnote -->
   <rect class="d-panel-2" x="34" y="258" width="666" height="30" rx="8" />
   <text class="d-sub" x="366" y="277" text-anchor="middle" style="font-size:9.5px">the <b>edge pool</b> is untouched until the route is <b>emitted</b> — then the came-from chain's edge ids stitch into one output polyline</text>
 </svg>
-<figcaption>A settle is <b>one descent + one read + a straight relax</b>. The quadtree walk is a <i>point</i> query — the leaf holding the node's coordinate, not a viewport rectangle — resolving to a single chunk. That chunk read brings the whole junction record into RAM, and every neighbour is relaxed straight off it: the cost <code>g</code> is the edge's stored metres, and the heuristic <code>h</code> is the great-circle distance from the neighbour's <b>inline</b> coordinate to the goal — no chase to the neighbour's own record. Because the A\* frontier keeps a handful of quadtree leaves simultaneously active, a small eight-slot tile cache holds them resident and turns most of those per-settle chunk reads into hits (the device is SD-bound, so that cache is the whole performance story — see <a href="../architecture/#on-device-routing-the-router-seam">the router seam</a>). The <b>edge pool</b> — the heavy polyline geometry — is read only at the end, once, to turn the winning chain of nodes into the route's line.</figcaption>
+<figcaption>A settle is <b>one descent + one read + a straight relax</b>. The quadtree walk is a <i>point</i> query — the leaf holding the node's coordinate, not a viewport rectangle — resolving to a single chunk. That chunk read brings the whole junction record into RAM, and every neighbour is relaxed straight off it: the cost step <code>g</code> is the edge's stored metres <b>scaled by the chosen bike profile's weight for that edge's way-kind</b> (both the metres and the way-kind byte are right there in the neighbour entry), and the heuristic <code>h</code> is the great-circle distance from the neighbour's <b>inline</b> coordinate to the goal — no chase to the neighbour's own record. Because the A\* frontier keeps a handful of quadtree leaves simultaneously active, a small eight-slot tile cache holds them resident and turns most of those per-settle chunk reads into hits (the device is SD-bound, so that cache is the whole performance story — see <a href="../architecture/#on-device-routing-the-router-seam">the router seam</a>). The <b>edge pool</b> — the heavy polyline geometry — is read only at the end, once, to turn the winning chain of nodes into the route's line.</figcaption>
 </figure>
 
-The full byte layout — the directory fields, the 20-byte neighbour entry, the `0xFF` degree sentinel and degree-24 cap, the edge record with its densified `int16` deltas, and how an over-long edge is split at synthetic junctions so no record ever straddles a chunk — is [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the packer does to *build* this graph from raw highways is the [extraction stage](../packer-routing/#building-the-navigation-graph); how the device turns it into a route the rest of the system can't tell from a GPX is [the router seam](../architecture/#on-device-routing-the-router-seam).
+The full byte layout — the 28-byte directory fields, the 52-byte profile records and their `1/16` fixed-point multipliers, the 15-byte neighbour entry, the `0xFF` degree sentinel and degree-24 cap, the edge record with its densified `int16` deltas, and how an over-long edge is split at synthetic junctions so no record ever straddles a chunk — is [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the packer does to *build* this graph from raw highways, and how a profile weights it, is the [extraction stage](../packer-routing/#building-the-navigation-graph); how the device turns it into a route the rest of the system can't tell from a GPX is [the router seam](../architecture/#on-device-routing-the-router-seam).
 
 ## OBCR — the route
 
