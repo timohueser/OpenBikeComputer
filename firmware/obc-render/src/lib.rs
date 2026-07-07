@@ -368,24 +368,126 @@ impl MapRenderer {
         stats
     }
 
-    /// Draw the collected, painter-ordered spans into `target`. Polygons fill via even-odd
-    /// scanline; lines stroke via the view-clipped overlay path — resolving each line's full
-    /// [`Style`](obc_reader::Style) (`dashed`/`color2`) from `reader` via [`Span::style_id`]. `lod`
-    /// is threaded in for the finest-LOD casing/outline gates (#559/#560); polygons ignore both.
+    /// Casing width added on **each** side of a cased road's fill, in px: a cased road strokes a solid
+    /// base in `color2` at the fill's ramped on-screen width (`scale_weight`, #579) `+ 2*CASING_PX`,
+    /// under its fill. Fixed const — a per-style casing width is out of scope for #559.
+    const CASING_PX: u32 = 1;
+
+    /// Draw the collected, painter-ordered spans into `target`. Polygons fill via even-odd scanline;
+    /// lines stroke via the view-clipped overlay path — resolving each line's full
+    /// [`Style`](obc_reader::Style) (`dashed`/`color2`) from `reader` via [`Span::style_id`].
+    ///
+    /// **Road casing (#559).** Solid lines whose style carries a `color2` (the *cased* styles) get a
+    /// `weight + 2*CASING_PX` stroke in `color2` painted **under** their normal fill — but only at the
+    /// finest LOD. Spans are `(z, seq)`-sorted, so the cased road lines form a contiguous z-band; the
+    /// casing pass is inserted at the **z boundary where that band begins** (`split`), *not* before the
+    /// whole frame. That keeps casings above the low-z land/water/landuse/forest fills — which would
+    /// otherwise paint over them — yet under **all** road fills, so crossing roads keep continuous
+    /// fills through a junction (no casing slicing across another road's fill) and a road over a forest
+    /// polygon keeps its casing. Three steps:
+    ///
+    /// 1. `spans[0..split)` — everything below the road band, drawn exactly as the base pass.
+    /// 2. casing pass over `spans[split..]` (finest LOD only) — the cased lines, wide `color2` base.
+    /// 3. `spans[split..]` — the road band and above, drawn exactly as the base pass, over the casings.
+    ///
+    /// When no style is cased `split == spans.len()`: step 2 is empty and steps 1 + 3 collapse to
+    /// today's single pass → **byte-identical** output at zero extra per-span cost. Coarser LODs skip
+    /// step 2 outright (`lod` gate). Polygons are never cased (that's #560).
     fn draw_map<D, F>(&mut self, target: &mut D, reader: &Reader, lod: usize, vp: &Viewport, color_fn: &F)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let _ = lod; // reserved for the finest-LOD casing (#559) / polygon-outline (#560) gates.
-                     // Disjoint borrows: spans/geometry read from `frame`, draw scratch written.
+        // Disjoint borrows: spans/geometry read from `frame`, draw scratch written to `draw`.
         let Self { frame, draw } = self;
-        // One zoom→width multiplier for the whole frame (see `width_scale`): a style's nominal
-        // `weight` ramps to its on-screen px width here, so roads thicken zoomed in and thin zoomed
-        // out instead of holding a fixed px at every scale. Polygons ignore it (fills carry no width);
-        // when casing (#559) lands it must derive its width from this same ramped value.
+        let spans = frame.spans();
+
+        // One zoom→width multiplier for the whole frame (#579, `width_scale`): a style's nominal
+        // `weight` ramps to its on-screen px width via `scale_weight`, so roads thicken zoomed in and
+        // thin zoomed out. The casing pass derives its width from this same ramped value.
         let wscale = width_scale(vp.meters_per_pixel());
-        for span in frame.spans() {
+
+        // The 256-bit "cased" style mask, built once per frame (mirrors `collect`'s `vis_mask`): a
+        // style is cased ⇔ it's a **solid** line (`!dashed`) carrying a `color2`. Dashed + color2 is
+        // the railway stripe (#558), which never cases.
+        let mut cased_mask = [0u32; 8];
+        for id in 0..=255u8 {
+            if let Some(s) = reader.style(id) {
+                if !s.dashed && s.color2.is_some() {
+                    cased_mask[(id >> 5) as usize] |= 1 << (id & 31);
+                }
+            }
+        }
+        let any_cased = cased_mask.iter().any(|&w| w != 0);
+        let is_cased = |sid: u8| cased_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0;
+
+        // The z boundary: the first cased road **line** span. Everything before it is the low-z band
+        // (land / water / landuse / buildings / low-z lines). No cased style ⇒ `split == spans.len()`,
+        // so the scan is skipped and the two ranges below collapse to one full pass (today's path).
+        let split = if any_cased {
+            spans.iter().position(|s| s.kind == Kind::Line && is_cased(s.style_id)).unwrap_or(spans.len())
+        } else {
+            spans.len()
+        };
+
+        // (1) Everything below the road band, exactly as the base pass.
+        Self::draw_spans(frame, draw, target, reader, lod, vp, color_fn, wscale, &spans[..split]);
+
+        // (2) Casing pass — finest LOD only. Each cased road strokes a solid `color2` base at the
+        // **ramped** fill width + `2*CASING_PX` (tracks the #579 zoom ramp, not a fixed px), under the
+        // fills step 3 paints on top. Re-projects each cased line (accepted; reuses `DrawScratch`).
+        if lod == reader.lods().len() - 1 {
+            for span in &spans[split..] {
+                if span.kind != Kind::Line || !is_cased(span.style_id) {
+                    continue;
+                }
+                // A line uses only its exterior (first) ring — the leading `n` frame points.
+                let n = frame.frame_ring_lens[span.ring_start as usize];
+                let pt_start = span.pt_start as usize;
+                let pts = &frame.frame_points[pt_start..pt_start + n];
+                // `is_cased` guarantees `color2.is_some()`; quantize it like the fill color. The
+                // `unwrap_or` is a defensive no-op (falls back to an invisible same-color casing).
+                let casing_color = color_fn(reader.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
+                draw_line(
+                    target,
+                    vp,
+                    pts,
+                    casing_color,
+                    scale_weight(span.weight, wscale) + 2 * Self::CASING_PX,
+                    false,
+                    None,
+                    &mut draw.screen,
+                    &mut draw.xs,
+                );
+            }
+        }
+
+        // (3) The road band and above, exactly as the base pass, on top of the casings.
+        Self::draw_spans(frame, draw, target, reader, lod, vp, color_fn, wscale, &spans[split..]);
+    }
+
+    /// Draw a contiguous, painter-ordered `spans` slice exactly as the base pass: polygons even-odd
+    /// fill, lines the view-clipped stroke with their resolved `dashed`/`color2` style at the frame's
+    /// ramped width (`wscale`, #579). Factored out of [`draw_map`](Self::draw_map) so it can be called
+    /// for the two ranges either side of the casing pass; the seam is left group-friendly for #560's
+    /// fills-then-outlines-per-z-group pass, so `lod` is threaded through though unused today.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_spans<D, F>(
+        frame: &FrameScratch,
+        draw: &mut DrawScratch,
+        target: &mut D,
+        reader: &Reader,
+        lod: usize,
+        vp: &Viewport,
+        color_fn: &F,
+        wscale: f32,
+        spans: &[Span],
+    ) where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        let _ = lod; // reserved for the finest-LOD polygon-outline pass (#560).
+        for span in spans {
             let ring_start = span.ring_start as usize;
             let pt_start = span.pt_start as usize;
             let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
