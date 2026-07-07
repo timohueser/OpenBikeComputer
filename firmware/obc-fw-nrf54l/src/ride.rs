@@ -183,7 +183,8 @@ struct NavRun {
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest) {
-    nav.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name()));
+    // Profile 0 (hardwired until N5 owns the bike-type setting, epic #533).
+    nav.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name(), 0));
     // One diagnostic line per plan start (#501 fault dossiers): the three nav statics' addresses
     // pin the memory map without needing the ELF at hand.
     defmt::debug!(

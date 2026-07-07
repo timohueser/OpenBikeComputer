@@ -21,15 +21,29 @@
 //! because the router must coexist with the map cache and the render scratch in RAM;
 //! on a dense graph it fills and the search aborts with [`NavError::Exhausted`].
 //!
+//! **Profile-weighted edges** (epic #533, N3): each edge is relaxed by the selected
+//! **bike profile's** multiplier for its §8.3 `way_kind` — `weighted = (cost_m ×
+//! mult(kind)) >> 4`, `mult` a 40-byte per-plan lookup (32 highway × 8 surface `u8`
+//! 1/16 bytes, combined at lookup) resolved once from the map's §8.6 profile table. An
+//! out-of-range profile index falls back to profile 0 (a stale device setting must
+//! never brick routing — never an error). A **forbidden** class (`mult == 0`) is simply
+//! not relaxed: the neighbor is skipped, so the graph stays whole for the other
+//! profiles and an endpoint whose only escapes are forbidden drains the frontier to an
+//! honest [`NavError::NoPath`]. The *displayed* distance is unweighted — the planner sums
+//! each hop's raw edge `length_m` at emit, not the weighted `g`.
+//!
 //! **Bounded suboptimality, not exactness** (decided 2026-07-06 — range in fixed
 //! memory): the priority is `f = g + ε·h` with ε = [`NAV_EPSILON_NUM`] /
-//! [`NAV_EPSILON_DEN`] = 1.3. The heuristic itself never overestimates — it is the
-//! great-circle distance to the goal in the *same* local-equirectangular metric the
-//! packer summed for every edge's `cost_m` — so weighted A\* returns a path of length
-//! **≤ 1.3× the true shortest** (in practice a few percent on road networks). What ε
-//! buys is *reach*: plain A\* explores roughly quadratically with distance and
-//! exhausted the fixed table ~1.5 km out; the goal-greedy inflated search settles a
-//! narrow corridor instead, planning multi-km routes in the same table.
+//! [`NAV_EPSILON_DEN`] = 1.3. The heuristic itself never overestimates the *weighted*
+//! cost — it is the great-circle distance to the goal in the *same*
+//! local-equirectangular metric the packer summed for every edge's `cost_m`, and every
+//! non-forbidden profile multiplier is **≥ 1.0** (packer-enforced + reader-clamped), so
+//! `weighted cost ≥ ground length ≥ great-circle`: `h` stays admissible unchanged. Weighted
+//! A\* therefore returns a path of cost **≤ 1.3× the cheapest route under the selected
+//! profile** (in practice a few percent on road networks). What ε buys is *reach*: plain
+//! A\* explores roughly quadratically with distance and exhausted the fixed table ~1.5 km
+//! out; the goal-greedy inflated search settles a narrow corridor instead, planning
+//! multi-km routes in the same table.
 //!
 //! **The planner is resumable** (#499): planning is a [`NavPlanner`] step machine —
 //! snap → search ([`NAV_SETTLES_PER_STEP`] settles per step) → emit
@@ -126,11 +140,15 @@ pub enum NavError {
 ///
 /// 24 B entry + 2 B heap slot = **26 B/node** (compile-time asserted below; was
 /// 34 B/node with `u32` costs and id-keyed `came_from` before the 2026-07-06 range
-/// fix). `g`/`h` in `u16` meters saturate at 65 535 m — far past anything the fixed
-/// table can span — and a saturated cost only makes its node maximally unattractive
-/// (never mis-ordered, never wrapped); with no distance cap a very distant goal just
-/// degrades the ordering toward uniform expansion until the table exhausts (see the
-/// module doc's no-cap note).
+/// fix). `g`/`h` in `u16` meters saturate at 65 535 m and a saturated cost only makes its
+/// node maximally unattractive (never mis-ordered, never wrapped). `g` now accumulates
+/// **weighted** cost (`(cost_m × mult) >> 4`, N3), so it saturates *earlier* than plain
+/// distance — a 4× multiplier ⇒ ~16 km of that class fills the field — but this is the
+/// same graceful degradation: the fixed table exhausts long before saturation matters on
+/// real terrain (profiles are capped ≤ ~8×), and with no distance cap a very distant goal
+/// still degrades the ordering toward uniform expansion until the table exhausts (see the
+/// module doc's no-cap note). The emitted route's displayed length is the unweighted
+/// `length_m` sum, immune to this.
 /// `came_from` as a slot index (slots never move — open addressing, no deletion)
 /// both saves 2 B and turns the emit chain-walk into direct indexing.
 ///
@@ -213,6 +231,54 @@ impl NavEntry {
 #[inline]
 fn sat16(m: u32) -> u16 {
     m.min(u16::MAX as u32) as u16
+}
+
+/// The selected bike profile's edge-weight lookup, resolved **once per plan** from the map's §8.6
+/// profile table (epic #533, N3): the 32 highway + 8 surface `u8` 1/16-fixed-point multipliers
+/// (`16` = 1.0×, `0` = forbidden), copied by value into the planner. Kept as the raw 40 bytes and
+/// **combined at lookup** ([`mult`](Self::mult)) rather than pre-expanded to a 256-entry
+/// `way_kind → multiplier` table — 40 B of `.bss` next to the scratch, no 256 B table, and one
+/// multiply per relaxation. Mirrors [`obc_reader::MapProfile::multiplier`]'s integer arithmetic
+/// exactly (the reader owns the same combine for its own callers); the copy is what lets the
+/// weighting run with no `Reader` borrow held across the search.
+#[derive(Clone, Copy)]
+struct ProfileMult {
+    highway: [u8; 32],
+    surface: [u8; 8],
+}
+
+impl ProfileMult {
+    /// The all-1.0× table: every non-forbidden multiplier `16`. The pre-resolution placeholder a
+    /// fresh [`NavPlanner`] holds (overwritten at its first step) and the fallback for the
+    /// degenerate empty-profile-table map (which snaps to nothing and fails first anyway).
+    const NEUTRAL: ProfileMult = ProfileMult { highway: [16; 32], surface: [16; 8] };
+
+    /// Resolve the profile selected by `profile_idx` from the reader's parsed §8.6 table. An
+    /// **out-of-range index falls back to profile 0** (locked on #536: a stale device profile
+    /// setting must never brick routing — never an error). The table always carries ≥ 1 profile
+    /// (the reader's parse rejects `profile_count == 0`), so profile 0 always exists for a map with
+    /// a graph; [`NEUTRAL`](Self::NEUTRAL) only stands in for the pathological empty table.
+    fn resolve(reader: &Reader, profile_idx: u8) -> ProfileMult {
+        let profiles = reader.nav_profiles();
+        match profiles.get(profile_idx as usize).or_else(|| profiles.first()) {
+            Some(p) => ProfileMult { highway: p.highway, surface: p.surface },
+            None => ProfileMult::NEUTRAL,
+        }
+    }
+
+    /// Effective edge multiplier for a packed `way_kind` byte in 1/16 fixed-point:
+    /// `(highway[kind & 31] × surface[kind >> 5]) >> 4`. `None` when either class is **forbidden**
+    /// (a `0` byte) — the neighbor is then skipped in relaxation (§8.6).
+    #[inline]
+    fn mult(&self, way_kind: u8) -> Option<u32> {
+        let mh = self.highway[(way_kind & 0x1F) as usize] as u32;
+        let ms = self.surface[(way_kind >> 5) as usize] as u32;
+        if mh == 0 || ms == 0 {
+            None
+        } else {
+            Some((mh * ms) >> 4)
+        }
+    }
 }
 
 /// The router's entire mutable state: an open-addressed `node_id → NavEntry` table and
@@ -446,6 +512,12 @@ pub struct NavPlanner {
     to: (i32, i32),
     /// The route's name, applied by the finishing header patch.
     name: heapless::String<NAME_CAP>,
+    /// The selected bike profile index (device setting; N5 threads the real value — N3 hosts pass
+    /// `0`). Resolved to [`mult`](Self::mult) at the first step; out-of-range falls back to profile 0.
+    profile_idx: u8,
+    /// The profile's 40-byte multiplier lookup, resolved once from the reader at the first step
+    /// (neutral until then). Every edge is relaxed through [`ProfileMult::mult`].
+    mult: ProfileMult,
     /// The snapped endpoints (valid once their phase has run).
     start_id: u32,
     start_c: (i32, i32),
@@ -465,9 +537,11 @@ pub struct NavPlanner {
 }
 
 impl NavPlanner {
-    /// A planner for one route request. Touches nothing yet — the first [`step`](NavPlanner::step)
-    /// resets the caller's scratch + tile cache and starts snapping.
-    pub fn new(from: (i32, i32), to: (i32, i32), name: &str) -> Self {
+    /// A planner for one route request routed under bike profile `profile_idx` (§8.6; an
+    /// out-of-range index falls back to profile 0 at the first step — never an error). Touches
+    /// nothing yet — the first [`step`](NavPlanner::step) resets the caller's scratch + tile cache,
+    /// resolves the profile, and starts snapping.
+    pub fn new(from: (i32, i32), to: (i32, i32), name: &str, profile_idx: u8) -> Self {
         let mut nm = heapless::String::new();
         for ch in name.chars() {
             if nm.push(ch).is_err() {
@@ -479,6 +553,8 @@ impl NavPlanner {
             from,
             to,
             name: nm,
+            profile_idx,
+            mult: ProfileMult::NEUTRAL,
             start_id: 0,
             start_c: (0, 0),
             goal_id: 0,
@@ -535,9 +611,11 @@ impl NavPlanner {
     ) -> Step {
         match self.phase {
             PhaseState::SnapFrom => {
-                // First step of the plan: claim the caller's buffers.
+                // First step of the plan: claim the caller's buffers and resolve the bike profile
+                // once (out-of-range index → profile 0; see `ProfileMult::resolve`).
                 scratch.reset();
                 tiles.reset();
+                self.mult = ProfileMult::resolve(reader, self.profile_idx);
                 let Some((id, c)) = snap(reader, tiles, self.from) else {
                     return self.fail(NavError::NoPath);
                 };
@@ -583,7 +661,7 @@ impl NavPlanner {
                     }
                     self.settles = self.settles.wrapping_add(1);
                     scratch.entries[idx].meta |= META_CLOSED;
-                    if let Err(e) = settle::<N>(reader, scratch, tiles, idx, self.goal_c) {
+                    if let Err(e) = settle::<N>(reader, scratch, tiles, idx, self.goal_c, &self.mult) {
                         return self.fail(e);
                     }
                 }
@@ -673,11 +751,11 @@ impl NavPlanner {
 
     /// Stage the found path goal→start in the (now dead) heap array — `came_from` holds **slot
     /// indices**, so the walk is direct indexing; path length is bounded by the tracked-node
-    /// count, so it always fits. Sets the emit cursors + the summed-cost header total (the
-    /// goal's `g`, saturated at 65 535 m like every stored cost).
+    /// count, so it always fits. Sets the emit cursors only — the goal's `g` is now the *weighted*
+    /// cost, so it is **not** the header total; [`emit_hop`](Self::emit_hop) sums the raw edge
+    /// `length_m` into `total_m` instead (N3 distance honesty).
     #[inline(never)] // #419/#501: keep the step dispatcher thin
     fn stage_chain<const N: usize>(&mut self, scratch: &mut NavScratch<N>, goal_idx: usize) -> Result<(), NavError> {
-        self.total_m = scratch.entries[goal_idx].g as u32;
         let mut chain_len = 0usize;
         let mut cur = goal_idx;
         loop {
@@ -702,8 +780,10 @@ impl NavPlanner {
 
     /// Emit one path hop: fetch hop `self.hop`'s edge polyline oriented via
     /// [`Reader::nav_edge_oriented`] and push it, deduping the seam vertex shared with the
-    /// previous hop so the OBCR carries one continuous polyline. Elevation is zero throughout
-    /// (no DEM, locked on #116).
+    /// previous hop so the OBCR carries one continuous polyline. The edge's raw ground `length_m`
+    /// (the call's return, no longer dead) accumulates into `total_m` — the **unweighted**
+    /// displayed distance, summed here rather than read off the weighted `g` (N3). Elevation is
+    /// zero throughout (no DEM, locked on #116).
     #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
     fn emit_hop<const N: usize>(
         &mut self,
@@ -718,7 +798,7 @@ impl NavPlanner {
         let em = self.em.as_mut().ok_or(NavError::NoPath)?;
         let mut last = self.last;
         let mut werr = false;
-        reader
+        let length_m = reader
             .nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), |pt| {
                 if werr || last == Some(pt) {
                     return; // seam vertex already emitted by the previous hop
@@ -734,23 +814,29 @@ impl NavPlanner {
         if werr {
             return Err(NavError::NoPath);
         }
+        // Real ground meters for the displayed total (saturating, like every stored cost).
+        self.total_m = self.total_m.saturating_add(length_m);
         Ok(())
     }
 }
 
-/// One-shot convenience over [`NavPlanner`]: loop [`step`](NavPlanner::step) to completion.
-/// What the route-level tests and the headless sim use; interactive hosts step the planner
-/// themselves, one bounded step per pass.
+/// One-shot convenience over [`NavPlanner`]: loop [`step`](NavPlanner::step) to completion under
+/// bike profile `profile_idx` (out-of-range → profile 0). What the route-level tests and the
+/// headless sim use; interactive hosts step the planner themselves, one bounded step per pass.
+// The arg list is the plan request (`from`/`to`/`name`/`profile_idx`) plus the four caller-owned
+// buffers the planner never allocates — grouping them into a struct would just move the noise.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_route<const N: usize>(
     reader: &Reader,
     from: (i32, i32),
     to: (i32, i32),
     name: &str,
+    profile_idx: u8,
     scratch: &mut NavScratch<N>,
     tiles: &mut NavTileCache,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, NavError> {
-    let mut planner = NavPlanner::new(from, to, name);
+    let mut planner = NavPlanner::new(from, to, name, profile_idx);
     loop {
         match planner.step(reader, scratch, tiles, sink) {
             Step::Running => {}
@@ -762,8 +848,11 @@ pub fn plan_route<const N: usize>(
 
 /// One settle: descend the node quadtree to the settled node's leaf (a degenerate
 /// one-point view — the spatial re-fetch) and relax each of its §8.3 neighbors from
-/// the inline `(coord, cost_m)`. A node the walk doesn't yield (corrupt map) simply
-/// relaxes nothing; the search continues on whatever frontier remains.
+/// the inline `(coord, cost_m, way_kind)`, weighting the cost by the plan's profile
+/// (`mult`). A neighbor whose `way_kind` is **forbidden** under the profile (`mult` is
+/// `None`) is skipped — not relaxed — so the graph stays whole for other profiles. A
+/// node the walk doesn't yield (corrupt map) simply relaxes nothing; the search
+/// continues on whatever frontier remains.
 #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn settle<const N: usize>(
     reader: &Reader,
@@ -771,6 +860,7 @@ fn settle<const N: usize>(
     tiles: &mut NavTileCache,
     idx: usize,
     goal_c: (i32, i32),
+    mult: &ProfileMult,
 ) -> Result<(), NavError> {
     let settled = scratch.entries[idx];
     let view = BBox { min_lon: settled.lon, min_lat: settled.lat, max_lon: settled.lon, max_lat: settled.lat };
@@ -782,9 +872,16 @@ fn settle<const N: usize>(
                 return;
             }
             for nb in n.neighbors() {
+                // Profile-weighted edge cost: `weighted = (cost_m × mult(kind)) >> 4` (mult in
+                // 1/16 fixed-point). A forbidden class (`mult == None`) is skipped entirely — the
+                // neighbor is never relaxed, so the graph stays whole for the other profiles.
+                let Some(m) = mult.mult(nb.way_kind) else {
+                    continue;
+                };
+                let weighted = (nb.cost_m.saturating_mul(m)) >> 4;
                 // u16-saturating tentative cost: a saturated g is just maximally
                 // unattractive (see the layout note) — never wrapped, never mis-ordered.
-                let tentative = sat16((settled.g as u32).saturating_add(nb.cost_m));
+                let tentative = sat16((settled.g as u32).saturating_add(weighted));
                 match scratch.lookup(nb.id) {
                     Some(j) => {
                         if tentative < scratch.entries[j].g {
@@ -832,6 +929,11 @@ fn settle<const N: usize>(
 /// snap radius. The cap makes the final ring exhaustive by construction (a 250 m
 /// half-extent square contains the whole 250 m disc), so unlike the POI query no
 /// map-cover fallback is needed. Repeat visits across rings re-hit the tile cache.
+///
+/// **Kind-agnostic** (locked on #536): snap picks the nearest node of *any* kind — a rider
+/// standing on a footway must still snap; the profile shapes the route *away* from it, not the
+/// snap. One accepted v1 consequence: a node **all of whose edges are forbidden** under the active
+/// profile is a dead snap — the search then drains the frontier to an honest [`NavError::NoPath`].
 #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32, (i32, i32))> {
     if reader.nav_directory().is_empty() {
