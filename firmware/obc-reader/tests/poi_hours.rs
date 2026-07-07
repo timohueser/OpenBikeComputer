@@ -182,28 +182,32 @@ fn poi_hours_corrupt_count_past_eof_is_none() {
     let blob0 = blob(0, [[(32, 72), (0, 0)]; 7]);
     let mut bytes = build_map_with_pool(&[blob0], 0, 0);
 
+    let real_len = bytes.len();
     let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
     let count_field = poi_off + 3 + 6 * 13 + 4;
     let off_field = poi_off + 3 + 6 * 13; // hours_pool_offset u32
     let pool_off = u32::from_le_bytes(bytes[off_field..off_field + 4].try_into().unwrap()) as usize;
-    // Claim 2 blobs in both the directory field and the pool's own count header, but append no second
-    // blob's bytes — blob index 1's read lands past the real EOF.
-    bytes[count_field..count_field + 2].copy_from_slice(&2u16.to_le_bytes());
-    bytes[pool_off..pool_off + 2].copy_from_slice(&2u16.to_le_bytes());
+    // Forge just enough blobs that the LAST one's read runs one blob past the real bytes (blob 0 is
+    // still fully present). Derived from the real length so it's robust to the trailing nav section's
+    // size (the §8.6 profile table pushed the file out in v9).
+    let real_blobs = (real_len - pool_off - 2) / POI_HOURS_BLOB_LEN;
+    let forged_count = (real_blobs + 2) as u16; // one more blob than the bytes actually hold
+    bytes[count_field..count_field + 2].copy_from_slice(&forged_count.to_le_bytes());
+    bytes[pool_off..pool_off + 2].copy_from_slice(&forged_count.to_le_bytes());
 
-    // Report a len big enough that parse's pool-region bound (pool_off + 2 + 2*29) fits, so parse
-    // succeeds; the real bytes still stop after blob 0.
-    let reported_len = (pool_off + 2 + 2 * POI_HOURS_BLOB_LEN + 16) as u32;
+    // Report a len big enough that parse's pool-region bound (pool_off + 2 + count*29) fits, so parse
+    // succeeds; the real bytes still stop before the last blob.
+    let reported_len = (pool_off + 2 + forged_count as usize * POI_HOURS_BLOB_LEN + 16) as u32;
     let src = ShortBackedSource { bytes, reported_len };
 
     let tables = MapTables::parse(&src).expect("inflated len lets the corrupt pool parse");
     let cache = MapCache::new();
     let r = Reader::new(&src, &tables, &cache);
-    assert_eq!(r.poi_directory().hours_pool_count, 2, "directory declares two blobs");
+    assert_eq!(r.poi_directory().hours_pool_count, forged_count as usize, "directory declares the forged blob count");
     // Blob 0 is fully present and resolves.
     assert!(r.poi_hours(0).is_some(), "in-file blob 0 resolves");
-    // Blob 1's read reaches past the real bytes ⇒ None, never a panic/UB.
-    assert_eq!(r.poi_hours(1), None, "missing blob ⇒ read fails ⇒ None");
+    // The last blob's read reaches past the real bytes ⇒ None, never a panic/UB.
+    assert_eq!(r.poi_hours(forged_count - 1), None, "missing blob ⇒ read fails ⇒ None");
 }
 
 #[test]

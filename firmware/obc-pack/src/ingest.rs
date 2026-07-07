@@ -149,9 +149,10 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     println!("{}", poi::format_counts(&pois, poi_dropped));
 
     // --- Nav graph: junctions + deduped edges from the routable ways, then
-    // island pruning + v9-guarantee edge splits ([`nav::build_graph`]). Serialized
-    // into the §8 nav section. Logged (with component + kinds stats) alongside POIs.
-    let (nav_graph, nav_stats) = nav::build_graph(&routable_ways);
+    // island pruning (`routing.min_component_edges`) + v9-guarantee edge splits
+    // ([`nav::build_graph_with`]). Serialized into the §8 nav section. Logged (with
+    // component + kinds stats) alongside POIs.
+    let (nav_graph, nav_stats) = nav::build_graph_with(&routable_ways, config.routing.min_component_edges);
     println!("{}", nav::format_summary(&nav_graph, &nav_stats));
 
     Ok(Ingested { features, coastlines, pois, nav_graph })

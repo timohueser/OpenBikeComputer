@@ -17,5 +17,6 @@ pub mod serialize;
 
 pub use serialize::{
     pack_chunk, pack_feature, pack_style_dict, serialize_lods, serialize_nav_section, serialize_poi_section,
-    serialize_tree, validate_chunk_size, Feature, Kind, LodLayer, Node, Style, MAX_SAFE_CHUNK_SIZE, MIN_CHUNK_SIZE,
+    serialize_tree, validate_chunk_size, Feature, Kind, LodLayer, NavProfile, Node, Style, MAX_SAFE_CHUNK_SIZE,
+    MIN_CHUNK_SIZE,
 };

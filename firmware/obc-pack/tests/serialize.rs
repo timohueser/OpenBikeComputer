@@ -70,19 +70,29 @@ fn serialize_lods_header_single_empty_leaf() {
         chunk_size: 2048,
         root: Node::Leaf { bbox: (0, 0, 100, 100), features: vec![] },
     }];
-    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, (0, 0, 100, 100), &[], &Default::default());
+    let (bin, dropped) = serialize_lods(
+        &lods,
+        &[],
+        0xF800,
+        (0, 0, 100, 100),
+        &[],
+        &Default::default(),
+        &obc_pack::config::default_profiles(),
+    );
     assert_eq!(dropped, 0);
 
-    // v8 header(40) + style count(1) + 1 LOD entry(18) + index(4) = 63, then the empty POI directory
+    // v9 header(40) + style count(1) + 1 LOD entry(18) + index(4) = 63, then the empty POI directory
     // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
-    // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty v8 nav
-    // directory (22 bytes) at the tail.
+    // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty v9 nav
+    // section (28-byte directory + the always-present profile table) at the tail.
     let poi_dir_len = 1 + 2 + 6 * 13 + 6;
     let hours_pool_len = 2; // an empty pool is just its count
-    let nav_dir_len = 22; // an empty graph is just its directory
-    assert_eq!(bin.len(), 63 + poi_dir_len + hours_pool_len + nav_dir_len);
+                            // Empty graph: the 28-byte directory + the four default profiles (52 B each), always present.
+    let profile_table_len = 4 * 52;
+    let nav_section_len = 28 + profile_table_len;
+    assert_eq!(bin.len(), 63 + poi_dir_len + hours_pool_len + nav_section_len);
     assert_eq!(&bin[0..4], b"OBCM");
-    assert_eq!(bin[4], 8); // version
+    assert_eq!(bin[4], 9); // version
     assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 40); // style offset (40 since v8)
     assert_eq!(bin[25], 1); // lod count
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
@@ -104,14 +114,24 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(hours_pool_off, poi_off + poi_dir_len, "pool follows the directory (no categories)");
     assert_eq!(u16::from_le_bytes(bin[hours_pool_off..hours_pool_off + 2].try_into().unwrap()), 0, "empty pool count");
 
-    // The nav section offset (header byte 36) points just past the hours pool; an empty graph is
-    // the bare 22-byte directory — zero index nodes / chunks / edges, chunk_size still written.
+    // The nav section offset (header byte 36) points just past the hours pool; an empty graph is the
+    // 28-byte directory followed by the always-present profile table — zero index nodes / chunks /
+    // edges, chunk_size pinned to 512, profile_count 4, profile table right after the directory.
     let nav_off = u32::from_le_bytes(bin[36..40].try_into().unwrap()) as usize;
     assert_eq!(nav_off, hours_pool_off + hours_pool_len, "nav section at the file tail");
     assert_eq!(u32::from_le_bytes(bin[nav_off + 4..nav_off + 8].try_into().unwrap()), 0, "index_node_count 0");
     assert_eq!(u32::from_le_bytes(bin[nav_off + 8..nav_off + 12].try_into().unwrap()), 0, "node_chunk_count 0");
     assert_eq!(u32::from_le_bytes(bin[nav_off + 16..nav_off + 20].try_into().unwrap()), 0, "edge_chunk_count 0");
-    assert_eq!(u16::from_le_bytes(bin[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "nav chunk_size");
+    assert_eq!(u16::from_le_bytes(bin[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "nav chunk_size pinned");
+    assert_eq!(
+        u32::from_le_bytes(bin[nav_off + 22..nav_off + 26].try_into().unwrap()) as usize,
+        nav_off + 28,
+        "profile table sits immediately after the 28-byte directory"
+    );
+    assert_eq!(bin[nav_off + 26], 4, "profile_count = the 4 default profiles");
+    assert_eq!(bin[nav_off + 27], 0, "reserved byte is 0");
+    // The empty nav section is exactly the directory + the 4-profile table.
+    assert_eq!(nav_off + nav_section_len, bin.len(), "empty nav section is dir + profile table");
 
     let mpp = f32::from_le_bytes([bin[lod_tbl], bin[lod_tbl + 1], bin[lod_tbl + 2], bin[lod_tbl + 3]]);
     assert!(mpp.is_infinite()); // coarsest layer
@@ -309,8 +329,15 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
         chunk_size: 20,
         root: Node::Leaf { bbox: (1_000_000, 1_000_000, 1_010_000, 1_010_000), features: vec![a, b] },
     }];
-    let (bin, dropped) =
-        serialize_lods(&lods, &[], 0xF800, (1_000_000, 1_000_000, 1_010_000, 1_010_000), &[], &Default::default());
+    let (bin, dropped) = serialize_lods(
+        &lods,
+        &[],
+        0xF800,
+        (1_000_000, 1_000_000, 1_010_000, 1_010_000),
+        &[],
+        &Default::default(),
+        &obc_pack::config::default_profiles(),
+    );
     assert_eq!(dropped, 1, "the overflowing feature is reported dropped");
 
     // Locate the LOD table and read its node/chunk counts + index offset.

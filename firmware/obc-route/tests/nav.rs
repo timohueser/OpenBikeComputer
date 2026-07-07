@@ -31,11 +31,12 @@ const EDGE_COST: u32 = 1_200;
 /// below the 4 800 m grid alternative (the unique optimum when present).
 const SHORTCUT_COST: u32 = 3_200;
 
-/// Serialize `graph` into a minimal v8 map (one empty geometry leaf, no styles).
+/// Serialize `graph` into a minimal v9 map (one empty geometry leaf, no styles, the default
+/// routing profiles).
 fn map_with(graph: &NavGraph) -> Vec<u8> {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
-    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph);
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, &obc_pack::config::default_profiles());
     assert_eq!(dropped, 0);
     bin
 }
@@ -385,19 +386,21 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
     assert_eq!(sink3.buf, first, "a slot overwrite leaks no state between plans");
 }
 
-/// The §8.3 record stride is 13 + 20·degree bytes — **odd + even** — so in any multi-record
-/// chunk, consecutive records alternate start-offset parity and the suite provably decodes
-/// records (and their multi-byte fields) at **odd, unaligned offsets**. That is the invariant
-/// behind the byte-wise-decode contract (PR #501's on-glass HardFault: an ARM backend
-/// `ldrd`-fusion over these bytes; fixed with `+strict-align` on the board build) — pinned here
-/// so a format change that accidentally aligns every record doesn't silently stop exercising
-/// the unaligned path. The full UB tripwire is Miri over this suite (see the module doc).
+/// The v9 §8.3 record head is 13 bytes (**odd**), so the first neighbor entry of every record
+/// begins at an **odd** offset relative to the record start. Record 0 starts at chunk offset 0, so
+/// its neighbor fields (`id u32 @+13`, `dlat i16 @+17`, `dlon i16 @+19`, `edge_id u32 @+21`, …)
+/// decode at odd, unaligned offsets — and the 15-byte (odd) entry then shifts each following
+/// record's start parity by degree, so multi-record chunks also decode record heads at odd offsets.
+/// Either way the byte-wise-decode contract (PR #501's on-glass HardFault: an ARM backend
+/// `ldrd`-fusion over these bytes; fixed with `+strict-align`) stays exercised. The full UB tripwire
+/// is Miri over this suite (see the module doc).
 #[test]
 fn record_stride_keeps_odd_offsets_exercised() {
     assert_eq!(obc_reader::NAV_NODE_FIXED_LEN % 2, 1, "the fixed record head is odd-length");
-    assert_eq!(obc_reader::NAV_NEIGHBOR_LEN % 2, 0, "neighbor entries are even-length");
-    // ⇒ record k+1 starts at (record k start) + odd ⇒ parity alternates ⇒ every ≥2-record
-    // chunk (all the grid/line fixtures here) decodes at least one odd-offset record.
+    assert_eq!(obc_reader::NAV_NEIGHBOR_LEN, 15, "v9 neighbor entries are 15 bytes");
+    // ⇒ every record's first neighbor entry begins at record_start + 13 (odd), so its multi-byte
+    // fields decode at odd, unaligned offsets. The 15-byte entry keeps consecutive record starts
+    // parity-varying, so record heads are exercised at odd offsets in multi-record chunks too.
 }
 
 /// The slimmed entry layout holds: 26 B/node (24 B entry + 2 B heap slot) plus the two
