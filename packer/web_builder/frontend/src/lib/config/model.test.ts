@@ -20,9 +20,12 @@ const sampleConfig = {
     disabled: ["highway/path"],
 };
 
+// Mirrors the OBCM v10 style schema obc-pack serves (#557): the five original
+// fields plus line_style + color2. Values are placeholders — buildConfigForSubmit
+// only reads the property *names* (its known-key set).
 const mockSchema: SchemaEnvelope = {
     schema_version: 1,
-    format_version: 6,
+    format_version: 10,
     source: "binary",
     schema: {
         $defs: {
@@ -33,6 +36,8 @@ const mockSchema: SchemaEnvelope = {
                     weight: {},
                     priority: {},
                     min_lod: {},
+                    line_style: { enum: ["solid", "dashed"], default: "solid" },
+                    color2: { $ref: "#/$defs/color" },
                 },
             },
         },
@@ -68,20 +73,46 @@ describe("buildConfigForSubmit", () => {
 
     it("strips per-style keys the served schema does not declare", () => {
         const { config } = normalizeConfig(sampleConfig);
-        config.features.highway.motorway.line_style = "dashed"; // a v6 field, v5 schema
+        config.features.highway.motorway.experimental = true; // not in the schema
         const out = buildConfigForSubmit(config, [], mockSchema);
-        expect(out.config.features.highway.motorway.line_style).toBeUndefined();
-        expect(out.strippedKeys).toEqual(["line_style"]);
+        expect(out.config.features.highway.motorway.experimental).toBeUndefined();
+        expect(out.strippedKeys).toEqual(["experimental"]);
     });
 
-    it("keeps v6 fields once the schema declares them", () => {
+    it("keeps line_style + color2 now that the v10 schema declares them", () => {
         const { config } = normalizeConfig(sampleConfig);
         config.features.highway.motorway.line_style = "dashed";
-        const v6 = structuredClone(mockSchema);
-        v6.schema.$defs.style.properties.line_style = {};
-        const out = buildConfigForSubmit(config, [], v6);
+        config.features.highway.motorway.color2 = "0x8410";
+        const out = buildConfigForSubmit(config, [], mockSchema);
         expect(out.config.features.highway.motorway.line_style).toBe("dashed");
+        expect(out.config.features.highway.motorway.color2).toBe("0x8410");
         expect(out.strippedKeys).toEqual([]);
+    });
+
+    it("round-trips an absent color2 as absent (no key, no null)", () => {
+        const { config } = normalizeConfig(sampleConfig);
+        const style = buildConfigForSubmit(config, [], mockSchema).config.features.highway.motorway;
+        expect("color2" in style).toBe(false);
+        expect(JSON.stringify(style).includes("color2")).toBe(false);
+    });
+
+    it("round-trips a present color2 (including black 0x0000, a legit color)", () => {
+        const { config } = normalizeConfig(sampleConfig);
+        config.features.highway.motorway.color2 = "0x0000"; // black is NOT "unset"
+        const style = buildConfigForSubmit(config, [], mockSchema).config.features.highway.motorway;
+        expect("color2" in style).toBe(true);
+        expect(style.color2).toBe("0x0000");
+    });
+
+    it("clearing color2 (undefined) drops the key from the submitted config", () => {
+        const { config } = normalizeConfig(sampleConfig);
+        // The StyleTable clear handler `delete`s the key; a stray present-but-
+        // undefined value must still emit as absent, not as `"color2":null`.
+        config.features.highway.motorway.color2 = undefined;
+        const out = buildConfigForSubmit(config, [], mockSchema);
+        const style = out.config.features.highway.motorway;
+        expect("color2" in style).toBe(false);
+        expect(out.strippedKeys).toEqual([]); // dropping undefined isn't "stripping"
     });
 
     it("carries the routing section through to the submitted config", () => {
