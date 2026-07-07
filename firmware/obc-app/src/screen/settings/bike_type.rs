@@ -16,8 +16,14 @@ use obc_render::{
     Surface,
 };
 
+use super::bike_icons;
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::{palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
+
+/// Art-pixel scale for the hero bike sprite (33 × 18 art px → 132 × 72 device px).
+const BIKE_SCALE: i32 = 4;
+/// Top of the profile-name value row, below the hero bike.
+const VALUE_ROW_Y: i32 = 124;
 
 /// The Bike type screen. Stateless — the value lives in [`Settings`](crate::Settings) and the name
 /// list in the App's [`NavProfiles`](crate::NavProfiles); the one row is always the cursor.
@@ -31,19 +37,20 @@ impl BikeTypeScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // Press or a turn steps the selection (press = one step forward), wrapping through the
-            // loaded map's profile names. A no-op when the map carries zero or one profile — nothing
-            // to cycle to — so a router-less / no-map device just leaves the index at 0.
-            Gesture::Press | Gesture::Turn(_) => {
+            // A turn browses the loaded map's profile names, wrapping at both ends. A no-op when the
+            // map carries zero or one profile — nothing to cycle to — so a router-less / no-map
+            // device just leaves the index at 0.
+            Gesture::Turn(n) => {
                 let count = cx.nav_profiles.len();
                 if count > 1 {
-                    let step = if let Gesture::Turn(n) = g { n } else { 1 };
                     let cur = cx.settings.bike_profile_idx as i32;
-                    cx.settings.bike_profile_idx = (cur + step).rem_euclid(count as i32) as u8;
+                    cx.settings.bike_profile_idx = (cur + n).rem_euclid(count as i32) as u8;
                 }
                 Transition::None
             }
-            Gesture::Back => Transition::Pop,
+            // Select confirms the browsed choice and closes the screen — the edits are live, so this
+            // just pops, exactly like Back (it no longer advances the selection).
+            Gesture::Press | Gesture::Back => Transition::Pop,
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
@@ -56,18 +63,31 @@ impl BikeTypeScreen {
         let idx = rx.settings.bike_profile_idx;
         let count = rx.nav_profiles.len();
 
-        // The single value row — the current profile name centred, flanked by left/right arrows so it
-        // reads as "rotate to switch" (the Units screen's affordance). The name resolves against the
-        // loaded map; an out-of-range index (a stale setting on a smaller map) shows **profile 0's
-        // name** — the profile routing actually falls back to (N3), never a name the map doesn't have.
-        let area = super::row_rect(LIST_TOP + 8, w, 50);
+        // No map loaded (or a router-less `ble` build): nothing to pick from, so say so instead of
+        // drawing an empty picker.
+        if count == 0 {
+            super::empty_state(cv, w, h, "No map profiles", "Load a map to pick a bike type");
+            return;
+        }
+
+        // The *effective* profile: profile 0 when the stored index is out of range on a smaller map
+        // (the router's fallback, N3) — so the hero bike, the value row, and the list all agree.
+        let marked = rx.nav_profiles.effective(idx);
+        let eff_name = rx.nav_profiles.name(marked).unwrap_or("");
+
+        // Hero: the pixel-art bike for the effective profile, matched by name and filling the space
+        // under the title bar. A custom profile the matcher doesn't recognise gets the generic bike.
+        bike_icons::draw(cv, bike_icons::for_name(eff_name), w / 2, TITLE_BAR_H + 12, BIKE_SCALE, INK);
+
+        // Value row — the current profile name centred, flanked by left/right arrows so it reads as
+        // "rotate to switch" (the Units screen's affordance). `write_label` shows profile 0's name for
+        // an out-of-range stored index (never a name the map doesn't have).
+        let area = super::row_rect(VALUE_ROW_Y, w, 46);
         super::row_cursor(cv, area, true, false);
         let midy = area.top_left.y + area.size.height as i32 / 2;
         let mut label: heapless::String<20> = heapless::String::new();
         rx.nav_profiles.write_label(idx, &mut label);
-        cv.text_vcentered(&label, w / 2, (area.top_left.y, 50), Font::Body, TextAlign::Center, INK);
-        // ◄ and ► as filled triangles, inset from the row edges — drawn only when there's more than
-        // one profile to move between (a single- or no-profile map has nowhere to go).
+        cv.text_vcentered(&label, w / 2, (area.top_left.y, 46), Font::Body, TextAlign::Center, INK);
         if count > 1 {
             let ax = area.top_left.x + 18;
             cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), INK);
@@ -75,30 +95,20 @@ impl BikeTypeScreen {
             cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), INK);
         }
 
-        // The full profile list below, current row highlighted — context for what the map offers, and
-        // the "N of M" sense without a separate counter. When no map profiles are resident the row is
-        // inert, so say so instead of listing nothing.
-        if count == 0 {
-            super::empty_state(cv, w, h, "No map profiles", "Load a map to pick a bike type");
-            return;
-        }
-        // The wedge marks the *effective* profile — for an out-of-range stored index that is
-        // profile 0 (the router's fallback), keeping the list consistent with the value row above.
-        let marked = rx.nav_profiles.effective(idx);
-        let mut ry = LIST_TOP + 96;
+        // The compact profile list below, current row wedge-marked — context for what the map offers
+        // and the "N of M" sense without a separate counter.
+        let mut ry = VALUE_ROW_Y + 64;
         for i in 0..count {
             let name = rx.nav_profiles.name(i as u8).unwrap_or("");
             let selected = i as u8 == marked;
             let color = if selected { INK } else { SUBTEXT };
             let x = area.top_left.x + 12;
             if selected {
-                // A small right-pointing wedge marks the active profile (the panel font has no
-                // bullet glyph; the nav-list rows use the same drawn-marker idiom).
                 let my = ry + 9;
                 cv.triangle(Point::new(x, my - 7), Point::new(x, my + 7), Point::new(x + 9, my), INK);
             }
             cv.text(name, Point::new(x + 18, ry), Font::Body, TextAlign::Left, color);
-            ry += 34;
+            ry += 30;
         }
     }
 }
@@ -133,24 +143,33 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// A turn/press cycles the index through the map's profiles, wrapping at both ends.
+    /// A turn cycles the index through the map's profiles, wrapping at both ends; Select and Back
+    /// both close the screen and a Select does **not** advance the selection (the browse-then-confirm
+    /// model — the edits are already live).
     #[test]
-    fn cycles_through_map_profiles() {
+    fn turn_cycles_select_and_back_close() {
         let profs = profiles(&["Road", "Gravel", "MTB", "Touring"]);
         let mut s = Settings::default();
         let mut scr = BikeTypeScreen::new();
         assert_eq!(s.bike_profile_idx, 0, "defaults to profile 0");
-        run(&mut scr, &mut s, &profs, Gesture::Press);
-        assert_eq!(s.bike_profile_idx, 1, "press steps forward one");
+        run(&mut scr, &mut s, &profs, Gesture::Turn(1));
+        assert_eq!(s.bike_profile_idx, 1, "a turn steps forward one detent");
         run(&mut scr, &mut s, &profs, Gesture::Turn(2));
         assert_eq!(s.bike_profile_idx, 3, "a turn walks by its detents");
         run(&mut scr, &mut s, &profs, Gesture::Turn(1));
         assert_eq!(s.bike_profile_idx, 0, "wraps past the last profile");
         run(&mut scr, &mut s, &profs, Gesture::Turn(-1));
         assert_eq!(s.bike_profile_idx, 3, "and back past the first");
+
+        // Select closes the screen without changing the browsed selection.
+        let t = run(&mut scr, &mut s, &profs, Gesture::Press);
+        assert!(matches!(t, Transition::Pop), "Select closes the screen");
+        assert_eq!(s.bike_profile_idx, 3, "Select confirms — it does not advance the selection");
+        // Back closes it too.
+        assert!(matches!(run(&mut scr, &mut s, &profs, Gesture::Back), Transition::Pop));
     }
 
-    /// With zero or one profile there is nothing to cycle to — the index stays put (the inert
+    /// With zero or one profile there is nothing to cycle to — a turn is a no-op (the inert
     /// no-map / single-profile case; "no behavior change when the map has exactly one profile").
     #[test]
     fn single_or_no_profile_is_inert() {
@@ -158,23 +177,12 @@ mod tests {
 
         let none = profiles(&[]);
         let mut s = Settings::default();
-        run(&mut scr, &mut s, &none, Gesture::Press);
         run(&mut scr, &mut s, &none, Gesture::Turn(3));
-        assert_eq!(s.bike_profile_idx, 0, "no profiles → cycling is a no-op");
+        assert_eq!(s.bike_profile_idx, 0, "no profiles → a turn is a no-op");
 
         let one = profiles(&["Road"]);
         let mut s = Settings::default();
-        run(&mut scr, &mut s, &one, Gesture::Press);
         run(&mut scr, &mut s, &one, Gesture::Turn(5));
         assert_eq!(s.bike_profile_idx, 0, "a single profile has nowhere to step");
-    }
-
-    /// Back pops the screen; the value edits are live (no save button), so nothing else to do.
-    #[test]
-    fn back_pops() {
-        let profs = profiles(&["Road", "MTB"]);
-        let mut s = Settings::default();
-        let mut scr = BikeTypeScreen::new();
-        assert!(matches!(run(&mut scr, &mut s, &profs, Gesture::Back), Transition::Pop));
     }
 }

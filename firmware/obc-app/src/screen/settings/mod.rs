@@ -30,6 +30,7 @@ use super::{palette, Ctx, Render, Screen, Transition};
 pub(super) use super::empty_state;
 
 mod add_field;
+mod bike_icons;
 mod bike_type;
 mod bluetooth;
 mod datetime;
