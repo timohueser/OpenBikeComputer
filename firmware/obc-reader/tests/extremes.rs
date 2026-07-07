@@ -1,4 +1,4 @@
-//! Adversarial / extreme-value coverage for the OBCM v5 reader.
+//! Adversarial / extreme-value coverage for the OBCM reader.
 //!
 //! `format.rs` pins the *happy-path* contract; this file drives the paths it never reaches — the
 //! no_std scratch-overflow guards, the uncached oversized-chunk branch, the cross-frame chunk-cache
@@ -11,7 +11,7 @@ use obc_reader::{
 };
 use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, pad, LodSpec, Style};
 
-const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3)];
+const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
 
 /// Build a single-LOD, single-leaf file over `node`'s bbox holding `chunk` (padded to
@@ -321,19 +321,19 @@ fn header_straddling_chunk_end_is_not_misread() {
 }
 
 /// A style table whose count byte claims more records than the file actually holds. `parse_styles`'
-/// `o + 6 > want` break must stop at the last whole record, parsing only the
+/// `o + 8 > want` break must stop at the last whole record, parsing only the
 /// styles physically present rather than reading past the table. We build a valid 2-style file,
 /// then forge the count byte up to 8: the two real records still parse, the phantom six don't
 /// appear, and the reader still constructs (a truncated table is not a hard error).
 #[test]
 fn truncated_style_table_parses_only_present_records() {
     let bytes = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
-    // style_offset is fixed at HEADER_LEN (36 in v6) by the builder; the count byte is the first byte
+    // style_offset is fixed at HEADER_LEN (40) by the builder; the count byte is the first byte
     // of the style table.
     let style_off = u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize;
     assert_eq!(style_off, obc_reader::HEADER_LEN);
     let mut forged = bytes.clone();
-    forged[style_off] = 8; // claim 8 styles; only 2 records (12 bytes) follow before the LOD table
+    forged[style_off] = 8; // claim 8 styles; only 2 records (16 bytes) follow before the LOD table
 
     let cache = MapCache::new();
     let src = SliceSource(&forged);

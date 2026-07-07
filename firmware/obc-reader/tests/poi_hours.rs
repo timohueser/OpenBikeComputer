@@ -18,7 +18,7 @@ use obcm_testkit::{
 
 const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 100_000_000, 100_000_000);
-const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3)];
+const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None)];
 
 /// A 29-byte pool blob from `flags` + per-day `(open_q, close_q)` slot pairs (Mon..Sun).
 fn blob(flags: u8, days: [[(u8, u8); 2]; 7]) -> [u8; POI_HOURS_BLOB_LEN] {

@@ -1,4 +1,4 @@
-//! Hand-written OBCM v8 byte builder shared by the `obc-reader` and `obc-render`
+//! Hand-written OBCM v10 byte builder shared by the `obc-reader` and `obc-render`
 //! integration tests.
 //!
 //! Both crates need to synthesise `.obcm` byte buffers by hand (rather than checking
@@ -15,7 +15,10 @@
 //! (`hours_pool_offset`, `hours_pool_count`), and added the tail hours-pool section
 //! (§7.5). **v8** grew the header to 40 bytes (the trailing `Nav Graph Offset`) and
 //! appended the nav-graph section (spec §8): a node quadtree over variable-length
-//! junction records plus a chunked edge pool. [`build_file`]/[`build_priority_tree`]
+//! junction records plus a chunked edge pool. **v9** reworked §8 (28-byte nav
+//! directory + profile table, 15-byte neighbor entries, pinned 512-byte nav chunks).
+//! **v10** grows the style record 6 → 8 bytes: a `dashed` flag bit + an optional
+//! `color2` u16 (spec §2, epic #556). [`build_file`]/[`build_priority_tree`]
 //! write **empty** POI + nav sections so the reader accepts them; the directory,
 //! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`],
 //! [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
@@ -30,12 +33,14 @@
 //! - [`build_bench_map`] — the deterministic two-LOD bench fixture `obc-bench` renders and
 //!   hashes (issue #327); its bytes must stay identical on every machine, forever.
 //!
-//! Style records are `(id, z_index, color_rgb565, weight, priority)`; feature encoders
-//! ([`pack_line`], [`pack_line16`], [`pack_poly`], [`pack_poly_hole`]) return one
+//! Style records are `(id, z_index, color_rgb565, weight, priority, dashed, color2)`; feature
+//! encoders ([`pack_line`], [`pack_line16`], [`pack_poly`], [`pack_poly_hole`]) return one
 //! packed feature, and [`pad`] right-pads a chunk to its `chunk_size` with `0xFF`.
 
-/// A style record: `(id, z_index, color_rgb565, weight, priority)`.
-pub type Style = (u8, i8, u16, u8, u8);
+/// A style record (OBCM v10, 8 bytes on the wire): `(id, z_index, color_rgb565, weight, priority,
+/// dashed, color2)`. `dashed` sets flag bit 2; `color2 = Some(_)` sets flag bit 3 and writes the
+/// secondary color, `None` writes `0x0000` with the bit clear.
+pub type Style = (u8, i8, u16, u8, u8, bool, Option<u16>);
 
 // The quadtree branch / empty-leaf sentinels are the format's, defined once in obc-reader
 // (issue #12) and re-exported here so the builders and their call sites keep the short names.
@@ -81,8 +86,8 @@ pub const NAV_PROFILE_LEN: usize = 52;
 /// The `Name` field width inside a §8.6 profile record: 12 bytes, `0xFF`-padded.
 pub const NAV_PROFILE_NAME_LEN: usize = 12;
 
-/// The v8 header length (bytes); the Style Table conventionally follows immediately, so it is the
-/// builders' `style_off`. Kept in lock-step with [`obc_reader::HEADER_LEN`].
+/// The OBCM header length (bytes; 40 since v8); the Style Table conventionally follows immediately,
+/// so it is the builders' `style_off`. Kept in lock-step with [`obc_reader::HEADER_LEN`].
 pub const HEADER_LEN: usize = 40;
 
 /// One LOD layer: its quadtree index (flat u32 nodes) and padded data chunks.
@@ -93,21 +98,32 @@ pub struct LodSpec {
     pub chunk_size: usize,
 }
 
-/// Pack the style table: a count byte followed by one 6-byte record per style
-/// (`id, z, color_le, weight, (priority-1) & STYLE_PRIORITY_MASK`). Shared by both file builders.
+/// Pack the style table (OBCM v10): a count byte followed by one 8-byte record per style
+/// (`id, z, color_le, weight, flags, color2_le`). `flags` = `(priority-1) & STYLE_PRIORITY_MASK`,
+/// plus bit 2 when `dashed` and bit 3 when `color2` is `Some`. `color2` writes its RGB565 value when
+/// present, else `0x0000` (ignored by the reader when bit 3 is clear). Shared by both file builders.
 fn style_table(styles: &[Style]) -> Vec<u8> {
+    use obc_reader::format::{STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK};
     let mut style_bytes = vec![styles.len() as u8];
-    for &(id, z, color, weight, priority) in styles {
+    for &(id, z, color, weight, priority, dashed, color2) in styles {
+        let mut flags = (priority - 1) & STYLE_PRIORITY_MASK;
+        if dashed {
+            flags |= STYLE_DASHED_BIT;
+        }
+        if color2.is_some() {
+            flags |= STYLE_HAS_COLOR2_BIT;
+        }
         style_bytes.push(id);
         style_bytes.push(z as u8);
         style_bytes.extend_from_slice(&color.to_le_bytes());
         style_bytes.push(weight);
-        style_bytes.push((priority - 1) & obc_reader::format::STYLE_PRIORITY_MASK);
+        style_bytes.push(flags);
+        style_bytes.extend_from_slice(&color2.unwrap_or(0).to_le_bytes());
     }
     style_bytes
 }
 
-/// The 40-byte OBCM v8 header, shared by both file builders.
+/// The 40-byte OBCM v10 header, shared by both file builders.
 ///
 /// `<4sBiiiiIBIHII`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
 /// lod_table_off, marker_color, poi_section_off, nav_section_off. `bbox` is
@@ -124,7 +140,7 @@ fn obcm_header(
 ) -> Vec<u8> {
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(9);
+    f.push(10);
     f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
     f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
     f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
@@ -473,7 +489,7 @@ pub fn build_poi_map_with_hours(
     hours_blobs: &[[u8; POI_HOURS_BLOB_LEN]],
 ) -> Vec<u8> {
     // A trivial single-leaf geometry LOD so the file is a valid map (the query never touches it).
-    let styles: &[Style] = &[(1, 0, 0xFFFF, 1, 1)];
+    let styles: &[Style] = &[(1, 0, 0xFFFF, 1, 1, false, None)];
     let base = build_file(
         bbox,
         styles,
@@ -548,10 +564,10 @@ fn push_deltas16(v: &mut Vec<u8>, deltas: &[(i16, i16)]) {
     }
 }
 
-/// Build a general multi-LOD `.obcm` (mirrors `serialize.py`). `bbox` is
+/// Build a general multi-LOD `.obcm` (mirrors `serialize.rs`). `bbox` is
 /// `(min_lon, min_lat, max_lon, max_lat)`; `styles` are
-/// `(id, z_index, color_rgb565, weight, priority)`; each [`LodSpec`] is one layer with
-/// its own quadtree index and padded chunks. The header carries [`MARKER`] as the
+/// `(id, z_index, color_rgb565, weight, priority, dashed, color2)`; each [`LodSpec`] is one layer
+/// with its own quadtree index and padded chunks. The header carries [`MARKER`] as the
 /// marker color.
 pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]) -> Vec<u8> {
     let style_off = HEADER_LEN;
@@ -602,7 +618,8 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
 /// four leaves are chunks 0–3 (the "early" chunks, all visited before NE); NE is chunk 4 (the
 /// "late" chunk). Splitting the early load across four leaves keeps every chunk under the
 /// reader's `MAX_CHUNK_BYTES` cap while still saturating the frame buffer before NE is reached.
-/// `styles` are `(id, z, color, weight, priority)`. The marker color is unused here, so it is 0.
+/// `styles` are `(id, z, color, weight, priority, dashed, color2)`. The marker color is unused here,
+/// so it is 0.
 pub fn build_priority_tree(
     bbox: (i32, i32, i32, i32),
     styles: &[Style],
@@ -922,12 +939,12 @@ fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
 pub fn build_bench_map() -> Vec<u8> {
     const CHUNK: usize = 4096; // the packer's default — every chunk stays cacheable
     let styles: [Style; 6] = [
-        (1, -10, 0xD6DA, 0, 1), // land backdrop — lowest z, fills under everything
-        (2, -5, 0x64DD, 0, 2),  // water
-        (6, 1, 0x9CD3, 0, 3),   // buildings
-        (5, 4, 0xFC00, 3, 2),   // major road, weight 3
-        (4, 3, 0xFEA0, 2, 3),   // secondary road, weight 2
-        (3, 2, 0xFFFF, 1, 4),   // minor path, weight 1 (Polyline path)
+        (1, -10, 0xD6DA, 0, 1, false, None), // land backdrop — lowest z, fills under everything
+        (2, -5, 0x64DD, 0, 2, false, None),  // water
+        (6, 1, 0x9CD3, 0, 3, false, None),   // buildings
+        (5, 4, 0xFC00, 3, 2, false, None),   // major road, weight 3
+        (4, 3, 0xFEA0, 2, 3, false, None),   // secondary road, weight 2
+        (3, 2, 0xFFFF, 1, 4, false, None),   // minor path, weight 1 (Polyline path)
     ];
 
     let mut rng = BenchRng(0x0BC0_0327_D00D_F00D); // hard-coded seed — never change casually

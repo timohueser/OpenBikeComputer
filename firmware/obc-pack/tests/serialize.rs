@@ -9,14 +9,54 @@ fn line(style_id: u8, pts: &[(f64, f64)]) -> Feature {
 
 #[test]
 fn pack_style_dict_one_style() {
-    let data = pack_style_dict(&[Style { id: 10, z_index: 50, color: 0xF9A6, weight: 4, priority: 2 }]);
-    assert_eq!(data.len(), 7); // count(1) + 6-byte record
+    let data = pack_style_dict(&[Style {
+        id: 10,
+        z_index: 50,
+        color: 0xF9A6,
+        weight: 4,
+        priority: 2,
+        dashed: false,
+        color2: None,
+    }]);
+    assert_eq!(data.len(), 9); // count(1) + 8-byte v10 record
     assert_eq!(data[0], 1); // count
     assert_eq!(data[1], 10); // id
     assert_eq!(data[2] as i8, 50); // z_index
     assert_eq!(u16::from_le_bytes([data[3], data[4]]), 0xF9A6); // color
     assert_eq!(data[5], 4); // weight
-    assert_eq!(data[6], 1); // flags = priority(2) - 1
+    assert_eq!(data[6], 1); // flags = priority(2) - 1, no dashed/color2 bits
+    assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x0000); // color2 absent ⇒ 0x0000 on the wire
+}
+
+#[test]
+fn pack_style_dict_line_style_and_color2() {
+    // Dashed + a secondary color: flag bit 2 (dashed) and bit 3 (color2-present) set over the
+    // priority bits, and the color2 u16 trails the record.
+    let data = pack_style_dict(&[Style {
+        id: 3,
+        z_index: 0,
+        color: 0x001F,
+        weight: 2,
+        priority: 3,
+        dashed: true,
+        color2: Some(0x8410),
+    }]);
+    assert_eq!(data.len(), 9);
+    assert_eq!(data[6], (3 - 1) | 0x04 | 0x08, "priority 3 + dashed bit 2 + color2 bit 3");
+    assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x8410, "color2");
+
+    // `color2 == Some(0x0000)` still sets bit 3 — black is a real secondary color, not a sentinel.
+    let data = pack_style_dict(&[Style {
+        id: 4,
+        z_index: 0,
+        color: 0x001F,
+        weight: 1,
+        priority: 1,
+        dashed: false,
+        color2: Some(0x0000),
+    }]);
+    assert_eq!(data[6] & 0x08, 0x08, "color2-present bit set even for black");
+    assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x0000);
 }
 
 #[test]
@@ -81,7 +121,7 @@ fn serialize_lods_header_single_empty_leaf() {
     );
     assert_eq!(dropped, 0);
 
-    // v9 header(40) + style count(1) + 1 LOD entry(18) + index(4) = 63, then the empty POI directory
+    // header(40) + style count(1) + 1 LOD entry(18) + index(4) = 63, then the empty POI directory
     // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
     // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty v9 nav
     // section (28-byte directory + the always-present profile table) at the tail.
@@ -92,7 +132,7 @@ fn serialize_lods_header_single_empty_leaf() {
     let nav_section_len = 28 + profile_table_len;
     assert_eq!(bin.len(), 63 + poi_dir_len + hours_pool_len + nav_section_len);
     assert_eq!(&bin[0..4], b"OBCM");
-    assert_eq!(bin[4], 9); // version
+    assert_eq!(bin[4], 10); // version
     assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 40); // style offset (40 since v8)
     assert_eq!(bin[25], 1); // lod count
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;

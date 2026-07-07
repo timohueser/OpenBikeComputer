@@ -34,11 +34,12 @@ const LINE16: &[(i32, i32)] = &[(300_000, 300_000), (300_500, 300_500), (301_000
 fn styles() -> Vec<Style> {
     vec![
         // Lowest z_index → the backdrop. Negative z and priority 1 (flags 0).
-        Style { id: 1, z_index: -2, color: 0x07E0, weight: 1, priority: 1 },
-        // Priority 4 (flags 3, the top of the clamped range).
-        Style { id: 5, z_index: 3, color: 0xF800, weight: 2, priority: 4 },
+        Style { id: 1, z_index: -2, color: 0x07E0, weight: 1, priority: 1, dashed: false, color2: None },
+        // Priority 4 (flags 3, the top of the clamped range). Dashed + a secondary color exercises
+        // the v10 flag bits (2 and 3) and the trailing color2 u16 through the whole pack→read path.
+        Style { id: 5, z_index: 3, color: 0xF800, weight: 2, priority: 4, dashed: true, color2: Some(0x8410) },
         // Mid priority; non-contiguous id exercises the sparse style lookup.
-        Style { id: 12, z_index: 0, color: 0x001F, weight: 3, priority: 2 },
+        Style { id: 12, z_index: 0, color: 0x001F, weight: 3, priority: 2, dashed: false, color2: None },
     ]
 }
 
@@ -152,7 +153,7 @@ fn header_round_trips() {
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
-    assert_eq!(r.version, 9);
+    assert_eq!(r.version, 10);
     assert_eq!(r.marker_color, MARKER);
     // bbox stored lat,lon,lat,lon in the header; the reader must hand it back
     // with lon and lat in the right fields (max_lon=2°, max_lat=1°).
@@ -169,12 +170,18 @@ fn styles_round_trip() {
 
     let s1 = r.style(1).expect("style 1");
     assert_eq!((s1.z_index, s1.color, s1.weight, s1.priority), (-2, 0x07E0, 1, 1));
+    assert!(!s1.dashed);
+    assert_eq!(s1.color2, None);
 
     let s5 = r.style(5).expect("style 5");
     assert_eq!((s5.z_index, s5.color, s5.weight, s5.priority), (3, 0xF800, 2, 4));
+    assert!(s5.dashed, "line_style survives the pack → read round trip");
+    assert_eq!(s5.color2, Some(0x8410), "color2 survives the pack → read round trip");
 
     let s12 = r.style(12).expect("style 12");
     assert_eq!((s12.z_index, s12.color, s12.weight, s12.priority), (0, 0x001F, 3, 2));
+    assert!(!s12.dashed);
+    assert_eq!(s12.color2, None);
 
     // Unused ids are absent.
     assert!(r.style(2).is_none());
