@@ -180,7 +180,11 @@
                             prop={eprop}
                             value={def[ename]}
                             onchange={(v) => {
-                                def[ename] = v;
+                                // undefined ⇒ the field is cleared (optional
+                                // color2): drop the key so it's absent from the
+                                // emitted JSON, not present-but-undefined.
+                                if (v === undefined) delete def[ename];
+                                else def[ename] = v;
                                 working.markModified();
                             }}
                         />
