@@ -132,11 +132,12 @@ pub const NAV_PROFILE_NAME_LEN: usize = 12;
 /// most eight profiles are ever resident.
 pub const NAV_MAX_PROFILES: usize = 8;
 
-/// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1). v9 pins the wire value to
-/// exactly [`NAV_CHUNK_SIZE`] (512), but the caller-owned scratch [`Reader::for_each_nav_node`]
-/// requires and R4's graph-tile cache slots stay sized at this larger bound — **N4 owns the cache
-/// geometry (2 slots × 2 KB); do not shrink it here**.
-pub const NAV_MAX_CHUNK_BYTES: usize = 2048;
+/// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1), and the byte size of one
+/// [`NavTileCache`] slot. v9 pins the wire value to exactly [`NAV_CHUNK_SIZE`] (512), so this equals
+/// it: the cache holds whole 512 B chunks and [`NavTileCache::chunk`]'s `debug_assert` guards that
+/// no larger chunk is ever routed through a slot. Pinning the two together is what lets N4 fit **8**
+/// slots in the same ~4 KB the pre-N4 `2 × 2048 B` geometry used (see [`NAV_TILE_SLOTS`]).
+pub const NAV_MAX_CHUNK_BYTES: usize = NAV_CHUNK_SIZE;
 
 /// The per-read window of [`Reader::nav_edge`]'s delta stream, bytes (a multiple of the 4-byte
 /// delta pair, so a pair never straddles two reads). Edge polylines are fetched once per route
@@ -505,12 +506,17 @@ impl<'a> NavNodeRef<'a> {
     }
 }
 
-/// Graph-tile cache slots. Two cover the router's working set: consecutive A* settles have strong
-/// spatial locality (the frontier advances through one leaf at a time), but a frontier straddling a
-/// leaf boundary ping-pongs between two chunks, which a single slot would thrash. More slots buy
-/// little for a search that only ever revisits its immediate neighborhood — and the cache lives in
-/// the device's `.bss` next to the router's ~10 kB scratch, so it stays deliberately small.
-pub const NAV_TILE_SLOTS: usize = 2;
+/// Graph-tile cache slots. **Eight** (N4, epic #533): the earlier "two slots cover the working set"
+/// assumption did not survive measurement. An A\* frontier pops the *globally* best-`f` node, so it
+/// hops between many simultaneously-active quadtree leaves, not one advancing neighborhood — a
+/// 2-slot cache thrashed at ~33 % hit rate on the real `grimsel.obcm` probe (giant-component
+/// endpoints, 2026-07-07). Rebuilding at 8 slots roughly doubled that (~55–67 % depending on the
+/// route) on the same runs; 16 bought little more (the frontier's live-leaf set is small but well
+/// above two). Because N2 pins nav
+/// `chunk_size` to 512 B, eight slots cost the **same ~4 KB** the old `2 × 2048 B` geometry did — a
+/// pure win in the device's `.bss` next to the router's scratch, no extra RAM. Eviction stays
+/// round-robin (below): at 8 slots LRU bookkeeping bought nothing measurable.
+pub const NAV_TILE_SLOTS: usize = 8;
 
 /// Empty-slot tag for [`NavTileCache`]: a chunk's absolute file offset never reaches `u32::MAX`
 /// (its whole extent must lie inside a `u32`-addressed source).
@@ -531,8 +537,9 @@ pub struct NavCacheStats {
 /// ≤ [`NAV_MAX_CHUNK_BYTES`] bytes, spec §8.1), keyed by the chunk's absolute file offset so the
 /// two chunk spaces can't collide. [`Reader::for_each_nav_node_cached`] and
 /// [`Reader::nav_edge_oriented`] stream through it so the router's per-settle spatial re-fetch
-/// doesn't re-read the same leaf from the SD (epic #116's named risk). Round-robin eviction: with
-/// two slots and a working set of at most two chunks, recency bookkeeping buys nothing.
+/// doesn't re-read the same leaf from the SD (epic #116's named risk). Round-robin eviction: across
+/// the [`NAV_TILE_SLOTS`] slots the measured hit rate matches LRU's within noise (the frontier's
+/// live-leaf set has no strong recency skew), so the cheaper cursor is kept.
 ///
 /// ~4 KB, owned by the caller (the device puts it in `.bss`); `new()` is `const` so a `static`
 /// lands zero-initialized. The tags are only meaningful against one map/source — the router
@@ -1225,10 +1232,12 @@ impl<'a> Reader<'a> {
 
     /// [`Reader::for_each_nav_node`] with the chunk read routed through a caller-owned
     /// [`NavTileCache`] instead of a bare scratch — the router's settle primitive (#465). A*'s
-    /// spatial re-fetch settles one node at a time (a degenerate one-point `view`), and
-    /// consecutive settles land in the same quadtree leaf far more often than not, so serving the
-    /// repeat from a resident slot is what keeps the SD-bound device from re-reading a chunk per
-    /// settle. Same decode, same corrupt-input posture, same reentrancy rule as the uncached walk.
+    /// spatial re-fetch settles one node at a time (a degenerate one-point `view`). It does **not**
+    /// walk a single advancing neighborhood: the heap pops the globally best-`f` node, so successive
+    /// settles scatter across the frontier's several live quadtree leaves (measured 2026-07-07 —
+    /// grimsel, giant-component endpoints — the reason N4 widened [`NAV_TILE_SLOTS`] to 8, where the
+    /// several live leaves stay resident and the per-settle re-fetch mostly hits). Same decode, same
+    /// corrupt-input posture, same reentrancy rule as the uncached walk.
     pub fn for_each_nav_node_cached(
         &self,
         view: &BBox,
@@ -2420,6 +2429,48 @@ mod tests {
         fn len(&self) -> u32 {
             self.data.len() as u32
         }
+    }
+
+    /// The N4 graph-tile cache holds [`NAV_TILE_SLOTS`] (8) distinct chunks resident at once, and
+    /// round-robin eviction drops the **oldest** on the next miss: prime 8 → re-touch all 8 hit → a
+    /// 9th evicts slot 0's chunk while the rest stay resident. Guards the widened geometry (2→8) the
+    /// measurements motivated.
+    #[test]
+    fn nav_tile_cache_holds_eight_and_evicts_round_robin() {
+        const LEN: usize = NAV_CHUNK_SIZE; // 512, = one pinned v9 nav chunk
+                                           // NAV_TILE_SLOTS + 1 distinct chunks; every byte of chunk k is `k`, so contents are checkable.
+        let mut data = [0u8; (NAV_TILE_SLOTS + 1) * LEN];
+        for (k, b) in data.iter_mut().enumerate() {
+            *b = (k / LEN) as u8;
+        }
+        let src = SliceSource(&data);
+        let mut cache = NavTileCache::new();
+        let off = |i: usize| (i * LEN) as u32;
+
+        // Prime all 8 slots: 8 misses, contents correct.
+        for i in 0..NAV_TILE_SLOTS {
+            assert_eq!(cache.chunk(&src, off(i), LEN).unwrap()[0], i as u8);
+        }
+        assert_eq!(cache.stats(), NavCacheStats { hits: 0, misses: NAV_TILE_SLOTS as u32 });
+
+        // Re-touch all 8 — every one still resident ⇒ 8 hits, no new read.
+        for i in 0..NAV_TILE_SLOTS {
+            assert_eq!(cache.chunk(&src, off(i), LEN).unwrap()[0], i as u8);
+        }
+        assert_eq!(cache.stats(), NavCacheStats { hits: NAV_TILE_SLOTS as u32, misses: NAV_TILE_SLOTS as u32 });
+
+        // A 9th distinct chunk misses and evicts the oldest (round-robin cursor = slot 0 = chunk 0).
+        assert_eq!(cache.chunk(&src, off(NAV_TILE_SLOTS), LEN).unwrap()[0], NAV_TILE_SLOTS as u8);
+        assert_eq!(cache.stats().misses, NAV_TILE_SLOTS as u32 + 1);
+
+        // Chunk 1 survived the eviction ⇒ hits; chunk 0 was evicted ⇒ re-reads. (Order matters: the
+        // chunk-0 re-read then evicts the next round-robin victim, so check the hit first.)
+        let s = cache.stats();
+        cache.chunk(&src, off(1), LEN).unwrap();
+        assert_eq!(cache.stats().hits, s.hits + 1, "a still-resident chunk hits");
+        let s = cache.stats();
+        cache.chunk(&src, off(0), LEN).unwrap();
+        assert_eq!(cache.stats().misses, s.misses + 1, "the evicted oldest re-reads");
     }
 
     /// A read that fails partway must leave the evicted slot *empty*, not poisoned with the old key

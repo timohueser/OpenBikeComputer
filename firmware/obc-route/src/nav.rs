@@ -18,8 +18,16 @@
 //! hit/miss counters are the number R4 logs on-glass).
 //!
 //! **The scratch is fixed** ([`NAV_MAX_NODES`] tracked nodes, per-target sized)
-//! because the router must coexist with the map cache and the render scratch in RAM;
-//! on a dense graph it fills and the search aborts with [`NavError::Exhausted`].
+//! because the router must coexist with the map cache and the render scratch in RAM.
+//! On a dense graph it fills — but a full table no longer aborts (N4, epic #533):
+//! the first failed insert latches a `table_full` flag and the search **continues
+//! without inserting new nodes** (relaxing already-tracked nodes — decrease-key — still
+//! works with zero allocations), so a goal already discovered can still be reached and
+//! returned (its path may then exceed the ε bound — accepted). Only when the frontier
+//! finally drains does the planner report: `table_full` ⇒ [`NavError::Exhausted`], never
+//! full ⇒ [`NavError::NoPath`]. Termination holds: the tracked set is finite, every
+//! re-open strictly lowers an integer `g ≥ 0`, and no new node ever enters once full — the
+//! frontier must empty.
 //!
 //! **Profile-weighted edges** (epic #533, N3): each edge is relaxed by the selected
 //! **bike profile's** multiplier for its §8.3 `way_kind` — `weighted = (cost_m ×
@@ -46,8 +54,9 @@
 //! multi-km routes in the same table.
 //!
 //! **The planner is resumable** (#499): planning is a [`NavPlanner`] step machine —
-//! snap → search ([`NAV_SETTLES_PER_STEP`] settles per step) → emit
-//! ([`NAV_EMIT_HOPS_PER_STEP`] edge fetches per step) → done — and the host runs
+//! snap → search (settles until [`NAV_MISSES_PER_STEP`] cache misses, capped at
+//! [`NAV_SETTLES_PER_STEP_CAP`]) → emit ([`NAV_EMIT_HOPS_PER_STEP`] edge fetches per step) → done
+//! — and the host runs
 //! **one bounded [`step`](NavPlanner::step) per loop pass**, so render/input/watchdog
 //! all run normally *between* steps and a multi-second plan no longer freezes the UI
 //! (the old sync `plan_route` starved the executor for the whole search). The
@@ -97,12 +106,23 @@ pub const NAV_EPSILON_NUM: u32 = 13;
 /// ε's denominator — see [`NAV_EPSILON_NUM`].
 pub const NAV_EPSILON_DEN: u32 = 10;
 
-/// Search-phase step budget: settles per [`NavPlanner::step`] — small enough that a
-/// step returns within a few SD chunk reads (the host's pass stays responsive and
-/// the watchdog is fed between steps), large enough that per-step overhead stays
-/// measurement noise. (Succeeds the removed per-`PROGRESS_EVERY_SETTLES` callback —
-/// the step boundary *is* the liveness point now.)
-pub const NAV_SETTLES_PER_STEP: u32 = 8;
+/// Search-phase step budget, **by cache misses** (N4, epic #533): a [`NavPlanner::step`] settles
+/// nodes until it has incurred this many [`NavTileCache`] misses, then returns. A miss is the only
+/// expensive unit of a settle — one ~512 B SD chunk read; a hit reads nothing. Budgeting by misses
+/// (read `tiles.stats().misses` delta inside the loop — no clock, no new dependency) makes a step's
+/// wall time roughly constant at ~6 SD reads whatever the cache hit rate, instead of the old fixed
+/// "8 settles per step" which paced by *work attempted* and so ran a warm step (mostly hits) far
+/// under the SD envelope while still charging a full pass. With the 8-slot cache the same real
+/// route now paces to far fewer steps (measured on grimsel: the search's step count drops several-
+/// fold), which is where the board's per-plan wall-time floor (`LOOP_MS` × steps) comes down.
+pub const NAV_MISSES_PER_STEP: u32 = 6;
+
+/// Hard settle cap per search [`NavPlanner::step`] (N4): even a **fully warm** step (every settle a
+/// cache hit ⇒ [`NAV_MISSES_PER_STEP`] never reached) returns after this many settles, so a step's
+/// worst-case pass time — pure in-RAM heap + record work, no SD — stays bounded and the host's
+/// render/input/watchdog cadence is never starved by one runaway step. 8× the old fixed budget: a
+/// warm step now does up to this much useful search where the pre-N4 code stopped at 8.
+pub const NAV_SETTLES_PER_STEP_CAP: u32 = 64;
 
 /// Emit-phase step budget: path hops (edge-geometry fetches + OBCR pushes) per
 /// [`NavPlanner::step`] — the emit is short next to the search, so a few hops per
@@ -119,8 +139,11 @@ pub enum NavError {
     /// lands here so the UX stays two-tier. (A rider cancel never produces an error at
     /// all: the host just stops stepping.)
     NoPath,
-    /// The fixed scratch filled before the goal was reached — the device's honest
-    /// "too far" (dense graph, long route, or an unreachable/hopeless target).
+    /// The fixed scratch filled and the frontier then drained without the goal ever popping — the
+    /// device's honest "too far" (dense graph, long route, or an unreachable/hopeless target). A
+    /// full table no longer aborts on sight (N4): the search continues without inserting new nodes
+    /// and only fails here once the frontier empties, so a goal reachable *before* the fill still
+    /// succeeds (see [`NavPlanner`]).
     Exhausted,
 }
 
@@ -359,8 +382,9 @@ impl<const N: usize> NavScratch<N> {
         None
     }
 
-    /// Insert a fresh entry for `id` (must not be present), un-queued. Scratch full ⇒
-    /// [`NavError::Exhausted`] — the locked abort path.
+    /// Insert a fresh entry for `id` (must not be present), un-queued. `Err(Exhausted)` when the
+    /// scratch is full — the caller ([`settle`]) latches `table_full` and drops the node rather than
+    /// aborting (N4 salvage); the seed insert in `SnapTo` is the one caller that still fails hard.
     fn insert(&mut self, id: u32, lon: i32, lat: i32) -> Result<usize, NavError> {
         if self.used as usize == N {
             return Err(NavError::Exhausted);
@@ -464,7 +488,8 @@ pub enum Step {
 pub enum NavPhase {
     /// Snapping an endpoint to the graph (one endpoint per step; a bounded ring walk each).
     Snap,
-    /// The weighted-A\* search, [`NAV_SETTLES_PER_STEP`] settles per step.
+    /// The weighted-A\* search, settling until [`NAV_MISSES_PER_STEP`] cache misses (capped at
+    /// [`NAV_SETTLES_PER_STEP_CAP`] settles).
     Search,
     /// Streaming the found path's edge geometry into the OBCR ([`NAV_EMIT_HOPS_PER_STEP`] hops
     /// per step), then the finishing header patch.
@@ -525,6 +550,10 @@ pub struct NavPlanner {
     goal_c: (i32, i32),
     /// Total settles so far — the RTT line's `settles=` figure, and the budget tests' probe.
     settles: u32,
+    /// Latched once an insert has failed — the scratch is full (N4 salvage). While set, the search
+    /// relaxes only already-tracked nodes (decrease-key); new discoveries are dropped. Distinguishes
+    /// the two frontier-drain outcomes: set ⇒ [`NavError::Exhausted`], clear ⇒ [`NavError::NoPath`].
+    table_full: bool,
     /// Emit cursors: the staged chain length, the next hop to emit (descending to 1), the summed
     /// path cost, and the cross-hop seam-dedup vertex.
     chain_len: u16,
@@ -560,6 +589,7 @@ impl NavPlanner {
             goal_id: 0,
             goal_c: (0, 0),
             settles: 0,
+            table_full: false,
             chain_len: 0,
             hop: 0,
             total_m: 0,
@@ -597,9 +627,9 @@ impl NavPlanner {
         Step::Failed(e)
     }
 
-    /// Run **one bounded unit** of planning: one endpoint snap, [`NAV_SETTLES_PER_STEP`]
-    /// settles, [`NAV_EMIT_HOPS_PER_STEP`] emit hops, or the finishing header patch — then
-    /// return. `reader`/`scratch`/`tiles`/`sink` are the caller's per-pass views over the same
+    /// Run **one bounded unit** of planning: one endpoint snap, a miss-budgeted burst of settles
+    /// ([`NAV_MISSES_PER_STEP`] misses / [`NAV_SETTLES_PER_STEP_CAP`] cap), [`NAV_EMIT_HOPS_PER_STEP`]
+    /// emit hops, or the finishing header patch — then return. `reader`/`scratch`/`tiles`/`sink` are the caller's per-pass views over the same
     /// underlying state every step (on the board: a fresh `Reader` borrow + a sink over the same
     /// open file each pass). Terminal outcomes are idempotent — further steps re-return them.
     pub fn step<const N: usize>(
@@ -641,16 +671,23 @@ impl NavPlanner {
                 self.phase = PhaseState::Search;
                 Step::Running
             }
-            // Settle up to the step budget: pop the best-f node, close it, relax its record's
-            // neighbors. Terminates: a settle closes a node or (re-open) strictly lowers an
-            // integer g ≥ 0, and the frontier is bounded by the table.
+            // Settle until the step's miss budget: pop the best-f node, close it, relax its record's
+            // neighbors. Terminates: a settle closes a node or (re-open) strictly lowers an integer
+            // g ≥ 0, the frontier is bounded by the table, and no new node enters once full.
             PhaseState::Search => {
-                for _ in 0..NAV_SETTLES_PER_STEP {
+                let miss_start = tiles.stats().misses;
+                let mut settled_this_step: u32 = 0;
+                loop {
                     let Some(idx) = scratch.heap_pop() else {
-                        // Frontier emptied without the goal — disconnected (or an empty graph).
-                        return self.fail(NavError::NoPath);
+                        // Frontier drained. A table that filled ran out of room short of the goal
+                        // (Exhausted — the device's "too far"); one that never filled means the goal
+                        // is genuinely disconnected/unreachable (NoPath). Preserves the two-tier UX.
+                        let e = if self.table_full { NavError::Exhausted } else { NavError::NoPath };
+                        return self.fail(e);
                     };
                     if scratch.entries[idx].node_id == self.goal_id {
+                        // Goal reached — success even if the table filled en route (the returned
+                        // path may then exceed the ε bound; accepted, see the type doc).
                         return match self.stage_chain(scratch, idx) {
                             Ok(()) => {
                                 self.phase = PhaseState::Emit;
@@ -660,9 +697,23 @@ impl NavPlanner {
                         };
                     }
                     self.settles = self.settles.wrapping_add(1);
+                    settled_this_step += 1;
                     scratch.entries[idx].meta |= META_CLOSED;
-                    if let Err(e) = settle::<N>(reader, scratch, tiles, idx, self.goal_c, &self.mult) {
+                    // Relax neighbors. A read failure is the only hard error; a full table latches
+                    // `table_full` and keeps searching (decrease-key on tracked nodes still relaxes).
+                    if let Err(e) =
+                        settle::<N>(reader, scratch, tiles, idx, self.goal_c, &self.mult, &mut self.table_full)
+                    {
                         return self.fail(e);
+                    }
+                    // Budget by cache misses — the only expensive unit (≈ one SD chunk read each) —
+                    // so a step's wall time is ~constant whatever the hit rate; the settle cap bounds
+                    // a fully-warm (hit-only) step. The check trails the settle, so a step always
+                    // makes at least one node of progress.
+                    if tiles.stats().misses - miss_start >= NAV_MISSES_PER_STEP
+                        || settled_this_step >= NAV_SETTLES_PER_STEP_CAP
+                    {
+                        break;
                     }
                 }
                 Step::Running
@@ -853,6 +904,12 @@ pub fn plan_route<const N: usize>(
 /// `None`) is skipped — not relaxed — so the graph stays whole for other profiles. A
 /// node the walk doesn't yield (corrupt map) simply relaxes nothing; the search
 /// continues on whatever frontier remains.
+///
+/// **Exhaustion salvage** (N4): when the scratch is full a *new* discovery can't be inserted, so it
+/// is dropped and `*table_full` is latched — but decrease-key of an already-tracked neighbor still
+/// relaxes normally (zero allocations). The only hard error is a read failure ([`NavError::NoPath`]);
+/// running out of table is no longer an error here — the caller drains the frontier and maps a
+/// latched `table_full` to [`NavError::Exhausted`] then.
 #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn settle<const N: usize>(
     reader: &Reader,
@@ -861,14 +918,15 @@ fn settle<const N: usize>(
     idx: usize,
     goal_c: (i32, i32),
     mult: &ProfileMult,
+    table_full: &mut bool,
 ) -> Result<(), NavError> {
     let settled = scratch.entries[idx];
     let view = BBox { min_lon: settled.lon, min_lat: settled.lat, max_lon: settled.lon, max_lat: settled.lat };
-    // The walk callback can't return early, so exhaustion is latched and re-raised after.
-    let mut full = false;
     reader
         .for_each_nav_node_cached(&view, tiles, |n| {
-            if n.id != settled.node_id || full {
+            // Idempotent under N2's bin-packed chunks (a node may be yielded more than once when two
+            // leaves share a chunk): only the settled node's own record relaxes anything.
+            if n.id != settled.node_id {
                 return;
             }
             for nb in n.neighbors() {
@@ -901,6 +959,10 @@ fn settle<const N: usize>(
                             }
                         }
                     }
+                    // A *new* node: insert only while the table has room. Once full, drop it and
+                    // latch — the search continues, relaxing tracked nodes but adding no new ones
+                    // (this is what makes the frontier provably drain: no new nodes, every re-open
+                    // strictly lowers an integer g ≥ 0).
                     None => match scratch.insert(nb.id, nb.lon, nb.lat) {
                         Ok(j) => {
                             let e = &mut scratch.entries[j];
@@ -910,15 +972,12 @@ fn settle<const N: usize>(
                             e.edge_used = nb.edge_id;
                             scratch.heap_push(j);
                         }
-                        Err(_) => full = true,
+                        Err(_) => *table_full = true,
                     },
                 }
             }
         })
         .map_err(|_| NavError::NoPath)?;
-    if full {
-        return Err(NavError::Exhausted);
-    }
     Ok(())
 }
 
