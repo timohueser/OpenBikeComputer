@@ -148,10 +148,11 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     let (pois, poi_dropped) = poi::dedupe(poi_cands);
     println!("{}", poi::format_counts(&pois, poi_dropped));
 
-    // --- Nav graph: junctions + deduped edges from the routable ways. ---
-    // Serialized into the §8 nav section. Logged alongside the POI counts.
-    let nav_graph = nav::build_graph(&routable_ways);
-    println!("{}", nav::format_summary(&nav_graph));
+    // --- Nav graph: junctions + deduped edges from the routable ways, then
+    // island pruning + v9-guarantee edge splits ([`nav::build_graph`]). Serialized
+    // into the §8 nav section. Logged (with component + kinds stats) alongside POIs.
+    let (nav_graph, nav_stats) = nav::build_graph(&routable_ways);
+    println!("{}", nav::format_summary(&nav_graph, &nav_stats));
 
     Ok(Ingested { features, coastlines, pois, nav_graph })
 }
@@ -166,11 +167,11 @@ fn push_routable_way(w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: 
     if refs.len() < 2 {
         return;
     }
-    if !nav::is_routable(w.tags()) {
-        return;
-    }
+    // Classify once (routability + way-kind byte). `None` ⇒ not routable — this is
+    // the only place tags exist, so the kind is captured here or never.
+    let Some(kind) = nav::classify(w.tags()) else { return };
     let coords_udeg = coords.iter().map(|&(x, y)| (poi::to_udeg(x), poi::to_udeg(y))).collect();
-    out.push(RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg });
+    out.push(RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg, kind });
 }
 
 /// Classify one node's tags against the POI table; push a candidate on match.
