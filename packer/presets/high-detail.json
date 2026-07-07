@@ -36,8 +36,8 @@
             "cycleway": {"z_index": 26, "color": "0x501F", "weight": 2, "min_lod": 1, "priority": 3}
         },
         "railway": {
-            "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2},
-            "light_rail": {"z_index": 36, "color": "0x0000", "weight": 1, "min_lod": 2, "priority": 3},
+            "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2, "line_style": "dashed", "color2": "0xFFFF"},
+            "light_rail": {"z_index": 36, "color": "0x0000", "weight": 1, "min_lod": 2, "priority": 3, "line_style": "dashed", "color2": "0xFFFF"},
             "subway": {"z_index": 35, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3},
             "tram": {"z_index": 31, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3}
         },
