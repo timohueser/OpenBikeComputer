@@ -237,10 +237,13 @@ builds on it:
   (LL crypto RNG), and a raft of PPI/PPIB channels (grouped in `main.rs`, consumed by
   `ble::run`). The HF **crystal** is an MPSL hard requirement (`HfclkSource::ExternalXtal`) —
   the `ble` build's boot config sets it; non-BLE builds keep the internal RC.
-- **RAM.** The `ble` build's statics end ~104 KB in (vs ~210 KB for the map build in 244 KB) —
-  the map plane's exclusion is what buys that. The budget assert in `main.rs` counts the BLE
-  residents (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this DK at compile time; the
-  512 KB LM20 relaxes the `has_map` line in `build.rs` to run both planes together.
+- **RAM.** The map plane compiles into every build now (#270), so on the `ble` build the map and
+  BLE stack are resident together. The budget assert in `main.rs` sums the map-plane residents
+  (`MAP_RESIDENT`) and the BLE stack's (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this
+  DK at compile time if they overrun the carve. The one piece the `ble` build drops is the
+  on-device router (`has_nav`): its ~14.3 KB of `NAV_*` statics don't fit beside the BLE stack on
+  the 256 KB DK (see `build.rs`); the 512 KB LM20 relaxes the `has_nav` gate to run the router on
+  every build too.
 
 ## BLE — board-specific notes & on-glass verification
 
