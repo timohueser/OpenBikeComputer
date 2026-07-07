@@ -1,8 +1,12 @@
 //! **The LS021B7DD02 FLPR display backend, driving the real app's map/ride render.**
 //!
 //! `main.rs` runs the real [`obc_app::App`](obc_app) on the reflective LS021 panel through the
-//! board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) seam — no panel-specific code in
-//! the map plane.
+//! board-agnostic [`DisplayDriver`](obc_platform::DisplayDriver) seam (in `obc-platform`) — no
+//! panel-specific code in the map plane. This crate's [`Ls021Flpr`] is one of its two backends; the
+//! simulator is the other.
+//!
+//! The seam's [`DisplayDriver`] impl (`present` / `present_overlay`) lives at the bottom of this
+//! file — a thin adapter over the panel methods below, so the whole LS021 backend is one module.
 //!
 //! What lives here is everything that talks to the **FLPR** (the nRF54L15's VPR RISC-V coprocessor):
 //!   - the cross-core [`Control`] block + the dirty-row span list (**contract v2**, issue #347 — the
@@ -20,8 +24,8 @@
 //!     those spans automatically from a per-row hash of the last-pushed frame, so an idle redraw
 //!     pushes only the rows that actually changed.
 //!
-//! The `DisplayDriver` adapter (present / present_overlay) lives in `display::ls021_flpr`; this root
-//! module owns the FLPR transport it calls into.
+//! The `DisplayDriver` adapter (present / present_overlay) is folded in at the bottom of this module;
+//! the rest owns the FLPR transport it calls into.
 //!
 //! **COM stays on the M33** (`com::com_task`) and **is not here** — if the FLPR ever faults, COM must
 //! keep alternating so the panel never takes a DC bias. The caller owns COM + the high-priority
@@ -84,7 +88,7 @@ use obc_platform::ls021_wire::WIDTH;
 // backend re-quantises it back into the framebuffer.
 // `RowDiff` is the self-diffing present store: a per-row hash of the last-pushed frame so a present
 // pushes only the rows that actually changed.
-use obc_platform::{composite_overlay_window, Band, RowDiff};
+use obc_platform::{composite_overlay_window, Band, DisplayDriver, OverlayRegion, RowDiff};
 // The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
 // re-quantised overlay window lands on the panel's RGB222 gamut exactly as the map style cards do.
 use obc_reader::rgb565_to_device64;
@@ -156,23 +160,25 @@ const DMSTATUS_ALLHALTED: u32 = 1 << 9; // DMSTATUS: the hart acknowledged the h
 /// halt is a courtesy (a clean instruction boundary), the reset is the actual guarantee.
 const HALT_DEADLINE: Duration = Duration::from_millis(10);
 
-// ── Frame geometry. The framebuffer is the seam's `display::FRAME_W × FRAME_H` frame; the wire-word
-//    counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248) come from `obc_platform::ls021_wire`.
-//    The static asserts pin the seam geometry to the protocol constants it must equal, so the frame the
-//    app renders can never silently fork from the frame this backend scans. ──
+// ── Frame geometry. The framebuffer is the seam's `obc_platform::FRAME_W × FRAME_H` frame; the
+//    wire-word counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248) come from
+//    `obc_platform::ls021_wire`. The static asserts pin the seam geometry to the protocol constants it
+//    must equal, so the frame the app renders can never silently fork from the frame this backend
+//    scans. ──
 /// Visible pixel rows the FLPR scans per frame — the `status` the M33 cross-checks, and the
 /// framebuffer height. The blob's gate scan is hard-wired to 320 rows, so the seam's `FRAME_H` must
 /// equal it (asserted below).
 pub const ROWS_PER_FRAME: u32 = 320;
 /// Framebuffer width = the seam's frame width (re-exported for the resident-plane sizing in the app).
-pub const FB_W: usize = crate::display::FRAME_W;
+pub const FB_W: usize = obc_platform::FRAME_W;
 /// Framebuffer height = the seam's frame height = the visible row count.
-pub const FB_H: usize = crate::display::FRAME_H;
+pub const FB_H: usize = obc_platform::FRAME_H;
 // The wire pack consumes exactly one `ls021_wire::WIDTH`-pixel row per framebuffer row, and the FLPR
-// blob scans exactly `ROWS_PER_FRAME` gate lines — the seam's frame must match both.
-const _: () = assert!(FB_W == WIDTH, "display::FRAME_W diverged from the LS021 wire row width");
+// blob scans exactly `ROWS_PER_FRAME` gate lines — the seam's frame must match both. (`obc_platform`
+// itself already asserts `ls021_wire::WIDTH == FRAME_W`; this pins the FLPR gate-scan height too.)
+const _: () = assert!(FB_W == WIDTH, "obc_platform::FRAME_W diverged from the LS021 wire row width");
 const _: () =
-    assert!(FB_H == ROWS_PER_FRAME as usize, "display::FRAME_H diverged from the FLPR blob's 320-row gate scan");
+    assert!(FB_H == ROWS_PER_FRAME as usize, "obc_platform::FRAME_H diverged from the FLPR blob's 320-row gate scan");
 
 /// Max overlay region [`push_overlay`](Ls021Flpr::push_overlay)'s composite scratch holds — the hold
 /// bulge's right-edge window (16 cols × 192 rows). A region must fit this (asserted);
@@ -385,8 +391,8 @@ fn dump_flpr_state(seq: u32) {
 /// the whole frame into it (the map path writes it directly as device-64 via [`fb_mut`](Self::fb_mut)),
 /// and [`push_frame`](Self::push_frame) / [`push_spans`](Self::push_spans) hand it to the FLPR to
 /// scan directly (`fb_addr` + the span list, then await the ack — #347). The board-agnostic
-/// [`DisplayDriver`](crate::display::DisplayDriver) impl (present / present_overlay) lives in
-/// `display::ls021_flpr`.
+/// [`DisplayDriver`](obc_platform::DisplayDriver) impl (present / present_overlay) is at the bottom
+/// of this file.
 pub struct Ls021Flpr<'b> {
     /// Resident RGB222 (device-64) frame plane, `FB_W × FB_H`. `fb_mut` writes it; the FLPR reads
     /// it directly during a push (`push_frame`/`push_spans` publish its address + await the ack).
@@ -564,7 +570,7 @@ impl<'b> Ls021Flpr<'b> {
         self.diff.reset();
     }
 
-    /// The **self-diffing present** behind [`DisplayDriver::present`](crate::display::DisplayDriver):
+    /// The **self-diffing present** behind [`DisplayDriver::present`](obc_platform::DisplayDriver):
     /// re-hash every framebuffer row against the [`RowDiff`] store and push only the rows that
     /// actually changed, optionally clipping the live hold bulge's rows out (`exclude`) so
     /// [`push_overlay`](Self::push_overlay) owns them. The first call after boot / a
@@ -573,8 +579,8 @@ impl<'b> Ls021Flpr<'b> {
     ///
     /// The diff/clip/fallback skeleton is the shared [`RowDiff::diff_clipped`] (see its docs for the
     /// exclude semantics — the store is updated for the clipped rows too, so the trailing clear finds
-    /// it already agreeing). Reached only through the seam's `present(exclude)` — `pub(crate)` solely
-    /// for the `display::ls021_flpr` adapter. Returns `false` on a transport fault (a stalled FLPR)
+    /// it already agreeing). Reached only through the seam's `present(exclude)`, the
+    /// [`DisplayDriver`] impl below. Returns `false` on a transport fault (a stalled FLPR)
     /// so the caller keeps the last frame and retries.
     pub(crate) async fn present_within(&mut self, exclude: Option<(u16, u16)>) -> bool {
         let mut scratch = [(0u16, 0u16); MAX_DIRTY_SPANS];
@@ -658,5 +664,35 @@ impl<'b> Ls021Flpr<'b> {
             }
         }
         ok
+    }
+}
+
+// ── The board-agnostic display seam. A thin adapter over the panel methods above: the FLPR launch +
+//    direct-fb transport stay this crate's business, but the map/ride app reaches glass only through
+//    `obc_platform::DisplayDriver` (the panel-swap point — the simulator is the other backend). The
+//    only LS021-specific code is the device-64 → 6-line wire pack the pushes drive; the overlay
+//    composite step is the shared `obc_platform::composite_overlay_window`. ──
+impl DisplayDriver for Ls021Flpr<'_> {
+    fn fb_mut(&mut self) -> &mut [u8] {
+        Ls021Flpr::fb_mut(self)
+    }
+
+    async fn present(&mut self, exclude: Option<(u16, u16)>) -> bool {
+        // Self-diffing present: push only the rows that changed since the last present, going around
+        // a live bulge's rows (`exclude`) so the map plane's overlay composite owns them. Awaits the
+        // FLPR's EGU20 frame ack — the M33 runs other futures for the whole scan (#347).
+        self.present_within(exclude).await
+    }
+
+    /// Re-present the overlay rectangle's **rows** with the bulge composited: the LS021
+    /// can't latch a sub-span of columns, so the FLPR rewrites the full-width rows `[y0, y0+rows)`
+    /// (only `[x0, x0+w)` carry the overlay) and fast-forwards the gate over the rest — see
+    /// [`push_overlay`](Ls021Flpr::push_overlay) for the stack-frugal, lock-once composite. The hold
+    /// bulge is **not** composited in `present`: it rides `present_overlay` on its own plane, so the
+    /// framebuffer stays the clean map.
+    async fn present_overlay(&mut self, region: OverlayRegion, draw_overlay: &mut dyn FnMut(&mut Band)) -> bool {
+        // Deliberately completes synchronously inside the async fn: the composite scratch + save
+        // window must stay stack transients, not task-future state (see `push_overlay`'s doc).
+        self.push_overlay(region.x0, region.y0, region.w, region.rows, draw_overlay)
     }
 }
