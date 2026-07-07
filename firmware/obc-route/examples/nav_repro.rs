@@ -55,10 +55,11 @@ fn stepped<const N: usize>(reader: &Reader, from: (i32, i32), to: (i32, i32)) {
     };
     let ((sid, sc), (gid, gc)) = planner.endpoints();
     let stats = tiles.stats();
+    let (eps_num, eps_den) = planner.epsilon_used();
     println!("  stepped N={N}:");
     println!("    snap: start id={sid} at ({},{})  goal id={gid} at ({},{})", sc.0, sc.1, gc.0, gc.1);
     println!(
-        "    outcome: {:?} | settles={} | steps snap/search/emit = {}/{}/{} | tiles {} hit / {} miss",
+        "    outcome: {:?} | settles={} (cumulative) | eps={eps_num}/{eps_den} | steps snap/search/emit = {}/{}/{} | tiles {} hit / {} miss",
         outcome,
         planner.settles(),
         steps_by_phase[0],

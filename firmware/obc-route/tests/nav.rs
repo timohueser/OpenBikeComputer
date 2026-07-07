@@ -1014,3 +1014,275 @@ fn road_vs_mtb_diverge_over_grimsel() {
     assert_ne!(pts_road, pts_mtb, "Road vs MTB must pick different polylines here");
     assert_ne!(road.total_distance_m, mtb.total_distance_m, "the two profiles' picks differ in raw ground length too");
 }
+
+// ---------------------------------------------------------------------------------------------
+// ε-escalation retry ladder (epic #533, N8). On `NavError::Exhausted` (the fixed table filled then
+// the frontier drained short of the goal) the planner retries the SAME snapped endpoints at the
+// next `NAV_EPSILON_LADDER` rung (1.3× → 2.0× → 3.0×), keeping the warm tile cache and accumulating
+// `settles`. `NavError::NoPath` (disconnected — the table never filled) never retries. The fixtures
+// below are diagonal grids: A* on a uniform grid expands the whole diamond of monotone-optimal nodes
+// at ε = 1.3 but only a narrow band at higher ε, so a fixed sub-diamond table exhausts tight and
+// completes greedy — the deterministic ε-sensitive exhaustion shape.
+// ---------------------------------------------------------------------------------------------
+
+/// A full `rows × cols` 4-connected grid (node id = `row*cols + col`), every edge one `EDGE_COST`
+/// hop of the given `kind`, one nudged interior shape point per edge (survives the decimator). The
+/// diagonal corner-to-corner route over it is the ε-sensitive exhaustion fixture.
+fn grid_diag(rows: i32, cols: i32, kind: u8) -> NavGraph {
+    let mut nodes = Vec::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            nodes.push(Node { id: (row * cols + col) as u32, coord: at(row, col) });
+        }
+    }
+    let mut edges = Vec::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            let a = (row * cols + col) as u32;
+            if col < cols - 1 {
+                let (ca, cb) = (at(row, col), at(row, col + 1));
+                let mid = ((ca.0 + cb.0) / 2, ca.1 + 500);
+                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
+            }
+            if row < rows - 1 {
+                let (ca, cb) = (at(row, col), at(row + 1, col));
+                let mid = (ca.0 + 500, (ca.1 + cb.1) / 2);
+                edges.push(Edge { a, b: a + cols as u32, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
+            }
+        }
+    }
+    NavGraph { nodes, edges }
+}
+
+/// Same diagonal grid but with a **cheap bottom corridor**: the bottom row + all verticals are cheap
+/// (`K_CYCLE`, 1.0×), every other horizontal is expensive (`K_PRIMARY`). The true optimum dives to
+/// the bottom row and runs across it; a greedy (high-ε) search cuts diagonally through the expensive
+/// interior — so an escalated route is genuinely *suboptimal but bounded*, the bound-per-rung case.
+fn grid_diag_mixed(rows: i32, cols: i32) -> NavGraph {
+    let mut g = grid_diag(rows, cols, K_CYCLE);
+    for e in &mut g.edges {
+        let (ra, ca) = ((e.a as i32) / cols, (e.a as i32) % cols);
+        let (rb, _cb) = ((e.b as i32) / cols, (e.b as i32) % cols);
+        let horizontal = ra == rb;
+        if horizontal && ra != rows - 1 {
+            e.kind = K_PRIMARY; // interior horizontals are the expensive class
+        }
+        let _ = ca;
+    }
+    g
+}
+
+/// Plain Dijkstra over a fixture graph with the profile's weighted edge costs — the in-test optimum
+/// the ε bound is measured against (O(n²), n small).
+fn dijkstra_weighted(graph: &NavGraph, prof: &NavProfile, goal: usize) -> u32 {
+    let n = graph.nodes.len();
+    let mut adj = vec![Vec::<(usize, u32)>::new(); n];
+    for e in &graph.edges {
+        let w = weighted(e.length_m, e.kind, prof);
+        adj[e.a as usize].push((e.b as usize, w));
+        adj[e.b as usize].push((e.a as usize, w));
+    }
+    let mut dist = vec![u32::MAX; n];
+    let mut done = vec![false; n];
+    dist[0] = 0;
+    for _ in 0..n {
+        let Some(u) = (0..n).filter(|&i| !done[i] && dist[i] != u32::MAX).min_by_key(|&i| dist[i]) else { break };
+        done[u] = true;
+        for &(v, w) in &adj[u] {
+            dist[v] = dist[v].min(dist[u].saturating_add(w));
+        }
+    }
+    dist[goal]
+}
+
+/// A stepped-ladder plan outcome: `(result, epsilon_used, cumulative_settles,
+/// settles_at_first_escalation, obcr_bytes)`. `settles_at_first_escalation` is `None` when the plan
+/// never escalated (a first-try success or a fast `NoPath`).
+type LadderOutcome = (Result<obc_route::RouteStats, NavError>, (u32, u32), u32, Option<u32>, Vec<u8>);
+
+/// Step a plan to its terminal outcome on an `N`-slot table, watching `epsilon_used()` change so the
+/// caller can see the rung ladder.
+fn plan_ladder<const N: usize>(bytes: &[u8], from: (i32, i32), to: (i32, i32), profile_idx: u8) -> LadderOutcome {
+    use obc_route::nav::Step;
+    let src = SliceSource(bytes);
+    let tables = MapTables::parse(&src).expect("a serialized v9 map parses");
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = Box::new(NavScratch::<N>::new());
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let mut planner = NavPlanner::new(from, to, "x", profile_idx);
+    let mut eps = planner.epsilon_used();
+    let mut first_escalation: Option<u32> = None;
+    let res = loop {
+        let step = planner.step(&r, &mut scratch, &mut tiles, &mut sink);
+        if planner.epsilon_used() != eps {
+            first_escalation.get_or_insert(planner.settles());
+            eps = planner.epsilon_used();
+        }
+        match step {
+            Step::Running => {}
+            Step::Done(s) => break Ok(s),
+            Step::Failed(e) => break Err(e),
+        }
+    };
+    (res, planner.epsilon_used(), planner.settles(), first_escalation, sink.buf)
+}
+
+/// **Escalation succeeds** — a diagonal grid whose ε = 1.3 diamond overruns a 50-slot table but
+/// whose ε = 2.0 corridor fits: the plan exhausts at rung 0, escalates once, and completes at 2.0×,
+/// reporting `epsilon_used() == (2, 1)`. `settles` is **cumulative** — the exhausted rung-0 pass
+/// alone fills the table (≈ N settles) before the successful rung-1 pass adds more, so the total
+/// exceeds both N and the settles reported the instant it escalated (a single-search counter, reset
+/// per rung, could report neither).
+#[test]
+fn escalation_succeeds_on_second_rung() {
+    let bytes = map_with(&grid_diag(9, 12, 0));
+    let from = (at(0, 0).0 + 100, at(0, 0).1 - 100);
+    let goal = at(8, 11);
+    let to = (goal.0 - 100, goal.1 + 100);
+    let (res, eps, settles, first_esc, obcr) = plan_ladder::<50>(&bytes, from, to, 0);
+    res.expect("the ε = 2.0 rung completes the route the tight bound couldn't fit");
+    assert_eq!(eps, (2, 1), "the plan escalated exactly one rung: 1.3 exhausted, 2.0 completed");
+    assert!(!obcr.is_empty(), "a completed plan emits an OBCR");
+    let escalated_at = first_esc.expect("the plan escalated, so a first-escalation settle count exists");
+    assert!(settles > escalated_at, "settles accumulated across the retry (cumulative {settles} > {escalated_at})");
+    assert!(settles > 50, "cumulative settles exceed the table size — a single sub-N success never could");
+}
+
+/// **Ladder exhausts honestly** — a 20-slot table can't fit even the ε = 3.0 corridor of the same
+/// diagonal grid, so all three rungs exhaust and the plan fails `Exhausted` at the top of the ladder
+/// (`epsilon_used() == (3, 1)`). `settles` is the honest total burned across the three passes.
+#[test]
+fn ladder_exhausts_honestly_at_top_rung() {
+    let bytes = map_with(&grid_diag(9, 12, 0));
+    let from = (at(0, 0).0 + 100, at(0, 0).1 - 100);
+    let goal = at(8, 11);
+    let to = (goal.0 - 100, goal.1 + 100);
+    let (res, eps, settles, _, obcr) = plan_ladder::<20>(&bytes, from, to, 0);
+    assert_eq!(res, Err(NavError::Exhausted), "too dense for every rung ⇒ honest Exhausted");
+    assert_eq!(eps, (3, 1), "the ladder climbed to and failed at the top rung");
+    assert!(obcr.is_empty(), "an exhausted plan writes nothing");
+    assert!(settles > 20, "three exhaustion passes burned more than one table's worth of settles ({settles})");
+}
+
+/// **No retry on disconnect** — two components each in snap range of an endpoint but not of each
+/// other: the frontier drains without the table ever filling, so the terminal is `NoPath` and the
+/// planner fails **immediately at rung 0** (`epsilon_used() == (13, 10)`) — retrying a greedier ε
+/// can't connect an island, and must not triple the island-case latency.
+#[test]
+fn no_retry_on_disconnect_fails_fast_at_rung_zero() {
+    let a0 = (500_000, 500_000);
+    let a1 = (505_000, 500_000);
+    let b0 = (550_000, 500_000);
+    let b1 = (555_000, 500_000);
+    let graph = NavGraph {
+        nodes: vec![
+            Node { id: 0, coord: a0 },
+            Node { id: 1, coord: a1 },
+            Node { id: 2, coord: b0 },
+            Node { id: 3, coord: b1 },
+        ],
+        edges: vec![
+            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0 },
+            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0 },
+        ],
+    };
+    let bytes = map_with(&graph);
+    let (res, eps, _, first_esc, obcr) =
+        plan_ladder::<{ obc_route::NAV_MAX_NODES }>(&bytes, (a0.0 + 100, a0.1), (b0.0 - 100, b0.1), 0);
+    assert_eq!(res, Err(NavError::NoPath), "disconnected ⇒ NoPath");
+    assert_eq!(eps, (13, 10), "NoPath never escalates — the plan stays at the tight rung 0");
+    assert!(first_esc.is_none(), "the plan never retried");
+    assert!(obcr.is_empty());
+}
+
+/// **Bound per rung** — the ε bound is measured against the *rung the search ends on*, not a fixed
+/// 1.3. On the cheap-bottom-corridor mixed grid a small table forces escalation to ε = 3.0 and the
+/// greedy pass takes a genuinely **suboptimal** interior diagonal; a large table completes optimally
+/// at 1.3. In both cases the found weighted cost stays within `epsilon_used()` × the in-test
+/// Dijkstra optimum — the N3 bound test parameterized over the ladder.
+#[test]
+fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
+    let (rows, cols) = (7, 10);
+    let graph = grid_diag_mixed(rows, cols);
+    let prof = profile("mixed", &[(K_PRIMARY, 32), (K_CYCLE, 16)]); // primary 2.0×, cycleway 1.0×
+    let bytes = map_with_profiles(&graph, std::slice::from_ref(&prof));
+    let from = (at(0, 0).0 + 100, at(0, 0).1 - 100);
+    let goal_n = ((rows - 1) * cols + (cols - 1)) as usize;
+    let goal = at(rows - 1, cols - 1);
+    let to = (goal.0 - 100, goal.1 + 100);
+    let reference = dijkstra_weighted(&graph, &prof, goal_n);
+    assert!(reference > 0 && reference != u32::MAX, "the reference is a real finite cost");
+
+    // Reconstruct the found path's node sequence from the emitted geometry and sum its weighted cost.
+    let found_weighted = |obcr: &[u8]| -> u32 {
+        let pts = route_points(obcr);
+        let mut seq: Vec<u32> = Vec::new();
+        for pt in &pts {
+            if let Some(node) = graph.nodes.iter().find(|nd| nd.coord == (pt.lon, pt.lat)) {
+                if seq.last() != Some(&node.id) {
+                    seq.push(node.id);
+                }
+            }
+        }
+        seq.windows(2)
+            .map(|w| {
+                let e = graph
+                    .edges
+                    .iter()
+                    .find(|e| (e.a == w[0] && e.b == w[1]) || (e.a == w[1] && e.b == w[0]))
+                    .expect("consecutive nodes share an edge");
+                weighted(e.length_m, e.kind, &prof)
+            })
+            .sum()
+    };
+
+    // Rung 2 (ε = 3.0): a 40-slot table exhausts rungs 0 and 1, completes greedy — a suboptimal path.
+    let (res, eps, _, _, obcr) = plan_ladder::<40>(&bytes, from, to, 0);
+    res.expect("the ε = 3.0 rung completes the mixed grid");
+    assert_eq!(eps, (3, 1), "the small table drove the plan to the top rung");
+    let found = found_weighted(&obcr);
+    assert!(found > reference, "the escalated greedy path is genuinely suboptimal (found {found} > opt {reference})");
+    assert!(
+        found <= reference * eps.0 / eps.1,
+        "found weighted {found} exceeds the ε = {}/{} bound over Dijkstra optimum {reference}",
+        eps.0,
+        eps.1
+    );
+
+    // Rung 0 (ε = 1.3): a roomy table completes optimally on the first try.
+    let (res, eps, _, first_esc, obcr) = plan_ladder::<120>(&bytes, from, to, 0);
+    res.expect("a roomy table completes at rung 0");
+    assert_eq!(eps, (13, 10), "no escalation with room to spare");
+    assert!(first_esc.is_none());
+    let found = found_weighted(&obcr);
+    assert_eq!(found, reference, "at ε = 1.3 with a roomy table the found path is the optimum here");
+    assert!(found <= reference * eps.0 / eps.1);
+}
+
+/// **Success path untouched** — a route that completes at ε = 1.3 must be indistinguishable from a
+/// pre-N8 plan: it takes rung 0 (`epsilon_used() == (13, 10)`, no retry), and its emitted OBCR is
+/// byte-for-byte the one-shot output (the existing exact-geometry fixtures — `grid_route_matches_
+/// known_optimum_and_round_trips`, `shortcut_wins_…` — pin the bytes themselves and still pass
+/// unchanged, so the pin here is the *no-escalation* guarantee on that same shape).
+#[test]
+fn first_try_success_takes_rung_zero_unchanged() {
+    let bytes = map_with(&grid3(true));
+    let (c0, c8) = (at(0, 0), at(2, 2));
+    let (from, to) = ((c0.0 + 100, c0.1), (c8.0 - 100, c8.1));
+
+    // The one-shot reference (the pre-N8 path — plain plan_route is unchanged for a 1.3 success).
+    // Same name "x" as `plan_ladder` so the comparison is of route bytes, not the header name field.
+    let (reference, one_shot, _) = plan(&bytes, from, to, "x");
+    let reference = reference.expect("the shortcut grid plans at 1.3");
+
+    // The stepped ladder path over the identical request.
+    let (res, eps, settles, first_esc, obcr) = plan_ladder::<{ obc_route::NAV_MAX_NODES }>(&bytes, from, to, 0);
+    let route = res.expect("still plans");
+    assert_eq!(eps, (13, 10), "a 1.3 success never escalates — the ladder is invisible on the success path");
+    assert!(first_esc.is_none(), "no retry happened");
+    assert_eq!(route.total_distance_m, reference.total_distance_m, "same route as pre-N8");
+    assert_eq!(obcr, one_shot, "byte-identical OBCR to the unchanged one-shot plan");
+    assert!(settles > 0 && settles < obc_route::NAV_MAX_NODES as u32, "a single search, well within one table");
+}
