@@ -35,7 +35,8 @@ use obc_reader::{MapCache, MapTables, Reader};
 use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 use crate::display::{DisplayDriver, FRAME_H, FRAME_W};
-use crate::planes::{MapDisplay, GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
+use crate::input_plane::{GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
+use crate::map_plane::MapDisplay;
 use crate::{sd, stackmeter, SharedStore, SharedStoreMutex};
 
 // ── Hardware watchdog (#349): the last-resort net under a wedged plane. The ride loop feeds it,
