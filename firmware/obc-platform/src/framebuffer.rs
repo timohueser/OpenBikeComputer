@@ -372,6 +372,28 @@ mod tests {
         }
     }
 
+    /// Exhaustive pin over **all 65,536** RGB565 values: the panel-plane pack must agree with
+    /// `obc_reader::rgb565_to_device64` (the simulator preview's quantizer) at the 6-bit palette
+    /// index. The two crates implement the same RGB565→device-64 quantization independently — this
+    /// byte pack vs. the reader's preview triple — so without this, a change to one would silently
+    /// fork on-glass colour from the sim preview.
+    ///
+    /// Only the *quantization* is pinned, not the *expansion*: the reader spreads each 2-bit level
+    /// on the `level * 85` ramp (full-colour preview), while [`device64_to_rgb565`] bit-replicates
+    /// for the banded push — the two land within ≤3/255 per channel, an intentional, preview-only
+    /// difference that never changes which of the 64 colours a pixel is.
+    #[test]
+    fn device64_matches_reader_quantization_exhaustively() {
+        for raw in 0u16..=u16::MAX {
+            let byte = rgb565_to_device64_byte(Rgb565::from(RawU16::new(raw)));
+            // The reader returns the kept colour expanded on the `level * 85` ramp; `/ 85` recovers
+            // the 2-bit index it quantized each channel to (0/85/170/255 → 0/1/2/3).
+            let (r, g, b) = obc_reader::rgb565_to_device64(raw);
+            let want = ((r / 85) << 4) | ((g / 85) << 2) | (b / 85);
+            assert_eq!(byte, want, "raw {raw:#06x}");
+        }
+    }
+
     /// Expansion is the exact inverse of the pack on the gamut: byte → RGB565 → byte round-trips,
     /// so the banded push reconstructs the stored colour losslessly. (The RGB565 it produces also
     /// re-quantizes to the same byte — the property the banded push relies on.)
