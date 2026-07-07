@@ -199,13 +199,18 @@ fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
     let route = StaticRoute::at(cx, cy);
     // Rider at the chunk seam: the chevron window spans both chunks' distance ranges.
     let arrows_at = Some(route.cum_m[1]);
-    // ROUTE_WEIGHT / palette from the app path: magenta 0xF81F stroke, white chevrons.
-    let (route_c, arrow_c) = (color_fn(0xF81F), color_fn(0xFFFF));
+    // Route stroke colour + weight imported straight from the Map screen, so the bench can't drift
+    // from what the device draws: magenta `palette::ROUTE` (0xF81F), `ROUTE_WEIGHT` (11 px). The
+    // chevron colour stays the literal white 0xFFFF (not the app's `ARROW_COLOR` = `PARCHMENT`,
+    // 0xF79D): those two RGB565 words quantize to the *same* device-64 white on-glass, but this bench
+    // renders into RGB565 and its committed frame hashes pin the literal pixels — importing PARCHMENT
+    // would repaint the chevrons 0xF79D and break the hash for zero on-device difference.
+    let (route_c, arrow_c) = (color_fn(obc_app::screen::palette::ROUTE), color_fn(0xFFFF));
 
     let draw = |buf: &mut [u16], renderer: &mut MapRenderer| {
         let mut fb = Framebuffer565::new(buf, WIDTH, HEIGHT);
         let stats = renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
-        renderer.draw_route(&mut fb, &vp, &route, route_c, 11, arrow_c, arrows_at);
+        renderer.draw_route(&mut fb, &vp, &route, route_c, obc_app::screen::ROUTE_WEIGHT, arrow_c, arrows_at);
         stats
     };
 

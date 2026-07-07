@@ -249,6 +249,25 @@ impl<const N: usize> NavScratch<N> {
         NavScratch { entries: [NavEntry::EMPTY; N], heap: [0; N], used: 0, heap_len: 0 }
     }
 
+    /// Allocate a zeroed `NavScratch` **directly on the heap**, never on the stack.
+    ///
+    /// The A* table is tens of KB (~39 KB at [`NAV_MAX_NODES`]), so `Box::new(Self::new())` would
+    /// first build the whole thing on the stack and then copy it — a silent overflow on a small
+    /// stack (the simulator's wasm build). This owns the format crate's private invariant that a
+    /// zeroed allocation *is* `new()`: every field is all-zero — `entries` is `[NavEntry::EMPTY;
+    /// N]` (`EMPTY` is the zero entry), `heap` is `[0; N]`, and `used`/`heap_len` are `0`. Adding a
+    /// non-zero-default field would break this, so the invariant lives *here*, in the crate that
+    /// owns the fields, instead of leaking into every host that heap-allocates one.
+    ///
+    /// Host-only ([`alloc`](crate) feature): the device keeps its scratch as a `.bss` static and
+    /// never calls this.
+    #[cfg(feature = "alloc")]
+    pub fn new_boxed() -> alloc::boxed::Box<Self> {
+        // SAFETY: an all-zero `NavScratch` is bit-identical to `new()` (see the field-by-field
+        // argument above), so a zeroed allocation is a fully initialised value.
+        unsafe { alloc::boxed::Box::<Self>::new_zeroed().assume_init() }
+    }
+
     fn reset(&mut self) {
         for e in self.entries.iter_mut() {
             e.meta = 0;

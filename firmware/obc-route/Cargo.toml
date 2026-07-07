@@ -10,6 +10,10 @@ description = "OBCR route format reader + GPX converter (no_std) — shared by t
 # Forwards to `obc-reader` so a single board-crate switch trims every shared crate's caps.
 # See `obc-reader`'s `nrf-mem` for the rationale. Off by default (full sizes on host/sim/tests).
 nrf-mem = ["obc-reader/nrf-mem"]
+# Pull in `alloc` for the heap-boxed nav constructors (`NavScratch::new_boxed`). A std host — the
+# simulator — enables this to build a zeroed `NavScratch` straight on the heap; the device never
+# does (its scratch is a `.bss` static), so `alloc` stays off by default.
+alloc = []
 
 [dependencies]
 heapless = "0.8"
