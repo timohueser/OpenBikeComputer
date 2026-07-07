@@ -204,7 +204,7 @@ pub struct Style {
     pub id: u8,             // referenced by feature headers
     pub z_index: i8,        // painter's order: lower draws first
     pub color: u16,         // RGB565 — device-independent
-    pub weight: u8,         // stroke width in pixels (lines)
+    pub weight: u8,         // nominal line width (px at a reference zoom; the renderer ramps it — see rendering)
     pub priority: u8,       // 1 = keep first … 4 = drop first (flags bits 0–1)
     pub dashed: bool,       // flags bit 2 — a dashed line (v10)
     pub color2: Option<u16>,// flags bit 3 + a trailing RGB565 (v10)
