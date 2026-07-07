@@ -20,9 +20,10 @@ runs:
       run: |
         # The runner image ships a packages.microsoft.com apt source (azure-cli) that
         # intermittently serves broken signature metadata and fails `apt-get update`
-        # hard. None of the packages below come from it, so drop it first to keep this
-        # step from flaking on Microsoft's mirror.
-        sudo rm -f /etc/apt/sources.list.d/microsoft*.list
+        # hard. None of the packages below come from it, so drop any source file that
+        # references it first — matched by content so it catches both the `.list` and
+        # the deb822 `.sources` forms, whatever the runner names them.
+        sudo bash -c "grep -rlZ 'packages\.microsoft\.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -0 -r rm -f" || true
         sudo apt-get update
         sudo apt-get install -y \
           libudev-dev \
