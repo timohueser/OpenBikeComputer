@@ -63,19 +63,19 @@ fn grid3(shortcut: bool) -> NavGraph {
             if col < 2 {
                 let (ca, cb) = (at(row, col), at(row, col + 1));
                 let mid = ((ca.0 + cb.0) / 2, ca.1 + 500); // nudge lat
-                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST });
+                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: 0 });
             }
             if row < 2 {
                 let (ca, cb) = (at(row, col), at(row + 1, col));
                 let mid = (ca.0 + 500, (ca.1 + cb.1) / 2); // nudge lon
-                edges.push(Edge { a, b: a + 3, polyline: vec![ca, mid, cb], length_m: EDGE_COST });
+                edges.push(Edge { a, b: a + 3, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: 0 });
             }
         }
     }
     if shortcut {
         let (ca, cb) = (at(0, 0), at(2, 2));
         let mid = ((ca.0 + cb.0) / 2 + 500, (ca.1 + cb.1) / 2 - 500);
-        edges.push(Edge { a: 0, b: 8, polyline: vec![ca, mid, cb], length_m: SHORTCUT_COST });
+        edges.push(Edge { a: 0, b: 8, polyline: vec![ca, mid, cb], length_m: SHORTCUT_COST, kind: 0 });
     }
     NavGraph { nodes, edges }
 }
@@ -89,7 +89,7 @@ fn line_graph(n: u32, step_udeg: i32, cost_m: u32) -> NavGraph {
     let edges = (0..n - 1)
         .map(|i| {
             let (ca, cb) = (nodes[i as usize].coord, nodes[i as usize + 1].coord);
-            Edge { a: i, b: i + 1, polyline: vec![ca, cb], length_m: cost_m }
+            Edge { a: i, b: i + 1, polyline: vec![ca, cb], length_m: cost_m, kind: 0 }
         })
         .collect();
     NavGraph { nodes, edges }
@@ -212,8 +212,8 @@ fn disconnected_graph_is_no_path() {
             Node { id: 3, coord: b1 },
         ],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600 },
-            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600 },
+            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0 },
+            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0 },
         ],
     };
     let (res, obcr, _) = plan(&map_with(&graph), (a0.0 + 100, a0.1), (b0.0 - 100, b0.1), "x");
@@ -452,8 +452,8 @@ fn saturated_costs_plan_without_panicking() {
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: n0 }, Node { id: 1, coord: n1 }, Node { id: 2, coord: n2 }],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![n0, n1], length_m: 60_000 },
-            Edge { a: 1, b: 2, polyline: vec![n1, n2], length_m: 60_000 },
+            Edge { a: 0, b: 1, polyline: vec![n0, n1], length_m: 60_000, kind: 0 },
+            Edge { a: 1, b: 2, polyline: vec![n1, n2], length_m: 60_000, kind: 0 },
         ],
     };
     let (res, obcr, _) = plan(&map_with(&graph), (n0.0 + 30, n0.1), (n2.0 - 30, n2.1), "Far");
