@@ -140,20 +140,32 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // hours_pool_count = 0
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
 
-    // Empty v8 nav directory (22 bytes) at the tail: zero-length index + edge pool.
+    // Empty v9 nav section at the tail: the 28-byte directory + the always-present §8.6 profile
+    // table (one "Default" profile, every multiplier 16 = 1.0×). Zero-length index + edge pool
+    // "start" just past the profile table.
     let nav_section_off = poi_section_off + poi_dir.len();
-    let after_nav = (nav_section_off + 22) as u32;
+    let profile_table_off = (nav_section_off + 28) as u32;
+    let mut profile_table = Vec::new();
+    profile_table.extend_from_slice(b"Default");
+    profile_table.resize(12, 0xFF); // 0xFF-padded 12-byte name
+    profile_table.extend_from_slice(&[16u8; 32]); // highway multipliers (1.0×)
+    profile_table.extend_from_slice(&[16u8; 8]); // surface multipliers (1.0×)
+    let after_nav = profile_table_off + profile_table.len() as u32;
     let mut nav_dir = Vec::new();
     nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // index_offset (zero-length)
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // index_node_count
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // node_chunk_count
     nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // edge_pool_offset (zero-length)
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // edge_chunk_count
-    nav_dir.extend_from_slice(&512u16.to_le_bytes()); // chunk_size
+    nav_dir.extend_from_slice(&512u16.to_le_bytes()); // chunk_size (pinned)
+    nav_dir.extend_from_slice(&profile_table_off.to_le_bytes()); // profile_table_offset
+    nav_dir.push(1); // profile_count
+    nav_dir.push(0); // reserved
+    nav_dir.extend_from_slice(&profile_table);
 
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(8);
+    f.push(9);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }

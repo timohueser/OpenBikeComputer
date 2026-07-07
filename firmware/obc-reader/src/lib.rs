@@ -1,9 +1,10 @@
 //! OBCM map format reader and renderer.
 //!
 //! `no_std`, zero-alloc (heapless) so the exact same code runs in the desktop
-//! simulator and in the nRF54L firmware. Parses format **v8** (the LOD pyramid,
+//! simulator and in the nRF54L firmware. Parses format **v9** (the LOD pyramid,
 //! a header marker color, a per-style priority level, the POI directory + hours
-//! pool, and the trailing nav-graph section — see OBCM_Spec.md): a file holds N
+//! pool, and the trailing nav-graph section with its profile table — see
+//! OBCM_Spec.md): a file holds N
 //! levels of detail, each its own quadtree + chunk set, selected at render time
 //! from the current meters-per-pixel, plus a per-category POI index, a
 //! deduplicated hours pool ([`Reader::poi_hours`](crate::Reader::poi_hours)
@@ -55,10 +56,11 @@ pub use hours::{
 };
 pub use poi_table::{category_of, label_of, subtype_row, PoiCategory, PoiSubtype, SUBTYPES};
 pub use reader::{
-    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapTables, NavCacheStats, NavDirectory,
-    NavNeighbor, NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES,
-    MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_EDGE_FIXED_LEN, NAV_MAX_CHUNK_BYTES, NAV_NEIGHBOR_LEN,
-    NAV_NODE_FIXED_LEN, NAV_TILE_SLOTS, POI_HOURS_BLOB_LEN, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
+    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapProfile, MapTables, NavCacheStats,
+    NavDirectory, NavNeighbor, NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, Style, HEADER_LEN,
+    MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN,
+    NAV_MAX_CHUNK_BYTES, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
+    NAV_TILE_SLOTS, POI_HOURS_BLOB_LEN, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the

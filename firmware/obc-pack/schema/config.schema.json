@@ -29,11 +29,59 @@
             "default": { "color": "0xF800" }
         },
         "chunk_size": {
-            "description": "Quadtree chunk payload target in bytes. The maximum is the reader's per-feature vertex cap; the minimum guards against chunks so small that features are dropped wholesale. Values outside the range are rejected at pack time.",
+            "description": "Quadtree chunk payload target in bytes. The maximum is the reader's per-feature vertex cap; the minimum guards against chunks so small that features are dropped wholesale. Values outside the range are rejected at pack time. Governs the geometry sections (LODs) only; the nav graph's chunks are pinned to 512 bytes.",
             "type": "integer",
             "minimum": 256,
             "maximum": 4106,
             "default": 4096
+        },
+        "routing": {
+            "description": "Nav-graph routing config (OBCM v9 §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).",
+            "type": "object",
+            "properties": {
+                "min_component_edges": {
+                    "description": "Drop each disconnected graph component with fewer than this many edges (the largest is always kept), so a rider can't snap onto an unroutable islet.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 50
+                },
+                "profiles": {
+                    "description": "1..=8 bike profiles selectable on the device by index. Each weights nav edges by highway + surface class; every multiplier is >= 1.0 (or the string \"forbidden\") so the great-circle A* heuristic stays admissible.",
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": { "$ref": "#/$defs/profile" }
+                }
+            },
+            "default": {
+                "min_component_edges": 50,
+                "profiles": [
+                    {
+                        "name": "Road",
+                        "default": 3.0,
+                        "highway": { "cycleway": 1.0, "living_street": 1.4, "residential": 1.4, "unclassified": 1.5, "tertiary": 1.3, "secondary": 1.5, "primary": 1.8, "service": 2.2, "trunk_cycl": 2.5, "track": 6.0, "path": 7.0, "footway": 5.0, "bridleway": 7.0, "steps": "forbidden" },
+                        "surface": { "paved": 1.0, "compacted": 2.5, "gravel": 5.0, "dirt": 7.0, "rough": 8.0, "cobbles": 3.0, "grass": 8.0, "unknown": 1.5 }
+                    },
+                    {
+                        "name": "Gravel",
+                        "default": 2.0,
+                        "highway": { "cycleway": 1.1, "track": 1.2, "path": 1.5, "unclassified": 1.2, "residential": 1.3, "living_street": 1.3, "tertiary": 1.3, "secondary": 1.6, "primary": 2.2, "service": 1.6, "footway": 3.0, "bridleway": 2.2, "trunk_cycl": 3.0, "steps": "forbidden" },
+                        "surface": { "paved": 1.1, "compacted": 1.0, "gravel": 1.1, "dirt": 1.6, "rough": 3.0, "cobbles": 2.0, "grass": 3.0, "unknown": 1.2 }
+                    },
+                    {
+                        "name": "MTB",
+                        "default": 2.0,
+                        "highway": { "path": 1.0, "track": 1.0, "bridleway": 1.1, "cycleway": 1.3, "footway": 1.8, "unclassified": 1.6, "residential": 1.6, "living_street": 1.5, "tertiary": 1.8, "secondary": 2.4, "primary": 3.5, "service": 1.6, "steps": 3.0, "trunk_cycl": 4.0 },
+                        "surface": { "dirt": 1.0, "gravel": 1.0, "compacted": 1.1, "rough": 1.3, "grass": 1.4, "cobbles": 1.5, "paved": 1.3, "unknown": 1.1 }
+                    },
+                    {
+                        "name": "Touring",
+                        "default": 2.0,
+                        "highway": { "cycleway": 1.0, "residential": 1.2, "living_street": 1.2, "unclassified": 1.2, "tertiary": 1.3, "track": 1.6, "path": 2.0, "secondary": 1.7, "primary": 2.6, "service": 1.5, "footway": 2.5, "bridleway": 2.5, "steps": 6.0, "trunk_cycl": 3.0 },
+                        "surface": { "paved": 1.0, "compacted": 1.2, "gravel": 2.0, "dirt": 3.0, "rough": 5.0, "cobbles": 2.0, "grass": 5.0, "unknown": 1.3 }
+                    }
+                ]
+            }
         }
     },
     "$defs": {
@@ -93,6 +141,46 @@
                     "minimum": 0,
                     "maximum": 255,
                     "default": 0
+                }
+            }
+        },
+        "multiplier": {
+            "description": "One routing edge-weight multiplier: a number >= 1.0 (quantized to 1/16 fixed-point on the wire, so 1.0 = neutral, capped ~16x) or the string \"forbidden\" (the class is not routable). Values below 1.0 are rejected at pack time - the great-circle A* heuristic must stay admissible.",
+            "oneOf": [
+                { "type": "number", "minimum": 1.0 },
+                { "type": "string", "const": "forbidden" }
+            ]
+        },
+        "profile": {
+            "description": "One bike profile: a display name plus per-class edge-weight multipliers. Classes not listed in `highway`/`surface` use `default`.",
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {
+                    "description": "Display name shown on the device (UTF-8, at most 12 bytes on the wire).",
+                    "type": "string",
+                    "maxLength": 12
+                },
+                "default": {
+                    "description": "Multiplier applied to any highway/surface class not listed below.",
+                    "$ref": "#/$defs/multiplier",
+                    "default": 2.0
+                },
+                "highway": {
+                    "description": "Per-highway-class multipliers, keyed by canonical class name.",
+                    "type": "object",
+                    "propertyNames": {
+                        "enum": ["cycleway", "path", "track", "footway", "steps", "bridleway", "living_street", "residential", "service", "unclassified", "tertiary", "secondary", "primary", "trunk_cycl"]
+                    },
+                    "additionalProperties": { "$ref": "#/$defs/multiplier" }
+                },
+                "surface": {
+                    "description": "Per-surface-class multipliers, keyed by canonical class name.",
+                    "type": "object",
+                    "propertyNames": {
+                        "enum": ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"]
+                    },
+                    "additionalProperties": { "$ref": "#/$defs/multiplier" }
                 }
             }
         }
