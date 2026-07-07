@@ -2,13 +2,17 @@
 //! document order, so `serde_json`'s `preserve_order` feature is mandatory (a
 //! hash-ordered map would scramble the IDs). Exposes the ordered `tag_key → value →
 //! style` map for first-match styling, the style table, LOD tiers, marker color,
-//! and chunk size.
+//! chunk size, and the `routing` section (island-pruning threshold + the §8.6 bike
+//! profiles the serializer bakes into the nav graph).
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::serialize::Style;
+use crate::nav::{
+    highway_class_index, surface_class_index, DEFAULT_MIN_COMPONENT_EDGES, HIGHWAY_CLASS_NAMES, SURFACE_CLASS_NAMES,
+};
+use crate::serialize::{NavProfile, Style, NAV_MAX_PROFILES, NAV_PROFILE_NAME_LEN};
 
 /// 0xFF is the end-of-features sentinel in chunk payloads, so style IDs occupy
 /// 1..=254 (ID 0 left unused).
@@ -63,6 +67,17 @@ pub struct Lod {
     pub simplify_m: f64,
 }
 
+/// The parsed `routing` config section (N2): the island-pruning threshold plus the §8.6 bike
+/// profiles baked into the nav graph. Absent ⇒ [`default_routing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Routing {
+    /// Keep every connected graph component with ≥ this many edges (plus the largest, always). Wired
+    /// into [`crate::nav::build_graph_with`]. Default [`DEFAULT_MIN_COMPONENT_EDGES`] (50).
+    pub min_component_edges: usize,
+    /// 1..=8 routing profiles, quantized to the §8.6 wire form. Never empty.
+    pub profiles: Vec<NavProfile>,
+}
+
 /// The parsed `config.json`.
 pub struct Config {
     /// `(tag_key, {value → style})` in document order. `get_style` walks the
@@ -71,6 +86,8 @@ pub struct Config {
     pub lods: Vec<Lod>,
     pub marker_color: u16,
     pub chunk_size: usize,
+    /// The `routing` section (island pruning + bike profiles).
+    pub routing: Routing,
 }
 
 impl Config {
@@ -130,7 +147,9 @@ impl Config {
 
         let chunk_size = root.get("chunk_size").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(4096);
 
-        Ok(Config { features, lods, marker_color, chunk_size })
+        let routing = parse_routing(root.get("routing"))?;
+
+        Ok(Config { features, lods, marker_color, chunk_size, routing })
     }
 
     /// First matching `(tag_key, value)` in document order.
@@ -203,6 +222,192 @@ fn parse_color(v: &Value) -> Result<u16, String> {
             n.as_u64().and_then(|v| u16::try_from(v).ok()).ok_or_else(|| format!("color {n} out of range 0..=65535"))
         }
         other => Err(format!("color must be int or hex string, got {other}")),
+    }
+}
+
+// --- routing section (N2): island-pruning threshold + §8.6 bike profiles --------------------
+
+/// The four shipped bike profiles, embedded so `default_profiles` and the parser can't drift. The
+/// presets in `packer/presets/` carry the same numbers verbatim (each preset is a complete config).
+/// Multipliers are "prefer lower": each profile makes its favored way/surface classes ~1.0× and
+/// penalizes the rest; `default` covers unlisted classes; `"forbidden"` excludes a class.
+const DEFAULT_PROFILES_JSON: &str = r#"[
+  {
+    "name": "Road",
+    "default": 3.0,
+    "highway": {
+      "cycleway": 1.0, "living_street": 1.4, "residential": 1.4, "unclassified": 1.5,
+      "tertiary": 1.3, "secondary": 1.5, "primary": 1.8, "service": 2.2, "trunk_cycl": 2.5,
+      "track": 6.0, "path": 7.0, "footway": 5.0, "bridleway": 7.0, "steps": "forbidden"
+    },
+    "surface": {
+      "paved": 1.0, "compacted": 2.5, "gravel": 5.0, "dirt": 7.0, "rough": 8.0,
+      "cobbles": 3.0, "grass": 8.0, "unknown": 1.5
+    }
+  },
+  {
+    "name": "Gravel",
+    "default": 2.0,
+    "highway": {
+      "cycleway": 1.1, "track": 1.2, "path": 1.5, "unclassified": 1.2, "residential": 1.3,
+      "living_street": 1.3, "tertiary": 1.3, "secondary": 1.6, "primary": 2.2, "service": 1.6,
+      "footway": 3.0, "bridleway": 2.2, "trunk_cycl": 3.0, "steps": "forbidden"
+    },
+    "surface": {
+      "paved": 1.1, "compacted": 1.0, "gravel": 1.1, "dirt": 1.6, "rough": 3.0,
+      "cobbles": 2.0, "grass": 3.0, "unknown": 1.2
+    }
+  },
+  {
+    "name": "MTB",
+    "default": 2.0,
+    "highway": {
+      "path": 1.0, "track": 1.0, "bridleway": 1.1, "cycleway": 1.3, "footway": 1.8,
+      "unclassified": 1.6, "residential": 1.6, "living_street": 1.5, "tertiary": 1.8,
+      "secondary": 2.4, "primary": 3.5, "service": 1.6, "steps": 3.0, "trunk_cycl": 4.0
+    },
+    "surface": {
+      "dirt": 1.0, "gravel": 1.0, "compacted": 1.1, "rough": 1.3, "grass": 1.4,
+      "cobbles": 1.5, "paved": 1.3, "unknown": 1.1
+    }
+  },
+  {
+    "name": "Touring",
+    "default": 2.0,
+    "highway": {
+      "cycleway": 1.0, "residential": 1.2, "living_street": 1.2, "unclassified": 1.2,
+      "tertiary": 1.3, "track": 1.6, "path": 2.0, "secondary": 1.7, "primary": 2.6,
+      "service": 1.5, "footway": 2.5, "bridleway": 2.5, "steps": 6.0, "trunk_cycl": 3.0
+    },
+    "surface": {
+      "paved": 1.0, "compacted": 1.2, "gravel": 2.0, "dirt": 3.0, "rough": 5.0,
+      "cobbles": 2.0, "grass": 5.0, "unknown": 1.3
+    }
+  }
+]"#;
+
+/// The default `routing` section used when a config omits it: [`DEFAULT_MIN_COMPONENT_EDGES`] plus
+/// [`default_profiles`].
+pub fn default_routing() -> Routing {
+    Routing { min_component_edges: DEFAULT_MIN_COMPONENT_EDGES, profiles: default_profiles() }
+}
+
+/// The four shipped bike profiles (Road / Gravel / MTB / Touring), quantized to §8.6's wire form.
+/// Parsed from [`DEFAULT_PROFILES_JSON`] through the same path as user config, so the shipped
+/// defaults and the parser can never disagree.
+pub fn default_profiles() -> Vec<NavProfile> {
+    let arr: Value = serde_json::from_str(DEFAULT_PROFILES_JSON).expect("embedded default profiles are valid JSON");
+    parse_profiles(arr.as_array().expect("default profiles is a JSON array")).expect("embedded default profiles valid")
+}
+
+/// Parse the optional `routing` section. Absent ⇒ [`default_routing`]. A present-but-partial
+/// section fills each missing field from the default (an omitted `profiles` still ships the four
+/// defaults). `min_component_edges` is a non-negative integer; `profiles` is validated by
+/// [`parse_profiles`].
+fn parse_routing(v: Option<&Value>) -> Result<Routing, String> {
+    let Some(v) = v else {
+        return Ok(default_routing());
+    };
+    let obj = v.as_object().ok_or("`routing` must be an object")?;
+    let min_component_edges = match obj.get("min_component_edges") {
+        None | Some(Value::Null) => DEFAULT_MIN_COMPONENT_EDGES,
+        Some(n) => n.as_u64().ok_or("routing.min_component_edges must be a non-negative integer")? as usize,
+    };
+    let profiles = match obj.get("profiles") {
+        None | Some(Value::Null) => default_profiles(),
+        Some(p) => parse_profiles(p.as_array().ok_or("routing.profiles must be an array")?)?,
+    };
+    Ok(Routing { min_component_edges, profiles })
+}
+
+/// Validate + quantize `routing.profiles`: 1..=[`NAV_MAX_PROFILES`] entries, each a [`parse_profile`].
+fn parse_profiles(arr: &[Value]) -> Result<Vec<NavProfile>, String> {
+    if arr.is_empty() {
+        return Err("routing.profiles must list at least one profile".into());
+    }
+    if arr.len() > NAV_MAX_PROFILES {
+        return Err(format!(
+            "routing.profiles has {} entries; the OBCM profile table supports at most {NAV_MAX_PROFILES}",
+            arr.len()
+        ));
+    }
+    arr.iter().map(parse_profile).collect()
+}
+
+/// One profile object → the §8.6 wire form. `name` (required, ≤ 12 bytes) + a `default` multiplier
+/// (config field, default 2.0) that fills every class not listed in the `highway`/`surface` maps.
+/// Class keys are the canonical [`HIGHWAY_CLASS_NAMES`] / [`SURFACE_CLASS_NAMES`] (an unknown key is
+/// a typo error). Every multiplier is a float ≥ 1.0 or `"forbidden"` ([`quantize_multiplier`]).
+fn parse_profile(v: &Value) -> Result<NavProfile, String> {
+    let obj = v.as_object().ok_or("routing.profiles[*] must be an object")?;
+    let name = obj.get("name").and_then(Value::as_str).ok_or("routing profile missing string `name`")?.to_string();
+    if name.len() > NAV_PROFILE_NAME_LEN {
+        return Err(format!("routing profile name {name:?} exceeds {NAV_PROFILE_NAME_LEN} bytes on the wire"));
+    }
+    // Unlisted classes get the per-profile `default` (default 2.0×).
+    let default_q = match obj.get("default") {
+        None | Some(Value::Null) => 32u8, // 2.0× in 1/16 fixed-point
+        Some(d) => quantize_multiplier(d, &name, "default", "(unlisted)")?,
+    };
+    let mut highway = [default_q; 32];
+    let mut surface = [default_q; 8];
+    if let Some(hw) = obj.get("highway") {
+        let hw = hw.as_object().ok_or_else(|| format!("routing profile {name:?}: `highway` must be an object"))?;
+        for (class, val) in hw {
+            let idx = highway_class_index(class).ok_or_else(|| {
+                format!(
+                    "routing profile {name:?}: unknown highway class {class:?}; valid: {}",
+                    HIGHWAY_CLASS_NAMES.join(", ")
+                )
+            })?;
+            highway[idx as usize] = quantize_multiplier(val, &name, "highway", class)?;
+        }
+    }
+    if let Some(sf) = obj.get("surface") {
+        let sf = sf.as_object().ok_or_else(|| format!("routing profile {name:?}: `surface` must be an object"))?;
+        for (class, val) in sf {
+            let idx = surface_class_index(class).ok_or_else(|| {
+                format!(
+                    "routing profile {name:?}: unknown surface class {class:?}; valid: {}",
+                    SURFACE_CLASS_NAMES.join(", ")
+                )
+            })?;
+            surface[idx as usize] = quantize_multiplier(val, &name, "surface", class)?;
+        }
+    }
+    // The admissibility invariant holds by construction (every value is 0 or ≥ 16); assert it so a
+    // future quantization change can't silently break the A* heuristic bound.
+    debug_assert!(
+        highway.iter().chain(&surface).all(|&m| m == 0 || m >= 16),
+        "every non-zero multiplier must be ≥ 16 (admissible)"
+    );
+    Ok(NavProfile { name, highway, surface })
+}
+
+/// Quantize one profile multiplier to §8.6's `u8` 1/16 fixed-point. `"forbidden"` ⇒ `0`; a number
+/// ≥ 1.0 ⇒ `round(v × 16)` clamped to `16..=255` (≈ 1.0×..16×). A number **below 1.0 is rejected**
+/// — the admissibility invariant (every non-zero weight ≥ 16) is what keeps the great-circle A*
+/// heuristic admissible, so the ε-optimality bound survives profile weighting.
+fn quantize_multiplier(v: &Value, profile: &str, kind: &str, class: &str) -> Result<u8, String> {
+    match v {
+        Value::String(s) if s == "forbidden" => Ok(0),
+        Value::Number(_) => {
+            let f = v.as_f64().filter(|f| f.is_finite()).ok_or_else(|| {
+                format!("routing profile {profile:?}: {kind} {class:?} multiplier {v} is not a finite number")
+            })?;
+            if f < 1.0 {
+                return Err(format!(
+                    "routing profile {profile:?}: {kind} {class:?} multiplier {f} is below 1.0 — every non-zero \
+                     weight must be ≥ 1.0 (≥ 16 in 1/16 fixed-point) so the great-circle A* heuristic stays \
+                     admissible; a weight < 1.0 lets the search underweight an edge and breaks the ε-optimality \
+                     bound. Use \"forbidden\" to exclude a class."
+                ));
+            }
+            Ok((f * 16.0).round().clamp(16.0, u8::MAX as f64) as u8)
+        }
+        other => Err(format!(
+            "routing profile {profile:?}: {kind} {class:?} multiplier must be a number ≥ 1.0 or \"forbidden\", got {other}"
+        )),
     }
 }
 
@@ -426,6 +631,129 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(crate::serialize::OBCM_VERSION as u64));
+        assert_eq!(env["format_version"].as_u64(), Some(9), "N2 bumps the OBCM format to v9");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
+    }
+
+    // --- routing section (N2) ---------------------------------------------------------------
+
+    /// An omitted `routing` section yields the four shipped profiles + the default threshold.
+    #[test]
+    fn routing_defaults_when_absent() {
+        let cfg = Config::parse("{}").expect("empty config parses");
+        assert_eq!(cfg.routing.min_component_edges, DEFAULT_MIN_COMPONENT_EDGES);
+        let names: Vec<&str> = cfg.routing.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Road", "Gravel", "MTB", "Touring"]);
+        // Spot-check the quantization on the Road profile: cycleway 1.0 → 16, steps forbidden → 0,
+        // primary 1.8 → 29, gravel 5.0 → 80.
+        let road = &cfg.routing.profiles[0];
+        assert_eq!(road.highway[0], 16, "cycleway 1.0× = 16");
+        assert_eq!(road.highway[4], 0, "steps forbidden = 0");
+        assert_eq!(road.highway[12], 29, "primary 1.8× ≈ 29");
+        assert_eq!(road.surface[1], 16, "paved 1.0× = 16");
+        assert_eq!(road.surface[3], 80, "gravel 5.0× = 80");
+    }
+
+    /// The admissibility invariant holds on every shipped profile: no non-zero multiplier below 16.
+    #[test]
+    fn default_profiles_are_admissible() {
+        for p in default_profiles() {
+            assert!(
+                p.highway.iter().chain(&p.surface).all(|&m| m == 0 || m >= 16),
+                "profile {:?} has a non-zero multiplier < 16 (inadmissible)",
+                p.name
+            );
+        }
+    }
+
+    /// A custom profile quantizes correctly; unlisted classes take the per-profile `default`.
+    #[test]
+    fn routing_parses_and_quantizes_custom_profile() {
+        let text = r#"{"routing":{"min_component_edges":12,"profiles":[
+            {"name":"Test","default":2.0,"highway":{"cycleway":1.0,"primary":2.5,"steps":"forbidden"},
+             "surface":{"paved":1.0,"gravel":4.0}}]}}"#;
+        let cfg = Config::parse(text).expect("custom routing parses");
+        assert_eq!(cfg.routing.min_component_edges, 12);
+        assert_eq!(cfg.routing.profiles.len(), 1);
+        let p = &cfg.routing.profiles[0];
+        assert_eq!(p.name, "Test");
+        assert_eq!(p.highway[0], 16, "cycleway 1.0×");
+        assert_eq!(p.highway[12], 40, "primary 2.5× = 40");
+        assert_eq!(p.highway[4], 0, "steps forbidden");
+        assert_eq!(p.highway[7], 32, "residential unlisted → default 2.0× = 32");
+        assert_eq!(p.surface[1], 16, "paved 1.0×");
+        assert_eq!(p.surface[3], 64, "gravel 4.0× = 64");
+        assert_eq!(p.surface[4], 32, "dirt unlisted → default 2.0×");
+    }
+
+    /// A multiplier below 1.0 is rejected and the message names the A* heuristic bound.
+    #[test]
+    fn routing_rejects_sub_unit_multiplier() {
+        let text = r#"{"routing":{"profiles":[{"name":"Bad","highway":{"cycleway":0.5}}]}}"#;
+        // `Config` isn't `Debug`, so match the Err arm rather than `expect_err`.
+        let err = match Config::parse(text) {
+            Ok(_) => panic!("a <1.0 multiplier must error"),
+            Err(e) => e,
+        };
+        assert!(err.contains("admissible"), "the error must name the A* admissibility bound: {err}");
+    }
+
+    /// Boundary + rejection cases: empty list, >8, and unknown class names.
+    #[test]
+    fn routing_rejects_malformed_profiles() {
+        assert!(Config::parse(r#"{"routing":{"profiles":[]}}"#).is_err(), "empty profiles must error");
+        let nine: Vec<String> = (0..9).map(|i| format!("{{\"name\":\"P{i}\"}}")).collect();
+        let text = format!("{{\"routing\":{{\"profiles\":[{}]}}}}", nine.join(","));
+        assert!(Config::parse(&text).is_err(), "9 profiles must exceed the 8-cap");
+        assert!(
+            Config::parse(r#"{"routing":{"profiles":[{"name":"X","highway":{"autobahn":2.0}}]}}"#).is_err(),
+            "an unknown highway class must error (typo protection)"
+        );
+    }
+
+    // --- schema pinning for the routing section ---------------------------------------------
+
+    /// The schema's routing default parses back to `default_routing()` — pins every shipped profile's
+    /// quantized bytes AND the threshold, so the web builder's starting config matches the packer.
+    #[test]
+    fn schema_routing_default_matches_parser() {
+        let schema = embedded_schema();
+        let default = &schema["properties"]["routing"]["default"];
+        let parsed = parse_routing(Some(default)).expect("schema routing default parses");
+        assert_eq!(parsed, default_routing(), "schema routing default must equal the code default");
+        assert_eq!(schema["properties"]["routing"]["properties"]["min_component_edges"]["default"].as_u64(), Some(50));
+    }
+
+    /// The schema's multiplier bound, profile caps, and class-name enums match the parser and the
+    /// canonical class tables — so the editor accepts exactly what `parse_profile` does.
+    #[test]
+    fn schema_routing_bounds_match_parser() {
+        let schema = embedded_schema();
+        // Multiplier: number branch minimum 1.0, string branch const "forbidden".
+        let mult = &schema["$defs"]["multiplier"]["oneOf"];
+        assert_eq!(mult[0]["minimum"].as_f64(), Some(1.0));
+        assert_eq!(mult[1]["const"].as_str(), Some("forbidden"));
+        // 1.0 quantizes to 16, just under 1.0 is rejected — consistent both sides.
+        assert_eq!(quantize_multiplier(&serde_json::json!(1.0), "p", "highway", "cycleway").unwrap(), 16);
+        assert!(quantize_multiplier(&serde_json::json!(0.99), "p", "highway", "cycleway").is_err());
+        // Profile-count caps.
+        let profiles = &schema["properties"]["routing"]["properties"]["profiles"];
+        assert_eq!(profiles["minItems"].as_u64(), Some(1));
+        assert_eq!(profiles["maxItems"].as_u64(), Some(NAV_MAX_PROFILES as u64));
+        // The class-name enums are exactly the canonical tables (the config vocabulary).
+        let hw_enum: Vec<&str> = schema["$defs"]["profile"]["properties"]["highway"]["propertyNames"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(hw_enum, HIGHWAY_CLASS_NAMES, "highway class enum must mirror the canonical table");
+        let sf_enum: Vec<&str> = schema["$defs"]["profile"]["properties"]["surface"]["propertyNames"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(sf_enum, SURFACE_CLASS_NAMES, "surface class enum must mirror the canonical table");
     }
 }

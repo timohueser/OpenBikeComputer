@@ -62,18 +62,24 @@ pub const POI_CAT_ENTRY_LEN: usize = 13;
 /// u32` + `hours_pool_count u16`.
 pub const POI_DIR_POOL_FIELDS_LEN: usize = 6;
 
-/// The nav directory length (spec §8.1): `index_offset u32, index_node_count u32, node_chunk_count
-/// u32, edge_pool_offset u32, edge_chunk_count u32, chunk_size u16`.
-pub const NAV_DIR_LEN: usize = 22;
+/// The v9 nav directory length (spec §8.1): `index_offset u32, index_node_count u32,
+/// node_chunk_count u32, edge_pool_offset u32, edge_chunk_count u32, chunk_size u16,
+/// profile_table_offset u32, profile_count u8, reserved u8` (v8 was 22).
+pub const NAV_DIR_LEN: usize = 28;
 /// Fixed prefix of a §8.3 junction record (`lat i32, lon i32, node_id u32, degree u8`).
 pub const NAV_NODE_FIXED_LEN: usize = 13;
-/// One §8.3 neighbor entry (`neighbor_id u32, neighbor_lat i32, neighbor_lon i32, edge_id u32,
-/// cost_m u32`).
-pub const NAV_NEIGHBOR_LEN: usize = 20;
-/// Fixed prefix of a §8.4 edge record (`length_m u32, pt_count u16, anchor_lat i32, anchor_lon i32`).
-pub const NAV_EDGE_FIXED_LEN: usize = 14;
-/// The fixed nav chunk capacity the packer writes (spec §8.1), shared by node + edge chunks.
+/// One v9 §8.3 neighbor entry (`neighbor_id u32, dlat i16, dlon i16, edge_id u32, cost_m u16,
+/// way_kind u8`), 15 bytes (v8 was 20 — absolute coords + u32 cost, no kind).
+pub const NAV_NEIGHBOR_LEN: usize = 15;
+/// Fixed prefix of a v9 §8.4 edge record (`length_m u32, pt_count u16, way_kind u8, anchor_lat i32,
+/// anchor_lon i32`), 15 bytes (v8 was 14 — no way_kind).
+pub const NAV_EDGE_FIXED_LEN: usize = 15;
+/// The fixed nav chunk capacity the packer writes (spec §8.1) — pinned to 512 in v9.
 pub const NAV_CHUNK_SIZE: usize = 512;
+/// One §8.6 profile record (`name [u8;12]`, `highway_mult [u8;32]`, `surface_mult [u8;8]`).
+pub const NAV_PROFILE_LEN: usize = 52;
+/// The `Name` field width inside a §8.6 profile record: 12 bytes, `0xFF`-padded.
+pub const NAV_PROFILE_NAME_LEN: usize = 12;
 
 /// The v8 header length (bytes); the Style Table conventionally follows immediately, so it is the
 /// builders' `style_off`. Kept in lock-step with [`obc_reader::HEADER_LEN`].
@@ -118,7 +124,7 @@ fn obcm_header(
 ) -> Vec<u8> {
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(8);
+    f.push(9);
     f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
     f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
     f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
@@ -194,9 +200,10 @@ pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
     d
 }
 
-/// Build a v8 nav directory (spec §8.1). The caller supplies the (already-computed) absolute
-/// offsets/counts — this only lays out the 22 directory bytes, not the index/chunks/pool that
-/// follow.
+/// Build a v9 nav directory (spec §8.1). The caller supplies the (already-computed) absolute
+/// offsets/counts — this only lays out the 28 directory bytes, not the profile table / index /
+/// chunks / pool that follow. `chunk_size` must be 512 (the reader rejects anything else).
+#[allow(clippy::too_many_arguments)]
 pub fn nav_directory(
     index_offset: u32,
     index_node_count: u32,
@@ -204,6 +211,8 @@ pub fn nav_directory(
     edge_pool_offset: u32,
     edge_chunk_count: u32,
     chunk_size: u16,
+    profile_table_offset: u32,
+    profile_count: u8,
 ) -> Vec<u8> {
     let mut d = Vec::with_capacity(NAV_DIR_LEN);
     d.extend_from_slice(&index_offset.to_le_bytes());
@@ -212,36 +221,68 @@ pub fn nav_directory(
     d.extend_from_slice(&edge_pool_offset.to_le_bytes());
     d.extend_from_slice(&edge_chunk_count.to_le_bytes());
     d.extend_from_slice(&chunk_size.to_le_bytes());
+    d.extend_from_slice(&profile_table_offset.to_le_bytes());
+    d.push(profile_count);
+    d.push(0); // reserved
     assert_eq!(d.len(), NAV_DIR_LEN);
     d
 }
 
-/// An **empty** v8 nav directory (spec §8.1): no quadtree, no chunks, no edges — what a map with
-/// no routable ways carries, and what [`build_file`]/[`build_priority_tree`] append so the v8
-/// reader accepts them. The zero-length index and edge pool "start" just past the directory.
-pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
-    let after = (section_off + NAV_DIR_LEN) as u32;
-    nav_directory(after, 0, 0, after, 0, NAV_CHUNK_SIZE as u16)
+/// Pack one §8.6 profile record (52 bytes): a `0xFF`-padded 12-byte name + 32 highway + 8 surface
+/// multipliers (`u8` 1/16 fixed-point). `name` is truncated to 12 bytes.
+pub fn nav_profile_record(name: &str, highway: [u8; 32], surface: [u8; 8]) -> Vec<u8> {
+    let mut rec = Vec::with_capacity(NAV_PROFILE_LEN);
+    let nb = name.as_bytes();
+    let n = nb.len().min(NAV_PROFILE_NAME_LEN);
+    rec.extend_from_slice(&nb[..n]);
+    rec.resize(NAV_PROFILE_NAME_LEN, 0xFF);
+    rec.extend_from_slice(&highway);
+    rec.extend_from_slice(&surface);
+    assert_eq!(rec.len(), NAV_PROFILE_LEN);
+    rec
 }
 
-/// One §8.3 neighbor entry for [`pack_nav_record`]: `(neighbor_id, lat, lon, edge_id, cost_m)`.
-pub type NavNeighborSpec = (u32, i32, i32, u32, u32);
+/// A minimal §8.6 profile table: one profile ("Default", every multiplier 16 = 1.0×), 52 bytes —
+/// enough to satisfy the v9 reader's "1..=8 profiles, always present" rule.
+pub fn default_nav_profile_table() -> Vec<u8> {
+    nav_profile_record("Default", [16; 32], [16; 8])
+}
 
-/// Pack one variable-length §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`,
-/// then one 20-byte entry per neighbor. Coordinates are absolute µdeg, lat first (the §7.3/§8
-/// record convention).
+/// An **empty** v9 nav directory + its (always-present) profile table: no quadtree, no chunks, no
+/// edges — what a map with no routable ways carries, and what [`build_file`]/[`build_priority_tree`]
+/// append so the v9 reader accepts them. The profile table sits right after the 28-byte directory;
+/// the zero-length index and edge pool "start" just past it. Returns dir + table (80 bytes).
+pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
+    let table = default_nav_profile_table();
+    let profile_table_offset = (section_off + NAV_DIR_LEN) as u32;
+    let after = profile_table_offset + table.len() as u32; // zero-length index + edge pool start here
+    let mut out = nav_directory(after, 0, 0, after, 0, NAV_CHUNK_SIZE as u16, profile_table_offset, 1);
+    out.extend_from_slice(&table);
+    out
+}
+
+/// One v9 §8.3 neighbor entry for [`pack_nav_record`]: `(neighbor_id, lat, lon, edge_id, cost_m,
+/// way_kind)`. `lat`/`lon` are the neighbor's **absolute** µdeg coords ([`pack_nav_record`] stores
+/// the `i16` delta from the owning record's own coord); `cost_m` must fit `u16`.
+pub type NavNeighborSpec = (u32, i32, i32, u32, u32, u8);
+
+/// Pack one variable-length v9 §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`,
+/// then one 15-byte entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16,
+/// way_kind u8`). The record head coords are absolute µdeg (lat first); each neighbor's coord is
+/// stored as an `i16` delta from this record's own `lat`/`lon`.
 pub fn pack_nav_record(lat: i32, lon: i32, node_id: u32, neighbors: &[NavNeighborSpec]) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_NODE_FIXED_LEN + neighbors.len() * NAV_NEIGHBOR_LEN);
     rec.extend_from_slice(&lat.to_le_bytes());
     rec.extend_from_slice(&lon.to_le_bytes());
     rec.extend_from_slice(&node_id.to_le_bytes());
     rec.push(neighbors.len() as u8);
-    for &(id, nlat, nlon, edge_id, cost_m) in neighbors {
+    for &(id, nlat, nlon, edge_id, cost_m, way_kind) in neighbors {
         rec.extend_from_slice(&id.to_le_bytes());
-        rec.extend_from_slice(&nlat.to_le_bytes());
-        rec.extend_from_slice(&nlon.to_le_bytes());
+        rec.extend_from_slice(&((nlat - lat) as i16).to_le_bytes());
+        rec.extend_from_slice(&((nlon - lon) as i16).to_le_bytes());
         rec.extend_from_slice(&edge_id.to_le_bytes());
-        rec.extend_from_slice(&cost_m.to_le_bytes());
+        rec.extend_from_slice(&(cost_m as u16).to_le_bytes());
+        rec.push(way_kind);
     }
     rec
 }
@@ -258,13 +299,14 @@ pub fn pack_nav_chunk(records: &[Vec<u8>], chunk_size: usize) -> Vec<u8> {
     c
 }
 
-/// Pack one §8.4 edge record: `length_m u32, pt_count u16, anchor_lat i32, anchor_lon i32`, then
-/// `pt_count - 1` × `(dlat i16, dlon i16)`. The polyline is absolute µdeg `(lat, lon)` pairs (lat
-/// first, the §8 record convention); the caller keeps deltas within `i16`.
-pub fn pack_nav_edge_record(length_m: u32, polyline: &[(i32, i32)]) -> Vec<u8> {
+/// Pack one v9 §8.4 edge record: `length_m u32, pt_count u16, way_kind u8, anchor_lat i32,
+/// anchor_lon i32`, then `pt_count - 1` × `(dlat i16, dlon i16)`. The polyline is absolute µdeg
+/// `(lat, lon)` pairs (lat first, the §8 record convention); the caller keeps deltas within `i16`.
+pub fn pack_nav_edge_record(length_m: u32, way_kind: u8, polyline: &[(i32, i32)]) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_EDGE_FIXED_LEN + (polyline.len() - 1) * 4);
     rec.extend_from_slice(&length_m.to_le_bytes());
     rec.extend_from_slice(&(polyline.len() as u16).to_le_bytes());
+    rec.push(way_kind);
     rec.extend_from_slice(&polyline[0].0.to_le_bytes()); // anchor lat
     rec.extend_from_slice(&polyline[0].1.to_le_bytes()); // anchor lon
     for w in polyline.windows(2) {

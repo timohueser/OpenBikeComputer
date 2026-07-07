@@ -154,6 +154,7 @@ fn run() -> Result<(), String> {
         global_bbox,
         &ingested.pois,
         &ingested.nav_graph,
+        &config.routing.profiles,
         |i| {
             let lod = &config.lods[i];
             println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
