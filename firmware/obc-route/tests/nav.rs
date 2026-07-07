@@ -589,14 +589,19 @@ fn stepped_plan_matches_one_shot_and_respects_budgets() {
         let misses_before = tiles.stats().misses;
         let step = planner.step(&r, &mut scratch, &mut tiles, &mut stepped);
         if phase == NavPhase::Search {
-            // A search step ends on the miss budget or the settle cap. The miss delta can overshoot
-            // the budget by the *final* settle's own reads (the budget is checked after each settle),
-            // so allow a one-settle spillover; the settle count is a hard cap.
+            // Miss budget, with a one-settle spillover bound: the budget check trails each settle,
+            // so entering the step's final settle the delta is ≤ NAV_MISSES_PER_STEP − 1, and that
+            // settle's relaxation is a degenerate one-point quadtree walk — it reads the single node
+            // chunk whose leaf contains the settled coord (this fixture's line-graph coords never
+            // sit on a quadtree split line, so exactly one leaf matches), i.e. at most one more miss
+            // ⇒ delta ≤ NAV_MISSES_PER_STEP. The +1 is documented slack for a coord landing exactly
+            // on a leaf boundary (the walk then visits the sibling leaf too). Unconditional — this
+            // is the assertion that actually pins the miss pacing.
             let miss_delta = tiles.stats().misses - misses_before;
             let settle_delta = planner.settles() - settles_before;
             assert!(
-                miss_delta <= NAV_MISSES_PER_STEP || settle_delta <= NAV_SETTLES_PER_STEP_CAP,
-                "a search step ends on the miss budget or the settle cap (misses {miss_delta}, settles {settle_delta})"
+                miss_delta <= NAV_MISSES_PER_STEP + 1,
+                "a search step's reads stay within the miss budget + one-settle spillover (got {miss_delta})"
             );
             assert!(settle_delta <= NAV_SETTLES_PER_STEP_CAP, "the settle cap is hard ({settle_delta} settles)");
         } else {
