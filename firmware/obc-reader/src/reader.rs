@@ -840,6 +840,13 @@ impl MapTables {
         let generation = GEN.fetch_add(1, Ordering::Relaxed) + 1;
         Ok(MapTables { version, bbox, marker_color, lods, pois, nav, profiles, styles, backdrop, generation })
     }
+
+    /// The map's §8.6 routing profiles (1..=8, always present). Lets a host mirror the profile
+    /// **names** into the app UI (`App::set_nav_profiles`) straight off the parsed tables, without
+    /// building a per-frame [`Reader`] — the same slice [`Reader::nav_profiles`] returns.
+    pub fn nav_profiles(&self) -> &[MapProfile] {
+        &self.profiles
+    }
 }
 
 pub struct Reader<'a> {

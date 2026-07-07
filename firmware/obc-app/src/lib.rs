@@ -22,6 +22,7 @@ pub mod hal;
 pub mod hold_hint;
 pub mod input;
 pub mod input_plane;
+pub mod nav_profiles;
 pub mod ride;
 pub mod route;
 pub mod screen;
@@ -42,6 +43,7 @@ pub use hal::{
 pub use hold_hint::HoldHints;
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
+pub use nav_profiles::NavProfiles;
 pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};

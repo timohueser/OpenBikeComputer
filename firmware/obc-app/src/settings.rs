@@ -631,6 +631,16 @@ pub struct Settings {
     /// Show the scale bar at the Map's bottom-left (the Display settings screen's toggle).
     /// **Device-only**, like [`map_clock`](Settings::map_clock). Default **on**.
     pub map_scale_bar: bool,
+    /// The rider's selected routing profile, an **index** into the loaded map's §8.6 profile table
+    /// (N2/N5, epic #533). The Bike-type settings screen cycles it through the map's profile *names*;
+    /// the planner is constructed with it ([`NavPlanner::new`](obc_route::NavPlanner)). Stored as a
+    /// bare `u8` because the profile table is the map's, not the device's: a map with fewer profiles
+    /// than this index falls back to profile 0 **at plan time** (guaranteed in the router, N3) and the
+    /// UI renders the fallback label so the rider isn't lied to (see
+    /// [`NavProfiles`](crate::NavProfiles)). Not range-clamped on decode for that reason — the value
+    /// only means anything against a map. **Device-only** (a bike type is picked on the device), so
+    /// [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default **0**.
+    pub bike_profile_idx: u8,
 }
 
 impl Default for Settings {
@@ -650,6 +660,7 @@ impl Default for Settings {
             idle_return: IdleReturn::default(),
             map_clock: true,
             map_scale_bar: true,
+            bike_profile_idx: 0,
         }
     }
 }
@@ -697,8 +708,9 @@ impl Settings {
 /// Codec version — bump when the byte layout changes; [`decode`] rejects any other version (the
 /// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
 /// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511); v6 appended
-/// the `idle_return` byte; v7 appended the `map_clock` + `map_scale_bar` bytes.
-pub const VERSION: u8 = 7;
+/// the `idle_return` byte; v7 appended the `map_clock` + `map_scale_bar` bytes; v8 appended the
+/// `bike_profile_idx` byte (routing-v2 N5, #538).
+pub const VERSION: u8 = 8;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -707,7 +719,7 @@ pub const VERSION: u8 = 7;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = SCALE_BAR_OFF + 1;
+const PAYLOAD_LEN: usize = PROFILE_OFF + 1;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
@@ -724,6 +736,8 @@ const IDLE_OFF: usize = CLIMB_OFF + 1;
 const MAP_CLOCK_OFF: usize = IDLE_OFF + 1;
 /// Byte offset of the `map_scale_bar` flag (the v7 tail, right after `map_clock`).
 const SCALE_BAR_OFF: usize = MAP_CLOCK_OFF + 1;
+/// Byte offset of the `bike_profile_idx` byte (the v8 tail, right after `map_scale_bar`).
+const PROFILE_OFF: usize = SCALE_BAR_OFF + 1;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -772,6 +786,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     // v7 tail: the two Map-chrome overlay toggles.
     b[MAP_CLOCK_OFF] = s.map_clock as u8;
     b[SCALE_BAR_OFF] = s.map_scale_bar as u8;
+    // v8 tail: the selected routing-profile index (§8.6; resolved against the loaded map).
+    b[PROFILE_OFF] = s.bike_profile_idx;
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -819,6 +835,10 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // The v7 Map-chrome toggles: any non-zero byte is "on" (like the other bool fields).
         map_clock: b[MAP_CLOCK_OFF] != 0,
         map_scale_bar: b[SCALE_BAR_OFF] != 0,
+        // The v8 routing-profile index: stored verbatim, **not** range-clamped here — an index past
+        // the loaded map's profile count is resolved to profile 0 at plan time (N3) and shown with a
+        // fallback label in the UI (see the field doc), so a stale index is never a decode failure.
+        bike_profile_idx: b[PROFILE_OFF],
     };
     s.sanitize();
     Some(s)
@@ -1058,6 +1078,7 @@ mod tests {
             idle_return: IdleReturn::M5,
             map_clock: false,
             map_scale_bar: false,
+            bike_profile_idx: 3,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -1154,7 +1175,6 @@ mod tests {
     /// [`adopt_ble_fields`] must never pull them across (a phone can't reconfigure the map overlays).
     #[test]
     fn map_overlays_round_trip_and_are_device_only() {
-        assert_eq!(VERSION, 7, "the map-overlay toggles are the v7 layout (settings reset on flash)");
         assert!(Settings::default().map_clock, "the map clock defaults on");
         assert!(Settings::default().map_scale_bar, "the scale bar defaults on");
         // The RRAM carve is unchanged — the two new bytes fit inside the same 16-byte line rounding.
@@ -1172,6 +1192,30 @@ mod tests {
         let mut app = Settings { map_clock: false, map_scale_bar: false, ..Settings::default() };
         app.adopt_ble_fields(&Settings { map_clock: true, map_scale_bar: true, ..Settings::default() });
         assert!(!app.map_clock && !app.map_scale_bar, "adopt_ble_fields leaves the map overlays alone");
+    }
+
+    /// The v8 tail: the routing-profile index round-trips every value, defaults **0**, is stored
+    /// **verbatim** (never range-clamped on decode — an out-of-range index is a live-map concern, not
+    /// a codec one), and is device-only — [`adopt_ble_fields`] must never pull it across (a phone
+    /// can't repick the rider's bike type).
+    #[test]
+    fn bike_profile_idx_round_trips_and_is_device_only() {
+        assert_eq!(VERSION, 8, "the bike-profile index is the v8 layout (settings reset on flash)");
+        assert_eq!(Settings::default().bike_profile_idx, 0, "the profile index defaults to 0");
+        // The one new byte still fits inside the same 16-byte RRAM line rounding as v7.
+        assert_eq!(ENCODED_LEN, 96, "the v8 byte doesn't cross a 16-byte RRAM line");
+
+        // Every index round-trips byte-for-byte — including a value past any real map's profile count,
+        // which the codec stores verbatim (the router/UI own the fallback, not decode).
+        for idx in [0u8, 1, 3, 7, 200] {
+            let s = Settings { bike_profile_idx: idx, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "idx={idx} round-trips verbatim");
+        }
+
+        // Device-only: a BLE blob's profile index never lands via the #456 coherence merge.
+        let mut app = Settings { bike_profile_idx: 2, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { bike_profile_idx: 5, ..Settings::default() });
+        assert_eq!(app.bike_profile_idx, 2, "adopt_ble_fields leaves the bike profile alone");
     }
 
     /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a

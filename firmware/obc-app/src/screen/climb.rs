@@ -288,6 +288,7 @@ mod tests {
             settings: &mut s,
             routes: &[],
             rides: &[],
+            nav_profiles: &crate::NavProfiles::EMPTY,
             poi_scratch: &scratch,
             now_ms: 0,
         };

@@ -122,6 +122,11 @@ impl RouteOverviewScreen {
             let _ = write!(dist, "{:.1}", units.dist(total_m as f32 / 1000.0));
             let dist_unit = if units.is_imperial() { "mi" } else { "km" };
             ledger_row(cv, w, LIST_TOP + 16, "DISTANCE", &dist, dist_unit, None);
+            // The bike profile the route was planned under (routing-v2 N5): the rider must be able to
+            // tell a Road route from an MTB one they picked by accident. The name resolves against the
+            // loaded map for the current selection — which is the profile the just-finished plan used,
+            // since planning uses `bike_profile_idx` and the overview opens straight off it.
+            draw_profile_label(cv, w, rx);
             draw_start_button(cv, w, h);
             return;
         }
@@ -205,6 +210,16 @@ impl RouteOverviewScreen {
 
         draw_start_button(cv, w, h);
     }
+}
+
+/// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
+/// N5), drawn under the DISTANCE row on the length-only page in the same caption-left/value-right
+/// shape. A stale/out-of-range index shows the honest `Profile N` fallback (see
+/// [`NavProfiles::write_label`](crate::NavProfiles)).
+fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render) {
+    let mut name: heapless::String<20> = heapless::String::new();
+    rx.nav_profiles.write_label(rx.settings.bike_profile_idx, &mut name);
+    ledger_row(cv, w, LIST_TOP + 16 + ROW_PITCH, "BIKE TYPE", &name, "", None);
 }
 
 /// START RIDE: the page's one action, so it draws armed (amber) with a play wedge. Shared by the

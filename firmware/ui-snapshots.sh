@@ -102,21 +102,25 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
     --script "B r r w p r r r p d p p p" --inject-nav-fail exhausted --png "$OUT/nav-toofar.png"
 "$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8140000,46480000 --heading 0 \
     --script "B r r w p p d p p p d" --png "$OUT/nav-nopath.png"
-# The Settings list (Date & Time, Units, Stats, Display, Power, Bluetooth, Reset — Display inserted
-# at index 3, so every row past it shifts one turn further in).
+# The Settings list (Date & Time, Units, Bike type, Stats, Display, Power, Bluetooth, Reset — Bike
+# type inserted at index 2 by routing-v2 N5 #538, so every row past Units shifts one turn further in).
 "$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
 "$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
 "$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
-"$SIM" "$MAP" --boot --script "B l p r r p"  --png "$OUT/stats-settings.png"
-"$SIM" "$MAP" --boot --script "B l p r r p r p" --png "$OUT/fields.png"
-# The Display page (row 3): the two Map-overlay toggles + the idle-return picker moved from Power.
-"$SIM" "$MAP" --boot --script "B l p r r r p"   --png "$OUT/display.png"
-"$SIM" "$MAP" --boot --script "B l p r r r r p" --png "$OUT/power.png"
+# Bike type (routing-v2 N5): the map's §8.6 profile names — grimsel ships Road/Gravel/MTB/Touring.
+# The default selection (Road), then one detent cycling it to Gravel — pinning the name list + cycle.
+"$SIM" "$MAP" --boot --script "B l p r r p"   --png "$OUT/biketype.png"
+"$SIM" "$MAP" --boot --script "B l p r r p r" --png "$OUT/biketype-cycled.png"
+"$SIM" "$MAP" --boot --script "B l p r r r p"  --png "$OUT/stats-settings.png"
+"$SIM" "$MAP" --boot --script "B l p r r r p r p" --png "$OUT/fields.png"
+# The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
+"$SIM" "$MAP" --boot --script "B l p r r r r p"   --png "$OUT/display.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r p" --png "$OUT/power.png"
 # Bluetooth screen (#455): the main state (radio on, advertising, a stored bond -> Paired: yes) and
 # the Forget-phone guarded hold mid-charge (select the Forget row, then a partial hold fills it).
-"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r p"     --png "$OUT/bluetooth.png"
-"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
-"$SIM" "$MAP" --boot --script "B l p r r r r r r p p H" --png "$OUT/reset-hold.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p"     --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r p p H" --png "$OUT/reset-hold.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
@@ -180,10 +184,10 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --inject-warning gps --png "$OUT/warning-gps.png"
 "$SIM" "$MAP" --boot --inject-warning gps,altimeter,compass,map --png "$OUT/warning-all.png"
 
-# The idle-return picker in its open (editing) state, now on the Display page's third row
+# The idle-return picker in its open (editing) state, on the Display page's third row
 # (Home → Menu → Settings → Display, two turns down to Idle, press to open the picker). The idle
 # timeout still works end-to-end: sit in Settings, elapse (`I`), land back on Home.
-"$SIM" "$MAP" --boot --script "B l p r r r p r r p" --png "$OUT/display-idle-return.png"
-"$SIM" "$MAP" --boot --script "B l p I"             --png "$OUT/idle-return-home.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r p r r p" --png "$OUT/display-idle-return.png"
+"$SIM" "$MAP" --boot --script "B l p I"               --png "$OUT/idle-return-home.png"
 
-echo "ui-snapshots: 52 screens rendered into $OUT/"
+echo "ui-snapshots: 54 screens rendered into $OUT/"

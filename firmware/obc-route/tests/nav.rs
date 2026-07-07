@@ -868,3 +868,29 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
         "found weighted cost {found} exceeds the ε = 1.3 bound over Dijkstra reference {reference}"
     );
 }
+
+/// N5's acceptance ride (#538): over the **real re-packed grimsel map** (the sim's committed v9
+/// asset, shipping the default Road/Gravel/MTB/Touring table), the same endpoints planned under
+/// Road (profile 0) vs MTB (profile 2) produce **different polylines** — the profile weights
+/// genuinely steer the search, end-to-end through the same `plan_route` both hosts call. The
+/// endpoints are a pinned pair from a deterministic sweep of the map's own nav nodes (two junctions
+/// ~2.4 km apart) where the paved-vs-track choice
+/// diverges; the raw lengths differ too (the road detour is shorter for Road, the track for MTB),
+/// so the assert can't pass on emit jitter.
+#[test]
+fn road_vs_mtb_diverge_over_grimsel() {
+    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/grimsel.obcm"))
+        .expect("grimsel.obcm fixture present");
+    let from = (8_175_487, 46_733_020);
+    let to = (8_148_471, 46_744_115);
+
+    let (road, obcr_road, _) = plan_p(&bytes, from, to, "Road", 0);
+    let (mtb, obcr_mtb, _) = plan_p(&bytes, from, to, "MTB", 2);
+    let road = road.expect("Road plans");
+    let mtb = mtb.expect("MTB plans");
+
+    let pts_road = route_points(&obcr_road);
+    let pts_mtb = route_points(&obcr_mtb);
+    assert_ne!(pts_road, pts_mtb, "Road vs MTB must pick different polylines here");
+    assert_ne!(road.total_distance_m, mtb.total_distance_m, "the two profiles' picks differ in raw ground length too");
+}

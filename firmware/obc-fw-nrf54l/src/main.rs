@@ -930,6 +930,10 @@ async fn main(_spawner: Spawner) {
         {
             ride::load_routes(&mut storage, app);
             ride::load_rides(&mut storage, app);
+            // Mirror the map's §8.6 routing-profile names into the app for the Bike-type settings
+            // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image
+            // too — the setting renders there but is inert (no router in that build).
+            app.set_nav_profiles(map_tables.nav_profiles());
             // Issue #504: the map loaded but its extent table was refused (fragmented past the cap /
             // failed verification), so reads fall back to the slow FAT-seek path. Surface it once as a
             // dismissable notice — `notify_warning` pushes the card over Home; the ride loop shows it on
