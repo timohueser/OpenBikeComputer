@@ -1,7 +1,8 @@
 //! The Menu overlay — **layout prototype pass**: two candidate designs behind the [`COMPASS`]
-//! switch. Both show the five entries (Routes / Rides / POIs / Map / Settings — Map is still an
-//! inert placeholder until that screen exists) and keep the list semantics: `turn` moves the
-//! selection (wrapping), `press` enters, `back` returns to the caller.
+//! switch. Both show the five entries (Routes / Rides / POIs / Map / Settings) and keep the list
+//! semantics: `turn` moves the selection (wrapping), `press` enters, `back` returns to the caller.
+//! Four stations open a menu; the **Map** station opens the Map screen directly (see [`open_map`]) —
+//! the live riding map while tracking, else a route-less browse map.
 //!
 //! * Compass dial: a wood bezel ring with the five entries as stations evenly spaced around the
 //!   ring (72° apart, starting from N — see [`station_dir`]), an amber needle that *sweeps* to the
@@ -19,8 +20,8 @@ use obc_render::{
 use crate::input::Gesture;
 
 use super::{
-    list, palette, title_frame_ble, Ctx, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick,
-    SettingsScreen, Transition,
+    list, palette, title_frame_ble, Ctx, MapScreen, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen,
+    ScreenTick, SettingsScreen, Transition,
 };
 
 const ITEMS: [&str; 5] = ["Routes", "Rides", "POIs", "Map", "Settings"];
@@ -65,7 +66,7 @@ impl MenuScreen {
         MenuScreen::default()
     }
 
-    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Turn(n) => {
                 self.target_deg += n as f32 * DETENT_DEG;
@@ -75,8 +76,8 @@ impl MenuScreen {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
                 1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
                 2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
-                4 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
-                _ => Transition::None,                                            // Map — future screen
+                3 => open_map(cx),                                                // Map
+                _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
             },
             Gesture::Back => Transition::Pop, // return to caller (Home or Map)
             Gesture::Hold => Transition::None,
@@ -121,6 +122,26 @@ impl MenuScreen {
             draw_grid(cv, rx.w, rx.h, self.selected, ble);
         }
     }
+}
+
+/// Open the Map station. **While tracking**, land the rider on the live riding map — the ride base
+/// — by rooting the stack to a clean `[Home, Map]`, exactly the normalization
+/// [`App::apply_idle_return`](crate::App::apply_idle_return) does when the idle timeout returns a
+/// tracking rider to the Map (so a second Map is never stacked and stale overlays are cleared). The
+/// camera is already following in the riding view. **Not tracking**, it's a route-less *browse* map:
+/// enter the riding view (GPS-follow, zoomed in) and push the Map over the Menu, so `back` returns
+/// here and `press` opens the start card.
+fn open_map(cx: &mut Ctx) -> Transition {
+    if cx.activity.is_tracking() {
+        return Transition::Root(Screen::Map(MapScreen::new()));
+    }
+    // Seed the browse camera on the rider (last fix) if there is one; Follow recenters on each fix.
+    if let Some(fix) = cx.state.user_fix {
+        cx.state.enter_riding_view(fix.lon, fix.lat);
+    } else {
+        cx.state.enter_riding_view(cx.state.cam_lon, cx.state.cam_lat);
+    }
+    Transition::Push(Screen::Map(MapScreen::new()))
 }
 
 /// The compass-dial layout under the standard title bar: bezel ring, intercardinal ticks, needle,
@@ -301,5 +322,54 @@ fn icon_sliders(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
         let y = c.y + si(k, row);
         cv.fill(rect(c.x - hw, y - track_h as i32 / 2, 2 * hw, track_h as i32), color);
         cv.disc(Point::new(c.x + si(k, knob), y), knob_r, color);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::activity::{Activity, Mode};
+    use crate::{AppState, Settings};
+
+    fn run(scr: &mut MenuScreen, act: &mut Activity, g: Gesture) -> Transition {
+        let mut st = AppState::new(0, 0, 1.0);
+        let mut settings = Settings::default();
+        let scratch = crate::screen::PoiScratch::new();
+        let mut cx = Ctx {
+            state: &mut st,
+            activity: act,
+            settings: &mut settings,
+            routes: &[],
+            rides: &[],
+            poi_scratch: &scratch,
+            now_ms: 0,
+        };
+        scr.handle(g, &mut cx)
+    }
+
+    /// Pressing the Map station while idle (not tracking) pushes the Map over the Menu — the
+    /// route-less browse map, reached without a route or session.
+    #[test]
+    fn map_station_idle_pushes_the_browse_map() {
+        let mut act = Activity::new(Mode::Idle);
+        let mut scr = MenuScreen::new();
+        scr.selected = 3; // the Map station
+        let t = run(&mut scr, &mut act, Gesture::Press);
+        assert!(matches!(t, Transition::Push(Screen::Map(_))), "idle → push the browse Map over the Menu");
+    }
+
+    /// Pressing the Map station **while tracking** lands the rider on the live riding map by rooting
+    /// the stack to a clean `[Home, Map]` — never a second stacked Map.
+    #[test]
+    fn map_station_while_tracking_roots_to_the_ride_base() {
+        let mut act = Activity::new(Mode::Riding);
+        act.start_session(); // now tracking
+        let mut scr = MenuScreen::new();
+        scr.selected = 3;
+        let t = run(&mut scr, &mut act, Gesture::Press);
+        assert!(
+            matches!(t, Transition::Root(Screen::Map(_))),
+            "tracking → root to [Home, Map] (the idle-return ride-base normalization), not a stacked Map"
+        );
     }
 }

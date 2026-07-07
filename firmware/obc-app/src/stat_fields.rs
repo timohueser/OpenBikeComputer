@@ -152,26 +152,39 @@ impl StatField {
                 false,
             ),
             StatField::DistToGo => {
-                let to_go_m = cx.route.map_or(0, |r| r.total_distance_m).saturating_sub(cx.activity.progress_m);
-                StatCell::new(cap(units.dist_label(), " TO GO"), fmt_km(units.dist(to_go_m as f32 / 1000.0)), false)
+                // Route-relative: with no route loaded (a route-less ride) there's nothing "to go",
+                // so the tile reads `--` rather than a misleading 0.0.
+                let value = match cx.route {
+                    Some(r) => {
+                        fmt_km(units.dist(r.total_distance_m.saturating_sub(cx.activity.progress_m) as f32 / 1000.0))
+                    }
+                    None => dashes(),
+                };
+                StatCell::new(cap(units.dist_label(), " TO GO"), value, false)
             }
             StatField::Climbed => {
                 StatCell::new(cap("CLIMBED", ""), fmt_int(units.elev(cx.activity.climb_m()) as u32), true)
             }
             StatField::ToClimb => {
-                let to_climb = match (cx.route, cx.profile) {
-                    (Some(r), Some(p)) => r.total_ascent_m.saturating_sub(p.ascent_to(live)),
-                    _ => 0,
+                // Route-relative — `--` on a route-less ride (no cumulative ascent to subtract from).
+                let value = match (cx.route, cx.profile) {
+                    (Some(r), Some(p)) => {
+                        fmt_int(units.elev(r.total_ascent_m.saturating_sub(p.ascent_to(live)) as f32) as u32)
+                    }
+                    _ => dashes(),
                 };
-                StatCell::new(cap("TO CLIMB", ""), fmt_int(units.elev(to_climb as f32) as u32), true)
+                StatCell::new(cap("TO CLIMB", ""), value, true)
             }
             StatField::Grade => {
-                let g = match (cx.route, cx.profile) {
-                    (Some(r), Some(p)) => grade_at(p, r.total_distance_m, live),
-                    _ => 0,
+                // Route-relative — `--` on a route-less ride (grade comes from the route profile).
+                let value = match (cx.route, cx.profile) {
+                    (Some(r), Some(p)) => {
+                        let mut s: heapless::String<8> = heapless::String::new();
+                        let _ = write!(s, "{}%", grade_at(p, r.total_distance_m, live));
+                        s
+                    }
+                    _ => dashes(),
                 };
-                let mut value: heapless::String<8> = heapless::String::new();
-                let _ = write!(value, "{g}%");
                 StatCell::new(cap("GRADE", ""), value, false)
             }
             StatField::Elevation => {
@@ -458,6 +471,14 @@ fn fmt_speed(v: Option<f32>) -> heapless::String<8> {
     s
 }
 
+/// The `--` placeholder a route-relative tile shows when no route is loaded (a route-less ride) —
+/// the same "no data" glyph the live speed/elevation tiles use for an absent reading.
+fn dashes() -> heapless::String<8> {
+    let mut s = heapless::String::new();
+    let _ = s.push_str("--");
+    s
+}
+
 /// An integer figure (climb) as plain digits.
 fn fmt_int(m: u32) -> heapless::String<8> {
     let mut s = heapless::String::new();
@@ -672,12 +693,35 @@ mod tests {
         assert_eq!(val(StatField::AvgSpeed).as_str(), "--", "no moving time → no average");
         assert_eq!(val(StatField::Elevation).as_str(), "--", "no altimeter sample yet");
         assert_eq!(val(StatField::DistDone).as_str(), "0.0");
-        assert_eq!(val(StatField::DistToGo).as_str(), "0.0", "no route → nothing to go");
+        assert_eq!(val(StatField::DistToGo).as_str(), "--", "no route → the route-relative tile reads --");
         assert_eq!(val(StatField::Climbed).as_str(), "0");
-        assert_eq!(val(StatField::ToClimb).as_str(), "0", "no route → nothing to climb");
-        assert_eq!(val(StatField::Grade).as_str(), "0%", "no route → flat");
+        assert_eq!(val(StatField::ToClimb).as_str(), "--", "no route → nothing to climb, reads --");
+        assert_eq!(val(StatField::Grade).as_str(), "--", "no route → grade reads --");
         assert_eq!(val(StatField::RideTime).as_str(), "0:00");
         assert_eq!(val(StatField::Clock).as_str(), "12:00", "the neutral default DateTime");
+    }
+
+    /// A **route-less ride** (a live session, distance/climb accumulated, but no route loaded): the
+    /// route-relative tiles read `--`, while the route-independent ones (distance done, climbed,
+    /// elevation) show their real values. This is the mid-route-less-ride grid.
+    #[test]
+    fn route_less_ride_shows_dashes_for_route_fields_but_real_data_otherwise() {
+        let mut activity = Activity::new(Mode::Riding);
+        // Accumulate some ridden distance, climb, and a live altitude — no route involved.
+        activity.record_motion(Fix::at(52_520_000, 13_405_000), 0);
+        activity.record_motion(Fix::at(52_520_100, 13_405_000), 2000);
+        activity.record_altitude(200.0);
+        activity.record_altitude(230.0); // +30 m climbed
+        let cx = readout(&activity, Units::Metric); // route: None, profile: None
+        let val = |f: StatField| f.cell(&cx).value;
+        // Route-relative → dashes.
+        assert_eq!(val(StatField::DistToGo).as_str(), "--", "no route → to-go reads --");
+        assert_eq!(val(StatField::ToClimb).as_str(), "--", "no route → to-climb reads --");
+        assert_eq!(val(StatField::Grade).as_str(), "--", "no route → grade reads --");
+        // Route-independent → real data.
+        assert_ne!(val(StatField::DistDone).as_str(), "--", "distance done is real, not --");
+        assert_eq!(val(StatField::Climbed).as_str(), "30", "climbed is barometric, route-independent");
+        assert_eq!(val(StatField::Elevation).as_str(), "230", "elevation is the live altitude");
     }
 
     /// The Speed tile reads the fix's ground speed and rescales per unit system.
