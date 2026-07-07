@@ -129,10 +129,13 @@ mod ls021_flpr;
 // The board's display-driver seam — the single screen-write interface both panels implement, so the
 // map plane drives either through one path (`fb_mut` + `present`).
 mod display;
-// The two-plane display machinery both backends share (issue #351): the cfg-selected `MapDisplay`
-// handle, the high-priority input/overlay tasks + the gesture channel, and their executor/ISR
-// statics. `main` constructs the panels and spawns the tasks; the planes live there.
-mod planes;
+// The two-plane display machinery both backends share (issue #351), one module per plane. `main`
+// constructs the panels and spawns the tasks; the planes live here.
+//   - The **input plane**: the high-priority input/overlay task + the gesture channel, and their
+//     executor/ISR statics (the COM task is spawned onto that executor too).
+mod input_plane;
+//   - The **map plane**: the cfg-selected `MapDisplay` handle the ride loop drives the panel through.
+mod map_plane;
 // The map/ride thread-mode plane: `run_app` + its loop-only helpers. In every build now (#270); on
 // `ble` builds it runs joined with the BLE stack, both driving the shared SD + settings store.
 #[cfg(has_map)]
@@ -212,6 +215,12 @@ use com::com_task;
 #[cfg(feature = "com-hw")]
 use com_hw::HwCom;
 use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Ls021Flpr};
+// The two planes' entry points `main` reaches: the input plane's executor + task + gesture channel,
+// and the map plane's display handle + boot-fault screen. (Unqualified so the input-plane items don't
+// read against the `input_plane` value binding constructed below — they're different namespaces, but
+// this keeps the call sites clean.)
+use input_plane::{input_task, EXECUTOR_HP, GESTURES};
+use map_plane::{show_boot_fault, MapDisplay};
 
 // VCOM debug-sensor / telemetry stream, behind `debug-uart`: the interrupt-buffered UARTE on the DK's
 // J-Link VCOM. `BufferedUarte` keeps RX DMA continuously armed into a ring driven by the SERIAL20
@@ -441,7 +450,7 @@ const INIT_MPP: f32 = 2.0;
 
 /// Heartbeat-only idle for an unrecoverable bring-up failure: blink LED0 forever rather than panic —
 /// a missing/bad card must **never** fault (acceptance criterion). The storage faults (no card, no
-/// `.obcm`, unreadable map) first paint an undismissable [`planes::show_boot_fault`] screen so the
+/// `.obcm`, unreadable map) first paint an undismissable [`show_boot_fault`] screen so the
 /// rider sees *why*, then land here; a bare heartbeat (no glass) remains only for a failure with no
 /// panel to draw on — an FLPR launch that never came alive. Diverges.
 async fn idle_blink(led: &mut Output<'static>) -> ! {
@@ -813,7 +822,7 @@ async fn main(_spawner: Spawner) {
                 init_static(core::ptr::addr_of_mut!(INPUT_PLANE), BlockingMutex::new(RefCell::new(InputPlane::new())))
             };
 
-            let hp = planes::EXECUTOR_HP.start(interrupt::SWI01);
+            let hp = EXECUTOR_HP.start(interrupt::SWI01);
             // COM starts only **now**, after the COM-held-`Lo` init-black frame above. Default: the M33
             // `com_task` on the high-priority executor (it must keep toggling during the blocking
             // whole-frame push). `com-hw`: the zero-CPU TIMER+DPPI+GPIOTE driver — no task, no core wakes
@@ -826,9 +835,9 @@ async fn main(_spawner: Spawner) {
                 info!("FLPR LS021: COM on hardware TIMER21+DPPI+GPIOTE20 (zero-CPU); M33 can WFI between events");
                 c
             };
-            hp.spawn(defmt::unwrap!(planes::input_task(buttons, input_plane, planes::GESTURES.sender())));
+            hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender())));
             info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven, #219)");
-            planes::MapDisplay {
+            MapDisplay {
                 panel,
                 input_plane,
                 last_overlay_span: None,
@@ -866,7 +875,7 @@ async fn main(_spawner: Spawner) {
         let Some(mut storage) = storage
         else {
             defmt::error!("SD: no card / mount failed — showing the NO SD CARD fault screen, then heartbeat idle");
-            planes::show_boot_fault(&mut display, obc_app::BootFault::NoCard).await;
+            show_boot_fault(&mut display, obc_app::BootFault::NoCard).await;
             idle_blink(&mut led).await
         };
 
@@ -897,7 +906,7 @@ async fn main(_spawner: Spawner) {
         let map_tables: &MapTables = unsafe {
             let Some(init_src) = storage.map_source() else {
                 defmt::error!("SD: no .obcm map in card root — showing the NO MAP fault screen, then heartbeat idle");
-                planes::show_boot_fault(&mut display, obc_app::BootFault::NoMap).await;
+                show_boot_fault(&mut display, obc_app::BootFault::NoMap).await;
                 idle_blink(&mut led).await
             };
             let slot = core::ptr::addr_of_mut!(MAP_TABLES) as *mut MapTables;
@@ -911,7 +920,7 @@ async fn main(_spawner: Spawner) {
                         "map: not valid OBCM: {} — showing the MAP UNREADABLE fault screen, then idle",
                         defmt::Debug2Format(&e)
                     );
-                    planes::show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
+                    show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
                     idle_blink(&mut led).await
                 }
             }

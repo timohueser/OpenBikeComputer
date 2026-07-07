@@ -34,7 +34,7 @@
 //! `where Self: Sized`, so the trait stays object-safe for the one thing the render path needs
 //! through `&mut dyn DisplayDriver` — [`fb_mut`](DisplayDriver::fb_mut); presents are always called
 //! on the concrete backend. The two-plane concurrency (which executor drives each path) lives in
-//! `main.rs` / `planes.rs`, *outside* the seam.
+//! `main.rs` / `input_plane.rs` / `map_plane.rs`, *outside* the seam.
 
 use obc_platform::Band;
 
