@@ -263,6 +263,9 @@ fn nav_finish(
     let cache = nav.tiles.stats();
     // SAFETY: the run guarded the slot; the planner is initialized for this plan.
     let settles = unsafe { nav.planner.assume_init_ref() }.settles();
+    // The ε rung the plan ended on (N8): 13/10 for a plain success or a fast no-path, 2/1 or 3/1 if
+    // the ε-escalation ladder retried on exhaustion. `settles` above is cumulative across the rungs.
+    let (eps_num, eps_den) = unsafe { nav.planner.assume_init_ref() }.epsilon_used();
     let hw = stackmeter::rescan(now);
     // `exhausted` is the range tier ("Too far to route here" on glass — no distance cap);
     // `no-path` the generic tier.
@@ -273,7 +276,7 @@ fn nav_finish(
     };
     let len = result.map(|(_, len)| len).unwrap_or(0);
     defmt::info!(
-        "nav route: {=str} len={=u32} total_ms={=u64} snap_ms={=u64} search_ms={=u64} emit_ms={=u64} write_ms={=u64} rescan_ms={=u64} sd_reads={=u32} settles={=u32} stack_hw={=usize}/{=usize}",
+        "nav route: {=str} len={=u32} total_ms={=u64} snap_ms={=u64} search_ms={=u64} emit_ms={=u64} write_ms={=u64} rescan_ms={=u64} sd_reads={=u32} settles={=u32} eps={=u32}/{=u32} stack_hw={=usize}/{=usize}",
         outcome_str,
         len,
         run.t0.elapsed().as_millis(),
@@ -284,6 +287,8 @@ fn nav_finish(
         rescan_us / 1000,
         cache.misses,
         settles,
+        eps_num,
+        eps_den,
         hw,
         stackmeter::total()
     );
