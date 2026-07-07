@@ -389,7 +389,7 @@ mod tests {
     }
 
     /// Real-data pack→parse of the POI section (#423): the committed `monaco.obcm` — a POI-dense
-    /// coastal fixture the packer produced from a real OSM extract — must parse as v8 and expose a
+    /// coastal fixture the packer produced from a real OSM extract — must parse as v10 and expose a
     /// full six-category POI directory with several **non-empty** categories, each carrying a real
     /// quadtree (non-zero node + chunk counts), plus a populated §8 nav graph (#464). This
     /// complements the reader's hand-built byte pins (`obc-reader/tests/format.rs`) by exercising
@@ -401,11 +401,11 @@ mod tests {
 
         let bytes = include_bytes!("../assets/monaco.obcm").to_vec();
         let src = SliceSource(&bytes);
-        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v9 map");
+        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v10 map");
         let cache = MapCache::new();
         let r = Reader::new(&src, &tables, &cache);
 
-        assert_eq!(r.version, 9, "the fixture is OBCM v9");
+        assert_eq!(r.version, 10, "the fixture is OBCM v10");
         let dir = r.poi_directory();
         // The directory is always present with all six categories (spec §7.1).
         assert_eq!(dir.entries.len(), 6, "six-category POI directory");

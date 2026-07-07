@@ -53,7 +53,7 @@ fn render_into(buf: &mut Buf, bytes: &[u8], vp: &Viewport) -> obc_render::Render
 fn polygon_straddling_top_edge_clamps_and_fills_visible_part() {
     // A big square spanning lon/lat so that, with the camera near its top, the square's top is above
     // the screen and its bottom is on-screen. Style is priority 1 so it always draws.
-    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1)];
+    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
     // (0,0)->(1000,0)->(1000,1000)->(0,1000): a 1000-µdeg square (16-bit deltas).
     let square = pack_poly16(1, 0, 0, &[(1000, 0), (0, 1000), (-1000, 0)]);
     let bytes = one_chunk_map((0, 0, 2000, 2000), styles, square, 4096);
@@ -79,7 +79,7 @@ fn polygon_straddling_top_edge_clamps_and_fills_visible_part() {
 /// screen.
 #[test]
 fn polygon_entirely_offscreen_fills_nothing() {
-    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1)];
+    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
     // A small triangle near (50,50) in a large bbox.
     let tri = pack_poly(1, 50, 50, &[(20, 0), (0, 20)]);
     let bytes = one_chunk_map((0, 0, 100_000, 100_000), styles, tri, 4096);
@@ -103,7 +103,7 @@ fn polygon_entirely_offscreen_fills_nothing() {
 /// emit a 1-point "polygon"; it must paint zero pixels, not a stray dot or a panic.
 #[test]
 fn single_point_polygon_fills_nothing() {
-    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1)];
+    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
     // Declared count 1 → exterior is just the anchor; no deltas. A 1-vertex ring.
     let degenerate = pack_poly_decl(1, 100, 100, 1, &[]);
     let bytes = one_chunk_map((0, 0, 1000, 1000), styles, degenerate, 4096);
@@ -118,7 +118,7 @@ fn single_point_polygon_fills_nothing() {
 /// region, so every scanline finds <2 crossings and the row is skipped. It must paint nothing.
 #[test]
 fn zero_area_collinear_polygon_fills_nothing() {
-    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1)];
+    let styles: &[Style] = &[(1, 0, FILL_565, 1, 1, false, None)];
     // Three collinear points along y = const: (100,100) -> (140,100) -> (180,100).
     let flat = pack_poly(1, 100, 100, &[(40, 0), (40, 0)]);
     let bytes = one_chunk_map((0, 0, 1000, 1000), styles, flat, 4096);
@@ -148,7 +148,7 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     // high priority (1) red, both big.
     const LOW_565: u16 = 0x001F; // blue, priority 4
     const HIGH_565: u16 = 0xF800; // red, priority 1
-    let styles: &[Style] = &[(1, 0, LOW_565, 1, 4), (2, 1, HIGH_565, 1, 1)];
+    let styles: &[Style] = &[(1, 0, LOW_565, 1, 4, false, None), (2, 1, HIGH_565, 1, 1, false, None)];
 
     // A low-priority "blob": a ~2000-vertex thin filled rectangle (densified edges). Its vertex
     // count is what matters — every vertex lands in `frame_points`, the buffer under test. Anchored

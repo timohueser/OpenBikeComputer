@@ -1,4 +1,4 @@
-//! Format-contract tests for the OBCM v9 reader.
+//! Format-contract tests for the OBCM v10 reader.
 //!
 //! Each test builds a synthetic `.obcm` with the shared `obcm-testkit` builder (which mirrors the
 //! Rust packer's `serialize.rs`), then asserts the reader parses it back. Building the bytes rather
@@ -70,7 +70,7 @@ fn query_all(r: &Reader, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
 // and feature anchors are absolute.
 const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
-const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3)];
+const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
 
 fn two_lod_file() -> Vec<u8> {
     let line = pad(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
@@ -94,7 +94,7 @@ fn header_and_lod_table() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    assert_eq!(r.version, 9);
+    assert_eq!(r.version, 10);
     assert_eq!(r.marker_color, MARKER);
     assert_eq!(r.bbox.min_lon, 0);
     assert_eq!(r.bbox.min_lat, 0);
@@ -135,12 +135,82 @@ fn styles_parse() {
     assert_eq!(s1.color, 0xF800);
     assert_eq!(s1.weight, 2);
     assert_eq!(s1.priority, 3);
+    // The v10 tail defaults for a solid, single-color style.
+    assert!(!s1.dashed, "STYLES are solid");
+    assert_eq!(s1.color2, None, "STYLES carry no color2");
 
     let s2 = r.style(2).expect("style 2");
     assert_eq!(s2.z_index, -1);
     assert_eq!(s2.color, 0x07E0);
 
     assert!(r.style(200).is_none());
+}
+
+/// The v10 8-byte style record round-trips `line_style` (flag bit 2) and the optional `color2`
+/// (flag bit 3 + the u16 at record offset 6) across every (dashed, color2) combination the epic
+/// #556 semantics use. `color2 == Some(0x0000)` on the casing style pins that **black is a legit
+/// secondary color**, not a "no color2" sentinel.
+#[test]
+fn style_record_round_trips_line_style_and_color2() {
+    let styles: &[Style] = &[
+        (1, 0, 0xF800, 2, 3, false, None),         // solid, no color2 — today's flat stroke
+        (2, 1, 0x001F, 1, 3, true, None),          // dashed, no color2 — admin border
+        (3, 2, 0x07E0, 3, 3, false, Some(0x0000)), // solid + color2 — road casing (black casing)
+        (4, 3, 0xFFFF, 2, 3, true, Some(0x8410)),  // dashed + color2 — railway stripe
+    ];
+    let line = pad(pack_line(1, 10, 10, &[(1, 1)]), CS);
+    let bytes = build_file(
+        GLOBAL,
+        styles,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![line], chunk_size: CS }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+
+    let s1 = r.style(1).unwrap();
+    assert!(!s1.dashed);
+    assert_eq!(s1.color2, None);
+
+    let s2 = r.style(2).unwrap();
+    assert!(s2.dashed);
+    assert_eq!(s2.color2, None);
+
+    let s3 = r.style(3).unwrap();
+    assert!(!s3.dashed);
+    assert_eq!(s3.color2, Some(0x0000), "black (0x0000) is a legit secondary color, not a sentinel");
+
+    let s4 = r.style(4).unwrap();
+    assert!(s4.dashed);
+    assert_eq!(s4.color2, Some(0x8410));
+}
+
+/// The color2 flag bit — not a `0x0000` sentinel — decides presence. A solid/no-color2 style packs
+/// its two color2 bytes as `0x0000` with bit 3 clear; forge those wire bytes to nonzero and the
+/// reader MUST still report `color2 == None`.
+#[test]
+fn color2_wire_bytes_ignored_when_flag_clear() {
+    let styles: &[Style] = &[(7, 0, 0xF800, 2, 3, false, None)];
+    let line = pad(pack_line(7, 10, 10, &[(1, 1)]), CS);
+    let mut bytes = build_file(
+        GLOBAL,
+        styles,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![line], chunk_size: CS }],
+    );
+    // Style table: count byte at HEADER_LEN, record 0 at HEADER_LEN + 1; within a record, flags are
+    // at offset 5 and color2 at offset 6.
+    let flags_at = HEADER_LEN + 1 + 5;
+    let color2_at = HEADER_LEN + 1 + 6;
+    assert_eq!(bytes[flags_at] & 0x08, 0, "color2 flag bit is clear as packed");
+    bytes[color2_at] = 0x34;
+    bytes[color2_at + 1] = 0x12; // wire bytes now read 0x1234, but the flag stays clear
+
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    assert_eq!(r.style(7).unwrap().color2, None, "nonzero color2 bytes are ignored when bit 3 is clear");
 }
 
 #[test]
@@ -348,7 +418,7 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_lod_file();
-    bytes[4] = 8; // v8 (and earlier) no longer supported — only v9 is read
+    bytes[4] = 9; // v9 (and earlier) no longer supported — only v10 is read
     assert_eq!(err(&bytes), Error::BadVersion);
 }
 
@@ -418,7 +488,8 @@ fn filtered_decode_skips_without_drifting() {
     chunk.extend_from_slice(&pack_line16(3, 0, 0, &[(300, 400), (-200, 0)]));
     let chunk = pad(chunk, 128);
 
-    let styles: &[Style] = &[(1, 3, 0xF800, 2, 3), (2, -1, 0x07E0, 1, 3), (3, 0, 0x001F, 1, 3)];
+    let styles: &[Style] =
+        &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None), (3, 0, 0x001F, 1, 3, false, None)];
     let bytes = build_file(
         GLOBAL,
         styles,
@@ -564,7 +635,7 @@ fn walk_caps_depth_on_forward_chain() {
 // directory, the populated-directory test hand-assembles the section so the record +
 // index + pool bytes are pinned, not derived.
 
-/// `build_file` (empty-POI, empty-nav) is a valid v9 map: 40-byte header, a POI-section
+/// `build_file` (empty-POI, empty-nav) is a valid v10 map: 40-byte header, a POI-section
 /// offset pointing just past the LOD payload, a six-category empty directory, an empty
 /// hours pool, and an empty nav section (28-byte directory + the always-present profile table)
 /// at the tail.
@@ -572,10 +643,10 @@ fn walk_caps_depth_on_forward_chain() {
 fn header_is_40_bytes_with_poi_and_nav_offsets() {
     let bytes = two_lod_file();
 
-    // Version byte is 9; the style table follows the header, so the style offset equals the 40-byte
-    // header length (unchanged v8→v9 — the new fields hang off the nav directory).
+    // Version byte is 10; the style table follows the header, so the style offset equals the 40-byte
+    // header length (v10 grows the style *record*, not the header).
     assert_eq!(HEADER_LEN, 40);
-    assert_eq!(bytes[4], 9);
+    assert_eq!(bytes[4], 10);
     assert_eq!(u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize, HEADER_LEN);
 
     // The POI section offset lives at header byte 32 (right after the 2-byte marker at 30) and is
@@ -629,7 +700,7 @@ fn empty_poi_directory_parses_six_empty_categories() {
     assert_eq!(u16::from_le_bytes(bytes[dir.hours_pool_offset..dir.hours_pool_offset + 2].try_into().unwrap()), 0);
 }
 
-/// Hand-assemble a v8 file whose POI section carries **one populated category** (id
+/// Hand-assemble a v10 file whose POI section carries **one populated category** (id
 /// 3, Accommodation) with a two-record chunk plus a **two-blob hours pool**: the two
 /// records reference blob 0 and blob 1 respectively. Pins the 36-byte record layout
 /// (each field at its offset, incl. the `hours_ref` at [34..36]), the 24-byte name,
@@ -754,14 +825,14 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert_eq!(&bytes[blob1_at..blob1_at + POI_HOURS_BLOB_LEN], &blob1, "blob 1 at index 1");
 }
 
-/// A v8 file (version byte 8) is rejected — the reader accepts v9 only ("current version only": old
-/// maps get repacked). Forging the version byte alone is enough; the rest of the bytes never get
-/// parsed. This is a **distinct** error (`BadVersion`) from a mis-sized v9 nav chunk (`BadOffset`,
-/// see `nav_directory_rejects_corrupt_fields`).
+/// An old file (version byte 9, the immediately-prior format) is rejected — the reader accepts v10
+/// only ("current version only": old maps get repacked). Forging the version byte alone is enough;
+/// the rest of the bytes never get parsed. This is a **distinct** error (`BadVersion`) from a
+/// mis-sized nav chunk (`BadOffset`, see `nav_directory_rejects_corrupt_fields`).
 #[test]
-fn v8_file_is_rejected() {
+fn old_version_file_is_rejected() {
     let mut bytes = two_lod_file();
-    bytes[4] = 8; // downgrade the version byte to v8
+    bytes[4] = 9; // downgrade the version byte to v9 (the just-superseded format)
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadVersion)));
 }
 

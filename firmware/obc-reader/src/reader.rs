@@ -1,4 +1,4 @@
-//! OBCM **v8** format reader: header, style table, LOD table, per-LOD
+//! OBCM **v10** format reader: header, style table, LOD table, per-LOD
 //! quadtree query + chunk decode, the POI directory + hours-pool section, and
 //! the trailing nav-graph section (parse + leaf-walk/record-decode only here —
 //! the A* traversal over it is R3, #465).
@@ -27,7 +27,8 @@ use heapless::Vec;
 use crate::byte_io::{ByteSource, Error as IoError};
 use crate::codec::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32};
 use crate::format::{
-    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_PRIORITY_MASK,
+    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_DASHED_BIT,
+    STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
 };
 use crate::geo::{cos_lat, ground_dist_m_cl};
 use crate::poi_table::PoiCategory;
@@ -254,6 +255,11 @@ pub struct Style {
     pub color: u16, // RGB565
     pub weight: u8,
     pub priority: u8,
+    /// Flag bit 2: the line is drawn dashed (else solid). Ignored for polygons.
+    pub dashed: bool,
+    /// Flag bit 3: the record's optional secondary color (RGB565). `None` when the flag is clear —
+    /// the two wire bytes are `0x0000` then and mean "no color2", not black.
+    pub color2: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -746,7 +752,7 @@ fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
         return Err(Error::BadMagic);
     }
     let version = h[4];
-    if version != 9 {
+    if version != 10 {
         return Err(Error::BadVersion);
     }
     // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack).
@@ -773,7 +779,7 @@ pub fn read_header(src: &dyn ByteSource) -> Result<MapHeader, Error> {
 /// The session-resident, immutable map tables — everything [`Reader`] needs that doesn't change
 /// frame to frame: header scalars, style table, LOD pyramid. Parsed **once** per `.obcm` by
 /// [`MapTables::parse`], then borrowed by a cheap per-frame [`Reader::new`]. Keeping the per-frame
-/// reader ~tens of bytes (no re-parse, no 1536-byte style scratch, no per-frame style-table SD
+/// reader ~tens of bytes (no re-parse, no 2048-byte style scratch, no per-frame style-table SD
 /// read) is what keeps the deep route-load render path inside the nRF's stack reserve.
 pub struct MapTables {
     pub version: u8,
@@ -807,7 +813,7 @@ pub struct MapTables {
 
 impl MapTables {
     /// Parse the header scalars + style table + LOD pyramid from `src`. The one expensive,
-    /// allocating step (a 1536-byte style scratch plus the style/LOD-table SD reads), so do it
+    /// allocating step (a 2048-byte style scratch plus the style/LOD-table SD reads), so do it
     /// **once** per map and hand the result to [`Reader::new`] each frame. A map shorter than the
     /// header, with the wrong magic / version, or with out-of-range table offsets is rejected. The
     /// magic / version / bbox / marker prefix goes through the shared (private) `parse_header` (so
@@ -1908,16 +1914,16 @@ fn read_ring<const P: usize>(
 }
 
 /// Parse the style table, read resident from `src` at `style_offset` (file is `total` bytes) into
-/// the caller's `styles` (cleared first). The table is small (≤ `1 + 256*6` bytes) so it's pulled
-/// in two reads (count byte, then records). A truncated *table* is tolerated — the `o + 6 > want`
+/// the caller's `styles` (cleared first). The table is small (≤ `1 + 256*8` bytes) so it's pulled
+/// in two reads (count byte, then records). A truncated *table* is tolerated — the `o + 8 > want`
 /// break stops at the last whole record rather than reading past it — but a failed *read* (flaky
 /// card) or a `style_offset` at/past EOF (corrupt header) is [`Error::BadOffset`]: an all-`None`
 /// table would let the map load "fine" and render nothing, with no error to surface.
 ///
 /// Out-param + `inline(never)`, deliberately: with the array in the return value this single-call-
-/// site function inlined its ~3.5 KB of scratch (the 1.5 KB record buffer plus the `Result` array
+/// site function inlined its several KB of scratch (the 2 KB record buffer plus the `Result` array
 /// temporaries) into `MapTables::parse` and on into the device `main`'s **permanent** frame — every
-/// stack watermark rose by ~3.8 KB and the DK's ride path overflowed (HardFault). The scratch must
+/// stack watermark rose by multiple KB and the DK's ride path overflowed (HardFault). The scratch must
 /// stay in a frame that pops before `run_app` starts.
 #[inline(never)]
 fn parse_styles(
@@ -1935,17 +1941,17 @@ fn parse_styles(
     let mut cb = [0u8; 1];
     src.read_at(style_offset as u32, &mut cb).map_err(|_| Error::BadOffset)?;
     let count = cb[0] as usize;
-    // `count*6` record bytes follow the count, clamped to what the file holds so the `o + 6 > want`
+    // `count*8` record bytes follow the count, clamped to what the file holds so the `o + 8 > want`
     // break below stops at the last whole record in a truncated table.
     let avail = total - (style_offset + 1);
-    let want = (count * 6).min(avail);
-    let mut buf = [0u8; 256 * 6];
+    let want = (count * 8).min(avail);
+    let mut buf = [0u8; 256 * 8];
     if want > 0 {
         src.read_at((style_offset + 1) as u32, &mut buf[..want]).map_err(|_| Error::BadOffset)?;
     }
     let mut o = 0usize;
     for _ in 0..count {
-        if o + 6 > want {
+        if o + 8 > want {
             break;
         }
         let id = buf[o];
@@ -1954,8 +1960,12 @@ fn parse_styles(
         let weight = buf[o + 4];
         let flags = buf[o + 5];
         let priority = (flags & STYLE_PRIORITY_MASK) + 1;
-        styles[id as usize] = Some(Style { id, z_index, color, weight, priority });
-        o += 6;
+        let dashed = flags & STYLE_DASHED_BIT != 0;
+        // The two color2 bytes are always present; the flag bit — not a `0x0000` sentinel — decides
+        // whether they carry a color (black `0x0000` is a legal secondary color).
+        let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(&buf, o + 6)) } else { None };
+        styles[id as usize] = Some(Style { id, z_index, color, weight, priority, dashed, color2 });
+        o += 8;
     }
     Ok(())
 }
@@ -2140,9 +2150,9 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         profile_table_offset: rd_u32(&d, 22) as usize,
         profile_count: d[26] as usize,
     };
-    // v9 pins the nav chunk size to 512 (§8.1) — a v8 file, or any other value, is rejected. This is
-    // a distinct error from the header's version check, so an old file and a mis-sized v9 file are
-    // told apart.
+    // The nav chunk size is pinned to 512 (§8.1) — a v8 file, or any other value, is rejected. This
+    // is a distinct error from the header's version check, so an old file and a mis-sized v10 file
+    // are told apart.
     if dir.chunk_size != NAV_CHUNK_SIZE {
         return Err(Error::BadOffset);
     }
@@ -2646,7 +2656,7 @@ mod tests {
         let build = |delta: (i8, i8)| {
             build_file(
                 (0, 0, 1000, 1000),
-                &[(1, 3, 0xF800, 2, 3)],
+                &[(1, 3, 0xF800, 2, 3, false, None)],
                 &[LodSpec {
                     max_mpp: f32::INFINITY,
                     index: vec![0],
@@ -2701,7 +2711,7 @@ mod tests {
         use obcm_testkit::{build_file, pack_line, pad, LodSpec};
         let bytes = build_file(
             (0, 0, 1000, 1000),
-            &[(1, 3, 0xF800, 2, 3)],
+            &[(1, 3, 0xF800, 2, 3, false, None)],
             &[LodSpec {
                 max_mpp: f32::INFINITY,
                 index: vec![0],
@@ -2754,7 +2764,7 @@ mod tests {
     fn synth_header(min_lon: i32, min_lat: i32, max_lon: i32, max_lat: i32, marker: u16) -> [u8; HEADER_LEN] {
         let mut h = [0u8; HEADER_LEN];
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 9;
+        h[4] = 10;
         h[5..9].copy_from_slice(&min_lat.to_le_bytes()); // field order is lat,lon,lat,lon
         h[9..13].copy_from_slice(&min_lon.to_le_bytes());
         h[13..17].copy_from_slice(&max_lat.to_le_bytes());
@@ -2772,7 +2782,7 @@ mod tests {
         assert_eq!(
             got,
             MapHeader {
-                version: 9,
+                version: 10,
                 bbox: BBox { min_lon: -34, min_lat: 12, max_lon: 78, max_lat: 56 },
                 marker_color: 0xBEEF
             }
@@ -2788,7 +2798,7 @@ mod tests {
         h[0..4].copy_from_slice(b"NOPE");
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadMagic));
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 8; // v8 (and earlier) no longer supported — only v9 is read
+        h[4] = 9; // v9 (and earlier) no longer supported — only v10 is read
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadVersion));
     }
 }
