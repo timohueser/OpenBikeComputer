@@ -123,6 +123,18 @@ pub fn run_web() {
     });
 }
 
+/// One frame's device-control hit-test, produced while the housing is drawn
+/// ([`SimGui::show_device_image`]) and consumed by [`SimGui::apply_device_input`]. Keeps the draw
+/// free of input side effects: it only reports geometry, the caller drives the recognizer.
+struct DeviceHit {
+    /// Encoder pressed this frame (housing hit-test OR the Enter key).
+    enc_down: bool,
+    /// Back pressed this frame (housing hit-test OR the Backspace key).
+    back_down: bool,
+    /// Encoder-wheel scroll delta — non-zero only while the wheel was hovered (zero otherwise).
+    scroll_dy: f32,
+}
+
 struct SimGui {
     /// Map file bytes; `Reader` borrows these each frame.
     bytes: Vec<u8>,
@@ -579,85 +591,102 @@ impl SimGui {
 
     /// Draw the device — housing chrome plus the framebuffer blitted into its screen cutout —
     /// centred, at either the integer fit scale (default) or the panel's true physical size
-    /// when 1:1 is on and calibrated.
-    fn show_device_image(&mut self, ctx: &egui::Context) {
+    /// when 1:1 is on and calibrated. Reports this frame's device-control hit-test ([`DeviceHit`])
+    /// so the caller can fold it into the shared input recognizer via [`apply_device_input`]; the
+    /// drawing itself has no input side effects.
+    #[must_use]
+    fn show_device_image(&mut self, ctx: &egui::Context) -> DeviceHit {
         // Native frames the device in a charcoal backdrop; the web demo is transparent so the
         // device sits straight on the page background.
         #[cfg(not(target_arch = "wasm32"))]
         let frame = egui::Frame::none().fill(housing::background());
         #[cfg(target_arch = "wasm32")]
         let frame = egui::Frame::none().fill(egui::Color32::TRANSPARENT);
-        egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            let tex = self.texture.clone().expect("texture uploaded this frame");
-            let style = housing::HousingStyle::default();
-            let screen = egui::vec2(self.dev_w as f32, self.dev_h as f32);
-            let disp_scale = match (self.physical, self.points_per_mm) {
-                // 1:1 — points per device pixel so 240 px spans the panel's real width.
-                // Fractional on purpose (the size isn't a whole multiple of the grid);
-                // NEAREST keeps it crisp at the cost of a slightly uneven pixel grid.
-                (true, Some(ppm)) => (crate::calib::PANEL_W_MM * ppm / self.dev_w as f32).max(0.05),
-                // Otherwise: largest integer scale at which the whole *device* fits,
-                // capped at `--scale`, ≥1 — keeps the screen at a crisp whole multiple.
-                _ => {
-                    let avail = ui.available_size();
-                    let dev = style.device_size_px(screen);
-                    let fit = (avail.x / dev.x).min(avail.y / dev.y);
-                    fit.floor().clamp(1.0, self.scale as f32)
-                }
-            };
-            let lo = style.layout(ui.available_rect_before_wrap(), disp_scale, screen);
+        egui::CentralPanel::default()
+            .frame(frame)
+            .show(ctx, |ui| {
+                let tex = self.texture.clone().expect("texture uploaded this frame");
+                let style = housing::HousingStyle::default();
+                let screen = egui::vec2(self.dev_w as f32, self.dev_h as f32);
+                let disp_scale = match (self.physical, self.points_per_mm) {
+                    // 1:1 — points per device pixel so 240 px spans the panel's real width.
+                    // Fractional on purpose (the size isn't a whole multiple of the grid);
+                    // NEAREST keeps it crisp at the cost of a slightly uneven pixel grid.
+                    (true, Some(ppm)) => (crate::calib::PANEL_W_MM * ppm / self.dev_w as f32).max(0.05),
+                    // Otherwise: largest integer scale at which the whole *device* fits,
+                    // capped at `--scale`, ≥1 — keeps the screen at a crisp whole multiple.
+                    _ => {
+                        let avail = ui.available_size();
+                        let dev = style.device_size_px(screen);
+                        let fit = (avail.x / dev.x).min(avail.y / dev.y);
+                        fit.floor().clamp(1.0, self.scale as f32)
+                    }
+                };
+                let lo = style.layout(ui.available_rect_before_wrap(), disp_scale, screen);
 
-            // The device controls live on the housing: click the encoder / Back, or scroll over
-            // the wheel to turn it. Hit-test their rects, fold in the keyboard, and run the shared
-            // recognizer — the same path the firmware uses with real GPIO.
-            let enc = ui.interact(lo.encoder, egui::Id::new("dev_encoder"), egui::Sense::click());
-            let back = ui.interact(lo.back, egui::Id::new("dev_back"), egui::Sense::click());
-            let enc = enc.on_hover_cursor(egui::CursorIcon::PointingHand);
-            let back = back.on_hover_cursor(egui::CursorIcon::PointingHand);
-            if enc.hovered() {
-                let dy = ui.input(|i| i.smooth_scroll_delta.y);
-                if dy != 0.0 {
-                    self.input.scroll(dy);
-                }
-            }
-            self.input.turn(self.kbd_turn);
-            let enc_down = enc.is_pointer_button_down_on() || self.kbd_enc;
-            let back_down = back.is_pointer_button_down_on() || self.kbd_back;
-            self.input.set_button(Button::Encoder, enc_down);
-            self.input.set_button(Button::Back, back_down);
-            let now = self.input.now_ms();
-            self.app.handle_input(InputClock(now), &mut self.input);
-            // Persist on the settings-dirty edge (the device's save-on-dirty path).
-            if self.app.take_settings_dirty() {
-                self.settings_store.save(self.app.settings());
-            }
+                // The device controls live on the housing: click the encoder / Back, or scroll over
+                // the wheel to turn it. Hit-test their rects here (drawing only); the keyboard fold-in
+                // and shared recognizer run in `apply_device_input` from the returned `DeviceHit`.
+                let enc = ui.interact(lo.encoder, egui::Id::new("dev_encoder"), egui::Sense::click());
+                let back = ui.interact(lo.back, egui::Id::new("dev_back"), egui::Sense::click());
+                let enc = enc.on_hover_cursor(egui::CursorIcon::PointingHand);
+                let back = back.on_hover_cursor(egui::CursorIcon::PointingHand);
+                // Wheel scroll is only picked up while hovering the encoder (zero otherwise), matching
+                // the inline behaviour; the delta is applied in `apply_device_input`.
+                let scroll_dy = if enc.hovered() { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
+                let enc_down = enc.is_pointer_button_down_on() || self.kbd_enc;
+                let back_down = back.is_pointer_button_down_on() || self.kbd_back;
 
-            // Mirror the live control state onto the housing. The knurl eases toward the new
-            // angle so each detent reads as a little turn.
-            let knob_angle =
-                ui.ctx().animate_value_with_time(egui::Id::new("knurl_phase"), self.input.knob_angle(), 0.12);
-            let ctrl = housing::ControlVisual { knob_angle, encoder_down: enc_down, back_down };
-            let palette = self.colorway.palette();
+                // Mirror the live control state onto the housing. The knurl eases toward the current
+                // angle so each detent reads as a little turn.
+                let knob_angle =
+                    ui.ctx().animate_value_with_time(egui::Id::new("knurl_phase"), self.input.knob_angle(), 0.12);
+                let ctrl = housing::ControlVisual { knob_angle, encoder_down: enc_down, back_down };
+                let palette = self.colorway.palette();
 
-            // Paint the housing, then blit the framebuffer into its screen rect, corners rounded
-            // to follow the bezel. Clone the painter so `ui`'s borrow is released before `ui.put`.
-            let painter = ui.painter().clone();
-            housing::draw(&painter, &lo, &style, &palette, &ctrl);
-            let resp = ui.put(
-                lo.screen,
-                egui::Image::new(egui::load::SizedTexture::from_handle(&tex))
-                    .fit_to_exact_size(lo.screen.size())
-                    .texture_options(egui::TextureOptions::NEAREST)
-                    .rounding(egui::Rounding::same(style.screen_radius_pts(disp_scale)))
-                    .sense(egui::Sense::click_and_drag()),
-            );
-            // Native: mouse drag pans / scroll zooms. The web demo is encoder-driven only — no
-            // screen pan/zoom, so it never feels like a touchscreen (the device has none).
-            #[cfg(not(target_arch = "wasm32"))]
-            self.handle_camera_input(ui, &resp, resp.rect, disp_scale);
-            #[cfg(target_arch = "wasm32")]
-            let _ = &resp;
-        });
+                // Paint the housing, then blit the framebuffer into its screen rect, corners rounded
+                // to follow the bezel. Clone the painter so `ui`'s borrow is released before `ui.put`.
+                let painter = ui.painter().clone();
+                housing::draw(&painter, &lo, &style, &palette, &ctrl);
+                let resp = ui.put(
+                    lo.screen,
+                    egui::Image::new(egui::load::SizedTexture::from_handle(&tex))
+                        .fit_to_exact_size(lo.screen.size())
+                        .texture_options(egui::TextureOptions::NEAREST)
+                        .rounding(egui::Rounding::same(style.screen_radius_pts(disp_scale)))
+                        .sense(egui::Sense::click_and_drag()),
+                );
+                // Native: mouse drag pans / scroll zooms. The web demo is encoder-driven only — no
+                // screen pan/zoom, so it never feels like a touchscreen (the device has none).
+                #[cfg(not(target_arch = "wasm32"))]
+                self.handle_camera_input(ui, &resp, resp.rect, disp_scale);
+                #[cfg(target_arch = "wasm32")]
+                let _ = &resp;
+
+                DeviceHit { enc_down, back_down, scroll_dy }
+            })
+            .inner
+    }
+
+    /// Fold a frame's device-control hit-test ([`show_device_image`]'s [`DeviceHit`]) into the
+    /// shared input recognizer — the same path the firmware runs with real GPIO — and persist
+    /// settings on the dirty edge. Split out of the draw so drawing reports geometry only; the same
+    /// events reach [`handle_input`](obc_app::App::handle_input) in the same order, with the same
+    /// coordinates, they did inline.
+    fn apply_device_input(&mut self, hit: DeviceHit) {
+        // Encoder-wheel scroll → detents (non-zero only when the wheel was hovered this frame).
+        if hit.scroll_dy != 0.0 {
+            self.input.scroll(hit.scroll_dy);
+        }
+        self.input.turn(self.kbd_turn);
+        self.input.set_button(Button::Encoder, hit.enc_down);
+        self.input.set_button(Button::Back, hit.back_down);
+        let now = self.input.now_ms();
+        self.app.handle_input(InputClock(now), &mut self.input);
+        // Persist on the settings-dirty edge (the device's save-on-dirty path).
+        if self.app.take_settings_dirty() {
+            self.settings_store.save(self.app.settings());
+        }
     }
 
     /// The 1:1 calibration screen: draw a reference bar of a known point-width; the user
@@ -807,11 +836,14 @@ impl eframe::App for SimGui {
 
         self.render_to_texture(ctx);
 
-        // The device window shows either the live screen or the size-calibration UI.
+        // The device window shows either the live screen or the size-calibration UI. Drawing the
+        // device only reports its hit-test; folding that into the input recognizer + saving
+        // settings happens right after, out of the draw.
         if self.calib.is_some() {
             self.show_calibration(ctx);
         } else {
-            self.show_device_image(ctx);
+            let hit = self.show_device_image(ctx);
+            self.apply_device_input(hit);
         }
         self.apply_physical_resize(ctx);
 
