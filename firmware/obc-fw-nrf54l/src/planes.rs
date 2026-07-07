@@ -1,9 +1,9 @@
 //! The two-plane display machinery every build shares — split out of `main.rs` (issue #351).
 //!
-//! Owns the high-priority input/overlay plane (the tasks, their executor statics + the SWI01 pend
-//! vector, the gesture channel) and the cfg-selected [`MapDisplay`] seam the thread-mode plane
+//! Owns the high-priority input plane (the task, its executor static + the SWI01 pend vector, the
+//! gesture channel) and the [`MapDisplay`] handle the thread-mode plane
 //! ([`run_app`](crate::ride::run_app)) drives the panel through. `main` still owns
-//! bring-up: it constructs the panels + `MapDisplay`, starts the executor, and spawns the tasks.
+//! bring-up: it constructs the panel + `MapDisplay`, starts the executor, and spawns the tasks.
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -13,51 +13,39 @@ use embassy_executor::InterruptExecutor;
 use embassy_futures::select::select;
 use embassy_nrf::gpio::Input;
 // The FLPR `MapDisplay` parks the gate/source GPIO lines it must keep driven for the program's life.
-#[cfg(not(feature = "tft"))]
 use embassy_nrf::gpio::Output;
 use embassy_nrf::interrupt;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::{Channel, Sender};
-#[cfg(feature = "tft")]
-use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::{Gesture, InputClock, InputEvent, InputPlane, InputSource};
-// `Band` is the frame-absolute draw view both map backends' `present_overlay` drawers paint the
+// `Band` is the frame-absolute draw view the map plane's `present_overlay` drawer paints the
 // hold bulge into.
 use obc_platform::{Band, ButtonInput, FbDevice64};
 use obc_render::RenderStats;
 
-#[cfg(all(feature = "com-hw", not(feature = "tft")))]
+#[cfg(feature = "com-hw")]
 use crate::com_hw::HwCom;
-#[cfg(feature = "tft")]
-use crate::display::Display;
 use crate::display::{DisplayDriver, OverlayRegion, FRAME_H, FRAME_W};
-#[cfg(not(feature = "tft"))]
 use crate::ls021_flpr::{relaunch_flpr, Ls021Flpr};
-#[cfg(feature = "tft")]
-use crate::BAND_ROWS;
 
 // ============================ Two-plane input + overlay ============================
-// The map render (`render_map` + the banded push) is a CPU- and SPI-bound call that would block its
-// executor for tens of ms. To keep input + the hold bulge responsive *during* that, the device runs
-// two planes around one shared SPI panel:
+// The map render (`render_map` + the FLPR frame scan the M33 awaits) would block its executor for
+// tens of ms. To keep input + the hold bulge responsive *during* that, the device runs two planes:
 //   - Map plane (thread mode, the `main` loop): drains the gesture channel → `apply_gesture`,
-//     advances screen animations, and re-renders the map only on `dirty.map`, compositing the live
-//     bulge into each pushed band.
-//   - Input plane (`input_overlay_task`, on a high-priority `InterruptExecutor` pended from SWI01):
-//     samples the buttons, recognises gestures (into the channel), and re-pushes just the right-edge
-//     overlay window so the bulge animates over a static map at full FPS with no map re-render.
-// The shared resource is the panel SPI bus + the framebuffer: the async `BUS` mutex serialises pushes
-// — and, since the map render runs inside it, the framebuffer write against the input plane's window
-// read — without disabling interrupts (the GRTC time-driver + the input executor keep running while
-// it's held). Keeping the framebuffer *inside* the mutex means the input plane never reads a
-// half-rendered frame, so the bulge backdrop is always clean (no tearing); the cost is that a long map
-// render holds the bus, so the bulge can briefly "stick" while a big segment repaints. The `InputPlane`
-// both planes draw the bulge from is behind a brief blocking mutex; lock order is always BUS-outer,
-// INPUT_PLANE-inner.
+//     advances screen animations, re-renders the map only on `dirty.map`, and — since it owns the
+//     panel — pushes both the clean frame and the live bulge to glass.
+//   - Input plane (`input_task`, on a high-priority `InterruptExecutor` pended from SWI01): samples
+//     the buttons and recognises gestures (into the channel), so press-to-feedback latency + the
+//     auto-repeat cadence stay exact even while a deep map render holds thread mode. It does **not**
+//     push to glass — the FLPR scans whole frames, so the map plane owns every push.
+// The shared state between them is the gesture `Channel` (lock-free) plus the `InputPlane` (behind a
+// brief blocking mutex the recognizer + the bulge composite each take, never across an `.await`): the
+// input plane advances the bulge under that lock and the map plane composites the same live state into
+// its partial overlay push.
 
 /// Bound of the input→map gesture channel. One frame yields a couple of gestures and the map plane
 /// drains it each loop, so even across a slow map push it never fills; `try_send` drops on the
@@ -77,29 +65,16 @@ pub(crate) static GESTURES: Channel<CriticalSectionRawMutex, Gesture, GESTURE_QU
 /// a queue) is exactly the semantics a repeated 8 ms nudge wants.
 pub(crate) static INPUT_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// The high-priority executor the input/overlay plane runs on, pended from the SWI01 vector (SWI00 is
-/// MPSL's low-prio lane on `ble` builds, so every build pends from SWI01). The FLPR build uses
-/// [`EXECUTOR_HP`] instead (it also free-runs COM there).
-#[cfg(feature = "tft")]
-pub(crate) static EXECUTOR_INPUT: InterruptExecutor = InterruptExecutor::new();
-
-/// SWI01 ISR → poll the input-plane executor. SWI01 has no peripheral; we only borrow its interrupt
-/// vector as the executor's pend line.
-#[cfg(feature = "tft")]
-#[interrupt]
-unsafe fn SWI01() {
-    EXECUTOR_INPUT.on_interrupt();
-}
-
-/// The FLPR build's single high-priority executor: it free-runs **both** the COM driver (which must
-/// keep alternating `VCOM`/`VB`/`VA` so the panel never DC-biases, whatever the map plane is doing)
+/// The single high-priority executor: it free-runs **both** the COM driver (which must keep
+/// alternating `VCOM`/`VB`/`VA` so the panel never DC-biases, whatever the map plane is doing)
 /// **and** the gesture-input plane (so button latency stays exact during a ~44 ms full-frame scan —
-/// the M33 now *awaits* that scan (#347), but a deep map render still occupies thread mode).
-/// Pended from the same SWI01 vector @ P3.
-#[cfg(not(feature = "tft"))]
+/// the M33 now *awaits* that scan (#347), but a deep map render still occupies thread mode). Pended
+/// from the SWI01 vector @ P3 (SWI00 is MPSL's low-prio lane on `ble` builds, so every build pends
+/// from SWI01).
 pub(crate) static EXECUTOR_HP: InterruptExecutor = InterruptExecutor::new();
 
-#[cfg(not(feature = "tft"))]
+/// SWI01 ISR → poll the high-priority executor. SWI01 has no peripheral; we only borrow its interrupt
+/// vector as the executor's pend line.
 #[interrupt]
 unsafe fn SWI01() {
     EXECUTOR_HP.on_interrupt();
@@ -118,37 +93,23 @@ pub(crate) const LOOP_MS: u64 = 8;
 const IDLE_REPOLL_MS: u64 = 30_000;
 
 /// The input plane's liveness heartbeat: `Instant` millis of its last recognizer pass / idle wake,
-/// stamped by [`input_task`] / [`input_overlay_task`] and read by the ride loop's watchdog feed.
+/// stamped by [`input_task`] and read by the ride loop's watchdog feed.
 pub(crate) static INPUT_HB_MS: AtomicU32 = AtomicU32::new(0);
 
 // The hold-bulge's right-edge overlay **columns**. Both bulges erupt from the right screen edge ≤12 px
-// deep, so this fixed 16-px column band bounds them with margin. Both map panels re-present the bulge
+// deep, so this fixed 16-px column band bounds them with margin. The map plane re-presents the bulge
 // through `DisplayDriver::present_overlay` over the clean framebuffer, addressing only the live bulge's
-// *rows* (`InputPlane::overlay_rows`: encoder ≈ 59–171, Back ≈ 182–246) — ST7789 a 16-px column window,
-// the FLPR the full-width rows of that span — so the column constants are shared; the fixed row band
-// (`OVL_Y0`/`OVL_ROWS`) is only the ST7789 trailing-clear + band-fit bound.
+// *rows* (`InputPlane::overlay_rows`: encoder ≈ 59–171, Back ≈ 182–246) — the FLPR the full-width rows
+// of that span (it has its own `MAX_OVERLAY_*` bound in `Ls021Flpr::push_overlay`).
 /// First overlay column: the rightmost 16 px (bulge depth ≤12 + margin).
 const OVL_X0: u16 = (FRAME_W - 16) as u16;
 /// Overlay window width (columns).
 const OVL_W: u16 = 16;
-/// First overlay row of the full hint band (a little above the encoder bulge's top). ST7789-only — the
-/// FLPR addresses the *live* bulge's rows (`InputPlane::overlay_rows`), never this fixed top.
-#[cfg(feature = "tft")]
-const OVL_Y0: u16 = 56;
-/// Full hint-band height in rows (down past the Back bulge's bottom) — the ST7789 trailing-clear span
-/// and the band-fit bound below. The FLPR has its own `MAX_OVERLAY_*` bound in `Ls021Flpr`.
-#[cfg(feature = "tft")]
-const OVL_ROWS: u16 = 192;
-/// ST7789: the overlay window must fit the shared band scratch (it borrows a prefix of it). The FLPR
-/// path has its own `MAX_OVERLAY_*` bound in `Ls021Flpr::push_overlay`.
-#[cfg(feature = "tft")]
-const _: () = assert!(OVL_W as usize * OVL_ROWS as usize <= FRAME_W * BAND_ROWS, "overlay window larger than BAND");
 
 // The live-bulge "present the rows *around* it" discipline lives **inside** the self-diffing present:
 // the map plane passes the bulge's row span to the seam's `DisplayDriver::present(exclude)`, which
 // clips it out of the changed-row spans it pushes (`obc_platform::RowDiff::diff_clipped`), leaving
-// those rows for the overlay plane (`MapDisplay::present_bulge` on the FLPR, `input_overlay_task` on
-// the ST7789).
+// those rows for the map plane's own `MapDisplay::present_bulge`.
 
 /// Chains two input sources for the gesture recogniser: drains `a` (the physical buttons) fully,
 /// then `b` (the VCOM-injected `K` events with `debug-uart`, else [`NullInput`]). So a host can
@@ -184,108 +145,15 @@ fn debug_input() -> impl InputSource {
     NullInput
 }
 
-/// The input + overlay plane. Runs on [`EXECUTOR_INPUT`], preempting the thread-mode map render:
-/// every [`LOOP_MS`] it samples the buttons, recognises gestures (pushing each into [`GESTURES`] for
-/// the map plane to apply), and — when the hold bulge changed — re-pushes just the right-edge overlay
-/// window: read its columns back from the framebuffer (RGB222→RGB565) and composite the bulge over
-/// them. No renderer scratch, no map re-render → the bulge animates fluidly over a static map. The
-/// panel is reached only through `bus`, the recogniser/overlay only through `input_plane`.
-#[cfg(feature = "tft")]
-#[embassy_executor::task]
-pub(crate) async fn input_overlay_task(
-    mut buttons: ButtonInput<Input<'static>>,
-    input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
-    bus: &'static Mutex<CriticalSectionRawMutex, Display>,
-    gestures: Sender<'static, CriticalSectionRawMutex, Gesture, GESTURE_QUEUE>,
-) {
-    // Native RGB565 panel → identity colour map (same as the map plane).
-    let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
-    loop {
-        let now = Instant::now().as_millis() as u32;
-        INPUT_HB_MS.store(now, Ordering::Relaxed); // liveness stamp the ride loop's WDT feed gates on
-        buttons.update(now);
-        // Recognise this frame's input under the shared InputPlane lock (a brief critical section,
-        // never held across an await/push). Each gesture is pushed to the map plane; the bulge is
-        // advanced regardless, so the press is confirmed on screen below even before the map plane
-        // drains the channel.
-        let (dirty, overlay_span, overlay_active, hold_charging) = input_plane.lock(|cell| {
-            let plane = &mut *cell.borrow_mut();
-            // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, drained into one
-            // recogniser pass — so a host can drive taps/holds like the real buttons.
-            let mut dbg = debug_input();
-            let mut input = ChainedInput { a: &mut buttons, b: &mut dbg };
-            plane.recognize(InputClock(now), &mut input, |g| {
-                if gestures.try_send(g).is_err() {
-                    defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
-                }
-            });
-            // `overlay_active` (the bulge is still live, incl. its retract) gates the idle sleep below;
-            // `hold_charging` (either button down, long-press not yet fired) feeds the map-loop wake.
-            (
-                plane.take_overlay_dirty(),
-                plane.overlay_rows(FRAME_W as i32, FRAME_H as i32),
-                plane.overlay_active(),
-                plane.encoder_hold_progress() > 0.0 || plane.back_hold_progress() > 0.0,
-            )
-        });
-        // Nudge the event-driven map loop for the whole hold lifecycle (charge → pop/retract): a
-        // press emits no gesture, so without this the loop sleeps through the charge and the
-        // in-screen hold fills (and, on the FLPR, the bulge itself) never animate — see [`INPUT_WAKE`].
-        if hold_charging || overlay_active {
-            INPUT_WAKE.signal(());
-        }
-
-        // Repaint the bulge only when it changed (plus the one trailing clear `take_overlay_dirty`
-        // reports): re-present just the right-edge region over a static map through the seam — while
-        // live, **only the active bulge's rows**, and the full band on the trailing clear to wipe the
-        // last bulge. `present_overlay` fills the window from the clean framebuffer + composites the
-        // bulge (the `InputPlane` lock is taken once, inside the drawer). Awaiting the bus yields to the
-        // (thread-mode) map plane if it is mid-frame, so this never spins.
-        //
-        // Dev-only-best-effort: the trailing clear is the **one** frame `take_overlay_dirty` flags, not
-        // a retry-until-acked loop like the FLPR map plane's `last_overlay_span` clear — the coordination
-        // isn't hardened the way the shipping FLPR path is (this is the opt-in `tft` bring-up backend).
-        if dirty {
-            let region = match overlay_span {
-                Some((y0, rows)) => OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows },
-                None => OverlayRegion { x0: OVL_X0, y0: OVL_Y0, w: OVL_W, rows: OVL_ROWS },
-            };
-            bus.lock()
-                .await
-                .present_overlay(region, &mut |band: &mut Band| {
-                    input_plane
-                        .lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
-                })
-                .await;
-        }
-        // Event-driven sleep (issue #219): idle (all buttons released + settled, no live bulge) → sleep
-        // on a button falling edge; otherwise keep the 8 ms poll so debounce / auto-repeat / the bulge
-        // animation stay exact. `debug-uart` always polls (prompt host-injected input).
-        #[cfg(feature = "debug-uart")]
-        {
-            let _ = overlay_active;
-            Timer::after_millis(LOOP_MS).await;
-        }
-        #[cfg(not(feature = "debug-uart"))]
-        if buttons.is_idle() && !overlay_active {
-            let _ = select(buttons.wait_for_any_press(), Timer::after_millis(IDLE_REPOLL_MS)).await;
-        } else {
-            Timer::after_millis(LOOP_MS).await;
-        }
-    }
-}
-
-/// The FLPR build's input plane: recognises gestures + animates the hold bulge. Runs on [`EXECUTOR_HP`]
+/// The input plane: recognises gestures + animates the hold bulge. Runs on [`EXECUTOR_HP`]
 /// beside COM, preempting the thread-mode map render, so press latency + the auto-repeat cadence stay
 /// exact across a deep map render. Each [`LOOP_MS`] it samples the buttons + (with
 /// `debug-uart`) the VCOM-injected `K` events and recognises gestures into [`GESTURES`] for the map
 /// plane to apply — **under the shared [`InputPlane`] lock**, so the live hold-bulge state it advances
 /// is the same one the map plane composites into its partial overlay push.
 ///
-/// Unlike the ST7789 plane this task does **not** push to glass: the FLPR scans whole frames, so the
-/// *map plane* owns every push. This task is purely the recogniser; the brief lock is never held across
-/// the `await`.
-#[cfg(not(feature = "tft"))]
+/// This task does **not** push to glass: the FLPR scans whole frames, so the *map plane* owns every
+/// push. This task is purely the recogniser; the brief lock is never held across the `await`.
 #[embassy_executor::task]
 pub(crate) async fn input_task(
     mut buttons: ButtonInput<Input<'static>>,
@@ -338,16 +206,17 @@ pub(crate) async fn input_task(
     }
 }
 
-// ============================ The de-cfg'd map plane ============================
-// The ride loop drives the screen through **one** handle, [`MapDisplay`], so [`run_app`] carries no
-// per-backend `#[cfg]`. `MapDisplay` is one name with two `cfg`-selected definitions — the only place
-// the backends diverge — each exposing the same three methods the loop calls:
+// ============================ The map plane ============================
+// The ride loop drives the screen through the [`MapDisplay`] handle, so [`run_app`] stays free of the
+// panel's transport details. `MapDisplay` owns the `Ls021Flpr` panel and exposes the methods the loop
+// calls:
 //   - `poll_overlay`     — this frame's hold-bulge state (dirty edge + live row span);
 //   - `render_present`   — render the clean frame into the framebuffer + push it to glass;
 //   - `present_bulge`    — re-present the hold bulge over the clean map.
-// The genuine asymmetry they hide: the ST7789 shares its bus with the input/overlay plane (which owns
-// the bulge re-push) so its map loop has no overlay work; the FLPR owns the panel outright and pushes
-// the bulge itself from the map plane. Everything else in the loop is shared.
+// The FLPR owns the panel outright (whole-frame scan per push → no shared bus), so the map plane pushes
+// both the clean frame and the bulge itself; the input plane only recognises gestures. The seam it goes
+// through, [`DisplayDriver`], is the deliberate panel-swap point (a follow-up PR moves it into
+// obc-platform and makes the simulator the second backend).
 
 /// What [`MapDisplay::render_present`] reports for one map frame: whether the push reached glass
 /// (`false` → a transport fault to retry, #66), the render's [`RenderStats`], and the render / push
@@ -381,113 +250,17 @@ pub(crate) async fn show_boot_fault(display: &mut MapDisplay, fault: obc_app::Bo
         .await;
 }
 
-/// ST7789 (`--features tft`): the map plane's handle is the `&'static` bus mutex it shares with the
-/// input/overlay plane, plus the shared `InputPlane` it *reads* the live bulge span + hold progress
-/// from. That plane still owns the hold-bulge re-push (and the one-shot `overlay_dirty` edge that
-/// drives it); the map loop only samples the read-only state so its present can go around a live
-/// bulge.
-#[cfg(feature = "tft")]
-pub(crate) struct MapDisplay {
-    pub(crate) bus: &'static Mutex<CriticalSectionRawMutex, Display>,
-    pub(crate) input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
-}
-
-#[cfg(feature = "tft")]
-impl MapDisplay {
-    /// The live bulge's row span, read-only, so `render_present` excludes it from the push. The dirty
-    /// edge stays `false`: `take_overlay_dirty` is the one-shot edge the input/overlay plane
-    /// (`input_overlay_task`) consumes to drive the bulge re-push — the map loop must not steal it
-    /// (its `present_bulge` is a no-op here).
-    #[inline(always)]
-    pub(crate) fn poll_overlay(&mut self) -> (bool, Option<(u16, u16)>) {
-        (false, self.input_plane.lock(|c| c.borrow().overlay_rows(FRAME_W as i32, FRAME_H as i32)))
-    }
-
-    /// Lock the shared bus, render the clean frame into the framebuffer through the seam, and push the
-    /// changed rows to GRAM — going around a live bulge's rows (`overlay_span`), so a redraw landing
-    /// mid-hold no longer flashes the bulge off. Dropping the guard on return lets the input plane
-    /// push its bulge again. `#[inline(always)]` + a generic (non-`dyn`) `render` so the deep render
-    /// folds into the caller's frame rather than nesting another (the stack regression — see
-    /// [`run_app`]).
-    #[inline(always)]
-    pub(crate) async fn render_present(
-        &mut self,
-        overlay_span: Option<(u16, u16)>,
-        mut render: impl FnMut(&mut dyn DisplayDriver) -> RenderStats,
-    ) -> FramePresent {
-        let mut guard = self.bus.lock().await;
-        let t_render = Instant::now();
-        // `render` reaches the framebuffer through the seam's one dyn-safe method (`fb_mut`); the
-        // async present below is called on the concrete backend (`where Self: Sized`).
-        let stats = render(&mut *guard);
-        let render_us = t_render.elapsed().as_micros();
-        let t_push = Instant::now();
-        let ok = guard.present(overlay_span).await;
-        let push_us = t_push.elapsed().as_micros();
-        FramePresent { ok, stats, render_us, push_us }
-    }
-
-    /// No-op: the ST7789 hold bulge is pushed by the input/overlay plane, not the map loop.
-    #[inline(always)]
-    pub(crate) async fn present_bulge(&mut self, _span: Option<(u16, u16)>, _dirty: bool) {}
-
-    /// No-op: the #349 relaunch escalation is FLPR-only (there is no coprocessor to relaunch —
-    /// a wedged ST7789 bus has no recovery lever beyond the retry the present already latches).
-    #[inline(always)]
-    pub(crate) fn take_relaunch_repaint(&mut self) -> bool {
-        false
-    }
-
-    /// Never degraded: see [`take_relaunch_repaint`](Self::take_relaunch_repaint).
-    #[cfg_attr(not(has_map), allow(dead_code))]
-    #[inline(always)]
-    pub(crate) fn degraded(&self) -> bool {
-        false
-    }
-
-    /// The live encoder hold-progress from the shared input plane (0.0–1.0), so the in-screen confirm
-    /// fills (the factory-Reset bar) track the hold on this backend too.
-    #[inline(always)]
-    pub(crate) fn hold_progress(&self) -> f32 {
-        self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
-    }
-
-    /// Whether a hold is **charging** right now — either button down, its long-press not yet fired.
-    /// The pre-fire window the ride loop defers expensive map redraws in, so the charge animation
-    /// keeps its cadence instead of waiting out a 150–300 ms map frame.
-    #[cfg_attr(not(has_map), allow(dead_code))]
-    #[inline(always)]
-    pub(crate) fn hold_charging(&self) -> bool {
-        self.input_plane.lock(|c| {
-            let p = c.borrow();
-            p.encoder_hold_progress() > 0.0 || p.back_hold_progress() > 0.0
-        })
-    }
-
-    /// Cancel any in-flight hold on the shared input plane — rung by the ride loop after a gesture
-    /// changed the screen stack ([`App::take_hold_cancel`](obc_app::App::take_hold_cancel)), so a
-    /// long-press charging over the *old* top can't complete onto the new one (issue #480).
-    #[cfg_attr(not(has_map), allow(dead_code))]
-    #[inline(always)]
-    pub(crate) fn cancel_holds(&self) {
-        self.input_plane.lock(|c| c.borrow_mut().cancel_holds());
-    }
-}
-
 /// Consecutive failed presents that trigger one FLPR relaunch (#349): each failure already costs a
 /// full frame-deadline spin inside the transport (250 ms), so three in a row (~0.75 s) is far past any
 /// transient — the FLPR is wedged, escalate.
-#[cfg(not(feature = "tft"))]
 const PUSH_FAILS_PER_RELAUNCH: u8 = 3;
 /// Consecutive relaunches that may fail (the launch erroring, or the presents after it still timing
 /// out) before the device stops touching the FLPR and degrades to the heartbeat idle (#349).
-#[cfg(not(feature = "tft"))]
 const MAX_CONSEC_RELAUNCHES: u8 = 3;
 
-/// FLPR LS021 (default): the map plane owns the panel outright (whole-frame scan per push → no shared
-/// bus), plus the shared `InputPlane` it composites the bulge from and the gate/source GPIO lines it
-/// must keep driven for the program's life.
-#[cfg(not(feature = "tft"))]
+/// The map plane's display handle: the `Ls021Flpr` panel owned outright (whole-frame scan per push →
+/// no shared bus), plus the shared `InputPlane` it composites the bulge from and the gate/source GPIO
+/// lines it must keep driven for the program's life.
 pub(crate) struct MapDisplay {
     pub(crate) panel: Ls021Flpr<'static>,
     pub(crate) input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
@@ -517,7 +290,6 @@ pub(crate) struct MapDisplay {
     pub(crate) _com_hw: HwCom,
 }
 
-#[cfg(not(feature = "tft"))]
 impl MapDisplay {
     /// Sample the shared `InputPlane` once per frame (the map plane is the sole owner of the FLPR
     /// overlay bookkeeping): the dirty edge (live while the bulge animates, plus one trailing clear)

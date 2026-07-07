@@ -1,4 +1,4 @@
-//! **The LS021/FLPR `DisplayDriver` backend** — the default reflective MIP panel behind the
+//! **The LS021/FLPR `DisplayDriver` backend** — the reflective MIP panel behind the
 //! board-agnostic [`DisplayDriver`](super::DisplayDriver) seam.
 //!
 //! A thin adapter over the [`Ls021Flpr`](crate::ls021_flpr::Ls021Flpr) coprocessor backend (the FLPR
@@ -6,8 +6,8 @@
 //! resident RGB222 plane, then [`present`](DisplayDriver::present) drives it in one masked full-frame
 //! scan; [`present_overlay`](DisplayDriver::present_overlay) re-presents the bulge's rows via
 //! [`push_overlay`](crate::ls021_flpr::Ls021Flpr::push_overlay), whose composite step is the shared
-//! `obc_platform::composite_overlay_window` the ST7789 backend also runs. The only LS021-specific code
-//! is the device-64 → 6-line wire-pack inside those pushes.
+//! `obc_platform::composite_overlay_window`. The only LS021-specific code is the device-64 → 6-line
+//! wire-pack inside those pushes.
 //!
 //! The hold bulge is **not** composited in `present`: it rides `present_overlay` on its own plane, so
 //! the framebuffer stays the clean map. A stalled FLPR returns `false` so the caller keeps the last
