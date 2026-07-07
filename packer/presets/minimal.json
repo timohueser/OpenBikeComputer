@@ -23,7 +23,7 @@
             "tertiary": {"z_index": 34, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2}
         },
         "railway": {
-            "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2}
+            "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2, "line_style": "dashed", "color2": "0xFFFF"}
         },
         "waterway": {
             "river": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 0, "priority": 2},

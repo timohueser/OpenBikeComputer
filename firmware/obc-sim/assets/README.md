@@ -38,3 +38,5 @@ fixture, update the log below.
 | 2026-07-07 | `monaco.obcm` | v9; tight Monaco bbox established (PR #548 follow-up commit) |
 | 2026-07-07 | `grimsel.obcm` | v10; line-style record (epic #556 #557). 3.80 MB → 3.80 MB (+84 B, the style table's 2-byte-per-record growth) |
 | 2026-07-07 | `monaco.obcm` | v10; line-style record (epic #556 #557). Re-packed via `repack.sh` at the canonical bbox: 2.56 MB → 1.10 MB (the committed v9 file predated the repack.sh provenance pass and used a wider bbox; this is the tighter canonical size) |
+| 2026-07-07 | `grimsel.obcm` | v10; rail/admin line styles (#558). `default.json` `railway.rail`/`light_rail` → dashed + white `color2` base (railway stripe), `admin_level.2` → dashed. Same snapshot, so size is unchanged (3.80 MB, 0 net bytes — records are already 8 bytes); only 7 style-table bytes differ (the two flag bits + `color2` per record). |
+| 2026-07-07 | `monaco.obcm` | v10; rail/admin line styles (#558). Same preset change; unchanged size (1.10 MB, 0 net bytes), 7 style-table bytes differ. |
