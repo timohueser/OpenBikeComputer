@@ -182,9 +182,9 @@ struct NavRun {
 /// HardFault's true cause). The one plan-start defmt line lives here with it.
 #[cfg(has_nav)]
 #[inline(never)]
-fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest) {
-    // Profile 0 (hardwired until N5 owns the bike-type setting, epic #533).
-    nav.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name(), 0));
+fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
+    // The rider's bike-type setting (N5 §8.6); an out-of-range index falls back to profile 0 in the router.
+    nav.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx));
     // One diagnostic line per plan start (#501 fault dossiers): the three nav statics' addresses
     // pin the memory map without needing the ELF at hand.
     defmt::debug!(
@@ -681,7 +681,7 @@ pub(crate) async fn run_app(
                 }
                 match storage.as_mut().and_then(|s| s.nav_route_begin()) {
                     Some(file) => {
-                        nav_begin(&mut nav, &req);
+                        nav_begin(&mut nav, &req, app.settings().bike_profile_idx);
                         nav_run = Some(NavRun { file, t0: Instant::now(), phase_us: [0; 3] });
                     }
                     // No card / no dir: nothing to route against — the generic failure tier.

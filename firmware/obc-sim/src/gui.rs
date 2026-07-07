@@ -274,6 +274,10 @@ impl SimGui {
         // run / unreadable file — the device's boot path.
         let mut settings_store = FileSettingsStore::open(args.settings_path());
         app.set_settings(settings_store.load().unwrap_or_default());
+        // Mirror the map's §8.6 routing-profile names into the app for the Bike-type screen +
+        // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
+        // (a device re-runs it on every map load).
+        app.set_nav_profiles(map_tables.nav_profiles());
         // `--physical` only takes effect with a saved calibration; `--calibrate` opens the screen.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
@@ -415,7 +419,9 @@ impl SimGui {
         // before `sync_active` below, so a successful plan's activated route streams open this
         // same frame.
         if let Some(req) = self.app.take_nav_request() {
-            self.nav_plan = Some(crate::NavPlan::start(&req));
+            // Plan under the rider's bike-type setting (N5 §8.6); the router falls back to profile 0
+            // for an index past the map's profile count.
+            self.nav_plan = Some(crate::NavPlan::start(&req, self.app.settings().bike_profile_idx));
         }
         if self.app.take_nav_cancel() {
             self.nav_plan = None;

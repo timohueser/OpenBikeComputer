@@ -65,8 +65,8 @@ pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AddFieldScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, PowerScreen, ResetScreen, SettingsScreen,
-    StatFieldsScreen, StatsScreen, UnitsScreen,
+    AddFieldScreen, BikeTypeScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, PowerScreen, ResetScreen,
+    SettingsScreen, StatFieldsScreen, StatsScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use warning::{WarningFlags, WarningScreen};
@@ -139,6 +139,10 @@ pub struct Ctx<'a> {
     /// The resident ride catalog (read-only here) — the Rides screen lists it and its hold-to-delete
     /// footer records a delete by index against it (epic #447, P7).
     pub rides: &'a [RideSummary],
+    /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen cycles
+    /// [`Settings::bike_profile_idx`](crate::Settings) within [`NavProfiles::len`](crate::NavProfiles).
+    /// Empty before a map load / on a router-less image (the setting then cycles nowhere, inert).
+    pub nav_profiles: &'a crate::NavProfiles,
     /// The App-owned POI-list snapshot, **read-only** here. The POI list's `Gesture::Press` reads
     /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
     /// place `handle` reaches the draw-taken snapshot. Every other screen leaves it untouched.
@@ -181,6 +185,11 @@ pub struct Render<'a, 'd> {
     /// The resident ride catalog (read-only) — the Rides screen draws its two-line rows + the
     /// hold-to-delete footer from it (epic #447, P7).
     pub rides: &'a [RideSummary],
+    /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen draws
+    /// the selected profile's name (or a `Profile N` fallback for a stale index) and the created-route
+    /// overview labels itself with it. Resident in the App because these frames draw without a
+    /// `Reader` on the board.
+    pub nav_profiles: &'a crate::NavProfiles,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
     pub route: Option<&'a RouteReader<'a>>,
@@ -374,6 +383,9 @@ screens! {
     Settings(SettingsScreen) => Settings,
     DateTime(DateTimeScreen) => Settings,
     Units(UnitsScreen) => Settings,
+    /// The Bike type screen: cycles the routing profile (§8.6) the planner weights edges by, by name
+    /// from the loaded map (routing-v2 N5, epic #533).
+    BikeType(BikeTypeScreen) => Settings,
     Stats(StatsScreen) => Settings,
     StatFields(StatFieldsScreen) => Settings,
     AddField(AddFieldScreen) => Settings,
