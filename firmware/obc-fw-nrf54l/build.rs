@@ -2,20 +2,19 @@
 //! (`--nmagic`, cortex-m-rt's `link.x`, defmt's interned-string section). Re-link
 //! if the source region map changes. Mirrors embassy-nrf's `nrf54l15-app` example build.rs.
 //!
-//! ⚠️ **Why the default map lives in `memory-default.x`, not `memory.x`.** cortex-m-rt's `link.x`
-//! does `INCLUDE memory.x`, and the linker resolves that from its **CWD (the crate root) first** —
-//! ahead of the `-L $OUT_DIR` search path. So a `memory.x` committed in the crate root would
-//! **shadow** the carved copy this script writes to `$OUT_DIR`, and the FLPR carve would silently
-//! never apply (the M33 stack would start at the full-256 KB top and grow down *through* the FLPR
-//! image — issue #165: it corrupted the blob on the first deep render). Keeping the source map under
-//! a non-`memory.x` name means the *only* `memory.x` the linker can find is the one we emit here.
+//! ⚠️ **Never commit a `memory.x` in the crate root.** cortex-m-rt's `link.x` does `INCLUDE
+//! memory.x`, and the linker resolves that from its **CWD (the crate root) first** — ahead of the
+//! `-L $OUT_DIR` search path. So a `memory.x` committed in the crate root would **shadow** the
+//! carved copy this script writes to `$OUT_DIR`, and the FLPR carve would silently never apply (the
+//! M33 stack would start at the full-256 KB top and grow down *through* the FLPR image — issue #165:
+//! it corrupted the blob on the first deep render). The *only* `memory.x` the linker can find is the
+//! carved one we emit here.
 //!
-//! For the FLPR build — the **default** LS021 map/ride `main.rs` (the real app on the LS021 panel,
-//! issue #165 / #173) — it additionally (1) emits a *carved* `memory.x` that reserves the top
-//! **8 KB** of SRAM for the FLPR image + the cross-core handshake, and (2) cross-compiles the
-//! freestanding FLPR C blob with a RISC-V gcc into `$OUT_DIR/flpr.bin` for the M33 binary to
-//! `include_bytes!`. Only the opt-in `tft` ST7789 build skips both, keeping the full 256 KB and
-//! needing no RISC-V toolchain (see the `flpr` gate in `main` below). See `firmware/docs/ls021-flpr.md`.
+//! The LS021 map/ride `main.rs` (the real app on the LS021 panel, issue #165 / #173) runs the FLPR
+//! on every build, so this script always (1) emits a *carved* `memory.x` that reserves the top of
+//! SRAM for the FLPR image + the cross-core handshake, and (2) cross-compiles the freestanding FLPR
+//! C blob with a RISC-V gcc into `$OUT_DIR/flpr.bin` for the M33 binary to `include_bytes!`. See
+//! `firmware/docs/ls021-flpr.md`.
 //!
 //! It is also the **single source of the M33↔FLPR cross-core contract** (issue #346): every
 //! constant both cores and both linker scripts must agree on — the shared addresses, the layout
@@ -70,7 +69,7 @@ mod contract {
 /// stack margin needs every carved KB back.) The M33 reaches the FLPR region only by hardcoded address (`memcpy` + the
 /// handshake word), never via the linker, so shrinking `RAM` is all that's needed here. It *also*
 /// carves the top **4 KB of FLASH** into the named `SETTINGS` region for the persistent settings
-/// store (#193) — identical to `memory-default.x`, so keep the two in sync.
+/// store (#193).
 fn flpr_memory_x() -> String {
     use contract::*;
     format!(
@@ -84,7 +83,7 @@ MEMORY
          FLPR_RAM {FLPR_RAM_BASE:#010X} .. {CONTROL_ADDR:#010X}  ({flpr_kb}K)   FLPR image + stack (INITPC = {FLPR_RAM_BASE:#010X})
          SHARED   {CONTROL_ADDR:#010X} .. {SRAM_TOP:#010X}  ({shared_kb}K)   cross-core handshake page */
 }}
-/* Base of the carved settings page (#193) — kept in sync with memory-default.x. */
+/* Base of the carved settings page (#193). */
 PROVIDE(__settings_base = ORIGIN(SETTINGS));
 ",
         ram_kb = (FLPR_RAM_BASE - SRAM_BASE) / 1024,
@@ -97,12 +96,9 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
-    // Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature is enabled. The carve +
-    // blob are needed wherever the FLPR drives the panel: the default LS021 map/ride `main.rs` build
-    // (issue #173) — the *baseline*, selected by the absence of `tft`. Only the opt-in `tft` ST7789
-    // build keeps the full 256 KB and needs no RISC-V toolchain.
-    let tft = env::var_os("CARGO_FEATURE_TFT").is_some();
-    let flpr = !tft;
+    // The FLPR drives the panel on every build (issue #173), so the memory carve + the RISC-V blob
+    // are always emitted below. Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature
+    // is enabled — used for the `ble`/`has_nav` gates below.
 
     // The map plane compiles into **every** build (issue #270): map + BLE now coexist in one image —
     // the `ble` build streams the map *and* serves the companion link, both driving the shared SD +
@@ -132,21 +128,14 @@ fn main() {
         println!("cargo:rustc-cfg=has_nav");
     }
 
-    if flpr {
-        fs::write(out.join("memory.x"), flpr_memory_x()).unwrap();
-    } else {
-        fs::write(out.join("memory.x"), include_bytes!("memory-default.x")).unwrap();
-    }
+    fs::write(out.join("memory.x"), flpr_memory_x()).unwrap();
     println!("cargo:rustc-link-search={}", out.display());
-    println!("cargo:rerun-if-changed=memory-default.x");
     println!("cargo:rerun-if-changed=build.rs");
 
     emit_fw_git();
     emit_flpr_contract(&out);
 
-    if flpr {
-        build_flpr_blob(&manifest, &out);
-    }
+    build_flpr_blob(&manifest, &out);
 
     // `-arg-bins` (not `-arg`) so these only apply to the firmware binary, never to
     // build scripts / proc-macros built for the host.
@@ -176,8 +165,7 @@ fn emit_fw_git() {
 
 /// Emit the [`contract`] into `$OUT_DIR` for both languages: `flpr_contract.rs` (include!'d at the
 /// top of `ls021_flpr.rs`'s memory-map section) and `flpr_contract.h` (included by
-/// `src/flpr/flpr_scan.c` via the `-I $OUT_DIR` the blob compile passes). Emitted on every
-/// build shape (the `.rs` costs nothing on `tft`, where the module that includes it isn't compiled).
+/// `src/flpr/flpr_scan.c` via the `-I $OUT_DIR` the blob compile passes).
 fn emit_flpr_contract(out: &Path) {
     use contract::*;
     let rs = format!(
