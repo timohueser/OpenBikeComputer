@@ -32,6 +32,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Monotonic clock that works on both native (re-exports std) and wasm (JS perf
 # clock) — std::time::Instant::now() panics in the browser.
 web-time = "1"
+# Minimal block-on to drive the `obc_platform::DisplayDriver` seam's async methods, which the sim
+# backend completes synchronously on the host. Already in the tree (eframe → wgpu pull it), so this
+# reuses the resolved 0.3 rather than adding a new executor dep.
+pollster = "0.3"
 
 # --- Native-only host concerns (file picker, etc.) ---
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

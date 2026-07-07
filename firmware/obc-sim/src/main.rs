@@ -153,12 +153,14 @@ struct Args {
 }
 
 impl Default for Args {
-    /// Device resolution + all knobs off — the base for both the CLI parser and the web build.
+    /// Device resolution + all knobs off — the base for both the CLI parser and the web build. The
+    /// resolution is the single [`obc_platform`] frame authority, not a re-declared literal (`--size`
+    /// overrides it for off-device experiments).
     fn default() -> Self {
         Args {
             map: String::new(),
-            width: 240,
-            height: 320,
+            width: obc_platform::FRAME_W as u32,
+            height: obc_platform::FRAME_H as u32,
             scale: 1,
             png: None,
             screenshot: None,
