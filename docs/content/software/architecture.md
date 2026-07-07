@@ -72,7 +72,7 @@ The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-m
 A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and drives it. The simulator ([`obc-sim`](src:firmware/obc-sim)) is an `eframe`/`egui` desktop+wasm shell; the device firmware ([`obc-fw-nrf54l`](src:firmware/obc-fw-nrf54l), via [`obc-platform`](src:firmware/obc-platform)) is bare-metal on the nRF54LM20. (The seams were first proven on an STM32F429 prototype, since removed; the nRF is what the project ships on, and the *same* core ran unchanged on both.) Each owns its window/panel, its storage, and its sensors — and hands the core four small abstractions. Those four **seams** are the entire device-specific surface area; find them and you've found every boundary that matters.
 
 <figure class="fig">
-<svg viewBox="0 0 720 372" role="img" aria-label="The shared core sits in the middle and connects through four seams to each host. DrawTarget carries pixels out (simulator: an RGB888 framebuffer; device: a resident RGB222 framebuffer pushed to the panel a band at a time). The colour function maps a 16-bit colour to a pixel (true-colour or 64-colour in the sim; native RGB222 on the panel). ByteSource brings bytes in (an in-memory slice in the sim; FatFs on the SD card on the device). The HAL traits bring the world in (the control panel, a GPX replay and the keyboard in the sim; GPS, a barometer and GPIO buttons on the device).">
+<svg viewBox="0 0 720 372" role="img" aria-label="The shared core sits in the middle and connects through four seams to each host. DrawTarget carries pixels out: both hosts now render into a resident RGB222 framebuffer and present it through the shared DisplayDriver seam (the device packs it to the panel a band at a time; the simulator self-diffs it and uploads the changed rows to a texture). The colour function maps a 16-bit colour to a pixel — native RGB222 (64-colour) on both; the simulator's un-quantized true-colour reference stays on the headless PNG path. ByteSource brings bytes in (an in-memory slice in the sim; FatFs on the SD card on the device). The HAL traits bring the world in (the control panel, a GPX replay and the keyboard in the sim; GPS, a barometer and GPIO buttons on the device).">
   <text class="d-tag" x="20" y="22">Everything device-specific lives at four seams</text>
 
   <!-- column headers -->
@@ -92,7 +92,7 @@ A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and 
   <text class="d-label" x="360" y="129" text-anchor="middle" style="font-size:11px">DrawTarget</text>
   <text class="d-sub" x="360" y="142" text-anchor="middle">pixels out</text>
   <rect class="d-panel" x="20" y="112" width="180" height="38" rx="9" />
-  <text class="d-sub" x="110" y="135" text-anchor="middle">RGB888 framebuffer</text>
+  <text class="d-sub" x="110" y="135" text-anchor="middle">RGB222 FB · self-diffed</text>
   <rect class="d-panel" x="520" y="112" width="180" height="38" rx="9" />
   <text class="d-sub" x="610" y="135" text-anchor="middle">RGB222 FB · banded push</text>
   <line class="d-stroke" x1="200" y1="131" x2="298" y2="131" /><line class="d-stroke" x1="422" y1="131" x2="520" y2="131" />
@@ -102,7 +102,7 @@ A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and 
   <text class="d-label" x="360" y="187" text-anchor="middle" style="font-size:11px">color_fn</text>
   <text class="d-sub" x="360" y="200" text-anchor="middle">u16 → pixel</text>
   <rect class="d-panel" x="20" y="170" width="180" height="38" rx="9" />
-  <text class="d-sub" x="110" y="193" text-anchor="middle">true-colour / 64-colour</text>
+  <text class="d-sub" x="110" y="193" text-anchor="middle">64-colour (PNG: true-colour)</text>
   <rect class="d-panel" x="520" y="170" width="180" height="38" rx="9" />
   <text class="d-sub" x="610" y="193" text-anchor="middle">native RGB222 (64)</text>
   <line class="d-stroke" x1="200" y1="189" x2="298" y2="189" /><line class="d-stroke" x1="422" y1="189" x2="520" y2="189" />
