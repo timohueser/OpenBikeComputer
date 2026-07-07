@@ -115,7 +115,8 @@
         <p class="muted small">
             Bike profiles weight the nav graph so the router prefers some way and surface types over
             others. Each multiplier is ≥ 1.0 (1.0 = neutral, higher = avoid); unlisted classes use the
-            profile's default. The device picks a profile by name. Up to {ps.maxProfiles} profiles.
+            profile's default. The device picks one of these profiles by position; the name is what
+            the rider sees. Up to {ps.maxProfiles} profiles.
         </p>
         <button
             type="button"

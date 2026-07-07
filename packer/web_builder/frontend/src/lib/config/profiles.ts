@@ -132,26 +132,23 @@ export function cellValue(
     return profileDefault(profile, ps);
 }
 
-/** Clamp a raw numeric input to the schema's admissible range (>= min). */
-export function clampMultiplier(n: number, ps: ProfileSchema): number {
-    return n < ps.multiplierMin ? ps.multiplierMin : n;
-}
-
 /**
- * Whether a raw numeric entry is admissible. A value below the schema minimum
- * is rejected with a hint that mirrors the packer's error text, so the CLI and
- * the web builder tell the user the same thing.
+ * Whether a raw numeric entry is admissible against the schema's minimum
+ * (`ProfileSchema.multiplierMin`). A value below it is rejected with a hint
+ * that mirrors the packer's error text, so the CLI and the web builder tell
+ * the user the same thing. This is the single copy of that message — the
+ * multiplier cells call it rather than re-wording it.
  */
-export function checkMultiplier(n: number, ps: ProfileSchema): { ok: boolean; hint: string | null } {
-    if (!Number.isFinite(n)) return { ok: false, hint: "Enter a number." };
-    if (n < ps.multiplierMin) {
+export function checkMultiplier(n: number, min: number): { ok: boolean; hint: string | null } {
+    if (!Number.isFinite(n)) return { ok: false, hint: "enter a number ≥ " + min.toFixed(1) + "." };
+    if (n < min) {
         return {
             ok: false,
             hint:
-                `A multiplier below ${ps.multiplierMin.toFixed(1)} breaks the router's ` +
+                `a multiplier below ${min.toFixed(1)} breaks the router's ` +
                 "shortest-path guarantee — every non-zero weight must stay ≥ 1.0 so the " +
                 "great-circle A* heuristic remains admissible. Use “forbidden” to exclude " +
-                "a class instead.",
+                "the class instead.",
         };
     }
     return { ok: true, hint: null };
