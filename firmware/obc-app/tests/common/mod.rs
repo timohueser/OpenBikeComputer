@@ -97,6 +97,12 @@ impl DrawTarget for Buf {
 /// flat backdrop, so the only non-backdrop pixels come from whatever is drawn on top — making
 /// overlays/markers trivial to detect. `marker` is the header's marker color (pass `0` when ignored).
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
+    build_min_obcm_profiles(marker, &["Default"])
+}
+
+/// [`build_min_obcm`] with a caller-chosen §8.6 profile table (1..=8 names, every multiplier the
+/// neutral 1.0×) — for the N5 bike-type tests, which need a map carrying several named profiles.
+pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     // v8 header is 40 bytes; the style table follows immediately.
     let style_off: u32 = 40;
     // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1, flags=0).
@@ -141,15 +147,18 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
 
     // Empty v9 nav section at the tail: the 28-byte directory + the always-present §8.6 profile
-    // table (one "Default" profile, every multiplier 16 = 1.0×). Zero-length index + edge pool
+    // table (the caller's names, every multiplier 16 = 1.0×). Zero-length index + edge pool
     // "start" just past the profile table.
     let nav_section_off = poi_section_off + poi_dir.len();
     let profile_table_off = (nav_section_off + 28) as u32;
     let mut profile_table = Vec::new();
-    profile_table.extend_from_slice(b"Default");
-    profile_table.resize(12, 0xFF); // 0xFF-padded 12-byte name
-    profile_table.extend_from_slice(&[16u8; 32]); // highway multipliers (1.0×)
-    profile_table.extend_from_slice(&[16u8; 8]); // surface multipliers (1.0×)
+    for name in profiles {
+        let base = profile_table.len();
+        profile_table.extend_from_slice(name.as_bytes());
+        profile_table.resize(base + 12, 0xFF); // 0xFF-padded 12-byte name
+        profile_table.extend_from_slice(&[16u8; 32]); // highway multipliers (1.0×)
+        profile_table.extend_from_slice(&[16u8; 8]); // surface multipliers (1.0×)
+    }
     let after_nav = profile_table_off + profile_table.len() as u32;
     let mut nav_dir = Vec::new();
     nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // index_offset (zero-length)
@@ -159,7 +168,7 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // edge_chunk_count
     nav_dir.extend_from_slice(&512u16.to_le_bytes()); // chunk_size (pinned)
     nav_dir.extend_from_slice(&profile_table_off.to_le_bytes()); // profile_table_offset
-    nav_dir.push(1); // profile_count
+    nav_dir.push(profiles.len() as u8); // profile_count
     nav_dir.push(0); // reserved
     nav_dir.extend_from_slice(&profile_table);
 

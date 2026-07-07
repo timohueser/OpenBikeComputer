@@ -370,6 +370,11 @@ pub struct App {
     /// — the identity the Rides-menu selection follows across a live rescan, and what the
     /// hold-to-delete drain resolves a highlighted index to.
     ride_catalog_ids: heapless::Vec<u16, { crate::ride::UI_RIDES_CAP }>,
+    /// The loaded map's routing-profile **names** (routing-v2 N5), refreshed by the host on map load
+    /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the Bike-type settings screen
+    /// and the created-route overview label render them on frames the host draws without a `Reader`.
+    /// Only the names are mirrored (≤ 8 × 12 B); the multiplier tables stay solely in `MapTables`.
+    nav_profiles: crate::NavProfiles,
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
     stack: Stack,
@@ -650,6 +655,7 @@ impl App {
             catalog_ids: heapless::Vec::new(),
             ride_catalog: crate::ride::RideCatalog::new(),
             ride_catalog_ids: heapless::Vec::new(),
+            nav_profiles: crate::NavProfiles::new(),
             stack,
             profile: None,
             profile_route: None,
@@ -1124,6 +1130,24 @@ impl App {
     /// id-less store. Hosts with real object identity (the firmware's filename-encoded ids, the
     /// sim's session ids) call [`set_routes_with_ids`](App::set_routes_with_ids) instead; don't mix
     /// the two on one `App`, or a positional id will remap against a durable one.
+    /// Mirror the loaded map's routing-profile **names** into the App for the UI (routing-v2 N5,
+    /// #538). The host calls this whenever it (re)loads a map's tables — pass
+    /// [`Reader::nav_profiles`](obc_reader::Reader::nav_profiles) — exactly as it calls
+    /// [`set_routes`](App::set_routes) when the route store changes. Copies only the display names
+    /// (the multiplier tables stay in `MapTables`); the Bike-type settings screen cycles them and the
+    /// created-route overview labels itself with the selected one. Safe to call on a router-less
+    /// (`ble`) image — the names are map metadata and the setting still renders (inert). Dirties the
+    /// map so an open settings screen picks up the new names.
+    pub fn set_nav_profiles(&mut self, profiles: &[obc_reader::MapProfile]) {
+        self.nav_profiles.set_from(profiles);
+        self.map_dirty = true;
+    }
+
+    /// The loaded map's resident routing-profile names (read-only), for host inspection / tests.
+    pub fn nav_profiles(&self) -> &crate::NavProfiles {
+        &self.nav_profiles
+    }
+
     pub fn set_routes(&mut self, summaries: &[RouteSummary]) {
         let mut ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }> = heapless::Vec::new();
         for i in 0..summaries.len().min(crate::route::MAX_ROUTES) {
@@ -1950,13 +1974,15 @@ impl App {
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
-        let App { state, activity, settings, catalog, ride_catalog, stack, now_ms, poi_scratch, .. } = self;
+        let App { state, activity, settings, catalog, ride_catalog, nav_profiles, stack, now_ms, poi_scratch, .. } =
+            self;
         let mut cx = Ctx {
             state,
             activity,
             settings,
             routes: catalog.as_slice(),
             rides: ride_catalog.as_slice(),
+            nav_profiles,
             poi_scratch,
             now_ms: *now_ms,
         };
@@ -2271,6 +2297,7 @@ impl App {
             settings,
             catalog,
             ride_catalog,
+            nav_profiles,
             renderer,
             stack,
             now_ms,
@@ -2296,6 +2323,7 @@ impl App {
             settings,
             routes: catalog.as_slice(),
             rides: ride_catalog.as_slice(),
+            nav_profiles,
             route,
             profile: profile.as_ref(),
             climb,
