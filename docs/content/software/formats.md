@@ -68,7 +68,7 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ### The file, front to back
 
-An OBCM file (current version **9**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
+An OBCM file (current version **10**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
 
 <figure class="fig">
 <svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 40-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section and a navigation-graph section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
@@ -194,20 +194,24 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. A few small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; a <b>POI-section offset</b> (coral) and, appended by <b>v8</b>, a <b>navigation-graph offset</b> (teal) sit at the tail — the growth that carried the header from 32 → 36 → 40 bytes. Neither tail offset is ever zero — both sections are always present, empty or not. <b>v8's only header change</b> was appending that last offset; the earlier fields never move, so a v7 reader that stops at byte 36 still parses everything it knew. <b>v9</b> reworked the nav section's internals (below) but left the header untouched — only the version byte ticked to <code>9</code>.</figcaption>
+<figcaption>Fixed offsets, no surprises. A few small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; a <b>POI-section offset</b> (coral) and, appended by <b>v8</b>, a <b>navigation-graph offset</b> (teal) sit at the tail — the growth that carried the header from 32 → 36 → 40 bytes. Neither tail offset is ever zero — both sections are always present, empty or not. <b>v8's only header change</b> was appending that last offset; the earlier fields never move, so a v7 reader that stops at byte 36 still parses everything it knew. <b>v9</b> reworked the nav section's internals (below) and <b>v10</b> grew the style record (next) — both left the header untouched, only ticking the version byte (now <code>10</code>).</figcaption>
 </figure>
 
-The **style table** that follows maps small numeric ids to how a feature looks. Each record is six bytes:
+The **style table** that follows maps small numeric ids to how a feature looks. Each record is eight bytes (v10 grew it from six):
 
 ```rust
 pub struct Style {
-    pub id: u8,        // referenced by feature headers
-    pub z_index: i8,   // painter's order: lower draws first
-    pub color: u16,    // RGB565 — device-independent
-    pub weight: u8,    // stroke width in pixels (lines)
-    pub priority: u8,  // 1 = keep first … 4 = drop first (from a flags byte)
+    pub id: u8,             // referenced by feature headers
+    pub z_index: i8,        // painter's order: lower draws first
+    pub color: u16,         // RGB565 — device-independent
+    pub weight: u8,         // stroke width in pixels (lines)
+    pub priority: u8,       // 1 = keep first … 4 = drop first (flags bits 0–1)
+    pub dashed: bool,       // flags bit 2 — a dashed line (v10)
+    pub color2: Option<u16>,// flags bit 3 + a trailing RGB565 (v10)
 }
 ```
+
+The last two fields are packed into the record's **flags byte** (dashed = bit 2, "color2 present" = bit 3) plus a trailing `u16`. `color2` is a **secondary** colour: **v10** carries it so a later render pass can draw road casings, dashed admin borders, railway stripes and building outlines at the finest zoom — the [line-styles work](https://github.com/timohueser/OpenBikeComputer/issues/556). It's written `0x0000` with the bit clear when unused, and readers ignore it then — black is a real colour (rails), not a "none" sentinel — so a map that uses no line styles is byte-for-byte the old record padded to eight, and renders identically.
 
 Two things worth knowing about style ids. First, they're **assigned by the packer, not authored** — the reader never depends on a specific value, only that ids are unique within the file, so the format can't be broken by an id collision. Second, `0xFF` is reserved as the "end of features" sentinel inside a chunk (more below), which caps a file at 254 distinct styles. The colour is stored once, device-independently, and resolved to the panel's palette at render time — the same RGB565 looks right on a true-colour desktop window and on the device's 64-colour panel.
 

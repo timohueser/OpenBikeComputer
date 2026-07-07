@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v9)
+# OBCM File Format Specification (v10)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -39,6 +39,14 @@ the device can run point-to-point A\* (epic #116) with only a small directory
 resident. The section is **always present** — a map with no routable ways writes
 an empty directory, never a sentinel-zero offset.
 
+**Version 10** (epic #556 #557) grows the **style record** 6 → 8 bytes (§2): the
+flags byte gains a **dashed** bit (bit 2, line style) and a **color2-present** bit
+(bit 3), and a trailing **`color2`** u16 (RGB565 secondary color) is appended. The
+header, geometry, POI, and nav sections are byte-identical to v9. `color2` is written
+`0x0000` when its flag bit is clear, and readers MUST ignore it then (`0x0000` is a
+legit color — black rails — not a "no color2" sentinel). **v10 is the only supported
+version**; earlier maps get repacked.
+
 **Version 9** (epic #533 N2) is a §8-only bump that makes the router **bike-type
 aware** and shrinks the section it reads (measured ~58% padding in v8 node
 chunks). The header stays 40 bytes; everything new hangs off the nav directory,
@@ -49,9 +57,9 @@ edge record; neighbor entries slim **20 → 15 bytes** by storing each neighbor'
 coord as an `int16` delta from the record's own coord and its cost as a `uint16`;
 nav chunks are **pinned to 512 bytes** (the reader rejects any other value); node
 chunks are **bin-packed** so distinct index leaves may share a chunk; and a
-per-map **profile table** (§8.6) of `1..=8` bike profiles is baked in. **v9 is the
-only supported version**; earlier versions (v8 down to v2) have been dropped —
-old maps get repacked.
+per-map **profile table** (§8.6) of `1..=8` bike profiles is baked in. (v9 was a
+hard cut from v8; earlier versions v8 down to v2 were dropped — old maps get
+repacked. v10 supersedes it, see above.)
 
 ## Design principles
 
@@ -100,7 +108,7 @@ Packed as `struct "<4sBiiiiIBIHII"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x09` |
+| 4 | Version | 1 | `uint8` | `0x0A` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -137,15 +145,22 @@ Maps numeric style IDs to rendering properties. **Global**: style IDs are shared
 across every LOD. Packed as `Count`, then `Count` records.
 
 1. **Count** (`uint8`): number of styles.
-2. **Style Records** (`Count` × 6 bytes):
+2. **Style Records** (`Count` × 8 bytes, v10 — v5..v9 were 6 bytes):
 
-| Field | Size | Type | Description |
-| :-- | :-- | :-- | :-- |
-| ID | 1 | `uint8` | Style ID, referenced by feature headers |
-| Z-Index | 1 | `int8` | Painter's-order layer (lower drawn first) |
-| Color | 2 | `uint16` | RGB565 |
-| Weight | 1 | `uint8` | Stroke width in pixels (lines) |
-| Flags | 1 | `uint8` | Bit 0-1: priority level (1=highest/render first, 4=lowest/render last) |
+| Offset | Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- | :-- |
+| 0 | ID | 1 | `uint8` | Style ID, referenced by feature headers |
+| 1 | Z-Index | 1 | `int8` | Painter's-order layer (lower drawn first) |
+| 2 | Color | 2 | `uint16` | RGB565 (the primary color) |
+| 4 | Weight | 1 | `uint8` | Stroke width in pixels (lines) |
+| 5 | Flags | 1 | `uint8` | Bits 0-1: priority level (1=highest/render first, 4=lowest/render last). **Bit 2 (v10): dashed** line (else solid; ignored for polygons). **Bit 3 (v10): color2 present.** Bits 4-7 reserved, written 0 |
+| 6 | Color2 | 2 | `uint16` | RGB565 **secondary color** (v10). Written `0x0000` when flag bit 3 is clear; readers MUST ignore it then (`0x0000` is a legit color — black — not a "no color2" sentinel) |
+
+The **secondary color** and **line style** drive the finest-LOD line/polygon
+embellishments (road casing, dashed admin borders, railway stripes, polygon ring
+outlines — epic #556); the semantics are the renderer's, not the format's. A solid,
+single-color style (flags bits 2-3 clear, `Color2 = 0x0000`) is the pre-v10 record
+padded to 8 bytes, so a map that uses no line styles renders identically.
 
 > **Style IDs are assigned by the packer, not authored.** A style ID is a
 > purely internal reference into this table — no reader depends on a specific
@@ -537,7 +552,7 @@ empty POI category.
 2048); v9 fixes it so a leaf holds a handful of junction records — one chunk read
 serves one A\* settle — and the reader **rejects a directory whose `Chunk Size`
 is not 512** (a distinct parse error from the header version check, so an old
-file and a mis-sized v9 file are told apart). The geometry sections' configurable
+file and a mis-sized current file are told apart). The geometry sections' configurable
 `chunk_size` (§5) is independent — that knob governs §5 only; nav is pinned.
 
 ### 8.2 Node quadtree
