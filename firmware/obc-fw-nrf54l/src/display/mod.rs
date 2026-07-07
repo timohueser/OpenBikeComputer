@@ -8,13 +8,13 @@
 //! [`DisplayDriver`]: hand it that framebuffer and it puts it on glass. Adding or swapping a panel is
 //! one new `impl DisplayDriver` in this crate — no change to the rendering stack.
 //!
-//! Two backends implement it today, which is what keeps the seam honest (the core can't silently grow
-//! a dependency on one panel's quirks):
-//!   - the **ST7789** EYESPI TFT (the bring-up stand-in): a random-access GRAM panel — `present` bands
-//!     the framebuffer over SPI-DMA, [`present_overlay`] addresses a column window directly;
-//!   - the **LS021B7DD02** reflective MIP panel driven by the FLPR coprocessor (the real target): a
-//!     row-addressed panel — `present` drives a masked full-frame scan, [`present_overlay`]
-//!     fast-forwards the gate to the dirty rows.
+//! One backend implements it today — the **LS021B7DD02** reflective MIP panel driven by the FLPR
+//! coprocessor (the real target): a row-addressed panel where `present` drives a masked full-frame
+//! scan and [`present_overlay`] fast-forwards the gate to the dirty rows. The seam still earns its
+//! keep as the deliberate **panel-swap point**: the rendering stack reaches glass only through
+//! [`DisplayDriver`], so it can't silently grow a dependency on this panel's quirks. (A follow-up PR
+//! moves the seam into `obc-platform` and makes the simulator the second backend, so it is exercised
+//! off-device again rather than by a second on-board panel.)
 //!
 //! ## Why the overlay is a *separate* seam method, not part of the framebuffer
 //!
@@ -30,12 +30,11 @@
 //!
 //! The write paths are **async** (`false` = a transport fault the caller may retry): the FLPR
 //! backend `await`s its coprocessor's EGU20 frame ack (issue #347 — the M33 is freed for the whole
-//! ~44 ms scan; a deadline turns a stalled FLPR into a clean `false`), while the ST7789 backend
-//! completes synchronously inside the async fn (it blocks on the SPI-DMA write, the panel's only
-//! mode). Both async methods carry `where Self: Sized`, so the trait stays object-safe for the one
-//! thing the render path needs through `&mut dyn DisplayDriver` — [`fb_mut`](DisplayDriver::fb_mut);
-//! presents are always called on the concrete backend. The two-plane concurrency (which executor
-//! drives each path, the bus mutex) lives in `main.rs`, *outside* the seam.
+//! ~44 ms scan; a deadline turns a stalled FLPR into a clean `false`). Both async methods carry
+//! `where Self: Sized`, so the trait stays object-safe for the one thing the render path needs
+//! through `&mut dyn DisplayDriver` — [`fb_mut`](DisplayDriver::fb_mut); presents are always called
+//! on the concrete backend. The two-plane concurrency (which executor drives each path) lives in
+//! `main.rs` / `planes.rs`, *outside* the seam.
 
 use obc_platform::Band;
 
@@ -49,22 +48,15 @@ pub const FRAME_W: usize = 240;
 /// Frame height in rows — see [`FRAME_W`].
 pub const FRAME_H: usize = 320;
 
-// The two backends, each a thin [`DisplayDriver`] impl in its own module behind this seam. The shared
-// overlay-composite plumbing lives in `obc_platform::composite_overlay_window`; each module supplies
-// **only** its panel's wire-pack + window math. Exactly one is compiled per build (`tft` selects the
-// ST7789). The low-level transports they drive (`crate::st7789`, `crate::ls021_flpr`) stay at the
-// crate root.
-#[cfg(feature = "tft")]
-mod st7789;
-#[cfg(feature = "tft")]
-pub use st7789::Display;
-#[cfg(not(feature = "tft"))]
+// The LS021 backend, a thin [`DisplayDriver`] impl in its own module behind this seam. The shared
+// overlay-composite plumbing lives in `obc_platform::composite_overlay_window`; the module supplies
+// **only** the panel's wire-pack + window math. The low-level transport it drives
+// (`crate::ls021_flpr`) stays at the crate root.
 mod ls021_flpr;
 
 /// A dirty rectangle of the frame to re-present with the overlay composited over it — today the hold
-/// bulge's right-edge window. A column-addressable panel (ST7789) re-pushes exactly
-/// this rectangle; a row-addressed panel (LS021) widens it to full-width rows internally (it can't
-/// latch a sub-span of columns) but still only touches rows `[y0, y0 + rows)`.
+/// bulge's right-edge window. The row-addressed LS021 panel widens it to full-width rows internally
+/// (it can't latch a sub-span of columns) but still only touches rows `[y0, y0 + rows)`.
 pub struct OverlayRegion {
     pub x0: u16,
     pub y0: u16,

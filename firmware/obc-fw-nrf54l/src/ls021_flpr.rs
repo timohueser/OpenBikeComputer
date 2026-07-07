@@ -1,8 +1,8 @@
 //! **The LS021B7DD02 FLPR display backend, driving the real app's map/ride render.**
 //!
 //! `main.rs` runs the real [`obc_app::App`](obc_app) on the reflective LS021 panel through the
-//! board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) seam the ST7789 also implements —
-//! no panel-specific code in the map plane.
+//! board-agnostic [`DisplayDriver`](crate::display::DisplayDriver) seam — no panel-specific code in
+//! the map plane.
 //!
 //! What lives here is everything that talks to the **FLPR** (the nRF54L15's VPR RISC-V coprocessor):
 //!   - the cross-core [`Control`] block + the dirty-row span list (**contract v2**, issue #347 — the
@@ -80,13 +80,13 @@ use embassy_time::{with_deadline, Duration, Instant, Timer};
 // pinned to it below.
 use obc_platform::ls021_wire::WIDTH;
 // `composite_overlay_window` is the shared overlay-composite core: fill a window scratch from the
-// clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band` — the same
-// step the ST7789 backend runs, before this backend re-quantises it back into the framebuffer.
+// clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band`, before this
+// backend re-quantises it back into the framebuffer.
 // `RowDiff` is the self-diffing present store: a per-row hash of the last-pushed frame so a present
 // pushes only the rows that actually changed.
 use obc_platform::{composite_overlay_window, Band, RowDiff};
 // The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
-// re-quantised overlay window lands on the panel's RGB222 gamut exactly as the ST7789 stand-in shows it.
+// re-quantised overlay window lands on the panel's RGB222 gamut exactly as the map style cards do.
 use obc_reader::rgb565_to_device64;
 
 use embedded_graphics::prelude::*;
@@ -407,16 +407,16 @@ impl<'b> Ls021Flpr<'b> {
     /// Build the backend over the resident **device-64 map/ride plane** (`main.rs`): the app quantises
     /// to the device-64 gamut itself ([`FbDevice64`](obc_platform::FbDevice64)) and renders straight
     /// into `fb`, then [`present_within`](Self::present_within) diffs + drives it. The FLPR packs `fb`
-    /// straight to the wire, so there is no RGB565 band scratch (the ~7.5 KB the ST7789 band push needs
-    /// is freed here). `fb` must be `FB_W × FB_H` device-64 bytes; `diff` is the `FB_H`-row [`RowDiff`]
-    /// store the self-diffing present compares against.
+    /// straight to the wire, so there is no RGB565 band scratch (the ~7.5 KB an intermediate band push
+    /// would need is never allocated). `fb` must be `FB_W × FB_H` device-64 bytes; `diff` is the
+    /// `FB_H`-row [`RowDiff`] store the self-diffing present compares against.
     pub fn new_fb(fb: &'b mut [u8], diff: &'b mut RowDiff<FB_H>) -> Self {
         Self { fb, diff, seq: 0 }
     }
 
     /// The resident RGB222 plane, for the map path to render into (device-64, `0b00_RR_GG_BB` per
-    /// pixel) before [`push_frame`](Self::push_frame). The ST7789 path keeps its framebuffer beside
-    /// the panel; the FLPR backend owns it, so this is how the app reaches it.
+    /// pixel) before [`push_frame`](Self::push_frame). The FLPR backend owns the framebuffer, so this
+    /// is how the app reaches it.
     pub fn fb_mut(&mut self) -> &mut [u8] {
         self.fb
     }
@@ -628,8 +628,7 @@ impl<'b> Ls021Flpr<'b> {
         // 1. Composite the overlay ONCE into a window scratch over the clean `fb` backdrop, via the
         //    shared `composite_overlay_window`: it fills the window from `fb` (device-64 → RGB565)
         //    and lets `draw_overlay` paint the bulge over it through a frame-absolute `Band`. `win`
-        //    then holds the composited region; `fb` is untouched so far. This is the exact step the
-        //    ST7789 backend runs.
+        //    then holds the composited region; `fb` is untouched so far.
         let mut win = [0u16; MAX_OVERLAY_COLS * MAX_OVERLAY_ROWS];
         let window = Rectangle::new(Point::new(x0 as i32, y0 as i32), Size::new(w as u32, rows as u32));
         composite_overlay_window(self.fb, Size::new(FB_W as u32, FB_H as u32), window, &mut win, draw_overlay);

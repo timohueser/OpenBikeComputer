@@ -2,7 +2,8 @@
 //! backend drains (epic #149).
 //!
 //! The sibling of [`device64_to_rgb565`](crate::device64_to_rgb565): where that expands a device-64
-//! ([`FbDevice64`](crate::FbDevice64)) byte back to RGB565 for an ST7789, this packs a whole **row**
+//! ([`FbDevice64`](crate::FbDevice64)) byte back to RGB565 (for the overlay-window fill and the
+//! simulator), this packs a whole **row**
 //! of device-64 bytes into the LS021's parallel **source bus** wire words — the format the FLPR
 //! clocks out over `BSP`/`BCK` + the 6 data lines (`R0/G0/B0`, `R1/G1/B1`). The trickiest bits (the
 //! area-gradation split, the odd/even column interleave, the pre-shift to GPIO bit positions) live
