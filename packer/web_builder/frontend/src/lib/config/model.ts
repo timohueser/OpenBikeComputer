@@ -15,7 +15,9 @@ export interface StyleDef {
     weight?: number;
     priority?: number;
     min_lod?: number;
-    // Future schema fields (v6 line_style/color2, …) ride along untouched.
+    // Schema-declared style fields (v10 line_style/color2) and any future ones
+    // ride along untouched. `color2` is optional: its key is simply absent when
+    // unset (never null / "0x0000" — black is a legit color, absence is not).
     [key: string]: unknown;
 }
 
@@ -144,12 +146,18 @@ export function buildConfigForSubmit(
             const copy: StyleDef = { ...def };
             copy.min_lod = Math.max(0, Math.min(n - 1, (def.min_lod ?? 0) | 0));
             copy.priority = def.priority || 3;
-            if (known) {
-                for (const key of Object.keys(copy)) {
-                    if (!known.has(key)) {
-                        stripped.add(key);
-                        delete copy[key];
-                    }
+            for (const key of Object.keys(copy)) {
+                // A cleared optional field (e.g. color2) is present-but-undefined
+                // after a spread; drop it so JSON emits absence, not the key.
+                if (copy[key] === undefined) {
+                    delete copy[key];
+                    continue;
+                }
+                // Keys the served schema doesn't declare would be silently
+                // ignored by the binary — strip them and report which.
+                if (known && !known.has(key)) {
+                    stripped.add(key);
+                    delete copy[key];
                 }
             }
             out.features[cat] = out.features[cat] || {};
