@@ -1,136 +1,194 @@
 //! Pixel-art bike sprites for the [Bike type screen](super::bike_type), one per
-//! routing profile, **matched by the profile's name** (routing-v2 follow-up). Each
-//! sprite is authored as ASCII rows — a non-space cell is one ink pixel — so the art
-//! is reviewable and tweakable right here in the source; [`draw`] blits it scaled with
-//! run-length fills (one [`Surface::fill`](obc_render::Surface) per ink run, not per
-//! pixel). The sprites are firmware-baked: the four shipped profiles
-//! (Road / Gravel / MTB / Touring) each get their own silhouette, and a custom
-//! web-builder profile falls back to a [`GENERIC`] bike.
+//! routing profile, **matched by the profile's name**. Each sprite is a grid of ASCII
+//! rows — a non-space cell is one ink pixel — laid out from simple geometry (round
+//! wheels, straight frame tubes) so the curves stay clean, then kept here as plain,
+//! hand-editable ASCII; [`draw`] blits it scaled with run-length fills (one
+//! [`Surface::fill`](obc_render::Surface) per ink run, not per pixel). Firmware-baked:
+//! the four shipped profiles (Road / Gravel / MTB / Touring) each get their own
+//! silhouette, and a custom web-builder profile falls back to a [`GENERIC`] bike.
 
 use obc_render::{rect, Surface};
 
-/// One sprite: ASCII rows, a non-space cell is an ink pixel. Rows need not be equal
-/// length — [`draw`] centres on the longest row.
+/// One sprite: ASCII rows, a non-space cell is an ink pixel. Every sprite is the same
+/// rectangular grid ([`draw`] centres on it).
 pub type Bike = &'static [&'static str];
 
-/// Road bike: thin wheels, a diamond frame, drop handlebars. 33 × 18 art pixels; the
-/// other silhouettes keep this frame and vary the bars, tyres, and load.
+/// Road bike: thin tyres, a diamond frame, drop handlebars.
 #[rustfmt::skip]
 pub const ROAD: Bike = &[
-    "                                 ",
-    "                                 ",
-    "                                 ",
-    "          ####     #####         ",
-    "            ########## #         ",
-    "            #        # #         ",
-    "           # #      # #          ",
-    "          #  #      # #          ",
-    "         #   #     #   #         ",
-    "    ######    #   #    ######    ",
-    "   #    ##    #  #     ##    #   ",
-    "  #    #  #   #  #    #  #    #  ",
-    "  #    #  #    ##     #  #    #  ",
-    "  #   ##########      #   #   #  ",
-    "  #       #    #      #       #  ",
-    "  #       #    ##     #       #  ",
-    "   #     #             #     #   ",
-    "    #####               #####    ",
+    "                                                  ",
+    "                                                  ",
+    "                                                  ",
+    "                               #####              ",
+    "                 ######          # #              ",
+    "                     #######     #  #             ",
+    "                    ##      ######  #             ",
+    "                    ##          ##                ",
+    "                   #  #        #  #               ",
+    "                  #   #        #  #               ",
+    "          #####   #   #       #    ######         ",
+    "        ##     ###    #      #    ##     ##       ",
+    "      ##        ###    #    #   ## #       ##     ",
+    "      ##       # ##    #    #   ##  #      ##     ",
+    "     #  #      ##  #   #   #   #  # #     #  #    ",
+    "     #   #    ##   #   #  #    #   # #   #   #    ",
+    "    #     #  ##     #  ###    #     ##  #     #   ",
+    "    #      ###      # # ###   #      ###      #   ",
+    "    #      ############## #   #      ###      #   ",
+    "    #      ###      # # # #   #      ###      #   ",
+    "    #     #   #     #  ###    #     #   #     #   ",
+    "     #   #     #   #   #       #   #     #   #    ",
+    "     #  #       #  #  ##       #  #       #  #    ",
+    "      ##         ##             ##         ##     ",
+    "      ##         ##             ##         ##     ",
+    "        ##     ##                 ##     ##       ",
+    "          #####                     #####         ",
+    "                                                  ",
+    "                                                  ",
+    "                                                  ",
 ];
 
-/// Gravel bike: drop bars (like the road) on **fat, knobby tyres** (2-px rings).
+/// Gravel bike: drop bars on fat, knobby tyres.
 #[rustfmt::skip]
 pub const GRAVEL: Bike = &[
-    "                                 ",
-    "                                 ",
-    "                                 ",
-    "          ####     #####         ",
-    "            ########## #         ",
-    "            #        # #         ",
-    "           # #      # #          ",
-    "          #  #      # #          ",
-    "         #   #     #   #         ",
-    "    #####     #   #    ######    ",
-    "   #######    #  #     #######   ",
-    "  ##     ##   #  #    ## #   ##  ",
-    "  ##     ##    ##     ## #   ##  ",
-    "  ##  ##########      ##  #  ##  ",
-    "  ##     ##    #      ##     ##  ",
-    "  ##     ##    ##     ##     ##  ",
-    "   #######             #######   ",
-    "    #####               #####    ",
+    "                                                  ",
+    "                                                  ",
+    "                                                  ",
+    "                               #####              ",
+    "                 ######          # #              ",
+    "                     #######     #  #             ",
+    "                    ##      ######  #             ",
+    "                    ##          ##                ",
+    "                   #  #        #  #               ",
+    "            #     #   #        #  #   #           ",
+    "          #####   #   #       #    ######         ",
+    "        ##########    #      #    #########       ",
+    "      ####     ####    #    #   ####     ####     ",
+    "      ##       # ##    #    #   ##  #      ##     ",
+    "     ## #      ## ##   #   #   ## # #     # ##    ",
+    "     ##  #    ##  ##   #  #    ##  # #   #  ##    ",
+    "    ##    #  ##    ##  ###    ##    ##  #    ##   ",
+    "    ##     ###     ## # ###   ##     ###     ##   ",
+    "   ###     ############## #  ###     ###     ###  ",
+    "    ##     ###     ## # # #   ##     ###     ##   ",
+    "    ##    #   #    ##  ###    ##    #   #    ##   ",
+    "     ##  #     #  ##   #       ##  #     #  ##    ",
+    "     ## #       # ##  ##       ## #       # ##    ",
+    "      ##         ##             ##         ##     ",
+    "      ####     ####             ####     ####     ",
+    "        #########                 #########       ",
+    "          #####                     #####         ",
+    "            #                         #           ",
+    "                                                  ",
+    "                                                  ",
 ];
 
-/// Mountain bike: a **flat handlebar** and **fat, knobby tyres**.
+/// Mountain bike: a flat handlebar and fat, knobby tyres.
 #[rustfmt::skip]
 pub const MTB: Bike = &[
-    "                                 ",
-    "                                 ",
-    "                                 ",
-    "          ####    #######        ",
-    "            ##########           ",
-    "            #        #           ",
-    "           # #      # #          ",
-    "          #  #      # #          ",
-    "         #   #     #   #         ",
-    "    #####     #   #    ######    ",
-    "   #######    #  #     #######   ",
-    "  ##     ##   #  #    ## #   ##  ",
-    "  ##     ##    ##     ## #   ##  ",
-    "  ##  ##########      ##  #  ##  ",
-    "  ##     ##    #      ##     ##  ",
-    "  ##     ##    ##     ##     ##  ",
-    "   #######             #######   ",
-    "    #####               #####    ",
+    "                                                  ",
+    "                                                  ",
+    "                                                  ",
+    "                             #########            ",
+    "                 ######          #                ",
+    "                     #######     #                ",
+    "                    ##      ######                ",
+    "                    ##          ##                ",
+    "                   #  #        #  #               ",
+    "            #     #   #        #  #   #           ",
+    "          #####   #   #       #    ######         ",
+    "        ##########    #      #    #########       ",
+    "      ####     ####    #    #   ####     ####     ",
+    "      ##       # ##    #    #   ##  #      ##     ",
+    "     ## #      ## ##   #   #   ## # #     # ##    ",
+    "     ##  #    ##  ##   #  #    ##  # #   #  ##    ",
+    "    ##    #  ##    ##  ###    ##    ##  #    ##   ",
+    "    ##     ###     ## # ###   ##     ###     ##   ",
+    "   ###     ############## #  ###     ###     ###  ",
+    "    ##     ###     ## # # #   ##     ###     ##   ",
+    "    ##    #   #    ##  ###    ##    #   #    ##   ",
+    "     ##  #     #  ##   #       ##  #     #  ##    ",
+    "     ## #       # ##  ##       ## #       # ##    ",
+    "      ##         ##             ##         ##     ",
+    "      ####     ####             ####     ####     ",
+    "        #########                 #########       ",
+    "          #####                     #####         ",
+    "            #                         #           ",
+    "                                                  ",
+    "                                                  ",
 ];
 
-/// Touring bike: road frame and drop bars, plus a **rear rack with a pannier** — the
-/// load is the tell.
+/// Touring bike: drop bars plus a rear rack and pannier -- the load is the tell.
 #[rustfmt::skip]
 pub const TOURING: Bike = &[
-    "                                 ",
-    "                                 ",
-    "                                 ",
-    "  ######  ####     #####         ",
-    "  #    #    ########## #         ",
-    "  #    #    #        # #         ",
-    "  ######   # #      # #          ",
-    "   #  #   #  #      # #          ",
-    "   #  #  #   #     #   #         ",
-    "    ######    #   #    ######    ",
-    "   #    ##    #  #     ##    #   ",
-    "  #    #  #   #  #    #  #    #  ",
-    "  #    #  #    ##     #  #    #  ",
-    "  #   ##########      #   #   #  ",
-    "  #       #    #      #       #  ",
-    "  #       #    ##     #       #  ",
-    "   #     #             #     #   ",
-    "    #####               #####    ",
+    "                                                  ",
+    "                                                  ",
+    "                                                  ",
+    "                               #####              ",
+    "                 ######          # #              ",
+    "                     #######     #  #             ",
+    "                    ##      ######  #             ",
+    "                    ##          ##                ",
+    "                  ##  #        #  #               ",
+    "     ##############   #        #  #               ",
+    "     ##########   #   #       #    ######         ",
+    "     #  ###    ###    #      #    ##     ##       ",
+    "     ###  #     ###    #    #   ## #       ##     ",
+    "     ###  #    # ##    #    #   ##  #      ##     ",
+    "     #  # #    ##  #   #   #   #  # #     #  #    ",
+    "     ######   ##   #   #  #    #   # #   #   #    ",
+    "    #     #  ##     #  ###    #     ##  #     #   ",
+    "    #      ###      # # ###   #      ###      #   ",
+    "    #      ############## #   #      ###      #   ",
+    "    #      ###      # # # #   #      ###      #   ",
+    "    #     #   #     #  ###    #     #   #     #   ",
+    "     #   #     #   #   #       #   #     #   #    ",
+    "     #  #       #  #  ##       #  #       #  #    ",
+    "      ##         ##             ##         ##     ",
+    "      ##         ##             ##         ##     ",
+    "        ##     ##                 ##     ##       ",
+    "          #####                     #####         ",
+    "                                                  ",
+    "                                                  ",
+    "                                                  ",
 ];
 
-/// Generic bike for an unrecognised custom profile: a plain flat-bar frame on thin tyres.
+/// Generic bike for an unrecognised custom profile: a plain flat-bar frame.
 #[rustfmt::skip]
 pub const GENERIC: Bike = &[
-    "                                 ",
-    "                                 ",
-    "                                 ",
-    "          ####    #######        ",
-    "            ##########           ",
-    "            #        #           ",
-    "           # #      # #          ",
-    "          #  #      # #          ",
-    "         #   #     #   #         ",
-    "    ######    #   #    ######    ",
-    "   #    ##    #  #     ##    #   ",
-    "  #    #  #   #  #    #  #    #  ",
-    "  #    #  #    ##     #  #    #  ",
-    "  #   ##########      #   #   #  ",
-    "  #       #    #      #       #  ",
-    "  #       #    ##     #       #  ",
-    "   #     #             #     #   ",
-    "    #####               #####    ",
+    "                                                  ",
+    "                                                  ",
+    "                                                  ",
+    "                             #########            ",
+    "                 ######          #                ",
+    "                     #######     #                ",
+    "                    ##      ######                ",
+    "                    ##          ##                ",
+    "                   #  #        #  #               ",
+    "                  #   #        #  #               ",
+    "          #####   #   #       #    ######         ",
+    "        ##     ###    #      #    ##     ##       ",
+    "      ##        ###    #    #   ## #       ##     ",
+    "      ##       # ##    #    #   ##  #      ##     ",
+    "     #  #      ##  #   #   #   #  # #     #  #    ",
+    "     #   #    ##   #   #  #    #   # #   #   #    ",
+    "    #     #  ##     #  ###    #     ##  #     #   ",
+    "    #      ###      # # ###   #      ###      #   ",
+    "    #      ############## #   #      ###      #   ",
+    "    #      ###      # # # #   #      ###      #   ",
+    "    #     #   #     #  ###    #     #   #     #   ",
+    "     #   #     #   #   #       #   #     #   #    ",
+    "     #  #       #  #  ##       #  #       #  #    ",
+    "      ##         ##             ##         ##     ",
+    "      ##         ##             ##         ##     ",
+    "        ##     ##                 ##     ##       ",
+    "          #####                     #####         ",
+    "                                                  ",
+    "                                                  ",
+    "                                                  ",
 ];
 
-/// The sprite for a profile name, case-insensitive substring match; unrecognised ⇒
+/// The sprite for a profile name, case-insensitive substring match; unrecognised =>
 /// [`GENERIC`]. Keyed on the shipped default names and common synonyms so a custom
 /// profile that *mentions* a bike type still gets the right art.
 pub fn for_name(name: &str) -> Bike {
@@ -155,7 +213,7 @@ pub fn for_name(name: &str) -> Bike {
 }
 
 /// Blit `bike` centred horizontally on `center_x`, top edge at `top_y`, each art pixel
-/// a `scale`×`scale` block of `color`. Contiguous ink cells in a row are filled as one
+/// a `scale`x`scale` block of `color`. Contiguous ink cells in a row are filled as one
 /// rectangle, so a sprite costs a handful of fills per row, not one per pixel.
 pub fn draw(cv: &mut impl Surface, bike: Bike, center_x: i32, top_y: i32, scale: i32, color: u16) {
     let cols = bike.iter().map(|r| r.len()).max().unwrap_or(0) as i32;
@@ -186,7 +244,7 @@ mod tests {
     /// unrecognised custom profile falls back to the generic bike.
     #[test]
     fn matches_shipped_names_case_insensitively() {
-        // Compare by content — `const` slices have no stable address, so identify the sprite by value.
+        // Compare by content -- `const` slices have no stable address, so identify the sprite by value.
         assert_eq!(for_name("Road"), ROAD);
         assert_eq!(for_name("gravel"), GRAVEL);
         assert_eq!(for_name("MTB"), MTB);
@@ -196,7 +254,7 @@ mod tests {
         assert_eq!(for_name(""), GENERIC);
     }
 
-    /// Every sprite is a rectangular grid of the same dimensions — guards against a ragged ASCII row
+    /// Every sprite is a rectangular grid of the same dimensions -- guards against a ragged ASCII row
     /// (a trimmed trailing space) that would misalign the run-length blit.
     #[test]
     fn sprites_are_uniform_rectangles() {
