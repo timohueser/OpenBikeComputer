@@ -26,9 +26,10 @@ use obc_platform::Framebuffer565;
 use obc_reader::{ground_dist_m, BBox, MapCache, MapTables, Reader, SliceSource};
 use obc_render::{zoom_for_mpp, Clock, MapRenderer, OverlayChunk, RenderStats, RouteOverlaySource, Viewport};
 
-/// Device resolution — the LS021B7DD02 panel the shipping firmware renders at.
-const WIDTH: u32 = 240;
-const HEIGHT: u32 = 320;
+/// Device resolution — the LS021B7DD02 panel the shipping firmware renders at. The single
+/// [`obc_platform`] frame authority, not a re-declared literal.
+const WIDTH: u32 = obc_platform::FRAME_W as u32;
+const HEIGHT: u32 = obc_platform::FRAME_H as u32;
 
 /// Timed iterations per scene (after one warm-up render that fills the chunk cache). The report is
 /// the **min** of each stage — the noise-floor estimator for a deterministic workload.

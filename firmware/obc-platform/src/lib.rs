@@ -65,6 +65,10 @@ pub mod debug_link;
 pub mod fat_extents;
 pub mod framebuffer;
 pub mod ls021_wire;
+// The board-agnostic display-driver seam (`DisplayDriver`, `OverlayRegion`, the frame geometry) both
+// backends implement — the on-device LS021/FLPR panel and the host simulator. No new deps: the trait
+// is dependency-free, so it stays compiled into every host workspace build.
+pub mod display;
 // Stand-in battery fuel gauge — a fixed level until the nPM1300 PMIC gauge is wired in.
 pub mod fuel;
 pub mod panel;
@@ -84,6 +88,7 @@ pub mod ubx;
 pub mod sensor_link;
 
 pub use button_input::{ButtonInput, Timing};
+pub use display::{DisplayDriver, OverlayRegion, FRAME_H, FRAME_W};
 pub use fat_extents::{ExtentSource, ExtentTable};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use fuel::StubFuelGauge;
