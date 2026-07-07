@@ -137,6 +137,19 @@ CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$CLIMBROUTES"' EXI
 cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
+# Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/POIs/Map/Settings,
+# so the Map station is three cw detents from the Routes start (`r r r w`). A live `--gpx` fix pins
+# the follow camera + marker so the frames reproduce (no route → no magenta line, no off-route chip).
+# (a) The route-less BROWSE map: Menu → Map (not tracking) → the follow map with clock + scale bar.
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p"     --png "$OUT/map-browse.png"
+# (b) The start card (browse map → press): "RIDE" — Start ride / Back.
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p p"   --png "$OUT/ride-start.png"
+# (c) A route-less RIDING map (start card → Start ride): the follow map with the recorded breadcrumb,
+# no route line and no off-route chip (there's no route to be off).
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p p p" --png "$OUT/map-routeless.png"
+# (d) The route-less Statistics page: the "No route loaded" band note over the stat grid, where the
+# route-relative tiles (KM TO GO, TO CLIMB) read "--" and the rest are live.
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p p p b" --png "$OUT/statistics-routeless.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B p r p" --png "$OUT/routeswap.png"
 # Pan mode: the pan HUD (chevrons + compass) plus the bottom-left scale bar (visible in pan too);
 # the clock digits are suppressed while panning (the top chevron owns the slot).
@@ -173,4 +186,4 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --script "B l p r r r p r r p" --png "$OUT/display-idle-return.png"
 "$SIM" "$MAP" --boot --script "B l p I"             --png "$OUT/idle-return-home.png"
 
-echo "ui-snapshots: 48 screens rendered into $OUT/"
+echo "ui-snapshots: 52 screens rendered into $OUT/"

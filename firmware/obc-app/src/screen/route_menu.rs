@@ -297,6 +297,22 @@ mod tests {
         assert_eq!(act.take_route_delete(), Some(0));
     }
 
+    /// Picking a route **mid route-less ride** (a running session with no `active_route`) goes
+    /// through the guarded swap flow — the "ROUTE ACTIVE" card — exactly as picking a *different*
+    /// route mid-ride does. There's no route yet to re-navigate, but a session is live, so the
+    /// keep-or-restart choice still applies; it must never silently start navigating.
+    #[test]
+    fn picking_a_route_during_a_route_less_ride_opens_the_swap() {
+        let routes = [summary("A"), summary("B")];
+        let mut act = Activity::new(Mode::Riding);
+        act.start_session(); // tracking, but route-less…
+        assert_eq!(act.active_route, None, "…so no route is navigated");
+        let mut scr = RouteMenuScreen::new(); // highlight row 0
+        let t = run(&mut scr, &mut act, &routes, Gesture::Press);
+        assert!(matches!(t, Transition::Push(Screen::RouteSwap(_))), "the guarded swap card opens");
+        assert_eq!(act.active_route, None, "picking alone doesn't attach the route — the card decides");
+    }
+
     /// An empty catalog offers no delete (the footer draws its rule only).
     #[test]
     fn empty_catalog_has_no_delete() {

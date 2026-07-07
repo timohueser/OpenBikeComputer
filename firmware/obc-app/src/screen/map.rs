@@ -5,8 +5,12 @@
 //! (stepping up above the chip while one is up), a low-battery cue in the top-left corner, and the
 //! pan HUD.
 //!
-//! Bindings: `turn` = zoom, `press` = pause → Ride control, `back` = the sibling Statistics view,
-//! `back-hold` = Menu, `hold` = enter Pan mode.
+//! Bindings depend on whether a ride is being tracked. Shared: `turn` = zoom, `hold` = enter Pan
+//! mode, `back-hold` = Menu. **Tracking** (the riding map): `press` = pause → Ride control, `back` =
+//! the sibling Statistics view. **Not tracking** (the route-less browse map, reached from the Menu's
+//! Map station): `press` = the start card, `back` = pop back to the Menu (there's no Statistics
+//! sibling without a ride). Off-route chrome can't fire without a route, so the browse map shows
+//! only clock / scale-bar / low-battery.
 
 use core::fmt::Write as _;
 
@@ -118,8 +122,18 @@ impl MapScreen {
                 cx.state.enter_pan();
                 Transition::None
             }
-            // Swap to the sibling Statistics view; its `back` swaps straight back here.
-            Gesture::Back => Transition::Replace(Screen::Statistics(StatisticsScreen::new())),
+            // `back`: while tracking, swap to the sibling Statistics view (its `back` swaps straight
+            // back here — the Map↔Statistics ring only exists mid-ride). On the route-less *browse*
+            // map (not tracking), there's no sibling to swap to, so `back` pops back to the Menu.
+            Gesture::Back if cx.activity.is_tracking() => {
+                Transition::Replace(Screen::Statistics(StatisticsScreen::new()))
+            }
+            Gesture::Back => Transition::Pop,
+            // `press`: while tracking, pause → Ride control (the shared riding binding). On the
+            // browse map, open the small start card instead of the Paused page.
+            Gesture::Press if !cx.activity.is_tracking() => {
+                Transition::Push(Screen::RideStart(super::RideStartScreen::new()))
+            }
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
         }
     }
@@ -607,6 +621,53 @@ fn arm(cv: &mut impl Surface, a: (f32, f32), b: (f32, f32), hw: f32, color: u16)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::activity::{Activity, Mode};
+    use crate::screen::{Screen, Transition};
+    use crate::Settings;
+
+    fn run(act: &mut Activity, g: Gesture) -> Transition {
+        let mut st = crate::AppState::new(0, 0, 1.0);
+        let mut settings = Settings::default();
+        let scratch = crate::screen::PoiScratch::new();
+        let mut cx = super::Ctx {
+            state: &mut st,
+            activity: act,
+            settings: &mut settings,
+            routes: &[],
+            rides: &[],
+            poi_scratch: &scratch,
+            now_ms: 0,
+        };
+        MapScreen::new().handle(g, &mut cx)
+    }
+
+    /// The **browse map** (not tracking): `back` pops back to the Menu — there's no Statistics
+    /// sibling without a ride.
+    #[test]
+    fn browse_map_back_pops() {
+        let mut act = Activity::new(Mode::Idle); // no session → browse map
+        assert!(matches!(run(&mut act, Gesture::Back), Transition::Pop));
+    }
+
+    /// The browse map's `press` opens the small start card instead of the Paused page.
+    #[test]
+    fn browse_map_press_opens_the_start_card() {
+        let mut act = Activity::new(Mode::Idle);
+        assert!(matches!(run(&mut act, Gesture::Press), Transition::Push(Screen::RideStart(_))));
+        assert_eq!(act.mode, Mode::Idle, "opening the card doesn't touch the mode");
+    }
+
+    /// The **riding map** (tracking): `back` swaps to the Statistics sibling, `press` pauses into
+    /// Ride control — the mid-ride bindings, unchanged.
+    #[test]
+    fn riding_map_keeps_the_sibling_and_pause_bindings() {
+        let mut act = Activity::new(Mode::Riding);
+        act.start_session();
+        assert!(matches!(run(&mut act, Gesture::Back), Transition::Replace(Screen::Statistics(_))));
+        let mut act = Activity::new(Mode::Riding);
+        act.start_session();
+        assert!(matches!(run(&mut act, Gesture::Press), Transition::Push(Screen::RideControl(_))));
+    }
 
     /// The chosen bar is always the largest 1/2/5×10ⁿ that fits the target width, so across the whole
     /// zoom range the realised pixel width stays in a sane band: never wider than the target, and wide

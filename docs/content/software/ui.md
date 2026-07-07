@@ -66,6 +66,7 @@ screens! {
     Map(MapScreen) => Riding,
     Statistics(StatisticsScreen) => Riding,
     RideControl(RideControl) => Nav,       // the Paused page: ride-so-far ledger + Resume/Finish/Discard
+    RideStart(RideStartScreen) => Nav,     // the browse map's start card: Start ride / Back (route-less ride)
     Menu(MenuScreen) => Nav,               // the compass dial
     PoiMenu(PoiMenuScreen) => Nav,         // POIs browser: the category list
     PoiList(PoiListScreen) => Nav,         // one category's nearest-16, with live bearing arrows
@@ -181,14 +182,16 @@ fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
             0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
             1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
             2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
-            4 => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
-            _ => Transition::None,                                            // Map — future screen
+            3 => open_map(cx),                                                // Map — browse map / ride base
+            _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
         },
         Gesture::Back    => Transition::Pop, // return to whoever opened the Menu
         _ => Transition::None,
     }
 }
 ```
+
+Four of the five stations open a menu; the **Map** station opens the riding map directly. Which map depends on whether a ride is already being tracked. Mid-ride it lands you back on the live riding map — the ride base — by rooting the stack to a clean `[Home, Map]`, the same normalization the [idle return](#the-whole-flow) does, so it never stacks a second Map or leaves stale menus buried underneath. With **no** ride running it opens a route-less **browse map**: the identical Map screen — GPS-follow camera, zoom on turn, `hold` to Pan — reached without a route or a session, for reading the map while riding without recording. On the browse map `back` pops back to the Menu (there's no Statistics sibling without a ride) and `press` opens a small **start card** — *Start ride* / *Back* — whose *Start ride* begins a route-less tracking session (the same session-begin the Route overview's START runs, minus the route) and roots to `[Home, Map]`. A route-less ride records and saves exactly like a guided one; only the route-relative stat tiles (*to go*, *to climb*, grade) read `--`, and the Statistics band shows a "No route loaded" note over an otherwise-live grid. The browse map is a *deliberate* view, so — unlike a menu left open — the idle-return timeout leaves it be.
 
 ## Two buttons, five gestures
 
@@ -755,7 +758,7 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <rect class="d-panel" x="36"  y="150" width="104" height="40" rx="9" /><text class="d-label" x="88"  y="170" text-anchor="middle">Home</text><text class="d-sub" x="88" y="183" text-anchor="middle" style="font-size:8.5px">root</text>
   <rect class="d-panel-2" x="232" y="56"  width="116" height="40" rx="9" /><text class="d-label" x="290" y="76"  text-anchor="middle">Route menu</text><text class="d-sub" x="290" y="89" text-anchor="middle" style="font-size:8.5px">pick a route</text>
   <rect class="d-panel-2" x="246" y="150" width="104" height="40" rx="9" /><text class="d-label" x="298" y="170" text-anchor="middle">Overview</text><text class="d-sub" x="298" y="183" text-anchor="middle" style="font-size:8.5px">profile · stats</text>
-  <rect class="d-panel-2" x="232" y="246" width="116" height="40" rx="9" /><text class="d-label" x="290" y="266" text-anchor="middle">Menu</text><text class="d-sub" x="290" y="279" text-anchor="middle" style="font-size:8.5px">compass · 4 stations</text>
+  <rect class="d-panel-2" x="232" y="246" width="116" height="40" rx="9" /><text class="d-label" x="290" y="266" text-anchor="middle">Menu</text><text class="d-sub" x="290" y="279" text-anchor="middle" style="font-size:8.5px">compass · 5 stations</text>
   <rect class="d-forest" x="436" y="150" width="104" height="40" rx="9" /><text class="d-label" x="488" y="174" text-anchor="middle" style="fill:#fff">Map</text>
   <rect class="d-water" x="596" y="150" width="104" height="40" rx="9" /><text class="d-label" x="648" y="170" text-anchor="middle" style="fill:#fff">Statistics</text><text class="d-sub" x="648" y="183" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">elevation</text>
   <rect class="d-hot" x="436" y="56" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="488" y="80" text-anchor="middle" style="fill:#a9501c">Paused</text>
@@ -784,7 +787,7 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <!-- Paused -> Home (finish/discard) -->
   <path d="M436 66 C 250 20, 90 70, 88 148" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="250" y="34" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
 </svg>
-<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Home has one door: both <code>press</code> and <code>back-hold</code> open the compass <b>Menu</b>, and the Route menu is reached from there at the Routes station. Picking a route opens the <b>Overview</b> — profile, distance/climb/descent, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or save &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows. On a climb, the Statistics view's <code>back</code> opens a third stop — the striped Climb panel — closing the ring back at the Map when you crest. Left untouched, the UI <b>returns on its own</b>: after a configurable idle timeout (default 30 s) it clears back to Home, or — mid-ride — back to the Map, so a menu or settings page left open doesn't strand the display away from the ride.</figcaption>
+<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Home has one door: both <code>press</code> and <code>back-hold</code> open the compass <b>Menu</b>, and the Route menu is reached from there at the Routes station. Picking a route opens the <b>Overview</b> — profile, distance/climb/descent, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or save &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows. The Menu's <b>Map</b> station is a second way onto the map: mid-ride it returns to the live Map (the same <code>Root</code> landing), and with no ride running it opens a route-less <b>browse map</b> whose <code>press</code> start card begins a route-less ride — the same START path, minus the route. On a climb, the Statistics view's <code>back</code> opens a third stop — the striped Climb panel — closing the ring back at the Map when you crest. Left untouched, the UI <b>returns on its own</b>: after a configurable idle timeout (default 30 s) it clears back to Home, or — mid-ride — back to the Map, so a menu or settings page left open doesn't strand the display away from the ride.</figcaption>
 </figure>
 
 ## The "field map" look

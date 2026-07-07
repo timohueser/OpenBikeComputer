@@ -72,6 +72,7 @@ fn test_routes() -> [RouteSummary; 3] {
 #[test]
 fn map_press_pauses_into_ride_control() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    act.start_session(); // the riding map (tracking) — press pauses; a browse map would open the start card
     let t = MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::Push(Screen::RideControl(_))));
     assert_eq!(act.mode, Mode::Paused, "pausing stops tracking immediately");
@@ -715,6 +716,7 @@ fn apply_pushes_pops_replaces_and_returns_home() {
 fn pausing_swaps_the_map_for_the_paused_page() {
     let bytes = build_min_obcm(0xF800);
     let mut app = App::new(AppState::new(0, 0, 0.05));
+    app.activity.start_session(); // a tracking ride, so the map's press pauses (not the browse-map start card)
 
     // Riding: sample the (blue sea) backdrop at a point clear of the map chrome — the clock digits
     // end ~y28, the bottom-centre "No GPS Fix" chip band starts ~y74 on the 120px test frame, and
