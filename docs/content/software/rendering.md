@@ -455,7 +455,7 @@ Every kept feature becomes a 14-byte **span** — a compact draw record that say
 struct Span {
     kind: Kind,      // polygon or line
     z: i8,           // paint order
-    weight: u8,      // line width
+    weight: u8,      // nominal line width — ramped by zoom at draw (see §6)
     color: u16,      // RGB565
     pt_start: u16,   // where its points sit in the frame buffer
     ring_start: u16,
@@ -557,6 +557,8 @@ Lines are where a naïve approach gets expensive. A loaded route or a long road 
 A **1 px** line is stroked by embedded-graphics directly — a thin Bresenham line it draws cheaply, and the one width the span fill below can't (a zero-width rectangle has no scanline crossings). **Everything else** — width-2 roads on up, plus the route and breadcrumb — takes a different path, because a per-pixel thick-line rasteriser is exactly the trap above: it *generates* every pixel of the stroke one at a time, and that generation, not the writes, was measured to dominate the overlay (and to run ~10× a span stroke even at 2 px, the narrowest thick width). So those strokes go through the **same scanline span fill as the polygons**: each segment becomes a rectangle (the segment swept ±half-width along its perpendicular), filled row-by-row as one `fill_solid` span apiece. No per-pixel plotting; the whole overlay rides the coalesced row blit.
 
 Two filled rectangles butt-joined at a vertex leave a small notch on the outside of a bend and don't round the line's ends, so a disc the width of the stroke is filled (also as spans) to smooth each joint and cap. The disc is the overlay's biggest remaining cost, so it's spent only where it shows: at the two **run ends** (which round the cap and close the gap to the next feature at a chunk seam) and at interior vertices where the line **bends sharply**. The uncovered notch at a turn of `θ` off straight is only about `r·sin(θ/2)` deep (`r` = half the stroke width), so a gentle bend leaves a sub-pixel notch and needs no disc at all.
+
+The half-width `r` above is **not** the style's stored `weight` directly — a line's on-screen thickness **ramps with zoom**. A style's `weight` is its width at a *reference* ground scale (mid-riding zoom); each frame the renderer multiplies it by `(ref_mpp / mpp)^0.6` — one factor for the whole frame — so a road thickens as you zoom in and thins as you zoom out, the way a physical thing looks closer or farther. The exponent is deliberately **sub-linear**: true physical scaling (`^1`) would make every road sub-pixel at continent zoom and let one motorway swallow the panel up close, so the ramp is clamped to `1…12 px` and rounded to whole pixels (the map zooms in fixed ×1.2 detents, so the width steps cleanly with no shimmer). This also rights the cost curve — a wide overview, where hundreds of roads are on screen and the frame budget is tightest, now strokes each at 1–2 px instead of its full authored weight; the fat strokes happen only zoomed in, where a handful of features are visible. Dashed lines (admin borders, railway stripes) ride the same ramped width, so their dash rhythm tracks the line's thickness rather than fighting it.
 
 ## 7 · The overlays
 
