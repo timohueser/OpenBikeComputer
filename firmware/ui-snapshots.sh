@@ -107,10 +107,14 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
 "$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
 "$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
-# Bike type (routing-v2 N5): the map's §8.6 profile names — grimsel ships Road/Gravel/MTB/Touring.
-# The default selection (Road), then one detent cycling it to Gravel — pinning the name list + cycle.
-"$SIM" "$MAP" --boot --script "B l p r r p"   --png "$OUT/biketype.png"
-"$SIM" "$MAP" --boot --script "B l p r r p r" --png "$OUT/biketype-cycled.png"
+# Bike type (routing-v2 N5): the map's §8.6 profile names — grimsel ships Road/Gravel/MTB/Touring,
+# each with its own name-matched pixel-art bike (Road/Gravel/MTB/Touring silhouettes). The default
+# selection (Road), then detents cycling through the other three — pinning the name list, the cycle,
+# and each hero sprite.
+"$SIM" "$MAP" --boot --script "B l p r r p"     --png "$OUT/biketype.png"
+"$SIM" "$MAP" --boot --script "B l p r r p r"   --png "$OUT/biketype-gravel.png"
+"$SIM" "$MAP" --boot --script "B l p r r p r r" --png "$OUT/biketype-mtb.png"
+"$SIM" "$MAP" --boot --script "B l p r r p l"   --png "$OUT/biketype-touring.png"
 "$SIM" "$MAP" --boot --script "B l p r r r p"  --png "$OUT/stats-settings.png"
 "$SIM" "$MAP" --boot --script "B l p r r r p r p" --png "$OUT/fields.png"
 # The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
