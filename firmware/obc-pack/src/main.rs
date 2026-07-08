@@ -20,6 +20,7 @@ use obc_pack::config::Config;
 use obc_pack::geom::{footprint_below, topology_preserve_simplify, Geom};
 use obc_pack::ingest::{ingest_osm, IngestFeature};
 use obc_pack::land;
+use obc_pack::merge::{merge_classes, merge_fills};
 use obc_pack::quadtree::build_lod;
 use obc_pack::serialize::serialize_lods_streaming;
 
@@ -144,6 +145,9 @@ fn run() -> Result<(), String> {
     // is built, serialized, streamed to disk, and dropped before the next, so peak
     // memory is ~one tree. ---
     let styles = config.styles();
+    // Fill-dissolve equivalence classes over the style table, computed once. Empty
+    // unless `merge_fills` is on (the closure only reads it in that branch).
+    let fill_classes = merge_classes(&styles);
     let file = std::fs::File::create(&args.output).map_err(|e| format!("create {}: {e}", args.output))?;
     let mut w = std::io::BufWriter::new(file);
     let (total, dropped) = serialize_lods_streaming(
@@ -166,25 +170,49 @@ fn run() -> Result<(), String> {
             // `min_area_px` is ignored. Off (`None`) ⇒ byte-identical to before.
             let cull_mpp = (lod.min_area_px > 0.0).then(|| config.lods.get(i + 1).and_then(|l| l.max_mpp)).flatten();
             let culled = std::sync::atomic::AtomicUsize::new(0);
-            // Parallel per-feature simplify: each closure runs wholly on one thread
-            // using that thread's own GEOS context, so no geometry crosses threads.
-            // `collect` preserves order, so the output is unchanged. The quadtree build
+            let min_area_px = lod.min_area_px;
+            // Per-feature simplify + coarse-LOD footprint cull. Each call runs wholly
+            // on one thread using that thread's own GEOS context, so no geometry
+            // crosses threads; rayon's `collect` preserves order. The quadtree build
             // stays sequential (bounded memory).
-            let level: Vec<(u8, Geom)> = ingested
-                .features
-                .par_iter()
-                .filter(|f| f.min_lod <= i)
-                .filter_map(|f| {
-                    let g = if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
-                    if let Some(mpp) = cull_mpp {
-                        if footprint_below(&g, mpp, lod.min_area_px) {
-                            culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            return None;
-                        }
+            let simplify_cull = |style_id: u8, geom: &Geom| -> Option<(u8, Geom)> {
+                let g = if tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
+                if let Some(mpp) = cull_mpp {
+                    if footprint_below(&g, mpp, min_area_px) {
+                        culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return None;
                     }
-                    Some((f.style_id, g))
-                })
-                .collect();
+                }
+                Some((style_id, g))
+            };
+            // Optionally dissolve pixel-identical fill polygons BEFORE simplify (see
+            // `obc_pack::merge`): unioning first deletes shared parcel boundaries
+            // exactly, where simplifying first would move each copy independently and
+            // leave seam cracks. Off ⇒ the original filter→simplify→cull path,
+            // byte-identical to before.
+            let level: Vec<(u8, Geom)> = if config.merge_fills {
+                let filtered: Vec<(u8, Geom)> =
+                    ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
+                let (merged, m) = merge_fills(filtered, &fill_classes);
+                if m.merged_inputs > 0 || m.fallbacks > 0 {
+                    print!(
+                        "  merged {} fill polygon(s) into {} across {} style class(es)",
+                        m.merged_inputs, m.merged_outputs, m.merged_classes
+                    );
+                    if m.fallbacks > 0 {
+                        print!(" ({} group(s) fell back unmerged)", m.fallbacks);
+                    }
+                    println!();
+                }
+                merged.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g)).collect()
+            } else {
+                ingested
+                    .features
+                    .par_iter()
+                    .filter(|f| f.min_lod <= i)
+                    .filter_map(|f| simplify_cull(f.style_id, &f.geom))
+                    .collect()
+            };
             let culled = culled.load(std::sync::atomic::Ordering::Relaxed);
             if culled > 0 {
                 println!("  culled {culled} feature(s) below {} px² footprint", lod.min_area_px);
