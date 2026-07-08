@@ -102,6 +102,16 @@
         newName = "";
     }
 
+    // The "*" catch-all styles every value this key carries that has no row of
+    // its own — so you don't enumerate all ~50 OSM building types by hand.
+    const hasCatchAll = $derived("*" in entries);
+
+    function addCatchAll() {
+        if (hasCatchAll) return;
+        env.config.features[cat]["*"] = newStyleDef(env.config);
+        working.markModified();
+    }
+
     const gridCols = $derived(
         `20px 24px minmax(96px, 1fr) 84px ${extras.map(() => "92px").join(" ")} 48px 48px 46px max-content 24px`.replace(/\s+/g, " "),
     );
@@ -166,7 +176,11 @@
                         title="Include in the build"
                         onchange={(e) => setOn(name, e.currentTarget.checked)}
                     />
-                    <span class="mono name">{name}</span>
+                    {#if name === "*"}
+                        <span class="name catch-all" title={`Catch-all: styles every ${cat} value without its own row`}>∗ any (catch-all)</span>
+                    {:else}
+                        <span class="mono name">{name}</span>
+                    {/if}
                     <ColorControl
                         value={def.color}
                         onchange={(v) => {
@@ -257,7 +271,17 @@
             {/each}
         </datalist>
     {:else}
-        <button type="button" class="add small" onclick={() => (adding = true)}>+ add type</button>
+        <div class="add-row">
+            <button type="button" class="add small" onclick={() => (adding = true)}>+ add type</button>
+            {#if !hasCatchAll}
+                <button
+                    type="button"
+                    class="add small"
+                    title="Add a catch-all row that styles every other value of this key"
+                    onclick={addCatchAll}>+ catch-all (∗)</button
+                >
+            {/if}
+        </div>
     {/if}
 </div>
 
@@ -352,12 +376,26 @@
         color: var(--coral);
     }
 
+    .add-row {
+        display: flex;
+        gap: 16px;
+        align-items: baseline;
+    }
+
     .add {
         margin-top: 9px;
         background: none;
         border: none;
         color: var(--forest);
         padding: 0;
+    }
+
+    .catch-all {
+        color: var(--forest);
+        font-style: italic;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .add-input {
