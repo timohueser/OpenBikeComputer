@@ -10,6 +10,7 @@ way to regenerate them.
 | `grimsel.obcm` | Grimsel Pass region — alpine showcase: contours, switchbacks, sparse POIs, 63-component nav graph | Geofabrik `europe/switzerland-latest.osm.pbf` | `8.15034,46.48261,8.46007,46.72070` |
 | `monaco.obcm` | Central Monaco — dense urban: POI-rich (opening hours), tight street grid | Geofabrik `europe/monaco-latest.osm.pbf` | `7.39,43.71,7.47,43.77` |
 | `grimsel-climb.gpx` / `.obcr` | Hand-made climb route inside the grimsel bbox (GPX + packed OBCR) | authored, not extracted | — |
+| `vector-loop-replay.gpx` | Synthetic replay tracing `protocol-vectors/route-waypoints.obcr` ("Vector Loop") — 6 trackpoints at that route's own vertices (from `obc-vectors/src/route-source.gpx`), timestamped at a constant ~6 m/s, ending at vertex 6 (~1.40 km, ~300 m short of the "Pass Summit" waypoint). Lies *on* the route so the matcher locks and progress drives the waypoint chip/ticks; the `ui-snapshots.sh` waypoint frames use it (the Grimsel climb GPX is far off that 48°N route). Regenerate: re-derive from the route vertices — no packer step (a hand-made GPX, not an `.obcm`, so the repack-provenance rules don't apply) | authored, not extracted | — |
 
 Both maps are packed with `packer/presets/default.json` via
 `cargo run --release --bin obc-pack -- <extract> <preset> <out>` — `repack.sh`
