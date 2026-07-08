@@ -1,9 +1,10 @@
 //! The Stats screen — the riding [`Statistics`](crate::screen) page's configuration. **Page cycle**
 //! (how fast the grid auto-flips) is a stepper here; **Fields** opens the
 //! [`StatFields`](super::StatFieldsScreen) sub-screen for the panel selection + order; **Climb**
-//! cycles the [`ClimbMode`](crate::settings::ClimbMode) that governs the Climb screen (epic #506).
-//! The cycle period is kept out of the field list deliberately — mixed among the panels it read as
-//! just another draggable row.
+//! cycles the [`ClimbMode`](crate::settings::ClimbMode) that governs the Climb screen (epic #506);
+//! **Waypoints** cycles the [`WaypointMode`](crate::settings::WaypointMode) that governs the Map
+//! waypoint chip (epic #523). The cycle period is kept out of the field list deliberately — mixed
+//! among the panels it read as just another draggable row.
 
 use core::fmt::Write;
 
@@ -27,7 +28,8 @@ const ROW_H: i32 = 58;
 const PAGE_CYCLE: usize = 0;
 const FIELDS: usize = 1;
 const CLIMB_PANEL: usize = 2;
-const ROWS: usize = 3;
+const WAYPOINT_PANEL: usize = 3;
+const ROWS: usize = 4;
 
 /// Step the page-cycle period by `n` detents (1 s each), clamped to the configured bounds.
 fn step_cycle(v: u16, n: i32) -> u16 {
@@ -68,6 +70,12 @@ impl StatsScreen {
                 // choice, so no edit sub-mode — like the Units screen's flip).
                 CLIMB_PANEL => {
                     cx.settings.climb_mode = cx.settings.climb_mode.cycled();
+                    Transition::None
+                }
+                // The Waypoints row: press cycles Off → Approach → Always in place, the same
+                // cycle-in-place idiom as the Climb row above.
+                WAYPOINT_PANEL => {
+                    cx.settings.waypoint_mode = cx.settings.waypoint_mode.cycled();
                     Transition::None
                 }
                 // Fields → the panel manager.
@@ -111,16 +119,35 @@ impl StatsScreen {
         let midy = r1.top_left.y + r1.size.height as i32 / 2;
         cv.triangle(Point::new(cx0, midy - 9), Point::new(cx0, midy + 9), Point::new(cx0 + 11, midy), INK);
 
-        // Row 2 — Climb panel (press cycles Off / Manual / Auto in place).
+        // Row 2 — Climb panel (press cycles Off / Manual / Auto in place). "Climb" is a short label,
+        // so — like the Units flip — the mode sits vcentered at the right, flanked by a ◄.
         let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
         super::row_cursor(cv, r2, self.selected == CLIMB_PANEL, false);
         super::row_label(cv, r2, "Climb", Some("climb panel"));
-        // The current mode right-aligned, flanked by a ◄ that reads as "press to change".
         let vx = r2.top_left.x + r2.size.width as i32 - 12;
         let vmidy = r2.top_left.y + r2.size.height as i32 / 2;
         cv.text_vcentered(rx.settings.climb_mode.name(), vx, (r2.top_left.y, ROW_H), Font::Body, TextAlign::Right, INK);
         let ax = vx - text_width(rx.settings.climb_mode.name(), Font::Body) as i32 - 14;
         cv.triangle(Point::new(ax, vmidy - 8), Point::new(ax, vmidy + 8), Point::new(ax - 10, vmidy), INK);
+
+        // Row 3 — Waypoints panel (press cycles Off / Approach / Always in place). Unlike Climb,
+        // "Waypoints" is a wide Body label, so a vcentered mode word would overprint it and the long
+        // Off/Approach/Always values won't share that line. The mode rides instead at the right of
+        // the **sub-caption** line — compact Label, ink against the grey caption — carrying the same
+        // ◄ "press to change" cue as the Climb row so the two read as siblings. (The caption is
+        // "chip", not "map chip": at Label width the 8-char caption + ◄ + the 8-char "Approach"
+        // value can't all clear the 240 px row, and the ◄ affordance wins.)
+        let r3 = super::row_rect(LIST_TOP + 8 + 3 * (ROW_H + 6), w, ROW_H);
+        super::row_cursor(cv, r3, self.selected == WAYPOINT_PANEL, false);
+        super::row_label(cv, r3, "Waypoints", Some("chip"));
+        let name = rx.settings.waypoint_mode.name();
+        let sub_y = r3.top_left.y + 30;
+        let vx = r3.top_left.x + r3.size.width as i32 - 8;
+        cv.text(name, Point::new(vx, sub_y), Font::Label, TextAlign::Right, INK);
+        // The ◄ cue immediately left of the value — the Climb row's INK triangle at Label scale.
+        let ax = vx - text_width(name, Font::Label) as i32 - 10;
+        let tmid = sub_y + Font::Label.cap_height() as i32 / 2;
+        cv.triangle(Point::new(ax, tmid - 6), Point::new(ax, tmid + 6), Point::new(ax - 8, tmid), INK);
     }
 }
 
@@ -188,6 +215,22 @@ mod tests {
         for expect in [ClimbMode::Off, ClimbMode::Manual, ClimbMode::Auto] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
             assert_eq!(s.climb_mode, expect);
+        }
+    }
+
+    /// The Waypoints row cycles Off → Approach → Always → Off in place on each press (no edit
+    /// sub-mode), the fourth row under Climb.
+    #[test]
+    fn waypoint_row_cycles_the_mode() {
+        use crate::settings::WaypointMode;
+        let mut s = Settings { waypoint_mode: WaypointMode::Approach, ..Settings::default() };
+        let mut scr = StatsScreen::new();
+        run(&mut scr, &mut s, Gesture::Turn(3)); // → Waypoints row (0 → 1 → 2 → 3)
+        assert_eq!(scr.selected, WAYPOINT_PANEL);
+        // Approach → Always → Off → Approach, one press each — and no navigation transition.
+        for expect in [WaypointMode::Always, WaypointMode::Off, WaypointMode::Approach] {
+            assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
+            assert_eq!(s.waypoint_mode, expect);
         }
     }
 
