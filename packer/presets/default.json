@@ -10,7 +10,7 @@
     "lods": [
         {"max_mpp": null, "simplify": 120},
         {"max_mpp": 120, "simplify": 18},
-        {"max_mpp": 18, "simplify": 0}
+        {"max_mpp": 18, "simplify": 2}
     ],
     "features": {
         "highway": {
