@@ -1,6 +1,6 @@
 //! The "Controls" window — a second egui immediate viewport driving the simulated device:
-//! the manual GPS fix (position / heading / zoom / camera / orientation), GPX replay, and
-//! the render-stats readout. A second `impl SimGui` block, so it mutates the same fields.
+//! the manual GPS fix (position / zoom / camera / orientation), GPX replay, and the
+//! render-stats readout. A second `impl SimGui` block, so it mutates the same fields.
 //!
 //! Native development tool only — the web demo shows just the device, so on wasm these
 //! methods are compiled but unreferenced.
@@ -41,160 +41,145 @@ impl SimGui {
             egui::ViewportBuilder::default().with_title("Controls").with_inner_size([360.0, 770.0]),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    // The device controls live on the housing now; this is just a reminder.
-                    ui.label(egui::RichText::new("Device — encoder + Back").strong());
-                    ui.label(
-                        egui::RichText::new(
-                            "click the wheel / Back on the device, or use the keyboard:\n\
-                             ←/→ turn · Enter push · Backspace back  (hold for long-press)",
-                        )
-                        .weak()
-                        .size(11.0),
-                    );
-                    ui.add_space(6.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Device color");
-                        egui::ComboBox::from_id_salt("colorway").selected_text(self.colorway.label()).show_ui(
-                            ui,
-                            |ui| {
-                                for c in Colorway::ALL {
-                                    ui.selectable_value(&mut self.colorway, c, c.label());
-                                }
-                            },
-                        );
-                    });
-
-                    ui.add_space(6.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    // Let sliders span the panel width, leaving room for the value box.
-                    ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(140.0);
-
-                    // A loaded GPX track owns the fix (as the device's GPS would), so the manual
-                    // position/heading inputs go read-only. Camera/zoom/orientation stay live.
-                    let replaying = self.gpx.is_some();
-
-                    // Position — the GPS fix, edited in degrees (stored as µdeg).
-                    ui.add_enabled_ui(!replaying, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label("Lat");
-                            ui.add(
-                                egui::DragValue::new(&mut self.panel.lat_deg)
-                                    .speed(1e-4)
-                                    .range(-90.0..=90.0)
-                                    .max_decimals(6)
-                                    .suffix("°"),
-                            );
-                            ui.add_space(12.0);
-                            ui.label("Lon");
-                            ui.add(
-                                egui::DragValue::new(&mut self.panel.lon_deg)
-                                    .speed(1e-4)
-                                    .range(-180.0..=180.0)
-                                    .max_decimals(6)
-                                    .suffix("°"),
+                            ui.label("Device color");
+                            egui::ComboBox::from_id_salt("colorway").selected_text(self.colorway.label()).show_ui(
+                                ui,
+                                |ui| {
+                                    for c in Colorway::ALL {
+                                        ui.selectable_value(&mut self.colorway, c, c.label());
+                                    }
+                                },
                             );
                         });
-                    });
 
-                    separator_above(ui);
-
-                    // Heading — rides on Fix.course (degrees CW from north).
-                    ui.add_enabled_ui(!replaying, |ui| {
-                        ui.label("Heading");
-                        ui.add(egui::Slider::new(&mut self.panel.heading_deg, 0.0..=360.0).suffix("°").step_by(1.0));
-                    });
-
-                    separator_above(ui);
-
-                    // Compass — the magnetometer heading, always live but only effective on a
-                    // heading-up map with no GPS course (so it rotates the map during a replay pause,
-                    // no-op otherwise).
-                    ui.label("Compass (heading when stopped)");
-                    ui.add(egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0));
-
-                    separator_above(ui);
-
-                    // Zoom — meters-per-pixel on a log scale. Only write back when dragged, so it
-                    // never fights the mouse scroll (which can range past the slider's bounds).
-                    ui.label("Zoom");
-                    let mut mpp = zoom_to_mpp(self.app.state.zoom);
-                    let resp = ui.add(
-                        egui::Slider::new(&mut mpp, MPP_MIN..=MPP_MAX).logarithmic(true).custom_formatter(|n, _| {
-                            let v = if n < 1.0 {
-                                format!("{n:.3}")
-                            } else if n < 100.0 {
-                                format!("{n:.1}")
-                            } else {
-                                format!("{n:.0}")
-                            };
-                            format!("{v} m/px")
-                        }),
-                    );
-                    if resp.changed() {
-                        self.app.state.zoom = mpp_to_zoom(mpp).clamp(MIN_ZOOM, MAX_ZOOM);
-                    }
-                    let span = zoom_to_mpp(self.app.state.zoom) * self.dev_w as f32;
-                    ui.label(format!("{} across screen", format_distance(span)));
-
-                    separator_above(ui);
-
-                    // Camera mode and Orientation — paired on one row. Orientation (north-up vs
-                    // heading-up) is independent of the camera mode.
-                    let prev_mode = self.app.state.mode;
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label("Camera");
-                            ui.horizontal(|ui| {
-                                ui.selectable_value(&mut self.app.state.mode, CameraMode::Follow, "Follow");
-                                ui.selectable_value(&mut self.app.state.mode, CameraMode::Free, "Free");
-                            });
-                        });
+                        ui.add_space(6.0);
                         ui.separator();
-                        ui.vertical(|ui| {
-                            ui.label("Orientation");
+                        ui.add_space(6.0);
+
+                        // Let sliders span the panel width, leaving room for the value box.
+                        ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(140.0);
+
+                        // A loaded GPX track owns the fix (as the device's GPS would), so the manual
+                        // position/heading inputs go read-only. Camera/zoom/orientation stay live.
+                        let replaying = self.gpx.is_some();
+
+                        // Position — the GPS fix, edited in degrees (stored as µdeg).
+                        ui.add_enabled_ui(!replaying, |ui| {
                             ui.horizontal(|ui| {
-                                ui.selectable_value(&mut self.app.state.heading_up, false, "North-up");
-                                ui.selectable_value(&mut self.app.state.heading_up, true, "Heading-up");
+                                ui.label("Lat");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.panel.lat_deg)
+                                        .speed(1e-4)
+                                        .range(-90.0..=90.0)
+                                        .max_decimals(6)
+                                        .suffix("°"),
+                                );
+                                ui.add_space(12.0);
+                                ui.label("Lon");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.panel.lon_deg)
+                                        .speed(1e-4)
+                                        .range(-180.0..=180.0)
+                                        .max_decimals(6)
+                                        .suffix("°"),
+                                );
                             });
                         });
-                    });
-                    // Entering Follow: snap the fix onto the camera center so the view doesn't jump
-                    // (Free moved the camera away from the fix).
-                    if prev_mode == CameraMode::Free && self.app.state.mode == CameraMode::Follow {
-                        self.panel.lat_deg = self.app.state.cam_lat as f64 / 1e6;
-                        self.panel.lon_deg = self.app.state.cam_lon as f64 / 1e6;
-                    }
 
-                    separator_above(ui);
+                        separator_above(ui);
 
-                    // GPX replay — play a recorded track back as a simulated GPS sensor. The player
-                    // is the active `LocationSource` while a track is loaded.
-                    ui.label("GPX replay");
-                    // Native uses an OS file picker; the web build has no such dialog.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if ui.button("Load GPX…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file() {
-                            self.load_gpx(&path);
+                        // Compass — the magnetometer heading, always live but only effective on a
+                        // heading-up map with no GPS course (so it rotates the map during a replay pause,
+                        // no-op otherwise).
+                        ui.label("Compass (heading when stopped)");
+                        ui.add(egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0));
+
+                        separator_above(ui);
+
+                        // Zoom — meters-per-pixel on a log scale. Only write back when dragged, so it
+                        // never fights the mouse scroll (which can range past the slider's bounds).
+                        ui.label("Zoom");
+                        let mut mpp = zoom_to_mpp(self.app.state.zoom);
+                        let resp =
+                            ui.add(egui::Slider::new(&mut mpp, MPP_MIN..=MPP_MAX).logarithmic(true).custom_formatter(
+                                |n, _| {
+                                    let v = if n < 1.0 {
+                                        format!("{n:.3}")
+                                    } else if n < 100.0 {
+                                        format!("{n:.1}")
+                                    } else {
+                                        format!("{n:.0}")
+                                    };
+                                    format!("{v} m/px")
+                                },
+                            ));
+                        if resp.changed() {
+                            self.app.state.zoom = mpp_to_zoom(mpp).clamp(MIN_ZOOM, MAX_ZOOM);
                         }
-                    }
-                    self.show_gpx_controls(ui);
+                        let span = zoom_to_mpp(self.app.state.zoom) * self.dev_w as f32;
+                        ui.label(format!("{} across screen", format_distance(span)));
 
-                    separator_above(ui);
+                        separator_above(ui);
 
-                    self.show_ble_controls(ui);
+                        // Camera mode and Orientation — paired on one row. Orientation (north-up vs
+                        // heading-up) is independent of the camera mode.
+                        let prev_mode = self.app.state.mode;
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label("Camera");
+                                ui.horizontal(|ui| {
+                                    ui.selectable_value(&mut self.app.state.mode, CameraMode::Follow, "Follow");
+                                    ui.selectable_value(&mut self.app.state.mode, CameraMode::Free, "Free");
+                                });
+                            });
+                            ui.separator();
+                            ui.vertical(|ui| {
+                                ui.label("Orientation");
+                                ui.horizontal(|ui| {
+                                    ui.selectable_value(&mut self.app.state.heading_up, false, "North-up");
+                                    ui.selectable_value(&mut self.app.state.heading_up, true, "Heading-up");
+                                });
+                            });
+                        });
+                        // Entering Follow: snap the fix onto the camera center so the view doesn't jump
+                        // (Free moved the camera away from the fix).
+                        if prev_mode == CameraMode::Free && self.app.state.mode == CameraMode::Follow {
+                            self.panel.lat_deg = self.app.state.cam_lat as f64 / 1e6;
+                            self.panel.lon_deg = self.app.state.cam_lon as f64 / 1e6;
+                        }
 
-                    separator_above(ui);
+                        separator_above(ui);
 
-                    self.show_display_controls(ui);
+                        // GPX replay — play a recorded track back as a simulated GPS sensor. The player
+                        // is the active `LocationSource` while a track is loaded.
+                        ui.label("GPX replay");
+                        // Native uses an OS file picker; the web build has no such dialog.
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if ui.button("Load GPX…").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file() {
+                                self.load_gpx(&path);
+                            }
+                        }
+                        self.show_gpx_controls(ui);
 
-                    separator_above(ui);
+                        separator_above(ui);
 
-                    egui::CollapsingHeader::new("Render Stats")
-                        .default_open(true)
-                        .show(ui, |ui| self.show_render_stats(ui));
+                        egui::CollapsingHeader::new("Bluetooth")
+                            .default_open(false)
+                            .show(ui, |ui| self.show_ble_controls(ui));
+
+                        separator_above(ui);
+
+                        self.show_display_controls(ui);
+
+                        separator_above(ui);
+
+                        egui::CollapsingHeader::new("Render Stats")
+                            .default_open(true)
+                            .show(ui, |ui| self.show_render_stats(ui));
+                    });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
                         self.quit = true;
@@ -250,7 +235,6 @@ impl SimGui {
     /// restructuring is needed then.
     fn show_ble_controls(&mut self, ui: &mut egui::Ui) {
         use obc_app::BleLink;
-        ui.label(egui::RichText::new("Bluetooth").strong());
         let mut connected = self.panel.ble.link == BleLink::Connected;
         if ui.checkbox(&mut connected, "Phone connected").changed() {
             self.panel.ble.link = if connected { BleLink::Connected } else { BleLink::Advertising };

@@ -281,7 +281,7 @@ impl SimGui {
         // `--physical` only takes effect with a saved calibration; `--calibrate` opens the screen.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
-        let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Slate);
+        let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Coral);
         let mut gui = SimGui {
             app,
             store,
