@@ -132,20 +132,22 @@ impl StatsScreen {
 
         // Row 3 — Waypoints panel (press cycles Off / Approach / Always in place). Unlike Climb,
         // "Waypoints" is a wide Body label, so a vcentered mode word would overprint it and the long
-        // Off/Approach/Always values won't share the line. It rides instead at the right of the
-        // sub-caption line — compact Label, ink against the grey caption — so the whole row fits the
-        // 240 px panel. Press still cycles it in place (the amber row cursor is the affordance).
+        // Off/Approach/Always values won't share that line. The mode rides instead at the right of
+        // the **sub-caption** line — compact Label, ink against the grey caption — carrying the same
+        // ◄ "press to change" cue as the Climb row so the two read as siblings. (The caption is
+        // "chip", not "map chip": at Label width the 8-char caption + ◄ + the 8-char "Approach"
+        // value can't all clear the 240 px row, and the ◄ affordance wins.)
         let r3 = super::row_rect(LIST_TOP + 8 + 3 * (ROW_H + 6), w, ROW_H);
         super::row_cursor(cv, r3, self.selected == WAYPOINT_PANEL, false);
-        super::row_label(cv, r3, "Waypoints", Some("map chip"));
-        let vx = r3.top_left.x + r3.size.width as i32 - 6;
-        cv.text(
-            rx.settings.waypoint_mode.name(),
-            Point::new(vx, r3.top_left.y + 30),
-            Font::Label,
-            TextAlign::Right,
-            INK,
-        );
+        super::row_label(cv, r3, "Waypoints", Some("chip"));
+        let name = rx.settings.waypoint_mode.name();
+        let sub_y = r3.top_left.y + 30;
+        let vx = r3.top_left.x + r3.size.width as i32 - 8;
+        cv.text(name, Point::new(vx, sub_y), Font::Label, TextAlign::Right, INK);
+        // The ◄ cue immediately left of the value — the Climb row's INK triangle at Label scale.
+        let ax = vx - text_width(name, Font::Label) as i32 - 10;
+        let tmid = sub_y + Font::Label.cap_height() as i32 / 2;
+        cv.triangle(Point::new(ax, tmid - 6), Point::new(ax, tmid + 6), Point::new(ax - 8, tmid), INK);
     }
 }
 
