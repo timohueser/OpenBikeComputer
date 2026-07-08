@@ -50,6 +50,13 @@ const SIDE_MARGIN: i32 = 12;
 /// it stays a constant on-glass distance at every zoom; an off-window peak is never near.
 const PEAK_NEAR_PX: i32 = 36;
 
+// Waypoint ticks on the progress bar (issue #572): a short INK mark per named waypoint at its
+// along-route fraction. 2 px wide and 6 px tall — inset 1 px top and bottom of the 8 px bar so the
+// bar's rounded ends stay clean and the tick reads as *in* the bar, not through it.
+const WP_TICK_W: i32 = 2;
+const WP_TICK_H: i32 = 6;
+const WP_TICK_INSET_Y: i32 = 1;
+
 /// What `turn` does: scrub the cursor, or zoom the view about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -346,6 +353,18 @@ impl StatisticsScreen {
             cv.round(rect(chart_x, prog_y, fill_w, 8), 4, live_color);
         }
 
+        // Waypoint ticks over the bar: one INK mark per named waypoint at its along-route fraction —
+        // the bar shares the route's distance axis, so the amber fill sweeping toward the next tick
+        // is free "distance to the next stop" context. Drawn *after* the fill (on top of it) and in
+        // INK, never `live_color`: the bar tints WARNING-red off-route, and red ticks would vanish
+        // against it exactly then. `rx.waypoints` is empty with no route loaded, so this no-ops in
+        // the route-less branch above.
+        for wp in rx.waypoints.as_slice() {
+            if let Some(x) = waypoint_tick_x(wp.dist_along_m, total, chart_x, chart_w) {
+                cv.vline(x, prog_y + WP_TICK_INSET_Y, WP_TICK_H, WP_TICK_W, INK);
+            }
+        }
+
         // Customizable stat grid below the progress bar.
         self.draw_stat_grid(cv, rx, prog_y + 16);
     }
@@ -375,6 +394,21 @@ impl StatisticsScreen {
             super::tile(cv, rect(x, y, tile_w, row_h), &cell.caption, &cell.value, cell.arrow, PARCHMENT_SHADE);
         }
     }
+}
+
+/// Map a waypoint's along-route distance to the x of its tick in the progress bar. The bar spans
+/// the whole route across `chart_x .. chart_x + chart_w` (frac `0..1`, unzoomed like the fill), so
+/// the tick sits at `chart_x + chart_w * (dist_along_m / total)`, clamped so the full [`WP_TICK_W`]
+/// px tick stays inside the bar at either end (and a defensive past-the-end waypoint can't
+/// overflow). Returns `None` for a zero-length route (`total == 0`): the fraction is undefined and
+/// no fill draws anyway. Pure integer/`f32` geometry, so the clamp + guard are unit-tested directly.
+fn waypoint_tick_x(dist_along_m: u32, total: u32, chart_x: i32, chart_w: i32) -> Option<i32> {
+    if total == 0 {
+        return None;
+    }
+    let frac = dist_along_m as f32 / total as f32;
+    let x = chart_x + (chart_w as f32 * frac) as i32;
+    Some(x.clamp(chart_x, chart_x + chart_w - WP_TICK_W))
 }
 
 /// Draw a magnifying-glass icon on a parchment chip — the wordless "Zoom mode is on" marker. A
@@ -660,5 +694,34 @@ mod tests {
         let mut s = StatisticsScreen::new(); // Cursor mode, zoom 1.0
         s.on_turn(3, LIVE, 0);
         assert_eq!(s.zoom, 1.0, "a scrub leaves the zoom at full");
+    }
+
+    /// The waypoint tick x-map (issue #572): a zero-length route (`total == 0`) yields `None` — no
+    /// axis to place a tick on, and the divide would be undefined — while a valid route maps the
+    /// along-route fraction across the bar and clamps so the full [`WP_TICK_W`] px tick stays inside
+    /// `chart_x .. chart_x + chart_w` at both ends (a defensive past-the-end waypoint can't overflow
+    /// the right edge either).
+    #[test]
+    fn waypoint_tick_x_guards_zero_total_and_clamps_to_the_bar() {
+        // A representative bar: SIDE_MARGIN and the 240 px panel's inner width.
+        let (cx, cw) = (SIDE_MARGIN, 240 - 2 * SIDE_MARGIN);
+        // total == 0 → no tick (guards the divide-by-zero).
+        assert_eq!(waypoint_tick_x(100, 0, cx, cw), None, "a zero-length route places no tick");
+        // Route start sits flush at the left edge.
+        assert_eq!(waypoint_tick_x(0, 1000, cx, cw), Some(cx), "frac 0 → left edge");
+        // A mid-route waypoint lands proportionally inside, unclamped.
+        assert_eq!(waypoint_tick_x(500, 1000, cx, cw), Some(cx + cw / 2), "frac 0.5 → centre");
+        // The exact end clamps left by the tick width so the 2 px tick stays fully inside the bar.
+        assert_eq!(
+            waypoint_tick_x(1000, 1000, cx, cw),
+            Some(cx + cw - WP_TICK_W),
+            "frac 1 → clamped flush against the right edge, not one column past it"
+        );
+        // A pathological past-the-end waypoint saturates at the same right limit instead of running off.
+        assert_eq!(
+            waypoint_tick_x(5000, 1000, cx, cw),
+            Some(cx + cw - WP_TICK_W),
+            "past the route end clamps, never overflows"
+        );
     }
 }
