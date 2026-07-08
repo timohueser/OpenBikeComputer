@@ -5,7 +5,7 @@
     "type": "object",
     "properties": {
         "features": {
-            "description": "OSM tag_key -> value -> style. Document order is load-bearing: it assigns style IDs and first-match wins.",
+            "description": "OSM tag_key -> value -> style. Document order is load-bearing: it assigns style IDs and first-match wins. Within a tag_key, the value \"*\" is a catch-all: an exact value match wins, otherwise a \"*\" entry styles every other value that key carries (e.g. building -> \"*\" paints all buildings without listing each OSM type).",
             "type": "object",
             "additionalProperties": {
                 "type": "object",

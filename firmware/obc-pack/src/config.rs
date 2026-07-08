@@ -174,11 +174,16 @@ impl Config {
         Ok(Config { features, lods, marker_color, chunk_size, routing })
     }
 
-    /// First matching `(tag_key, value)` in document order.
+    /// First matching `(tag_key, value)` in document order. Within a matched
+    /// `tag_key`, an exact value match wins; failing that, a `"*"` catch-all
+    /// entry (if the category defines one) styles every other value the key
+    /// carries. So `building: {"warehouse": …, "*": …}` gives warehouses their
+    /// own style and paints every other `building=*` with the catch-all — no
+    /// need to enumerate OSM's ~50 building values by hand.
     pub fn get_style(&self, tags: &HashMap<&str, &str>) -> Option<&FeatureStyle> {
         for (tag_key, by_value) in &self.features {
             if let Some(val) = tags.get(tag_key.as_str()) {
-                if let Some(style) = by_value.get(*val) {
+                if let Some(style) = by_value.get(*val).or_else(|| by_value.get("*")) {
                     return Some(style);
                 }
             }
@@ -468,7 +473,7 @@ mod tests {
         assert_eq!(id("highway", "motorway"), Some(1));
         assert_eq!(id("highway", "cycleway"), Some(19)); // last highway value
         assert_eq!(id("railway", "rail"), Some(20)); // counter carries across keys
-        assert_eq!(id("building", "yes"), Some(29));
+        assert_eq!(id("building", "*"), Some(29)); // the default preset's building catch-all
         assert_eq!(id("natural", "land"), Some(31));
         assert_eq!(id("admin_level", "2"), Some(42)); // last value in the document
 
@@ -511,6 +516,33 @@ mod tests {
         let mut other = HashMap::new();
         other.insert("barrier", "fence");
         assert!(cfg.get_style(&other).is_none());
+    }
+
+    /// A `"*"` value entry is a per-category catch-all: an exact value match still
+    /// wins, but any other value the key carries falls back to `*`. A key with no
+    /// `*` and no exact match stays unstyled (unchanged behaviour).
+    #[test]
+    fn wildcard_value_is_a_catch_all() {
+        let text = r#"{"features":{"building":{
+            "warehouse":{"color":"0x0001"},
+            "*":{"color":"0x0002"}
+        }}}"#;
+        let cfg = Config::parse(text).expect("wildcard config parses");
+
+        let style_for = |val: &str| {
+            let mut tags = HashMap::new();
+            tags.insert("building", val);
+            cfg.get_style(&tags).map(|s| s.color)
+        };
+        assert_eq!(style_for("warehouse"), Some(0x0001), "exact match beats the catch-all");
+        assert_eq!(style_for("house"), Some(0x0002), "an unlisted value falls back to *");
+        assert_eq!(style_for("yes"), Some(0x0002), "so does every other building value");
+
+        // No `*` in a category ⇒ an unlisted value is still unstyled.
+        let no_star = Config::parse(r#"{"features":{"building":{"yes":{"color":"0x0001"}}}}"#).unwrap();
+        let mut tags = HashMap::new();
+        tags.insert("building", "house");
+        assert!(no_star.get_style(&tags).is_none(), "without a catch-all, an unlisted value is dropped");
     }
 
     #[test]
@@ -709,6 +741,21 @@ mod tests {
         // `line_style`/`color2`) must extend the schema in the same change.
         assert_eq!(keys, ["color", "color2", "line_style", "min_lod", "priority", "weight", "z_index"]);
         assert_eq!(schema["$defs"]["style"]["required"], serde_json::json!(["color"]));
+    }
+
+    /// The schema advertises the `"*"` catch-all in the `features` description, and the parser
+    /// actually honours it — so the web builder's editor can offer a catch-all row without lying.
+    #[test]
+    fn schema_documents_wildcard_catch_all() {
+        let schema = embedded_schema();
+        let desc = schema["properties"]["features"]["description"].as_str().expect("features description");
+        assert!(desc.contains("\"*\""), "the features description must document the * catch-all: {desc}");
+
+        // And the behaviour the description promises holds.
+        let cfg = Config::parse(r#"{"features":{"building":{"*":{"color":"0x0002"}}}}"#).unwrap();
+        let mut tags = HashMap::new();
+        tags.insert("building", "anything");
+        assert_eq!(cfg.get_style(&tags).map(|s| s.color), Some(0x0002));
     }
 
     #[test]
