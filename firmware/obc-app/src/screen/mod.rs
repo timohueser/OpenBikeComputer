@@ -16,7 +16,7 @@ use obc_render::{
     text::{Font, TextAlign},
     Canvas, Clock, MapRenderer, RenderStats, Surface,
 };
-use obc_route::{ClimbProfile, ClimbSeg, Profile, RouteReader};
+use obc_route::{ClimbProfile, ClimbSeg, Profile, RouteReader, Waypoints};
 
 use crate::activity::{Activity, Mode};
 use crate::app::AppState;
@@ -202,6 +202,11 @@ pub struct Render<'a, 'd> {
     /// tracked, both are valid". `None` whenever [`Activity::active_climb`](crate::activity::Activity)
     /// is `None` (no route, off any climb), so a screen never reads a stale detail buffer.
     pub climb: Option<ActiveClimb<'a>>,
+    /// The active route's resident named-waypoint table (App-owned), in route order — the riding
+    /// views draw its diamonds / chip / ticks / stat fields (later in the epic) and index it with
+    /// [`Activity::next_waypoint`](crate::activity::Activity). Empty when no route is loaded, so a
+    /// screen iterates it unconditionally.
+    pub waypoints: &'a Waypoints,
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,

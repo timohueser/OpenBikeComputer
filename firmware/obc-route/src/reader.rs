@@ -29,6 +29,12 @@ pub const WAYPOINT_LEN: usize = 40;
 pub const WAYPOINT_NAME_CAP: usize = 24;
 /// Waypoint-elevation sentinel: "no elevation known" (§4).
 pub const WAYPOINT_ELE_NONE: i16 = i16::MIN;
+/// The device's waypoint cap — one number for both roles: the converter's `<wpt>` emission cap
+/// ([`gpx_to_obcr`](crate::gpx_to_obcr)) and the resident [`Waypoints`] table the ride loop holds
+/// (~40 B/entry ≈ 1.3 KB — negligible on the 512 KB target). The *format* allows up to `u16::MAX`
+/// waypoints (a phone-side encoder isn't bound by this), so [`RouteReader::load_waypoints`] windows
+/// + truncates a longer file rather than overflowing.
+pub const MAX_WAYPOINTS: usize = 32;
 /// Resident chunk-index capacity. A route past the cap fails conversion with
 /// [`Error::TooLarge`] rather than being silently coarsened (full profile: ~131 k points,
 /// ~24 KB index; `nrf-mem`: 128 chunks, ~33 k points, ~6 KB). The `nrf-mem` trim is the
@@ -570,9 +576,10 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     })
 }
 
-/// One stored route waypoint (`OBCR_Spec.md` §4): a POI pinned to a position along the route.
-/// **Storage-only** on the device today — written by the converter / the phone and skipped by
-/// the ride path; this type serves hosts, tests, and the future waypoint UI.
+/// One stored route waypoint (`OBCR_Spec.md` §4): a POI pinned to a position along the route, as it
+/// sits on disk — every field, `ele`/`kind` included. The ride *geometry* path still skips it (a
+/// v2 route rides through the v1 code); [`RouteReader::load_waypoints`] distils the named ones into
+/// the resident [`Waypoints`] table the waypoint UI reads. Also serves hosts and tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waypoint {
     /// Cumulative distance from the route start to this waypoint's position, meters.
@@ -587,9 +594,11 @@ pub struct Waypoint {
     pub name: String<WAYPOINT_NAME_CAP>,
 }
 
-/// Visit each stored waypoint in route order (ascending `dist_along_m`), streaming
-/// one fixed [`WAYPOINT_LEN`] record at a time — no resident table, any count. Returns
-/// the number visited; a v1 route (or a v2 route without waypoints) yields none.
+/// Visit each stored waypoint in route order (ascending `dist_along_m`), streaming one fixed
+/// [`WAYPOINT_LEN`] record at a time — the low-level cursor over the whole (unfiltered, any-count)
+/// section. [`RouteReader::load_waypoints`] layers the resident-table policy (name filter, window,
+/// cap) on top of it. Returns the number visited; a v1 route (or a v2 route without waypoints)
+/// yields none.
 pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) -> Result<u16, Error> {
     let h = read_header(src)?;
     if h.version < 2 {
@@ -618,4 +627,102 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
         });
     }
     Ok(count)
+}
+
+/// One resident waypoint: the compact subset of a stored [`Waypoint`] the ride UI actually needs —
+/// its along-route position, its own coordinate, and its (non-empty) name. `ele` and `kind` are
+/// **dropped** on purpose: the waypoint UI ignores both (plain diamonds; distances come from
+/// `dist_along_m`), so a `Copy`-ish 40-byte entry stays cheap to hold [`MAX_WAYPOINTS`] resident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WptEntry {
+    /// Cumulative distance from the route start to this waypoint, meters — the axis the ride
+    /// progress, the progress-bar ticks, and the chip's distance-to-go all share.
+    pub dist_along_m: u32,
+    /// The waypoint's own coordinate (microdegrees) — where its map diamond is drawn.
+    pub lon: i32,
+    pub lat: i32,
+    /// The waypoint's name (non-empty: an unnamed waypoint never enters the table).
+    pub name: String<WAYPOINT_NAME_CAP>,
+}
+
+/// A route's resident named-waypoint table, in route order (ascending `dist_along_m`) — the
+/// waypoint sibling of [`Climbs`](crate::Climbs). Built once per route load by
+/// [`RouteReader::load_waypoints`] and cached in the app; the riding views then read it per frame.
+///
+/// Capacity is fixed at [`MAX_WAYPOINTS`]. When a file carries more named, in-window waypoints than
+/// fit, the first-by-distance ones are kept and [`truncated`](Self::truncated) is set, so the ride
+/// loop can slide the window forward once the rider passes the resident tail (re-window on
+/// exhaustion — see the app's `tick`). A normal route (≤ cap) never truncates.
+#[derive(Debug, Clone, Default)]
+pub struct Waypoints {
+    /// The kept named waypoints, route order (ascending `dist_along_m`).
+    pub entries: Vec<WptEntry, MAX_WAYPOINTS>,
+    /// `true` when the file had more qualifying (named, at/after the load window) waypoints than
+    /// [`MAX_WAYPOINTS`] — the re-window signal. `false` for any route within the cap.
+    pub truncated: bool,
+}
+
+impl Waypoints {
+    /// An empty table (no route loaded, or a route without waypoints).
+    #[inline]
+    pub fn new() -> Self {
+        Waypoints { entries: Vec::new(), truncated: false }
+    }
+
+    /// The kept waypoints in route order.
+    #[inline]
+    pub fn as_slice(&self) -> &[WptEntry] {
+        &self.entries
+    }
+
+    /// Number of resident waypoints.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the table holds no waypoints.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl RouteReader<'_> {
+    /// Load the route's **named** waypoints into a resident [`Waypoints`] table, windowed and capped
+    /// for the device — the waypoint sibling of [`detect_climbs`](Self::detect_climbs). Streams the
+    /// stored waypoint section via [`for_each_waypoint`] and keeps each record that
+    ///
+    /// - sits at or past `min_dist_m` (`dist_along_m >= min_dist_m`), and
+    /// - has a non-empty name after trimming ASCII whitespace — an unnamed waypoint surfaces nowhere
+    ///   in the UI (no diamond, tick, chip, or row), so it never enters the table.
+    ///
+    /// Records arrive in ascending `dist_along_m`, so the first [`MAX_WAYPOINTS`] kept are the nearest
+    /// ahead of `min_dist_m`; a file with more qualifying waypoints stops filling and sets
+    /// [`truncated`](Waypoints::truncated), so the caller can re-window forward with a larger
+    /// `min_dist_m` once the rider passes the tail.
+    ///
+    /// O(waypoints), one small read per record — call on route load (and on re-window), never per
+    /// frame. A v1 route, or a v2 route without waypoints, yields an empty table.
+    pub fn load_waypoints(&self, min_dist_m: u32) -> Waypoints {
+        let mut wpts = Waypoints::new();
+        // A read error (a torn waypoint section) ends the stream early; the partial table is still
+        // safe to hand back, matching `for_each_waypoint`'s best-effort contract.
+        let _ = for_each_waypoint(self.src, |w| {
+            if w.dist_along_m < min_dist_m {
+                return;
+            }
+            // Unnamed = empty, or only ASCII whitespace: `all()` on the bytes is true for both.
+            if w.name.as_bytes().iter().all(u8::is_ascii_whitespace) {
+                return;
+            }
+            let entry = WptEntry { dist_along_m: w.dist_along_m, lon: w.lon, lat: w.lat, name: w.name.clone() };
+            // Full: keep the first-by-distance ones already pushed and flag the overflow. Keep
+            // streaming (don't break) so `truncated` reflects the whole file, not the first extra.
+            if wpts.entries.push(entry).is_err() {
+                wpts.truncated = true;
+            }
+        });
+        wpts
+    }
 }
