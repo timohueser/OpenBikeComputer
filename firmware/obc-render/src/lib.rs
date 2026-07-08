@@ -239,6 +239,16 @@ pub struct RenderStats {
     pub span_utilization: f32,
     pub point_utilization: f32,
     pub ring_utilization: f32,
+    // TEMP debug (scratch-budget investigation): how the drawn frame's span / point / ring scratch
+    // splits between the line and polygon render paths. Summed over the final drawn spans in
+    // [`collect`](crate::collect) by [`Kind`]. `line_* + poly_*` equals the totals behind
+    // `*_utilization`. Remove once the zoom-levels-that-saturate question is answered.
+    pub line_spans: usize,
+    pub line_points: usize,
+    pub line_rings: usize,
+    pub poly_spans: usize,
+    pub poly_points: usize,
+    pub poly_rings: usize,
     /// Streamed-map cache accounting for this frame. Stub-select touches each visible chunk once in
     /// pass A and once more in pass B only if it owns a winner (`chunks_refetched`), so
     /// `map_chunk_misses ≈ chunks_visited + chunks_refetched`. `map_chunk_hits` are fetches served
