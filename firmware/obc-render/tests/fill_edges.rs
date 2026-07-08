@@ -135,16 +135,16 @@ fn zero_area_collinear_polygon_fills_nothing() {
 /// has room. A high-priority feature must still survive while low-priority big ones are dropped for
 /// lack of point room.
 ///
-/// Full-profile only: the premise is `MAX_FRAME_POINTS` (12288) ≫ a single max feature (~2000 pts)
-/// so several pack in before saturation and `point_utilization` exceeds 0.9. The `nrf-mem` profile
-/// sizes `MAX_FRAME_POINTS` (2560) to ≈ one max feature, so this setup doesn't apply; its
+/// Full-profile only: the premise is `MAX_FRAME_POINTS` (4096) > a single max feature (~2000 pts),
+/// so two pack in before saturation and `point_utilization` exceeds 0.9. The `nrf-mem` profile
+/// sizes `MAX_FRAME_POINTS` (768) below one max feature, so this setup doesn't apply; its
 /// panic-safety is instead pinned by the compile-time `MAX_SCREEN_POINTS >= MAX_DECODE_POINTS`
 /// invariant.
 #[cfg(not(feature = "nrf-mem"))]
 #[test]
 fn frame_points_saturate_before_spans_and_priority_still_wins() {
-    // ~2000 points per feature. MAX_FRAME_POINTS = 12288, so ~6 fit; the 7th+ are dropped on the
-    // point check, long before MAX_SPANS (3072) could fill. Two styles: low priority (4) blue and
+    // ~2000 points per feature. MAX_FRAME_POINTS = 4096, so ~2 fit; the 3rd+ are dropped on the
+    // point check, long before MAX_SPANS (1536) could fill. Two styles: low priority (4) blue and
     // high priority (1) red, both big.
     const LOW_565: u16 = 0x001F; // blue, priority 4
     const HIGH_565: u16 = 0xF800; // red, priority 1
@@ -175,7 +175,7 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     // (nodes 1..4) whose children are the 16 leaves (nodes 5..20). One feature per leaf, each
     // anchored at its own quadrant's (10,10) so it sits inside that quadrant and (at a whole-map
     // zoom) on-screen. Leaves 0..6 carry low-priority blobs (7 × 2001 = 14007 points, already past
-    // MAX_FRAME_POINTS = 12288 → the point buffer overflows); leaf 7 carries the high-priority
+    // MAX_FRAME_POINTS = 4096 → the point buffer overflows); leaf 7 carries the high-priority
     // square; leaves 8..15 carry more low-priority blobs, all dropped, keeping the buffer pinned
     // full so the saturation is unambiguous.
     const BRANCH: u32 = 0x8000_0000;
