@@ -33,7 +33,7 @@ pub use viewport::{mpp_for_zoom, round_coord, zoom_for_mpp, Viewport};
 
 use collect::{FrameScratch, Span};
 use fill::fill_polygon_proj;
-use stroke::draw_line;
+use stroke::{draw_line, Stroker};
 
 // Per-frame buffer capacities. Statically allocated (heapless::Vec); growing one costs boot
 // RAM, not per-frame. Two memory profiles select the caps:
@@ -421,6 +421,18 @@ impl MapRenderer {
         let any_cased = cased_mask.iter().any(|&w| w != 0);
         let is_cased = |sid: u8| cased_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0;
 
+        // The 256-bit "outlined" style mask (#560): a style is polygon-outline-eligible ⇔ it carries a
+        // `color2` (`line_style`/`dashed` are irrelevant for polygons — `draw_spans`'s outline pass
+        // filters to `Kind::Polygon`, so a cased *line* sharing this bit never triggers an outline).
+        // Built **once per frame** and threaded into both `draw_spans` calls so neither rebuilds it; an
+        // empty mask makes each call take today's exact single-loop path (byte-identical, zero cost).
+        let mut outlined_mask = [0u32; 8];
+        for id in 0..=255u8 {
+            if reader.style(id).is_some_and(|s| s.color2.is_some()) {
+                outlined_mask[(id >> 5) as usize] |= 1 << (id & 31);
+            }
+        }
+
         // The z boundary: the first cased road **line** span. Everything before it is the low-z band
         // (land / water / landuse / buildings / low-z lines). No cased style ⇒ `split == spans.len()`,
         // so the scan is skipped and the two ranges below collapse to one full pass (today's path).
@@ -431,7 +443,7 @@ impl MapRenderer {
         };
 
         // (1) Everything below the road band, exactly as the base pass.
-        Self::draw_spans(frame, draw, target, reader, lod, vp, color_fn, wscale, &spans[..split]);
+        Self::draw_spans(frame, draw, target, reader, lod, vp, color_fn, wscale, &outlined_mask, &spans[..split]);
 
         // (2) Casing pass — finest LOD only. Each cased road strokes a solid `color2` base at the
         // **ramped** fill width + `2*CASING_PX` (tracks the #579 zoom ramp, not a fixed px), under the
@@ -463,14 +475,30 @@ impl MapRenderer {
         }
 
         // (3) The road band and above, exactly as the base pass, on top of the casings.
-        Self::draw_spans(frame, draw, target, reader, lod, vp, color_fn, wscale, &spans[split..]);
+        Self::draw_spans(frame, draw, target, reader, lod, vp, color_fn, wscale, &outlined_mask, &spans[split..]);
     }
 
-    /// Draw a contiguous, painter-ordered `spans` slice exactly as the base pass: polygons even-odd
-    /// fill, lines the view-clipped stroke with their resolved `dashed`/`color2` style at the frame's
-    /// ramped width (`wscale`, #579). Factored out of [`draw_map`](Self::draw_map) so it can be called
-    /// for the two ranges either side of the casing pass; the seam is left group-friendly for #560's
-    /// fills-then-outlines-per-z-group pass, so `lod` is threaded through though unused today.
+    /// Draw a contiguous, painter-ordered `spans` slice: polygons even-odd fill, lines the view-clipped
+    /// stroke with their resolved `dashed`/`color2` style at the frame's ramped width (`wscale`, #579).
+    /// Factored out of [`draw_map`](Self::draw_map) so it can be called for the two ranges either side
+    /// of the casing pass — the z-group iteration here applies to both automatically.
+    ///
+    /// **Polygon outlines (#560).** At the finest LOD, a polygon whose style carries a `color2` gets
+    /// **every ring — exterior and holes — stroked closed** in `color2` (the fill in `color` is
+    /// unchanged; `line_style` is ignored for polygons). Touching row-house buildings share walls, so
+    /// outlining each polygon right after its own fill would let a neighbour's fill erase the shared
+    /// wall. Instead the loop walks **contiguous equal-`z` groups** (spans are `(z, seq)`-sorted, so a
+    /// group is a maximal equal-`z` run) and, per group:
+    ///
+    /// 1. **pass 1** — draw every span exactly as the base pass (fills + line strokes, in seq order).
+    /// 2. **pass 2** (finest LOD only, and only if the group holds an outlined polygon) — re-stroke each
+    ///    outlined polygon's rings in `color2`, **after both** shared-wall neighbours' fills, so the
+    ///    wall survives. The group finishes before the next `z` begins, so outlines never paint over a
+    ///    higher-`z` feature (roads at z 24+ still cover z-20 building outlines where they cross).
+    ///
+    /// **Zero cost when unused.** `outlined_mask` (built once per frame in `draw_map`) is empty for a
+    /// config with no polygon `color2`, and pass 2 is gated on the finest LOD — either case takes the
+    /// early single-loop path, byte-identical to today. A group with no outlined polygon skips pass 2.
     #[allow(clippy::too_many_arguments)]
     fn draw_spans<D, F>(
         frame: &FrameScratch,
@@ -481,43 +509,148 @@ impl MapRenderer {
         vp: &Viewport,
         color_fn: &F,
         wscale: f32,
+        outlined_mask: &[u32; 8],
         spans: &[Span],
     ) where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let _ = lod; // reserved for the finest-LOD polygon-outline pass (#560).
-        for span in spans {
-            let ring_start = span.ring_start as usize;
-            let pt_start = span.pt_start as usize;
-            let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
-            let total: usize = ring_lens.iter().sum();
-            let pts = &frame.frame_points[pt_start..pt_start + total];
-            let color = color_fn(span.color);
-
-            match span.kind {
-                Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, &mut draw.screen, &mut draw.xs),
-                Kind::Line => {
-                    // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;
-                    // `color2` quantizes through `color_fn` exactly like the primary. A missing
-                    // style (never collected) falls back to today's solid stroke.
-                    let n = ring_lens.first().copied().unwrap_or(0);
-                    let style = reader.style(span.style_id);
-                    let dashed = style.is_some_and(|s| s.dashed);
-                    let color2 = style.and_then(|s| s.color2).map(color_fn);
-                    draw_line(
-                        target,
-                        vp,
-                        &pts[..n],
-                        color,
-                        scale_weight(span.weight, wscale),
-                        dashed,
-                        color2,
-                        &mut draw.screen,
-                        &mut draw.xs,
-                    );
-                }
+        let is_outlined = |sid: u8| outlined_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0;
+        // Outlines exist only at the finest LOD and only when some style carries a `color2`. Neither
+        // holds ⇒ today's exact single pass (byte-identical, and no group-boundary scan).
+        let any_outlined = lod == reader.lods().len() - 1 && outlined_mask.iter().any(|&w| w != 0);
+        if !any_outlined {
+            for span in spans {
+                Self::draw_span(frame, draw, target, reader, vp, color_fn, wscale, span);
             }
+            return;
+        }
+
+        // Fills-then-outlines per contiguous equal-`z` group.
+        let mut i = 0;
+        while i < spans.len() {
+            let z = spans[i].z;
+            let mut j = i + 1;
+            while j < spans.len() && spans[j].z == z {
+                j += 1;
+            }
+            let group = &spans[i..j];
+            i = j;
+
+            // pass 1 — every span exactly as the base pass, tracking whether this group needs pass 2.
+            let mut group_has_outline = false;
+            for span in group {
+                Self::draw_span(frame, draw, target, reader, vp, color_fn, wscale, span);
+                group_has_outline |= span.kind == Kind::Polygon && is_outlined(span.style_id);
+            }
+            if !group_has_outline {
+                continue;
+            }
+
+            // pass 2 — re-stroke each outlined polygon's rings closed in `color2`, over both fills.
+            for span in group {
+                if span.kind != Kind::Polygon || !is_outlined(span.style_id) {
+                    continue;
+                }
+                Self::outline_polygon(frame, draw, target, reader, vp, color_fn, span);
+            }
+        }
+    }
+
+    /// Draw one span exactly as the base pass: a polygon even-odd fill, or a line's view-clipped stroke
+    /// with its resolved `dashed`/`color2` style at the frame's ramped width (`wscale`, #579). The
+    /// unit of pass 1 in [`draw_spans`](Self::draw_spans), unchanged from the pre-#560 single loop.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_span<D, F>(
+        frame: &FrameScratch,
+        draw: &mut DrawScratch,
+        target: &mut D,
+        reader: &Reader,
+        vp: &Viewport,
+        color_fn: &F,
+        wscale: f32,
+        span: &Span,
+    ) where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        let ring_start = span.ring_start as usize;
+        let pt_start = span.pt_start as usize;
+        let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
+        let total: usize = ring_lens.iter().sum();
+        let pts = &frame.frame_points[pt_start..pt_start + total];
+        let color = color_fn(span.color);
+
+        match span.kind {
+            Kind::Polygon => fill_polygon_proj(target, vp, pts, ring_lens, color, &mut draw.screen, &mut draw.xs),
+            Kind::Line => {
+                // Lines use only the exterior ring. Re-resolve the style for `dashed`/`color2`;
+                // `color2` quantizes through `color_fn` exactly like the primary. A missing
+                // style (never collected) falls back to today's solid stroke.
+                let n = ring_lens.first().copied().unwrap_or(0);
+                let style = reader.style(span.style_id);
+                let dashed = style.is_some_and(|s| s.dashed);
+                let color2 = style.and_then(|s| s.color2).map(color_fn);
+                draw_line(
+                    target,
+                    vp,
+                    &pts[..n],
+                    color,
+                    scale_weight(span.weight, wscale),
+                    dashed,
+                    color2,
+                    &mut draw.screen,
+                    &mut draw.xs,
+                );
+            }
+        }
+    }
+
+    /// Stroke a polygon span's rings — **exterior and every hole (courtyards)** — **closed** (first
+    /// point repeated) in its style's `color2`, at a **fixed hairline** width `weight.max(1)`. The #560
+    /// finest-LOD outline: called from [`draw_spans`](Self::draw_spans)'s pass 2 for a span the
+    /// `outlined_mask` already vetted (`color2.is_some()`). Reuses `DrawScratch` — no new buffers; each
+    /// ring projects exactly like a line's exterior. At the preset `weight 1` this is the thin Bresenham
+    /// polyline path.
+    ///
+    /// **Fixed, not ramped.** A line's *stroke* ramps with zoom ([`scale_weight`], #579), but a
+    /// building outline is a **1-px edge accent**, not a road: ramped, it hits 3–4 px at the finest LOD
+    /// where the ground scale is sub-metre, and a closed ring stroked that thick (round joins + a disc
+    /// per sharp corner) floods a small footprint — the fill drowns and the building reads as a dark
+    /// slab (measured: outline `color2` pixels ≫ fill pixels). A fixed `weight.max(1)` keeps the wall a
+    /// crisp hairline at every finest-LOD zoom, which is the whole point of the feature.
+    #[allow(clippy::too_many_arguments)]
+    fn outline_polygon<D, F>(
+        frame: &FrameScratch,
+        draw: &mut DrawScratch,
+        target: &mut D,
+        reader: &Reader,
+        vp: &Viewport,
+        color_fn: &F,
+        span: &Span,
+    ) where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        // `outlined_mask` guarantees `color2.is_some()`; the `unwrap_or` is a defensive no-op that
+        // falls back to an invisible same-color outline rather than panicking.
+        let color2 = color_fn(reader.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
+        let weight = span.weight.max(1) as u32;
+        let (w, h) = (vp.w as i32, vp.h as i32);
+
+        let ring_start = span.ring_start as usize;
+        let ring_lens = &frame.frame_ring_lens[ring_start..ring_start + span.ring_count as usize];
+        let mut off = span.pt_start as usize;
+        for &rl in ring_lens {
+            let ring = &frame.frame_points[off..off + rl];
+            off += rl;
+            if rl < 2 {
+                continue;
+            }
+            // Stroke the ring **closed**: chain the first vertex again so the wall between the last and
+            // first point is drawn. Projects lazily, exactly like a line's exterior ring.
+            let closed = ring.iter().chain(ring.first()).map(|&(lon, lat)| vp.project(lon, lat));
+            Stroker::new(target, &mut draw.screen, &mut draw.xs, color2, weight, w, h).stroke(closed);
         }
     }
 }
