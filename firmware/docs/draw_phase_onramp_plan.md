@@ -1,4 +1,13 @@
-# Draw-phase on-ramp — implementation plan (STATUS: PLANNED)
+# Draw-phase on-ramp — implementation plan (STATUS: SHIPPED — superseded by epic #556)
+
+> **Shipped as epic [#556](https://github.com/timohueser/OpenBikeComputer/issues/556)** (line
+> styles, OBCM **v10** — sub-issues #557–#560), not the "v6" this plan reads. Kept for design
+> history only; **trust the shipped code over the anchors, versions, and pass ordering here.** In
+> particular this plan's casing order is the **pre-correction** one — see the correction note in
+> [`road_casing_plan.md`](road_casing_plan.md). What actually landed: `Span.style_id` plus
+> `stroke_dashed` / `walk_dashes` in `../obc-render/src/stroke.rs`, and the z-boundary `draw_map`
+> split + fills-then-outlines-per-z-group `draw_spans` in `../obc-render/src/lib.rs`. The readable
+> tour is the rendering-pipeline docs (`../../docs/content/software/rendering.md`, §6 line styles).
 
 This is **step 6** of the rendering refactor (`rendering_pipeline.md` §10). Steps
 1–5 (the structural refactor) are **done and merged into the working tree**; this
