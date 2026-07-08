@@ -29,7 +29,7 @@ use obc_route::WptEntry;
 use crate::app::{Pan, PanAxis};
 use crate::hal::Fix;
 use crate::input::Gesture;
-use crate::settings::{DateTime, Units};
+use crate::settings::{DateTime, Units, WaypointMode};
 use crate::wall_clock::MinuteTicker;
 
 use super::{Ctx, Render, Screen, ScreenTick, StatisticsScreen, Transition};
@@ -229,13 +229,13 @@ impl MapScreen {
             draw_clock(cv, rx.w, rx.now);
         }
 
-        // Bottom-centre one-slot status chip, shown only when there's something to say. "No GPS
+        // Bottom-centre one-slot warning chip, shown only when there's something to say. "No GPS
         // Fix" takes priority over off-route: with no fix the match is stale, so cross-track
         // distance is meaningless. Suppressed while panning — the pan HUD's bottom chevron owns the
         // bottom-centre slot (they'd collide), and panning is deliberate map inspection anyway; the
         // chip returns the moment pan exits.
-        let chip_up = !panning && (rx.no_fix || rx.activity.off_route);
-        if chip_up {
+        let warning_up = !panning && (rx.no_fix || rx.activity.off_route);
+        if warning_up {
             if rx.no_fix {
                 draw_status_chip(cv, rx.w, rx.h, "No GPS Fix");
             } else {
@@ -245,13 +245,33 @@ impl MapScreen {
             }
         }
 
+        // Waypoint chip (same bottom-centre slot): the calm `◆ NAME  <dist>` pill counting the
+        // along-route distance to the next named waypoint, governed by the `WaypointMode` setting.
+        // The warning chip keeps slot priority — the pure helper below only reports a chip when the
+        // warning chip is down (and not panning), so the two never collide.
+        let wpt_chip = waypoint_chip(
+            rx.settings.waypoint_mode,
+            panning,
+            rx.no_fix,
+            rx.activity.off_route,
+            rx.activity.next_waypoint,
+            rx.waypoints.as_slice(),
+            rx.activity.progress_m,
+        );
+        if let Some((k, dist_to_go)) = wpt_chip {
+            let dist = crate::stat_fields::fmt_dist_short(dist_to_go, rx.settings.units);
+            draw_waypoint_chip(cv, rx.w, rx.h, rx.waypoints.as_slice()[k].name.as_str(), &dist);
+        }
+
         // Scale bar (bottom-left): the largest round distance that fits the target on-screen width
-        // at the current zoom, in the units setting's system. Right in the corner — except while
-        // the warning chip is up, when it steps to just above the chip band so a wide chip
-        // ("off route 153km") never runs under it. Visible in pan mode too (where it's most
-        // useful) — the pan HUD's bottom chevron is centred, well clear of the corner.
+        // at the current zoom, in the units setting's system. Right in the corner — except while a
+        // bottom chip is up (warning **or** waypoint), when it steps to just above the chip band so
+        // a wide chip ("off route 153km", "◆ Pass Summit  0.4km") never runs under it. Visible in
+        // pan mode too (where it's most useful) — the pan HUD's bottom chevron is centred, well
+        // clear of the corner.
+        let any_chip_up = warning_up || wpt_chip.is_some();
         if rx.settings.map_scale_bar {
-            draw_scale_bar(cv, rx.h, chip_up, vp.meters_per_pixel(), rx.settings.units);
+            draw_scale_bar(cv, rx.h, any_chip_up, vp.meters_per_pixel(), rx.settings.units);
         }
 
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
@@ -325,6 +345,121 @@ fn draw_status_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
 /// where the pan bottom chevron would draw — the two never coexist; the chip is pan-suppressed).
 const CHIP_H: i32 = 36;
 const CHIP_MARGIN: i32 = 10;
+
+// ---- Waypoint chip (bottom-centre) ----------------------------------------
+
+/// Approach radius (metres): in [`WaypointMode::Approach`] the chip appears once the next waypoint
+/// is within this along-route distance ahead and counts down to it. `pub(crate)` so the setting's
+/// doc + the tests share the one value.
+pub(crate) const WAYPOINT_APPROACH_M: u32 = 500;
+
+/// Half-diagonal (px) of the chip's ink diamond glyph — part 2's route diamond at chip scale.
+const WPT_CHIP_DIAMOND_R: i32 = 4;
+/// Horizontal pad inside the pill (each side).
+const WPT_CHIP_PAD_X: i32 = 12;
+/// Gap between the diamond glyph and the name.
+const WPT_CHIP_GAP_D: i32 = 7;
+/// Gap between the name and the right-aligned distance.
+const WPT_CHIP_GAP_N: i32 = 12;
+
+/// Whether the Map waypoint chip shows this frame, and — if so — which resident waypoint it names
+/// and the along-route distance-to-go it reads. A **pure** helper (no render context) so the one
+/// visibility rule is unit-tested directly. Returns `Some((index, dist_to_go_m))` when the chip is
+/// up (the caller pairs `index` with `wpts[index].name`), or `None` when it stays down.
+///
+/// Shows iff **all** of: not `panning`; the warning chip is **down** (`!no_fix && !off_route` — it
+/// keeps slot priority, and both its states also make the along-route distance stale/meaningless);
+/// `next_waypoint` is `Some(k)` and in range of `wpts`; and the `mode` allows — [`Always`] always,
+/// [`Approach`] only within [`WAYPOINT_APPROACH_M`], [`Off`] never. `dist_to_go` is
+/// `wpts[k].dist_along_m.saturating_sub(progress_m)`, so it clamps to `0` during the 100 m
+/// pass-linger (the wanted "you are here" readout until the index advances).
+///
+/// [`Always`]: WaypointMode::Always
+/// [`Approach`]: WaypointMode::Approach
+/// [`Off`]: WaypointMode::Off
+fn waypoint_chip(
+    mode: WaypointMode,
+    panning: bool,
+    no_fix: bool,
+    off_route: bool,
+    next_waypoint: Option<usize>,
+    wpts: &[WptEntry],
+    progress_m: u32,
+) -> Option<(usize, u32)> {
+    if panning || no_fix || off_route {
+        return None;
+    }
+    let k = next_waypoint?;
+    let dist_to_go = wpts.get(k)?.dist_along_m.saturating_sub(progress_m);
+    match mode {
+        WaypointMode::Off => None,
+        WaypointMode::Approach => (dist_to_go <= WAYPOINT_APPROACH_M).then_some((k, dist_to_go)),
+        WaypointMode::Always => Some((k, dist_to_go)),
+    }
+}
+
+/// Fit `name` into `budget_px` at [`Font::Body`], dropping trailing chars and appending an ASCII
+/// ellipsis (`...` — the device font is printable-ASCII only, so `…` would render as tofu) when it
+/// overflows. Writes the result into `buf` and returns it. Pure integer geometry over the monospace
+/// cell width, so the truncation is deterministic and testable.
+fn fit_name<'b>(name: &str, budget_px: i32, buf: &'b mut heapless::String<28>) -> &'b str {
+    buf.clear();
+    let char_w = Font::Body.char_width() as i32;
+    let chars = name.chars().count() as i32;
+    if chars * char_w <= budget_px {
+        let _ = buf.push_str(name); // fits whole (name ≤ WAYPOINT_NAME_CAP bytes ≤ buf)
+        return buf.as_str();
+    }
+    const ELL: &str = "...";
+    let ell_w = text_width(ELL, Font::Body) as i32;
+    let keep = ((budget_px - ell_w) / char_w).max(0) as usize;
+    for ch in name.chars().take(keep) {
+        if buf.push(ch).is_err() {
+            break;
+        }
+    }
+    let _ = buf.push_str(ELL);
+    buf.as_str()
+}
+
+/// Draw the calm bottom-centre waypoint pill: `◆ NAME  <dist>` in [`INK`](super::palette::INK) on
+/// parchment (warning-orange stays reserved for the alert chip, matching the muted clock). Same
+/// pill geometry as [`draw_status_chip`]; a filled ink diamond at the left, the (truncated-to-fit)
+/// name, and the right-aligned distance. The whole pill is kept within `w − 2·CHIP_MARGIN` by
+/// shrinking the name only — the distance is never truncated.
+fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &str) {
+    use super::palette::*;
+    let font = Font::Body;
+    let diamond_w = 2 * WPT_CHIP_DIAMOND_R + 1;
+    let dist_w = text_width(dist, font) as i32;
+    // Everything but the name is fixed; the name gets whatever remains inside the max pill width.
+    let fixed_w = 2 * WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D + WPT_CHIP_GAP_N + dist_w;
+    let name_budget = (w - 2 * CHIP_MARGIN) - fixed_w;
+    let mut buf = heapless::String::<28>::new();
+    let name = fit_name(name, name_budget, &mut buf);
+    let name_w = text_width(name, font) as i32;
+
+    let pw = fixed_w + name_w;
+    let px = (w - pw) / 2;
+    let py = h - CHIP_H - CHIP_MARGIN;
+    cv.round(rect(px, py, pw, CHIP_H), 9, PARCHMENT);
+    cv.round_outline(rect(px, py, pw, CHIP_H), 9, INK);
+
+    // Ink diamond, vertically centred — two triangles sharing the left/right vertices (part 2's idiom).
+    let dcx = px + WPT_CHIP_PAD_X + WPT_CHIP_DIAMOND_R;
+    let dcy = py + CHIP_H / 2;
+    let r = WPT_CHIP_DIAMOND_R;
+    let (left, right) = (Point::new(dcx - r, dcy), Point::new(dcx + r, dcy));
+    cv.triangle(Point::new(dcx, dcy - r), left, right, INK);
+    cv.triangle(Point::new(dcx, dcy + r), left, right, INK);
+
+    // Name after the diamond (left-aligned), distance at the pill's right pad (right-aligned). Text
+    // top at `py + 5` centres Body in the 36 px band, matching `draw_status_chip`.
+    let ty = py + 5;
+    let name_x = px + WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D;
+    cv.text(name, Point::new(name_x, ty), font, TextAlign::Left, INK);
+    cv.text(dist, Point::new(px + pw - WPT_CHIP_PAD_X, ty), font, TextAlign::Right, INK);
+}
 
 // ---- Clock (top-centre) ---------------------------------------------------
 
@@ -808,5 +943,69 @@ mod tests {
         // Hidden by pan: same — the pan chevron owns the slot.
         let panned = scr.tick_timers(dt(14, 43), 60_000, w, true, true);
         assert_eq!(panned, ScreenTick::idle());
+    }
+
+    fn wp(dist_along_m: u32, name: &str) -> WptEntry {
+        let mut n = heapless::String::new();
+        let _ = n.push_str(name);
+        WptEntry { dist_along_m, lon: 0, lat: 0, name: n }
+    }
+
+    /// The waypoint chip's pure visibility helper: shown only when not panning, the warning chip is
+    /// down, a next waypoint exists and is in range, and the mode allows — with the approach radius
+    /// honoured to the exact metre.
+    #[test]
+    fn waypoint_chip_visibility_rules() {
+        let wpts = [wp(0, "Brunnen"), wp(1700, "Pass Summit")];
+        let next = Some(1); // the next waypoint is Pass Summit at 1700 m
+        let approach = |p| waypoint_chip(WaypointMode::Approach, false, false, false, next, &wpts, p);
+        // Approach: hidden beyond the radius, shown from exactly 500 m out (not 501 m).
+        assert_eq!(approach(1000), None, "700 m out: still hidden");
+        assert_eq!(approach(1199), None, "501 m out: still hidden");
+        assert_eq!(approach(1200), Some((1, 500)), "exactly 500 m out: shown, counting 500");
+        assert_eq!(approach(1201), Some((1, 499)), "inside the radius: shown, counting down");
+        // Always: shown at any distance ahead; Off: never.
+        assert_eq!(
+            waypoint_chip(WaypointMode::Always, false, false, false, next, &wpts, 0),
+            Some((1, 1700)),
+            "Always shows the far waypoint too"
+        );
+        assert_eq!(waypoint_chip(WaypointMode::Off, false, false, false, next, &wpts, 1200), None, "Off never shows");
+        // The three suppressors, each over an Always frame that would otherwise show.
+        assert_eq!(waypoint_chip(WaypointMode::Always, true, false, false, next, &wpts, 0), None, "panning hides it");
+        assert_eq!(waypoint_chip(WaypointMode::Always, false, true, false, next, &wpts, 0), None, "no-fix hides it");
+        assert_eq!(waypoint_chip(WaypointMode::Always, false, false, true, next, &wpts, 0), None, "off-route hides it");
+        // No next waypoint (route done / none loaded), and a stale index past the table, both cull safely.
+        assert_eq!(waypoint_chip(WaypointMode::Always, false, false, false, None, &wpts, 0), None, "no next waypoint");
+        assert_eq!(
+            waypoint_chip(WaypointMode::Always, false, false, false, Some(9), &wpts, 0),
+            None,
+            "stale index culls"
+        );
+    }
+
+    /// The pass-linger: for the ~100 m the resident index still points at a just-passed waypoint,
+    /// `dist_to_go` clamps to 0 — the "you are here" readout — so the chip shows `0m`, never a
+    /// wrapped/negative distance.
+    #[test]
+    fn waypoint_chip_lingers_at_zero_past_the_waypoint() {
+        let wpts = [wp(1700, "Pass Summit")];
+        // 50 m past the waypoint the index (still 0) lingers; the distance clamps to 0.
+        let got = waypoint_chip(WaypointMode::Approach, false, false, false, Some(0), &wpts, 1750);
+        assert_eq!(got, Some((0, 0)), "50 m past: visible, distance clamped to 0");
+        assert_eq!(crate::stat_fields::fmt_dist_short(0, Units::Metric).as_str(), "0m", "…rendering as 0m");
+    }
+
+    /// The chip name fits its pixel budget: short names pass through verbatim, long ones are cut to
+    /// leading chars + an ASCII ellipsis (the device font is ASCII-only) that stays within budget.
+    #[test]
+    fn waypoint_chip_name_truncation_fits_the_budget() {
+        let cw = Font::Body.char_width() as i32;
+        let mut buf = heapless::String::<28>::new();
+        assert_eq!(fit_name("Brunnen", 100 * cw, &mut buf), "Brunnen", "a name within budget is verbatim");
+        let mut buf = heapless::String::<28>::new();
+        let fitted = fit_name("Pass Summit Overlook", 10 * cw, &mut buf);
+        assert_eq!(fitted, "Pass Su...", "7 leading chars + ellipsis fill the 10-cell budget");
+        assert!((text_width(fitted, Font::Body) as i32) <= 10 * cw, "and it stays within budget");
     }
 }

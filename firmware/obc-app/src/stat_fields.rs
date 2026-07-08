@@ -457,6 +457,38 @@ pub(crate) fn fmt_km(km: f32) -> heapless::String<8> {
     s
 }
 
+/// A compact **whole-distance** readout in the units system — the shared string for the Map
+/// waypoint chip's distance-to-go and (later in epic #523) the waypoint stat fields. Metric: `NNNm`
+/// below 1 km, `N.Nkm` to one decimal below 100 km, whole `NNNkm` above. Imperial: `NNNft` below
+/// 1000 ft, `N.Nmi` to one decimal below 100 mi, whole `NNNmi` above. Rounds to the readout's own
+/// grain (nearest tenth / whole), the same integer style as [`write_off_route`](crate::screen)'s
+/// warning-chip readout — which stays as-is, being a different (feet-to-a-full-mile) format.
+pub(crate) fn fmt_dist_short(d_m: u32, units: Units) -> heapless::String<8> {
+    use crate::settings::{FT_PER_M, FT_PER_MI};
+    let mut s = heapless::String::new();
+    if units.is_imperial() {
+        let ft = (d_m as f32 * FT_PER_M) as u32;
+        if ft < 1000 {
+            let _ = write!(s, "{ft}ft");
+        } else if ft < 100 * FT_PER_MI {
+            // One decimal mile, rounded to the nearest tenth.
+            let tenths = (ft * 10 + FT_PER_MI / 2) / FT_PER_MI;
+            let _ = write!(s, "{}.{}mi", tenths / 10, tenths % 10);
+        } else {
+            let _ = write!(s, "{}mi", (ft + FT_PER_MI / 2) / FT_PER_MI);
+        }
+    } else if d_m < 1000 {
+        let _ = write!(s, "{d_m}m");
+    } else if d_m < 100_000 {
+        // One decimal km, rounded to the nearest tenth (100 m).
+        let tenths = (d_m + 50) / 100;
+        let _ = write!(s, "{}.{}km", tenths / 10, tenths % 10);
+    } else {
+        let _ = write!(s, "{}km", (d_m + 500) / 1000);
+    }
+    s
+}
+
 /// A speed to one decimal, or `--` when unknown (no fix / no moving time yet).
 fn fmt_speed(v: Option<f32>) -> heapless::String<8> {
     let mut s = heapless::String::new();
@@ -750,5 +782,33 @@ mod tests {
         let l = list(&[]);
         assert_eq!(page_count(&l), 1);
         assert!(page_fields(&l, 0).is_empty());
+    }
+
+    /// `fmt_dist_short` metric: metres below 1 km, one decimal km up to 100 km, whole km above —
+    /// pinned across the 1 km and 100 km crossovers.
+    #[test]
+    fn fmt_dist_short_metric_crossovers() {
+        assert_eq!(fmt_dist_short(0, Units::Metric).as_str(), "0m");
+        assert_eq!(fmt_dist_short(487, Units::Metric).as_str(), "487m");
+        assert_eq!(fmt_dist_short(999, Units::Metric).as_str(), "999m", "just under 1 km stays metres");
+        assert_eq!(fmt_dist_short(1000, Units::Metric).as_str(), "1.0km", "1 km crosses to one-decimal km");
+        assert_eq!(fmt_dist_short(12_400, Units::Metric).as_str(), "12.4km");
+        assert_eq!(fmt_dist_short(99_900, Units::Metric).as_str(), "99.9km", "just under 100 km keeps a decimal");
+        assert_eq!(fmt_dist_short(100_000, Units::Metric).as_str(), "100km", "100 km crosses to whole km");
+        assert_eq!(fmt_dist_short(153_000, Units::Metric).as_str(), "153km");
+    }
+
+    /// `fmt_dist_short` imperial: feet below 1000 ft, one decimal miles up to 100 mi, whole miles
+    /// above — pinned across the ft→mi and 100 mi crossovers.
+    #[test]
+    fn fmt_dist_short_imperial_crossovers() {
+        assert_eq!(fmt_dist_short(0, Units::Imperial).as_str(), "0ft");
+        assert_eq!(fmt_dist_short(300, Units::Imperial).as_str(), "984ft", "300 m ≈ 984 ft stays feet");
+        // 1000 ft ≈ 304.8 m — the feet→miles crossover; 305 m ≈ 1000 ft reads a fractional mile.
+        assert_eq!(fmt_dist_short(305, Units::Imperial).as_str(), "0.2mi", "past 1000 ft crosses to decimal miles");
+        assert_eq!(fmt_dist_short(15_933, Units::Imperial).as_str(), "9.9mi");
+        // 100 mi = 528000 ft ≈ 160934 m — the decimal→whole-miles crossover.
+        assert_eq!(fmt_dist_short(160_000, Units::Imperial).as_str(), "99.4mi", "just under 100 mi keeps a decimal");
+        assert_eq!(fmt_dist_short(200_000, Units::Imperial).as_str(), "124mi", "well past 100 mi is whole miles");
     }
 }
