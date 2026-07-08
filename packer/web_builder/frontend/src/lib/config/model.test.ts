@@ -139,6 +139,33 @@ describe("buildConfigForSubmit", () => {
         expect("routing" in out).toBe(false);
     });
 
+    it("emits a positive min_area_px but drops it on the finest tier", () => {
+        const cfg = normalizeConfig({
+            lods: [
+                { max_mpp: null, simplify: 120, min_area_px: 6 },
+                { max_mpp: 120, simplify: 18, min_area_px: 4 },
+                { max_mpp: 18, simplify: 0, min_area_px: 4 }, // finest — packer ignores it
+            ],
+            features: {},
+            marker: { color: "0xF800" },
+        }).config;
+        const out = buildConfigForSubmit(cfg, [], mockSchema).config;
+        expect(out.lods[0].min_area_px).toBe(6);
+        expect(out.lods[1].min_area_px).toBe(4);
+        expect("min_area_px" in out.lods[2]).toBe(false);
+    });
+
+    it("omits min_area_px entirely when it is 0/absent (byte-identical off)", () => {
+        const cfg = normalizeConfig({
+            lods: [{ max_mpp: null, simplify: 0, min_area_px: 0 }, { max_mpp: 30, simplify: 0 }],
+            features: {},
+            marker: { color: "0xF800" },
+        }).config;
+        const out = buildConfigForSubmit(cfg, [], mockSchema).config;
+        expect("min_area_px" in out.lods[0]).toBe(false);
+        expect("min_area_px" in out.lods[1]).toBe(false);
+    });
+
     it("preserves feature key order (style IDs are document order)", () => {
         // Build a config whose keys would re-sort alphabetically if mishandled.
         const cfg = normalizeConfig({

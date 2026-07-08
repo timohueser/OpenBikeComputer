@@ -105,6 +105,12 @@
                     "type": "number",
                     "minimum": 0,
                     "default": 0
+                },
+                "min_area_px": {
+                    "description": "Drop area features (polygons) whose projected area is below this many square pixels at the tier's finest on-screen scale; 0 means no culling. Lines are never culled. Ignored on the finest tier (no coarser fallback).",
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0
                 }
             }
         },

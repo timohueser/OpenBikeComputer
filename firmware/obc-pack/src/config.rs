@@ -87,6 +87,13 @@ pub struct Lod {
     pub max_mpp: Option<f64>,
     /// Simplify tolerance in **meters**; `0.0` ⇒ no simplify.
     pub simplify_m: f64,
+    /// Coarse-LOD minimum-area cull threshold in **square pixels**; `0.0` ⇒ off.
+    /// A **polygon** whose projected area is below this at the tier's finest
+    /// on-screen scale — the next-finer tier's `max_mpp` — is dropped from this
+    /// tier. Lines are never culled (fragmented ways ⇒ road holes). The finest
+    /// tier is never culled (no finer fallback), so its value is ignored. See
+    /// [`crate::geom::footprint_below`].
+    pub min_area_px: f64,
 }
 
 /// The parsed `routing` config section (N2): the island-pruning threshold plus the §8.6 bike
@@ -151,9 +158,10 @@ impl Config {
                 .map(|l| Lod {
                     max_mpp: l.get("max_mpp").and_then(Value::as_f64),
                     simplify_m: l.get("simplify").and_then(Value::as_f64).unwrap_or(0.0),
+                    min_area_px: l.get("min_area_px").and_then(Value::as_f64).unwrap_or(0.0),
                 })
                 .collect(),
-            _ => vec![Lod { max_mpp: None, simplify_m: 0.0 }],
+            _ => vec![Lod { max_mpp: None, simplify_m: 0.0, min_area_px: 0.0 }],
         };
 
         // The reader parses the LOD table into a fixed `heapless::Vec<_, 16>` and the
@@ -654,6 +662,10 @@ mod tests {
         assert_eq!(lods_default.len(), cfg.lods.len());
         assert!(lods_default[0]["max_mpp"].is_null() && cfg.lods[0].max_mpp.is_none());
         assert_eq!(lods_default[0]["simplify"].as_f64(), Some(cfg.lods[0].simplify_m));
+        // min_area_px is optional; absent ⇒ 0.0 (cull off), matching the schema default.
+        let lod_props = &schema["$defs"]["lod"]["properties"];
+        assert_eq!(lod_props["min_area_px"]["default"].as_f64(), Some(cfg.lods[0].min_area_px));
+        assert_eq!(cfg.lods[0].min_area_px, 0.0);
     }
 
     #[test]

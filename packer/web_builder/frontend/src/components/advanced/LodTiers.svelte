@@ -5,7 +5,7 @@
     const env = $derived(working.envelope!);
     const lods = $derived(env.config.lods);
 
-    function edit(i: number, field: "max_mpp" | "simplify", raw: string) {
+    function edit(i: number, field: "max_mpp" | "simplify" | "min_area_px", raw: string) {
         const v = parseFloat(raw);
         editLodTier(env.config, i, field, Number.isFinite(v) ? v : 0);
         working.markModified();
@@ -24,12 +24,19 @@
         one pixel at every scale the tier is drawn at — and follows that ceiling until you type
         your own value.
     </p>
+    <p class="muted small intro">
+        <em>min area</em> drops <strong>area features</strong> (forests, landuse, water) whose
+        on-screen area would be smaller than that many pixels² at this tier — a coarse-view
+        declutter that keeps sub-pixel slivers out of the point budget. Lines (roads, paths) are
+        never culled. 0 is off; the finest tier has no coarser fallback, so it is never culled.
+    </p>
 
     <div class="tiers">
         <div class="hrow small faint">
             <span>tier</span>
             <span>max m/px</span>
             <span>simplify (m)</span>
+            <span>min area (px²)</span>
         </div>
         {#each lods as lod, i (i)}
             <div class="tier">
@@ -73,6 +80,19 @@
                             onclick={() => edit(i, "simplify", String(autoSimplify(env.config, i)))}
                             >auto: {autoSimplify(env.config, i)}</button
                         >
+                    {/if}
+                </span>
+                <span class="cell">
+                    {#if i === lods.length - 1}
+                        <span class="faint small" title="The finest tier is never culled — no coarser fallback">—</span>
+                    {:else}
+                        <input
+                            type="number"
+                            min="0"
+                            aria-label="min area (px²) for LOD {i}"
+                            value={lod.min_area_px ?? 0}
+                            oninput={(e) => edit(i, "min_area_px", e.currentTarget.value)}
+                        />
                     {/if}
                 </span>
                 {#if lods.length > 1}
@@ -122,7 +142,7 @@
     .hrow,
     .tier {
         display: grid;
-        grid-template-columns: 110px 120px 200px 1fr;
+        grid-template-columns: 110px 120px 200px 130px 1fr;
         gap: 16px;
         align-items: center;
     }
