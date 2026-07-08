@@ -109,7 +109,8 @@ What a feature *is* — and whether it's kept at all — comes from a `config.js
 pub fn get_style(&self, tags: &HashMap<&str, &str>) -> Option<&FeatureStyle> {
     for (tag_key, by_value) in &self.features {   // walked in document order
         if let Some(val) = tags.get(tag_key.as_str()) {
-            if let Some(style) = by_value.get(*val) {
+            // exact value first, then the category's "*" catch-all
+            if let Some(style) = by_value.get(*val).or_else(|| by_value.get("*")) {
                 return Some(style);               // first match wins
             }
         }
@@ -117,6 +118,8 @@ pub fn get_style(&self, tags: &HashMap<&str, &str>) -> Option<&FeatureStyle> {
     None                                          // unstyled → dropped
 }
 ```
+
+Within a `tag_key`, the value `"*"` is a **catch-all**: an exact value match still wins, but any other value that key carries falls back to the `"*"` rule. So `building → { warehouse: …, "*": … }` gives warehouses their own style and paints every other `building=*` with the catch-all — without enumerating OSM's ~50 building values by hand. The catch-all is an ordinary rule (it takes one style ID like any other), so it's purely a packer-side convenience; the file format and the device never know it existed.
 
 ### Ingest: two passes, then assemble
 
