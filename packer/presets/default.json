@@ -48,7 +48,7 @@
             "ditch": {"z_index": 12, "color": "0x555F", "weight": 1, "min_lod": 2, "priority": 3}
         },
         "building": {
-            "yes": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4}
+            "yes": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"}
         },
         "natural": {
             "sea": {"z_index": 0, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 1},
