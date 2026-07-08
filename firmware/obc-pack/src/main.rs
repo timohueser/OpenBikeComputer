@@ -170,39 +170,23 @@ fn run() -> Result<(), String> {
             // `min_area_px` is ignored. Off (`None`) ⇒ byte-identical to before.
             let cull_mpp = (lod.min_area_px > 0.0).then(|| config.lods.get(i + 1).and_then(|l| l.max_mpp)).flatten();
             let culled = std::sync::atomic::AtomicUsize::new(0);
+            let holes_stripped = std::sync::atomic::AtomicUsize::new(0);
             let min_area_px = lod.min_area_px;
-            // Per-feature simplify + coarse-LOD footprint cull. Each call runs wholly
-            // on one thread using that thread's own GEOS context, so no geometry
-            // crosses threads; rayon's `collect` preserves order. The quadtree build
-            // stays sequential (bounded memory).
+            // Per-feature simplify + coarse-LOD footprint cull + sub-pixel hole trim. Each call runs
+            // wholly on one thread using that thread's own GEOS context, so no geometry crosses
+            // threads; rayon's `collect` preserves order. The quadtree build stays sequential.
             let simplify_cull = |style_id: u8, geom: &Geom| -> Option<(u8, Geom)> {
-                let g = if tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
+                let mut g = if tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
                 if let Some(mpp) = cull_mpp {
                     if footprint_below(&g, mpp, min_area_px) {
                         culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return None;
-            let holes_stripped = std::sync::atomic::AtomicUsize::new(0);
-            // Parallel per-feature simplify: each closure runs wholly on one thread
-            // using that thread's own GEOS context, so no geometry crosses threads.
-            // `collect` preserves order, so the output is unchanged. The quadtree build
-            // stays sequential (bounded memory).
-            let level: Vec<(u8, Geom)> = ingested
-                .features
-                .par_iter()
-                .filter(|f| f.min_lod <= i)
-                .filter_map(|f| {
-                    let mut g = if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
-                    if let Some(mpp) = cull_mpp {
-                        if footprint_below(&g, mpp, lod.min_area_px) {
-                            culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            return None;
-                        }
-                        // Survivors: trim sub-pixel holes (invisible; frees a ring + its vertices in
-                        // the render scratch, on the same tier gate + threshold as the footprint cull).
-                        let n = strip_small_holes(&mut g, mpp, lod.min_area_px);
-                        if n > 0 {
-                            holes_stripped.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
-                        }
+                    }
+                    // Survivors: trim sub-pixel holes (invisible; frees a ring + its vertices in the
+                    // render scratch, on the same tier gate + threshold as the footprint cull).
+                    let n = strip_small_holes(&mut g, mpp, min_area_px);
+                    if n > 0 {
+                        holes_stripped.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
                 Some((style_id, g))
