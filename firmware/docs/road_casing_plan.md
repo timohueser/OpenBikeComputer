@@ -1,4 +1,14 @@
-# Road casing / borders at the finest LOD — PLAN (STATUS: PLANNED)
+# Road casing / borders at the finest LOD — PLAN (STATUS: SHIPPED — superseded by epic #556)
+
+> **Shipped as sub-issue #559 of epic [#556](https://github.com/timohueser/OpenBikeComputer/issues/556)**
+> (OBCM **v10**). ⚠ **The casing order in this plan is WRONG as written** — it runs the casing pass
+> *before the entire main pass*, which lets the low-z landuse/water/forest fills paint over the
+> casings and erase them. The shipped renderer instead inserts the casing pass at the **z boundary**
+> where the cased road lines begin (a split index into the `(z, seq)`-sorted spans), so casings land
+> above the low-z fills but under all road fills — see `draw_map` in `../obc-render/src/lib.rs` and
+> the rendering docs (`../../docs/content/software/rendering.md`, §6, "the z-boundary that makes
+> junctions work"). The `lib.rs` line numbers and `serialize.py` references below are also stale.
+> **Trust the shipped code, not this plan.**
 
 **Part 3 of 3** of the line-rendering roadmap ([route arrows](route_arrows_plan.md) →
 [line styles](line_styles_plan.md) → road casing). **Depends on [part 2](line_styles_plan.md)**: it

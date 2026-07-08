@@ -92,16 +92,17 @@ What a feature *is* — and whether it's kept at all — comes from a `config.js
   <line class="d-flow" x1="488" y1="92" x2="540" y2="92" marker-end="url(#aP2)" />
 
   <!-- style out -->
-  <rect class="d-hot" x="548" y="56" width="150" height="120" rx="10" style="fill:#f8efe4" />
-  <text class="d-label" x="564" y="76" style="fill:#a9501c">style #5</text>
+  <rect class="d-hot" x="548" y="52" width="150" height="140" rx="10" style="fill:#f8efe4" />
+  <text class="d-label" x="564" y="72" style="fill:#a9501c">style #5</text>
   <g font-family="var(--mono)">
-    <text class="d-sub" x="564" y="98">color (RGB565)</text>
-    <text class="d-sub" x="564" y="118">z_index · weight</text>
-    <text class="d-sub" x="564" y="138">priority 1–4</text>
-    <text class="d-sub" x="564" y="158">min_lod</text>
+    <text class="d-sub" x="564" y="94">color (RGB565)</text>
+    <text class="d-sub" x="564" y="112">z_index · weight</text>
+    <text class="d-sub" x="564" y="130">priority 1–4</text>
+    <text class="d-sub" x="564" y="148">min_lod</text>
+    <text class="d-sub" x="564" y="166">line_style · color2</text>
   </g>
 </svg>
-<figcaption>A style carries everything the renderer later needs: a colour, a paint order (<code>z_index</code>), a line weight, a drop-priority, and a <code>min_lod</code> — the zoom tier below which the feature isn't included. These become the <a href="../formats/#the-header">style table</a> in the file, and the colours resolve through the very same <a href="../architecture/#two-hosts-one-core-and-the-seams-between-them"><code>color_fn</code></a> the UI uses.</figcaption>
+<figcaption>A style carries everything the renderer later needs: a colour, a paint order (<code>z_index</code>), a line weight, a drop-priority, a <code>min_lod</code> (the zoom tier below which the feature isn't included), and — since <b>v10</b> — a <code>line_style</code> and an optional secondary colour <code>color2</code> for dashes, casings, stripes and outlines. These become the <a href="../formats/#the-header">style table</a> in the file, and the colours resolve through the very same <a href="../architecture/#two-hosts-one-core-and-the-seams-between-them"><code>color_fn</code></a> the UI uses.</figcaption>
 </figure>
 
 ```rust
@@ -573,7 +574,7 @@ That this is the *same* quadtree the device walks closes the loop with the other
 Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a drawn box the sources are cropped to), pick a style, build, download. Three ideas shape it:
 
 - **Presets over knobs.** The main page offers complete style presets — Bikepacking, Minimal, High detail — each a full packer config shipped in [`packer/presets/`](src:packer/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
-- **The binary is the schema authority.** `obc-pack schema` prints a JSON Schema describing exactly the config the installed binary parses, and the editor derives its capability from it. When the format grows — say v6's line styles — the new fields appear in the editor because the *schema* says so, not because the frontend shipped in lockstep.
+- **The binary is the schema authority.** `obc-pack schema` prints a JSON Schema describing exactly the config the installed binary parses, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear in the editor because the *schema* says so, not because the frontend shipped in lockstep.
 - **A stateless server.** The working config lives in the browser ("Custom — based on Bikepacking"), never on the server; builds run through a bounded queue into per-job directories and stream progress live. That shape runs locally today and would survive a shared deployment unchanged.
 
 ## Following a route
