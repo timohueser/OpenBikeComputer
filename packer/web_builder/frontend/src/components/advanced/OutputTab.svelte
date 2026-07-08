@@ -77,6 +77,28 @@
 
     <div class="row">
         <div>
+            <h4>Merge lines</h4>
+            <p class="muted small">
+                Stitch same-styled road/path/rail fragments — one OSM way split into many segments —
+                into continuous polylines per zoom level. Reclaims the per-feature scratch that
+                saturates at mid zoom; solid lines look identical, a dashed or cased line runs
+                continuous across former joins. Off packs exactly as before.
+            </p>
+        </div>
+        <label class="toggle">
+            <input
+                type="checkbox"
+                checked={env.config.merge_lines ?? false}
+                onchange={(e) => {
+                    env.config.merge_lines = e.currentTarget.checked;
+                    working.markModified();
+                }}
+            />
+        </label>
+    </div>
+
+    <div class="row">
+        <div>
             <h4>Packer</h4>
             <p class="muted small">
                 The editor's capability follows the schema served by the obc-pack binary on this
