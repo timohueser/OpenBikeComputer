@@ -501,7 +501,7 @@ Most screens have one focus: the row cursor. The **Settings** screens — Date &
 
 The **Display** screen governs the Map's chrome and the auto-return: two toggles for the Map overlays — small floating top-centre **clock** digits (`HH:MM`, bare ink with a halo — no pill) and a bottom-left **scale bar** (the largest round 1/2/5 distance that fits the current zoom, in the units system) — plus the **idle-return** timeout (15 s / 30 s / 1 min / 5 min / Never, default 30 s) that decides how long an untouched UI waits before returning itself to Home (or, mid-ride, the Map). The Map's other chrome isn't a setting: a bottom-centre **one-slot warning chip** ("No GPS Fix" outranks "off route NNNm"), suppressed while panning (the pan bottom chevron owns that slot); the scale bar sits right in the corner and steps up above the chip band while a chip is up, and a warning-red **low-battery** glyph in the top-left corner below 10 %.
 
-The **Stats** screen configures the riding grid itself. Its *Page cycle* row sets how fast the grid auto-flips between pages; *Fields* opens the grid **editor — which simply *is* the grid**: the same 3×2 tile pages the riding view shows, placed by the same layout walk and painted by the same tile renderer, with live values. The grid draws from a predefined, in-code catalogue of fields (speed, distance, climb, grade, elevation, clock, …) — the rider picks which to show and in what order, and a field is either one column or a full-width two. The cursor is the amber tile (walking past a page's last tile flips pages), and reordering reuses the grab idiom: press *lifts* the tile (move arrows appear), rotating moves it through the order — the grid reflows live, so a two-column panel's row-aligned hops are something you watch, not infer — and press drops it. A ghost `+` tile in the first free slot opens the field picker, so a new panel visibly lands where the ghost sits; a panel is removed by a **hold-to-delete** bar, the same guarded hold as Reset's. The chosen panels lay out six to a page (3×2) and auto-cycle on the timer, so a long list stays glanceable. The selection and period live in the same persisted `Settings` value, so they survive a reboot like every other setting. The same screen also carries the **Climb** toggle — Off / Manual / Auto — that decides whether the [climb panel](#climbs-get-their-own-panel) appears on its own when a climb begins.
+The **Stats** screen configures the riding grid itself. Its *Page cycle* row sets how fast the grid auto-flips between pages; *Fields* opens the grid **editor — which simply *is* the grid**: the same 3×2 tile pages the riding view shows, placed by the same layout walk and painted by the same tile renderer, with live values. The grid draws from a predefined, in-code catalogue of fields (speed, distance, climb, grade, elevation, clock, …) — the rider picks which to show and in what order, and a field takes one of three shapes: a single column, a full-width two-column tile, or the page-sized [waypoint list panel](#waypoints-on-the-route) (two columns tall enough to fill a page). The cursor is the amber tile (walking past a page's last tile flips pages), and reordering reuses the grab idiom: press *lifts* the tile (move arrows appear), rotating moves it through the order — the grid reflows live, so a two-column panel's row-aligned hops are something you watch, not infer — and press drops it. A ghost `+` tile in the first free slot opens the field picker, so a new panel visibly lands where the ghost sits; a panel is removed by a **hold-to-delete** bar, the same guarded hold as Reset's. The chosen panels lay out six to a page (3×2) and auto-cycle on the timer, so a long list stays glanceable. The selection and period live in the same persisted `Settings` value, so they survive a reboot like every other setting. The same screen also carries two press-to-cycle mode rows: the **Climb** toggle — Off / Manual / Auto — that decides whether the [climb panel](#climbs-get-their-own-panel) appears on its own when a climb begins, and beneath it the **Waypoints** toggle — Off / Approach / Always — that governs the [waypoint chip](#waypoints-on-the-route).
 
 <figure class="fig">
 <svg viewBox="0 0 720 232" role="img" aria-label="Settings screens have two focus levels. In row focus, rotate moves the amber row cursor, press flips a toggle or opens a value row's stepper, and back climbs one screen. Pressing a value row enters field focus, where rotate changes the live field's value shown in an up-down arrow box, press advances to the next field, and back — or pressing past the last field — steps back out to row focus.">
@@ -742,6 +742,74 @@ A planned route's hard parts are its climbs, so a third riding view is given ove
 <figcaption>The Climb screen is the profile the way a paper route card would draw it — the trace tinted by gradient, hottest where it's steepest. The climbs themselves are found in one pass when the route loads (the same moment the whole-route profile is built), so riding only has to ask which segment the matched distance falls in; the panel then reads a second, finer profile scoped to that one climb — a small buffer rebuilt on each new climb, never per frame. Nothing new is stored in the route file.</figcaption>
 </figure>
 
+## Waypoints on the route
+
+A planned route can carry **named waypoints** — a water stop, a viewpoint, the pass at the top — pinned along it in an [along-route table](../formats/#the-file) in the route file (`OBCR` v2). The device treats them as calm furniture, not a fourth screen: they surface in three always-available places plus two opt-in stat fields, every element built on machinery already there.
+
+**Diamonds on the map.** Each named waypoint draws as a small ink diamond (~9 px) on the route line at its position — no label, the way the route's direction arrows read as furniture. They're always on when the loaded route has waypoints; the name lives in the chip, not on the glyph. A waypoint whose coordinate sits slightly off the drawn polyline shows its diamond slightly off the line, which is honest — the diamond marks the *point*, not the nearest pixel of route.
+
+**The approach chip.** A one-line pill at the **bottom** of the Map — the same idiom as the off-route chip at the top, but calm ink-on-parchment rather than warning-orange — reads `◆ NAME  <distance>`: the along-route distance still to go to the next waypoint (the same arithmetic as the climb tiles' *to climb*). A three-state setting governs it, like the climb mode:
+
+- **Off** — never shown. Route planners sprinkle artefact waypoints into their GPX exports; a route full of junk must be silenceable, so Off is the escape hatch.
+- **Approach** *(the default)* — the chip appears only once the next waypoint is within **500 m** ahead and counts the metres down, so you notice the stop without standing chrome.
+- **Always** — visible whenever a waypoint is still ahead (kilometres beyond 1 km, metres inside).
+
+Two details keep it steady. **Passing** is distance-hysteresis, not time: the chip lingers on a waypoint until you're **100 m past** it — the shown distance pinned at 0 through the linger — before advancing to the next, so GPS jitter at the stop can't flap the readout. And the chip **hides off-route**: the along-route distance is meaningless once you've left the line, and the bottom slot belongs to the warning chip (*off route* / *No GPS Fix*) when it's up. The waypoint chip takes that slot only when it's clear — and the scale bar steps up above whichever chip is showing.
+
+**Ticks on the progress bar.** Under the Statistics [elevation profile](../formats/#exact-stats-decimated-geometry) the amber live-fraction bar already shares the route's distance axis, so each waypoint gets a thin **black** tick at its fraction, and the fill sweeping toward the next tick is free "distance to the next stop" context. Black, not red, is deliberate: the bar tints warning-red when you're off-route, and a red tick would vanish against it exactly then. (Diamonds *on* the profile were tried and dropped — ten waypoints clutter the thin band; the calm ticks won.)
+
+**Two opt-in stat fields.** For a waypoint readout on the numbers page, the [field picker](#settings-a-second-level-of-focus) offers two, so they cost nothing for riders who don't use them:
+
+- a **2×1 "next waypoint" tile** — name and distance-to-go, a direct sibling of the wide clock tile;
+- a **2×3 list panel** — the next few waypoints, name left / distance right, the first row emphasised. It's the one page-sized field: six slots, so it always begins a page, mirroring how a two-span tile always begins a row.
+
+**Unnamed waypoints are ignored everywhere** — no diamond, no tick, no chip, no list row. An empty label carries no information anywhere it would surface, so a waypoint whose name is blank after trimming is dropped as the route's table loads; the diamond, tick and row counts then stay consistent by construction. Together with **Off**, that's the whole answer to junk-waypoint routes: nameless artefacts never appear, and a route full of *named* clutter is silenced with one setting.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="Left, a device mock of the riding Map: a magenta route line down the middle, two small black diamonds on it marking named waypoints, a red heading arrow for the rider, and a bottom pill reading a diamond, the name Pass Summit and 299 m — the approach chip counting down. Right, the Statistics progress bar in close-up: an amber fill from the left with two black vertical ticks, one at the far left for a waypoint at the start and one near three-quarters for the pass, annotated: the fill sweeps toward the next tick, the ticks are ink not red so they survive the off-route red tint, and the chip hides off-route.">
+  <text class="d-tag" x="20" y="24">Waypoints — diamonds, the approach chip, progress-bar ticks</text>
+
+  <!-- device mock: the Map -->
+  <rect x="40" y="48" width="150" height="188" rx="10" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.5" />
+  <rect x="107" y="54" width="12" height="150" style="fill:#ff00ff" />
+  <!-- waypoint diamonds on the route -->
+  <path d="M113 92 l7 7 l-7 7 l-7 -7 z" style="fill:#000" />
+  <path d="M113 132 l7 7 l-7 7 l-7 -7 z" style="fill:#000" />
+  <!-- rider heading arrow -->
+  <path d="M113 158 l8 15 l-8 -5 l-8 5 z" style="fill:#ff0000" />
+  <!-- scale bar -->
+  <line x1="50" y1="196" x2="72" y2="196" stroke="#000" stroke-width="1.4" />
+  <text x="50" y="192" style="fill:#000;font-family:var(--mono);font-size:7px">20m</text>
+  <!-- approach chip -->
+  <rect x="46" y="208" width="138" height="22" rx="9" style="fill:#ffffff;stroke:#000;stroke-width:1" />
+  <path d="M60 219 l4 4 l-4 4 l-4 -4 z" style="fill:#000" />
+  <text x="70" y="223" style="fill:#000;font-family:var(--mono);font-size:8.5px">Pass Summit  299m</text>
+  <text class="d-sub" x="115" y="248" text-anchor="middle" style="font-size:9px">ink diamonds + the bottom approach chip</text>
+
+  <!-- progress bar close-up -->
+  <text class="d-sub" x="250" y="70" style="font-size:10.5px">the Statistics progress bar shares the route's distance axis</text>
+  <rect x="250" y="86" width="430" height="18" rx="9" style="fill:#eae3c9;stroke:#aaaa55;stroke-width:1" />
+  <!-- live fill ~0.63 -->
+  <rect x="250" y="86" width="271" height="18" rx="9" style="fill:#ffaa00" />
+  <!-- ticks: start (~0) and pass (~0.77) -->
+  <rect x="252" y="89" width="2.4" height="12" style="fill:#000" />
+  <rect x="581" y="89" width="2.4" height="12" style="fill:#000" />
+  <!-- annotations -->
+  <line x1="253" y1="118" x2="253" y2="130" stroke="#6b5a2a" stroke-width="1" />
+  <text class="d-sub" x="258" y="142" style="font-size:9px">waypoint at the start</text>
+  <line x1="582" y1="118" x2="582" y2="130" stroke="#6b5a2a" stroke-width="1" />
+  <text class="d-sub" x="582" y="142" text-anchor="middle" style="font-size:9px">the pass</text>
+  <line x1="521" y1="76" x2="521" y2="84" stroke="#a9501c" stroke-width="1.2" marker-end="none" />
+  <text class="d-sub" x="521" y="72" text-anchor="middle" style="fill:#a9501c;font-size:9px">you are here</text>
+  <text class="d-sub" x="250" y="176" style="font-size:10px">· the fill sweeping toward the next tick is free "distance to go"</text>
+  <text class="d-sub" x="250" y="194" style="font-size:10px">· ticks are <tspan style="fill:#000;font-weight:600">ink</tspan>, never red — the bar itself tints red off-route, where a</text>
+  <text class="d-sub" x="262" y="210" style="font-size:10px">red tick would vanish</text>
+  <text class="d-sub" x="250" y="228" style="font-size:10px">· off-route the chip hides and the bar freezes — the along-route</text>
+  <text class="d-sub" x="262" y="244" style="font-size:10px">distance is meaningless once you've left the line</text>
+</svg>
+<figcaption>Three read-outs, one distance axis. On the map the diamonds mark the waypoints and the bottom chip names the next one and counts down (default: only inside 500 m); on the Statistics bar the same waypoints are black ticks with the amber fill closing on the next. All of it is derived on each matched fix from the route's along-route waypoint table — nothing extra stored, nothing new sent over the link — and all of it hides or freezes off-route, where an along-route distance has no meaning. Unnamed waypoints are filtered as the table loads, so every count stays consistent.</figcaption>
+</figure>
+
 ## The whole flow
 
 Put the pieces together and the navigation graph is small and legible. Two screens are always **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack, and both share the same `press` (pause) and `back-hold` (Menu) bindings. Each also has a `hold`-entered sub-mode (Pan on the Map, Zoom on the profile). On a climb a [third view](#climbs-get-their-own-panel) joins the ring between them.
@@ -828,6 +896,7 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 
 - The screen system, stack, and `Transition`: [`obc-app/src/screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
 - The Climb screen: [`obc-app/src/screen/climb.rs`](src:firmware/obc-app/src/screen/climb.rs); the climb detection + per-climb profile it reads: [`obc-route/src/climb.rs`](src:firmware/obc-route/src/climb.rs), [`obc-route/src/climb_profile.rs`](src:firmware/obc-route/src/climb_profile.rs)
+- The waypoint UI — map diamonds + the approach chip: [`obc-app/src/screen/map.rs`](src:firmware/obc-app/src/screen/map.rs); the progress-bar ticks: [`obc-app/src/screen/statistics.rs`](src:firmware/obc-app/src/screen/statistics.rs); the next-waypoint tracking (approach radius, pass-linger): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs); the two stat fields: [`obc-app/src/stat_fields.rs`](src:firmware/obc-app/src/stat_fields.rs)
 - The host→app BLE seam (`BleStatus` — the connected indicator, passkey, paired): [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs)
 - The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
 - The Rides screen and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
