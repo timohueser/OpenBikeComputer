@@ -152,7 +152,7 @@ impl StatFieldsScreen {
                 let is_sel = i == self.selected;
                 let cell = f.cell(&rdt);
                 let bg = if is_sel { AMBER } else { PARCHMENT_SHADE };
-                crate::screen::tile(cv, area, &cell.caption, &cell.value, cell.arrow, bg);
+                crate::screen::tile(cv, area, &cell.caption, &cell.value, cell.arrow, cell.value_align, bg);
                 if is_sel && self.grabbed {
                     move_arrows(cv, area);
                 }

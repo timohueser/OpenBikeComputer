@@ -391,7 +391,15 @@ impl StatisticsScreen {
             let x = chart_x + placed.col as i32 * (col_w + gap);
             let y = grid_top + placed.row as i32 * (row_h + gap);
             let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
-            super::tile(cv, rect(x, y, tile_w, row_h), &cell.caption, &cell.value, cell.arrow, PARCHMENT_SHADE);
+            super::tile(
+                cv,
+                rect(x, y, tile_w, row_h),
+                &cell.caption,
+                &cell.value,
+                cell.arrow,
+                cell.value_align,
+                PARCHMENT_SHADE,
+            );
         }
     }
 }
