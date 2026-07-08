@@ -456,6 +456,7 @@ struct Span {
     kind: Kind,      // polygon or line
     z: i8,           // paint order
     weight: u8,      // nominal line width — ramped by zoom at draw (see §6)
+    style_id: u8,    // → the full Style (dashed / color2) at draw time (a spare byte)
     color: u16,      // RGB565
     pt_start: u16,   // where its points sit in the frame buffer
     ring_start: u16,
@@ -559,6 +560,136 @@ A **1 px** line is stroked by embedded-graphics directly — a thin Bresenham li
 Two filled rectangles butt-joined at a vertex leave a small notch on the outside of a bend and don't round the line's ends, so a disc the width of the stroke is filled (also as spans) to smooth each joint and cap. The disc is the overlay's biggest remaining cost, so it's spent only where it shows: at the two **run ends** (which round the cap and close the gap to the next feature at a chunk seam) and at interior vertices where the line **bends sharply**. The uncovered notch at a turn of `θ` off straight is only about `r·sin(θ/2)` deep (`r` = half the stroke width), so a gentle bend leaves a sub-pixel notch and needs no disc at all.
 
 The half-width `r` above is **not** the style's stored `weight` directly — a line's on-screen thickness **ramps with zoom**. A style's `weight` is its width at a *reference* ground scale (mid-riding zoom); each frame the renderer multiplies it by `(ref_mpp / mpp)^0.6` — one factor for the whole frame — so a road thickens as you zoom in and thins as you zoom out, the way a physical thing looks closer or farther. The exponent is deliberately **sub-linear**: true physical scaling (`^1`) would make every road sub-pixel at continent zoom and let one motorway swallow the panel up close, so the ramp is clamped to `1…12 px` and rounded to whole pixels (the map zooms in fixed ×1.2 detents, so the width steps cleanly with no shimmer). This also rights the cost curve — a wide overview, where hundreds of roads are on screen and the frame budget is tightest, now strokes each at 1–2 px instead of its full authored weight; the fat strokes happen only zoomed in, where a handful of features are visible. Dashed lines (admin borders, railway stripes) ride the same ramped width, so their dash rhythm tracks the line's thickness rather than fighting it.
+
+### A second colour and a dash: line styles
+
+Everything above strokes a line in one flat colour. But a railway isn't flat, an admin border is dashed, a road at riding zoom wants a darker *casing* down each side so it reads as a road and not a scratch, and a building at the finest zoom wants a crisp wall instead of a grey slab. Version 10 of the map format gives every style two extra knobs — a **`line_style`** (solid or dashed) and an optional **secondary colour `color2`** — and the renderer fans those two bits, crossed with whether the feature is a line or a polygon, into five distinct looks:
+
+| Feature | `line_style` | `color2` | Renders as |
+| :-- | :-- | :-- | :-- |
+| Line | solid | — | a flat stroke — the unchanged path |
+| Line | solid | set | **road casing** — a wider `color2` base under the fill (finest LOD only) |
+| Line | dashed | — | **dashes** in `color`, gaps transparent (admin borders) |
+| Line | dashed | set | **railway stripe** — a solid `color2` base with `color` dashes on top |
+| Polygon | *(ignored)* | set | fill in `color`, plus a `color2` **ring outline** (finest LOD only) |
+
+Each span already carries its one-byte `style_id`, so the draw loop re-resolves the full style from the reader's `O(1)` style table at draw time — no extra per-span RAM. Two of the five (casing, outline) are *extra passes* that cost real time, so they're gated to the finest LOD; the other three ride the existing stroke path. A config that uses **none** of them renders byte-for-byte what it did before — the whole feature is built to be free when unused, and each renderer sub-issue proved it with a before/after PNG md5 diff on a fixed camera.
+
+**Dashes, for free.** A dashed line reuses the entire clip-then-stroke pipeline unchanged and diverges only at the very end: instead of filling the whole visible run, it walks that run in **screen-space arc length** and emits only the "on" intervals. Because the clip happens *first*, the walker only ever sees on-screen geometry — so a dashed line is actually *cheaper* than the solid one, not dearer: it clips away the same off-screen majority, then paints only half of what survives. The phase resets at each clipped run (each time the line re-enters the view), which lets a dash straddle a bend seamlessly but also means the pattern can "crawl" a pixel or two as you pan — every slippy map does this, and it isn't worth carrying feature-space arc length to avoid. A **railway stripe** is just this composed with a base: stroke the whole line once in `color2`, then stroke `color` dashes on top, so the gaps between the dark dashes show the light base through — alternating stripes, no perpendicular crossties.
+
+### Road casing, and the z-boundary that makes junctions work
+
+A casing is a `weight + 2 px` stroke in `color2` painted **under** a road's fill, giving the road a darker edge down each side — the OSM-carto / Komoot "roads have borders" look. The subtlety isn't the stroke; it's *when* to paint it. Paint all the casings first, before the map, and the low-z fills that blanket a town (landuse, forest, water) paint straight over them — the casings vanish. Paint each casing right before its own road, and where two roads cross, one road's casing slices across the other's fill and the junction reads as cut.
+
+The spans are already sorted by `(z, seq)`, so the cased road lines form one contiguous z-band. The casing pass is inserted at exactly the **z boundary where that band begins** — a split index into the sorted array, not a re-sort — so the casings land *above* the low-z fills that would erase them yet *under* every road fill.
+
+<figure class="fig">
+<svg viewBox="0 0 800 320" role="img" aria-label="Left: the frame's spans, sorted by z-index and drawn bottom-up — water, landuse and building fills at the bottom, then a dashed split line marking the first cased road line, then the road casings, then the road fills on top. The casing pass is inserted at that split: after the low-z fills, so they cannot paint over it, but under every road fill. Right: a junction where two roads cross — the road fills stay continuous through the crossing and the darker casing hugs only the outside of each road, with no casing line slicing across the junction.">
+  <text class="d-tag" x="20" y="24">The casing pass goes at the z boundary — not before the frame</text>
+
+  <!-- LEFT: the sorted span stack -->
+  <text class="d-sub" x="150" y="52" text-anchor="middle">spans · sorted (z, seq) · drawn bottom-up</text>
+  <text class="d-sub" x="42" y="186" text-anchor="middle" transform="rotate(-90 42 186)" style="font-size:9px">z ↑ · paint order ↑</text>
+
+  <!-- bands: bottom (low z) drawn first -->
+  <rect x="90" y="248" width="110" height="26" rx="4" class="d-water" />
+  <text class="d-num" x="145" y="265" text-anchor="middle">water</text>
+  <rect x="90" y="220" width="110" height="26" rx="4" class="d-forest" />
+  <text class="d-num" x="145" y="237" text-anchor="middle">landuse</text>
+  <rect x="90" y="192" width="110" height="26" rx="4" style="fill:#d6cda8;stroke:#3c6b39;stroke-width:0.8" />
+  <text class="d-sub" x="145" y="209" text-anchor="middle">buildings</text>
+
+  <!-- split line -->
+  <line x1="72" y1="186" x2="214" y2="186" stroke="#cf6a2a" stroke-width="2" stroke-dasharray="5 4" />
+
+  <!-- casing pass -->
+  <rect x="90" y="152" width="110" height="26" rx="4" style="fill:#5a4326" />
+  <text class="d-num" x="145" y="169" text-anchor="middle">casings</text>
+  <!-- road fills -->
+  <rect x="90" y="124" width="110" height="26" rx="4" style="fill:#cdb894;stroke:#5a4326;stroke-width:0.8" />
+  <text class="d-sub" x="145" y="141" text-anchor="middle">road fills</text>
+
+  <!-- step annotations -->
+  <text class="d-sub" x="216" y="140" style="fill:#a9501c;font-size:9.5px">③ spans[split..) — road band, on top</text>
+  <text class="d-sub" x="216" y="168" style="fill:#a9501c;font-size:9.5px">② casing pass — wide color2, finest LOD</text>
+  <text class="d-sub" x="216" y="184" style="font-size:9px">split — first cased road line</text>
+  <text class="d-sub" x="216" y="230" style="fill:#a9501c;font-size:9.5px">① spans[0..split) — the base pass</text>
+
+  <!-- RIGHT: a junction -->
+  <text class="d-sub" x="620" y="52" text-anchor="middle">at a crossing</text>
+  <!-- casing (dark), drawn first -->
+  <rect x="520" y="162" width="200" height="36" style="fill:#5a4326" />
+  <rect x="602" y="100" width="36" height="160" style="fill:#5a4326" />
+  <!-- fills (tan), on top — cover the casing where the roads cross -->
+  <rect x="520" y="166" width="200" height="28" style="fill:#cdb894" />
+  <rect x="606" y="100" width="28" height="160" style="fill:#cdb894" />
+  <!-- callouts -->
+  <line class="d-stroke" x1="620" y1="180" x2="620" y2="180" />
+  <text class="d-sub" x="620" y="284" text-anchor="middle" style="font-size:9.5px">fills continuous through the junction</text>
+  <text class="d-sub" x="620" y="298" text-anchor="middle" style="font-size:9.5px">casing hugs the outside of each road only</text>
+</svg>
+<figcaption>Because the spans are already <code>(z, seq)</code>-sorted, the cased road lines are a contiguous band; the draw phase draws <b>①</b> everything below that band, then runs the <b>②</b> casing pass, then draws <b>③</b> the road band on top. So a casing survives the landuse/water fills below it, yet sits under all the road fills above it — at a junction (right) the fills stay continuous and no casing slices across the crossing. With no cased style the split is the whole array, the casing pass is empty, and ①+③ collapse to today's single pass; coarser LODs skip the pass outright.</figcaption>
+</figure>
+
+### Building outlines: all the fills, then all the walls
+
+A polygon whose style carries a `color2` gets **every ring — its exterior and any courtyard holes — stroked closed** in that colour at the finest LOD, so a building stops reading as a flat grey slab when you zoom in. Here too the interesting part is ordering. Touching row-house buildings share a wall, so if you outline each building right after its own fill, the *next* building's fill paints over the wall the previous one just drew — the terrace merges into one blob.
+
+The fix reuses the same `(z, seq)` sort. Within each contiguous **equal-z group** the draw loop runs two passes: **all the fills first**, then **all the outlines**. Nothing paints a fill after an outline within the group, so a neighbour can no longer erase a shared wall — both buildings stroke that edge, and it survives. The group closes before the next z begins, so a road at a higher z still paints over a building outline where it crosses.
+
+<figure class="fig">
+<svg viewBox="0 0 760 300" role="img" aria-label="Top row, per-feature order (wrong): building A is filled and outlined, then building B's fill lands over the shared edge and erases A's wall there, then B is outlined — the two touching buildings merge into one block with no divider. Bottom row, per-z-group order (right): both buildings are filled first, then both are outlined — the shared middle wall is drawn last, after every fill, so it survives and the two buildings read as distinct.">
+  <text class="d-tag" x="20" y="24">Outline after every fill in the z-group, so shared walls survive</text>
+
+  <!-- TOP ROW: per-feature (wrong) -->
+  <text class="d-label" x="30" y="70" style="fill:#a9501c">per feature</text>
+  <text class="d-sub" x="30" y="84" style="font-size:9px">outline right after each fill</text>
+
+  <!-- frame 1: A filled + outlined -->
+  <rect x="182" y="52" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <text class="d-sub" x="204" y="112" text-anchor="middle" style="font-size:9px">① fill + outline A</text>
+
+  <!-- frame 2: B's fill lands over the shared edge -->
+  <rect x="352" y="52" width="44" height="44" style="fill:#d6cda8" />
+  <rect x="396" y="52" width="44" height="44" style="fill:#d6cda8" />
+  <!-- A's surviving outer edges (coral), but the shared edge is covered by B's fill -->
+  <path d="M352 52 h44 M352 96 h44 M352 52 v44" fill="none" stroke="#cf6a2a" stroke-width="2.5" />
+  <line x1="399" y1="50" x2="399" y2="98" stroke="#c0492e" stroke-width="2" stroke-dasharray="3 3" />
+  <text x="446" y="70" style="font-family:var(--mono);font-size:9px;fill:#c0492e">B's fill erased</text>
+  <text x="446" y="82" style="font-family:var(--mono);font-size:9px;fill:#c0492e">A's shared wall</text>
+  <text class="d-sub" x="374" y="112" text-anchor="middle" style="font-size:9px">② B's fill lands</text>
+
+  <!-- frame 3: B outlined -> blob -->
+  <rect x="600" y="52" width="88" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <text class="d-sub" x="644" y="112" text-anchor="middle" style="font-size:9px">③ one merged blob ✗</text>
+
+  <!-- divider -->
+  <line class="d-stroke" x1="30" y1="150" x2="730" y2="150" style="stroke:#9aa884;stroke-width:1" />
+
+  <!-- BOTTOM ROW: per-z-group (right) -->
+  <text class="d-label" x="30" y="192" style="fill:#3c6b39">per z-group</text>
+  <text class="d-sub" x="30" y="206" style="font-size:9px">all fills, then all outlines</text>
+
+  <!-- frame 1: both fills, no outlines -->
+  <rect x="182" y="176" width="44" height="44" style="fill:#d6cda8" />
+  <rect x="226" y="176" width="44" height="44" style="fill:#d6cda8" />
+  <text class="d-sub" x="226" y="236" text-anchor="middle" style="font-size:9px">① all fills first</text>
+
+  <!-- frame 2: both outlined -> wall kept -->
+  <rect x="374" y="176" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <rect x="418" y="176" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <line x1="418" y1="174" x2="418" y2="222" stroke="#cf6a2a" stroke-width="2.5" />
+  <text class="d-sub" x="418" y="236" text-anchor="middle" style="font-size:9px">② all outlines</text>
+
+  <!-- result -->
+  <text x="560" y="196" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">the shared wall is</text>
+  <text x="560" y="210" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">drawn after every fill</text>
+  <text x="560" y="224" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">→ two crisp buildings ✓</text>
+</svg>
+<figcaption>Both shared-wall neighbours sit in the same z-group (buildings share a z), so drawing every fill before any outline is what keeps the wall. The outline is a <b>fixed 1-px hairline</b>, not the zoom-ramped stroke width: ramped, a closed ring hits 3–4 px at the sub-metre finest-LOD scale and its round joins flood a small footprint until the fill drowns and the building reads as a dark slab — the opposite of the goal. With no outlined polygon the group takes the single-loop path, byte-identical to before.</figcaption>
+</figure>
+
+**What the finest-LOD passes cost.** Both casing and outlines run **only at the finest LOD**, so every coarser zoom — where the frame budget is already tightest — pays exactly nothing. Where they do run, the numbers (measured `draw_us`, dense street scenes) are modest: casing adds **~20–25%** to the draw (at 4 m/px on a dense grid, ~170–179 µs climbs to ~206–250 µs for 152 cased roads; ~+55–80 µs at a busier zoom), because a casing is one extra wide stroke — wider than the fill it underlies, so its cost is the raster, not the re-projection. Building outlines are far cheaper still — **~7–9% of the casing pass** (about +10 µs at 2 m/px, +25 µs at 4 m/px) — because a hairline ring is the thin Bresenham line path, a fraction of a filled stroke.
 
 ## 7 · The overlays
 
