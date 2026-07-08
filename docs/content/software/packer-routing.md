@@ -531,7 +531,7 @@ for i in 0..lods.len() {                              // coarse (0) → fine
 
 ### The quadtree: packing geometry into chunks
 
-Within a tier, features are inserted into a quadtree over the global bounding box. A leaf simply accumulates features until their packed size — `12 + point_count·4` bytes each — would exceed the chunk size; then it **splits** into four (NW · NE · SW · SE) and re-distributes them. A feature that straddles a child boundary is **clipped** to each child's box.
+Within a tier, features are bucketed into a quadtree over the global bounding box. A node holds every feature reaching it; if their combined packed size — `12 + point_count·4` bytes each — fits the chunk size it becomes a leaf, otherwise it **splits** into four (NW · NE · SW · SE), hands each child the features it reaches, and recurses. A feature that straddles a child boundary is **clipped** to each child's box. The four child subtrees are built **in parallel** — they share no state, and only plain geometry (never a live GEOS handle) crosses a thread — which is what keeps the per-LOD build, otherwise the packer's heaviest stage, off the critical path.
 
 <figure class="fig">
 <svg viewBox="0 0 720 290" role="img" aria-label="A region with features being bucketed into a quadtree. A dense corner has been subdivided into four smaller cells, one of them subdivided again. A line feature crossing a cell boundary is clipped into two pieces, one per cell.">
@@ -574,12 +574,13 @@ Within a tier, features are inserted into a quadtree over the global bounding bo
 </figure>
 
 ```rust
-let delta = 12 + pt_count(&f.geom) * 4;   // this feature's packed size
-self.features.push(f);
-self.current_size += delta;
-if self.current_size > self.chunk_size {  // leaf full → subdivide NW/NE/SW/SE
-    self.split();                         // and re-insert the accumulated features
+let total: usize = feats.iter().map(|f| 12 + pt_count(&f.geom) * 4).sum();
+if total <= chunk_size || !splittable {
+    return Node::Leaf { bbox, features: feats };   // fits the chunk → a leaf
 }
+// too big → split NW/NE/SW/SE, clip straddlers into each child, recurse in parallel
+let (nw, ne, sw, se) = distribute_to_quadrants(feats, bbox);
+rayon::join(|| (build(nw), build(ne)), || (build(sw), build(se)))
 ```
 
 That this is the *same* quadtree the device walks closes the loop with the other pages: the packer writes it, the [format](../formats/#the-quadtree-index) stores it as a flat `u32` array, and the [renderer](../rendering/#3-the-quadtree-cull-only-the-chunks-you-can-see) walks it to cull.
