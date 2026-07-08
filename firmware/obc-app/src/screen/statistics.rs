@@ -387,9 +387,17 @@ impl StatisticsScreen {
         let row_h = ((h - 10 - grid_top - 2 * gap) / stat_fields::ROWS_PER_PAGE as i32).max(20);
         let cx = rx.readout();
         for placed in stat_fields::page_fields(fields, page) {
-            let cell = placed.field.cell(&cx);
             let x = chart_x + placed.col as i32 * (col_w + gap);
             let y = grid_top + placed.row as i32 * (row_h + gap);
+            // The multi-row waypoint panel bypasses `cell()` (its 2×3 list doesn't fit the tile's
+            // caption+value shape): it always starts a page at col 0 / row 0, so it fills the whole
+            // grid width and all three rows + their inner gaps.
+            if placed.field.rows() > 1 {
+                let panel_h = row_h * stat_fields::ROWS_PER_PAGE as i32 + gap * (stat_fields::ROWS_PER_PAGE as i32 - 1);
+                super::waypoint_panel(cv, rect(chart_x, y, chart_w, panel_h), &cx, PARCHMENT_SHADE);
+                continue;
+            }
+            let cell = placed.field.cell(&cx);
             let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
             super::tile(
                 cv,
