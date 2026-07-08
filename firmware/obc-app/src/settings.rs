@@ -245,6 +245,74 @@ impl ClimbMode {
     }
 }
 
+/// Whether — and when — the Map's bottom-centre **waypoint chip** (epic #523) is shown: the calm
+/// `◆ NAME  <dist>` pill counting the along-route distance to the next named waypoint ahead. A
+/// device-only setting (the Stats settings screen cycles it), persisted in the codec next to
+/// [`climb_mode`](Settings::climb_mode).
+///
+/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+/// byte always decodes to the same mode (an unknown byte sanitises to the default, [`Approach`]).
+///
+/// [`Approach`]: WaypointMode::Approach
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WaypointMode {
+    /// The chip is never shown — the silencer for routes carrying junk/artifact waypoints from a
+    /// planner's GPX export (a whole route of them can be muted here).
+    Off = 0,
+    /// The chip appears only as the next waypoint nears — within the approach radius
+    /// (`WAYPOINT_APPROACH_M`, 500 m) ahead — counting the distance down, so a stop is noticed
+    /// without standing chrome. **The default** (discoverability won over the conservative `Off`).
+    Approach = 1,
+    /// The chip is shown whenever a named waypoint lies ahead (subject to the shared
+    /// no-fix / off-route / pan suppression), reading the along-route distance to it.
+    Always = 2,
+}
+
+impl Default for WaypointMode {
+    /// **Approach** out of the box — the calm middle ground: the chip surfaces as a waypoint nears
+    /// (so the feature is self-discovering) but stays down the rest of the time. Locked 2026-07-08.
+    fn default() -> Self {
+        WaypointMode::Approach
+    }
+}
+
+impl WaypointMode {
+    /// The label for the Stats screen's Waypoints-panel row (`Off` / `Approach` / `Always`).
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            WaypointMode::Off => "Off",
+            WaypointMode::Approach => "Approach",
+            WaypointMode::Always => "Always",
+        }
+    }
+
+    /// The next mode in the Off → Approach → Always → Off ring — the Stats row's one action (a turn
+    /// or press steps it).
+    #[inline]
+    pub const fn cycled(self) -> Self {
+        match self {
+            WaypointMode::Off => WaypointMode::Approach,
+            WaypointMode::Approach => WaypointMode::Always,
+            WaypointMode::Always => WaypointMode::Off,
+        }
+    }
+
+    /// Rebuild from a stored byte, sanitising an unknown value to the default
+    /// ([`Approach`](WaypointMode::Approach)) — the decode-side clamp, exactly like the other codec
+    /// fields.
+    #[inline]
+    fn from_byte(b: u8) -> Self {
+        match b {
+            0 => WaypointMode::Off,
+            1 => WaypointMode::Approach,
+            2 => WaypointMode::Always,
+            _ => WaypointMode::default(),
+        }
+    }
+}
+
 /// How long the UI sits idle (no user input) before it navigates itself back to where it belongs —
 /// the Home root when not tracking a ride, the Map when a ride is running (see
 /// [`App::apply_idle_return`](crate::App::apply_idle_return)). A device-only setting, cycled by the
@@ -641,6 +709,12 @@ pub struct Settings {
     /// only means anything against a map. **Device-only** (a bike type is picked on the device), so
     /// [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default **0**.
     pub bike_profile_idx: u8,
+    /// Whether — and when — the Map's bottom-centre waypoint chip appears (epic #523, the Stats
+    /// settings screen cycles it). **Device-only**, like [`climb_mode`](Settings::climb_mode):
+    /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
+    /// pulls across — a BLE Config write must never flip the rider's on-glass chrome. Default
+    /// **Approach** (the chip surfaces only as a waypoint nears).
+    pub waypoint_mode: WaypointMode,
 }
 
 impl Default for Settings {
@@ -661,6 +735,7 @@ impl Default for Settings {
             map_clock: true,
             map_scale_bar: true,
             bike_profile_idx: 0,
+            waypoint_mode: WaypointMode::default(),
         }
     }
 }
@@ -709,8 +784,8 @@ impl Settings {
 /// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
 /// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511); v6 appended
 /// the `idle_return` byte; v7 appended the `map_clock` + `map_scale_bar` bytes; v8 appended the
-/// `bike_profile_idx` byte (routing-v2 N5, #538).
-pub const VERSION: u8 = 8;
+/// `bike_profile_idx` byte (routing-v2 N5, #538); v9 appended the `waypoint_mode` byte (epic #523).
+pub const VERSION: u8 = 9;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -719,7 +794,7 @@ pub const VERSION: u8 = 8;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = PROFILE_OFF + 1;
+const PAYLOAD_LEN: usize = WAYPOINT_OFF + 1;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
@@ -738,6 +813,8 @@ const MAP_CLOCK_OFF: usize = IDLE_OFF + 1;
 const SCALE_BAR_OFF: usize = MAP_CLOCK_OFF + 1;
 /// Byte offset of the `bike_profile_idx` byte (the v8 tail, right after `map_scale_bar`).
 const PROFILE_OFF: usize = SCALE_BAR_OFF + 1;
+/// Byte offset of the `waypoint_mode` byte (the v9 tail, right after `bike_profile_idx`).
+const WAYPOINT_OFF: usize = PROFILE_OFF + 1;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -788,6 +865,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[SCALE_BAR_OFF] = s.map_scale_bar as u8;
     // v8 tail: the selected routing-profile index (§8.6; resolved against the loaded map).
     b[PROFILE_OFF] = s.bike_profile_idx;
+    // v9 tail: the Map waypoint-chip mode.
+    b[WAYPOINT_OFF] = s.waypoint_mode as u8;
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -839,6 +918,9 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // the loaded map's profile count is resolved to profile 0 at plan time (N3) and shown as
         // profile 0's name in the UI (see the field doc), so a stale index is never a decode failure.
         bike_profile_idx: b[PROFILE_OFF],
+        // The v9 waypoint-chip mode: an unknown byte sanitises to the default (Approach), like the
+        // other enum codec fields.
+        waypoint_mode: WaypointMode::from_byte(b[WAYPOINT_OFF]),
     };
     s.sanitize();
     Some(s)
@@ -1079,6 +1161,7 @@ mod tests {
             map_clock: false,
             map_scale_bar: false,
             bike_profile_idx: 3,
+            waypoint_mode: WaypointMode::Always,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -1200,7 +1283,6 @@ mod tests {
     /// can't repick the rider's bike type).
     #[test]
     fn bike_profile_idx_round_trips_and_is_device_only() {
-        assert_eq!(VERSION, 8, "the bike-profile index is the v8 layout (settings reset on flash)");
         assert_eq!(Settings::default().bike_profile_idx, 0, "the profile index defaults to 0");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v7.
         assert_eq!(ENCODED_LEN, 96, "the v8 byte doesn't cross a 16-byte RRAM line");
@@ -1216,6 +1298,38 @@ mod tests {
         let mut app = Settings { bike_profile_idx: 2, ..Settings::default() };
         app.adopt_ble_fields(&Settings { bike_profile_idx: 5, ..Settings::default() });
         assert_eq!(app.bike_profile_idx, 2, "adopt_ble_fields leaves the bike profile alone");
+    }
+
+    /// The v9 tail: the Map waypoint-chip mode round-trips every value, defaults **Approach** (the
+    /// discoverable middle ground), sanitises an out-of-range byte back to Approach, and is
+    /// device-only — [`adopt_ble_fields`] must never pull it across (a BLE Config write can't flip
+    /// the rider's on-glass chrome).
+    #[test]
+    fn waypoint_mode_round_trips_and_is_device_only() {
+        assert_eq!(VERSION, 9, "the waypoint mode is the v9 layout (settings reset on flash)");
+        assert_eq!(Settings::default().waypoint_mode, WaypointMode::Approach, "the chip defaults to Approach");
+        // The one new byte still fits inside the same 16-byte RRAM line rounding as v8.
+        assert_eq!(ENCODED_LEN, 96, "the v9 byte doesn't cross a 16-byte RRAM line");
+
+        // Each mode round-trips through the codec byte-for-byte.
+        for mode in [WaypointMode::Off, WaypointMode::Approach, WaypointMode::Always] {
+            let s = Settings { waypoint_mode: mode, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "{mode:?} round-trips");
+        }
+
+        // An out-of-range stored byte (a newer writer, a bit-flip the CRC missed) sanitises to the
+        // default Approach — re-stamp the CRC so only the payload byte is "wrong".
+        let mut b = encode(&Settings { waypoint_mode: WaypointMode::Off, ..Settings::default() });
+        b[WAYPOINT_OFF] = 200;
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        let got = decode(&b).expect("valid CRC → Some, just sanitised");
+        assert_eq!(got.waypoint_mode, WaypointMode::Approach, "an unknown waypoint-mode byte falls back to Approach");
+
+        // Device-only: a BLE blob's waypoint_mode never lands via the #456 coherence merge.
+        let mut app = Settings { waypoint_mode: WaypointMode::Off, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { waypoint_mode: WaypointMode::Always, ..Settings::default() });
+        assert_eq!(app.waypoint_mode, WaypointMode::Off, "adopt_ble_fields leaves the waypoint mode alone");
     }
 
     /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a
