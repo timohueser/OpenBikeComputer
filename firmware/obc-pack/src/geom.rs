@@ -148,6 +148,42 @@ pub fn footprint_below(g: &Geom, mpp: f64, min_area_px: f64) -> bool {
     }
 }
 
+/// Drop interior rings (holes) whose projected area is below `min_area_px` square pixels at `mpp`,
+/// returning the count removed. A hole smaller than a pixel is invisible — the fill paints straight
+/// over it — so dropping it is a pixel-exact no-op that frees **a ring plus its vertices** in the
+/// render's frame scratch (and shaves bytes on disk). The exterior is never touched, and a polygon
+/// is never emptied (a kept polygon keeps its outline); lines and empties pass through. Same
+/// disabled/degenerate guards and mid-latitude foreshortening basis as [`footprint_below`], so a
+/// hole and a standalone polygon of equal area cull at the same scale. `Multi` recurses per part.
+///
+/// Paired with [`footprint_below`]: the cull drops whole sub-pixel polygons, this trims sub-pixel
+/// holes out of the ones that survive (e.g. a big farmland face pocked with tiny unmapped islands).
+pub fn strip_small_holes(g: &mut Geom, mpp: f64, min_area_px: f64) -> usize {
+    if min_area_px <= 0.0 || mpp <= 0.0 {
+        return 0;
+    }
+    match g {
+        Geom::Empty | Geom::Line(_) => 0,
+        Geom::Multi(parts) => parts.iter_mut().map(|p| strip_small_holes(p, mpp, min_area_px)).sum(),
+        Geom::Polygon { exterior, interiors } => {
+            if interiors.is_empty() {
+                return 0;
+            }
+            // Foreshorten at the exterior's mid-latitude — holes live inside it, so its bounds set
+            // the scale (matching `footprint_below`'s whole-geometry `bounds()` mid-lat).
+            let (mut miny, mut maxy) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &(_, y) in exterior.iter() {
+                miny = miny.min(y);
+                maxy = maxy.max(y);
+            }
+            let (lon_ppd, lat_ppd) = px_per_deg(0.5 * (miny + maxy), mpp);
+            let before = interiors.len();
+            interiors.retain(|hole| ring_area_deg2(hole) * lon_ppd * lat_ppd >= min_area_px);
+            before - interiors.len()
+        }
+    }
+}
+
 /// Only `Line`/`Polygon` reach here (post-flatten).
 pub fn to_feature(style_id: u8, g: &Geom) -> Option<Feature> {
     match g {
@@ -753,5 +789,56 @@ mod tests {
         };
         assert!(!footprint_below(&equator, 18.0, 4.0), "kept at the equator");
         assert!(footprint_below(&north, 18.0, 4.0), "same size, culled at 60°N");
+    }
+
+    // --- strip_small_holes (sub-pixel hole trim) ----------------------------
+
+    /// The exterior of a big 0.01° face, holed by one ~1375 px² courtyard and one ~1.5 px² island at
+    /// 18 m/px.
+    fn holed(interiors: Vec<Vec<(f64, f64)>>) -> Geom {
+        Geom::Polygon { exterior: ring(&[(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.01), (0.0, 0.0)]), interiors }
+    }
+    fn big_hole() -> Vec<(f64, f64)> {
+        ring(&[(0.002, 0.002), (0.008, 0.002), (0.008, 0.008), (0.002, 0.008), (0.002, 0.002)])
+    }
+    fn tiny_hole() -> Vec<(f64, f64)> {
+        ring(&[(0.0011, 0.0011), (0.0013, 0.0011), (0.0013, 0.0013), (0.0011, 0.0013), (0.0011, 0.0011)])
+    }
+
+    /// A sub-pixel hole is dropped, a supra-pixel hole survives untouched, and the exterior is never
+    /// modified — same 4 px² threshold that culls a standalone ~1.5 px² square in the tests above.
+    #[test]
+    fn strip_small_holes_drops_only_subpixel_holes() {
+        let mut g = holed(vec![big_hole(), tiny_hole()]);
+        assert_eq!(strip_small_holes(&mut g, 18.0, 4.0), 1, "exactly the sub-pixel hole is removed");
+        match &g {
+            Geom::Polygon { exterior, interiors } => {
+                assert_eq!(exterior.len(), 5, "the exterior ring is untouched");
+                assert_eq!(interiors.as_slice(), &[big_hole()], "the big courtyard survives, unchanged");
+            }
+            other => panic!("expected a polygon, got {other:?}"),
+        }
+    }
+
+    /// Disabled (`min_area_px <= 0`) or a non-positive mpp trims nothing, so the packer stays
+    /// byte-identical when the knob is off — the same off-contract as the footprint cull.
+    #[test]
+    fn strip_small_holes_disabled_is_a_noop() {
+        let mut g = holed(vec![tiny_hole()]);
+        assert_eq!(strip_small_holes(&mut g, 18.0, 0.0), 0, "min_area_px 0 is off");
+        assert_eq!(strip_small_holes(&mut g, 0.0, 4.0), 0, "non-positive mpp is off");
+        match &g {
+            Geom::Polygon { interiors, .. } => assert_eq!(interiors.len(), 1, "the tiny hole is still present"),
+            other => panic!("expected a polygon, got {other:?}"),
+        }
+    }
+
+    /// Lines, hole-free polygons, and empties have nothing to strip; a `Multi` recurses per part.
+    #[test]
+    fn strip_small_holes_ignores_lines_and_hole_free() {
+        assert_eq!(strip_small_holes(&mut Geom::Line(ring(&[(0.0, 0.0), (0.01, 0.0)])), 18.0, 4.0), 0);
+        assert_eq!(strip_small_holes(&mut square(0.001), 18.0, 4.0), 0, "a solid polygon has no holes to trim");
+        let mut multi = Geom::Multi(vec![holed(vec![tiny_hole()]), Geom::Line(ring(&[(0.0, 0.0), (0.01, 0.0)]))]);
+        assert_eq!(strip_small_holes(&mut multi, 18.0, 4.0), 1, "Multi recurses: the polygon part's tiny hole goes");
     }
 }
