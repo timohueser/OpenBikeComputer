@@ -17,7 +17,7 @@ use std::process::{Command, ExitCode};
 use rayon::prelude::*;
 
 use obc_pack::config::Config;
-use obc_pack::geom::{footprint_below, topology_preserve_simplify, Geom};
+use obc_pack::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
 use obc_pack::ingest::{ingest_osm, IngestFeature};
 use obc_pack::land;
 use obc_pack::merge::{merge_classes, merge_fills};
@@ -170,17 +170,23 @@ fn run() -> Result<(), String> {
             // `min_area_px` is ignored. Off (`None`) ⇒ byte-identical to before.
             let cull_mpp = (lod.min_area_px > 0.0).then(|| config.lods.get(i + 1).and_then(|l| l.max_mpp)).flatten();
             let culled = std::sync::atomic::AtomicUsize::new(0);
+            let holes_stripped = std::sync::atomic::AtomicUsize::new(0);
             let min_area_px = lod.min_area_px;
-            // Per-feature simplify + coarse-LOD footprint cull. Each call runs wholly
-            // on one thread using that thread's own GEOS context, so no geometry
-            // crosses threads; rayon's `collect` preserves order. The quadtree build
-            // stays sequential (bounded memory).
+            // Per-feature simplify + coarse-LOD footprint cull + sub-pixel hole trim. Each call runs
+            // wholly on one thread using that thread's own GEOS context, so no geometry crosses
+            // threads; rayon's `collect` preserves order. The quadtree build stays sequential.
             let simplify_cull = |style_id: u8, geom: &Geom| -> Option<(u8, Geom)> {
-                let g = if tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
+                let mut g = if tol > 0.0 { topology_preserve_simplify(geom, tol) } else { geom.clone() };
                 if let Some(mpp) = cull_mpp {
                     if footprint_below(&g, mpp, min_area_px) {
                         culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return None;
+                    }
+                    // Survivors: trim sub-pixel holes (invisible; frees a ring + its vertices in the
+                    // render scratch, on the same tier gate + threshold as the footprint cull).
+                    let n = strip_small_holes(&mut g, mpp, min_area_px);
+                    if n > 0 {
+                        holes_stripped.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
                 Some((style_id, g))
@@ -216,6 +222,10 @@ fn run() -> Result<(), String> {
             let culled = culled.load(std::sync::atomic::Ordering::Relaxed);
             if culled > 0 {
                 println!("  culled {culled} feature(s) below {} px² footprint", lod.min_area_px);
+            }
+            let holes_stripped = holes_stripped.load(std::sync::atomic::Ordering::Relaxed);
+            if holes_stripped > 0 {
+                println!("  stripped {holes_stripped} sub-pixel hole(s) from surviving polygons");
             }
             (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
         },
