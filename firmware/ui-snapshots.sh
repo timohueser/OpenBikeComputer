@@ -22,6 +22,10 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 SIM="${SIM:-$repo_root/firmware/target/release/obc-sim}"
 MAP="${MAP:-$repo_root/firmware/obc-sim/assets/grimsel.obcm}"
 GPX="${GPX:-$repo_root/firmware/obc-sim/assets/grimsel-climb.gpx}"
+# A second, tiny replay that lies *on* protocol-vectors' `route-waypoints.obcr` ("Vector Loop") — the
+# Grimsel climb GPX above is far off it, so it can't drive the waypoint chip/ticks. Synthetic + its
+# provenance are pinned in the assets README; it stops ~300 m short of the "Pass Summit" waypoint.
+WPTGPX="$repo_root/firmware/obc-sim/assets/vector-loop-replay.gpx"
 ROUTES="$repo_root/protocol-vectors"
 OUT="${1:-ui-snapshots}"
 
@@ -116,7 +120,15 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --script "B l p r r p r r" --png "$OUT/biketype-mtb.png"
 "$SIM" "$MAP" --boot --script "B l p r r p l"   --png "$OUT/biketype-touring.png"
 "$SIM" "$MAP" --boot --script "B l p r r r p"  --png "$OUT/stats-settings.png"
+# The Waypoints mode row (epic #523): the Stats settings screen's 4th press-to-cycle row, under
+# Climb. Three extra detents park the amber cursor on it, showing the default `Approach` mode.
+"$SIM" "$MAP" --boot --script "B l p r r r p r r r" --png "$OUT/settings-stats-waypoints.png"
 "$SIM" "$MAP" --boot --script "B l p r r r p r p" --png "$OUT/fields.png"
+# The 2×3 waypoint list panel placed in the WYSIWYG field editor (epic #523): from the Fields grid,
+# six detents reach the ADD ghost (the six default tiles fill page 1), press to open the picker, then
+# five detents to `Waypoint list` (last in StatField::ALL) and press. The page-sized panel lands on
+# its own page — the `2 / 3` counter, full-width and three rows tall (`--` with no route loaded).
+"$SIM" "$MAP" --boot --script "B l p r r r p r p r r r r r r p r r r r r p" --png "$OUT/fields-wpt-panel.png"
 # The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
 "$SIM" "$MAP" --boot --script "B l p r r r r p"   --png "$OUT/display.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r p" --png "$OUT/power.png"
@@ -134,6 +146,22 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --battery 5 --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/map-lowbatt.png"
+# Waypoint UI (epic #523). protocol-vectors holds two routes in filename order: id 0 = route-plain,
+# id 1 = route-waypoints ("Vector Loop": named waypoints Brunnen @ ~0 m and Pass Summit @ ~1.70 km on
+# a 2.20 km track). The default `p p p p` rides id 0, so the extra `r` after the Route-menu press
+# (`p p r p p`) picks id 1 — the *only* route these shots use. `--gpx $WPTGPX` is the committed replay
+# that lies on that track, so the matcher locks on and progress drives the chip/tick countdowns; the
+# Grimsel basemap doesn't reach 48°N, which is fine — these frames pin the waypoint chrome, not the map.
+# (a) Map diamonds: at the start (--at 5 ⇒ ~30 m in) the black Brunnen diamond sits on the route by
+# the marker — waypoints render as always-on ink furniture on the route line.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:00" --script "p p r p p" --gpx "$WPTGPX" --at 5   --png "$OUT/map-waypoints.png"
+# (b) The Approach chip: replayed to ~300 m short of Pass Summit (inside the 500 m approach radius),
+# default `Approach` mode → the calm `◆ Pass Summit  299m` pill counts down at bottom-centre, the
+# scale bar stepped up above the chip band.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:03" --script "p p r p p" --gpx "$WPTGPX" --at 233 --png "$OUT/map-wpt-chip.png"
+# (c) Stats mid-route: the amber live-fraction progress bar carries a black tick per named waypoint
+# (Brunnen at the left edge, Pass Summit at its ~0.77 fraction) with the fill sweeping between them.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p r p p b" --gpx "$WPTGPX" --at 233 --png "$OUT/stats-wpt.png"
 # Climb screen (epic #506, C4). The default protocol-vectors routes don't match the Grimsel replay
 # (they're tiny test routes), so ride the committed grimsel-climb.obcr — the route the GPX follows,
 # giving the detector its three back-to-back climbs. `--at 1500` replays ~25 min in (progress ~5 km,
@@ -194,4 +222,4 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --script "B l p r r r r p r r p" --png "$OUT/display-idle-return.png"
 "$SIM" "$MAP" --boot --script "B l p I"               --png "$OUT/idle-return-home.png"
 
-echo "ui-snapshots: 54 screens rendered into $OUT/"
+echo "ui-snapshots: 61 screens rendered into $OUT/"
