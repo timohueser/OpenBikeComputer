@@ -136,23 +136,35 @@ impl StatFieldsScreen {
         let grid_w = w - 2 * GRID_X;
         let col_w = (grid_w - GAP) / 2;
         let row_h = (h - FOOTER_H - LIST_TOP - 2 * GAP - 6) / stat_fields::ROWS_PER_PAGE as i32;
-        let tile_rect = |slot: usize, span: u8| {
+        // A field's rect from its slot + shape: a single fills one cell, a two-span the grid width,
+        // and the page-sized panel (`rows > 1`) the whole grid — full width, all three rows + gaps.
+        let tile_rect = |slot: usize, span: u8, rows: u8| {
             let s = slot % SLOTS_PER_PAGE;
             let (col, row) = ((s % COLS) as i32, (s / COLS) as i32);
             let tw = if span == 2 { grid_w } else { col_w };
-            rect(GRID_X + col * (col_w + GAP), LIST_TOP + row * (row_h + GAP), tw, row_h)
+            let th = if rows > 1 {
+                row_h * stat_fields::ROWS_PER_PAGE as i32 + GAP * (stat_fields::ROWS_PER_PAGE as i32 - 1)
+            } else {
+                row_h
+            };
+            rect(GRID_X + col * (col_w + GAP), LIST_TOP + row * (row_h + GAP), tw, th)
         };
 
-        // The page's tiles — live cells through the same registry the Statistics grid draws with.
+        // The page's tiles — live cells through the same drawers the Statistics grid uses (so the
+        // arrangement is WYSIWYG, the panel included).
         let rdt = rx.readout();
         for (i, f) in list.as_slice().iter().enumerate() {
             let slot = stat_fields::slot_of(&list, i).unwrap_or(0);
             if slot / SLOTS_PER_PAGE == page {
-                let area = tile_rect(slot, f.span());
+                let area = tile_rect(slot, f.span(), f.rows());
                 let is_sel = i == self.selected;
-                let cell = f.cell(&rdt);
                 let bg = if is_sel { AMBER } else { PARCHMENT_SHADE };
-                crate::screen::tile(cv, area, &cell.caption, &cell.value, cell.arrow, cell.value_align, bg);
+                if f.rows() > 1 {
+                    crate::screen::waypoint_panel(cv, area, &rdt, bg);
+                } else {
+                    let cell = f.cell(&rdt);
+                    crate::screen::tile(cv, area, &cell.caption, &cell.value, cell.arrow, cell.value_align, bg);
+                }
                 if is_sel && self.grabbed {
                     move_arrows(cv, area);
                 }
@@ -161,7 +173,7 @@ impl StatFieldsScreen {
 
         // The ghost Add tile: tile anatomy (caption + a plus where the value goes) in outline form.
         if ghost_slot / SLOTS_PER_PAGE == page {
-            let area = tile_rect(ghost_slot, 1);
+            let area = tile_rect(ghost_slot, 1, 1);
             let is_sel = self.selected == len;
             if is_sel {
                 cv.round(area, 5, AMBER);
@@ -311,6 +323,34 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));
         assert!(!scr.grabbed, "back dropped the grab, didn't pop");
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "a second back pops");
+    }
+
+    /// Grabbing the page-sized waypoint panel and turning moves it a whole page per detent, the
+    /// cursor following it across pages — the editor path over the new multi-row machinery.
+    #[test]
+    fn grabbing_the_panel_moves_it_page_to_page() {
+        use crate::stat_fields::StatField;
+        let mut s = Settings::default(); // six single-span defaults (page 0, full)
+        assert!(s.stat_fields.push(StatField::WaypointList));
+        let panel_idx = s.stat_fields.len() - 1; // 6 — the panel trails the six, on page 1
+        let mut scr = StatFieldsScreen::new();
+        // Walk the cursor onto the panel, confirm it starts on page 1, then grab it.
+        for _ in 0..panel_idx {
+            run(&mut scr, &mut s, Gesture::Turn(1));
+        }
+        assert_eq!(scr.selected, panel_idx);
+        assert_eq!(stat_fields::slot_of(&s.stat_fields, panel_idx).unwrap() / SLOTS_PER_PAGE, 1, "panel on page 1");
+        run(&mut scr, &mut s, Gesture::Press); // grab
+        assert!(scr.grabbed);
+        // Up: hops the whole page to the front; the cursor follows.
+        run(&mut scr, &mut s, Gesture::Turn(-1));
+        assert_eq!(scr.selected, 0, "the cursor follows the panel to page 0");
+        assert_eq!(s.stat_fields.as_slice()[0], StatField::WaypointList);
+        assert_eq!(stat_fields::slot_of(&s.stat_fields, 0).unwrap() / SLOTS_PER_PAGE, 0, "now on page 0");
+        // Down: hops a whole page back, cursor still following.
+        run(&mut scr, &mut s, Gesture::Turn(1));
+        assert_eq!(scr.selected, panel_idx, "and back down a page");
+        assert_eq!(s.stat_fields.as_slice()[panel_idx], StatField::WaypointList);
     }
 
     /// The editor's cursor→page mapping: with seven fields (two pages), walking the cursor past
