@@ -24,6 +24,7 @@ use obc_render::{
     text::{text_width, Font, TextAlign},
     Canvas, Surface, Viewport,
 };
+use obc_route::WptEntry;
 
 use crate::app::{Pan, PanAxis};
 use crate::hal::Fix;
@@ -59,6 +60,12 @@ const CHEVRON_MAX_MPP: f32 = 4.0;
 /// Stroke width (px) of the breadcrumb — thinner than the route, so the route stays dominant where
 /// the two coincide.
 const BREADCRUMB_WEIGHT: u32 = 3;
+
+/// Half-diagonal (px) of a waypoint diamond — a ~9 px point-to-point ink rhombus, small map furniture
+/// on the route line (epic #523, part 2). No zoom gate (unlike the chevrons' [`CHEVRON_MAX_MPP`]):
+/// the resident table is ≤ `MAX_WAYPOINTS`, so even a wide overview shows only a calm handful of
+/// anchors — the "day at a glance" read.
+const WAYPOINT_DIAMOND_R: i32 = 4;
 
 /// The live map / Follow view. The camera is the shared [`AppState`](crate::AppState); the only
 /// screen-local state is the clock overlay's [`MinuteTicker`], which fires a region-clipped repaint
@@ -185,14 +192,24 @@ impl MapScreen {
             rx.renderer.stroke_path(target, &vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
         }
 
+        rx.stats = stats;
+        // The raw-target borrow (`target` / `color_fn` from `split`) ends here; the diamonds and the
+        // marker below re-`split` the canvas as they draw.
+
+        // Waypoint diamonds: small filled-ink rhombuses on the route line at each named waypoint,
+        // drawn over the route + breadcrumb but under the marker (so the marker wins when the rider
+        // sits on a waypoint). Always on when the loaded route has waypoints — the part-3 chip setting
+        // governs only the chip, and an empty table (no route) skips the loop for free.
+        draw_waypoint_diamonds(cv, &vp, rx.waypoints.as_slice(), rx.w, rx.h);
+
         // The "you" colour: warning-red while off-route, else the map's marker colour. Shared by the
-        // marker and the pan pin so the off-screen pin matches the on-screen marker.
+        // marker and the pan pin so the off-screen pin matches the on-screen marker. Drawn last of the
+        // map plane, so it sits over the waypoint diamonds.
         let marker565 = if rx.activity.off_route { super::palette::WARNING } else { reader.marker_color };
         if let Some(fix) = rx.state.user_fix {
+            let (target, color_fn) = cv.split();
             rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
         }
-
-        rx.stats = stats;
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
         let panning = rx.state.pan.is_some();
@@ -240,6 +257,35 @@ impl MapScreen {
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
         if let Some(pan) = rx.state.pan {
             draw_pan_hud(cv, (rx.w as f32, rx.h as f32), pan, rx.state.user_fix, marker565, &vp);
+        }
+    }
+}
+
+// ---- Waypoint diamonds (on the route line) --------------------------------
+
+/// The four screen vertices `(top, bottom, left, right)` of a waypoint diamond centred at
+/// `(cx, cy)`, or `None` when the centre lies more than one half-diagonal ([`WAYPOINT_DIAMOND_R`])
+/// outside the `w`×`h` panel — the off-panel cull. A diamond straddling an edge (centre within the
+/// margin) still draws; one wholly past it is dropped. Pure integer geometry, unit-tested below.
+fn waypoint_diamond(cx: i32, cy: i32, w: i32, h: i32) -> Option<(Point, Point, Point, Point)> {
+    let r = WAYPOINT_DIAMOND_R;
+    if cx < -r || cx > w + r || cy < -r || cy > h + r {
+        return None;
+    }
+    Some((Point::new(cx, cy - r), Point::new(cx, cy + r), Point::new(cx - r, cy), Point::new(cx + r, cy)))
+}
+
+/// Draw the route's named waypoints as small filled-[`INK`](super::palette::INK) diamonds at each
+/// entry's own (`lon`, `lat`) — the stored coordinate, **not** snapped to the polyline (it may sit
+/// slightly off it). Each diamond is two [`triangle`](Surface::triangle)s (top + bottom halves
+/// sharing the left/right vertices), the way the rest of the map chrome draws. The table is empty
+/// with no route loaded, so this is a no-op then.
+fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry], w: i32, h: i32) {
+    for wp in wpts {
+        let (sx, sy) = vp.to_screen(wp.lon, wp.lat);
+        if let Some((top, bottom, left, right)) = waypoint_diamond(sx, sy, w, h) {
+            cv.triangle(top, left, right, super::palette::INK);
+            cv.triangle(bottom, left, right, super::palette::INK);
         }
     }
 }
@@ -713,6 +759,27 @@ mod tests {
         assert!(scale_bar_choice(f32::INFINITY, Units::Metric).is_none());
         assert!(scale_bar_choice(0.0, Units::Metric).is_none());
         assert!(scale_bar_choice(-1.0, Units::Metric).is_none());
+    }
+
+    /// The diamond helper: an on-panel centre yields the four rhombus vertices ±r about it; a centre
+    /// straddling an edge (within the half-diagonal margin) still draws; one wholly past the margin
+    /// culls to `None`.
+    #[test]
+    fn waypoint_diamond_vertices_and_cull() {
+        let r = WAYPOINT_DIAMOND_R;
+        // On-panel: the four vertices sit ±r about the centre.
+        let v = waypoint_diamond(100, 80, 240, 240).expect("on-panel centre draws");
+        assert_eq!(
+            v,
+            (Point::new(100, 80 - r), Point::new(100, 80 + r), Point::new(100 - r, 80), Point::new(100 + r, 80))
+        );
+        // Straddling an edge (centre exactly on the half-diagonal margin): still drawn.
+        assert!(waypoint_diamond(-r, 120, 240, 240).is_some(), "just off the left edge still draws");
+        assert!(waypoint_diamond(120, 240 + r, 240, 240).is_some(), "just past the bottom still draws");
+        // Wholly off-panel beyond the margin: culled.
+        assert!(waypoint_diamond(-r - 1, 120, 240, 240).is_none(), "past the left margin culls");
+        assert!(waypoint_diamond(240 + r + 1, 120, 240, 240).is_none(), "past the right margin culls");
+        assert!(waypoint_diamond(120, -r - 1, 240, 240).is_none(), "above the top margin culls");
     }
 
     fn dt(hour: u8, minute: u8) -> DateTime {
