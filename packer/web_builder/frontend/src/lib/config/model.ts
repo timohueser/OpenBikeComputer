@@ -7,6 +7,11 @@
 export interface LodTier {
     max_mpp: number | null;
     simplify: number;
+    // Drop area features (polygons) whose projected area is below this many square
+    // pixels at this tier's finest on-screen scale; absent/0 ⇒ off. Lines are never
+    // culled. Ignored by the packer on the finest tier (no coarser fallback).
+    // Optional so a config without it stays byte-identical when submitted.
+    min_area_px?: number;
 }
 
 export interface StyleDef {
@@ -94,6 +99,7 @@ export function normalizeConfig(raw: Record<string, unknown>): {
     cfg.lods = cfg.lods.map((l, i) => ({
         max_mpp: i === 0 ? null : (l.max_mpp ?? null),
         simplify: l.simplify ?? 0,
+        ...(l.min_area_px ? { min_area_px: l.min_area_px } : {}),
     }));
     cfg.features = cfg.features ?? {};
     cfg.marker = cfg.marker ?? { color: "0xF800" };
@@ -128,10 +134,13 @@ export function buildConfigForSubmit(
     const stripped = new Set<string>();
     const n = config.lods.length;
     const out: PackConfig = {
-        lods: config.lods.map((l, i) => ({
-            max_mpp: i === 0 ? null : (l.max_mpp ?? null),
-            simplify: l.simplify || 0,
-        })),
+        lods: config.lods.map((l, i) => {
+            const tier: LodTier = { max_mpp: i === 0 ? null : (l.max_mpp ?? null), simplify: l.simplify || 0 };
+            // Emit only a positive footprint floor; the finest tier's value is ignored
+            // by the packer, so leaving it off keeps the submitted config clean.
+            if (l.min_area_px && i < n - 1) tier.min_area_px = l.min_area_px;
+            return tier;
+        }),
         features: {},
         marker: config.marker,
     };

@@ -17,7 +17,7 @@ use std::process::{Command, ExitCode};
 use rayon::prelude::*;
 
 use obc_pack::config::Config;
-use obc_pack::geom::{topology_preserve_simplify, Geom};
+use obc_pack::geom::{footprint_below, topology_preserve_simplify, Geom};
 use obc_pack::ingest::{ingest_osm, IngestFeature};
 use obc_pack::land;
 use obc_pack::quadtree::build_lod;
@@ -159,6 +159,13 @@ fn run() -> Result<(), String> {
             let lod = &config.lods[i];
             println!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m);
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
+            // Coarse-LOD footprint cull: after simplify, drop features too small to
+            // render at the finest scale this tier is ever shown at — the next-finer
+            // tier's `max_mpp`. The finest tier has no finer fallback (a drop there
+            // would erase the feature at every zoom), so it is never culled and its
+            // `min_area_px` is ignored. Off (`None`) ⇒ byte-identical to before.
+            let cull_mpp = (lod.min_area_px > 0.0).then(|| config.lods.get(i + 1).and_then(|l| l.max_mpp)).flatten();
+            let culled = std::sync::atomic::AtomicUsize::new(0);
             // Parallel per-feature simplify: each closure runs wholly on one thread
             // using that thread's own GEOS context, so no geometry crosses threads.
             // `collect` preserves order, so the output is unchanged. The quadtree build
@@ -167,11 +174,21 @@ fn run() -> Result<(), String> {
                 .features
                 .par_iter()
                 .filter(|f| f.min_lod <= i)
-                .map(|f| {
+                .filter_map(|f| {
                     let g = if tol > 0.0 { topology_preserve_simplify(&f.geom, tol) } else { f.geom.clone() };
-                    (f.style_id, g)
+                    if let Some(mpp) = cull_mpp {
+                        if footprint_below(&g, mpp, lod.min_area_px) {
+                            culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return None;
+                        }
+                    }
+                    Some((f.style_id, g))
                 })
                 .collect();
+            let culled = culled.load(std::sync::atomic::Ordering::Relaxed);
+            if culled > 0 {
+                println!("  culled {culled} feature(s) below {} px² footprint", lod.min_area_px);
+            }
             (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
         },
     )
