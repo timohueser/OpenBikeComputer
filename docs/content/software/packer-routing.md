@@ -452,12 +452,14 @@ Profiles are the one part of the routing graph that **is** configurable (the top
 
 Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything, at full detail. The presets pick each tolerance pixel-accurately: one pixel at the finest scale the tier is drawn at, which is the next finer tier's `max_mpp` ceiling.
 
+An optional third knob, **`min_area_px`**, declutters the coarse tiers: after simplify, a **polygon** whose projected area falls below that many square pixels — measured at the tier's finest on-screen scale, again the next finer tier's `max_mpp` — is dropped, so a whole region's worth of sub-pixel forest and landuse slivers stop crowding the render's [point budget](../rendering/#4-decode-by-priority-the-clever-bit). It's off by default and never touches the finest tier (nothing coarser to fall back to). Lines are left alone: an OSM way is stored as many short segments, so an area test would drop a road's shortest links and leave it holed — zoomed-out line density stays purely a `min_lod` choice.
+
 <figure class="fig">
 <svg viewBox="0 0 720 270" role="img" aria-label="A pool of features each tagged with a min-LOD flows into three tiers. The country tier takes only features with min-LOD 0 and simplifies them at 120 metres. The region tier adds min-LOD 1 features at 18 metres. The street tier adds everything at full detail. Each tier becomes its own quadtree.">
   <defs>
     <marker id="aP5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">Each tier: filter by min_lod, simplify, then quadtree</text>
+  <text class="d-tag" x="20" y="24">Each tier: filter by min_lod, simplify, cull tiny areas, then quadtree</text>
 
   <!-- feature pool -->
   <rect class="d-panel-2" x="30" y="70" width="140" height="130" rx="10" />
@@ -507,10 +509,16 @@ Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-fi
 ```rust
 for i in 0..lods.len() {                              // coarse (0) → fine
     let tol = lods[i].simplify_m / M_PER_DEG;
+    let cull_mpp = lods.get(i + 1).and_then(|l| l.max_mpp); // finest tier: None → never cull
     let level: Vec<(u8, Geom)> = features
         .par_iter()                                   // rayon — one GEOS context per thread
         .filter(|f| f.min_lod <= i)                   // the LOD gate
-        .map(|f| (f.style_id, simplify(&f.geom, tol)))
+        .filter_map(|f| {
+            let g = simplify(&f.geom, tol);
+            let too_small = cull_mpp                  // drop sub-min_area_px polygons (lines: never)
+                .is_some_and(|mpp| footprint_below(&g, mpp, lods[i].min_area_px));
+            (!too_small).then(|| (f.style_id, g))
+        })
         .collect();                                   // order preserved
     let tree = build_lod(level, global_bbox, chunk_size); // this tier's quadtree
     serialize_and_stream(tree);                       // write to disk, then drop
