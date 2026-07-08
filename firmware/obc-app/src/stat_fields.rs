@@ -15,7 +15,8 @@
 
 use core::fmt::Write;
 
-use obc_route::{Profile, RouteReader};
+use obc_render::text::TextAlign;
+use obc_route::{Profile, RouteReader, Waypoints};
 
 use crate::activity::Activity;
 use crate::hal::Fix;
@@ -41,6 +42,15 @@ pub struct Readout<'a> {
     /// climb-scoped tiles (to-top / to-climb / grade) the Climb screen adds in C4. `Some` exactly
     /// when [`Activity::active_climb`](crate::activity::Activity) is `Some`.
     pub climb: Option<crate::screen::ActiveClimb<'a>>,
+    /// The active route's resident named-waypoint table (App-owned), in route order — the
+    /// [`NextWaypoint`](StatField::NextWaypoint) tile reads its name + along-route position. Empty
+    /// when no route is loaded, so the tile falls back to its `NEXT WPT` / `--` empty state.
+    pub waypoints: &'a Waypoints,
+    /// The resolved index into [`waypoints`](Self::waypoints) of the next waypoint ahead, or `None`
+    /// when there's no route / nothing ahead. Mirrors
+    /// [`Activity::next_waypoint`](crate::activity::Activity) but is kept explicit so a test — or a
+    /// future non-`App` host — can build a `Readout` without the ride loop that resolves it.
+    pub next_waypoint: Option<usize>,
     /// The live wall-clock time (the [`Clock`](StatField::Clock) tile).
     pub now: DateTime,
 }
@@ -83,11 +93,13 @@ pub enum StatField {
     RideTime = 8,
     /// Wall-clock time of day — a **two-column** tile.
     Clock = 9,
+    /// Next route waypoint ahead — name + distance-to-go, a **two-column** tile.
+    NextWaypoint = 10,
 }
 
 impl StatField {
     /// Every field, in catalogue order — drives the "Add field" picker and decode validation.
-    pub const ALL: [StatField; 10] = [
+    pub const ALL: [StatField; 11] = [
         StatField::Speed,
         StatField::AvgSpeed,
         StatField::DistDone,
@@ -98,6 +110,7 @@ impl StatField {
         StatField::Elevation,
         StatField::RideTime,
         StatField::Clock,
+        StatField::NextWaypoint,
     ];
 
     /// Decode a persisted discriminant, or `None` for an unknown byte (a newer writer, a bit-flip
@@ -106,10 +119,11 @@ impl StatField {
         Self::ALL.into_iter().find(|f| *f as u8 == b)
     }
 
-    /// Column span: `2` for the full-width [`Clock`](StatField::Clock), else `1`.
+    /// Column span: `2` for the full-width [`Clock`](StatField::Clock) and
+    /// [`NextWaypoint`](StatField::NextWaypoint), else `1`.
     pub const fn span(self) -> u8 {
         match self {
-            StatField::Clock => 2,
+            StatField::Clock | StatField::NextWaypoint => 2,
             _ => 1,
         }
     }
@@ -127,6 +141,7 @@ impl StatField {
             StatField::Elevation => "Elevation",
             StatField::RideTime => "Ride time",
             StatField::Clock => "Clock",
+            StatField::NextWaypoint => "Next waypoint",
         }
     }
 
@@ -199,21 +214,47 @@ impl StatField {
                 let _ = write!(value, "{:02}:{:02}", cx.now.hour, cx.now.minute);
                 StatCell::new(cap("TIME", ""), value, false)
             }
+            StatField::NextWaypoint => {
+                // The next named waypoint ahead (App-resolved index into the resident table): its
+                // name is the caption, its along-route distance-to-go the value — `dist_along_m −
+                // progress`, the same arithmetic as the Map chip, clamping to `0m` through the 100 m
+                // pass-linger. With no route / nothing ahead / a stale index the tile reads
+                // `NEXT WPT` / `--`, the route-relative fallback (like `DistToGo`). The value is
+                // right-aligned to sit at the wide tile's far edge, per the field's mockup; the
+                // caption (a name up to `WAYPOINT_NAME_CAP`) is ellipsis-truncated by the tile drawer.
+                let mut cell = match cx.next_waypoint.and_then(|k| cx.waypoints.as_slice().get(k)) {
+                    Some(wp) => {
+                        let mut caption: heapless::String<24> = heapless::String::new();
+                        let _ = caption.push_str(wp.name.as_str());
+                        let value = fmt_dist_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), units);
+                        StatCell::new(caption, value, false)
+                    }
+                    None => StatCell::new(cap("NEXT WPT", ""), dashes(), false),
+                };
+                cell.value_align = TextAlign::Right;
+                cell
+            }
         }
     }
 }
 
-/// The rendered content of one tile — caption (unit-bearing), number-only value, and the climb
-/// up-triangle flag. Drawn by the Statistics screen's `tile`.
+/// The rendered content of one tile — caption (unit-bearing, or a waypoint name), number-only
+/// value, the climb up-triangle flag, and the value's horizontal alignment. Drawn by the Statistics
+/// screen's `tile`. The caption is `String<24>` (not the built-in fields' short unit captions) so a
+/// waypoint name fits; the tile drawer ellipsis-truncates one that overflows the tile width.
 pub struct StatCell {
-    pub caption: heapless::String<12>,
+    pub caption: heapless::String<24>,
     pub value: heapless::String<8>,
     pub arrow: bool,
+    /// Where the value sits in the tile: [`Left`](TextAlign::Left) for the number-only built-in
+    /// fields, [`Right`](TextAlign::Right) for the wide [`NextWaypoint`](StatField::NextWaypoint)
+    /// distance (hugging the far edge, clear of the name caption).
+    pub value_align: TextAlign,
 }
 
 impl StatCell {
-    fn new(caption: heapless::String<12>, value: heapless::String<8>, arrow: bool) -> Self {
-        StatCell { caption, value, arrow }
+    fn new(caption: heapless::String<24>, value: heapless::String<8>, arrow: bool) -> Self {
+        StatCell { caption, value, arrow, value_align: TextAlign::Left }
     }
 }
 
@@ -544,8 +585,9 @@ pub(crate) fn fmt_hms(secs: f32) -> heapless::String<8> {
 }
 
 /// Glue two caption fragments into a tile caption (e.g. `"AVG "` + `Units::speed_label()`),
-/// keeping the unit label as the single source of truth.
-fn cap(a: &str, b: &str) -> heapless::String<12> {
+/// keeping the unit label as the single source of truth. `String<24>` to share the
+/// [`StatCell::caption`] type (a waypoint name's width); the built-in fragments are far shorter.
+fn cap(a: &str, b: &str) -> heapless::String<24> {
     let mut s = heapless::String::new();
     let _ = s.push_str(a);
     let _ = s.push_str(b);
@@ -692,10 +734,34 @@ mod tests {
         assert_eq!(l.as_slice(), &[StatField::Clock]);
     }
 
-    /// A bare readout over `activity` — no fix, no route, no profile. The point of [`Readout`]:
-    /// formatting a cell needs no `MapRenderer`, no `Render`.
-    fn readout(activity: &Activity, units: Units) -> Readout<'_> {
-        Readout { fix: None, activity, units, route: None, profile: None, climb: None, now: DateTime::default() }
+    /// A bare readout over `activity` + a waypoint table — no fix, no route, no profile, no
+    /// next-waypoint. The point of [`Readout`]: formatting a cell needs no `MapRenderer`, no
+    /// `Render`. Tests that exercise the next-waypoint tile set `waypoints` / `next_waypoint` on the
+    /// returned value.
+    fn readout<'a>(activity: &'a Activity, units: Units, waypoints: &'a Waypoints) -> Readout<'a> {
+        Readout {
+            fix: None,
+            activity,
+            units,
+            route: None,
+            profile: None,
+            climb: None,
+            waypoints,
+            next_waypoint: None,
+            now: DateTime::default(),
+        }
+    }
+
+    /// A `Waypoints` table from `(dist_along_m, name)` pairs, in route order — the stat-field
+    /// mirror of `app.rs`'s `wpts` helper, for the next-waypoint tile tests.
+    fn wpts(items: &[(u32, &str)]) -> Waypoints {
+        let mut w = Waypoints::new();
+        for &(dist_along_m, name) in items {
+            let mut n = heapless::String::new();
+            n.push_str(name).unwrap();
+            w.entries.push(obc_route::WptEntry { dist_along_m, lon: 0, lat: 0, name: n }).unwrap();
+        }
+        w
     }
 
     /// The Elevation tile reads the live barometric altitude, not the route profile: it shows the
@@ -704,7 +770,8 @@ mod tests {
     #[test]
     fn elevation_tile_reads_live_barometric_altitude() {
         let mut activity = Activity::new(Mode::Riding);
-        let value = |a: &Activity, units: Units| StatField::Elevation.cell(&readout(a, units)).value;
+        let empty = Waypoints::new();
+        let value = |a: &Activity, units: Units| StatField::Elevation.cell(&readout(a, units, &empty)).value;
 
         assert_eq!(value(&activity, Units::Metric).as_str(), "--", "no altimeter sample yet");
 
@@ -719,7 +786,8 @@ mod tests {
     #[test]
     fn fields_fall_back_without_data() {
         let activity = Activity::new(Mode::Riding);
-        let cx = readout(&activity, Units::Metric);
+        let empty = Waypoints::new();
+        let cx = readout(&activity, Units::Metric, &empty);
         let val = |f: StatField| f.cell(&cx).value;
         assert_eq!(val(StatField::Speed).as_str(), "--", "no fix → no live speed");
         assert_eq!(val(StatField::AvgSpeed).as_str(), "--", "no moving time → no average");
@@ -731,6 +799,7 @@ mod tests {
         assert_eq!(val(StatField::Grade).as_str(), "--", "no route → grade reads --");
         assert_eq!(val(StatField::RideTime).as_str(), "0:00");
         assert_eq!(val(StatField::Clock).as_str(), "12:00", "the neutral default DateTime");
+        assert_eq!(val(StatField::NextWaypoint).as_str(), "--", "no route → the waypoint tile reads --");
     }
 
     /// A **route-less ride** (a live session, distance/climb accumulated, but no route loaded): the
@@ -744,7 +813,8 @@ mod tests {
         activity.record_motion(Fix::at(52_520_100, 13_405_000), 2000);
         activity.record_altitude(200.0);
         activity.record_altitude(230.0); // +30 m climbed
-        let cx = readout(&activity, Units::Metric); // route: None, profile: None
+        let empty = Waypoints::new();
+        let cx = readout(&activity, Units::Metric, &empty); // route: None, profile: None
         let val = |f: StatField| f.cell(&cx).value;
         // Route-relative → dashes.
         assert_eq!(val(StatField::DistToGo).as_str(), "--", "no route → to-go reads --");
@@ -760,20 +830,27 @@ mod tests {
     #[test]
     fn speed_tile_reads_the_fix() {
         let activity = Activity::new(Mode::Riding);
+        let empty = Waypoints::new();
         let fix = Fix { speed_mps: Some(10.0), ..Fix::at(0, 0) };
-        let value =
-            |units: Units| StatField::Speed.cell(&Readout { fix: Some(fix), ..readout(&activity, units) }).value;
+        let value = |units: Units| {
+            StatField::Speed.cell(&Readout { fix: Some(fix), ..readout(&activity, units, &empty) }).value
+        };
         assert_eq!(value(Units::Metric).as_str(), "36.0", "10 m/s reads 36 km/h");
         assert_eq!(value(Units::Imperial).as_str(), "22.4", "…and 22.4 mph");
     }
 
-    /// Discriminants round-trip through `from_u8`, and an unknown byte is dropped.
+    /// Discriminants round-trip through `from_u8`, and an unknown byte is dropped. Byte `10`
+    /// (`NextWaypoint`, the on-disk contract this sub-issue appends) resolves and survives a
+    /// `StatFieldList` decode — so a persisted grid carrying the field reloads it.
     #[test]
     fn discriminant_round_trips() {
         for f in StatField::ALL {
             assert_eq!(StatField::from_u8(f as u8), Some(f));
         }
         assert_eq!(StatField::from_u8(200), None, "an unknown discriminant is rejected");
+        assert_eq!(StatField::from_u8(10), Some(StatField::NextWaypoint), "byte 10 is Next waypoint");
+        let list = StatFieldList::decode(1, &[10]);
+        assert_eq!(list.as_slice(), &[StatField::NextWaypoint], "a decoded byte-10 selection keeps the field");
     }
 
     /// An empty selection is still one page (drawing nothing), never zero — the `.max(1)` guard.
@@ -810,5 +887,78 @@ mod tests {
         // 100 mi = 528000 ft ≈ 160934 m — the decimal→whole-miles crossover.
         assert_eq!(fmt_dist_short(160_000, Units::Imperial).as_str(), "99.4mi", "just under 100 mi keeps a decimal");
         assert_eq!(fmt_dist_short(200_000, Units::Imperial).as_str(), "124mi", "well past 100 mi is whole miles");
+    }
+
+    /// The next-waypoint tile ahead of the rider: caption = the waypoint's name, value = its
+    /// along-route distance-to-go (`dist_along_m − progress`) in the readout's units, right-aligned
+    /// so it sits at the wide tile's far edge.
+    #[test]
+    fn next_waypoint_tile_names_and_counts_down() {
+        let w = wpts(&[(1_000, "Brunnen"), (5_000, "Pass Summit")]);
+        let mut activity = Activity::new(Mode::Riding);
+        activity.progress_m = 1_200; // past Brunnen, 3.8 km before Pass Summit
+        let cell =
+            |units| StatField::NextWaypoint.cell(&Readout { next_waypoint: Some(1), ..readout(&activity, units, &w) });
+
+        let m = cell(Units::Metric);
+        assert_eq!(m.caption.as_str(), "Pass Summit", "caption is the waypoint's name");
+        assert_eq!(m.value.as_str(), "3.8km", "metric distance-to-go = 5000 − 1200 m");
+        assert_eq!(m.value_align, TextAlign::Right, "the wide-tile value hugs the far edge");
+        assert!(!m.arrow, "no climb triangle on the waypoint tile");
+
+        let i = cell(Units::Imperial);
+        assert_eq!(i.caption.as_str(), "Pass Summit");
+        assert_eq!(i.value.as_str(), "2.4mi", "imperial distance-to-go (3800 m ≈ 2.36 mi)");
+    }
+
+    /// Inside the 100 m pass-linger (progress ≥ the waypoint's `dist`, its index still current) the
+    /// shown distance clamps to `0m` via `saturating_sub` — the "you are here" readout the chip also
+    /// pins until the index advances.
+    #[test]
+    fn next_waypoint_tile_clamps_to_zero_in_the_linger() {
+        let w = wpts(&[(1_000, "Brunnen")]);
+        let mut activity = Activity::new(Mode::Riding);
+        activity.progress_m = 1_050; // 50 m past Brunnen, still inside its 100 m linger band
+        let cell =
+            StatField::NextWaypoint.cell(&Readout { next_waypoint: Some(0), ..readout(&activity, Units::Metric, &w) });
+        assert_eq!(cell.caption.as_str(), "Brunnen");
+        assert_eq!(cell.value.as_str(), "0m", "saturating_sub clamps the passed distance to zero");
+    }
+
+    /// Empty state — caption `NEXT WPT`, value `--`, still right-aligned — for every way there's no
+    /// waypoint ahead: no index resolved (`None`, i.e. no route / nothing ahead), a stale out-of-
+    /// range index, and an empty table.
+    #[test]
+    fn next_waypoint_tile_empty_state() {
+        let activity = Activity::new(Mode::Riding);
+        let w = wpts(&[(1_000, "Brunnen")]);
+        let empty = Waypoints::new();
+        let check = |cell: StatCell| {
+            assert_eq!(cell.caption.as_str(), "NEXT WPT");
+            assert_eq!(cell.value.as_str(), "--");
+            assert_eq!(cell.value_align, TextAlign::Right, "the fallback stays right-aligned too");
+        };
+        // next_waypoint = None (the readout default): no route, or nothing ahead.
+        check(StatField::NextWaypoint.cell(&readout(&activity, Units::Metric, &w)));
+        // A stale index past the table's end (defensive against a lagging resolver).
+        check(
+            StatField::NextWaypoint.cell(&Readout { next_waypoint: Some(9), ..readout(&activity, Units::Metric, &w) }),
+        );
+        // An index against an empty table (no route loaded).
+        check(
+            StatField::NextWaypoint
+                .cell(&Readout { next_waypoint: Some(0), ..readout(&activity, Units::Metric, &empty) }),
+        );
+    }
+
+    /// As a two-span field the tile fills a whole row and the next single starts the row below —
+    /// exactly the wide-`Clock` layout it mirrors.
+    #[test]
+    fn next_waypoint_two_span_fills_a_row() {
+        assert_eq!(StatField::NextWaypoint.span(), 2, "the waypoint tile is full-width");
+        let l = list(&[StatField::NextWaypoint, StatField::Speed]);
+        let p = page_fields(&l, 0);
+        assert_eq!((p[0].field, p[0].col, p[0].row), (StatField::NextWaypoint, 0, 0));
+        assert_eq!((p[1].field, p[1].col, p[1].row), (StatField::Speed, 0, 1));
     }
 }

@@ -26,7 +26,7 @@
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
-use obc_render::{rect, Surface};
+use obc_render::{rect, text::TextAlign, Surface};
 
 use crate::input::Gesture;
 use crate::screen::ActiveClimb;
@@ -173,7 +173,7 @@ impl ClimbScreen {
             let (r, c) = (i / 2, i % 2);
             let x = chart_x + c as i32 * (col_w + gap);
             let y = grid_top + r as i32 * (row_h + gap);
-            tile(cv, rect(x, y, col_w, row_h), &cell.caption, &cell.value, cell.arrow, CLIMB_TILE);
+            tile(cv, rect(x, y, col_w, row_h), &cell.caption, &cell.value, cell.arrow, TextAlign::Left, CLIMB_TILE);
         }
     }
 }

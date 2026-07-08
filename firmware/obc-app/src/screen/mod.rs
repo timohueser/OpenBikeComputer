@@ -252,6 +252,8 @@ impl Render<'_, '_> {
             route: self.route,
             profile: self.profile,
             climb: self.climb,
+            waypoints: self.waypoints,
+            next_waypoint: self.activity.next_waypoint,
             now: self.now,
         }
     }
@@ -648,29 +650,75 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
 }
 
 /// Draw one stat tile — a rounded pane in `bg` with an olive caption over a big ink Display value,
-/// optionally prefixed by an up-triangle for climb figures (the panel font has no ↑ glyph). Shared
-/// by the riding Statistics grid (tan panes) and the Fields editor (which draws the same tiles,
-/// amber under the cursor). The caption+value block is vertically centred, so the taller editor
-/// tiles and the chart-squeezed Statistics tiles both balance.
-pub(crate) fn tile(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str, arrow: bool, bg: u16) {
+/// optionally prefixed by an up-triangle for climb figures (the panel font has no ↑ glyph). The
+/// value sits at `value_align` (Left for the number-only fields; Right for the wide `NextWaypoint`
+/// distance, so it hugs the far edge clear of the name caption). Shared by the riding Statistics
+/// grid (tan panes) and the Fields editor (which draws the same tiles, amber under the cursor). The
+/// caption+value block is vertically centred, so the taller editor tiles and the chart-squeezed
+/// Statistics tiles both balance.
+pub(crate) fn tile(
+    cv: &mut impl Surface,
+    area: Rectangle,
+    label: &str,
+    value: &str,
+    arrow: bool,
+    value_align: TextAlign,
+    bg: u16,
+) {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
     cv.round(area, 5, bg);
     // Content block: Label caption (cap 18) + Display value (cap 26) with the same 18 px lead the
     // Statistics grid always had; centre it in whatever height the pane has.
     let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
-    // Caption inset less than the value so wide unit captions sit nearer the tile centre.
+    // A caption wider than the tile (a long waypoint name) is truncated with an ASCII ellipsis; the
+    // short unit captions of every built-in field pass through untouched. Caption inset less than
+    // the value so those unit captions sit nearer the tile centre.
+    let mut label_buf: heapless::String<24> = heapless::String::new();
+    let label = fit_caption(label, area.size.width as i32 - 5, &mut label_buf);
     cv.text(label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
     let vy = cy + 18;
-    let vx = if arrow {
-        // Up-triangle sized to sit alongside the Display digits.
-        let ax = x + 8;
-        cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
-        x + 26
-    } else {
-        x + 8
-    };
-    cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
+    match value_align {
+        // Right-aligned (the wide waypoint distance): anchor at the tile's far edge, so it can never
+        // collide with the caption on the line above.
+        TextAlign::Right => {
+            cv.text(value, Point::new(x + area.size.width as i32 - 8, vy), Font::Display, TextAlign::Right, INK);
+        }
+        _ => {
+            let vx = if arrow {
+                // Up-triangle sized to sit alongside the Display digits.
+                let ax = x + 8;
+                cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
+                x + 26
+            } else {
+                x + 8
+            };
+            cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
+        }
+    }
+}
+
+/// Fit a tile caption into `budget_px` at [`Font::Label`], dropping trailing chars and appending an
+/// ASCII ellipsis (`...` — the device font is printable-ASCII only, so `…` would render as tofu)
+/// when it overflows. Every built-in field's unit caption fits whole; only a long waypoint name is
+/// ever truncated. Writes into `buf` and returns it. Pure integer geometry over the monospace cell
+/// width, so the truncation is deterministic. Mirrors the Map chip's `fit_name`.
+fn fit_caption<'b>(label: &str, budget_px: i32, buf: &'b mut heapless::String<24>) -> &'b str {
+    buf.clear();
+    let char_w = Font::Label.char_width() as i32;
+    if label.chars().count() as i32 * char_w <= budget_px {
+        let _ = buf.push_str(label); // fits whole (caption ≤ StatCell cap ≤ buf)
+        return buf.as_str();
+    }
+    const ELL: &str = "...";
+    let keep = ((budget_px - ELL.len() as i32 * char_w) / char_w).max(0) as usize;
+    for ch in label.chars().take(keep) {
+        if buf.push(ch).is_err() {
+            break;
+        }
+    }
+    let _ = buf.push_str(ELL);
+    buf.as_str()
 }
 
 /// One stat-ledger row — olive caption on the left, the Display value right-aligned with a small
@@ -855,4 +903,24 @@ pub mod palette {
     /// Navy — the recorded breadcrumb (travelled path), stroked over the route and under the marker.
     /// Recessive so the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obc_render::text::text_width;
+
+    /// A stat tile's caption fits its pixel budget: a short built-in caption passes through verbatim,
+    /// a long waypoint name is cut to leading chars + an ASCII ellipsis that stays within budget — so
+    /// the wide `NextWaypoint` tile's name can never run into its right-aligned value.
+    #[test]
+    fn tile_caption_truncation_fits_the_budget() {
+        let cw = Font::Label.char_width() as i32;
+        let mut buf = heapless::String::<24>::new();
+        assert_eq!(fit_caption("NEXT WPT", 100 * cw, &mut buf), "NEXT WPT", "a caption within budget is verbatim");
+        let mut buf = heapless::String::<24>::new();
+        let fitted = fit_caption("Pass Summit Overlook", 10 * cw, &mut buf);
+        assert_eq!(fitted, "Pass Su...", "7 leading chars + ellipsis fill the 10-cell budget");
+        assert!(text_width(fitted, Font::Label) as i32 <= 10 * cw, "and it stays within budget");
+    }
 }
