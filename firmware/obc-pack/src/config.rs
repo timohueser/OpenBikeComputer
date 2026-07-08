@@ -507,12 +507,13 @@ mod tests {
     fn lods_marker_chunk_parsed() {
         let cfg = corpus_config();
         // `"lods": [{max_mpp:null, simplify:120}, {max_mpp:120, simplify:18},
-        //           {max_mpp:18, simplify:0}]`
+        //           {max_mpp:18, simplify:2}]` — the finest tier carries a small
+        // sub-pixel simplify (2 m) that trims road vertices with no visible change.
         assert_eq!(cfg.lods.len(), 3);
         assert_eq!(cfg.lods[0].max_mpp, None);
         assert_eq!(cfg.lods[0].simplify_m, 120.0);
         assert_eq!(cfg.lods[1].max_mpp, Some(120.0));
-        assert_eq!(cfg.lods[2].simplify_m, 0.0);
+        assert_eq!(cfg.lods[2].simplify_m, 2.0);
         // `"marker": {"color": "0xF800"}`
         assert_eq!(cfg.marker_color, 0xF800);
         // No chunk_size key ⇒ default.
