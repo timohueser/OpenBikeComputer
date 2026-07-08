@@ -53,7 +53,7 @@ pub use climb::{
     segment_climbs, ClimbSeg, Climbs, ElePt, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE, MIN_GAIN, MIN_LEN,
 };
 pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
-pub use convert::{gpx_to_obcr, RouteStats, MAX_WAYPOINTS};
+pub use convert::{gpx_to_obcr, RouteStats};
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2_cl};
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner};
@@ -62,8 +62,8 @@ pub use nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_
 pub use profile::{Profile, Window, PROFILE_COLS};
 pub use reader::{
     for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RouteReader, RouteSummary,
-    Waypoint, CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP,
-    WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_CAP,
+    Waypoint, Waypoints, WptEntry, CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
+    MAX_WAYPOINTS, NAME_CAP, WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_CAP,
 };
 pub use ride::{
     ride_object_len, track_to_ride, RideInfo, RideStats, RIDE_ELE_NONE, RIDE_HEADER_LEN, RIDE_POINT_LEN, RIDE_VERSION,
