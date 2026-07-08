@@ -20,7 +20,7 @@ use obc_pack::config::Config;
 use obc_pack::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
 use obc_pack::ingest::{ingest_osm, IngestFeature};
 use obc_pack::land;
-use obc_pack::merge::{merge_classes, merge_fills};
+use obc_pack::merge::{merge_classes, merge_fills, merge_line_classes, merge_lines, MergeStats};
 use obc_pack::quadtree::build_lod;
 use obc_pack::serialize::serialize_lods_streaming;
 
@@ -145,9 +145,10 @@ fn run() -> Result<(), String> {
     // is built, serialized, streamed to disk, and dropped before the next, so peak
     // memory is ~one tree. ---
     let styles = config.styles();
-    // Fill-dissolve equivalence classes over the style table, computed once. Empty
-    // unless `merge_fills` is on (the closure only reads it in that branch).
+    // Fill-dissolve / line-stitch equivalence classes over the style table, computed
+    // once. Read only when their respective `merge_*` flag is on.
     let fill_classes = merge_classes(&styles);
+    let line_classes = merge_line_classes(&styles);
     let file = std::fs::File::create(&args.output).map_err(|e| format!("create {}: {e}", args.output))?;
     let mut w = std::io::BufWriter::new(file);
     let (total, dropped) = serialize_lods_streaming(
@@ -191,26 +192,28 @@ fn run() -> Result<(), String> {
                 }
                 Some((style_id, g))
             };
-            // Optionally dissolve pixel-identical fill polygons BEFORE simplify (see
-            // `obc_pack::merge`): unioning first deletes shared parcel boundaries
-            // exactly, where simplifying first would move each copy independently and
-            // leave seam cracks. Off ⇒ the original filter→simplify→cull path,
-            // byte-identical to before.
-            let level: Vec<(u8, Geom)> = if config.merge_fills {
-                let filtered: Vec<(u8, Geom)> =
+            // Optionally dissolve pixel-identical fill polygons and/or stitch
+            // same-styled line fragments BEFORE simplify (see `obc_pack::merge`):
+            // merging first deletes shared parcel boundaries / duplicated way
+            // endpoints exactly, where simplifying first would move each copy
+            // independently (fills: seam cracks) or retain the now-interior junction
+            // vertex (lines: less reduction). The two passes are orthogonal (polygon
+            // vs line kind), so they compose. Off ⇒ the original filter→simplify→cull
+            // path, byte-identical to before.
+            let level: Vec<(u8, Geom)> = if config.merge_fills || config.merge_lines {
+                let mut feats: Vec<(u8, Geom)> =
                     ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
-                let (merged, m) = merge_fills(filtered, &fill_classes);
-                if m.merged_inputs > 0 || m.fallbacks > 0 {
-                    print!(
-                        "  merged {} fill polygon(s) into {} across {} style class(es)",
-                        m.merged_inputs, m.merged_outputs, m.merged_classes
-                    );
-                    if m.fallbacks > 0 {
-                        print!(" ({} group(s) fell back unmerged)", m.fallbacks);
-                    }
-                    println!();
+                if config.merge_fills {
+                    let (merged, m) = merge_fills(feats, &fill_classes);
+                    report_merge(m, "fill polygon", "into");
+                    feats = merged;
                 }
-                merged.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g)).collect()
+                if config.merge_lines {
+                    let (merged, m) = merge_lines(feats, &line_classes);
+                    report_merge(m, "line fragment", "into");
+                    feats = merged;
+                }
+                feats.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g)).collect()
             } else {
                 ingested
                     .features
@@ -250,6 +253,23 @@ fn run() -> Result<(), String> {
 /// coords are the exact osmium f64s, so the bbox is stable across runs. Truncation
 /// pulls the max edges (and, for negative coordinates, the min edges) inward by
 /// under 1 µdeg (~0.11 m); vertices past the shrunken edge are clipped at the root.
+/// One-line per-LOD merge report (fills or lines), printed only when something
+/// actually merged. `noun` names the consumed input ("fill polygon" / "line
+/// fragment"); `verb` bridges to the output count ("into").
+fn report_merge(m: MergeStats, noun: &str, verb: &str) {
+    if m.merged_inputs == 0 && m.fallbacks == 0 {
+        return;
+    }
+    print!(
+        "  merged {} {noun}(s) {verb} {} across {} style class(es)",
+        m.merged_inputs, m.merged_outputs, m.merged_classes
+    );
+    if m.fallbacks > 0 {
+        print!(" ({} group(s) fell back unmerged)", m.fallbacks);
+    }
+    println!();
+}
+
 fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut widen = |x: f64, y: f64| {

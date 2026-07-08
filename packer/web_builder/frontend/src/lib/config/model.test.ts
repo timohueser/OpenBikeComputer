@@ -183,6 +183,23 @@ describe("buildConfigForSubmit", () => {
         expect(on.merge_fills).toBe(true);
     });
 
+    it("emits merge_lines only when on (absent/false ⇒ byte-identical off)", () => {
+        const base = { lods: [{ max_mpp: null, simplify: 0 }], features: {}, marker: { color: "0xF800" } };
+
+        const off = buildConfigForSubmit(normalizeConfig(base).config, [], mockSchema).config;
+        expect("merge_lines" in off).toBe(false);
+
+        const explicitOff = buildConfigForSubmit(
+            normalizeConfig({ ...base, merge_lines: false }).config,
+            [],
+            mockSchema,
+        ).config;
+        expect("merge_lines" in explicitOff).toBe(false);
+
+        const on = buildConfigForSubmit(normalizeConfig({ ...base, merge_lines: true }).config, [], mockSchema).config;
+        expect(on.merge_lines).toBe(true);
+    });
+
     it("preserves feature key order (style IDs are document order)", () => {
         // Build a config whose keys would re-sort alphabetically if mishandled.
         const cfg = normalizeConfig({
