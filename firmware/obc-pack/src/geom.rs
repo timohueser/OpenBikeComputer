@@ -5,6 +5,7 @@
 //! the serializer rounds to microdegrees.
 
 use geos::{CoordSeq, Geom as _, Geometry, GeometryTypes};
+use obc_reader::M_PER_DEG;
 
 use crate::serialize::{Feature, Kind};
 
@@ -76,6 +77,74 @@ fn widen(b: &mut Bounds, x: f64, y: f64) {
     }
     if y > b.3 {
         b.3 = y;
+    }
+}
+
+/// Pixels-per-degree at latitude `lat` (degrees) and scale `mpp` (meters/pixel):
+/// longitude carries the `cos(lat)` foreshortening, latitude does not. The
+/// `cos` is floored at 0.01 so a near-polar feature can't blow the scale up.
+#[inline]
+fn px_per_deg(lat: f64, mpp: f64) -> (f64, f64) {
+    let cos_lat = lat.to_radians().cos().abs().max(0.01);
+    (M_PER_DEG * cos_lat / mpp, M_PER_DEG / mpp)
+}
+
+/// Absolute area of a closed ring in degrees², via the shoelace formula. The
+/// ring may or may not repeat its first vertex (the index wrap closes it);
+/// fewer than three vertices enclose no area.
+fn ring_area_deg2(ring: &[(f64, f64)]) -> f64 {
+    if ring.len() < 3 {
+        return 0.0;
+    }
+    let mut a = 0.0;
+    for i in 0..ring.len() {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % ring.len()];
+        a += x1 * y2 - x2 * y1;
+    }
+    (a * 0.5).abs()
+}
+
+/// Minimum-area cull for a coarse LOD: `true` when a **polygon** feature's
+/// projected area (exterior minus holes) is below `min_area_px` square pixels at
+/// `mpp` meters-per-pixel, so it should be dropped from this tier.
+///
+/// **Lines are never culled.** OSM ways are fragmented — one road is stored as
+/// many short segments — so an extent test on each segment drops a road's
+/// shortest links and leaves it patched with holes. There's no per-segment size
+/// that means anything without stitching the ways back together, so zoomed-out
+/// line density is left to `min_lod` (only major classes reach the coarse tiers).
+/// A `Multi` culls only if *every* non-empty part is a cullable polygon.
+///
+/// Degrees convert to meters with [`M_PER_DEG`] and the `cos(lat)` longitude
+/// foreshortening at the feature's mid-latitude. `min_area_px <= 0`, a
+/// non-positive `mpp`, and empty/line geometry never cull.
+pub fn footprint_below(g: &Geom, mpp: f64, min_area_px: f64) -> bool {
+    if min_area_px <= 0.0 || mpp <= 0.0 || g.is_empty() {
+        return false;
+    }
+    match g {
+        // A road is many short ways; culling by segment extent punches holes in it.
+        Geom::Empty | Geom::Line(_) => false,
+        Geom::Multi(parts) => {
+            let mut any = false;
+            for p in parts.iter().filter(|p| !p.is_empty()) {
+                any = true;
+                if !footprint_below(p, mpp, min_area_px) {
+                    return false;
+                }
+            }
+            any
+        }
+        Geom::Polygon { exterior, interiors } => {
+            let (_, miny, _, maxy) = g.bounds();
+            let (lon_ppd, lat_ppd) = px_per_deg(0.5 * (miny + maxy), mpp);
+            let mut area = ring_area_deg2(exterior);
+            for hole in interiors {
+                area -= ring_area_deg2(hole);
+            }
+            area.max(0.0) * lon_ppd * lat_ppd < min_area_px
+        }
     }
 }
 
@@ -609,5 +678,80 @@ mod tests {
 
         let degenerate = ring(&[(0.0, 0.0), (0.002, 0.0), (0.0, 0.0)]);
         assert!(!polygon_is_valid(&degenerate, &[]), "a <4-position ring can't form a polygon");
+    }
+
+    // --- footprint_below (coarse-LOD cull) ----------------------------------
+
+    /// A square `side` degrees on a side, anchored near the equator so the `cos`
+    /// foreshortening is ≈1 and the math is easy to reason about.
+    fn square(side: f64) -> Geom {
+        Geom::Polygon {
+            exterior: ring(&[(0.0, 0.0), (side, 0.0), (side, side), (0.0, side), (0.0, 0.0)]),
+            interiors: vec![],
+        }
+    }
+
+    /// `ring_area_deg2` is the plain shoelace area and ignores winding /
+    /// closure: a 0.002°×0.002° square is 4e-6 deg² either way round.
+    #[test]
+    fn ring_area_is_shoelace_and_winding_agnostic() {
+        let cw = ring(&[(0.0, 0.0), (0.0, 0.002), (0.002, 0.002), (0.002, 0.0), (0.0, 0.0)]);
+        let ccw = ring(&[(0.0, 0.0), (0.002, 0.0), (0.002, 0.002), (0.0, 0.002)]); // unclosed
+        assert!((ring_area_deg2(&cw) - 4e-6).abs() < 1e-12);
+        assert!((ring_area_deg2(&ccw) - 4e-6).abs() < 1e-12, "closure vertex is optional");
+    }
+
+    /// At 18 m/px, a ~111 m square (≈6 px/side, ~38 px²) is kept but a ~22 m
+    /// square (≈1.2 px/side, ~1.5 px²) is dropped by a 4 px² threshold.
+    #[test]
+    fn polygon_culled_below_area_threshold() {
+        assert!(!footprint_below(&square(0.001), 18.0, 4.0), "a ~38 px² wood stays");
+        assert!(footprint_below(&square(0.0002), 18.0, 4.0), "a ~1.5 px² sliver goes");
+    }
+
+    /// The same tier's `max_mpp` sets the real-world cut: at 120 m/px a field
+    /// that easily survives at 18 m/px is dropped, so the cut widens as the tier
+    /// coarsens even at one `min_area_px`.
+    #[test]
+    fn coarser_mpp_widens_the_real_world_cut() {
+        let field = square(0.001); // ~111 m
+        assert!(!footprint_below(&field, 18.0, 4.0), "kept at the region tier");
+        assert!(footprint_below(&field, 120.0, 4.0), "dropped at the country tier");
+    }
+
+    /// Lines are never culled by the area test — a road is stored as many short
+    /// ways, and dropping the shortest ones patches holes into it. Even a tiny
+    /// sub-pixel segment survives; zoomed-out line density is a `min_lod` concern.
+    #[test]
+    fn lines_are_never_culled() {
+        let road = Geom::Line(ring(&[(0.0, 0.0), (0.02, 0.0)])); // ~2.2 km segment
+        let stub = Geom::Line(ring(&[(0.0, 0.0), (0.0001, 0.0001)])); // ~11 m segment of a longer road
+        assert!(!footprint_below(&road, 18.0, 4.0), "a long segment stays");
+        assert!(!footprint_below(&stub, 18.0, 4.0), "a short segment stays too — no road holes");
+    }
+
+    /// A disabled threshold (`<= 0`) and empty geometry never cull, so the
+    /// packer stays byte-identical when the field is absent.
+    #[test]
+    fn disabled_and_empty_never_cull() {
+        assert!(!footprint_below(&square(0.0002), 18.0, 0.0), "min_area_px 0 is off");
+        assert!(!footprint_below(&square(0.0002), 18.0, -1.0), "negative is off");
+        assert!(!footprint_below(&Geom::Empty, 18.0, 4.0), "empty is never a cull");
+        assert!(!footprint_below(&square(0.001), 0.0, 4.0), "non-positive mpp is off");
+    }
+
+    /// Longitude foreshortening shrinks a high-latitude polygon's projected area,
+    /// so a square that survives at the equator can be culled at 60°N (where a
+    /// degree of longitude is half as wide).
+    #[test]
+    fn latitude_foreshortening_shrinks_projected_area() {
+        let side = 0.0004_f64; // ~6.1 px² at the equator, ~3.1 px² at 60°N — straddles the 4 px² cut
+        let equator = square(side);
+        let north = Geom::Polygon {
+            exterior: ring(&[(0.0, 60.0), (side, 60.0), (side, 60.0 + side), (0.0, 60.0 + side), (0.0, 60.0)]),
+            interiors: vec![],
+        };
+        assert!(!footprint_below(&equator, 18.0, 4.0), "kept at the equator");
+        assert!(footprint_below(&north, 18.0, 4.0), "same size, culled at 60°N");
     }
 }
