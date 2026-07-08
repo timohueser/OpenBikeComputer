@@ -11,7 +11,8 @@
 //!   formatter. Adding a field is one variant + one match arm.
 //! - **the selection** — [`StatFieldList`], a fixed-capacity ordered list persisted in [`Settings`].
 //! - **the layout** — [`page_count`] / [`page_fields`], walking the selection into 6-slot pages
-//!   (3 rows × 2 cols), keeping a `2`-span tile row-aligned so it never straddles a row or page.
+//!   (3 rows × 2 cols) by each field's [`slots`](StatField::slots) footprint, keeping a `2`-span tile
+//!   row-aligned and the page-sized waypoint panel page-aligned so neither straddles a row or page.
 
 use core::fmt::Write;
 
@@ -95,11 +96,16 @@ pub enum StatField {
     Clock = 9,
     /// Next route waypoint ahead — name + distance-to-go, a **two-column** tile.
     NextWaypoint = 10,
+    /// The next ~4 route waypoints ahead — a **2-column × 3-row** list panel (name + along-route
+    /// distance-to-go per row, the first emphasized). The one multi-row field: page-sized
+    /// ([`SLOTS_PER_PAGE`] slots), so it always begins a page — mirroring how a two-span tile always
+    /// begins a row — which keeps the layout + reorder machinery tractable.
+    WaypointList = 11,
 }
 
 impl StatField {
     /// Every field, in catalogue order — drives the "Add field" picker and decode validation.
-    pub const ALL: [StatField; 11] = [
+    pub const ALL: [StatField; 12] = [
         StatField::Speed,
         StatField::AvgSpeed,
         StatField::DistDone,
@@ -111,6 +117,7 @@ impl StatField {
         StatField::RideTime,
         StatField::Clock,
         StatField::NextWaypoint,
+        StatField::WaypointList,
     ];
 
     /// Decode a persisted discriminant, or `None` for an unknown byte (a newer writer, a bit-flip
@@ -119,13 +126,32 @@ impl StatField {
         Self::ALL.into_iter().find(|f| *f as u8 == b)
     }
 
-    /// Column span: `2` for the full-width [`Clock`](StatField::Clock) and
-    /// [`NextWaypoint`](StatField::NextWaypoint), else `1`.
+    /// Column span: `2` for the full-width [`Clock`](StatField::Clock),
+    /// [`NextWaypoint`](StatField::NextWaypoint), and the [`WaypointList`](StatField::WaypointList)
+    /// panel, else `1`.
     pub const fn span(self) -> u8 {
         match self {
-            StatField::Clock | StatField::NextWaypoint => 2,
+            StatField::Clock | StatField::NextWaypoint | StatField::WaypointList => 2,
             _ => 1,
         }
+    }
+
+    /// Row span: `3` for the multi-row [`WaypointList`](StatField::WaypointList) panel, `1` for every
+    /// other field (all today's tiles are one row tall). With [`span`](Self::span) it derives the
+    /// field's slot footprint, [`slots`](Self::slots).
+    pub const fn rows(self) -> u8 {
+        match self {
+            StatField::WaypointList => 3,
+            _ => 1,
+        }
+    }
+
+    /// The field's grid footprint in slots — [`span`](Self::span) × [`rows`](Self::rows): `1` for a
+    /// single tile, `2` for a full-width tile, [`SLOTS_PER_PAGE`] (`6`) for the page-sized waypoint
+    /// panel. The one measure the layout [`walk`] advances by, so the three tile shapes flow through
+    /// it uniformly.
+    pub const fn slots(self) -> usize {
+        self.span() as usize * self.rows() as usize
     }
 
     /// The field's name for the settings list / picker (the on-grid caption is in [`cell`](StatField::cell)).
@@ -142,6 +168,7 @@ impl StatField {
             StatField::RideTime => "Ride time",
             StatField::Clock => "Clock",
             StatField::NextWaypoint => "Next waypoint",
+            StatField::WaypointList => "Waypoint list",
         }
     }
 
@@ -233,6 +260,13 @@ impl StatField {
                 };
                 cell.value_align = TextAlign::Right;
                 cell
+            }
+            StatField::WaypointList => {
+                // The panel is drawn by the dedicated `waypoint_panel` (its 2×3 list doesn't fit the
+                // caption+value shape a `StatCell` carries — the Statistics grid + Fields editor
+                // special-case `rows() > 1` and call that drawer instead). This arm exists only so
+                // `cell` stays total and no path can panic: a caption + `--`, echoing the empty state.
+                StatCell::new(cap("WAYPOINTS", ""), dashes(), false)
             }
         }
     }
@@ -353,8 +387,12 @@ impl StatFieldList {
 
     /// Move the field at `i` one valid step in `dir` (`+1` down / `-1` up), returning its new index
     /// (unchanged if it can't move further). A single-span field moves one slot at a time; a
-    /// **two-span** field only lands where an *even number of single panels* precede it — so a wide
-    /// tile always begins a row, hopping over a pair of singles (or one wide tile) per step.
+    /// **two-span** field only lands where it begins a row, and the page-sized **panel** only where
+    /// it begins a page — so a wide tile hops over a pair of singles (or one wide tile) per step, and
+    /// the panel hops a whole page. The rule is one slot-simulation: for each candidate insertion
+    /// index, [`landing_slot`](Self::landing_slot) walks the *other* fields (with their own bumps) to
+    /// the slot the moved field would start at, and the step is valid iff the field needs no bump of
+    /// its own there ([`placed_slot`] is the identity) — subsuming the old even-singles-before rule.
     pub fn move_item(&mut self, i: usize, dir: i32) -> usize {
         let len = self.len as usize;
         if len == 0 || dir == 0 {
@@ -363,20 +401,42 @@ impl StatFieldList {
         let i = i.min(len - 1);
         let f = self.ids[i];
         let step = dir.signum();
-        // Candidate insertion indices in `dir`; a two-span field skips past any index whose
-        // preceding single-panel count is odd (it would land mid-row).
+        // Candidate insertion indices in `dir`; skip past any index where the moved field would need
+        // its own alignment bump (a wide tile landing mid-row, the panel landing mid-page).
         let mut p = i as i32;
         loop {
             let cand = p + step;
             if cand < 0 || cand as usize >= len {
                 return i; // hit an end without a valid landing → no move
             }
-            if f.span() == 1 || self.even_singles_before(cand as usize, i) {
+            let slot = self.landing_slot(i, cand as usize);
+            if placed_slot(slot, f) == slot {
                 self.shift(i, cand as usize);
                 return cand as usize;
             }
             p = cand;
         }
+    }
+
+    /// The slot the field currently at `from` would start at if reordered to insertion index `to`:
+    /// walk the *other* fields in order (each bumped to its own alignment by [`placed_slot`]) and
+    /// stop once `to` of them are placed — the accumulated slot is where the moved field then lands,
+    /// before any bump of its own. The reorder-time mirror of [`walk`], sharing its `placed_slot`
+    /// spine so a proposed landing can never disagree with where the grid would actually draw it.
+    fn landing_slot(&self, from: usize, to: usize) -> usize {
+        let mut slot = 0usize;
+        let mut placed = 0usize;
+        for (k, &g) in self.as_slice().iter().enumerate() {
+            if k == from {
+                continue; // the moved field isn't part of what precedes it
+            }
+            if placed == to {
+                break; // `to` other fields now sit before the insertion point
+            }
+            slot = placed_slot(slot, g) + g.slots();
+            placed += 1;
+        }
+        slot
     }
 
     /// Move the item from index `from` to index `to` by rotating the span between them — an
@@ -397,27 +457,6 @@ impl StatFieldList {
         }
         self.ids[to] = f;
     }
-
-    /// Whether inserting the item currently at `from` at index `to` leaves an **even** number of
-    /// single-span fields before it — i.e. a two-span field would begin a row there. Counts the
-    /// singles among the other fields that would precede the insertion point.
-    fn even_singles_before(&self, to: usize, from: usize) -> bool {
-        let mut singles: usize = 0;
-        let mut seen = 0; // positions filled by the *other* fields, in order
-        for (k, &g) in self.as_slice().iter().enumerate() {
-            if k == from {
-                continue;
-            }
-            if seen == to {
-                break;
-            }
-            if g.span() == 1 {
-                singles += 1;
-            }
-            seen += 1;
-        }
-        singles.is_multiple_of(2)
-    }
 }
 
 /// A field placed in the grid: which field, and its top-left cell (`col` ∈ `0..COLS`,
@@ -429,18 +468,34 @@ pub struct Placed {
     pub row: u8,
 }
 
-/// Walk the selection into global slots, calling `visit(field, slot)` for each. A two-span field
-/// that would start in the right column is bumped to the next row (leaving a one-slot gap), so it
-/// never straddles a row — and, since rows align to the 6-slot page, never a page either. Returns
-/// the total slots consumed (gaps included). Pure spine shared by [`page_count`] / [`page_fields`].
+/// The slot `f` actually starts at when a left-to-right walk reaches it at `slot`, bumped forward so
+/// it never straddles a row or page: a **single** fills any slot (no bump); a **two-span** tile that
+/// would start in the right column is bumped to the next row; the page-sized **panel** is bumped to
+/// the next page ([`slot.next_multiple_of(SLOTS_PER_PAGE)`](usize::next_multiple_of)). The single
+/// alignment rule shared by the layout [`walk`] and [`StatFieldList::move_item`]'s landing check, so
+/// a reorder can never propose a slot the walk would then shift out from under it.
+fn placed_slot(slot: usize, f: StatField) -> usize {
+    if f.slots() == SLOTS_PER_PAGE {
+        slot.next_multiple_of(SLOTS_PER_PAGE) // the panel begins a page
+    } else if f.span() == 2 && !slot.is_multiple_of(COLS) {
+        slot + 1 // defensive: a malformed list can't mis-render — the wide tile begins a row
+    } else {
+        slot
+    }
+}
+
+/// Walk the selection into global slots, calling `visit(field, slot)` for each. Every field is
+/// placed at its [`placed_slot`] (bumped so a wide tile begins a row and the panel begins a page,
+/// leaving a defensive gap) and then advances the cursor by its [`slots`](StatField::slots)
+/// footprint. Because rows align to the [`SLOTS_PER_PAGE`] page, a bumped wide tile never straddles a
+/// page either. Returns the total slots consumed (gaps included). Pure spine shared by
+/// [`page_count`] / [`page_fields`] / [`slot_of`] / [`next_free_slot`].
 fn walk(list: &StatFieldList, mut visit: impl FnMut(StatField, usize)) -> usize {
     let mut slot = 0usize;
     for &f in list.as_slice() {
-        if f.span() == 2 && !slot.is_multiple_of(COLS) {
-            slot += 1; // defensive: a malformed list can't mis-render — the wide tile starts a row
-        }
+        slot = placed_slot(slot, f);
         visit(f, slot);
-        slot += f.span() as usize;
+        slot += f.slots();
     }
     slot
 }
@@ -960,5 +1015,178 @@ mod tests {
         let p = page_fields(&l, 0);
         assert_eq!((p[0].field, p[0].col, p[0].row), (StatField::NextWaypoint, 0, 0));
         assert_eq!((p[1].field, p[1].col, p[1].row), (StatField::Speed, 0, 1));
+    }
+
+    // ── Multi-row panel machinery (issue #574) ─────────────────────────────────────────────────
+
+    /// The panel's shape: span 2, rows 3, so a `SLOTS_PER_PAGE`-slot footprint — exactly one page.
+    #[test]
+    fn waypoint_list_is_a_page_sized_field() {
+        assert_eq!(StatField::WaypointList.span(), 2, "the panel is full-width");
+        assert_eq!(StatField::WaypointList.rows(), 3, "and three rows tall — the only multi-row field");
+        assert_eq!(StatField::WaypointList.slots(), SLOTS_PER_PAGE, "span × rows = a whole page");
+        // Every other field is a single row; slots() = span().
+        for f in StatField::ALL {
+            if f != StatField::WaypointList {
+                assert_eq!(f.rows(), 1, "{f:?} is one row tall");
+                assert_eq!(f.slots(), f.span() as usize, "{f:?} slots() == span()");
+            }
+        }
+    }
+
+    /// The panel always begins a page — first, mid-list, after an odd single, or after a wide tile —
+    /// consuming all six slots so the following field lands on the next page. The row-align bump the
+    /// wide tile does, scaled to a whole page.
+    #[test]
+    fn panel_always_starts_a_page() {
+        // Panel first: it owns page 0; the trailing single starts page 1.
+        let l = list(&[StatField::WaypointList, StatField::Speed]);
+        assert_eq!(slot_of(&l, 0), Some(0), "the panel sits at slot 0");
+        assert_eq!(slot_of(&l, 1), Some(SLOTS_PER_PAGE), "the single after it lands on page 1");
+        assert_eq!(page_count(&l), 2);
+
+        // Mid-list after an odd single: the single fills slot 0, the panel bumps a whole page.
+        let l = list(&[StatField::Speed, StatField::WaypointList, StatField::AvgSpeed]);
+        assert_eq!(slot_of(&l, 0), Some(0));
+        assert_eq!(slot_of(&l, 1), Some(SLOTS_PER_PAGE), "the panel bumps off the half-filled page 0");
+        assert_eq!(slot_of(&l, 2), Some(2 * SLOTS_PER_PAGE), "and the trailing single lands on page 2");
+        assert_eq!(page_count(&l), 3);
+
+        // After a wide tile (slots 0..2): the panel still bumps to the next page boundary, and a
+        // following single lands on the page after it.
+        let l = list(&[StatField::Clock, StatField::WaypointList, StatField::Speed]);
+        assert_eq!(slot_of(&l, 0), Some(0), "the wide clock fills row 0 of page 0");
+        assert_eq!(slot_of(&l, 1), Some(SLOTS_PER_PAGE), "the panel bumps to page 1");
+        assert_eq!(slot_of(&l, 2), Some(2 * SLOTS_PER_PAGE), "the single after the panel lands on page 2");
+        assert_eq!(page_count(&l), 3);
+    }
+
+    /// `page_count` counts the panel as a full page. Panel + six singles = two pages; panel + seven
+    /// singles spills a third; and a maxed selection that includes the panel reaches beyond two —
+    /// there is no ≤2-page assumption to trip over.
+    #[test]
+    fn page_count_treats_the_panel_as_a_page() {
+        let six = [StatField::Speed, StatField::AvgSpeed, StatField::DistDone, StatField::DistToGo, StatField::Climbed];
+        let mut l = list(&[StatField::WaypointList]);
+        for f in six {
+            assert!(l.push(f));
+        }
+        assert!(l.push(StatField::ToClimb)); // panel + 6 singles
+        assert_eq!(page_count(&l), 2, "the panel's page + one full page of six singles");
+        assert!(l.push(StatField::Grade)); // panel + 7 singles
+        assert_eq!(page_count(&l), 3, "the seventh single spills to a third page");
+
+        // The full 12-field catalogue (nine singles, two wide tiles, the panel) — a legitimate
+        // MAX_STAT_FIELDS selection — reaches four pages. Nothing may cap at two.
+        let full = {
+            let mut l = StatFieldList { ids: [StatField::Speed; MAX_STAT_FIELDS], len: 0 };
+            for f in StatField::ALL {
+                assert!(l.push(f), "the whole catalogue fits MAX_STAT_FIELDS");
+            }
+            l
+        };
+        assert_eq!(full.len(), MAX_STAT_FIELDS, "all twelve fields selected");
+        assert_eq!(page_count(&full), 4, "a full selection with the panel spans four pages, not two");
+    }
+
+    /// The panel hops a whole page of singles per step and can never land mid-page — the page-level
+    /// analogue of the wide tile's row hop.
+    #[test]
+    fn move_item_panel_hops_whole_pages() {
+        let mut l = list(&[
+            StatField::WaypointList,
+            StatField::Speed,
+            StatField::AvgSpeed,
+            StatField::DistDone,
+            StatField::DistToGo,
+            StatField::Climbed,
+            StatField::ToClimb,
+        ]);
+        // Down: past all six singles in one step, landing on the next page boundary — not between.
+        let ni = l.move_item(0, 1);
+        assert_eq!(ni, 6, "the panel lands after the whole page of six singles");
+        assert_eq!(l.as_slice()[6], StatField::WaypointList);
+        assert_eq!(slot_of(&l, 6), Some(SLOTS_PER_PAGE), "and its slot is a page boundary");
+        // Up: hops the whole page back.
+        let ni = l.move_item(6, -1);
+        assert_eq!(ni, 0, "and back up a whole page in one step");
+        assert_eq!(l.as_slice()[0], StatField::WaypointList);
+    }
+
+    /// A panel at either end can't move further (no valid aligned landing past the end) — a no-op.
+    #[test]
+    fn move_item_panel_is_a_noop_at_the_ends() {
+        let mut l = list(&[StatField::WaypointList, StatField::Speed, StatField::AvgSpeed]);
+        assert_eq!(l.move_item(0, -1), 0, "a leading panel can't move up");
+        assert_eq!(l.as_slice()[0], StatField::WaypointList);
+        let mut l = list(&[StatField::Speed, StatField::AvgSpeed, StatField::WaypointList]);
+        assert_eq!(l.move_item(2, 1), 2, "a trailing panel can't move down");
+        assert_eq!(l.as_slice()[2], StatField::WaypointList);
+    }
+
+    /// A single stepping past the panel hops the whole panel in one detent, keeping its order
+    /// relative to the other singles (the panel moves as one page-sized unit, not something to land
+    /// inside).
+    #[test]
+    fn move_item_single_hops_the_whole_panel() {
+        let mut l = list(&[StatField::Speed, StatField::WaypointList, StatField::AvgSpeed]);
+        let ni = l.move_item(0, 1); // step Speed down, past the panel
+        assert_eq!(ni, 1, "Speed lands right after the panel");
+        assert_eq!(l.as_slice(), &[StatField::WaypointList, StatField::Speed, StatField::AvgSpeed]);
+        // Speed hopped onto the page after the panel; its order before AvgSpeed is preserved.
+        assert_eq!(slot_of(&l, 1), Some(SLOTS_PER_PAGE));
+    }
+
+    /// A wide tile navigating around the panel still lands only on an even (row-aligned) slot — the
+    /// old even-singles-before rule, now falling out of the shared slot simulation.
+    #[test]
+    fn move_item_wide_stays_row_aligned_around_the_panel() {
+        // [Speed, WaypointList, Clock]: the clock is on page 2 at an even slot. Moving it up, the
+        // only valid landing is slot 0 (past the single *and* the panel) — never the odd slot 1.
+        let mut l = list(&[StatField::Speed, StatField::WaypointList, StatField::Clock]);
+        let ni = l.move_item(2, -1);
+        assert_eq!(ni, 0, "the wide tile skips the odd slot-1 landing and lands row-aligned at slot 0");
+        assert_eq!(l.as_slice(), &[StatField::Clock, StatField::Speed, StatField::WaypointList]);
+        // Every placement keeps the wide tile in the left column.
+        for placed in
+            (0..page_count(&l)).flat_map(|p| page_fields(&l, p).into_iter()).filter(|p| p.field == StatField::Clock)
+        {
+            assert_eq!(placed.col, 0, "the wide tile always begins a row, even around the panel");
+        }
+    }
+
+    /// `slot_of` / `next_free_slot` agree with `page_fields` around a trailing panel: the panel sits
+    /// alone on its page at col 0 / row 0, and the ghost Add slot lands on the page after it.
+    #[test]
+    fn slot_queries_agree_with_page_fields_around_the_panel() {
+        let l = list(&[StatField::Speed, StatField::AvgSpeed, StatField::WaypointList]);
+        assert_eq!(slot_of(&l, 0), Some(0));
+        assert_eq!(slot_of(&l, 1), Some(1));
+        assert_eq!(slot_of(&l, 2), Some(SLOTS_PER_PAGE), "the panel starts page 1");
+        assert_eq!(slot_of(&l, 3), None, "past the selection there is no slot");
+        // The Add ghost sits past the panel, on page 2.
+        assert_eq!(next_free_slot(&l), 2 * SLOTS_PER_PAGE);
+        assert_eq!(next_free_slot(&l) / SLOTS_PER_PAGE, 2, "the ghost Add lands on the page after the panel");
+        // page_fields draws the panel alone on its page, col 0 / row 0.
+        let p1 = page_fields(&l, 1);
+        assert_eq!(p1.len(), 1, "the panel owns its page");
+        assert_eq!((p1[0].field, p1[0].col, p1[0].row), (StatField::WaypointList, 0, 0));
+        // And each field's reported slot matches where page_fields places it.
+        for (i, &f) in l.as_slice().iter().enumerate() {
+            let slot = slot_of(&l, i).unwrap();
+            let placed = page_fields(&l, slot / SLOTS_PER_PAGE).into_iter().find(|p| p.field == f).unwrap();
+            let s = slot % SLOTS_PER_PAGE;
+            assert_eq!((placed.col as usize, placed.row as usize), (s % COLS, s / COLS), "{f:?} slot vs placement");
+        }
+    }
+
+    /// The panel's on-disk discriminant is `11` (append-only), decodes through `from_u8`, and
+    /// survives a `StatFieldList` decode — a persisted grid carrying the panel reloads it.
+    #[test]
+    fn waypoint_list_discriminant_round_trips() {
+        assert_eq!(StatField::WaypointList as u8, 11, "append-only: the panel is byte 11");
+        assert_eq!(StatField::from_u8(11), Some(StatField::WaypointList));
+        let list = StatFieldList::decode(1, &[11]);
+        assert_eq!(list.as_slice(), &[StatField::WaypointList], "a decoded byte-11 selection keeps the panel");
     }
 }

@@ -13,7 +13,7 @@ use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rec
 use obc_reader::Reader;
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Canvas, Clock, MapRenderer, RenderStats, Surface,
 };
 use obc_route::{ClimbProfile, ClimbSeg, Profile, RouteReader, Waypoints};
@@ -675,7 +675,7 @@ pub(crate) fn tile(
     // short unit captions of every built-in field pass through untouched. Caption inset less than
     // the value so those unit captions sit nearer the tile centre.
     let mut label_buf: heapless::String<24> = heapless::String::new();
-    let label = fit_caption(label, area.size.width as i32 - 5, &mut label_buf);
+    let label = fit_caption(label, area.size.width as i32 - 5, &mut label_buf, Font::Label);
     cv.text(label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
     let vy = cy + 18;
     match value_align {
@@ -698,14 +698,65 @@ pub(crate) fn tile(
     }
 }
 
-/// Fit a tile caption into `budget_px` at [`Font::Label`], dropping trailing chars and appending an
-/// ASCII ellipsis (`...` — the device font is printable-ASCII only, so `…` would render as tofu)
-/// when it overflows. Every built-in field's unit caption fits whole; only a long waypoint name is
-/// ever truncated. Writes into `buf` and returns it. Pure integer geometry over the monospace cell
-/// width, so the truncation is deterministic. Mirrors the Map chip's `fit_name`.
-fn fit_caption<'b>(label: &str, budget_px: i32, buf: &'b mut heapless::String<24>) -> &'b str {
+/// Number of waypoint rows the 2×3 panel lists — the next this-many ahead of the rider.
+pub(crate) const WAYPOINT_PANEL_ROWS: usize = 4;
+
+/// Draw the **waypoint list panel** — the page-sized (2-col × 3-row) multi-row stat field
+/// ([`WaypointList`](crate::stat_fields::StatField::WaypointList)). Its 2×3 list doesn't fit the
+/// caption+value shape [`tile`] draws, so the Statistics grid and the Fields editor special-case
+/// `rows() > 1` and call this instead (WYSIWYG: the editor draws the real panel, live). Chrome
+/// matches [`tile`] — a rounded pane in `bg` with the olive `WAYPOINTS` caption — so it reads as one
+/// system with the tan tiles around it.
+///
+/// Content is the next [`WAYPOINT_PANEL_ROWS`] waypoints ahead (rows `k..k+4` from
+/// [`next_waypoint`](crate::stat_fields::Readout), the App-resolved first-ahead index): each row is
+/// the name on the left and the along-route distance-to-go (`dist_along_m − progress`, clamped
+/// through the pass-linger by `saturating_sub`) on the right, the **first row emphasized**
+/// ([`Font::Body`]; the rest [`Font::Label`]). A name that would reach the distance column is
+/// ellipsis-truncated. Fewer than four remaining leaves the tail rows blank; no route / nothing ahead
+/// draws the frame + caption with a centred `--` (the route-relative fallback, like the 2×1 tile).
+pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate::stat_fields::Readout, bg: u16) {
+    use palette::*;
+    let (x, y) = (area.top_left.x, area.top_left.y);
+    let (w, hgt) = (area.size.width as i32, area.size.height as i32);
+    cv.round(area, 5, bg);
+    cv.text("WAYPOINTS", Point::new(x + 8, y + 8), Font::Label, TextAlign::Left, SUBTEXT);
+
+    // The first waypoint ahead, guarded against a stale/out-of-range resolver index and the empty
+    // table (no route loaded) — either way the panel falls back to a centred `--`.
+    let ahead = cx.next_waypoint.filter(|&k| k < cx.waypoints.as_slice().len());
+    let Some(k) = ahead else {
+        cv.text("--", Point::new(x + w / 2, y + hgt / 2 - 11), Font::Body, TextAlign::Center, INK);
+        return;
+    };
+
+    // Rows below the caption band, split evenly; the first is emphasized (Body), the rest Label.
+    const HEAD: i32 = 30;
+    let stride = (hgt - HEAD - 6) / WAYPOINT_PANEL_ROWS as i32;
+    let wps = cx.waypoints.as_slice();
+    for i in 0..WAYPOINT_PANEL_ROWS {
+        let Some(wp) = wps.get(k + i) else { break }; // fewer than four remaining → blank tail rows
+        let font = if i == 0 { Font::Body } else { Font::Label };
+        let ry = y + HEAD + i as i32 * stride;
+        // Distance-to-go, right-aligned at the far edge; the name is truncated clear of it.
+        let dist = crate::stat_fields::fmt_dist_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), cx.units);
+        cv.text(&dist, Point::new(x + w - 10, ry), font, TextAlign::Right, INK);
+        let budget = w - 20 - text_width(&dist, font) as i32 - 8;
+        let mut buf: heapless::String<24> = heapless::String::new();
+        let name = fit_caption(wp.name.as_str(), budget, &mut buf, font);
+        cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, INK);
+    }
+}
+
+/// Fit a caption into `budget_px` at `font`, dropping trailing chars and appending an ASCII ellipsis
+/// (`...` — the device font is printable-ASCII only, so `…` would render as tofu) when it overflows.
+/// Every built-in field's unit caption fits whole; only a long waypoint name is ever truncated (the
+/// wide tile's caption at [`Font::Label`], the panel's per-row names at their row font). Writes into
+/// `buf` and returns it. Pure integer geometry over the monospace cell width, so the truncation is
+/// deterministic. Mirrors the Map chip's `fit_name`.
+fn fit_caption<'b>(label: &str, budget_px: i32, buf: &'b mut heapless::String<24>, font: Font) -> &'b str {
     buf.clear();
-    let char_w = Font::Label.char_width() as i32;
+    let char_w = font.char_width() as i32;
     if label.chars().count() as i32 * char_w <= budget_px {
         let _ = buf.push_str(label); // fits whole (caption ≤ StatCell cap ≤ buf)
         return buf.as_str();
@@ -910,6 +961,141 @@ mod tests {
     use super::*;
     use obc_render::text::text_width;
 
+    /// A draw target that records only its text draws — the panel-content tests observe which strings
+    /// land, at what font + alignment, ignoring the chrome primitives (fills/rounds).
+    #[derive(Default)]
+    struct TextRec {
+        calls: heapless::Vec<(heapless::String<24>, Font, TextAlign), 16>,
+    }
+    impl Surface for TextRec {
+        fn clear(&mut self, _: u16) {}
+        fn fill(&mut self, _: Rectangle, _: u16) {}
+        fn round(&mut self, _: Rectangle, _: u32, _: u16) {}
+        fn round_outline(&mut self, _: Rectangle, _: u32, _: u16) {}
+        fn line(&mut self, _: Point, _: Point, _: u16) {}
+        fn triangle(&mut self, _: Point, _: Point, _: Point, _: u16) {}
+        fn disc(&mut self, _: Point, _: u32, _: u16) {}
+        fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, _: u16) -> Point {
+            let mut buf = heapless::String::new();
+            let _ = buf.push_str(s);
+            let _ = self.calls.push((buf, font, align));
+            at
+        }
+    }
+
+    /// A `Waypoints` table from `(dist_along_m, name)` pairs, route order — the panel-drawer mirror
+    /// of `stat_fields`' `wpts` helper.
+    fn wpts(items: &[(u32, &str)]) -> Waypoints {
+        let mut w = Waypoints::new();
+        for &(dist_along_m, name) in items {
+            let mut n = heapless::String::new();
+            n.push_str(name).unwrap();
+            w.entries.push(obc_route::WptEntry { dist_along_m, lon: 0, lat: 0, name: n }).unwrap();
+        }
+        w
+    }
+
+    /// A bare metric readout over `activity` + `waypoints`, resolving `next` as the first waypoint
+    /// ahead — enough for the panel drawer (which reads only those three).
+    fn readout<'a>(
+        activity: &'a Activity,
+        waypoints: &'a Waypoints,
+        next: Option<usize>,
+    ) -> crate::stat_fields::Readout<'a> {
+        crate::stat_fields::Readout {
+            fix: None,
+            activity,
+            units: Units::Metric,
+            route: None,
+            profile: None,
+            climb: None,
+            waypoints,
+            next_waypoint: next,
+            now: DateTime::default(),
+        }
+    }
+
+    /// A representative panel rect (the Statistics grid's full-page area on the 240×320 panel).
+    fn panel_area() -> Rectangle {
+        rect(12, 136, 216, 174)
+    }
+
+    /// The panel pins the next four waypoints ahead (rows `k..k+4`), the first emphasized (`Body`)
+    /// and the rest `Label`, each row a right-aligned distance-to-go (`dist_along_m − progress`) and
+    /// a left name; with only two remaining, the tail rows stay blank (nothing drawn).
+    #[test]
+    fn waypoint_panel_pins_the_next_four_and_blanks_the_tail() {
+        let act = Activity::new(Mode::Riding); // progress 0
+        let w = wpts(&[(1_000, "Brunnen"), (5_000, "Alp")]); // short names → verbatim, no truncation
+        let cx = readout(&act, &w, Some(0));
+        let mut rec = TextRec::default();
+        waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
+
+        // caption, then per row: distance (right) then name (left). Two waypoints → 1 + 2×2 = 5.
+        assert_eq!(rec.calls.len(), 5, "caption + two rows; the two empty tail rows draw nothing");
+        assert_eq!((rec.calls[0].0.as_str(), rec.calls[0].1), ("WAYPOINTS", Font::Label));
+        // Row 0 — emphasized (Body), distance-to-go 1000 − 0 = 1.0 km, then the name.
+        assert_eq!((rec.calls[1].0.as_str(), rec.calls[1].1, rec.calls[1].2), ("1.0km", Font::Body, TextAlign::Right));
+        assert_eq!((rec.calls[2].0.as_str(), rec.calls[2].1, rec.calls[2].2), ("Brunnen", Font::Body, TextAlign::Left));
+        // Row 1 — Label, 5000 − 0 = 5.0 km.
+        assert_eq!((rec.calls[3].0.as_str(), rec.calls[3].1, rec.calls[3].2), ("5.0km", Font::Label, TextAlign::Right));
+        assert_eq!((rec.calls[4].0.as_str(), rec.calls[4].1, rec.calls[4].2), ("Alp", Font::Label, TextAlign::Left));
+    }
+
+    /// A name too wide for the space left of its distance is ellipsis-truncated (ASCII `...`) so it
+    /// can never run into the distance column — the panel row's version of the tile's `fit_caption`.
+    #[test]
+    fn waypoint_panel_truncates_a_long_name_before_the_distance() {
+        let act = Activity::new(Mode::Riding);
+        let w = wpts(&[(12_400, "Pass Summit Overlook")]); // 20 chars ≤ WAYPOINT_NAME_CAP, too wide for the row
+        let cx = readout(&act, &w, Some(0));
+        let mut rec = TextRec::default();
+        waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
+        // Row 0: distance then the truncated name.
+        assert_eq!(rec.calls[1].0.as_str(), "12.4km", "the distance-to-go is intact");
+        let name = rec.calls[2].0.as_str();
+        assert!(name.ends_with("..."), "an over-long name is ellipsis-truncated, got {name:?}");
+        assert!(name.starts_with("Pass"), "…keeping its leading characters, got {name:?}");
+        // And the truncated name plus a gap stays clear of the distance's left edge.
+        let name_px = text_width(name, Font::Body) as i32;
+        let budget = panel_area().size.width as i32 - 20 - text_width("12.4km", Font::Body) as i32 - 8;
+        assert!(name_px <= budget, "the truncated name fits its budget ({name_px} <= {budget})");
+    }
+
+    /// Inside the 100 m pass-linger (progress past the still-current first waypoint) the row-1
+    /// distance clamps to `0m` via `saturating_sub` — the "you are here" readout the 2×1 tile shares.
+    #[test]
+    fn waypoint_panel_row_one_clamps_to_zero_in_the_linger() {
+        let mut act = Activity::new(Mode::Riding);
+        act.progress_m = 1_050; // 50 m past Brunnen, still its index (inside the linger)
+        let w = wpts(&[(1_000, "Brunnen"), (5_000, "Pass Summit")]);
+        let cx = readout(&act, &w, Some(0));
+        let mut rec = TextRec::default();
+        waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
+        assert_eq!(rec.calls[1].0.as_str(), "0m", "the passed first waypoint clamps to 0m");
+        assert_eq!(rec.calls[2].0.as_str(), "Brunnen");
+    }
+
+    /// Empty state — the frame + caption `WAYPOINTS` and a single centred `--` — for every way there's
+    /// nothing ahead: no index resolved, a stale out-of-range index, and an empty table.
+    #[test]
+    fn waypoint_panel_empty_state_is_a_centred_dash() {
+        let act = Activity::new(Mode::Riding);
+        let w = wpts(&[(1_000, "Brunnen")]);
+        let empty = Waypoints::new();
+        for cx in [
+            readout(&act, &empty, None),    // no route / nothing ahead
+            readout(&act, &w, Some(9)),     // a stale index past the table's end
+            readout(&act, &empty, Some(0)), // an index against an empty table
+        ] {
+            let mut rec = TextRec::default();
+            waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
+            assert_eq!(rec.calls.len(), 2, "just the caption and the fallback dash — no rows");
+            assert_eq!(rec.calls[0].0.as_str(), "WAYPOINTS");
+            assert_eq!((rec.calls[1].0.as_str(), rec.calls[1].2), ("--", TextAlign::Center), "a centred fallback dash");
+        }
+    }
+
     /// A stat tile's caption fits its pixel budget: a short built-in caption passes through verbatim,
     /// a long waypoint name is cut to leading chars + an ASCII ellipsis that stays within budget — so
     /// the wide `NextWaypoint` tile's name can never run into its right-aligned value.
@@ -917,9 +1103,13 @@ mod tests {
     fn tile_caption_truncation_fits_the_budget() {
         let cw = Font::Label.char_width() as i32;
         let mut buf = heapless::String::<24>::new();
-        assert_eq!(fit_caption("NEXT WPT", 100 * cw, &mut buf), "NEXT WPT", "a caption within budget is verbatim");
+        assert_eq!(
+            fit_caption("NEXT WPT", 100 * cw, &mut buf, Font::Label),
+            "NEXT WPT",
+            "a caption within budget is verbatim"
+        );
         let mut buf = heapless::String::<24>::new();
-        let fitted = fit_caption("Pass Summit Overlook", 10 * cw, &mut buf);
+        let fitted = fit_caption("Pass Summit Overlook", 10 * cw, &mut buf, Font::Label);
         assert_eq!(fitted, "Pass Su...", "7 leading chars + ellipsis fill the 10-cell budget");
         assert!(text_width(fitted, Font::Label) as i32 <= 10 * cw, "and it stays within budget");
     }
