@@ -432,6 +432,52 @@ pub(crate) fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Res
     Geometry::create_polygon(lr, vec![])
 }
 
+/// Fallible [`Geom::Polygon`] → GEOS polygon: unlike [`to_geos`] (which `expect`s),
+/// any ring that won't assemble into a valid `LinearRing`/`Polygon` yields `None`.
+/// A non-polygon geometry is also `None`. Used by [`union_polygons`], where a GEOS
+/// failure must fall back to passthrough, never panic the pack.
+fn try_polygon_to_geos(g: &Geom) -> Option<Geometry> {
+    let Geom::Polygon { exterior, interiors } = g else {
+        return None;
+    };
+    // A linear ring needs ≥4 positions (≥3 distinct + closing) or GEOS errors.
+    if exterior.len() < 4 {
+        return None;
+    }
+    let ext = Geometry::create_linear_ring(ring_to_coordseq(exterior)).ok()?;
+    let mut holes = Vec::with_capacity(interiors.len());
+    for r in interiors {
+        if r.len() < 4 {
+            return None;
+        }
+        holes.push(Geometry::create_linear_ring(ring_to_coordseq(r)).ok()?);
+    }
+    Geometry::create_polygon(ext, holes).ok()
+}
+
+/// Dissolve a set of fill **polygons** into their union via GEOS `unary_union` (the
+/// cascaded/STRtree union, built for exactly this workload — large sets of mostly
+/// disjoint small polygons). Returns the flattened [`Geom::Polygon`] parts of the
+/// result (a ring of parcels around an unmapped centre keeps its interior ring), or
+/// `None` on any GEOS failure or an empty result — so the caller passes the group
+/// through unmerged rather than drop map content. Builds, unions, and reads back
+/// **wholly on the calling thread**: no `geos::Geometry` ever crosses a thread
+/// boundary (it is `!Send`), so this is safe to call from a rayon worker.
+pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
+    let mut geoms = Vec::with_capacity(polys.len());
+    for g in polys {
+        geoms.push(try_polygon_to_geos(g)?);
+    }
+    if geoms.is_empty() {
+        return None;
+    }
+    let collection = Geometry::create_multipolygon(geoms).ok()?;
+    let unioned = collection.unary_union().ok()?;
+    let mut out = Vec::new();
+    collect_polygons(from_geos(&unioned), &mut out);
+    (!out.is_empty()).then_some(out)
+}
+
 /// Clip `geom` to the node box (integer microdegrees → degrees) via GEOS
 /// `intersection`.
 pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {

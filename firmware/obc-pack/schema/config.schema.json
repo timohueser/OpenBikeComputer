@@ -35,6 +35,11 @@
             "maximum": 4106,
             "default": 4096
         },
+        "merge_fills": {
+            "description": "Dissolve fill polygons that render pixel-identically - same z_index, color, and priority, with no color2 (an un-outlined fill next to an identical un-outlined fill) - into one union per LOD, deleting every shared interior boundary. A pure map-size/render-cost optimization with no intended visual change; false (the default) packs byte-identically to before.",
+            "type": "boolean",
+            "default": false
+        },
         "routing": {
             "description": "Nav-graph routing config (OBCM v9 §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).",
             "type": "object",
