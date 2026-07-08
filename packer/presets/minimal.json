@@ -39,6 +39,7 @@
         }
     },
     "marker": {"color": "0xF800"},
+    "merge_fills": true,
     "routing": {
         "min_component_edges": 50,
         "profiles": [

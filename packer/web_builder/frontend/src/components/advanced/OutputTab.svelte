@@ -56,6 +56,27 @@
 
     <div class="row">
         <div>
+            <h4>Merge fills</h4>
+            <p class="muted small">
+                Dissolve fill polygons that render identically — same colour, no outline — into one
+                shape per zoom level, dropping shared parcel boundaries. A pure size and render-cost
+                win with no visual change; off packs exactly as before.
+            </p>
+        </div>
+        <label class="toggle">
+            <input
+                type="checkbox"
+                checked={env.config.merge_fills ?? false}
+                onchange={(e) => {
+                    env.config.merge_fills = e.currentTarget.checked;
+                    working.markModified();
+                }}
+            />
+        </label>
+    </div>
+
+    <div class="row">
+        <div>
             <h4>Packer</h4>
             <p class="muted small">
                 The editor's capability follows the schema served by the obc-pack binary on this
@@ -97,7 +118,19 @@
         max-width: 52ch;
     }
 
-    input {
+    input[type="number"] {
         width: 108px;
+    }
+
+    .toggle {
+        display: inline-flex;
+        align-items: center;
+    }
+
+    .toggle input {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+        accent-color: var(--forest);
     }
 </style>

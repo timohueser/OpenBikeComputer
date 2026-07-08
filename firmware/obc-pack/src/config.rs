@@ -115,6 +115,11 @@ pub struct Config {
     pub lods: Vec<Lod>,
     pub marker_color: u16,
     pub chunk_size: usize,
+    /// Dissolve fill polygons that render pixel-identically (same `(z_index, color,
+    /// priority)`, no `color2`) into one union per LOD — a pure size/render-cost win
+    /// with no intended visual change ([`crate::merge`]). Default `false` ⇒ absent
+    /// flag packs byte-identically to before.
+    pub merge_fills: bool,
     /// The `routing` section (island pruning + bike profiles).
     pub routing: Routing,
 }
@@ -177,9 +182,12 @@ impl Config {
 
         let chunk_size = root.get("chunk_size").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(4096);
 
+        // Off by default: an absent flag packs byte-identically to before.
+        let merge_fills = root.get("merge_fills").and_then(Value::as_bool).unwrap_or(false);
+
         let routing = parse_routing(root.get("routing"))?;
 
-        Ok(Config { features, lods, marker_color, chunk_size, routing })
+        Ok(Config { features, lods, marker_color, chunk_size, merge_fills, routing })
     }
 
     /// First matching `(tag_key, value)` in document order. Within a matched
@@ -768,6 +776,19 @@ mod tests {
         let mut tags = HashMap::new();
         tags.insert("building", "anything");
         assert_eq!(cfg.get_style(&tags).map(|s| s.color), Some(0x0002));
+    }
+
+    /// `merge_fills` is an optional top-level boolean, default `false`; the schema's
+    /// declared default matches the parser, and both `true`/`false` parse.
+    #[test]
+    fn schema_merge_fills_default_matches_parser() {
+        let schema = embedded_schema();
+        assert_eq!(schema["properties"]["merge_fills"]["type"].as_str(), Some("boolean"));
+        assert_eq!(schema["properties"]["merge_fills"]["default"].as_bool(), Some(false));
+        // Absent ⇒ default false (byte-identical contract), and both values parse.
+        assert!(!Config::parse("{}").unwrap().merge_fills, "absent ⇒ false");
+        assert!(Config::parse(r#"{"merge_fills": true}"#).unwrap().merge_fills);
+        assert!(!Config::parse(r#"{"merge_fills": false}"#).unwrap().merge_fills);
     }
 
     #[test]
