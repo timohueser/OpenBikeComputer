@@ -163,6 +163,13 @@ pub struct Activity {
     /// C4, the Climb screen) read it to decide whether a climb is being tracked. Cleared on every
     /// route swap / unload / replace, alongside `progress_m` / `off_route`.
     pub active_climb: Option<usize>,
+    /// Index into the App-owned [`Waypoints`](obc_route::Waypoints) table of the next waypoint ahead
+    /// on the route, or `None` when past the last (or no route). Set by
+    /// [`App::update_next_waypoint`](crate::App::update_next_waypoint) on each matched fix — with a
+    /// distance-linger so it can't flap around a waypoint — since `App`, not `Activity`, owns the
+    /// table. The riding views (the map chip / stat fields, later in the epic) read it for the "next
+    /// waypoint" readouts. Cleared on every route swap / unload / replace, alongside `active_climb`.
+    pub next_waypoint: Option<usize>,
 
     // actually-ridden accumulators
     /// Distance actually pedalled (m) — the `done` stat. Counts **every** sane fix, including
@@ -340,9 +347,10 @@ impl Activity {
         self.progress_m = 0;
         self.off_route = false;
         self.dist_to_route_m = 0;
-        // A fresh session restarts at progress 0; drop any on-climb state so the next matched fix
-        // re-derives it from the reset cursor rather than holding a climb the old ride was on.
+        // A fresh session restarts at progress 0; drop any on-climb / next-waypoint state so the next
+        // matched fix re-derives both from the reset cursor rather than holding the old ride's.
         self.active_climb = None;
+        self.next_waypoint = None;
         self.ridden_m = 0.0;
         self.moving_m = 0.0;
         self.moving_s = 0.0;

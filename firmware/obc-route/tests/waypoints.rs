@@ -3,8 +3,8 @@
 //! loads and rides **identically** to the same route without waypoints.
 
 use obc_route::{
-    for_each_waypoint, gpx_to_obcr, RouteIndex, RouteReader, SliceSource, Waypoint, HEADER_V2_LEN, MAX_WAYPOINTS,
-    WAYPOINT_ELE_NONE, WAYPOINT_LEN,
+    for_each_waypoint, gpx_to_obcr, RouteIndex, RouteReader, SliceSource, Waypoint, Waypoints, HEADER_V2_LEN,
+    MAX_WAYPOINTS, WAYPOINT_ELE_NONE, WAYPOINT_LEN,
 };
 
 mod common;
@@ -234,4 +234,106 @@ fn waypoint_bearing_route_rides_identically() {
     for k in 0..idx_w.chunks().len() {
         assert_eq!(decode(&r_w, k), decode(&r_o, k), "chunk {k} diverged");
     }
+}
+
+// --- the resident `Waypoints` table (`RouteReader::load_waypoints`, #569) ---
+//
+// The table is the waypoint UI's data layer: it distils the raw stored section into named,
+// windowed, capped entries. These pin the filter/window/cap policy over hand-built byte routes.
+
+/// Build a `RouteReader` over `bytes` and load its resident table windowed at `min_dist_m`.
+fn load(bytes: &[u8], min_dist_m: u32) -> Waypoints {
+    let src = SliceSource(bytes);
+    let idx = RouteIndex::read(&src).unwrap();
+    RouteReader::new(&idx, &src).load_waypoints(min_dist_m)
+}
+
+/// The names, in order, of a loaded table — the shape most assertions want.
+fn names(w: &Waypoints) -> Vec<&str> {
+    w.as_slice().iter().map(|e| e.name.as_str()).collect()
+}
+
+#[test]
+fn load_waypoints_drops_unnamed_and_whitespace_only() {
+    // A real name, an empty name, an all-spaces name, a tab+space name, another real name.
+    let bytes = v2_route(&[
+        (0, 1_000, 2_000, 100, 0, 8, b"Fountain"),
+        (10, 1_000, 2_000, 100, 0, 0, b""),
+        (20, 1_000, 2_000, 100, 0, 3, b"   "),
+        (30, 1_000, 2_000, 100, 0, 2, b"\t "),
+        (40, 1_000, 2_000, 100, 0, 6, b"Summit"),
+    ]);
+    let w = load(&bytes, 0);
+    // Only the two genuinely-named waypoints survive; the blank/whitespace ones surface nowhere.
+    assert_eq!(names(&w), ["Fountain", "Summit"]);
+    assert!(!w.truncated);
+    // The compact entry mirrors the record's along/coord (ele/kind are dropped).
+    assert_eq!(w.as_slice()[0].dist_along_m, 0);
+    assert_eq!((w.as_slice()[0].lon, w.as_slice()[0].lat), (1_000, 2_000));
+}
+
+#[test]
+fn load_waypoints_windows_by_min_dist() {
+    let bytes = v2_route(&[
+        (0, 1_000, 2_000, 100, 0, 1, b"A"),
+        (500, 1_000, 2_000, 100, 0, 1, b"B"),
+        (1_000, 1_000, 2_000, 100, 0, 1, b"C"),
+    ]);
+    // No window: everything ahead of 0.
+    assert_eq!(names(&load(&bytes, 0)), ["A", "B", "C"]);
+    // A window at 500 keeps `dist_along_m >= 500` (B and C); the boundary is inclusive.
+    assert_eq!(names(&load(&bytes, 500)), ["B", "C"]);
+    // A window past the last waypoint yields an empty, non-truncated table.
+    let past = load(&bytes, 1_001);
+    assert!(past.is_empty() && !past.truncated);
+}
+
+#[test]
+fn load_waypoints_caps_first_by_distance_and_flags_truncation() {
+    // MAX_WAYPOINTS + 5 named waypoints at strictly increasing distance (the name is irrelevant to
+    // the cap, only that it's non-empty — one shared literal keeps the builder simple).
+    let recs: Vec<WpRec> =
+        (0..(MAX_WAYPOINTS + 5) as u32).map(|k| (k * 100, 1_000, 2_000, 100, 0, 1, b"w".as_slice())).collect();
+    let bytes = v2_route(&recs);
+
+    let w = load(&bytes, 0);
+    // Exactly the cap is resident, and it's the *first* MAX_WAYPOINTS by distance (0, 100, …).
+    assert_eq!(w.len(), MAX_WAYPOINTS);
+    assert!(w.truncated, "an over-cap file must flag truncation");
+    assert_eq!(w.as_slice().first().unwrap().dist_along_m, 0);
+    assert_eq!(w.as_slice().last().unwrap().dist_along_m, (MAX_WAYPOINTS as u32 - 1) * 100);
+
+    // Sliding the window forward past the resident tail re-captures the truncated remainder — the
+    // re-window the app performs on exhaustion. Starting just past entry 4 drops 5 and keeps the
+    // rest, so the (previously truncated) tail now fits.
+    let slid = load(&bytes, 5 * 100);
+    assert_eq!(slid.as_slice().first().unwrap().dist_along_m, 5 * 100);
+    assert!(!slid.truncated, "the remaining tail now fits under the cap");
+}
+
+#[test]
+fn load_waypoints_v1_route_is_empty() {
+    let mut bytes = v2_route(&[(0, 1_000, 2_000, 100, 0, 8, b"Fountain")]);
+    bytes[4] = 1; // downgrade to v1: the extension is untrusted, so no waypoints exist
+    let w = load(&bytes, 0);
+    assert!(w.is_empty() && !w.truncated);
+}
+
+/// Smoke-read the committed vector (2 named waypoints: `Brunnen` @ 0, `Pass Summit` mid-route) the
+/// way the shared vector tests reach it. Soft-skips if the repo-root fixture isn't reachable from
+/// the crate (the same tolerance the issue calls for), so the unit contract above is authoritative.
+#[test]
+fn load_waypoints_reads_the_committed_vector() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-vectors/route-waypoints.obcr");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("skipping: {} not reachable", path.display());
+        return;
+    };
+    let w = load(&bytes, 0);
+    assert_eq!(names(&w), ["Brunnen", "Pass Summit"]);
+    assert_eq!(w.as_slice()[0].dist_along_m, 0);
+    assert!(w.as_slice()[1].dist_along_m > 0, "the summit sits mid-route");
+    assert!(!w.truncated);
+    // Windowing past the first waypoint drops it.
+    assert_eq!(names(&load(&bytes, 1)), ["Pass Summit"]);
 }
