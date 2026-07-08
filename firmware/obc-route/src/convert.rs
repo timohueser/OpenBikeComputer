@@ -22,8 +22,8 @@ use crate::deadband::DeadBand;
 use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::{GpxScanner, RawWaypoint, WptScanner};
 use crate::reader::{
-    ChunkMeta, CHUNK_META_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP, WAYPOINT_ELE_NONE,
-    WAYPOINT_LEN,
+    ChunkMeta, CHUNK_META_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS, NAME_CAP,
+    WAYPOINT_ELE_NONE, WAYPOINT_LEN,
 };
 use obc_reader::codec::{put_i16, put_i32, put_u16, put_u32};
 use obc_reader::BBox;
@@ -42,11 +42,6 @@ const MAX_SEGMENT_UDEG: i64 = 30_000;
 
 /// Max bytes of one chunk's record body (`(points-1) × 6`).
 const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * 6;
-
-/// Converter emission cap for `<wpt>` waypoints (bounds the resident collection pass;
-/// extras past the cap are dropped). The *format* allows up to `u16::MAX` — the
-/// phone-side OBCR encoder is not bound by this.
-pub const MAX_WAYPOINTS: usize = 32;
 
 /// Stats computed during conversion (also written into the header).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
