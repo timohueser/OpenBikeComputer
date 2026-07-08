@@ -80,6 +80,27 @@ impl FrameScratch {
         stats.span_utilization = winners as f32 / self.slots.capacity() as f32;
         stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
         stats.ring_utilization = self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
+
+        // TEMP debug (scratch-budget investigation): split the drawn geometry by kind so the sim can
+        // show which render path — lines or polygons — eats the span/point/ring scratch at the zoom
+        // levels that saturate it. A span's point count is the sum of its ring lengths.
+        for span in self.spans() {
+            let start = span.ring_start as usize;
+            let rings = span.ring_count as usize;
+            let points: usize = self.frame_ring_lens[start..start + rings].iter().sum();
+            match span.kind {
+                Kind::Line => {
+                    stats.line_spans += 1;
+                    stats.line_rings += rings;
+                    stats.line_points += points;
+                }
+                Kind::Polygon => {
+                    stats.poly_spans += 1;
+                    stats.poly_rings += rings;
+                    stats.poly_points += points;
+                }
+            }
+        }
     }
 
     /// **Pass A.** One chunk-major walk over the viewport's leaves ([`Reader::for_each_chunk`]),

@@ -995,6 +995,19 @@ fn main() {
             stats.map_sd_reads,
             stats.map_bytes_read
         );
+        // TEMP debug (scratch-budget investigation): span/point/ring scratch split by render path.
+        eprintln!(
+            "  scratch by kind: spans {}L+{}P/{} · points {}L+{}P/{} · rings {}L+{}P/{}",
+            stats.line_spans,
+            stats.poly_spans,
+            obc_render::MAX_SPANS,
+            stats.line_points,
+            stats.poly_points,
+            obc_render::MAX_FRAME_POINTS,
+            stats.line_rings,
+            stats.poly_rings,
+            obc_render::MAX_FRAME_RINGS,
+        );
 
         if let Err(e) = write_png(&fb, args.scale, path) {
             eprintln!("{e}");
