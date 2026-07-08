@@ -40,6 +40,11 @@
             "type": "boolean",
             "default": false
         },
+        "merge_lines": {
+            "description": "Stitch same-styled connected line fragments - an OSM way split into many segments that agree on every rendered attribute (z_index, color, weight, priority, dashed, color2) - into maximal polylines per LOD, reclaiming a span and a ring per join (the budgets that saturate at mid zoom). No intended visual change for solid lines; a dashed or cased line's pattern runs continuously across a former join instead of restarting. false (the default) packs byte-identically to before.",
+            "type": "boolean",
+            "default": false
+        },
         "routing": {
             "description": "Nav-graph routing config (OBCM v9 §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).",
             "type": "object",

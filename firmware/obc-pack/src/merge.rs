@@ -16,12 +16,30 @@
 //! simplify — adjacent OSM parcels share boundary *nodes*, so the union dissolves
 //! them exactly; simplifying first would move each copy of a shared boundary
 //! independently and leave seam cracks. Off by default ⇒ byte-identical output.
+//!
+//! **Line-stitch (`merge_lines`).** The sibling pass for lines: OSM splits one
+//! continuous road/river/rail into many `way`s (at every bridge, name change, lane
+//! change…), each packed as its own line feature — so a frame spends one span **and
+//! one ring** on every fragment, and at coarse zoom simplify crushes each to a
+//! ~2-vertex stub. Since a line record carries no per-feature payload (color /
+//! weight / dashed / color2 all live in the style table), same-styled fragments that
+//! meet end-to-end render as one polyline; stitching them via GEOS `line_merge` (see
+//! [`crate::geom::merge_lines_geos`]) reclaims a span + a ring per join — the budget
+//! that actually saturates at mid zoom — at no cost to the plain solid-line output.
+//! Two lines stitch iff their styles agree on the **full** render identity
+//! `(z_index, color, weight, priority, dashed, color2)` (weight/dashed/color2 *do*
+//! change a stroked line, unlike a fill, so all are in the key). The one visible
+//! difference is at a join between **dashed** or **casing** (`color2`) fragments: the
+//! dash phase / casing runs continuously across it instead of restarting per way —
+//! an improvement, never a regression. Same placement (before simplify, so a merged
+//! run's now-interior junction vertices simplify away too); off by default ⇒
+//! byte-identical.
 
 use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::geom::{union_polygons, Geom};
+use crate::geom::{merge_lines_geos, union_polygons, Geom};
 use crate::serialize::Style;
 
 /// A fill's render-equivalence key: `(z_index, color, priority)`. Two `color2`-less
@@ -43,6 +61,35 @@ pub fn merge_classes(styles: &[Style]) -> HashMap<u8, (ClassKey, u8)> {
         if s.color2.is_none() {
             by_key.entry((s.z_index, s.color, s.priority)).or_default().push(s.id);
         }
+    }
+    let mut out = HashMap::with_capacity(styles.len());
+    for (key, ids) in by_key {
+        let canonical = ids.iter().copied().min().expect("a class has ≥1 member");
+        for id in ids {
+            out.insert(id, (key, canonical));
+        }
+    }
+    out
+}
+
+/// A line's render-equivalence key: `(z_index, color, weight, priority, dashed,
+/// color2)`. Unlike a fill (whose key is only `(z, color, priority)`), a line's
+/// stroke consults **every** rendered attribute — `weight` sets its width, `dashed`
+/// its pattern, `color2` its casing — so all are in the key: two lines stitch only
+/// if the merged polyline strokes pixel-for-pixel like the two fragments did.
+pub type LineClassKey = (i8, u16, u8, u8, bool, Option<u16>);
+
+/// `style_id → (line_class_key, canonical_style_id)` for **every** style — a line
+/// carries no `color2` exclusion (a merged casing is continuous, not a lost wall).
+/// The canonical id is the class's smallest style id (deterministic, independent of
+/// which members appear at a given LOD); a stitched run is tagged with it. A style
+/// used for both lines and polygons appears here (its lines stitch) and in
+/// [`merge_classes`] (its polygons dissolve) independently — the two passes select
+/// by geometry kind, so the keys need not agree.
+pub fn merge_line_classes(styles: &[Style]) -> HashMap<u8, (LineClassKey, u8)> {
+    let mut by_key: HashMap<LineClassKey, Vec<u8>> = HashMap::new();
+    for s in styles {
+        by_key.entry((s.z_index, s.color, s.weight, s.priority, s.dashed, s.color2)).or_default().push(s.id);
     }
     let mut out = HashMap::with_capacity(styles.len());
     for (key, ids) in by_key {
@@ -83,6 +130,22 @@ fn split_geom(g: Geom, polys: &mut Vec<Geom>, others: &mut Vec<Geom>) {
         }
         Geom::Empty => {}
         line => others.push(line),
+    }
+}
+
+/// The line dual of [`split_geom`]: separate a geometry's line parts (stitch
+/// candidates) from everything else (polygons pass through unchanged). Flattens
+/// nested `Multi`; drops `Empty`.
+fn split_lines(g: Geom, lines: &mut Vec<Geom>, others: &mut Vec<Geom>) {
+    match g {
+        l @ Geom::Line(_) => lines.push(l),
+        Geom::Multi(parts) => {
+            for p in parts {
+                split_lines(p, lines, others);
+            }
+        }
+        Geom::Empty => {}
+        poly => others.push(poly),
     }
 }
 
@@ -177,6 +240,93 @@ pub fn merge_fills(features: Vec<(u8, Geom)>, classes: &HashMap<u8, (ClassKey, u
                     }
                     // GEOS failed (or emptied a non-empty group): pass through
                     // unmerged, original style ids. Never drop map content.
+                    None => {
+                        stats.fallbacks += 1;
+                        out.extend(group);
+                    }
+                }
+            }
+        }
+    }
+    (out, stats)
+}
+
+/// Stitch same-styled connected line fragments in a per-LOD `(style_id, geom)` list
+/// into maximal polylines (see the module docs). Structurally the line dual of
+/// [`merge_fills`]: candidates are selected by geometry **kind** (line), polygons
+/// pass through unchanged, and the same never-drop guarantees hold — a singleton
+/// class passes through byte-untouched (no GEOS round-trip) and any `line_merge`
+/// failure passes the group through unmerged with its original style ids. Emission
+/// order is deterministic (passthroughs keep input order; each stitched group emits
+/// at its first member's position; classes key by canonical id), so packing the same
+/// input twice is byte-identical.
+pub fn merge_lines(
+    features: Vec<(u8, Geom)>,
+    classes: &HashMap<u8, (LineClassKey, u8)>,
+) -> (Vec<(u8, Geom)>, MergeStats) {
+    // --- Phase 1: lay out slots, accumulate group members (both in input order). ---
+    let mut slots: Vec<Slot> = Vec::with_capacity(features.len());
+    let mut members: HashMap<u8, Vec<(u8, Geom)>> = HashMap::new();
+    for (style_id, geom) in features {
+        let Some(&(_key, canonical)) = classes.get(&style_id) else {
+            slots.push(Slot::Pass(style_id, geom));
+            continue;
+        };
+        // Every style is in a line class, so a polygon-only style still routes here;
+        // its (polygon) parts fall out as `others` and pass through at this position.
+        let mut lines = Vec::new();
+        let mut others = Vec::new();
+        split_lines(geom, &mut lines, &mut others);
+        for o in others {
+            slots.push(Slot::Pass(style_id, o));
+        }
+        if lines.is_empty() {
+            continue;
+        }
+        let first = !members.contains_key(&canonical);
+        let bucket = members.entry(canonical).or_default();
+        for l in lines {
+            bucket.push((style_id, l));
+        }
+        if first {
+            slots.push(Slot::Group(canonical));
+        }
+    }
+
+    // --- Phase 2: stitch each ≥2-member group in parallel (one `line_merge` call per
+    // class; only plain `Geom` crosses threads). ---
+    let mut merges: HashMap<u8, Option<Vec<Geom>>> = members
+        .par_iter()
+        .filter(|(_, m)| m.len() >= 2)
+        .map(|(&canonical, m)| {
+            let refs: Vec<&Geom> = m.iter().map(|(_, g)| g).collect();
+            (canonical, merge_lines_geos(&refs))
+        })
+        .collect();
+
+    // --- Phase 3: emit in slot order. ---
+    let mut out = Vec::with_capacity(slots.len());
+    let mut stats = MergeStats::default();
+    for slot in slots {
+        match slot {
+            Slot::Pass(sid, g) => out.push((sid, g)),
+            Slot::Group(canonical) => {
+                let group = members.remove(&canonical).expect("a Group slot has members");
+                if group.len() == 1 {
+                    stats.singletons += 1;
+                    out.push(group.into_iter().next().unwrap());
+                    continue;
+                }
+                let n_in = group.len();
+                match merges.remove(&canonical).flatten() {
+                    Some(parts) => {
+                        stats.merged_classes += 1;
+                        stats.merged_inputs += n_in;
+                        stats.merged_outputs += parts.len();
+                        for p in parts {
+                            out.push((canonical, p));
+                        }
+                    }
                     None => {
                         stats.fallbacks += 1;
                         out.extend(group);
@@ -405,6 +555,166 @@ mod tests {
         assert_eq!(sa, sb);
         let key = |v: &[(u8, Geom)]| v.iter().map(|(s, g)| (*s, verts(g))).collect::<Vec<_>>();
         assert_eq!(key(&a), key(&b), "same style-id + vertex-count sequence both runs");
+    }
+
+    // --- merge_lines --------------------------------------------------------
+
+    /// A line style at the given key fields; the non-key spare (`id`) aside, every
+    /// field IS in the line key, so these helpers pin the full render identity.
+    fn line_style(
+        id: u8,
+        z_index: i8,
+        color: u16,
+        weight: u8,
+        priority: u8,
+        dashed: bool,
+        color2: Option<u16>,
+    ) -> Style {
+        Style { id, z_index, color, weight, priority, dashed, color2 }
+    }
+
+    fn line(pts: &[(f64, f64)]) -> Geom {
+        Geom::Line(pts.to_vec())
+    }
+
+    fn count_lines(features: &[(u8, Geom)]) -> usize {
+        features.iter().filter(|(_, g)| matches!(g, Geom::Line(_))).count()
+    }
+
+    #[test]
+    fn line_classes_key_on_full_render_identity() {
+        // 1 and 4 agree on every rendered field ⇒ one class (canonical 1); 2 differs
+        // in weight, 3 in dashed, 5 in color2 — each its own class. No style is ever
+        // excluded (a line carries no color2 veto).
+        let styles = [
+            line_style(1, 24, 0xAAA0, 1, 3, false, None),
+            line_style(4, 24, 0xAAA0, 1, 3, false, None),
+            line_style(2, 24, 0xAAA0, 2, 3, false, None), // weight differs
+            line_style(3, 24, 0xAAA0, 1, 3, true, None),  // dashed differs
+            line_style(5, 24, 0xAAA0, 1, 3, false, Some(0x52AA)), // color2 differs
+        ];
+        let classes = merge_line_classes(&styles);
+        assert_eq!(classes[&1].1, 1, "1 and 4 share a class ⇒ canonical is min id 1");
+        assert_eq!(classes[&4].1, 1);
+        assert_eq!(classes[&2].1, 2, "different weight ⇒ own class");
+        assert_eq!(classes[&3].1, 3, "different dashed ⇒ own class");
+        assert_eq!(classes[&5].1, 5, "a color2 line is still classed (just alone here)");
+    }
+
+    #[test]
+    fn two_segments_sharing_an_endpoint_stitch_into_one_line() {
+        // A→B and B→C, same style, meet at B ⇒ one polyline A→B→C, B stored once.
+        let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, false, None)]);
+        let a = line(&[(0.0, 0.0), (1.0, 0.0)]);
+        let b = line(&[(1.0, 0.0), (2.0, 0.0)]);
+        let (out, stats) = merge_lines(vec![(1, a), (1, b)], &classes);
+        assert_eq!(count_lines(&out), 1, "the two segments stitch into one line");
+        assert_eq!(out[0].0, 1);
+        assert_eq!(verts(&out[0].1), 3, "A,B,C — the shared B is not duplicated");
+        assert_eq!((stats.merged_inputs, stats.merged_outputs, stats.merged_classes), (2, 1, 1));
+    }
+
+    #[test]
+    fn cross_style_lines_stitch_under_the_canonical_id() {
+        // ids 4 and 2 render identically (e.g. track↔path) ⇒ canonical 2; a fragment
+        // of each, meeting end-to-end, stitches into one line tagged with id 2.
+        let classes = merge_line_classes(&[
+            line_style(4, 24, 0xAAA0, 1, 3, false, None),
+            line_style(2, 24, 0xAAA0, 1, 3, false, None),
+        ]);
+        let (out, _) =
+            merge_lines(vec![(4, line(&[(0.0, 0.0), (1.0, 0.0)])), (2, line(&[(1.0, 0.0), (2.0, 0.0)]))], &classes);
+        assert_eq!(count_lines(&out), 1);
+        assert_eq!(out[0].0, 2, "stitched run carries the class's canonical (smallest) id");
+    }
+
+    #[test]
+    fn a_y_junction_does_not_stitch_through_the_degree_3_node() {
+        // Three same-style arms meet at the origin. `line_merge` only joins degree-2
+        // nodes, so no arm stitches through — all three survive as separate lines
+        // (their shared endpoint's vertex count is unchanged).
+        let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, false, None)]);
+        let feats = vec![
+            (1u8, line(&[(0.0, 0.0), (1.0, 0.0)])),
+            (1u8, line(&[(0.0, 0.0), (-1.0, 0.0)])),
+            (1u8, line(&[(0.0, 0.0), (0.0, 1.0)])),
+        ];
+        let (out, _) = merge_lines(feats, &classes);
+        assert_eq!(count_lines(&out), 3, "a degree-3 junction leaves all three arms unstitched");
+    }
+
+    #[test]
+    fn different_render_keys_block_stitching() {
+        // Base style 1; four others each differ in exactly one line-key field. A
+        // fragment of each, sharing style 1's endpoint, must NOT stitch.
+        let base = line_style(1, 24, 0xAAA0, 1, 3, false, None);
+        let styles = [
+            base,
+            line_style(2, 25, 0xAAA0, 1, 3, false, None),         // z
+            line_style(3, 24, 0xAAA1, 1, 3, false, None),         // color
+            line_style(6, 24, 0xAAA0, 2, 3, false, None),         // weight
+            line_style(7, 24, 0xAAA0, 1, 3, false, Some(0x52AA)), // color2
+        ];
+        let classes = merge_line_classes(&styles);
+        for other in [2u8, 3, 6, 7] {
+            let (out, stats) = merge_lines(
+                vec![(1, line(&[(0.0, 0.0), (1.0, 0.0)])), (other, line(&[(1.0, 0.0), (2.0, 0.0)]))],
+                &classes,
+            );
+            assert_eq!(count_lines(&out), 2, "style {other} must not stitch with style 1");
+            assert_eq!(stats.merged_classes, 0, "no stitch happened for style {other}");
+        }
+    }
+
+    #[test]
+    fn a_polygon_in_a_line_class_passes_through_as_a_polygon() {
+        // Every style is line-classed, but this feature is a polygon (kind decides).
+        let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, false, None)]);
+        let (out, stats) =
+            merge_lines(vec![(1, square(0.0, 0.0, 1.0)), (1, line(&[(0.0, 0.0), (1.0, 0.0)]))], &classes);
+        assert!(out.iter().any(|(_, g)| matches!(g, Geom::Polygon { .. })), "the square survives as a polygon");
+        assert_eq!(stats.singletons, 1, "the lone line is a singleton; the polygon is not a candidate");
+    }
+
+    #[test]
+    fn singleton_line_is_byte_untouched() {
+        let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, false, None)]);
+        let l = line(&[(0.0, 0.0), (0.3, 0.1), (0.7, 0.2)]);
+        let (out, stats) = merge_lines(vec![(1, l.clone())], &classes);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, 1);
+        assert_eq!(verts(&out[0].1), verts(&l), "no GEOS round-trip: vertices unchanged");
+        assert_eq!(stats, MergeStats { singletons: 1, ..Default::default() });
+    }
+
+    #[test]
+    fn disjoint_same_class_lines_both_survive() {
+        // Two far-apart same-style segments: they can't stitch but neither is dropped.
+        let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, false, None)]);
+        let (out, stats) =
+            merge_lines(vec![(1, line(&[(0.0, 0.0), (1.0, 0.0)])), (1, line(&[(5.0, 5.0), (6.0, 5.0)]))], &classes);
+        assert_eq!(count_lines(&out), 2, "both disjoint lines survive");
+        assert_eq!(stats.merged_inputs, 2, "both counted as stitch inputs (one class, ≥2 members)");
+    }
+
+    #[test]
+    fn stitched_group_sits_at_its_first_members_position() {
+        // Input [A(class1 line), B(other line), C(class1 line, joins A)] →
+        // [stitched(1), B]: the stitched block sits at A's slot, B keeps its place.
+        let classes = merge_line_classes(&[
+            line_style(1, 24, 0xAAA0, 1, 3, false, None),
+            line_style(9, 40, 0x0000, 2, 2, true, None), // unrelated key
+        ]);
+        let feats = vec![
+            (1u8, line(&[(0.0, 0.0), (1.0, 0.0)])), // A
+            (9u8, line(&[(0.0, 5.0), (1.0, 5.0)])), // B
+            (1u8, line(&[(1.0, 0.0), (2.0, 0.0)])), // C joins A at (1,0)
+        ];
+        let (out, _) = merge_lines(feats, &classes);
+        assert_eq!(out.len(), 2, "A+C stitched, B passthrough");
+        assert_eq!(out[0].0, 1, "the stitched block is first (A's position)");
+        assert_eq!(verts(&out[0].1), 3);
+        assert_eq!(out[1].0, 9, "B keeps its position after the stitched block");
     }
 
     /// Total vertex count across a geometry's rings (exterior + holes / parts).

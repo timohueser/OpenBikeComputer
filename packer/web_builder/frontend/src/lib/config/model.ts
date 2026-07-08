@@ -55,6 +55,10 @@ export interface PackConfig {
     // Dissolve pixel-identical fill polygons per LOD (obc-pack `merge_fills`).
     // Absent/false ⇒ byte-identical output; a visual no-op size/render win.
     merge_fills?: boolean;
+    // Stitch same-styled connected line fragments into maximal polylines per LOD
+    // (obc-pack `merge_lines`) — reclaims a span + ring per join. Absent/false ⇒
+    // byte-identical; solid lines unchanged, dashed/cased phase runs continuous.
+    merge_lines?: boolean;
     // Bike-type routing profiles (§8.6). Absent ⇒ the packer bakes in its four
     // shipped defaults; the profile editor materializes it on first edit.
     routing?: RoutingConfig;
@@ -148,9 +152,10 @@ export function buildConfigForSubmit(
         marker: config.marker,
     };
     if (config.chunk_size != null) out.chunk_size = config.chunk_size;
-    // Emit merge_fills only when on; absent ⇒ the packer's default (off), keeping
-    // the submitted config clean and the byte-identical-off contract intact.
+    // Emit merge_fills / merge_lines only when on; absent ⇒ the packer's default
+    // (off), keeping the submitted config clean and the byte-identical-off contract.
     if (config.merge_fills) out.merge_fills = true;
+    if (config.merge_lines) out.merge_lines = true;
     // Routing profiles ride through untouched (validated by the packer). Absent
     // ⇒ the binary bakes in its four shipped defaults, so CLI parity holds.
     if (config.routing) out.routing = deepCopy(config.routing);

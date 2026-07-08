@@ -478,6 +478,52 @@ pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// Stitch a set of **lines** into maximal-length polylines via GEOS `line_merge`
+/// (the LineMerger): joins linestrings sharing an endpoint at a degree-2 node,
+/// dropping the duplicated join vertex, and stops at degree-≥3 junctions and where
+/// two lines only cross without a shared vertex — so an OSM way split into many
+/// segments recombines, but distinct roads meeting at a junction stay separate.
+/// Returns the flattened [`Geom::Line`] parts of the result (disjoint members pass
+/// straight through as their own lines), or `None` on any GEOS failure or an empty
+/// result — so the caller passes the group through unmerged rather than drop map
+/// content. Builds, merges, and reads back **wholly on the calling thread**: no
+/// `geos::Geometry` ever crosses a thread boundary (it is `!Send`), so this is safe
+/// to call from a rayon worker (see [`union_polygons`]).
+pub fn merge_lines_geos(lines: &[&Geom]) -> Option<Vec<Geom>> {
+    let mut geoms = Vec::with_capacity(lines.len());
+    for g in lines {
+        // A caller in `merge.rs` only ever hands us `Geom::Line`s; a degenerate
+        // <2-vertex line can't form a linestring, so bail to the unmerged fallback.
+        let Geom::Line(c) = g else { return None };
+        if c.len() < 2 {
+            return None;
+        }
+        geoms.push(Geometry::create_line_string(ring_to_coordseq(c)).ok()?);
+    }
+    if geoms.is_empty() {
+        return None;
+    }
+    let collection = Geometry::create_multiline_string(geoms).ok()?;
+    let merged = collection.line_merge().ok()?;
+    let mut out = Vec::new();
+    collect_lines(from_geos(&merged), &mut out);
+    (!out.is_empty()).then_some(out)
+}
+
+/// Flatten a `line_merge` result into its [`Geom::Line`] parts (a single merged
+/// chain reads back as one `Line`; several as a `Multi` of them).
+pub(crate) fn collect_lines(g: Geom, out: &mut Vec<Geom>) {
+    match g {
+        l @ Geom::Line(_) => out.push(l),
+        Geom::Multi(parts) => {
+            for p in parts {
+                collect_lines(p, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Clip `geom` to the node box (integer microdegrees → degrees) via GEOS
 /// `intersection`.
 pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
