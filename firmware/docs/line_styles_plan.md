@@ -1,4 +1,11 @@
-# Dashed & two-colour lines (railways, borders) — PLAN (STATUS: PLANNED)
+# Dashed & two-colour lines (railways, borders) — PLAN (STATUS: SHIPPED — superseded by epic #556)
+
+> **Shipped as sub-issue #558 of epic [#556](https://github.com/timohueser/OpenBikeComputer/issues/556)**
+> (OBCM **v10**, not the version this plan predates). Kept for design history; the `serialize.py` /
+> `static/app.js` references are stale (now `obc-pack/src/serialize.rs` + the Svelte frontend), and
+> the `lib.rs` line numbers below predate the refactor. **Trust the shipped code:** `Span.style_id`,
+> `stroke_dashed` and `walk_dashes` in `../obc-render/src/stroke.rs`; `draw_line`'s dashed / railway
+> dispatch there too. The readable tour is `../../docs/content/software/rendering.md` (§6 line styles).
 
 **Part 2 of 3** of the line-rendering roadmap ([route arrows](route_arrows_plan.md) → line styles →
 [road casing](road_casing_plan.md)). This part introduces the **secondary-colour + line-style style
