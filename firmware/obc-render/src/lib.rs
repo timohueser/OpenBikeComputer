@@ -54,7 +54,7 @@ use stroke::{draw_line, Stroker};
 /// Maximum visible features per frame (each is a [`Span`] — 14 bytes). Saturates first at coarse
 /// zoom (many small features).
 #[cfg(not(feature = "nrf-mem"))]
-pub const MAX_SPANS: usize = 1536;
+pub const MAX_SPANS: usize = 1152;
 // Trimmed hard on nrf-mem: the ride loop's deep per-frame render path (per-frame `Reader::new` +
 // streamed-chunk decode over embedded-sdmmc) needs a large MSP stack that must coexist with the
 // resident `RouteCache`/`RouteIndex` — and, on the combined image, the BLE stack — on the 256 KB
@@ -71,7 +71,7 @@ pub const MAX_SPANS: usize = 384;
 /// LM20 relaxes the trim), and real map features rarely approach these sizes. Do not "fix" it by
 /// raising this cap.
 #[cfg(not(feature = "nrf-mem"))]
-pub const MAX_FRAME_POINTS: usize = 4096;
+pub const MAX_FRAME_POINTS: usize = 4768;
 #[cfg(feature = "nrf-mem")]
 pub const MAX_FRAME_POINTS: usize = 768;
 

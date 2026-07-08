@@ -135,35 +135,35 @@ fn zero_area_collinear_polygon_fills_nothing() {
 /// has room. A high-priority feature must still survive while low-priority big ones are dropped for
 /// lack of point room.
 ///
-/// Full-profile only: the premise is `MAX_FRAME_POINTS` (4096) > a single max feature (~2000 pts),
-/// so two pack in before saturation and `point_utilization` exceeds 0.9. The `nrf-mem` profile
-/// sizes `MAX_FRAME_POINTS` (768) below one max feature, so this setup doesn't apply; its
+/// Full-profile only: the premise is `MAX_FRAME_POINTS` (4768) holds three of the test's ~1580-pt
+/// blobs, so a few pack in before saturation and `point_utilization` exceeds 0.9. The `nrf-mem`
+/// profile sizes `MAX_FRAME_POINTS` (768) below one blob, so this setup doesn't apply; its
 /// panic-safety is instead pinned by the compile-time `MAX_SCREEN_POINTS >= MAX_DECODE_POINTS`
 /// invariant.
 #[cfg(not(feature = "nrf-mem"))]
 #[test]
 fn frame_points_saturate_before_spans_and_priority_still_wins() {
-    // ~2000 points per feature. MAX_FRAME_POINTS = 4096, so ~2 fit; the 3rd+ are dropped on the
-    // point check, long before MAX_SPANS (1536) could fill. Two styles: low priority (4) blue and
+    // ~1580 points per feature. MAX_FRAME_POINTS = 4768, so ~3 fit; the 4th+ are dropped on the
+    // point check, long before MAX_SPANS (1152) could fill. Two styles: low priority (4) blue and
     // high priority (1) red, both big.
     const LOW_565: u16 = 0x001F; // blue, priority 4
     const HIGH_565: u16 = 0xF800; // red, priority 1
     let styles: &[Style] = &[(1, 0, LOW_565, 1, 4, false, None), (2, 1, HIGH_565, 1, 1, false, None)];
 
-    // A low-priority "blob": a ~2000-vertex thin filled rectangle (densified edges). Its vertex
+    // A low-priority "blob": a ~1580-vertex thin filled rectangle (densified edges). Its vertex
     // count is what matters — every vertex lands in `frame_points`, the buffer under test. Anchored
     // at its leaf-local (10,10); 8-bit deltas keep each step ≤127 µdeg, well inside a quadrant.
     let big_blob = |style: u8| -> Vec<u8> {
         let mut deltas: Vec<(i8, i8)> = Vec::new();
-        for _ in 0..999 {
+        for _ in 0..790 {
             deltas.push((1, 0)); // densified east edge
         }
         deltas.push((0, 40)); // up
-        for _ in 0..999 {
+        for _ in 0..790 {
             deltas.push((-1, 0)); // densified west edge back
         }
         deltas.push((0, -40)); // close
-        pack_poly(style, 10, 10, &deltas) // 2001 exterior points
+        pack_poly(style, 10, 10, &deltas) // 1582 exterior points
     };
     // The high-priority feature: a solid 10000-µdeg red square (16-bit deltas) so it unmistakably
     // fills pixels (≈30 px across at the test zoom) yet fits inside its 25000-µdeg quadrant. Far
@@ -174,8 +174,8 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     // A complete depth-2 quadtree: root branch (node 0, children 1..4), four sub-branches
     // (nodes 1..4) whose children are the 16 leaves (nodes 5..20). One feature per leaf, each
     // anchored at its own quadrant's (10,10) so it sits inside that quadrant and (at a whole-map
-    // zoom) on-screen. Leaves 0..6 carry low-priority blobs (7 × 2001 = 14007 points, already past
-    // MAX_FRAME_POINTS = 4096 → the point buffer overflows); leaf 7 carries the high-priority
+    // zoom) on-screen. Leaves 0..6 carry low-priority blobs (7 × 1582 = 11074 points, already past
+    // MAX_FRAME_POINTS = 4768 → the point buffer overflows); leaf 7 carries the high-priority
     // square; leaves 8..15 carry more low-priority blobs, all dropped, keeping the buffer pinned
     // full so the saturation is unambiguous.
     const BRANCH: u32 = 0x8000_0000;
