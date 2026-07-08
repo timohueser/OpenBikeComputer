@@ -49,17 +49,17 @@
             "ditch": {"z_index": 12, "color": "0x555F", "weight": 1, "min_lod": 2, "priority": 3}
         },
         "building": {
-            "yes": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "house": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "apartments": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "detached": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "terrace": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "garage": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "industrial": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "commercial": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "retail": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "school": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4},
-            "church": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4}
+            "yes": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "house": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "apartments": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "detached": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "terrace": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "garage": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "industrial": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "commercial": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "retail": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "school": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"},
+            "church": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"}
         },
         "natural": {
             "sea": {"z_index": 0, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 1},
