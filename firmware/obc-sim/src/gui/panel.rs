@@ -24,10 +24,49 @@ fn separator_above(ui: &mut egui::Ui) {
 }
 
 /// A labelled `0–100%` progress bar (a render-stats buffer-utilization row).
+#[allow(dead_code)]
 fn util_bar(ui: &mut egui::Ui, label: &str, frac: f32) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.add(egui::ProgressBar::new(frac).text(format!("{:.0}%", frac * 100.0)));
+    });
+}
+
+// TEMP debug (scratch-budget investigation): the two render paths, colored the same in the legend
+// and the stacked bars below.
+const KIND_LINE: egui::Color32 = egui::Color32::from_rgb(80, 150, 235); // lines = blue
+const KIND_POLY: egui::Color32 = egui::Color32::from_rgb(227, 165, 43); // polygons = amber
+
+/// TEMP debug: a stacked buffer-utilization bar splitting the fill into the line vs polygon
+/// contribution. `line`/`poly` are this frame's counts of the resource; `cap` its scratch capacity.
+/// The blue segment is lines and the amber segment polygons, laid end to end, so the total fill is
+/// `(line + poly) / cap` — how close this frame is to the scratch limit, and which path is eating it.
+fn kind_bar(ui: &mut egui::Ui, label: &str, line: usize, poly: usize, cap: usize) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let cap_f = cap.max(1) as f32;
+        let counts = format!("{line}L {poly}P · {:.0}%", 100.0 * (line + poly) as f32 / cap_f);
+        // Reserve room for the trailing counts label; the bar takes the rest.
+        let bar_w = (ui.available_width() - 118.0).max(60.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, 15.0), egui::Sense::hover());
+        let painter = ui.painter();
+        let rounding = 3.0;
+        painter.rect_filled(rect, rounding, ui.visuals().extreme_bg_color);
+        let line_frac = (line as f32 / cap_f).clamp(0.0, 1.0);
+        let poly_frac = (poly as f32 / cap_f).clamp(0.0, 1.0 - line_frac);
+        let w = rect.width();
+        if line_frac > 0.0 {
+            let seg = egui::Rect::from_min_size(rect.left_top(), egui::vec2(w * line_frac, rect.height()));
+            painter.rect_filled(seg, rounding, KIND_LINE);
+        }
+        if poly_frac > 0.0 {
+            let seg = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + w * line_frac, rect.top()),
+                egui::vec2(w * poly_frac, rect.height()),
+            );
+            painter.rect_filled(seg, rounding, KIND_POLY);
+        }
+        ui.label(counts);
     });
 }
 
@@ -470,9 +509,15 @@ impl SimGui {
         });
 
         ui.add_space(4.0);
-        ui.label("Buffer utilization");
-        util_bar(ui, "Spans", s.span_utilization);
-        util_bar(ui, "Points", s.point_utilization);
-        util_bar(ui, "Rings", s.ring_utilization);
+        // TEMP debug (scratch-budget investigation): scratch utilization split by render path, so
+        // the line vs polygon contribution to each buffer is visible at saturating zoom levels.
+        ui.horizontal(|ui| {
+            ui.label("Scratch by kind");
+            ui.colored_label(KIND_LINE, "■ lines");
+            ui.colored_label(KIND_POLY, "■ polygons");
+        });
+        kind_bar(ui, "Spans", s.line_spans, s.poly_spans, obc_render::MAX_SPANS);
+        kind_bar(ui, "Points", s.line_points, s.poly_points, obc_render::MAX_FRAME_POINTS);
+        kind_bar(ui, "Rings", s.line_rings, s.poly_rings, obc_render::MAX_FRAME_RINGS);
     }
 }
