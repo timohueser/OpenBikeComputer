@@ -4,8 +4,11 @@
 //! Coordinates are f64 lon/lat degrees; the quadtree clips in degree space, then
 //! the serializer rounds to microdegrees.
 
+use std::collections::HashMap;
+
 use geos::{CoordSeq, Geom as _, Geometry, GeometryTypes};
 use obc_reader::M_PER_DEG;
+use rayon::prelude::*;
 
 use crate::serialize::{Feature, Kind};
 
@@ -455,15 +458,61 @@ fn try_polygon_to_geos(g: &Geom) -> Option<Geometry> {
     Geometry::create_polygon(ext, holes).ok()
 }
 
-/// Dissolve a set of fill **polygons** into their union via GEOS `unary_union` (the
-/// cascaded/STRtree union, built for exactly this workload — large sets of mostly
-/// disjoint small polygons). Returns the flattened [`Geom::Polygon`] parts of the
-/// result (a ring of parcels around an unmapped centre keeps its interior ring), or
-/// `None` on any GEOS failure or an empty result — so the caller passes the group
-/// through unmerged rather than drop map content. Builds, unions, and reads back
-/// **wholly on the calling thread**: no `geos::Geometry` ever crosses a thread
-/// boundary (it is `!Send`), so this is safe to call from a rayon worker.
+/// Dissolve a set of fill **polygons** into their union.
+///
+/// Rather than one global `unary_union` over the whole set, the polygons are first
+/// split into **vertex-sharing connected components** (see [`vertex_components`])
+/// and each component unioned independently, in parallel; a component of one
+/// polygon — the common case, since most fills have no same-class neighbour —
+/// passes straight through with **no GEOS round-trip at all**. This is far cheaper
+/// than the global union: the isolated majority skip the overlay machinery
+/// entirely, and the surviving clusters (adjacent parcels, tiled landuse) are small
+/// and union in parallel instead of as one giant serial call.
+///
+/// Adjacency is decided by a shared vertex because separate OSM ways that abut
+/// reference the *same* boundary nodes, so their rings carry bit-identical
+/// coordinates there. This is a near-exact decomposition of the global union: the
+/// only merges it can miss are two same-class polygons that overlap without sharing
+/// a node (a rare mapping artefact), which stay as two parts instead of one — and
+/// since the class merges only fills that render pixel-identically (same z/color/
+/// priority, no outline), two undissolved same-color parts paint exactly as their
+/// union would, so the miss is invisible.
+///
+/// Returns the flattened [`Geom::Polygon`] parts (a ring of parcels around an
+/// unmapped centre keeps its interior ring); `None` only on an empty input. A
+/// component whose GEOS union fails falls back to passing its own polygons through
+/// unmerged, so map content is never dropped. Order is deterministic: components
+/// are emitted by ascending smallest-member index. Each component builds, unions,
+/// and reads back its GEOS geometries **wholly on one thread** (no `geos::Geometry`
+/// — which is `!Send` — ever crosses a thread boundary), so the parallel map is
+/// safe, and the clustering itself is pure-Rust on plain coordinates.
 pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
+    if polys.is_empty() {
+        return None;
+    }
+    let components = vertex_components(polys);
+    let out: Vec<Geom> = components
+        .par_iter()
+        .map(|comp| {
+            if comp.len() == 1 {
+                // Isolated fill: no neighbour to dissolve into — pass it through
+                // untouched, skipping GEOS entirely.
+                return vec![polys[comp[0]].clone()];
+            }
+            let refs: Vec<&Geom> = comp.iter().map(|&i| polys[i]).collect();
+            union_polygons_serial(&refs).unwrap_or_else(|| refs.iter().map(|g| (*g).clone()).collect())
+        })
+        .flatten()
+        .collect();
+    (!out.is_empty()).then_some(out)
+}
+
+/// Union a set of polygons with a single global GEOS `unary_union` (the
+/// cascaded/STRtree union). Returns the flattened [`Geom::Polygon`] parts, or
+/// `None` on any GEOS failure or empty result. This is the per-component worker
+/// behind [`union_polygons`]; it builds, unions, and reads back wholly on the
+/// calling thread (`geos::Geometry` is `!Send`).
+fn union_polygons_serial(polys: &[&Geom]) -> Option<Vec<Geom>> {
     let mut geoms = Vec::with_capacity(polys.len());
     for g in polys {
         geoms.push(try_polygon_to_geos(g)?);
@@ -476,6 +525,70 @@ pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
     let mut out = Vec::new();
     collect_polygons(from_geos(&unioned), &mut out);
     (!out.is_empty()).then_some(out)
+}
+
+/// Partition polygon indices `0..polys.len()` into connected components where two
+/// polygons are linked iff they share a vertex. Abutting OSM ways reference the
+/// same boundary nodes, so their rings carry bit-identical coordinates along the
+/// shared edge; quantising to ~1 cm (`1e7` scale) before hashing absorbs any float
+/// noise while keeping genuinely distinct nodes apart. A union-find over "these
+/// indices touched the same grid point" yields the components in one pass.
+///
+/// Output is deterministic regardless of link order: components are grouped by
+/// walking indices `0..n`, so each component's members are ascending and the
+/// components themselves are ordered by their smallest member.
+fn vertex_components(polys: &[&Geom]) -> Vec<Vec<usize>> {
+    let n = polys.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]]; // path halving
+            x = parent[x];
+        }
+        x
+    }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let (ra, rb) = (find(parent, a), find(parent, b));
+        if ra != rb {
+            parent[ra.max(rb)] = ra.min(rb);
+        }
+    }
+    // Quantise to ~1 cm so exact shared nodes collide but distinct ones don't.
+    const SCALE: f64 = 1e7;
+    let key = |(x, y): (f64, f64)| ((x * SCALE).round() as i64, (y * SCALE).round() as i64);
+    // First polygon index seen at each grid point; later arrivals link to it.
+    let total_verts: usize = polys
+        .iter()
+        .map(|g| match g {
+            Geom::Polygon { exterior, interiors } => exterior.len() + interiors.iter().map(Vec::len).sum::<usize>(),
+            _ => 0,
+        })
+        .sum();
+    let mut seen: HashMap<(i64, i64), usize> = HashMap::with_capacity(total_verts);
+    for (i, g) in polys.iter().enumerate() {
+        if let Geom::Polygon { exterior, interiors } = g {
+            for &v in exterior.iter().chain(interiors.iter().flatten()) {
+                match seen.entry(key(v)) {
+                    std::collections::hash_map::Entry::Occupied(e) => union(&mut parent, i, *e.get()),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(i);
+                    }
+                }
+            }
+        }
+    }
+    // Group indices by root, preserving ascending order within and across groups.
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut roots_in_order: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        let g = groups.entry(r).or_default();
+        if g.is_empty() {
+            roots_in_order.push(r);
+        }
+        g.push(i);
+    }
+    roots_in_order.into_iter().map(|r| groups.remove(&r).unwrap()).collect()
 }
 
 /// Stitch a set of **lines** into maximal-length polylines via GEOS `line_merge`
