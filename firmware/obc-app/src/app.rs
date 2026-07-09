@@ -567,6 +567,15 @@ pub struct App {
     /// dismissed notice doesn't nag — while a genuinely *new* flag (e.g. a late sensor timeout)
     /// still re-opens the card. Never cleared (the boot's warnings are the boot's).
     warned: WarningFlags,
+    /// A pending **install-update request** (epic #615 S4, #619) — the DFU one-shot, posted by
+    /// the S5 update screen (until then, by the `dfu-install` debug-link command) and drained
+    /// once per pass by the board's ride loop, which owns the exclusive storage + boot-state
+    /// access the arm needs. The create-route request shape, without a payload.
+    dfu_request: bool,
+    /// The firmware update **this boot just confirmed** (S4, #619): the running image's version
+    /// string, set by the board once the trial confirm has written `Idle { installed }`. The
+    /// one-time fact S5's "updated to vX" toast takes; `None` on a normal boot.
+    update_confirmed: Option<heapless::String<32>>,
 }
 
 /// One committed route upload, as [`notify_route_uploaded`](App::notify_route_uploaded) queues it
@@ -741,6 +750,8 @@ impl App {
             pending_upload: None,
             pending_warnings: WarningFlags::NONE,
             warned: WarningFlags::NONE,
+            dfu_request: false,
+            update_confirmed: None,
         }
     }
 
@@ -821,6 +832,8 @@ impl App {
             addr_of_mut!((*slot).pending_upload).write(None);
             addr_of_mut!((*slot).pending_warnings).write(WarningFlags::NONE);
             addr_of_mut!((*slot).warned).write(WarningFlags::NONE);
+            addr_of_mut!((*slot).dfu_request).write(false);
+            addr_of_mut!((*slot).update_confirmed).write(None);
         }
     }
 
@@ -1465,6 +1478,41 @@ impl App {
     /// its per-pass router work without draining the one-shot.
     pub fn has_nav_request(&self) -> bool {
         self.activity.has_nav_request()
+    }
+
+    /// Post the **install-update request** (epic #615 S4, #619) — the one-shot the board's ride
+    /// loop drains to run the DFU armer (validate `UPDATE.BIN`, snapshot the rollback, arm the
+    /// boot-state page, reboot into the bootloader). The S5 update screen will post this; until
+    /// then the `dfu-install` debug-link command does. The create-route request shape: posting
+    /// records intent only — execution, guards (not mid-recording), and errors are the drain's.
+    pub fn request_dfu_install(&mut self) {
+        self.dfu_request = true;
+    }
+
+    /// Drain the pending install-update request — the board's per-pass one-shot, like
+    /// [`take_nav_request`](App::take_nav_request).
+    pub fn take_dfu_request(&mut self) -> bool {
+        core::mem::take(&mut self.dfu_request)
+    }
+
+    /// Record that this boot **confirmed a freshly-installed firmware update** (S4, #619): the
+    /// board calls this right after the trial confirm writes `Idle { installed }` at the health
+    /// anchor (first frame presented + SD mounted). `version` is the running image's OBCU
+    /// version string (≤ 32 bytes by the container format; longer input is truncated).
+    pub fn notify_update_confirmed(&mut self, version: &str) {
+        let mut v: heapless::String<32> = heapless::String::new();
+        let mut end = version.len().min(v.capacity());
+        while end > 0 && !version.is_char_boundary(end) {
+            end -= 1;
+        }
+        let _ = v.push_str(&version[..end]);
+        self.update_confirmed = Some(v);
+    }
+
+    /// Take the one-time "update confirmed" fact — the just-confirmed running version, if this
+    /// boot set one. S5's toast is the consumer; taking it clears it (shown once).
+    pub fn take_update_confirmed(&mut self) -> Option<heapless::String<32>> {
+        self.update_confirmed.take()
     }
 
     /// **Debug bench** (#500): start a route plan from `from` to `to` (both `(lon, lat)` µdeg) exactly
@@ -3979,5 +4027,22 @@ mod tests {
         app.last_input_ms = 0;
         idle_tick(&mut app, 10_000);
         assert_eq!(app.ms_until_next_wake(10_000), Some(20_000), "wake armed 20 s out (30 s − 10 s elapsed)");
+    }
+
+    /// The DFU one-shots (epic #615 S4, #619): the install request and the confirmed-update fact
+    /// are both drained exactly once — the create-route request contract.
+    #[test]
+    fn dfu_request_and_confirmed_fact_are_take_once() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        assert!(!app.take_dfu_request(), "nothing pending at boot");
+        app.request_dfu_install();
+        assert!(app.take_dfu_request(), "the posted request drains");
+        assert!(!app.take_dfu_request(), "…exactly once");
+
+        assert_eq!(app.take_update_confirmed(), None, "no confirmed update on a normal boot");
+        app.notify_update_confirmed("v1.2.3-4-gabc1234");
+        let v = app.take_update_confirmed().expect("the fact is set");
+        assert_eq!(v.as_str(), "v1.2.3-4-gabc1234");
+        assert_eq!(app.take_update_confirmed(), None, "taken once — the toast shows once");
     }
 }

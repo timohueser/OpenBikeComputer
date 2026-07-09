@@ -59,6 +59,25 @@ fn region_offset() -> u32 {
     core::ptr::addr_of!(__settings_base) as u32
 }
 
+/// Base address of the DFU **boot-state page** (#617/#619): the `__boot_state_base` linker symbol
+/// (`ORIGIN(BOOT_STATE)`), read at runtime like [`region_offset`] so the linker map stays the only
+/// address authority. RRAM starts at 0, so the address doubles as the [`Rramc`] write offset.
+fn boot_state_base() -> u32 {
+    extern "C" {
+        static __boot_state_base: u8;
+    }
+    core::ptr::addr_of!(__boot_state_base) as u32
+}
+
+// The armer writes whole 16-byte RRAMC lines with no read-modify-write — the shared codec pads
+// every encoded blob to a line multiple (pinned in obc-dfu too; mirrored here like the settings
+// SLOT_LEN guard so a codec change fails loud at this write site's crate).
+const _: () = assert!(
+    obc_dfu::MAX_ENCODED_LEN.is_multiple_of(RRAM_WRITE_LINE),
+    "boot-state blobs must stay 16-byte-line aligned for RRAMC",
+);
+const _: () = assert!(obc_dfu::MAX_ENCODED_LEN <= obc_dfu::PAGE_LEN);
+
 /// Byte offset of the **boot-counter line** within the reserved settings page — the diagnostics
 /// blob's one persisted fact. Placed at the page's midpoint so the low half stays free for the
 /// settings slot's future two-slot + sequence upgrade (module doc).
@@ -144,6 +163,38 @@ impl RramSettingsStore {
     #[cfg(feature = "ble")]
     pub fn boot_count(&self) -> u32 {
         self.boot_count
+    }
+
+    /// Decode the DFU **boot-state page** (S4, #619) — a plain memory-mapped read (RRAM is
+    /// XIP-readable; no controller round-trip, no 4 KB stack buffer). Anything torn/blank/foreign
+    /// decodes to `Idle { installed: None }` per the shared codec's safety net (`OBCU_Spec.md`
+    /// §2.4). `&mut self` only for symmetry with the write path (the store owns the page).
+    pub fn read_boot_state(&mut self) -> obc_dfu::BootState {
+        // SAFETY: the linker reserves the 4 KB BOOT_STATE region; RRAM is memory-mapped and
+        // always readable, and nothing writes it concurrently (this store is the sole writer,
+        // on the one thread-mode executor).
+        let page = unsafe { core::slice::from_raw_parts(boot_state_base() as *const u8, obc_dfu::PAGE_LEN) };
+        obc_dfu::BootState::decode(page)
+    }
+
+    /// Persist a DFU boot state to the BOOT_STATE page (S4, #619) — the armer's page write and
+    /// the trial confirm's, through the same `Rramc` line-write path as the settings blob (the
+    /// encoded blob is a whole number of 16-byte lines by construction; see the compile guards
+    /// above). Returns `false` on a controller error — the caller must **not** proceed to the
+    /// reset (an unwritten arm must never reboot the device into the bootloader).
+    pub fn write_boot_state(&mut self, state: &obc_dfu::BootState) -> bool {
+        let off = boot_state_base();
+        let page = state.encode();
+        match self.rram.write(off, page.as_bytes()) {
+            Ok(()) => {
+                defmt::info!("dfu: wrote boot state ({=usize} B) to RRAM @ {=u32:#010x}", page.len(), off);
+                true
+            }
+            Err(e) => {
+                defmt::warn!("dfu: boot-state RRAM write failed: {}", e);
+                false
+            }
+        }
     }
 
     /// Load the durable object-id high-water marks (#450), or `None` when the line is blank /

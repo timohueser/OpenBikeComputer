@@ -170,3 +170,11 @@ cargo run -p obc-mkimage -- inspect UPDATE.BIN
 and **warns** if the binary's first word isn't a plausible initial stack pointer in
 RAM (`0x2000_0000 … 0x2004_0000`) — a raw `.bin` starts with the vector table, so a
 failed check usually means an ELF or a wrong-section-order strip slipped through.
+
+Installing a staged `UPDATE.BIN` on the device is the app-side armer (S4, #619): copy
+the file to the card root and trigger the install — from the S5 UI once it lands, or
+today over the debug VCOM link (`dfu-install`; recipe in the
+[board README](obc-fw-nrf54l/README.md#triggering-a-firmware-update-over-the-vcom-dfu-install-s4-619)).
+The armer validates the file, snapshots the running image to `/ROLLBACK.BIN`, arms the
+boot-state page, and resets into `obc-boot`, which does the actual flash
+([its README](obc-boot/README.md) has the LED codes).

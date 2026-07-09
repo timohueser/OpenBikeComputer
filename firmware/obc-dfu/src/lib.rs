@@ -15,6 +15,10 @@
 //! - [`engine`] — the bootloader's **install engine** (S3, #618): the verify → flash → readback →
 //!   state-transition sequencing as a pure driver over the [`engine::InstallIo`] trait, so the
 //!   whole failure matrix (power loss, bad stage, readback retries) is host-tested with mock IO.
+//! - [`armer`] — the app-side **armer**'s decision core (S4, #619): the staging-scan validation
+//!   matrix, the snapshot-before-page-write arm sequencing, the generation bump, and the trial
+//!   confirm, as pure drivers over the [`armer::StageIo`]/[`armer::ArmIo`] traits — host-tested
+//!   with mocks (`tests/armer.rs`) exactly like the engine.
 //!
 //! Everything is little-endian (repo convention, matching OBCM/OBCR). Both codecs follow the
 //! settings-store convention: a version + CRC frame, **valid CRC ⇒ `Some`/decoded**, anything else
@@ -22,11 +26,13 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod armer;
 pub mod crc32;
 pub mod engine;
 pub mod image;
 pub mod state;
 
+pub use armer::{ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo};
 pub use crc32::{crc32, Crc32};
 pub use engine::{InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE, RRAM_LINE_LEN, SD_BLOCK_LEN};
 pub use image::{

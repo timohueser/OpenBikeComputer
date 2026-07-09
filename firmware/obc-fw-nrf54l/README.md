@@ -315,3 +315,22 @@ on-screen button row that injects encoder/Back presses), and shows the device's
 render-stats telemetry coming back. It's the same `obc-platform::debug_link` wire
 protocol the simulator uses — only the transport differs (a VCOM UART here). `--list`
 enumerates serial ports; the VCOM is the J-Link CDC port.
+
+### Triggering a firmware update over the VCOM (`dfu-install`, S4 #619)
+
+With an `UPDATE.BIN` (see `../README.md` §Firmware update images) in the card root, the
+same link carries the DFU armer's trigger — no feeder GUI needed, any raw terminal works:
+
+```sh
+PORT=/dev/tty.usbmodem<...>          # the J-Link CDC port
+stty -f "$PORT" 115200 raw -echo
+cat "$PORT" &                        # watch the `D …` status lines (and `T …` telemetry)
+printf 'dfu-install\n' > "$PORT"
+```
+
+The device streams one `D` line per phase — scan result (staged version, size, extents),
+rollback snapshot, `armed gen=N` — then resets into `obc-boot`, which installs the image
+(LED codes: `../obc-boot/README.md`). Errors (`no UPDATE.BIN…`, `failed its CRC check…`,
+`too fragmented…`) come back the same way and the device keeps running. The trigger is
+refused mid-recording. Concept + formats: `OBCU_Spec.md`; the byte-identical request path
+is what S5's on-device menu entry will post.

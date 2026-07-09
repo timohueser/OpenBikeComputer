@@ -27,6 +27,11 @@
 //!   would (records the request *and* shows the spinning-compass planning screen), so a host can
 //!   drive the resumable router repeatably and read the per-phase `nav route:` RTT line without
 //!   navigating the POI browser. `debug-uart` + `has_nav` builds only.
+//! - `dfu-install` — **firmware-update trigger** (epic #615 S4, #619): post the same install
+//!   request the S5 UI will post, so the on-glass DFU gate runs over the VCOM harness before any
+//!   screen exists. The ride loop drains it, runs the armer (scan `UPDATE.BIN` → rollback
+//!   snapshot → arm the boot-state page), streams its result back as `D …` status lines (below),
+//!   and reboots into the bootloader on success. `debug-uart` builds only.
 //!
 //! Device → host (see [`Telemetry`]): `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped>
 //! <chunks> <cache_hits> <cache_misses> <sd_reads> <bytes_read> <collect_us> <read_us> <sort_us>
@@ -34,6 +39,10 @@
 //! the RTT `map frame` log / the sim's Render Stats panel), at a low fixed rate so the link never
 //! floods. The trailing six are the render-benchmark fields: the per-stage wall-time breakdown
 //! and the frame's camera scale (see [`Telemetry`]).
+//!
+//! Additionally `D <text>` — one **DFU status line** per armer phase (scan result / rollback /
+//! armed / error), pushed by the ride loop's `dfu-install` drain via [`dfu_status`] and sent by
+//! the same TX task as telemetry. Free-form human-readable text after the `D ` tag.
 //!
 //! ## Fresh-fix contract — behind `debug-link`
 //! Each parsed *sensor* sample is handed to the app through an embassy `Signal`, whose `try_take`
@@ -54,6 +63,10 @@ use obc_app::{Button, ButtonEvent, Fix, InputEvent};
 /// course/speed (`F -2147483648 -2147483648 359.99 99.99`) ≈ 45 bytes; 64 leaves slack.
 const LINE_MAX: usize = 64;
 
+/// Byte cap of one device→host DFU status line (S4, #619) — a phase result with a version
+/// string and a couple of numbers fits comfortably; anything longer is truncated at push.
+pub const DFU_STATUS_MAX: usize = 96;
+
 /// One decoded host→device message.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Msg {
@@ -71,6 +84,9 @@ pub enum Msg {
     /// microdegrees, exactly as the POI create-route confirm would — the repeatable stand-in for
     /// driving the UI, so the `nav route:` RTT breakdown can be captured over VCOM.
     Nav { from: (i32, i32), to: (i32, i32) },
+    /// A firmware-update install trigger (epic #615 S4, #619): post the same request the S5 UI
+    /// will post — scan `UPDATE.BIN`, snapshot the rollback, arm the boot-state page, reboot.
+    DfuInstall,
 }
 
 /// Parse one line into a [`Msg`], or `None` if the tag is unknown or the required fields are
@@ -99,6 +115,9 @@ pub fn parse_line(line: &str) -> Option<Msg> {
             Some(Msg::Nav { from: (from_lon, from_lat), to: (to_lon, to_lat) })
         }
         "K" => parse_key(&mut it),
+        // The one word-tag command (its name is the on-glass DFU gate's whole interface, so it
+        // stays greppable over a cryptic letter). No arguments.
+        "dfu-install" => Some(Msg::DfuInstall),
         _ => None,
     }
 }
@@ -328,6 +347,15 @@ mod handoff {
     /// Latest debug route-plan trigger, `try_take`-once like the `Z` command. Drained by the ride
     /// loop → `App::debug_start_nav` (#500 perf bench).
     static NAV: Signal<CriticalSectionRawMutex, NavTrigger> = Signal::new();
+    /// A pending `dfu-install` trigger (S4, #619), `try_take`-once like the `Z`/`N` commands.
+    /// Drained by the ride loop → `App::request_dfu_install` (the same request the S5 UI posts).
+    static DFU_INSTALL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+    /// DFU status lines device→host (`D <text>`), queued in order — a `Channel`, not a latch,
+    /// because one arm emits several phase lines back-to-back (scan / rollback / armed) and each
+    /// must reach the host. Sized for one full arm's line budget; an overflowing push is dropped
+    /// (the RTT log still carries everything).
+    static DFU_STATUS: Channel<CriticalSectionRawMutex, heapless::String<{ super::DFU_STATUS_MAX }>, 4> =
+        Channel::new();
     /// A single "a datapoint arrived" wake, the `debug-uart` twin of `sensor_link::EVENT`: pulsed
     /// by [`dispatch`] on any host-streamed sensor sample so the event-driven loop's [`wait_event`]
     /// wakes the render once. Injected *input* (`Msg::Input`) does **not** pulse it — that wakes the
@@ -361,6 +389,11 @@ mod handoff {
             }
             Msg::Nav { from, to } => {
                 NAV.signal((from, to));
+                EVENT.signal(());
+            }
+            // Pulse EVENT too: a parked device must wake its ride loop to drain the request.
+            Msg::DfuInstall => {
+                DFU_INSTALL.signal(());
                 EVENT.signal(());
             }
             // Drop on the (unreachable) overflow rather than block the RX task. No `EVENT` pulse —
@@ -430,6 +463,33 @@ mod handoff {
         NAV.try_take()
     }
 
+    /// Take a pending `dfu-install` trigger (S4, #619) — `try_take`-once, like [`take_nav`]. The
+    /// ride loop calls this each pass and posts the app-level DFU request from it.
+    pub fn take_dfu_install() -> bool {
+        DFU_INSTALL.try_take().is_some()
+    }
+
+    /// Queue one DFU status line for the host (sent as `D <text>`). Called by the ride loop's
+    /// armer drain at each phase boundary; a full queue drops the line (the RTT log is the
+    /// lossless record — this stream is the harness's convenience view).
+    pub fn dfu_status(text: &str) {
+        let mut line: heapless::String<{ super::DFU_STATUS_MAX }> = heapless::String::new();
+        // Truncate rather than drop on an over-long message; the prefix carries the meaning.
+        let take = text.len().min(super::DFU_STATUS_MAX);
+        let mut end = take;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let _ = line.push_str(&text[..end]);
+        let _ = DFU_STATUS.try_send(line);
+    }
+
+    /// Await the next queued DFU status line (the transport's TX task) — the `D`-line twin of
+    /// [`wait_telemetry`].
+    pub async fn wait_dfu_status() -> heapless::String<{ super::DFU_STATUS_MAX }> {
+        DFU_STATUS.receive().await
+    }
+
     /// Publish the latest telemetry (called by the app loop, throttled). Overwrites any unsent
     /// value, so the host always gets the freshest snapshot.
     pub fn set_telemetry(t: Telemetry) {
@@ -447,8 +507,8 @@ mod handoff {
 // (`debug_link::DebugLocation`, `debug_link::feed_bytes`, …) are unchanged by the split.
 #[cfg(feature = "debug-link")]
 pub use handoff::{
-    dispatch, feed_bytes, set_telemetry, take_nav, take_zoom, wait_event, wait_telemetry, DebugAltimeter, DebugCompass,
-    DebugInput, DebugLocation,
+    dfu_status, dispatch, feed_bytes, set_telemetry, take_dfu_install, take_nav, take_zoom, wait_dfu_status,
+    wait_event, wait_telemetry, DebugAltimeter, DebugCompass, DebugInput, DebugLocation,
 };
 
 #[cfg(test)]
@@ -503,6 +563,16 @@ mod tests {
         );
         assert_eq!(parse_line("N 7809000 48126000 7808898"), None); // missing to_lat
         assert_eq!(parse_line("N"), None); // no coords
+    }
+
+    #[test]
+    fn parses_dfu_install() {
+        assert_eq!(parse_line("dfu-install"), Some(Msg::DfuInstall));
+        assert_eq!(parse_line("  dfu-install  "), Some(Msg::DfuInstall), "whitespace tolerated like every tag");
+        // Trailing junk is ignored (the tag alone is the command — no arguments defined).
+        assert_eq!(parse_line("dfu-install now"), Some(Msg::DfuInstall));
+        assert_eq!(parse_line("dfu-installx"), None, "the tag must match exactly");
+        assert_eq!(parse_line("DFU-INSTALL"), None, "tags are case-sensitive, like F/A/C");
     }
 
     #[test]
