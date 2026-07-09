@@ -27,6 +27,7 @@ use obc_render::{
 use crate::hal::Fix;
 use crate::input::Gesture;
 use crate::settings::Units;
+use crate::Msg;
 
 use super::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};
@@ -157,11 +158,11 @@ impl PoiListScreen {
             // against a fix, "No POIs in this map" for a genuinely empty category. Before the first
             // query (no fix yet, not queried) draw nothing — a transient one-frame state.
             if rx.state.user_fix.is_none() {
-                super::empty_state(cv, w, h, "No position", "No GPS fix yet");
+                super::empty_state(cv, w, h, rx.t(Msg::PoiListNoPosition), rx.t(Msg::PoiListNoPositionSub));
             } else if queried {
                 // Body title fits ~16 chars on the 240 px panel — keep it short; the hint carries
                 // the "in this map" scope the epic's wording wants.
-                super::empty_state(cv, w, h, "No POIs nearby", "None in this map");
+                super::empty_state(cv, w, h, rx.t(Msg::PoiListNoPois), rx.t(Msg::PoiListNoPoisSub));
             }
             return;
         }

@@ -13,6 +13,7 @@ use obc_render::Surface;
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
 use crate::stat_fields::{fmt_hms, fmt_km};
+use crate::Msg;
 
 use super::{ledger_row, list, palette, title_frame, Ctx, MenuItem, Render, Transition};
 
@@ -25,11 +26,9 @@ const OPTIONS_TOP: i32 = 178;
 const OPTION_ROW_H: i32 = 38;
 const OPTION_GAP: i32 = 8;
 
-const ITEMS: [MenuItem; 3] = [
-    MenuItem { label: "Resume", guard: false },
-    MenuItem { label: "Finish", guard: true },
-    MenuItem { label: "Discard", guard: true },
-];
+/// Per-row guard flags (Finish / Discard are irreversible). Labels are looked up per language at
+/// draw time (see [`RideControl::draw`]) — the old `const ITEMS` couldn't stay const.
+const GUARDS: [bool; 3] = [false, true, true];
 
 const FINISH: usize = 1;
 const DISCARD: usize = 2;
@@ -49,15 +48,15 @@ impl RideControl {
     /// progress in `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports
     /// a charging hold as worth repainting here.
     pub fn selection_is_guarded(&self) -> bool {
-        ITEMS[self.selected].guard
+        GUARDS[self.selected.min(GUARDS.len() - 1)]
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, GUARDS.len()),
             Gesture::Press => {
                 // Instant (non-guarded) options only — i.e. Resume.
-                if ITEMS[self.selected].guard {
+                if GUARDS[self.selected.min(GUARDS.len() - 1)] {
                     Transition::None
                 } else {
                     cx.activity.mode = Mode::Riding;
@@ -94,7 +93,7 @@ impl RideControl {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, "PAUSED", "");
+        title_frame(cv, w, h, rx.t(Msg::RideControlTitle), "");
 
         // The ride so far, in the shared pane-free ledger: what you're about to Finish (or throw
         // away with Discard) is on screen while the option rows are armed below.
@@ -107,9 +106,9 @@ impl RideControl {
         let _ = write!(climb, "{}", units.elev(act.climb_m()) as u32);
 
         let rows: [(&str, &str, &str, Option<bool>); 3] = [
-            ("RIDE TIME", &time, "", None),
-            ("DISTANCE", &dist, dist_unit, None),
-            ("CLIMB", &climb, units.elev_label(), Some(true)),
+            (rx.t(Msg::RideControlRideTime), &time, "", None),
+            (rx.t(Msg::RideControlDistance), &dist, dist_unit, None),
+            (rx.t(Msg::RideControlClimb), &climb, units.elev_label(), Some(true)),
         ];
         for (i, (caption, value, unit, arrow)) in rows.iter().enumerate() {
             let y = ROWS_TOP + i as i32 * ROW_PITCH;
@@ -129,6 +128,11 @@ impl RideControl {
             label_dx: 12,
             label_dy: 5,
         };
-        super::draw_guarded_rows(cv, &ITEMS, self.selected, rx.hold_progress, WARNING, geo);
+        let items = [
+            MenuItem { label: rx.t(Msg::RideControlResume), guard: GUARDS[0] },
+            MenuItem { label: rx.t(Msg::RideControlFinish), guard: GUARDS[1] },
+            MenuItem { label: rx.t(Msg::RideControlDiscard), guard: GUARDS[2] },
+        ];
+        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, geo);
     }
 }

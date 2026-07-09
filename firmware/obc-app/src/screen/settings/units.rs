@@ -10,6 +10,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::Msg;
 
 /// The Units screen. Stateless — the value lives in [`Settings`](crate::Settings); the one row
 /// is always the cursor.
@@ -37,14 +38,21 @@ impl UnitsScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         let units = rx.settings.units;
-        title_frame(cv, w, h, "UNITS", "");
+        title_frame(cv, w, h, rx.t(Msg::UnitsTitle), "");
 
         // The single value row — the current system centred, flanked by left/right arrows to read as
         // "rotate to switch".
         let area = super::row_rect(LIST_TOP + 8, w, 50);
         super::row_cursor(cv, area, true, false);
         let midy = area.top_left.y + area.size.height as i32 / 2;
-        cv.text_vcentered(units.name(), w / 2, (area.top_left.y, 50), Font::Body, TextAlign::Center, INK);
+        cv.text_vcentered(
+            units.name(rx.settings.language),
+            w / 2,
+            (area.top_left.y, 50),
+            Font::Body,
+            TextAlign::Center,
+            INK,
+        );
         // ◄ and ► as filled triangles, inset from the row edges.
         let ax = area.top_left.x + 18;
         cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), INK);
@@ -52,8 +60,11 @@ impl UnitsScreen {
         cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), INK);
 
         // What the system means for each readout — label left, unit right.
-        let rows: [(&str, &str); 3] =
-            [("Distance", units.dist_label()), ("Speed", units.speed_label()), ("Elevation", units.elev_label())];
+        let rows: [(&str, &str); 3] = [
+            (rx.t(Msg::UnitsDistance), units.dist_label()),
+            (rx.t(Msg::UnitsSpeed), units.speed_label()),
+            (rx.t(Msg::UnitsElevation), units.elev_label()),
+        ];
         let mut ry = LIST_TOP + 96;
         for (label, value) in rows {
             cv.text(label, Point::new(area.top_left.x + 12, ry), Font::Body, TextAlign::Left, SUBTEXT);

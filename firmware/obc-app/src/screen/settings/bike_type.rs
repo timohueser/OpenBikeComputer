@@ -19,6 +19,7 @@ use obc_render::{
 use super::bike_icons;
 use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
+use crate::Msg;
 
 /// Art-pixel scale for the hero bike sprite (50 × 30 art px → 200 × 120 device px).
 const BIKE_SCALE: i32 = 4;
@@ -60,7 +61,7 @@ impl BikeTypeScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, "BIKE TYPE", "");
+        title_frame(cv, w, h, rx.t(Msg::BikeTypeTitle), "");
 
         let idx = rx.settings.bike_profile_idx;
         let count = rx.nav_profiles.len();
@@ -68,7 +69,7 @@ impl BikeTypeScreen {
         // No map loaded (or a router-less `ble` build): nothing to pick from, so say so instead of
         // drawing an empty picker.
         if count == 0 {
-            super::empty_state(cv, w, h, "No map profiles", "Load a map to pick a bike type");
+            super::empty_state(cv, w, h, rx.t(Msg::BikeTypeNoProfiles), rx.t(Msg::BikeTypeNoProfilesSub));
             return;
         }
 

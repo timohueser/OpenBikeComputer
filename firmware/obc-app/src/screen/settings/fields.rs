@@ -29,6 +29,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::screen::{list, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
 use crate::stat_fields::{self, COLS, SLOTS_PER_PAGE};
+use crate::Msg;
 
 use super::AddFieldScreen;
 
@@ -129,7 +130,7 @@ impl StatFieldsScreen {
         if pages > 1 {
             let _ = write!(counter, "{} / {}", page + 1, pages);
         }
-        title_frame(cv, w, h, "FIELDS", &counter);
+        title_frame(cv, w, h, rx.t(Msg::FieldsTitle), &counter);
 
         // Tile geometry: the Statistics grid's columns and gaps, with the rows stretched into the
         // space the chart occupies there — same arrangement, roomier panes.
@@ -182,7 +183,13 @@ impl StatFieldsScreen {
                 cv.round_outline(rect(area.top_left.x + 1, area.top_left.y + 1, col_w - 2, row_h - 2), 5, RULE);
             }
             let (x, y) = (area.top_left.x, area.top_left.y);
-            cv.text("ADD", Point::new(x + 5, y + ((row_h - 48) / 2).max(4)), Font::Label, TextAlign::Left, SUBTEXT);
+            cv.text(
+                rx.t(Msg::FieldsAdd),
+                Point::new(x + 5, y + ((row_h - 48) / 2).max(4)),
+                Font::Label,
+                TextAlign::Left,
+                SUBTEXT,
+            );
             let (px, py) = (x + col_w / 2, y + row_h / 2 + 8);
             cv.hline(px - 8, py, 17, INK);
             cv.vline(px, py - 8, 17, 2, INK);

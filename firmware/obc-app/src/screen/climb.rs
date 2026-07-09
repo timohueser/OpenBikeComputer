@@ -30,7 +30,8 @@ use obc_render::{rect, text::TextAlign, Surface};
 
 use crate::input::Gesture;
 use crate::screen::ActiveClimb;
-use crate::settings::Units;
+use crate::settings::{Language, Units};
+use crate::{t, Msg};
 
 use super::{palette, tile, title_frame, Ctx, MapScreen, Render, Screen, Transition};
 
@@ -89,8 +90,8 @@ impl ClimbScreen {
         // reached without one — a stray push, a climb that ended a frame before the repaint — draw a
         // safe placeholder instead of panicking, exactly like Statistics' no-route guard.
         let Some(climb) = rx.climb else {
-            title_frame(cv, w, h, "CLIMB", "");
-            super::empty_state(cv, w, h, "No climb", "Not on a climb");
+            title_frame(cv, w, h, rx.t(Msg::ClimbTitle), "");
+            super::empty_state(cv, w, h, rx.t(Msg::ClimbNoClimb), rx.t(Msg::ClimbNotOnClimb));
             return;
         };
         let ActiveClimb { seg, profile } = climb;
@@ -107,7 +108,7 @@ impl ClimbScreen {
         // meaningful, always-available climb figure regardless.)
         let mut readout: heapless::String<16> = heapless::String::new();
         let _ = write!(readout, "{} {}", units.elev(seg.top_ele_m as f32) as i32, units.elev_label());
-        title_frame(cv, w, h, "CLIMB", &readout);
+        title_frame(cv, w, h, rx.t(Msg::ClimbTitle), &readout);
 
         // Elevation → y over the climb's own base..summit span (not the whole route's), so a small
         // climb still fills the chart. `.max(1)` guards a degenerate flat seg.
@@ -168,7 +169,7 @@ impl ClimbScreen {
         let col_w = (chart_w - gap) / 2;
         let grid_top = prog_y + 16;
         let row_h = ((h - 10 - grid_top - gap) / 2).max(20);
-        let cells = climb_tiles(&climb, rx.activity.progress_m, units);
+        let cells = climb_tiles(&climb, rx.activity.progress_m, units, rx.settings.language);
         for (i, cell) in cells.iter().enumerate() {
             let (r, c) = (i / 2, i % 2);
             let x = chart_x + c as i32 * (col_w + gap);
@@ -197,22 +198,26 @@ impl ClimbCell {
 /// Build the four climb tiles for the current live position — the pure value logic, split out so it
 /// unit-tests against a synthetic climb without a draw context. The order is the 2×2 grid,
 /// row-major: To climb, To top / Grade, Avg → top.
-fn climb_tiles(climb: &ActiveClimb, progress_m: u32, units: Units) -> [ClimbCell; 4] {
+fn climb_tiles(climb: &ActiveClimb, progress_m: u32, units: Units, lang: Language) -> [ClimbCell; 4] {
     let ActiveClimb { seg, profile } = climb;
     let cursor = profile.cursor_frac(progress_m);
     [
-        ClimbCell::new("TO CLIMB", fmt_int(units.elev(to_climb_m(climb, progress_m) as f32) as u32), true),
         ClimbCell::new(
-            &cap_dist(units, " TO GO"),
+            t(Msg::ClimbToClimb, lang),
+            fmt_int(units.elev(to_climb_m(climb, progress_m) as f32) as u32),
+            true,
+        ),
+        ClimbCell::new(
+            &cap_dist(units, t(Msg::ClimbToGo, lang)),
             crate::stat_fields::fmt_km(units.dist(to_top_m(seg, progress_m) as f32 / 1000.0)),
             false,
         ),
-        ClimbCell::new("GRADE", fmt_pct(profile.grade_at(cursor)), false),
+        ClimbCell::new(t(Msg::ClimbGrade, lang), fmt_pct(profile.grade_at(cursor)), false),
         // The epic's "Avg → top": average grade over the climb's remainder. Captioned "AVG GRAD"
         // (average gradient) — a monospace 8-char caption that fits the half-width tile, where the
         // 9-char "AVG AHEAD" (and "AVG→TOP", whose `→` renders `?` in the ASCII panel font) overshot.
         // Reads as the average gradient still to come, paired with the instantaneous "GRADE" beside it.
-        ClimbCell::new("AVG GRAD", fmt_pct(avg_to_top_pct(climb, progress_m)), false),
+        ClimbCell::new(t(Msg::ClimbAvgGrad, lang), fmt_pct(avg_to_top_pct(climb, progress_m)), false),
     ]
 }
 
@@ -368,7 +373,7 @@ mod tests {
     fn climb_tiles_assemble_in_grid_order() {
         let (seg, profile) = synthetic();
         let climb = ActiveClimb { seg: &seg, profile: &profile };
-        let cells = climb_tiles(&climb, 7_000, Units::Metric);
+        let cells = climb_tiles(&climb, 7_000, Units::Metric, Language::En);
         assert_eq!(cells[0].caption.as_str(), "TO CLIMB");
         assert!(cells[0].arrow, "To climb is an ascent figure → up-arrow");
         assert_eq!(cells[1].caption.as_str(), "KM TO GO", "the distance tile prefixes the unit");
@@ -384,7 +389,7 @@ mod tests {
     fn climb_tiles_respect_imperial_units() {
         let (seg, profile) = synthetic();
         let climb = ActiveClimb { seg: &seg, profile: &profile };
-        let cells = climb_tiles(&climb, 5_000, Units::Imperial);
+        let cells = climb_tiles(&climb, 5_000, Units::Imperial, Language::En);
         assert_eq!(cells[1].caption.as_str(), "MI TO GO");
         // 4 km × 0.621371 ≈ 2.5 mi.
         assert_eq!(cells[1].value.as_str(), "2.5", "4 km reads 2.5 mi");

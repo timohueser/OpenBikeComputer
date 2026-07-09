@@ -20,6 +20,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::{palette, Ctx, Render, Transition};
 
@@ -49,7 +50,7 @@ impl PasskeyScreen {
 
         // Opaque full-screen card on the wood frame — the shared chrome, but titled as the pairing
         // prompt rather than a menu (no title-bar readout, no BLE glyph: the whole screen is the cue).
-        super::title_frame(cv, w, h, "PAIRING", "");
+        super::title_frame(cv, w, h, rx.t(Msg::PasskeyTitle), "");
 
         // The six digits, zero-padded, in the Huge tier — the one oversized readout besides the Home
         // clock. LESC passkeys are 000000–999999, so `{:06}` always fits the six 32 px cells (192 px)
@@ -63,7 +64,7 @@ impl PasskeyScreen {
         // split across two lines so it fits the 240 px panel in the Label tier (≈ 20 chars/line).
         let cap_top = code_top + Font::Huge.line_height() as i32 + 8;
         let line = Font::Label.line_height() as i32;
-        cv.text("Enter this code", Point::new(w / 2, cap_top), Font::Label, TextAlign::Center, SUBTEXT);
-        cv.text("on your phone", Point::new(w / 2, cap_top + line), Font::Label, TextAlign::Center, SUBTEXT);
+        cv.text(rx.t(Msg::PasskeyEnterCode), Point::new(w / 2, cap_top), Font::Label, TextAlign::Center, SUBTEXT);
+        cv.text(rx.t(Msg::PasskeyOnPhone), Point::new(w / 2, cap_top + line), Font::Label, TextAlign::Center, SUBTEXT);
     }
 }
