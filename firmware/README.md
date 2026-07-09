@@ -116,3 +116,36 @@ firmware runs. `../freiburg.obcm` is a current sample.
 Run `obc-sim --help` for the full flag set (routes/tracks folders, `--import`,
 `--physical`/`--calibrate`, `--script`/`--boot`, headless `--center`/`--zoom`).
 Packing maps and the web builder are covered in the [repo README](../README.md).
+
+## Firmware update images (OBCU)
+
+Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header
+plus the raw app image — dropped on the SD card as `/UPDATE.BIN`. The byte format is
+[`OBCU_Spec.md`](../OBCU_Spec.md); the shared codec + boot-decision logic live in
+`obc-dfu` (a `no_std` workspace member, host-tested by the `cargo test` above). The
+producer is `obc-mkimage`.
+
+The pipeline is **objcopy → wrap**. Strip the board ELF to a raw binary (vector table
+first), then wrap it:
+
+```sh
+# From the board crate — its .cargo/config.toml selects the nRF54L target (see its README).
+# cargo-binutils provides `cargo objcopy`; `-O binary` emits the raw image in LMA order.
+cd obc-fw-nrf54l
+cargo objcopy --release -- -O binary app.bin
+# (equivalently, on the ELF: llvm-objcopy -O binary target/<triple>/release/obc-fw-nrf54l app.bin)
+
+# Wrap into an OBCU container tagged with the build's git describe.
+cargo run -p obc-mkimage -- wrap \
+    --bin app.bin \
+    --version "$(git describe --always --dirty)" \
+    --out UPDATE.BIN
+
+# Inspect: decode + verify both CRCs (non-zero exit if invalid).
+cargo run -p obc-mkimage -- inspect UPDATE.BIN
+```
+
+`wrap` refuses an image over the app-slot limit (`MAX_IMAGE_LEN`, 1,480,000 bytes)
+and **warns** if the binary's first word isn't a plausible initial stack pointer in
+RAM (`0x2000_0000 … 0x2004_0000`) — a raw `.bin` starts with the vector table, so a
+failed check usually means an ELF or a wrong-section-order strip slipped through.
