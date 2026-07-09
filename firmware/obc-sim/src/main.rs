@@ -5,17 +5,15 @@
 //! parsing, the eframe window + pan/zoom event loop, PNG output, and the color
 //! policy (device 64-color quantization by default, or `--true-color`).
 //!
-//! The web build (wasm32) reuses only the shared host pieces and the eframe app;
-//! the CLI parser and headless-PNG helpers still compile but go unreferenced there,
-//! so we quiet the resulting dead-code/import noise for wasm.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+//! Host logic shared with the landing page's wasm host (`obc-web-demo`) — replay stepping, the
+//! frame-interleaved `NavPlan`, the in-memory byte sink — lives in `obc-host-core`, not here.
 
 use std::time::Instant;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::{
-    App, AppState, Button, ButtonEvent, CompassSource, Fix, InputClock, InputEvent, InputSource, LocationSource,
-    RideClock, Sensors, TrackAction, TrackSink,
+    App, AppState, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackAction,
+    TrackSink,
 };
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
@@ -24,20 +22,16 @@ mod calib;
 mod device_input;
 mod framebuffer;
 mod gui;
-mod present;
-// `--palette` is a native-only standalone window; keep its native APIs out of the wasm compile.
-#[cfg(not(target_arch = "wasm32"))]
 mod palette;
+mod present;
 mod rides;
 mod routes;
 mod settings_store;
 mod sim_compass;
 mod sim_location;
 mod track;
-// In-memory `ByteSink` — the GPX import (native) and the nav router's emit (both builds) write
-// through it.
-mod vec_sink;
 use framebuffer::Framebuffer;
+use obc_host_core::{finish_nav_plan, initial_camera, replay_step, NavPlan, VecSink};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::{RouteIndex, RouteReader};
 use rides::RideStore;
@@ -93,9 +87,6 @@ struct Args {
     palette: bool,
     /// Initial housing body color: `coral` | `mint` | `mustard` | `slate` (default slate).
     colorway: Option<String>,
-    /// Boot straight onto the live Map instead of the Home/Idle screensaver. The native
-    /// GUI always boots to Home; the web demo sets this so the page opens on the moving map.
-    start_on_map: bool,
     /// Initial battery charge (0–100 %) shown on the Home gauge; stands in for the not-yet-
     /// wired fuel gauge. Defaults to full.
     battery: Option<u8>,
@@ -165,9 +156,9 @@ struct Args {
 }
 
 impl Default for Args {
-    /// Device resolution + all knobs off — the base for both the CLI parser and the web build. The
-    /// resolution is the single [`obc_platform`] frame authority, not a re-declared literal (`--size`
-    /// overrides it for off-device experiments).
+    /// Device resolution + all knobs off — the CLI parser's base. The resolution is the single
+    /// [`obc_platform`] frame authority, not a re-declared literal (`--size` overrides it for
+    /// off-device experiments).
     fn default() -> Self {
         Args {
             map: String::new(),
@@ -193,7 +184,6 @@ impl Default for Args {
             calibrate: false,
             palette: false,
             colorway: None,
-            start_on_map: false,
             battery: None,
             home_seed: None,
             clock: None,
@@ -213,18 +203,6 @@ impl Default for Args {
 }
 
 impl Args {
-    /// Defaults for the web build: the [`Args::default`] base plus in-memory route/track
-    /// stores (the `*_dir`s are unused on wasm) and the demo-friendly tweaks.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn web_default() -> Self {
-        Args {
-            // Warm terracotta body for the web demo, to fit the parchment/forest/amber page.
-            colorway: Some("coral".to_string()),
-            start_on_map: true,
-            ..Args::default()
-        }
-    }
-
     pub(crate) fn routes_dir(&self) -> String {
         self.routes_dir.clone().unwrap_or_else(|| "routes".to_string())
     }
@@ -448,121 +426,9 @@ fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
     draw_text(fb, "RIGHT", Point::new(w - 8, y), Font::Label, TextAlign::Right, col(INK));
 }
 
-/// The starting camera for a freshly-opened map: centered on the bbox, zoomed so
-/// its longitude span fills the window width. Returns `(cam_lon, cam_lat, zoom)`
-/// in the [`AppState`] convention (microdegrees, pixels-per-microdegree).
-fn initial_camera(reader: &Reader, width: u32) -> (i32, i32, f32) {
-    let b = reader.bbox;
-    let cam_lon = (b.min_lon as i64 + b.max_lon as i64) / 2;
-    let cam_lat = (b.min_lat as i64 + b.max_lat as i64) / 2;
-    let span_lon = (b.max_lon as i64 - b.min_lon as i64).max(1) as f32;
-    (cam_lon as i32, cam_lat as i32, width as f32 / span_lon)
-}
-
-/// Advance the GPX replay by `dt` seconds and run one app tick on the **playback**
-/// clock. The millis derive from playback-time (not wall-clock), so Avg. Speed isn't
-/// scaled by the replay-speed multiplier. Shared by the live GUI loop and the headless
-/// `--png` replay.
-fn replay_step<'s>(
-    app: &mut App,
-    player: &'s mut GpxPlayer,
-    baro: &'s mut BaroSensor,
-    compass: Option<&'s mut dyn CompassSource>,
-    dt: f64,
-    route: Option<&RouteReader>,
-    track: Option<&'s mut dyn TrackSink>,
-) {
-    // The sensor handles share one lifetime `'s` so the invariant `Sensors<'a>` can bind them
-    // together. The compass only matters while stationary (GPS course drops to `None`).
-    player.advance(dt);
-    baro.feed(player.elevation_at(player.time()), player.time());
-    let now_ms = (player.time() * 1000.0) as u32;
-    let sensors =
-        Sensors { loc: player, altimeter: Some(baro), temperature: None, clock: None, compass, track, fuel: None };
-    app.tick(RideClock(now_ms), sensors, route);
-}
-
-/// An in-flight route plan (#499): the resumable planner plus its caller-owned buffers and the
-/// in-memory sink. The GUI holds one and steps it **once per frame**, so the window stays fully
-/// interactive while a route computes (exactly how the board steps once per ride-loop pass); the
-/// headless path loops it to completion via `plan_route`.
-///
-/// The A* table is the capped sim/LM20 size (`NAV_MAX_NODES` = 1536 ⇒ ~39 KB — the final
-/// device's 40 kB nav budget, deliberately emulated so sim range = final-device range) and is
-/// **heap-allocated zeroed**: an all-zero `NavScratch` is bit-identical to `new()` (its
-/// `.bss`-placement contract; the first planner step resets it anyway), and `Box::new` would
-/// first build the table on the stack — a silent trap on the wasm build's small stack. The
-/// ~9 KB planner (it owns the OBCR emitter across steps) is boxed for the same reason.
-pub(crate) struct NavPlan {
-    planner: Box<obc_route::NavPlanner>,
-    scratch: Box<obc_route::nav::NavScratch>,
-    tiles: obc_reader::NavTileCache,
-    sink: vec_sink::VecSink,
-}
-
-impl NavPlan {
-    /// Begin a plan for a drained [`NavRequest`](obc_app::NavRequest) under bike profile
-    /// `profile_idx` (the rider's [`Settings::bike_profile_idx`](obc_app::Settings), N5 §8.6).
-    pub(crate) fn start(req: &obc_app::NavRequest, profile_idx: u8) -> Self {
-        NavPlan {
-            planner: Box::new(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx)),
-            // A zeroed heap allocation with no giant stack temp — obc-route owns the "all-zero *is*
-            // `new()`" invariant (see `NavScratch::new_boxed`); the sim just asks for one.
-            scratch: obc_route::nav::NavScratch::new_boxed(),
-            tiles: obc_reader::NavTileCache::new(),
-            sink: vec_sink::VecSink::default(),
-        }
-    }
-
-    /// Run **one bounded planner step** (the GUI's per-frame unit). `Running` = keep going next
-    /// frame; a terminal outcome is handed to [`finish_nav_plan`].
-    pub(crate) fn step(&mut self, reader: &Reader) -> obc_route::Step {
-        self.planner.step(reader, &mut self.scratch, &mut self.tiles, &mut self.sink)
-    }
-
-    /// The emitted OBCR bytes so far (complete once the planner reported `Done`).
-    pub(crate) fn bytes(&self) -> &[u8] {
-        self.sink.bytes()
-    }
-
-    /// The plan's cumulative tile-cache counters (misses = chunk reads).
-    pub(crate) fn tile_stats(&self) -> obc_reader::NavCacheStats {
-        self.tiles.stats()
-    }
-}
-
-/// Commit / report a finished plan and answer the app — the shared tail of the GUI's stepped
-/// path and the headless one-shot: on success write the reserved `_nav.obcr`, rescan + re-feed
-/// the id-carrying catalog, and `notify_nav_result` (which swaps the planning screen for the
-/// computed-route overview or the failure card).
-fn finish_nav_plan(
-    app: &mut obc_app::App,
-    store: &mut RouteStore,
-    outcome: Result<obc_route::RouteStats, obc_route::NavError>,
-    sink_bytes: &[u8],
-    tile_stats: obc_reader::NavCacheStats,
-) {
-    use obc_route::NavError;
-    let result = outcome.and_then(|stats| {
-        let id = store.write_nav_route(sink_bytes).ok_or(NavError::NoPath)?;
-        app.set_routes_with_ids(store.catalog(), store.ids());
-        // A re-route rewrites the nav bytes under an unchanged catalog index — force the
-        // change-gated active-route read to re-open them.
-        store.invalidate_active();
-        eprintln!(
-            "nav route: ok len={} m | tile-cache {} hit / {} miss (misses = chunk reads)",
-            stats.total_distance_m, tile_stats.hits, tile_stats.misses
-        );
-        Ok(id)
-    });
-    if let Err(e) = &result {
-        eprintln!("nav route: failed ({e:?})");
-    }
-    app.notify_nav_result(result);
-}
-
 /// Headless one-shot for a drained request: loop the planner to completion (`plan_route`), then
-/// commit — scripted flows don't need frame-interleaved stepping.
+/// commit through the shared [`finish_nav_plan`] — scripted flows don't need frame-interleaved
+/// stepping (the live GUI holds an [`obc_host_core::NavPlan`] instead).
 fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Reader, req: &obc_app::NavRequest) {
     use obc_route::nav::{plan_route, NavScratch};
     // Zeroed heap allocation, no giant stack temp (invariant owned by `NavScratch::new_boxed`).
@@ -570,7 +436,7 @@ fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Read
     // infer the struct's const-generic default the way a type in position does).
     let mut scratch: Box<NavScratch> = NavScratch::new_boxed();
     let mut tiles = obc_reader::NavTileCache::new();
-    let mut sink = vec_sink::VecSink::default();
+    let mut sink = VecSink::default();
     // The rider's bike-type setting (N5 §8.6); an out-of-range index falls back to profile 0 in the router.
     let profile_idx = app.settings().bike_profile_idx;
     let outcome = plan_route(reader, req.from, req.to, req.name(), profile_idx, &mut scratch, &mut tiles, &mut sink);
@@ -593,9 +459,7 @@ fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
 /// A [`TrackSink`] whose every append fails — the `--fail-track` stand-in for the SD card being
 /// pulled mid-ride (issue #11). It stores nothing and returns `Err`, so the app sees a genuine
 /// record failure and raises the recording-error card through the real path, not a shortcut.
-#[cfg(not(target_arch = "wasm32"))]
 struct FailTrackSink;
-#[cfg(not(target_arch = "wasm32"))]
 impl TrackSink for FailTrackSink {
     fn record(&mut self, _p: obc_route::TrackPoint) -> Result<(), obc_app::TrackError> {
         Err(obc_app::TrackError)
@@ -711,13 +575,6 @@ fn apply_script(app: &mut App, script: &str, render: &mut dyn FnMut(&mut App)) {
     }
 }
 
-/// Web entry: hand the page's canvas to the shared eframe app (see [`gui::run_web`]).
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    gui::run_web();
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let args = match parse_args() {
         Ok(a) => a,

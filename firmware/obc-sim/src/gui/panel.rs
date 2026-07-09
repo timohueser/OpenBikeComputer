@@ -1,10 +1,6 @@
 //! The "Controls" window — a second egui immediate viewport driving the simulated device:
 //! the manual GPS fix (position / zoom / camera / orientation), GPX replay, and the
 //! render-stats readout. A second `impl SimGui` block, so it mutates the same fields.
-//!
-//! Native development tool only — the web demo shows just the device, so on wasm these
-//! methods are compiled but unreferenced.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use eframe::egui;
 use obc_app::CameraMode;
@@ -194,8 +190,6 @@ impl SimGui {
                         // GPX replay — play a recorded track back as a simulated GPS sensor. The player
                         // is the active `LocationSource` while a track is loaded.
                         ui.label("GPX replay");
-                        // Native uses an OS file picker; the web build has no such dialog.
-                        #[cfg(not(target_arch = "wasm32"))]
                         if ui.button("Load GPX…").clicked() {
                             if let Some(path) = rfd::FileDialog::new().add_filter("GPX track", &["gpx"]).pick_file() {
                                 self.load_gpx(&path);

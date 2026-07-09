@@ -3,17 +3,13 @@
 //! Implements [`obc_app::SettingsStore`] over a single file holding the shared
 //! [`obc_app::settings`] blob — the *same* versioned, CRC'd byte layout the firmware writes to
 //! RRAM, so the codec is exercised identically on both sides.
-//!
-//! On the web (wasm) there is no filesystem, so the store is a no-op (session-only settings),
-//! mirroring the web [`TrackStore`](crate::track::TrackStore).
 
 use std::path::PathBuf;
 
 use obc_app::{Settings, SettingsStore};
 
-/// A file-backed settings store. Native reads/writes the file; the web build keeps no file.
+/// A file-backed settings store.
 pub struct FileSettingsStore {
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     path: PathBuf,
 }
 
@@ -24,7 +20,6 @@ impl FileSettingsStore {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl SettingsStore for FileSettingsStore {
     fn load(&mut self) -> Option<Settings> {
         // A missing file (first run) or an unreadable/short/corrupt blob both yield `None`, so
@@ -39,13 +34,4 @@ impl SettingsStore for FileSettingsStore {
             eprintln!("settings: cannot write {}: {e}", self.path.display());
         }
     }
-}
-
-// No filesystem in the browser: the store accepts and discards, so settings are session-only.
-#[cfg(target_arch = "wasm32")]
-impl SettingsStore for FileSettingsStore {
-    fn load(&mut self) -> Option<Settings> {
-        None
-    }
-    fn save(&mut self, _s: &Settings) {}
 }
