@@ -98,6 +98,18 @@ debug *args:
     _say "flashed — starting the feeder (Ctrl-C to stop)…"
     just --justfile '{{justfile()}}' uart ${gpx:+"$gpx"}
 
+# Attach to a running board and stream defmt/RTT — no rebuild, no reflash. Bypasses
+# cargo entirely (so nothing recompiles) and uses `probe-rs attach` on the last-built
+# ELF (attach programs nothing). Flash first with `obc flash`.
+rtt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_probe || exit 1
+    elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
+    [[ -f "$elf" ]] || { _err "no board ELF yet — flash once first:  obc flash [ble] [debug-uart]"; exit 1; }
+    _say "attaching to nRF54L15 — no rebuild, no reflash (decoding $(basename "$elf"))"
+    _run probe-rs attach --chip nRF54L15 "$elf"
+
 # ── Map packing & the web builder ────────────────────────────────────────────
 
 # Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
@@ -187,26 +199,106 @@ check-device:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT/firmware"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
+# Run the CI rust gates locally — "will CI pass?" before you push. Mirrors the required
+# `ci` job (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
+# deny/wasm if cargo-deny/trunk are installed). Filter to a subset, e.g.:
+#   obc check fmt         obc check test         obc check board docs
+check *args:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    sel=("$@"); (( ${#sel[@]} )) || sel=(fmt clippy test device docs board deny wasm)
+    want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
+    FAILED=(); PASSED=(); SKIPPED=()
+    step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
+             if _run "$@"; then PASSED+=("$label"); else _err "$label FAILED"; FAILED+=("$label"); fi; }
+    cd "$OBC_ROOT/firmware"
+    if want fmt; then
+      step "fmt (workspace)"  cargo fmt --all --check
+      step "fmt (board crate)" cargo fmt --check --manifest-path obc-fw-nrf54l/Cargo.toml
+    fi
+    want clippy && step "clippy (workspace, all-targets/features)" \
+      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    if want test; then
+      step "test (workspace, all features)" cargo test --workspace --all-features --locked
+      step "bench pixel-hash tripwire" cargo run -p obc-bench --release --locked -- --check obc-bench/hashes.txt
+    fi
+    want device && step "device build (obc-app @ thumbv8m)" \
+      cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
+    if want board; then
+      if ensure_riscv 2>/dev/null; then
+        pushd "$OBC_ROOT/firmware/obc-fw-nrf54l" >/dev/null
+        step "board clippy (default)"        cargo clippy --locked -- -D warnings
+        step "board clippy (debug-uart)"     cargo clippy --locked --features debug-uart -- -D warnings
+        step "board build (default, release)" cargo build --release --locked
+        step "board clippy (ble)"            cargo clippy --locked --no-default-features --features ble -- -D warnings
+        step "board build (ble, release)"    cargo build --release --locked --no-default-features --features ble
+        popd >/dev/null
+      else _warn "skip board gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("board"); fi
+    fi
+    if want deny; then
+      if command -v cargo-deny >/dev/null 2>&1; then
+        step "deny (workspace)"   cargo deny --manifest-path "$OBC_ROOT/firmware/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (board crate)" cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+      else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
+    fi
+    if want wasm; then
+      if command -v trunk >/dev/null 2>&1; then step "wasm (obc-sim → wasm)" trunk build --config "$OBC_ROOT/docs/Trunk.toml"
+      else _warn "skip wasm — trunk not installed (cargo install trunk)"; SKIPPED+=("wasm"); fi
+    fi
+    want docs && step "docs link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
+    printf '\n'; _say "check summary"
+    (( ${#PASSED[@]} ))  && _ok   "passed:  ${PASSED[*]}"
+    (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"
+    if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
+    _ok "all run gates passed"
+
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
-# Check your toolchain and report what's missing (and how to fix it).
-doctor:
+# Check your toolchain and report what's missing. Add --install to fix what it can
+# (rustup targets, just, probe-rs, the venv, and GEOS / RISC-V gcc via scripts/).
+doctor *args:
     #!/usr/bin/env bash
     set -uo pipefail
     source "{{lib}}"; obc_init
+    install=0; for a in "$@"; do [[ "$a" == --install ]] && install=1; done
     _say "OpenBikeComputer toolchain check"
-    ck() { if eval "$2" >/dev/null 2>&1; then _ok "$1"; else _err "$1"; [[ -n "${3:-}" ]] && _hint "$3"; fi; }
-    ck "rust / cargo"                 'command -v cargo'         'install rustup: https://rustup.rs'
-    ck "just"                         'command -v just'          'cargo install just'
-    ck "device target (thumbv8m)"     'rustup target list --installed | grep -q thumbv8m.main-none-eabihf' 'rustup target add thumbv8m.main-none-eabihf'
-    ck "wasm target (docs demo)"      'rustup target list --installed | grep -q wasm32-unknown-unknown'     'rustup target add wasm32-unknown-unknown'
-    ck "GEOS (obc-pack)"              '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'build GEOS ≥3.14 and write ~/.obc-geos-env.sh (see repo notes)'
-    ck "RISC-V gcc (board FLPR blob)" 'command -v riscv64-elf-gcc || command -v riscv-none-elf-gcc || command -v riscv64-unknown-elf-gcc || { [[ -n "${RISCV_GCC:-}" && -x "${RISCV_GCC:-/nonexistent}" ]]; }' 'xPack riscv-none-elf-gcc, then set RISCV_GCC in obc.local'
-    ck "probe-rs (flashing)"          'command -v probe-rs'      'cargo install probe-rs-tools --locked'
-    ck "node + npm (web builder)"     'command -v node && command -v npm' 'install Node 22+'
-    ck "python venv (web builder)"    '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'run `obc web` once to bootstrap it'
+    MISSING=()
+    ck() { # ck <key> <label> <test> [hint]
+      if eval "$3" >/dev/null 2>&1; then _ok "$2"; else _err "$2"; [[ -n "${4:-}" ]] && _hint "$4"; MISSING+=("$1"); fi
+    }
+    ck cargo    "rust / cargo"              'command -v cargo'  'install rustup: https://rustup.rs'
+    ck just     "just"                      'command -v just'   'obc doctor --install'
+    ck thumbv8m "device target (thumbv8m)"  'rustup target list --installed | grep -q thumbv8m.main-none-eabihf' 'obc doctor --install'
+    ck wasm     "wasm target (docs demo)"   'rustup target list --installed | grep -q wasm32-unknown-unknown'     'obc doctor --install'
+    ck geos     "GEOS (obc-pack)"           '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'obc doctor --install (builds GEOS ≥3.14 from source)'
+    ck riscv    "RISC-V gcc (board FLPR)"   'command -v riscv64-elf-gcc || command -v riscv-none-elf-gcc || command -v riscv64-unknown-elf-gcc || { [[ -n "${RISCV_GCC:-}" && -x "${RISCV_GCC:-/nonexistent}" ]]; }' 'obc doctor --install (fetches an xPack toolchain)'
+    ck probe    "probe-rs (flashing)"       'command -v probe-rs' 'obc doctor --install'
+    ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
+    ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
     m="$(_all_maps | head -n1 || true)"
-    if [[ -n "$m" ]]; then _ok "default sim map → ${m##*/}"; else _warn "no .obcm found — build one with 'obc pack' or 'obc web', or drop one in the repo root"; fi
+    if [[ -n "$m" ]]; then _ok "default sim map → ${m##*/}"
+    elif [[ -f "$OBC_ROOT/firmware/obc-sim/assets/grimsel.obcm" ]]; then _ok "default sim map → bundled grimsel.obcm"
+    else _warn "no .obcm found — build one with 'obc pack' or 'obc web', or drop one in the repo root"; fi
+
+    if (( ! install )); then
+      (( ${#MISSING[@]} )) && { printf '\n'; _hint "re-run with --install to fix: ${MISSING[*]}"; }
+      exit 0
+    fi
+    (( ${#MISSING[@]} )) || { printf '\n'; _ok "nothing to install"; exit 0; }
+    printf '\n'; _say "installing: ${MISSING[*]}"
+    for k in "${MISSING[@]}"; do case "$k" in
+      thumbv8m) _run rustup target add thumbv8m.main-none-eabihf ;;
+      wasm)     _run rustup target add wasm32-unknown-unknown ;;
+      just)     _run cargo install just ;;
+      probe)    _run cargo install probe-rs-tools --locked ;;
+      riscv)    _run bash "$OBC_ROOT/scripts/install-riscv.sh" ;;
+      geos)     _run bash "$OBC_ROOT/scripts/install-geos.sh" ;;
+      venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/packer/requirements.txt" ;;
+      cargo)    _err "install Rust yourself: https://rustup.rs" ;;
+      node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
+    esac; done
+    printf '\n'; _say "done — re-run 'obc doctor' to confirm"
 
 # One-time: link `obc` into ~/.local/bin and enable bash completion.
 setup:

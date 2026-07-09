@@ -48,7 +48,8 @@ ensure_riscv() {
     command -v "$c" >/dev/null 2>&1 && return 0   # on PATH — build.rs auto-detects
   done
   local g
-  for g in "$HOME"/.local/xPacks/*/*/bin/riscv-none-elf-gcc \
+  for g in "$HOME"/.local/xPacks/*/bin/riscv-none-elf-gcc \
+           "$HOME"/.local/xPacks/*/*/bin/riscv-none-elf-gcc \
            "$HOME"/.local/*riscv*/bin/riscv-none-elf-gcc \
            "$HOME"/xpack-riscv*/bin/riscv-none-elf-gcc; do
     [[ -x "$g" ]] && { export RISCV_GCC="$g"; _say "RISCV_GCC=$g"; return 0; }
@@ -61,11 +62,11 @@ ensure_riscv() {
   return 1
 }
 
-# Warn (don't fail) if probe-rs — the board's `cargo run` flasher — is missing.
+# Fail (with a fix hint) if probe-rs — needed to flash and to attach RTT — is missing.
 ensure_probe() {
   command -v probe-rs >/dev/null 2>&1 && return 0
-  _err "probe-rs not found — the board flashes via 'probe-rs run' (its cargo runner)."
-  _hint "Install:  cargo install probe-rs-tools --locked   (or see https://probe.rs/docs/getting-started/installation/)"
+  _err "probe-rs not found — needed to flash the board and to attach RTT."
+  _hint "Install:  cargo install probe-rs-tools --locked   (or: obc doctor --install)"
   return 1
 }
 
@@ -101,6 +102,9 @@ resolve_map() {
   [[ -n "${OBC_MAP:-}" ]] && { _abspath "$OBC_MAP"; return 0; }
   local newest; newest="$(_all_maps | head -n1)"
   if [[ -n "$newest" ]]; then _warn "no map given — using newest: ${newest##*/}"; printf '%s\n' "$newest"; return 0; fi
+  # last resort: the committed sample fixture, so a fresh clone's `obc sim` just works
+  local fx="$OBC_ROOT/firmware/obc-sim/assets/grimsel.obcm"
+  [[ -f "$fx" ]] && { _warn "no map found — using the bundled sample: ${fx##*/}"; printf '%s\n' "$fx"; return 0; }
   _err "no map file. Pass one:  obc sim <map.obcm>"
   _hint "or set OBC_MAP in obc.local, or build one:  obc pack <region.osm.pbf>   /   obc web"
   return 1

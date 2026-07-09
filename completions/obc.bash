@@ -80,6 +80,10 @@ _obc() {
       esac ;;
     bench)
       (( idx == 0 )) && mapfile -t COMPREPLY < <(compgen -W "check write" -- "$cur") ;;
+    check)
+      mapfile -t COMPREPLY < <(compgen -W "fmt clippy test device docs board deny wasm" -- "$cur") ;;
+    doctor)
+      mapfile -t COMPREPLY < <(compgen -W "--install" -- "$cur") ;;
     test)
       mapfile -t COMPREPLY < <(compgen -W "-p --release --" -- "$cur") ;;
   esac
