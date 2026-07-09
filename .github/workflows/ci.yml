@@ -18,7 +18,9 @@ name: CI
 #   * There is no board in CI, so every embedded target is build-only.
 #   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is pinned once in
 #     //rust-toolchain.toml and shared with local dev; jobs install from it.
-#   * `--locked` everywhere so a stale Cargo.lock (either of the two) fails CI.
+#   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
+#     board crate; its job adds a flash-size guard against the 32 KB slot.
+#   * `--locked` everywhere so a stale Cargo.lock (any of the three) fails CI.
 
 on:
   pull_request:
@@ -72,9 +74,9 @@ jobs:
               - 'packer/web_builder/frontend/**'
               - '.github/workflows/ci.yml'
 
-  # cargo fmt --check for both manifests. rustfmt walks up from each file and finds the shared
-  # firmware/rustfmt.toml, so the excluded board crate inherits it; the virtual workspace
-  # manifest needs `--all`, the board crate is checked on its own. (Folds the old fmt.yml.)
+  # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
+  # shared firmware/rustfmt.toml, so the excluded crates inherit it; the virtual workspace
+  # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -84,7 +86,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      - name: cargo fmt --check (host workspace + standalone board crate)
+      - name: cargo fmt --check (host workspace + standalone board crate + obc-boot)
         run: |
           rc=0
           echo "::group::firmware workspace"
@@ -92,6 +94,9 @@ jobs:
           echo "::endgroup::"
           echo "::group::obc-fw-nrf54l (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml || rc=1
+          echo "::endgroup::"
+          echo "::group::obc-boot (workspace-excluded)"
+          cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -184,6 +189,53 @@ jobs:
         working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}
 
+  # The obc-boot bootloader (epic #615, #617): workspace-excluded like the board crate, built
+  # from its own directory so its .cargo/config.toml selects thumbv8m. No test harness and no
+  # FLPR blob (no RISC-V gcc needed). The size guard is the real gate: the shipping (default,
+  # no-rtt) release image's flash footprint — .vector_table + .text + .rodata + .data — must fit
+  # the 32 KB slot below the app (see firmware/obc-boot/memory.x), with the measured number in
+  # the failure so a regression is diagnosable from the log.
+  boot:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/obc-boot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/obc-boot
+          key: thumbv8m-boot
+      - name: "obc-boot: clippy (default)"
+        run: cargo clippy --locked -- -D warnings
+      - name: "obc-boot: clippy (rtt)"
+        run: cargo clippy --locked --features rtt -- -D warnings
+      - name: "obc-boot: build (release)"
+        run: cargo build --release --locked
+      - name: "obc-boot: 32 KB size guard"
+        run: |
+          rustup component add llvm-tools
+          LLVM_SIZE=$(find "$(rustc --print sysroot)" -name llvm-size | head -1)
+          ELF=target/thumbv8m.main-none-eabihf/release/obc-boot
+          "$LLVM_SIZE" -A "$ELF"
+          # Flash footprint = the sections with an LMA in the 32 KB slot: the flash-resident
+          # ones (.vector_table/.text/.rodata report their flash VMA) plus .data (VMA in RAM,
+          # loaded from flash). .bss/.uninit/debug info cost no flash.
+          FLASH=$("$LLVM_SIZE" -A "$ELF" | awk '
+            $1 ~ /^\.(vector_table|text|rodata|data)$/ { sum += $2 }
+            END { print sum }')
+          BUDGET=32768
+          echo "obc-boot flash footprint: $FLASH / $BUDGET bytes"
+          if [ "$FLASH" -gt "$BUDGET" ]; then
+            echo "::error::obc-boot is $FLASH bytes — over the 32 KB bootloader slot ($BUDGET). See firmware/obc-boot/memory.x."
+            exit 1
+          fi
+
   # std-creep guard for the real device: the shared no_std stack (obc-app pulls in reader /
   # route / render) must still compile for the nRF54L's thumbv8m target.
   device:
@@ -219,6 +271,8 @@ jobs:
         run: cargo deny --manifest-path firmware/Cargo.toml --all-features check --config deny.toml
       - name: cargo-deny (obc-fw-nrf54l board crate)
         run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features check --config deny.toml
+      - name: cargo-deny (obc-boot bootloader)
+        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features check --config deny.toml
 
   # The web sim is the firmware's own render path compiled to wasm; build it on PRs (not just on
   # the deploy-to-Pages push) so a stack-size regression in firmware/.cargo/config.toml — which
@@ -345,7 +399,7 @@ jobs:
 
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, device, deny, wasm, docs, ios-unit, ios-app, web]
+    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, docs, ios-unit, ios-app, web]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)
