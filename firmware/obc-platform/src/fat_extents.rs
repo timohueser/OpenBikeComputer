@@ -264,6 +264,13 @@ impl ExtentTable {
         self.len
     }
 
+    /// The resolved runs as `(absolute start LBA, blocks)`, in file order — what the DFU armer
+    /// (S4, #619) copies into the boot-state page's `StagedRef` extents (`OBCU_Spec.md` §2.3):
+    /// the bootloader replays exactly these block runs with no FAT of its own.
+    pub fn runs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.runs.iter().map(|r| (r.lba, r.blocks))
+    }
+
     /// Whether the table is empty (a zero-length file — never built in practice).
     pub fn is_empty(&self) -> bool {
         self.runs.is_empty()

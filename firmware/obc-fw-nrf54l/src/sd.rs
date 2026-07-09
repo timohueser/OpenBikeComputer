@@ -47,7 +47,8 @@ use heapless::{String, Vec};
 use obc_app::{
     decode_synced_rides, encode_synced_rides, SyncedRides, MAX_RIDES, MAX_ROUTES, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
-use obc_platform::fat_extents::{ExtentSource, ExtentTable, SharedBlockDevice};
+use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
+use obc_platform::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_route::{track_to_ride, ByteSource, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
 
@@ -78,6 +79,17 @@ const SYNCED_SET: &str = "SYNCED.SET";
 /// so a partial upload — a drop, a power cut — is invisible until [`Storage::upload_commit`]
 /// promotes it. Truncated-and-reused per upload.
 const UPLOAD_TMP: &str = "UPLOAD.TMP";
+
+/// The staged firmware update in the **card root** (epic #615, locked: 8.3-safe, no LFN — the
+/// same file contract the future LM20 USB-MSC epic exposes). Sideloaded by the user (or, S6, the
+/// phone); the armer only ever reads it.
+const UPDATE_BIN: &str = "UPDATE.BIN";
+
+/// The armer's snapshot of the **running** image (epic #615 S4, #619), in the card root next to
+/// [`UPDATE_BIN`]: a full OBCU container (64-byte header + raw image read straight out of RRAM),
+/// truncated-and-reused per arm like `TRACK.OBT`. The bootloader flashes it back if a trial boot
+/// goes unconfirmed.
+const ROLLBACK_BIN: &str = "ROLLBACK.BIN";
 
 /// The reserved **computed-route** file (epic #116, R4): the on-device router's OBCR output,
 /// overwritten on every plan. The 8.3 face of the spec'd `/routes/_nav.obcr` — embedded-sdmmc
@@ -1434,6 +1446,164 @@ impl Storage {
     pub fn close_object(&mut self) {
         if let Some((_, file, _)) = self.open_object.take() {
             let _ = self.vmgr.close_file(file);
+        }
+    }
+}
+
+// ==================== The DFU armer plane (epic #615 S4, #619) ====================
+//
+// The storage half of the app-side armer: locate + validate the staged `UPDATE.BIN` and write
+// the `ROLLBACK.BIN` snapshot, both resolved to raw block extents through the same
+// `obc_platform::fat_extents` machinery as the map (#500). The *decision logic* — the scan
+// matrix, the arm sequencing — is pure and host-tested in `obc_dfu::armer`; these methods are
+// its thin `StageIo`/snapshot adapters over FatFs + the raw card. Everything here runs inside
+// the ride loop's drained request at shallow per-pass depth, in frames that pop on return —
+// the transient `ExtentTable` (~2 KB) and the `StagedRef`s never sit resident.
+impl Storage {
+    /// Locate an 8.3 `name` in the card root, returning the entry facts the extent build needs:
+    /// `(entry_block, entry_offset, byte length)` — the same public `DirEntry` capture as the
+    /// map-open scan.
+    fn find_root_entry(&self, name: &ShortFileName) -> Option<(embedded_sdmmc::BlockIdx, u32, u32)> {
+        let mut found = None;
+        self.iter_dir_lfn(self.root, |e, _| {
+            if found.is_none() && !e.attributes.is_directory() && e.name == *name {
+                found = Some((e.entry_block, e.entry_offset, e.size));
+            }
+        });
+        found
+    }
+
+    /// The staging scan (#619 §1): find `UPDATE.BIN` in the card root, decode + validate its
+    /// OBCU header, run the **full CRC-32 pass** over the image body through the byte source,
+    /// gate the size, and resolve the whole-file extent chain (spec §2.3 — the header is part
+    /// of the chain). Typed errors surface verbatim to the debug link now and S5's UI later.
+    /// Read-only: a failed scan costs nothing.
+    pub fn dfu_scan_update(&mut self) -> Result<obc_dfu::StagedRef, ScanError> {
+        let name = ShortFileName::create_from_str(UPDATE_BIN).map_err(|_| ScanError::Io)?;
+        let Some((entry_block, entry_offset, len)) = self.find_root_entry(&name) else {
+            return Err(ScanError::Missing);
+        };
+        let file = self.vmgr.open_file_in_dir(self.root, UPDATE_BIN, Mode::ReadOnly).map_err(|_| ScanError::Io)?;
+        let mut stage = SdStage { vmgr: &self.vmgr, card: self.card, file, len, entry_block, entry_offset };
+        // The CRC staging buffer matches this module's transfer idiom (`copy_with_held_magic`'s
+        // 512-byte stack chunk) — no new resident statics; the frame pops with the scan.
+        let mut chunk = [0u8; 512];
+        let result = obc_dfu::armer::scan(&mut stage, &mut chunk);
+        let _ = self.vmgr.close_file(file);
+        result
+    }
+
+    /// Write the rollback snapshot (#619 §2): `installed`'s raw image — `image`, the caller's
+    /// memory-mapped view of the app slot — re-wrapped as a full OBCU container at
+    /// `/ROLLBACK.BIN` (truncate-and-reuse, the `TRACK.OBT` idiom), then extent-resolved exactly
+    /// like the update file (whole-file chain, spec §2.3).
+    ///
+    /// `Ok(None)` = the slot's bytes no longer CRC-match the installed header (a dev SWD reflash
+    /// since the last install) — a snapshot would record a rollback the bootloader must reject,
+    /// so none is taken and any stale `ROLLBACK.BIN` is removed. Errors abort the arm.
+    pub fn dfu_write_rollback(
+        &mut self,
+        installed: &obc_dfu::ImageHeader,
+        image: &[u8],
+    ) -> Result<Option<obc_dfu::StagedRef>, ScanError> {
+        debug_assert_eq!(image.len() as u32, installed.image_len);
+        let crc = obc_dfu::crc32(image);
+        if crc != installed.image_crc32 {
+            defmt::warn!("dfu: running image doesn't match the installed record (SWD reflash?) — no rollback");
+            let _ = self.vmgr.delete_file_in_dir(self.root, ROLLBACK_BIN); // don't leave a stale snapshot
+            return Ok(None);
+        }
+
+        let file = self
+            .vmgr
+            .open_file_in_dir(self.root, ROLLBACK_BIN, Mode::ReadWriteCreateOrTruncate)
+            .map_err(|_| ScanError::Io)?;
+        // Header, then the raw image straight from the memory-mapped slot (embedded-sdmmc chunks
+        // the long write into blocks itself). Flush before the extent resolve — the chain must
+        // be final on card.
+        let ok = self.vmgr.write(file, &installed.encode()).is_ok()
+            && self.vmgr.write(file, image).is_ok()
+            && self.vmgr.flush_file(file).is_ok();
+        let _ = self.vmgr.close_file(file);
+        if !ok {
+            defmt::warn!("dfu: rollback snapshot write failed — arm aborted");
+            let _ = self.vmgr.delete_file_in_dir(self.root, ROLLBACK_BIN);
+            return Err(ScanError::Io);
+        }
+
+        // Resolve the fresh file's chain off its directory entry, exactly like the update file.
+        let name = ShortFileName::create_from_str(ROLLBACK_BIN).map_err(|_| ScanError::Io)?;
+        let Some((entry_block, entry_offset, len)) = self.find_root_entry(&name) else {
+            return Err(ScanError::Io);
+        };
+        let mut extents = [obc_dfu::Extent::default(); obc_dfu::MAX_EXTENTS];
+        let count = resolve_extents(self.card, entry_block, entry_offset, len, &mut extents).map_err(|e| match e {
+            ExtentsError::TooFragmented { extents } => ScanError::TooFragmented { extents },
+            ExtentsError::Io => ScanError::Io,
+        })?;
+        defmt::info!(
+            "dfu: rollback snapshot written ({=u32} B raw image, {=usize} extent(s))",
+            installed.image_len,
+            count
+        );
+        obc_dfu::StagedRef::new(*installed, installed.image_len, crc, &extents[..count])
+            .map(Some)
+            .ok_or(ScanError::TooFragmented { extents: count as u32 })
+    }
+}
+
+/// The armer's [`StageIo`] over the open `UPDATE.BIN`: byte reads through the manager's seek
+/// path (a scan is one forward pass — the extent-mapped fast path matters for the bootloader's
+/// reads, not this one) and the whole-file extent resolve off the raw card.
+struct SdStage<'a> {
+    vmgr: &'a Vmgr,
+    card: &'static Sd,
+    file: RawFile,
+    len: u32,
+    entry_block: embedded_sdmmc::BlockIdx,
+    entry_offset: u32,
+}
+
+impl StageIo for SdStage<'_> {
+    fn stage_len(&mut self) -> Option<u32> {
+        Some(self.len)
+    }
+
+    fn read_stage(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), obc_dfu::engine::IoError> {
+        SdByteSource::new(self.vmgr, self.file, self.len).read_at(offset, buf).map_err(|_| obc_dfu::engine::IoError)
+    }
+
+    fn stage_extents(&mut self, out: &mut [obc_dfu::Extent; obc_dfu::MAX_EXTENTS]) -> Result<usize, ExtentsError> {
+        resolve_extents(self.card, self.entry_block, self.entry_offset, self.len, out)
+    }
+}
+
+/// Resolve a root file's FAT chain to `obc_dfu` extents via [`ExtentTable::build`] (the map path's
+/// machinery, #500). The table is a ~2 KB transient in this popped frame — unlike the map's
+/// session-long `.bss` table, it's read once into `out` and dropped. Two fragmentation walls:
+/// `fat_extents`' own cap (128) and `obc_dfu::MAX_EXTENTS` (96, the boot-state page's wire cap).
+fn resolve_extents(
+    card: &'static Sd,
+    entry_block: embedded_sdmmc::BlockIdx,
+    entry_offset: u32,
+    len: u32,
+    out: &mut [obc_dfu::Extent],
+) -> Result<usize, ExtentsError> {
+    match ExtentTable::build(card, entry_block, entry_offset, len) {
+        Ok(table) => {
+            let count = table.extent_count();
+            if count > out.len() {
+                return Err(ExtentsError::TooFragmented { extents: count as u32 });
+            }
+            for (slot, (lba, blocks)) in out.iter_mut().zip(table.runs()) {
+                *slot = obc_dfu::Extent { start_block: lba, blocks };
+            }
+            Ok(count)
+        }
+        Err(BuildError::TooFragmented(n)) => Err(ExtentsError::TooFragmented { extents: n }),
+        Err(e) => {
+            defmt::warn!("dfu: extent resolve failed: {}", defmt::Debug2Format(&e));
+            Err(ExtentsError::Io)
         }
     }
 }

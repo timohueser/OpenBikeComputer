@@ -1229,6 +1229,10 @@ name = "obc-ble"
 version = "0.1.0"
 
 [[package]]
+name = "obc-dfu"
+version = "0.1.0"
+
+[[package]]
 name = "obc-fw-nrf54l"
 version = "0.1.0"
 dependencies = [
@@ -1254,6 +1258,7 @@ dependencies = [
  "nrf-sdc",
  "obc-app",
  "obc-ble",
+ "obc-dfu",
  "obc-platform",
  "obc-reader",
  "obc-render",
