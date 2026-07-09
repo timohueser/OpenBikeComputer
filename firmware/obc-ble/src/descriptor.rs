@@ -33,8 +33,10 @@ pub enum ObjectType {
     /// Reserved on the CoC — Config crosses GATT whole-blob.
     ConfigBlob = 3,
     Diagnostics = 4,
-    /// Reserved (future OTA).
-    Firmware = 5,
+    /// A firmware update image — a complete `UPDATE.BIN` OBCU container, app → device (upload only).
+    /// The transfer layer stays format-blind: the payload is opaque bytes staged to `/UPDATE.BIN`
+    /// (spec §7.6). Installing it is the separate, on-glass-confirmed `installFw` command.
+    FwImage = 5,
     RouteList = 6,
     RideList = 7,
     /// Dev/test loopback: the device streams back exactly what it received.
@@ -53,7 +55,7 @@ impl ObjectType {
             2 => Self::Ride,
             3 => Self::ConfigBlob,
             4 => Self::Diagnostics,
-            5 => Self::Firmware,
+            5 => Self::FwImage,
             6 => Self::RouteList,
             7 => Self::RideList,
             8 => Self::Echo,
@@ -209,6 +211,20 @@ impl TransferStatus {
         }
         None
     }
+
+    /// The announce-time reject for a `fwImage` upload (spec §4.2 / §7.6): an announced object
+    /// larger than the device's update-slot ceiling `max_len` (the board passes
+    /// `obc_dfu::MAX_IMAGE_LEN`, kept out of this crate so the wire codec never links the DFU crate)
+    /// is refused at the `transferControl` write with [`Error`](Self::Error), **before any bytes
+    /// stream** — a ~900 KB update would otherwise transfer only to fail at commit. `None` = accept
+    /// (the caller arms the [`Receiver`](crate::Receiver)).
+    pub const fn fwimage_announce_reject(total_len: u32, max_len: u32) -> Option<Self> {
+        if total_len > max_len {
+            Some(Self::Error)
+        } else {
+            None
+        }
+    }
 }
 
 /// The closing result of a transfer (`msg = 1`). `committed_offset` is the durable byte count.
@@ -290,6 +306,35 @@ impl CommandResult {
 pub const CMD_DELETE_OBJECT: u8 = 1;
 /// `command` byte: `ackRides` (§4.4, cmd 2) — see [`AckRides`].
 pub const CMD_ACK_RIDES: u8 = 2;
+/// `command` byte: `installFw` (§4.4, cmd 3) — no args (the `cmd` byte only). Asks the device to
+/// install the staged `/UPDATE.BIN`; see [`install_fw_reply`].
+pub const CMD_INSTALL_FW: u8 = 3;
+
+/// Map the cheaply-knowable device state at the BLE edge to the `installFw` `commandResult.status`
+/// (§4.4 cmd 3). The four documented outcomes reuse the existing status vocabulary — **no new status
+/// byte** — with precedence **`busy` > `noStaged` > `invalid` > `ok`**:
+///
+/// - `busy` → [`Busy`](CommandStatus::Busy): a ride is recording, or an install request is already
+///   pending.
+/// - `noStaged` → [`NotFound`](CommandStatus::NotFound): no `UPDATE.BIN` on the card (a cheap
+///   card-root existence check).
+/// - `invalid` → [`Error`](CommandStatus::Error): the device can *cheaply* tell the stage is
+///   unusable. The reference firmware never runs the multi-second CRC scan inside the command
+///   handler, so it always passes `staged_invalid = false` and lets the on-device confirm flow
+///   surface a bad image; this arm exists for a device that can reject a stage cheaply.
+/// - else → [`Ok`](CommandStatus::Ok): the request is accepted and the on-glass confirm card will
+///   show. The command **never installs on its own** — a physical confirm is always required.
+pub const fn install_fw_reply(has_staged: bool, busy: bool, staged_invalid: bool) -> CommandStatus {
+    if busy {
+        CommandStatus::Busy
+    } else if !has_staged {
+        CommandStatus::NotFound
+    } else if staged_invalid {
+        CommandStatus::Error
+    } else {
+        CommandStatus::Ok
+    }
+}
 
 /// The `ackRides` command (§4.4, cmd `2`): `cmd u8 · count u8 · count × object_id u16 LE` — the
 /// phone's **possession ack** for stored rides.
