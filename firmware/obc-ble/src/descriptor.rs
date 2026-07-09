@@ -66,7 +66,7 @@ impl ObjectType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Op {
-    /// app → device: the app streams `object[offset…]` over the CoC.
+    /// app → device: the app streams the whole object over the CoC.
     Upload = 1,
     /// device → app: the app requests, the device announces (`total_len`/`crc32`) then streams.
     Download = 2,
@@ -98,7 +98,8 @@ impl Op {
 ///   object_id  u16   0xFFFF on upload = "new" (device assigns; see TransferResult)
 ///   total_len  u32   upload: full object size · download request / abort: 0
 ///   crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
-///   offset     u32   byte offset to start streaming from (0 = fresh) — the resume anchor
+///   offset     u32   always 0 — transfers restart, not resume; the field exists for
+///                    descriptor-shape stability only (§1 principle 4)
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransferControl {
