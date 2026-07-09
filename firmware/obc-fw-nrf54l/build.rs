@@ -97,6 +97,9 @@ MEMORY
 PROVIDE(__settings_base = ORIGIN(SETTINGS));
 /* Base of the carved boot-state page (#617) — the armer's write target (S4). */
 PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
+/* Base of the app slot (#619) — where the armer's rollback snapshot reads the running image
+   from (memory-mapped; RRAM is XIP-readable). The linker map stays the only address authority. */
+PROVIDE(__app_slot_base = ORIGIN(FLASH));
 ",
         ram_kb = (FLPR_RAM_BASE - SRAM_BASE) / 1024,
         flpr_kb = (CONTROL_ADDR - FLPR_RAM_BASE) / 1024,

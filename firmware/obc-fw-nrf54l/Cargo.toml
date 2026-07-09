@@ -148,6 +148,9 @@ embedded-graphics = "0.8"
 obc-app = { path = "../obc-app", features = ["nrf-mem"] } # App/init_map + render_map (#125); MAX_ROUTES / TrackAction / TrackSink for the SD `Storage`; the budget assert's App/cache sizes
 obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the N4 map path renders from (#125)
 obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx for the `/routes` catalog + GPX (SD `Storage`)
+# The SD-staged DFU foundation (epic #615): the OBCU container + boot-state codec the app-side
+# armer reads/writes (S4, #619), plus its pure scan/arm/confirm decision core (`obc_dfu::armer`).
+obc-dfu = { path = "../obc-dfu" }
 # FatFs over SPI. `default-features = false` (no `log`/`defmt-log`): embedded-sdmmc 0.9 pins
 # `defmt = "0.3"`, which would clash with this crate's defmt 1.0 — so its internal logging stays
 # the no-op fallback and card/FS errors are surfaced via this crate's `defmt::Debug2Format`.
