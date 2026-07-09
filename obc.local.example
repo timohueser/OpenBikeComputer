@@ -1,0 +1,20 @@
+# Personal defaults for the `obc` dev tasks. Copy to `obc.local` (gitignored) and edit.
+# This file is sourced as bash, so it's plain KEY=value (no `export` needed).
+
+# Default map for `obc sim` when you don't pass one. If unset, obc uses the newest
+# .obcm in the repo root (then maps/, then the web-builder cache).
+#OBC_MAP="freiburg.obcm"
+
+# Default GPX track for `obc sim` / `obc uart`. If unset, the bundled
+# firmware/obc-sim/assets/grimsel-climb.gpx is used.
+#OBC_GPX="tracks/my-favourite-loop.gpx"
+
+# Default packer preset for `obc pack`. If unset, packer/presets/default.json.
+#OBC_PRESET="packer/presets/high-detail.json"
+
+# Extra directories to scan for maps (colon-separated) — overrides the default
+# root : maps/ : ~/.cache/obcm/builds search.
+#OBC_MAPS_DIRS="$HOME/maps:$HOME/Downloads"
+
+# RISC-V gcc for the board's FLPR blob, if it isn't on your PATH.
+#RISCV_GCC="$HOME/.local/xPacks/riscv-none-elf-gcc/14.2.0-3/bin/riscv-none-elf-gcc"
