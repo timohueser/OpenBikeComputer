@@ -188,6 +188,26 @@ pub fn request_forget_bond() {
     FORGET_BOND.signal(());
 }
 
+// ============================ Ride-recording → the installFw busy-gate (S6, #621) ============
+
+/// Whether a ride is recording, mirrored across the plane boundary: the ride loop owns the `App`
+/// and pushes `app.activity.is_tracking()` here each pass ([`set_recording`]); the `installFw`
+/// command handler reads it as the `busy` gate's "a ride is recording" input (spec §4.4) — the arm
+/// ends in a reboot, so an install must never be requested mid-ride. Defaults **false**; the ride
+/// loop seeds the real value on its first pass. `Relaxed`: both planes are cooperative futures on
+/// the one executor, and a stale read is at worst one pass late (the on-device guard still refuses).
+static RECORDING: AtomicBool = AtomicBool::new(false);
+
+/// Push the ride-recording state to the BLE plane (ride loop, once per pass — one atomic store).
+pub fn set_recording(recording: bool) {
+    RECORDING.store(recording, Ordering::Relaxed);
+}
+
+/// Whether a ride is recording (the `installFw` `busy` gate).
+pub(crate) fn recording() -> bool {
+    RECORDING.load(Ordering::Relaxed)
+}
+
 /// The battery percent for the BAS characteristic, read by `battery_task` to seed + notify. A
 /// constant [`StubFuelGauge`]-matching 75 % until the real nPM1300 fuel gauge is wired across the
 /// plane seam (the ride loop owns the gauge; feeding it into BAS is a #270 follow-up).

@@ -1317,6 +1317,77 @@ impl Storage {
         Some((final_name, len, info))
     }
 
+    /// Promote the CRC-verified upload temp to `/UPDATE.BIN` in the card **root** — the `fwImage`
+    /// commit target (epic #615 S6, #621). Parametrizes the route promote's atomic story onto the DFU
+    /// staging file rather than forking it: the same held-back-magic copy
+    /// ([`copy_with_held_magic`](Self::copy_with_held_magic)) — here the OBCU magic (`b"OBCU"`, bytes
+    /// `0..4`) — so a torn copy leaves a zero-magic `UPDATE.BIN` the armer's scan rejects on a bad
+    /// header, exactly as a torn route's zero-magic OBCR is rejected. A commit **overwrites** any
+    /// existing `UPDATE.BIN` (deleted first). The OBCU header is validated (a cheap 64-byte decode) —
+    /// the transfer CRC only proved the bytes are what the app sent, not that they are an update image
+    /// (the route path's OBCR-parse analogue); the armer re-runs the full CRC scan before erasing the
+    /// slot. Returns the promoted byte length, or `None` with the temp dropped (invalid container /
+    /// torn copy — a retry is a whole fresh upload). The temp lives in `/routes` like a route upload;
+    /// only the promote target differs.
+    pub fn commit_fwimage(&mut self) -> Option<u32> {
+        self.upload_close();
+        let dir = self.routes_dir?; // UPLOAD.TMP sinks into /routes (route-upload path, unchanged)
+
+        // Validate: the temp must decode as an OBCU container header. The transfer CRC only proved the
+        // bytes match what the app sent — this rejects a well-CRC'd but non-update payload cheaply.
+        let src_file = self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(src_file).unwrap_or(0);
+        let mut header = [0u8; obc_dfu::HEADER_LEN];
+        let valid = matches!(self.vmgr.read(src_file, &mut header), Ok(n) if n == obc_dfu::HEADER_LEN)
+            && obc_dfu::ImageHeader::decode(&header).is_some();
+        if !valid {
+            let _ = self.vmgr.close_file(src_file);
+            let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+            defmt::warn!("SD: fwImage upload is not a valid OBCU container — rejected");
+            return None;
+        }
+
+        // Overwrite semantics: drop any existing UPDATE.BIN before promoting the new stage.
+        let Ok(update_name) = ShortFileName::create_from_str(UPDATE_BIN) else {
+            let _ = self.vmgr.close_file(src_file);
+            let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+            return None;
+        };
+        let _ = self.vmgr.delete_file_in_dir(self.root, &update_name);
+
+        // Copy temp → /UPDATE.BIN, OBCU magic held back until the body is durable (the commit point).
+        let copied = match self.vmgr.open_file_in_dir(self.root, UPDATE_BIN, Mode::ReadWriteCreateOrTruncate) {
+            Ok(dst_file) => {
+                let ok = self.copy_with_held_magic(src_file, dst_file, len);
+                if !ok {
+                    defmt::warn!("SD: fwImage copy failed — /UPDATE.BIN left zero-magic (inert; armer rejects)");
+                }
+                let _ = self.vmgr.close_file(dst_file);
+                ok
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot create /UPDATE.BIN: {}", defmt::Debug2Format(&e));
+                false
+            }
+        };
+        let _ = self.vmgr.close_file(src_file);
+        let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+        if !copied {
+            // A torn/failed copy left a zero-magic (invisible-to-the-armer) UPDATE.BIN; a retry is a
+            // whole fresh upload — exactly the route path's torn-commit story.
+            return None;
+        }
+        defmt::info!("SD: fwImage committed → /UPDATE.BIN ({=u32} B)", len);
+        Some(len)
+    }
+
+    /// Whether a staged `/UPDATE.BIN` exists in the card root — the `installFw` `noStaged` cheap
+    /// existence check (spec §4.4). Presence only (a directory scan, no read): the full CRC validation
+    /// is the on-device confirm flow's, never a BLE command handler's.
+    pub fn has_update_bin(&self) -> bool {
+        ShortFileName::create_from_str(UPDATE_BIN).ok().and_then(|n| self.find_root_entry(&n)).is_some()
+    }
+
     /// The commit's copy: `src[0..len]` → `dst` with bytes 0..4 (the OBCR magic) written as
     /// zeros, then — after the body is flushed — patched to the real magic and flushed again.
     /// True only when every step landed.

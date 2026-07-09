@@ -544,6 +544,15 @@ pub(crate) async fn run_app(
         #[cfg(feature = "ble")]
         {
             app.set_ble_status(crate::ble::app_ble_status());
+            // Mirror the ride-recording state to the BLE plane's `installFw` busy-gate (S6, #621), and
+            // drain a BLE-initiated install request into S4's app-level request seam — the *same*
+            // `request_dfu_install` the debug-link `dfu-install` and S5's confirm card post. The DFU
+            // drain later this pass applies the guards and, with S5, the on-glass confirm; the BLE
+            // command only records intent (spec §4.4 — no silent installs).
+            crate::ble::set_recording(app.activity.is_tracking());
+            if crate::object_store::take_dfu_install_ble() {
+                app.request_dfu_install();
+            }
             for _ in 0..crate::object_store::take_store_changed() {
                 app.notify_store_changed();
             }
