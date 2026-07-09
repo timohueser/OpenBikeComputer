@@ -20,6 +20,7 @@ pub mod dirty;
 pub mod fault;
 pub mod hal;
 pub mod hold_hint;
+pub mod i18n;
 pub mod input;
 pub mod input_plane;
 pub mod nav_profiles;
@@ -41,6 +42,7 @@ pub use hal::{
     InputSource, LocationSource, RideClock, Sensors, SettingsStore, TemperatureSource, TrackSink,
 };
 pub use hold_hint::HoldHints;
+pub use i18n::{t, Msg};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
 pub use nav_profiles::NavProfiles;
