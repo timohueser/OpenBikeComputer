@@ -18,13 +18,41 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::{
     list, palette, title_frame_ble, Ctx, MapScreen, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen,
     ScreenTick, SettingsScreen, Transition,
 };
 
-const ITEMS: [&str; 5] = ["Routes", "Rides", "POIs", "Map", "Settings"];
+/// The number of menu entries (Routes / Rides / POIs / Map / Settings). A compile-time constant
+/// because the ring geometry + selection wrap depend on it and it never varies by language; the
+/// entries' *labels* are looked up per-language at draw time (see [`MenuText`]).
+const N_ITEMS: usize = 5;
+
+/// The menu's per-language copy, resolved once per frame — the bar caption plus the five entry
+/// labels in ring order. Built fresh each draw because the language is a runtime value (the old
+/// `const ITEMS` array couldn't stay `const`); bundled so the layout helpers take one param, not
+/// six.
+struct MenuText {
+    title: &'static str,
+    items: [&'static str; N_ITEMS],
+}
+
+impl MenuText {
+    fn resolve(rx: &Render) -> Self {
+        Self {
+            title: rx.t(Msg::MenuTitle),
+            items: [
+                rx.t(Msg::MenuRoutes),
+                rx.t(Msg::MenuRides),
+                rx.t(Msg::MenuPois),
+                rx.t(Msg::MenuMap),
+                rx.t(Msg::MenuSettings),
+            ],
+        }
+    }
+}
 
 /// Prototype switch: `true` draws the compass dial, `false` the 2×2 card grid.
 const COMPASS: bool = true;
@@ -39,7 +67,7 @@ fn station_dir(i: usize, n: usize) -> (f32, f32) {
 
 /// Degrees the needle sweeps per encoder detent — one station step around the ring of [`ITEMS`]
 /// (360° ÷ five entries = 72°).
-const DETENT_DEG: f32 = 360.0 / ITEMS.len() as f32;
+const DETENT_DEG: f32 = 360.0 / N_ITEMS as f32;
 
 /// Needle sweep tuning: an ease-out — the needle moves at `SWEEP_RATE` of the remaining arc per
 /// second, floored at `SWEEP_MIN_DEG_S` so the tail doesn't crawl. A one-detent step lands in ≈200 ms.
@@ -70,7 +98,7 @@ impl MenuScreen {
         match g {
             Gesture::Turn(n) => {
                 self.target_deg += n as f32 * DETENT_DEG;
-                list::on_turn(&mut self.selected, n, ITEMS.len())
+                list::on_turn(&mut self.selected, n, N_ITEMS)
             }
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
@@ -116,10 +144,11 @@ impl MenuScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let ble = rx.state.ble_connected();
+        let txt = MenuText::resolve(rx);
         if COMPASS {
-            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble);
+            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble, &txt);
         } else {
-            draw_grid(cv, rx.w, rx.h, self.selected, ble);
+            draw_grid(cv, rx.w, rx.h, self.selected, ble, &txt);
         }
     }
 }
@@ -149,9 +178,17 @@ fn open_map(cx: &mut Ctx) -> Transition {
 /// centred between the bar and the name strip — which works out to exactly `h / 2`. The needle
 /// points at `needle_deg` (0° = N, clockwise) — mid-sweep that's between stations; the station
 /// highlight and the name snap to the selection immediately.
-fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_deg: f32, ble_connected: bool) {
+fn draw_compass(
+    cv: &mut impl Surface,
+    w: i32,
+    h: i32,
+    selected: usize,
+    needle_deg: f32,
+    ble_connected: bool,
+    txt: &MenuText,
+) {
     use palette::*;
-    title_frame_ble(cv, w, h, "MENU", "", ble_connected);
+    title_frame_ble(cv, w, h, txt.title, "", ble_connected);
 
     let c = Point::new(w / 2, h / 2);
 
@@ -174,7 +211,7 @@ fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_d
 
     // Stations: amber-filled when selected, a thin tan ring otherwise. Evenly spaced around the ring
     // by `station_dir`, so the five entries sit at 72° detents starting from N.
-    let n = ITEMS.len();
+    let n = txt.items.len();
     for i in 0..n {
         let (dx, dy) = station_dir(i, n);
         let sc = Point::new(c.x + si(1.0, dx * 72.0), c.y + si(1.0, dy * 72.0));
@@ -190,7 +227,7 @@ fn draw_compass(cv: &mut impl Surface, w: i32, h: i32, selected: usize, needle_d
         draw_icon(cv, i, sc, 1.2, ink, bg);
     }
 
-    cv.text(ITEMS[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, INK);
+    cv.text(txt.items[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, INK);
 }
 
 /// Draw the compass **needle** centred at `c`, pointing `deg` (0° = N, clockwise): amber head of
@@ -214,10 +251,10 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
 
 /// The 2×2 card-grid layout under the standard title bar: amber fill on the selected card, a tan
 /// outline on the rest, each with its icon over a centred label.
-fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize, ble_connected: bool) {
+fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize, ble_connected: bool, txt: &MenuText) {
     use palette::*;
-    title_frame_ble(cv, w, h, "MENU", "", ble_connected);
-    for (i, label) in ITEMS.iter().enumerate() {
+    title_frame_ble(cv, w, h, txt.title, "", ble_connected);
+    for (i, label) in txt.items.iter().enumerate() {
         let col = (i % 2) as i32;
         let row = (i / 2) as i32;
         let (x, y) = (14 + col * 110, 51 + row * 132);

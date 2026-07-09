@@ -1,0 +1,23 @@
+# OpenBikeComputer UI translation catalog — ENGLISH (canonical key set).
+#
+# This file defines the *universe* of message keys (epic #602, L2). Every key present
+# here MUST be present in de.toml / fr.toml / es.toml too, or the build fails
+# (see obc-app/build.rs — the completeness check). de/fr/es may still be English
+# stubs at this stage; real translations land in L4 (#606).
+#
+# Naming convention (key -> `Msg` variant):
+#   * Keys are grouped in `[section]` tables (a section is a screen or domain).
+#   * The generated `Msg` variant is PascalCase(section) + PascalCase(key), e.g.
+#         [menu] routes = "Routes"   ->   Msg::MenuRoutes
+#     Underscores in a key are word breaks:  `off_route = "..."` -> `Msg::…OffRoute`.
+#   * A bare top-level key (no section, discouraged) maps to PascalCase(key) alone.
+#   * Values are TOML basic strings (double-quoted). Keep them within the #601 font
+#     repertoire (Latin-1 + Latin Extended-A); no curly quotes / em-dash / ellipsis.
+
+[menu]
+title = "MENU"
+routes = "Routes"
+rides = "Rides"
+pois = "POIs"
+map = "Map"
+settings = "Settings"
