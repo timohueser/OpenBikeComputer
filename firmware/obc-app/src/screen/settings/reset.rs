@@ -19,6 +19,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
 use crate::settings::Settings;
+use crate::Msg;
 
 /// The Factory Reset screen. `armed` is set by the first press (you must arm before a hold can
 /// erase); `done` is set once the hold completes and the reset has been applied.
@@ -70,32 +71,44 @@ impl ResetScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, "RESET", "");
+        title_frame(cv, w, h, rx.t(Msg::ResetTitle), "");
         // Body content is positioned from the title bar so the armed/idle layouts stack cleanly.
 
         if self.done {
             draw_check(cv, w / 2, TITLE_BAR_H + 64, 26);
-            cv.text("Reset complete", Point::new(w / 2, TITLE_BAR_H + 110), Font::Body, TextAlign::Center, INK);
-            cv.text("Restarting", Point::new(w / 2, TITLE_BAR_H + 142), Font::Label, TextAlign::Center, SUBTEXT);
+            cv.text(rx.t(Msg::ResetComplete), Point::new(w / 2, TITLE_BAR_H + 110), Font::Body, TextAlign::Center, INK);
+            cv.text(
+                rx.t(Msg::ResetRestarting),
+                Point::new(w / 2, TITLE_BAR_H + 142),
+                Font::Label,
+                TextAlign::Center,
+                SUBTEXT,
+            );
             return;
         }
 
         // Warning icon + title (kept short so nothing overruns the 240 px panel).
         draw_warning(cv, w / 2, TITLE_BAR_H + 50, 24);
-        cv.text("Factory reset", Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
+        cv.text(rx.t(Msg::ResetFactory), Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
 
         if !self.armed {
             // Step 1: the consequence + the arm prompt.
             cv.text(
-                "Erases all settings",
+                rx.t(Msg::ResetErases),
                 Point::new(w / 2, TITLE_BAR_H + 124),
                 Font::Label,
                 TextAlign::Center,
                 SUBTEXT,
             );
-            cv.text("& saved time.", Point::new(w / 2, TITLE_BAR_H + 144), Font::Label, TextAlign::Center, SUBTEXT);
+            cv.text(
+                rx.t(Msg::ResetSavedTime),
+                Point::new(w / 2, TITLE_BAR_H + 144),
+                Font::Label,
+                TextAlign::Center,
+                SUBTEXT,
+            );
             // The arm action as an amber inset button.
-            let label = "Confirm";
+            let label = rx.t(Msg::ResetConfirm);
             let (bw, bh) = (text_width(label, Font::Body) as i32 + 44, 42);
             let (bx, by) = (w / 2 - bw / 2, TITLE_BAR_H + 170);
             cv.round(rect(bx, by, bw, bh), 8, AMBER);
@@ -105,7 +118,7 @@ impl ResetScreen {
 
         // Step 2: armed → the hold-to-erase prompt over a bar that fills with the live encoder hold.
         let p = rx.hold_progress.clamp(0.0, 1.0);
-        let prompt = if p > 0.02 { "Keep holding" } else { "Hold to erase" };
+        let prompt = if p > 0.02 { rx.t(Msg::ResetKeepHolding) } else { rx.t(Msg::ResetHoldToErase) };
         cv.text(prompt, Point::new(w / 2, TITLE_BAR_H + 150), Font::Body, TextAlign::Center, INK);
         let (bx, bw, by, bh) = (40, w - 80, TITLE_BAR_H + 184, 16);
         let radius = (bh / 2) as u32;

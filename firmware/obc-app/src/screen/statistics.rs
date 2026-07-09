@@ -25,6 +25,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::settings::Settings;
 use crate::stat_fields;
+use crate::Msg;
 
 use super::{palette, title_frame, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
@@ -243,10 +244,10 @@ impl StatisticsScreen {
         // no-profile state, not a separate empty screen: a route-less rider still watches speed /
         // distance / climb / clock.
         let (Some(profile), Some(route)) = (rx.profile, rx.route) else {
-            title_frame(cv, w, h, "STATS", if rx.no_fix { "no GPS" } else { "" });
+            title_frame(cv, w, h, rx.t(Msg::StatsTitle), if rx.no_fix { rx.t(Msg::StatsNoGps) } else { "" });
             // The no-profile note, centred where the elevation band would draw.
             cv.text(
-                "No route loaded",
+                rx.t(Msg::StatsNoRoute),
                 Point::new(w / 2, (CHART_TOP + CHART_BOT) / 2 - 9),
                 Font::Label,
                 TextAlign::Center,
@@ -289,13 +290,13 @@ impl StatisticsScreen {
         // cross-track distance, else the grade at the cursor.
         let mut readout: heapless::String<16> = heapless::String::new();
         if rx.no_fix {
-            let _ = readout.push_str("no GPS");
+            let _ = readout.push_str(rx.t(Msg::StatsNoGps));
         } else if off {
-            super::write_off_route(&mut readout, "off ", rx.activity.dist_to_route_m, units);
+            super::write_off_route(&mut readout, rx.t(Msg::StatsOff), rx.activity.dist_to_route_m, units);
         } else {
-            let _ = write!(readout, "grade {}%", stat_fields::grade_at(profile, total, cursor_frac));
+            let _ = write!(readout, "{}{}%", rx.t(Msg::StatsGrade), stat_fields::grade_at(profile, total, cursor_frac));
         }
-        title_frame(cv, w, h, "STATS", &readout);
+        title_frame(cv, w, h, rx.t(Msg::StatsTitle), &readout);
 
         // Elevation band + amber top line
         let band_bot = CHART_BOT;

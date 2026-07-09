@@ -35,6 +35,10 @@ pub enum BootFault {
 impl BootFault {
     /// The card's `(title, line 1, line 2)` — the wood-bar title and the two body lines. Plain
     /// language: the fault, then the fix. Pinned by [`tests`].
+    ///
+    /// **Intentionally English, not catalogued (epic #602).** A boot fault is drawn by
+    /// [`draw_boot_fault`] before `App`/`Settings` exist — there is no `settings.language` to read at
+    /// this point in the boot path — so this diagnostic copy stays English in every language build.
     pub fn copy(self) -> (&'static str, &'static str, &'static str) {
         match self {
             BootFault::NoCard => ("NO SD CARD", "Insert a card", "with a map file"),

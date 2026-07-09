@@ -29,7 +29,8 @@ use obc_render::{
 
 use crate::activity::Activity;
 use crate::input::Gesture;
-use crate::settings::{DateTime, Units};
+use crate::settings::{DateTime, Language, Units};
+use crate::{t, Msg};
 
 use super::list::{self, ListGeometry, Separators};
 use super::route_menu::fit_name;
@@ -108,10 +109,10 @@ impl RidesScreen {
         let geo = ListGeometry::below_title(w, h - FOOTER_H, ROW_H, 8, 12, Separators::Unselected);
 
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
-        list::list_frame(cv, w, h, "RIDES", pos, total, geo.visible);
+        list::list_frame(cv, w, h, rx.t(Msg::RidesTitle), pos, total, geo.visible);
 
         if total == 0 {
-            super::empty_state(cv, w, h, "No rides yet", "Record a ride to see it here");
+            super::empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
             return;
         }
 
@@ -151,7 +152,15 @@ impl RidesScreen {
         // The hold-to-delete footer over the highlighted ride: greyed while recording, warning-red
         // with a "not synced" cue for an unsynced ride, the standard footer otherwise.
         let synced = rides.get(sel).map(|r| r.synced).unwrap_or(true);
-        delete_footer(cv, w, h, self.delete_enabled(rx.activity, total), synced, rx.hold_progress);
+        delete_footer(
+            cv,
+            w,
+            h,
+            self.delete_enabled(rx.activity, total),
+            synced,
+            rx.hold_progress,
+            rx.settings.language,
+        );
     }
 }
 
@@ -159,7 +168,7 @@ impl RidesScreen {
 /// while a ride is being recorded. When live, an **unsynced** ride adds a warning-red "not synced"
 /// cue before the progress bar; a synced ride shows the plain trash + bar. The bar fills with the
 /// live encoder hold. The delete itself fires from `handle`'s `Hold` arm.
-fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, enabled: bool, synced: bool, hold: f32) {
+fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, enabled: bool, synced: bool, hold: f32, lang: Language) {
     use palette::*;
     let fy = h - FOOTER_H;
     cv.hline(FOOTER_X, fy, w - 2 * FOOTER_X, RULE);
@@ -168,7 +177,14 @@ fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, enabled: bool, synced: b
         // Greyed while recording: a dim trash + a "Recording" hint so the disabled state reads
         // deliberately (the recording ride isn't listed and can't be deleted mid-session).
         draw_trash(cv, FOOTER_X + 16, midy, RULE);
-        cv.text_vcentered("Recording", FOOTER_X + 36, (fy, FOOTER_H), Font::Label, TextAlign::Left, SUBTEXT);
+        cv.text_vcentered(
+            t(Msg::RidesRecording, lang),
+            FOOTER_X + 36,
+            (fy, FOOTER_H),
+            Font::Label,
+            TextAlign::Left,
+            SUBTEXT,
+        );
         return;
     }
     let p = hold.clamp(0.0, 1.0);
@@ -179,7 +195,7 @@ fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, enabled: bool, synced: b
         // Unsynced: a warning-red trash + a compact "not synced" cue, then the bar is pushed right of
         // it so the rider is told the ride isn't backed up before they hold to delete it.
         draw_trash(cv, FOOTER_X + 16, midy, WARNING);
-        let cue = "not synced";
+        let cue = t(Msg::RidesNotSynced, lang);
         cv.text_vcentered(cue, bx, (fy, FOOTER_H), Font::Label, TextAlign::Left, WARNING);
         bx += cue.chars().count() as i32 * Font::Label.char_width() as i32 + 8;
     }
