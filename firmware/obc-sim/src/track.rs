@@ -14,6 +14,7 @@ use obc_app::{TrackAction, TrackSink};
 #[cfg(not(target_arch = "wasm32"))]
 use {
     crate::vec_sink::VecSink,
+    obc_app::TrackError,
     obc_route::{encode_record, track_to_gpx, track_to_ride, RideStats, SliceSource, TrackPoint},
     std::fs::{self, File, OpenOptions},
     std::io::Write,
@@ -31,9 +32,10 @@ struct OpenLog {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl TrackSink for OpenLog {
-    fn record(&mut self, p: TrackPoint) {
-        // Append the fixed record; a write error just drops the point (the ride continues).
-        let _ = self.file.write_all(&encode_record(&p));
+    fn record(&mut self, p: TrackPoint) -> Result<(), TrackError> {
+        // Append the fixed record; a write error surfaces as `Err` so the app raises the
+        // recording-error indicator (issue #11) — the ride keeps going regardless.
+        self.file.write_all(&encode_record(&p)).map_err(|_| TrackError)
     }
 }
 

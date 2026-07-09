@@ -997,13 +997,21 @@ impl App {
             if motion.log {
                 self.breadcrumb.push(fix.lon, fix.lat);
                 if let Some(track) = track {
-                    track.record(TrackPoint {
+                    let logged = track.record(TrackPoint {
                         lon: fix.lon,
                         lat: fix.lat,
                         ele: self.activity.track_ele(),
                         t_ms: now_ms,
                         segment_start: motion.segment_start,
                     });
+                    // The host couldn't durably write the point (card pulled, write error, medium
+                    // full) — the ride log now has a gap. Raise the recording-error advisory so the
+                    // rider isn't left thinking the ride is being logged when it isn't (issue #11).
+                    // `notify_warning` latches it once per boot, so a whole ride of failing writes
+                    // raises one dismissable card, not a per-fix nag.
+                    if logged.is_err() {
+                        self.notify_warning(WarningFlags::REC_ERROR);
+                    }
                 }
             }
         }
@@ -2820,8 +2828,17 @@ mod tests {
     #[derive(Default)]
     struct CountSink(usize);
     impl crate::hal::TrackSink for CountSink {
-        fn record(&mut self, _p: obc_route::TrackPoint) {
+        fn record(&mut self, _p: obc_route::TrackPoint) -> Result<(), crate::hal::TrackError> {
             self.0 += 1;
+            Ok(())
+        }
+    }
+
+    /// A track sink whose every append fails — the "card pulled / write error mid-ride" case.
+    struct FailSink;
+    impl crate::hal::TrackSink for FailSink {
+        fn record(&mut self, _p: obc_route::TrackPoint) -> Result<(), crate::hal::TrackError> {
+            Err(crate::hal::TrackError)
         }
     }
 
@@ -2873,6 +2890,70 @@ mod tests {
         );
         assert!(app.has_live_fix(2_000), "the fix landed → banner clears");
         assert_eq!(sink.0, 1, "the first fix logs the segment anchor");
+    }
+
+    /// A failed ride-log append (card pulled / write error mid-ride) must not be swallowed: the app
+    /// raises the dismissable "recording error" warning so the rider learns the log dropped a point
+    /// — the core of issue #11. Latched once per boot: a whole ride of failing writes is one card.
+    #[test]
+    fn record_failure_raises_recording_error_warning() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.start_session();
+
+        // No warning while nothing has failed.
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::Warning(_))), "a healthy ride shows no warning card",);
+
+        // A logged fix whose write fails → the recording-error card opens.
+        let mut sink = FailSink;
+        let mut loc = OneFix(Some(Fix::at(0, 0)));
+        app.now_ms = 1_000;
+        app.tick(
+            RideClock(1_000),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: Some(&mut sink),
+                fuel: None,
+            },
+            None,
+        );
+        let card = app
+            .stack
+            .iter()
+            .find_map(|s| match s {
+                Screen::Warning(w) => Some(w.flags()),
+                _ => None,
+            })
+            .expect("a failed record opens the recording-error card");
+        assert!(card.contains(WarningFlags::REC_ERROR), "the card carries the recording-error flag");
+
+        // Dismiss it; a second failing fix doesn't nag again (latched once per boot). A small,
+        // plausible move (~11 m in 1 s) so the fix is actually logged — record is called and fails
+        // again, which the latch must swallow.
+        app.apply_gesture(Gesture::Back);
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::Warning(_))), "dismiss pops the card");
+        let mut loc = OneFix(Some(Fix::at(0, 100)));
+        app.now_ms = 2_000;
+        app.tick(
+            RideClock(2_000),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: Some(&mut sink),
+                fuel: None,
+            },
+            None,
+        );
+        assert!(
+            !app.stack.iter().any(|s| matches!(s, Screen::Warning(_))),
+            "an already-acknowledged recording error stays quiet",
+        );
     }
 
     // --- the heading fallback chain (course_rad / live_course_rad) ---
