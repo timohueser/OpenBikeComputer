@@ -82,13 +82,14 @@ screens! {
     Passkey(PasskeyScreen) => Nav,             // the 6-digit pairing code, modal + non-dismissible
     Warning(WarningScreen) => Nav,             // advisory: missing sensor / slow (fragmented) map — dismissable
     // The Settings tree — a list plus one screen each for Date & Time, Units, Display, Power,
-    // Bluetooth, Reset, and Stats (which opens onto Fields → AddField, the stat-grid panel manager).
+    // Bluetooth, Language, Reset, and Stats (which opens onto Fields → AddField, the stat-grid panel manager).
     // The `Settings` kind is what holds the debounced settings save while one of these is on top.
     Settings(SettingsScreen) => Settings,  DateTime(DateTimeScreen) => Settings,
     Units(UnitsScreen) => Settings,        Stats(StatsScreen) => Settings,
     StatFields(StatFieldsScreen) => Settings, AddField(AddFieldScreen) => Settings,
     Display(DisplayScreen) => Settings,    Power(PowerScreen) => Settings,
-    Bluetooth(BluetoothScreen) => Settings, Reset(ResetScreen) => Settings,
+    Bluetooth(BluetoothScreen) => Settings, Language(LanguageScreen) => Settings,
+    Reset(ResetScreen) => Settings,
 }
 
 // Each variant is a module with typed state and exactly two methods:
@@ -497,7 +498,7 @@ Pressing a list row opens the **detail view** for that POI — one more `Nav` sc
 
 ## Settings: a second level of focus
 
-Most screens have one focus: the row cursor. The **Settings** screens — Date & Time, Units, Stats, Display, Power, Bluetooth, and the factory Reset — add a *second* level. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a date, a UTC offset, a fix interval — and the same toggle row flips GPS-set-time or the power saver. No new gestures; the existing five just mean different things at each level.
+Most screens have one focus: the row cursor. The **Settings** screens — Date & Time, Units, Stats, Display, Power, Bluetooth, Language, and the factory Reset — add a *second* level. A value isn't a separate sub-screen; it's edited **in place**. Rotating still moves the amber row cursor, but once you press a value row, focus drops *into* a field: a `▲▼` box marks the live one, rotating now changes *its* value, pressing steps to the next field, and back steps out. The same two-level model drives every editor — a date, a UTC offset, a fix interval — and the same toggle row flips GPS-set-time or the power saver. No new gestures; the existing five just mean different things at each level.
 
 The **Display** screen governs the Map's chrome and the auto-return: two toggles for the Map overlays — small floating top-centre **clock** digits (`HH:MM`, bare ink with a halo — no pill) and a bottom-left **scale bar** (the largest round 1/2/5 distance that fits the current zoom, in the units system) — plus the **idle-return** timeout (15 s / 30 s / 1 min / 5 min / Never, default 30 s) that decides how long an untouched UI waits before returning itself to Home (or, mid-ride, the Map). The Map's other chrome isn't a setting: a bottom-centre **one-slot warning chip** ("No GPS Fix" outranks "off route NNNm"), suppressed while panning (the pan bottom chevron owns that slot); the scale bar sits right in the corner and steps up above the chip band while a chip is up, and a warning-red **low-battery** glyph in the top-left corner below 10 %.
 

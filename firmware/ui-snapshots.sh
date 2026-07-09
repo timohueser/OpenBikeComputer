@@ -136,7 +136,11 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # the Forget-phone guarded hold mid-charge (select the Forget row, then a partial hold fills it).
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p"     --png "$OUT/bluetooth.png"
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
-"$SIM" "$MAP" --boot --script "B l p r r r r r r r p p H" --png "$OUT/reset-hold.png"
+# The Language screen (epic #602): the endonym value picker (row 7, above Reset). The default
+# (English), then two detents cycling to Français — pinning the ç glyph the Latin font (#601) adds.
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r p"     --png "$OUT/language.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r p r r" --png "$OUT/language-french.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p H" --png "$OUT/reset-hold.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
