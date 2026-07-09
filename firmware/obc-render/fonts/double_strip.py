@@ -7,19 +7,26 @@ pixel becomes a 2×2 block, so the layout (16 glyphs/row, 1bpp MSB-first) is pre
 the cell doubles (e.g. 16×32 → 32×64). The chunky doubled edges read as deliberate at the
 oversized clock size.
 
-    python3 double_strip.py ter_u32b.raw ter_u64b.raw 16 32
+    python3 double_strip.py ter_u32b.raw ter_u64b.raw 16 32 [ROWS]
 
-Args: SRC.raw DST.raw CELL_W CELL_H  (the source cell size; the strip is 16*CELL_W wide).
+The clock only draws digits and the colon, so only the first `ROWS` glyph-rows of the source
+are doubled (default 6 = printable ASCII 0x20..0x7F). This means a `latin`-charset source (20
+rows) yields the same ASCII-only Huge strip as an `ascii`-charset one — its ASCII glyphs sit in
+those first 6 rows unchanged — so the doubled font stays small and the `Huge` tier keeps eg's
+`mapping::ASCII` (issue #489).
+
+Args: SRC.raw DST.raw CELL_W CELL_H [ROWS]  (the source cell size; the strip is 16*CELL_W wide).
 """
 import sys
 
 
 def main():
     src_path, dst_path, cw, ch = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-    sw, sh = 16 * cw, 6 * ch  # 16 glyphs/row, 6 rows over printable ASCII 0x20..0x7F
+    rows = int(sys.argv[5]) if len(sys.argv) > 5 else 6
+    sw, sh = 16 * cw, rows * ch  # 16 glyphs/row; double only the first `rows` glyph-rows
     src = open(src_path, "rb").read()
     sstride = (sw + 7) // 8
-    assert len(src) == sstride * sh, (len(src), sstride * sh)
+    assert len(src) >= sstride * sh, (len(src), sstride * sh)
 
     def get(x, y):
         return (src[y * sstride + (x >> 3)] >> (7 - (x & 7))) & 1
