@@ -411,10 +411,12 @@ stored per record — it is derived on-device from the subtype (each subtype map
 exactly one category, §7.4) — and is implicit anyway from which category's
 quadtree the record came from.
 
-Names are ASCII-folded at pack time to the device font's printable set
-(`0x20..=0x7E`, Terminus) and capped at **24 bytes** (v7 widened the field from
-20); an unnamed POI (`Name Len == 0`) shows its subtype's fallback label
-on-device. The 24-byte `Name` field is `0xFF`-padded past `Name Len`.
+Names are ASCII-folded at pack time to printable ASCII (`0x20..=0x7E`) and
+capped at **24 bytes** (v7 widened the field from 20) — a fixed-width,
+one-byte-per-character slot, so the packer transliterates umlauts/accents
+(e.g. `ä → ae`) rather than store variable-width UTF-8; an unnamed POI
+(`Name Len == 0`) shows its subtype's fallback label on-device. The 24-byte
+`Name` field is `0xFF`-padded past `Name Len`.
 
 `HoursRef` is a 0-based index into the hours-pool section (§7.5): blob `i` lives at
 `hours_pool_offset + 2 + i*29`. `0xFFFF` means the POI has no (parseable) hours.
