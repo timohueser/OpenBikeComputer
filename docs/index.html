@@ -194,6 +194,31 @@
     .ctl:hover { background: var(--parchment-3); }
     .ctl.pressed, .ctl:active { background: var(--wood); color: var(--parchment); transform: translateY(1px); }
     .ctl-arrow { font-size: 17px; line-height: 1; }
+    /* While a guided demo drives, the manual controls dim but stay clickable — a tap on any of
+       them takes control (see the demo engine). */
+    .controls.paused .ctl { opacity: 0.45; }
+
+    /* Guided-demo toggle + live/demo mode indicator (minimal; S3 folds this into the card). */
+    .demo-bar { margin: 12px 0 0; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+    .demo-toggle {
+      font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--parchment);
+      background: var(--forest); border: 1px solid var(--forest);
+      border-radius: 10px; padding: 8px 15px; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 8px; min-height: 38px;
+      user-select: none; -webkit-user-select: none;
+      transition: background .12s ease, border-color .12s ease, transform .06s ease;
+    }
+    .demo-toggle:hover { background: #34602f; }
+    .demo-toggle:active { transform: translateY(1px); }
+    .demo-toggle .dt-icon { font-size: 12px; line-height: 1; }
+    /* "Take control" state — the trail-marker orange, so grabbing the wheel reads as the action. */
+    .demo-toggle.live { background: var(--coral); border-color: var(--coral); }
+    .demo-toggle.live:hover { background: #bd5d22; }
+    .mode-note { margin: 0; font-size: 12.5px; color: var(--ink-soft); text-align: center; max-width: 24rem; min-height: 18px; }
+    .mode-live { display: inline-flex; align-items: center; gap: 6px; color: var(--forest); font-weight: 700; }
+    .mode-live.playing { color: var(--coral); }
+    .mode-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 0 currentColor; animation: modepulse 1.8s ease-out infinite; }
+    @keyframes modepulse { 0% { box-shadow: 0 0 0 0 rgba(60,107,57,0.5); } 70%, 100% { box-shadow: 0 0 0 7px rgba(60,107,57,0); } }
     .ctl-hint { margin: 9px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
     .ctl-hint kbd {
       font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
@@ -368,6 +393,17 @@
             <button class="ctl" data-btn="back">Back</button>
             <button class="ctl ctl-arrow" data-turn="1" aria-label="Scroll forward" title="Scroll forward">▸</button>
           </div>
+          <!-- Guided-demo toggle + live/demo mode indicator. Tapping the toggle (or any device
+               control) while a demo plays "takes control": the scripted step engine cancels and
+               the visitor drives from wherever the demo left off. -->
+          <div class="demo-bar">
+            <button class="demo-toggle" id="demo_toggle" type="button">
+              <span class="dt-icon" aria-hidden="true">▶</span><span class="dt-label">Play guided demo</span>
+            </button>
+            <p class="mode-note" id="mode_note" role="status" aria-live="polite">
+              <span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls
+            </p>
+          </div>
           <p class="ctl-hint">Or on a keyboard: <kbd>←</kbd> <kbd>→</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back — hold for a long-press.</p>
         </div>
       </div>
@@ -458,6 +494,125 @@
       var HOLD_MS = 500; // the firmware's DEFAULT_HOLD_MS — crossing it turns a press into a hold
       var api = null;
 
+      // -----------------------------------------------------------------------------------------
+      // Live ⇄ guided-demo mode (epic #624 S2). The page is in one of two modes: LIVE (the visitor
+      // drives with the controls) or a guided DEMO (a scripted step engine drives). `runToken` is a
+      // generation counter — every mode switch bumps it, and the async step runner re-checks it at
+      // every await boundary, so a cancelled script can NEVER fire a late step or a late label after
+      // the visitor takes control. Deliberately minimal: one scenario, one toggle, one status line.
+      // S3 (#628) reworks lifecycle/stepping and folds the indicator into the feature card — this is
+      // the local take-control seam it builds on, not the carousel.
+      // -----------------------------------------------------------------------------------------
+      var demoRunning = false;
+      var runToken = 0;
+      var toggle = document.getElementById('demo_toggle');
+      var toggleLabel = toggle && toggle.querySelector('.dt-label');
+      var toggleIcon = toggle && toggle.querySelector('.dt-icon');
+      var modeNote = document.getElementById('mode_note');
+      var controls = document.querySelector('.controls');
+
+      var LIVE_NOTE = '<span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls';
+      function demoNote(label) {
+        return '<span class="mode-live playing"><span class="mode-dot"></span>Guided demo</span> — ' + label;
+      }
+
+      function ready() { return !!(api && api.obc_demo_cmd && api.obc_demo_state); }
+      function cmd(s) { if (api) api.obc_demo_cmd(s); }
+      function screenName() { return ready() ? api.obc_demo_state() : ''; }
+      function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+      // One guided scenario for now — the riding Back-cycle (Map → Statistics → Climb → Map). Each
+      // step pushes its cmds in one frame (the host drains them in order, same tick) then WAITS for
+      // `until` — a rendered screen — before the next step. Gestures that consume draw-time lazy
+      // state must live in SEPARATE steps: see the gesture-batch caveat doc-comment on the host's
+      // command queue (firmware/obc-web-demo/src/demo.rs). `enter` (step 0) is the staged-tour
+      // baseline reset — the one demo-reset seam.
+      var SCENARIO = {
+        title: 'See the climb ahead',
+        steps: [
+          { cmds: ['enter'], until: ['Map'], label: 'Riding the Grimsel climb' },
+          { cmds: ['back'], until: ['Statistics'], label: 'Back cycles to ride statistics' },
+          { cmds: ['back'], until: ['Climb'], label: 'Back again — the climb ahead' },
+          { cmds: ['back'], until: ['Map'], label: 'Back closes the ring' }
+        ]
+      };
+
+      // Resolve once the device reports one of `targets`, or on cancel (token bumped) / soft cap.
+      // The token check is what makes cancellation clean: a poll left over from a cancelled run
+      // resolves false and never advances the script.
+      function until(targets, token) {
+        return new Promise(function (resolve) {
+          var t0 = performance.now();
+          (function poll() {
+            if (token !== runToken) return resolve(false);           // cancelled
+            if (targets.indexOf(screenName()) >= 0) return resolve(true);
+            if (performance.now() - t0 > 20000) return resolve(false); // soft cap — don't hang
+            setTimeout(poll, 90);
+          })();
+        });
+      }
+
+      function setMode(running, label) {
+        demoRunning = running;
+        if (!toggle) return;
+        if (running) {
+          if (controls) controls.classList.add('paused');
+          toggleIcon.textContent = '✋';
+          toggleLabel.textContent = 'Take control';
+          toggle.classList.add('live');
+          modeNote.innerHTML = demoNote(label || SCENARIO.title);
+        } else {
+          if (controls) controls.classList.remove('paused');
+          toggleIcon.textContent = '▶';
+          toggleLabel.textContent = 'Play guided demo';
+          toggle.classList.remove('live');
+          modeNote.innerHTML = LIVE_NOTE;
+        }
+      }
+
+      // Take control: cancel any running script (bump the token → no late step can fire), hand the
+      // device to the visitor WHERE THE DEMO LEFT IT — `exit` is a no-rebuild command, so the screen
+      // never jumps — re-enable the controls, flip the indicator to Live. Idempotent when live.
+      function takeControl() {
+        runToken++;                    // cancels the in-flight runScript at its next await
+        if (demoRunning) cmd('exit');
+        setMode(false);
+      }
+
+      async function runScript(token) {
+        while (!ready() && token === runToken) { await sleep(120); }
+        var steps = SCENARIO.steps;
+        for (var i = 0; i < steps.length; i++) {
+          if (token !== runToken) return;    // cancelled before this step
+          setMode(true, steps[i].label);
+          steps[i].cmds.forEach(cmd);
+          await until(steps[i].until, token);
+          if (token !== runToken) return;    // cancelled during the wait
+          await sleep(2600);                 // deliberate dwell so a reader can follow
+          if (token !== runToken) return;    // cancelled during the dwell
+        }
+        if (token === runToken) takeControl(); // scenario done → hand back, still where it ended
+      }
+
+      function startDemo() {
+        if (demoRunning) return;
+        var token = ++runToken;
+        setMode(true, SCENARIO.steps[0].label);
+        runScript(token);
+      }
+
+      // A manual interaction while a demo plays takes control first, then the gesture applies to the
+      // now-live device (both queue this frame: `exit` then the gesture). Returns nothing.
+      function grabIfDemo() { if (demoRunning) takeControl(); }
+
+      if (toggle) {
+        toggle.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (!api) return;
+          if (demoRunning) takeControl(); else startDemo();
+        });
+      }
+
       // --- frame loop: rAF-driven; the wasm renders on demand and reports whether the
       // frame changed, so an idle demo costs neither a render nor a putImageData.
       function frame(now) {
@@ -502,7 +657,7 @@
       document.querySelectorAll('.ctl[data-btn]').forEach(function (btn) {
         var g = btn.getAttribute('data-btn'); // 'press' | 'back'
         var h = holdable(g, g === 'press' ? 'hold' : 'backhold', btn);
-        btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!api) return; stage.focus(); h.down(); });
+        btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!api) return; stage.focus(); grabIfDemo(); h.down(); });
         btn.addEventListener('pointerup', function (e) { e.preventDefault(); if (!api) return; h.up(false); });
         btn.addEventListener('pointerleave', function () { if (api) h.up(true); });
         btn.addEventListener('pointercancel', function () { if (api) h.up(true); });
@@ -515,6 +670,7 @@
           e.preventDefault();
           if (!api) return;
           stage.focus();
+          grabIfDemo();
           btn.classList.add('pressed');
           api.obc_demo_cmd('turn:' + dir);
           repeat = setInterval(function () { api.obc_demo_cmd('turn:' + dir); }, 160); // detents while held
@@ -530,10 +686,11 @@
         if (!api) return;
         if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
           e.preventDefault();
+          grabIfDemo();
           api.obc_demo_cmd('turn:' + (e.key === 'ArrowRight' ? 1 : -1)); // key autorepeat = detents
         } else if (keys[e.key]) {
           e.preventDefault();
-          if (!e.repeat) keys[e.key].down();
+          if (!e.repeat) { grabIfDemo(); keys[e.key].down(); }
         }
       });
       stage.addEventListener('keyup', function (e) {

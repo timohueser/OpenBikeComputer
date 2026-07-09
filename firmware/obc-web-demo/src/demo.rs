@@ -136,6 +136,22 @@ pub struct Demo {
     /// route computes. `None` when nothing is planning.
     nav_plan: Option<NavPlan>,
     frame: RgbaFrame,
+    /// Page commands queued since the last [`tick`](Demo::tick), drained **in full, in order,
+    /// once per tick** (not one-per-tick — a guided-tour step deliberately pushes several cmds in
+    /// one frame, e.g. `["turn:2", "press"]`, and relies on the app draining them in that order
+    /// within the single frame; one-per-tick would stall every multi-cmd step across extra frames
+    /// and break that contract).
+    ///
+    /// **Gesture-batch caveat for tour authors:** every cmd drained in one tick applies with **no
+    /// draw between them** (the single [`render_frame`](App::render_frame) happens after the whole
+    /// queue is drained). A gesture that consumes *draw-time lazy state* — the canonical case is
+    /// the POI list, whose first draw snapshots the nearest-POI ordering that a following `Press`
+    /// consumes (the `d` "draw a throwaway frame" token in `obc-sim`'s `apply_script` exists for
+    /// exactly this) — must therefore land in a **separate tour step / separate tick** from the
+    /// gesture that opens that screen, so a real render happens in between. Batching them in one
+    /// step presses against un-filled lazy state. The page's step engine gets this for free: each
+    /// step waits (polls [`state`](Demo::state)) for its target screen — i.e. for a render — before
+    /// issuing the next step's cmds.
     queue: Vec<Cmd>,
     /// The previous `tick` timestamp (rAF `now_ms`), for the replay `dt`.
     last_now_ms: Option<f64>,
@@ -221,7 +237,9 @@ impl Demo {
         };
 
         // Drain the page's commands first, so a gesture's transition is visible in this same
-        // frame's render (and the closed-loop tour never waits an extra frame).
+        // frame's render (and the closed-loop tour never waits an extra frame). The whole queue
+        // drains before the render below — see [`queue`](Self::queue) for the no-draw-between-cmds
+        // caveat that constrains how tour steps are grouped.
         for cmd in std::mem::take(&mut self.queue) {
             self.apply(cmd);
         }
@@ -329,9 +347,16 @@ impl Demo {
         }
     }
 
-    /// **The demo-reset seam**: rebuild the app to a clean `[Home, Map]` riding session on the
-    /// demo route and stage `baseline` (see [`Baseline`] for what differs). Rebuilding — rather
-    /// than unwinding — guarantees a previous demo can't leak state in.
+    /// **The demo-reset seam** (epic #624 S2): the single path behind boot, `ambient`, and
+    /// `enter`. Rebuild the app to a clean `[Home, Map]` riding session on the demo route and stage
+    /// `baseline`. Rebuilding — rather than unwinding — guarantees a previous demo can't leak state
+    /// in. The three axes the seam is parameterized on:
+    /// - **climb_mode** — `Manual` for *both* baselines (constant, not a knob): the demo ride is
+    ///   one long climb, so `Auto` would yank the opening Map onto the Climb profile (req 2).
+    /// - **seek_time** — the only per-baseline construction difference: [`Baseline::Tour`] seeks
+    ///   mid-climb ([`TOUR_BASELINE_S`]), [`Baseline::Ambient`] starts from `0.0`.
+    /// - **controls_enabled** — captured by `tour_active` (`= baseline == Tour`): a guided tour
+    ///   owns playback (visitor controls paused on the page), ambient hands the visitor the wheel.
     fn reset(&mut self, baseline: Baseline) {
         use obc_app::settings::{ClimbMode, Settings};
 
