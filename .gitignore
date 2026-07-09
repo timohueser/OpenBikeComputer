@@ -34,6 +34,12 @@ user_config.json
 # ...and the iOS companion's bundled GPX import fixture (three OBCKit tests load it).
 !companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx
 project/
+# `obc` dev-task tooling (in tools/): personal defaults + the web builder's
+# virtualenv + the optional local maps drop. The tooling itself (everything in
+# tools/ except obc.local) is committed.
+tools/obc.local
+.venv/
+/maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
 packer/web_builder/frontend/node_modules/
 packer/web_builder/static/dist/
