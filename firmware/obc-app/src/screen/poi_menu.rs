@@ -16,6 +16,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiListScreen, Render, Screen, Transition};
@@ -53,7 +54,7 @@ impl PoiMenuScreen {
         let (w, h) = (rx.w, rx.h);
         let total = PoiCategory::ALL.len();
         let geo = ListGeometry::below_title(w, h, ROW_H, 8, 16, Separators::All);
-        list::list_frame(cv, w, h, "POIS", self.selected + 1, total, geo.visible);
+        list::list_frame(cv, w, h, rx.t(Msg::PoiMenuTitle), self.selected + 1, total, geo.visible);
 
         let first = list::window_start(self.selected, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, self.selected, first, |cv, row| {

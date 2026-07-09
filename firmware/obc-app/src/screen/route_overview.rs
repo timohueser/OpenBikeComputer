@@ -20,6 +20,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::{ledger_row, palette, title_frame, Ctx, Render, Transition, LIST_TOP};
 
@@ -100,8 +101,8 @@ impl RouteOverviewScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         let Some(summary) = rx.routes.get(self.route) else {
-            title_frame(cv, w, h, "ROUTE", "");
-            super::empty_state(cv, w, h, "No route", "Back to the list");
+            title_frame(cv, w, h, rx.t(Msg::RouteOverviewTitle), "");
+            super::empty_state(cv, w, h, rx.t(Msg::RouteOverviewNoRoute), rx.t(Msg::RouteOverviewNoRouteSub));
             return;
         };
 
@@ -121,13 +122,13 @@ impl RouteOverviewScreen {
             let mut dist: heapless::String<8> = heapless::String::new();
             let _ = write!(dist, "{:.1}", units.dist(total_m as f32 / 1000.0));
             let dist_unit = if units.is_imperial() { "mi" } else { "km" };
-            ledger_row(cv, w, LIST_TOP + 16, "DISTANCE", &dist, dist_unit, None);
+            ledger_row(cv, w, LIST_TOP + 16, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
             // The bike profile the route was planned under (routing-v2 N5): the rider must be able to
             // tell a Road route from an MTB one they picked by accident. The name resolves against the
             // loaded map for the current selection — which is the profile the just-finished plan used,
             // since planning uses `bike_profile_idx` and the overview opens straight off it.
             draw_profile_label(cv, w, rx);
-            draw_start_button(cv, w, h);
+            draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
             return;
         }
 
@@ -164,7 +165,7 @@ impl RouteOverviewScreen {
         } else {
             // Route still streaming open: keep the band's footprint so the page doesn't jump.
             cv.text(
-                "loading profile",
+                rx.t(Msg::RouteOverviewLoadingProfile),
                 Point::new(w / 2, (BAND_TOP + BAND_BOT) / 2 - 9),
                 Font::Label,
                 TextAlign::Center,
@@ -196,9 +197,9 @@ impl RouteOverviewScreen {
         }
 
         let rows: [(&str, &str, &str, Option<bool>); 3] = [
-            ("DISTANCE", &dist, dist_unit, None),
-            ("CLIMB", &climb, units.elev_label(), Some(true)),
-            ("DESCENT", &desc, units.elev_label(), Some(false)),
+            (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
+            (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
+            (rx.t(Msg::RouteOverviewDescent), &desc, units.elev_label(), Some(false)),
         ];
         for (i, (caption, value, unit, arrow)) in rows.iter().enumerate() {
             let y = ROWS_TOP + i as i32 * ROW_PITCH;
@@ -208,7 +209,7 @@ impl RouteOverviewScreen {
             }
         }
 
-        draw_start_button(cv, w, h);
+        draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
     }
 }
 
@@ -219,17 +220,17 @@ impl RouteOverviewScreen {
 fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render) {
     let mut name: heapless::String<20> = heapless::String::new();
     rx.nav_profiles.write_label(rx.settings.bike_profile_idx, &mut name);
-    ledger_row(cv, w, LIST_TOP + 16 + ROW_PITCH, "BIKE TYPE", &name, "", None);
+    ledger_row(cv, w, LIST_TOP + 16 + ROW_PITCH, rx.t(Msg::RouteOverviewBikeType), &name, "", None);
 }
 
 /// START RIDE: the page's one action, so it draws armed (amber) with a play wedge. Shared by the
 /// full page and the computed-route (length-only) variant.
-fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32) {
+fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
     use palette::*;
     let by = h - 10 - BUTTON_H;
     cv.round(rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H), 8, AMBER);
     let tx = w / 2 + 8;
-    cv.text_vcentered("START RIDE", tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
+    cv.text_vcentered(label, tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
     let px = tx - 5 * Font::Body.char_width() as i32 - 16;
     let mid = by + BUTTON_H / 2;
     cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), INK);

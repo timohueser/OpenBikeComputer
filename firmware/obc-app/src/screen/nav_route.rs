@@ -35,11 +35,13 @@ use obc_render::{
 
 use crate::activity::NavRequest;
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::{list, palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition};
 
-const ITEMS: [MenuItem; 2] =
-    [MenuItem { label: "Create route", guard: false }, MenuItem { label: "Cancel", guard: false }];
+/// The two confirm rows (Create route / Cancel), neither guarded — labels looked up per language at
+/// draw time (see [`NavConfirmScreen::draw`]).
+const N_ITEMS: usize = 2;
 
 const CREATE: usize = 0;
 
@@ -69,7 +71,7 @@ impl NavConfirmScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
             Gesture::Press if self.selected == CREATE => {
                 // The request's start is the rider's fix. No position at all (never a fix this
                 // session) can't be routed — degrade to the generic failure tier rather than
@@ -92,7 +94,7 @@ impl NavConfirmScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        title_frame(cv, w, h, "CREATE ROUTE", "");
+        title_frame(cv, w, h, rx.t(Msg::NavRouteTitle), "");
         // The destination's name — what the rider is routing to.
         let max = (((w - 24) / Font::Label.char_width() as i32).max(6)) as usize;
         let name = super::route_menu::fit_name(&self.name, max);
@@ -107,7 +109,11 @@ impl NavConfirmScreen {
             label_dx: 16,
             label_dy: 11,
         };
-        super::draw_guarded_rows(cv, &ITEMS, self.selected, rx.hold_progress, AMBER, geo);
+        let items = [
+            MenuItem { label: rx.t(Msg::NavRouteCreateRoute), guard: false },
+            MenuItem { label: rx.t(Msg::NavRouteCancel), guard: false },
+        ];
+        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 
@@ -213,7 +219,7 @@ impl NavPlanningScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        title_frame(cv, w, h, "CREATE ROUTE", "");
+        title_frame(cv, w, h, rx.t(Msg::NavRouteTitle), "");
         // The destination, so the wait reads as *this* route being found.
         let max = (((w - 24) / Font::Label.char_width() as i32).max(6)) as usize;
         let name = super::route_menu::fit_name(&self.name, max);
@@ -225,7 +231,7 @@ impl NavPlanningScreen {
         super::menu::draw_needle(cv, Point::new(w / 2, h / 2), self.needle_deg, NEEDLE_R, 10.0);
 
         // Label-tier: the full phrase overruns the panel at Body width (18 × 14 px > 240).
-        cv.text("Finding a route...", Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, INK);
+        cv.text(rx.t(Msg::NavRouteFinding), Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, INK);
     }
 }
 
@@ -268,10 +274,14 @@ impl NavFailScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        title_frame(cv, w, h, "CREATE ROUTE", "");
+        title_frame(cv, w, h, rx.t(Msg::NavRouteTitle), "");
         // The two-tier message, wrapped onto two Body lines (either single line overruns the
         // 240 px panel).
-        let (l1, l2) = if self.too_far { ("Too far to", "route here") } else { ("Couldn't find", "a route.") };
+        let (l1, l2) = if self.too_far {
+            (rx.t(Msg::NavRouteTooFar1), rx.t(Msg::NavRouteTooFar2))
+        } else {
+            (rx.t(Msg::NavRouteNotFound1), rx.t(Msg::NavRouteNotFound2))
+        };
         let y = h * 35 / 100;
         cv.text(l1, Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
         cv.text(l2, Point::new(w / 2, y + Font::Body.line_height() as i32 + 6), Font::Body, TextAlign::Center, INK);

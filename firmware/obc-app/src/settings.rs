@@ -7,6 +7,7 @@
 //! region — see [`SettingsStore`](crate::hal::SettingsStore)), so a blank or corrupt read falls
 //! back to [`Settings::default`] rather than loading garbage.
 
+use crate::i18n::{t, Msg};
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
 
 /// Measurement system for the ride readouts. Re-captions and re-scales the
@@ -154,13 +155,15 @@ impl Units {
         }
     }
 
-    /// The label for the Units screen's value row (`Metric` / `Imperial`).
+    /// The label for the Units screen's value row (`Metric` / `Imperial`), in the UI `lang`
+    /// (epic #602). Word-bearing, so it routes through the catalog; the symbol labels
+    /// ([`speed_label`](Units::speed_label) etc.) stay language-independent.
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self, lang: Language) -> &'static str {
         if self.is_imperial() {
-            "Imperial"
+            t(Msg::UnitsImperial, lang)
         } else {
-            "Metric"
+            t(Msg::UnitsMetric, lang)
         }
     }
 
@@ -205,13 +208,14 @@ impl Default for ClimbMode {
 }
 
 impl ClimbMode {
-    /// The label for the Stats screen's Climb-panel row (`Off` / `Manual` / `Auto`).
+    /// The label for the Stats screen's Climb-panel row (`Off` / `Manual` / `Auto`), in the UI
+    /// `lang` (epic #602).
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self, lang: Language) -> &'static str {
         match self {
-            ClimbMode::Off => "Off",
-            ClimbMode::Manual => "Manual",
-            ClimbMode::Auto => "Auto",
+            ClimbMode::Off => t(Msg::ClimbModeOff, lang),
+            ClimbMode::Manual => t(Msg::ClimbModeManual, lang),
+            ClimbMode::Auto => t(Msg::ClimbModeAuto, lang),
         }
     }
 
@@ -278,13 +282,14 @@ impl Default for WaypointMode {
 }
 
 impl WaypointMode {
-    /// The label for the Stats screen's Waypoints-panel row (`Off` / `Approach` / `Always`).
+    /// The label for the Stats screen's Waypoints-panel row (`Off` / `Approach` / `Always`), in
+    /// the UI `lang` (epic #602).
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self, lang: Language) -> &'static str {
         match self {
-            WaypointMode::Off => "Off",
-            WaypointMode::Approach => "Approach",
-            WaypointMode::Always => "Always",
+            WaypointMode::Off => t(Msg::WaypointModeOff, lang),
+            WaypointMode::Approach => t(Msg::WaypointModeApproach, lang),
+            WaypointMode::Always => t(Msg::WaypointModeAlways, lang),
         }
     }
 
@@ -351,15 +356,17 @@ impl IdleReturn {
     const ORDER: [IdleReturn; 5] =
         [IdleReturn::S15, IdleReturn::S30, IdleReturn::M1, IdleReturn::M5, IdleReturn::Never];
 
-    /// The label for the Power screen's value picker (`15 s` / `30 s` / `1 min` / `5 min` / `Never`).
+    /// The label for the Power screen's value picker (`15 s` / `30 s` / `1 min` / `5 min` /
+    /// `Never`), in the UI `lang` (epic #602). `Never` is a word; the durations are unit-glued
+    /// numbers, catalogued whole so a language can localize the `s`/`min` grain if it ever needs to.
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self, lang: Language) -> &'static str {
         match self {
-            IdleReturn::S15 => "15 s",
-            IdleReturn::S30 => "30 s",
-            IdleReturn::M1 => "1 min",
-            IdleReturn::M5 => "5 min",
-            IdleReturn::Never => "Never",
+            IdleReturn::S15 => t(Msg::IdleS15, lang),
+            IdleReturn::S30 => t(Msg::IdleS30, lang),
+            IdleReturn::M1 => t(Msg::IdleM1, lang),
+            IdleReturn::M5 => t(Msg::IdleM5, lang),
+            IdleReturn::Never => t(Msg::IdleNever, lang),
         }
     }
 
@@ -516,8 +523,22 @@ impl DateTime {
     pub const MIN_YEAR: u16 = 2020;
     pub const MAX_YEAR: u16 = 2099;
 
-    const MONTHS: [&'static str; 12] =
-        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    /// The 12 month-abbreviation catalog keys in calendar order (`Jan`…`Dec`), so
+    /// [`month_name`](DateTime::month_name) is a per-language lookup (epic #602).
+    const MONTHS_MSG: [Msg; 12] = [
+        Msg::MonthJan,
+        Msg::MonthFeb,
+        Msg::MonthMar,
+        Msg::MonthApr,
+        Msg::MonthMay,
+        Msg::MonthJun,
+        Msg::MonthJul,
+        Msg::MonthAug,
+        Msg::MonthSep,
+        Msg::MonthOct,
+        Msg::MonthNov,
+        Msg::MonthDec,
+    ];
 
     /// Gregorian leap-year test (the Feb-length input to [`month_len`](DateTime::month_len)).
     pub const fn is_leap(year: u16) -> bool {
@@ -535,9 +556,9 @@ impl DateTime {
         }
     }
 
-    /// The three-letter month name (`Jan`…`Dec`).
-    pub fn month_name(self) -> &'static str {
-        Self::MONTHS[(self.month.clamp(1, 12) - 1) as usize]
+    /// The three-letter month name (`Jan`…`Dec`) in the UI `lang` (epic #602).
+    pub fn month_name(self, lang: Language) -> &'static str {
+        t(Self::MONTHS_MSG[(self.month.clamp(1, 12) - 1) as usize], lang)
     }
 
     /// Re-pin the day inside the current month after a month/year change (Jan 31 → Feb 28/29).

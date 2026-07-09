@@ -10,6 +10,7 @@ use obc_render::{rect, text::Font, Surface};
 use crate::input::Gesture;
 use crate::screen::{title_frame, Ctx, Render, Transition, LIST_TOP};
 use crate::settings::{FIX_INTERVAL_MAX, FIX_INTERVAL_MIN};
+use crate::Msg;
 
 /// Row height — fits a two-line label (Body + sub-caption) plus a stepper field with arrow room.
 const ROW_H: i32 = 58;
@@ -80,13 +81,13 @@ impl PowerScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, "POWER", "");
+        title_frame(cv, w, h, rx.t(Msg::PowerTitle), "");
 
         // Row 0 — GPS Fix interval (value row).
         let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
         let editing = self.editing && self.selected == GPS_FIX;
         super::row_cursor(cv, r0, self.selected == GPS_FIX, editing);
-        super::row_label(cv, r0, "GPS Fix", Some("interval"));
+        super::row_label(cv, r0, rx.t(Msg::PowerGpsFix), Some(rx.t(Msg::PowerGpsFixSub)));
         let mut val: heapless::String<8> = heapless::String::new();
         let _ = write!(val, "{} s", rx.settings.fix_interval_s);
         let (cw, ch) = (76, 32);
@@ -96,7 +97,7 @@ impl PowerScreen {
         // Row 1 — Power Saver (toggle).
         let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         super::row_cursor(cv, r1, self.selected == POWER_SAVER, false);
-        super::row_label(cv, r1, "Power save", Some("low power"));
+        super::row_label(cv, r1, rx.t(Msg::PowerPowerSave), Some(rx.t(Msg::PowerPowerSaveSub)));
         super::toggle_slider(cv, r1, rx.settings.power_saver);
     }
 }

@@ -21,6 +21,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::list;
 use super::{palette, Ctx, Render, Screen, Transition};
@@ -54,10 +55,9 @@ pub use reset::ResetScreen;
 pub use stats::StatsScreen;
 pub use units::UnitsScreen;
 
-/// The Settings list entries, in order. Each row pushes its sub-screen. Language sits just above the
-/// terminal (destructive) Reset row.
-const ITEMS: [&str; 9] =
-    ["Date & Time", "Units", "Bike type", "Stats", "Display", "Power", "Bluetooth", "Language", "Reset"];
+/// The number of Settings list entries. The row *labels* are looked up per-language at draw time
+/// (see [`SettingsScreen::draw`]); Language sits just above the terminal (destructive) Reset row.
+const N_ITEMS: usize = 9;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -73,7 +73,7 @@ impl SettingsScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::DateTime(DateTimeScreen::new())),
                 1 => Transition::Push(Screen::Units(UnitsScreen::new())),
@@ -91,7 +91,20 @@ impl SettingsScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        list::nav_list(cv, rx.w, rx.h, "SETTINGS", &ITEMS, self.selected);
+        // Built per-frame from the catalog (the old `const ITEMS` couldn't stay const once the labels
+        // are language-dependent); the order matches the `handle` press arms above.
+        let items: [&str; N_ITEMS] = [
+            rx.t(Msg::SettingsDatetime),
+            rx.t(Msg::SettingsUnits),
+            rx.t(Msg::SettingsBikeType),
+            rx.t(Msg::SettingsStats),
+            rx.t(Msg::SettingsDisplay),
+            rx.t(Msg::SettingsPower),
+            rx.t(Msg::SettingsBluetooth),
+            rx.t(Msg::SettingsLanguage),
+            rx.t(Msg::SettingsReset),
+        ];
+        list::nav_list(cv, rx.w, rx.h, rx.t(Msg::SettingsTitle), &items, self.selected);
     }
 }
 

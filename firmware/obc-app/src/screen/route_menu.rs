@@ -18,6 +18,8 @@ use obc_render::{
 
 use crate::activity::Activity;
 use crate::input::Gesture;
+use crate::settings::Language;
+use crate::{t, Msg};
 
 use super::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, MapScreen, Render, RouteOverviewScreen, RouteSwapScreen, Screen, Transition};
@@ -118,10 +120,10 @@ impl RouteMenuScreen {
         let geo = ListGeometry::below_title(w, h - FOOTER_H, ROW_H, 8, 12, Separators::Unselected);
 
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
-        list::list_frame(cv, w, h, "ROUTES", pos, total, geo.visible);
+        list::list_frame(cv, w, h, rx.t(Msg::RouteMenuTitle), pos, total, geo.visible);
 
         if total == 0 {
-            super::empty_state(cv, w, h, "No routes yet", "Import a GPX file");
+            super::empty_state(cv, w, h, rx.t(Msg::RouteMenuNoRoutes), rx.t(Msg::RouteMenuNoRoutesSub));
             return;
         }
 
@@ -156,7 +158,7 @@ impl RouteMenuScreen {
 
         // The hold-to-delete footer over the highlighted route — greyed while it's the active-ride
         // route (a hold does nothing there). Same idiom as the Fields screen's delete bar.
-        delete_footer(cv, w, h, self.delete_enabled(rx.activity, total), rx.hold_progress);
+        delete_footer(cv, w, h, self.delete_enabled(rx.activity, total), rx.hold_progress, rx.settings.language);
     }
 }
 
@@ -164,7 +166,7 @@ impl RouteMenuScreen {
 /// encoder hold. `enabled` greys the whole footer (rule only, no trash/bar) when the highlighted
 /// route can't be deleted (it's the actively-navigated ride route). The delete itself fires from
 /// `handle`'s `Hold` arm.
-fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, enabled: bool, hold: f32) {
+fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, enabled: bool, hold: f32, lang: Language) {
     use palette::*;
     let fy = h - FOOTER_H;
     cv.hline(FOOTER_X, fy, w - 2 * FOOTER_X, RULE);
@@ -172,7 +174,14 @@ fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, enabled: bool, hold: f32
     if !enabled {
         // Greyed: a dim trash + a "route in use" hint so the disabled state reads deliberately.
         draw_trash(cv, FOOTER_X + 16, midy, RULE);
-        cv.text_vcentered("In use", FOOTER_X + 36, (fy, FOOTER_H), Font::Label, TextAlign::Left, SUBTEXT);
+        cv.text_vcentered(
+            t(Msg::RouteMenuInUse, lang),
+            FOOTER_X + 36,
+            (fy, FOOTER_H),
+            Font::Label,
+            TextAlign::Left,
+            SUBTEXT,
+        );
         return;
     }
     let p = hold.clamp(0.0, 1.0);

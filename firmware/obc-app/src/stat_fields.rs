@@ -21,7 +21,8 @@ use obc_route::{Profile, RouteReader, Waypoints};
 
 use crate::activity::Activity;
 use crate::hal::Fix;
-use crate::settings::{DateTime, Units};
+use crate::i18n::{t, Msg};
+use crate::settings::{DateTime, Language, Units};
 
 /// The narrow live-data view a stat field formats from — exactly what [`StatField::cell`] reads,
 /// nothing more. Deliberately decoupled from the full draw context
@@ -54,6 +55,9 @@ pub struct Readout<'a> {
     pub next_waypoint: Option<usize>,
     /// The live wall-clock time (the [`Clock`](StatField::Clock) tile).
     pub now: DateTime,
+    /// The UI language (epic #602) — the word-bearing tile captions (`AVG`, `CLIMBED`, `TO GO`…)
+    /// route through the catalog; the unit symbols glued to the value stay language-independent.
+    pub language: Language,
 }
 
 /// Grid geometry: a page is `ROWS_PER_PAGE × COLS` tiles. A single-span field fills one slot, a
@@ -154,21 +158,22 @@ impl StatField {
         self.span() as usize * self.rows() as usize
     }
 
-    /// The field's name for the settings list / picker (the on-grid caption is in [`cell`](StatField::cell)).
-    pub const fn name(self) -> &'static str {
+    /// The field's name for the settings list / picker, in the UI `lang` (epic #602). The on-grid
+    /// caption is in [`cell`](StatField::cell).
+    pub const fn name(self, lang: Language) -> &'static str {
         match self {
-            StatField::Speed => "Speed",
-            StatField::AvgSpeed => "Avg speed",
-            StatField::DistDone => "Dist. done",
-            StatField::DistToGo => "Dist. to go",
-            StatField::Climbed => "Climbed",
-            StatField::ToClimb => "To climb",
-            StatField::Grade => "Grade",
-            StatField::Elevation => "Elevation",
-            StatField::RideTime => "Ride time",
-            StatField::Clock => "Clock",
-            StatField::NextWaypoint => "Next waypoint",
-            StatField::WaypointList => "Waypoint list",
+            StatField::Speed => t(Msg::StatfieldSpeed, lang),
+            StatField::AvgSpeed => t(Msg::StatfieldAvgSpeed, lang),
+            StatField::DistDone => t(Msg::StatfieldDistDone, lang),
+            StatField::DistToGo => t(Msg::StatfieldDistToGo, lang),
+            StatField::Climbed => t(Msg::StatfieldClimbed, lang),
+            StatField::ToClimb => t(Msg::StatfieldToClimb, lang),
+            StatField::Grade => t(Msg::StatfieldGrade, lang),
+            StatField::Elevation => t(Msg::StatfieldElevation, lang),
+            StatField::RideTime => t(Msg::StatfieldRideTime, lang),
+            StatField::Clock => t(Msg::StatfieldClock, lang),
+            StatField::NextWaypoint => t(Msg::StatfieldNextWaypoint, lang),
+            StatField::WaypointList => t(Msg::StatfieldWaypointList, lang),
         }
     }
 
@@ -178,6 +183,7 @@ impl StatField {
     /// digits fit the half-width tile.
     pub fn cell(&self, cx: &Readout) -> StatCell {
         let units = cx.units;
+        let lang = cx.language;
         let live = live_frac(cx.activity);
         match self {
             StatField::Speed => {
@@ -186,10 +192,10 @@ impl StatField {
             }
             StatField::AvgSpeed => {
                 let v = cx.activity.avg_kmh().map(|kmh| units.speed(kmh));
-                StatCell::new(cap("AVG ", units.speed_label()), fmt_speed(v), false)
+                StatCell::new(cap(t(Msg::TileAvg, lang), units.speed_label()), fmt_speed(v), false)
             }
             StatField::DistDone => StatCell::new(
-                cap(units.dist_label(), " DONE"),
+                cap(units.dist_label(), t(Msg::TileDone, lang)),
                 fmt_km(units.dist(cx.activity.ridden_m / 1000.0)),
                 false,
             ),
@@ -202,11 +208,13 @@ impl StatField {
                     }
                     None => dashes(),
                 };
-                StatCell::new(cap(units.dist_label(), " TO GO"), value, false)
+                StatCell::new(cap(units.dist_label(), t(Msg::TileToGo, lang)), value, false)
             }
-            StatField::Climbed => {
-                StatCell::new(cap("CLIMBED", ""), fmt_int(units.elev(cx.activity.climb_m()) as u32), true)
-            }
+            StatField::Climbed => StatCell::new(
+                cap(t(Msg::TileClimbed, lang), ""),
+                fmt_int(units.elev(cx.activity.climb_m()) as u32),
+                true,
+            ),
             StatField::ToClimb => {
                 // Route-relative — `--` on a route-less ride (no cumulative ascent to subtract from).
                 let value = match (cx.route, cx.profile) {
@@ -215,7 +223,7 @@ impl StatField {
                     }
                     _ => dashes(),
                 };
-                StatCell::new(cap("TO CLIMB", ""), value, true)
+                StatCell::new(cap(t(Msg::TileToClimb, lang), ""), value, true)
             }
             StatField::Grade => {
                 // Route-relative — `--` on a route-less ride (grade comes from the route profile).
@@ -227,19 +235,19 @@ impl StatField {
                     }
                     _ => dashes(),
                 };
-                StatCell::new(cap("GRADE", ""), value, false)
+                StatCell::new(cap(t(Msg::TileGrade, lang), ""), value, false)
             }
             StatField::Elevation => {
                 // The live barometric altitude, not the route profile — so it reads the current
                 // height with no route loaded, and `--` until the first sample.
                 let v = cx.activity.current_elevation_m().map(|m| units.elev(m));
-                StatCell::new(cap("ELEV ", units.elev_label()), fmt_elev(v), false)
+                StatCell::new(cap(t(Msg::TileElev, lang), units.elev_label()), fmt_elev(v), false)
             }
-            StatField::RideTime => StatCell::new(cap("RIDE", ""), fmt_hms(cx.activity.moving_s), false),
+            StatField::RideTime => StatCell::new(cap(t(Msg::TileRide, lang), ""), fmt_hms(cx.activity.moving_s), false),
             StatField::Clock => {
                 let mut value: heapless::String<8> = heapless::String::new();
                 let _ = write!(value, "{:02}:{:02}", cx.now.hour, cx.now.minute);
-                StatCell::new(cap("TIME", ""), value, false)
+                StatCell::new(cap(t(Msg::TileTime, lang), ""), value, false)
             }
             StatField::NextWaypoint => {
                 // The next named waypoint ahead (App-resolved index into the resident table): its
@@ -256,7 +264,7 @@ impl StatField {
                         let value = fmt_dist_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), units);
                         StatCell::new(caption, value, false)
                     }
-                    None => StatCell::new(cap("NEXT WPT", ""), dashes(), false),
+                    None => StatCell::new(cap(t(Msg::TileNextWpt, lang), ""), dashes(), false),
                 };
                 cell.value_align = TextAlign::Right;
                 cell
@@ -266,7 +274,7 @@ impl StatField {
                 // caption+value shape a `StatCell` carries — the Statistics grid + Fields editor
                 // special-case `rows() > 1` and call that drawer instead). This arm exists only so
                 // `cell` stays total and no path can panic: a caption + `--`, echoing the empty state.
-                StatCell::new(cap("WAYPOINTS", ""), dashes(), false)
+                StatCell::new(cap(t(Msg::TileWaypoints, lang), ""), dashes(), false)
             }
         }
     }
@@ -804,6 +812,7 @@ mod tests {
             waypoints,
             next_waypoint: None,
             now: DateTime::default(),
+            language: Language::En,
         }
     }
 

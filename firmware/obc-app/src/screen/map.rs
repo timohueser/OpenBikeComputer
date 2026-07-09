@@ -31,6 +31,7 @@ use crate::hal::Fix;
 use crate::input::Gesture;
 use crate::settings::{DateTime, Units, WaypointMode};
 use crate::wall_clock::MinuteTicker;
+use crate::Msg;
 
 use super::{Ctx, Render, Screen, ScreenTick, StatisticsScreen, Transition};
 
@@ -237,10 +238,10 @@ impl MapScreen {
         let warning_up = !panning && (rx.no_fix || rx.activity.off_route);
         if warning_up {
             if rx.no_fix {
-                draw_status_chip(cv, rx.w, rx.h, "No GPS Fix");
+                draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapNoGpsFix));
             } else {
                 let mut s: heapless::String<20> = heapless::String::new();
-                super::write_off_route(&mut s, "off route ", rx.activity.dist_to_route_m, rx.settings.units);
+                super::write_off_route(&mut s, rx.t(Msg::MapOffRoute), rx.activity.dist_to_route_m, rx.settings.units);
                 draw_status_chip(cv, rx.w, rx.h, &s);
             }
         }

@@ -18,15 +18,14 @@ use obc_render::{
 
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::route_received::{popup_expired, popup_tick};
 use super::{list, palette, title_frame, Ctx, MapScreen, MenuItem, Render, Screen, ScreenTick, Transition};
 
-const ITEMS: [MenuItem; 3] = [
-    MenuItem { label: "Swap route", guard: false },
-    MenuItem { label: "Save & new", guard: true },
-    MenuItem { label: "Cancel", guard: false },
-];
+/// Per-row guard flags (only *Save & new* is destructive). The labels are looked up per language at
+/// draw time (see [`RouteSwapScreen::draw`]) — the old `const ITEMS` couldn't stay const.
+const GUARDS: [bool; 3] = [false, true, false];
 
 const SWAP: usize = 0;
 const SAVE_NEW: usize = 1;
@@ -89,12 +88,12 @@ impl RouteSwapScreen {
     /// `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a charging
     /// hold as worth repainting here.
     pub fn selection_is_guarded(&self) -> bool {
-        ITEMS[self.selected].guard
+        GUARDS[self.selected.min(GUARDS.len() - 1)]
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, GUARDS.len()),
             Gesture::Press => match self.selected {
                 // Swap only: keep the session (no `start_session`), just re-navigate.
                 SWAP => self.swap_route(cx),
@@ -139,7 +138,8 @@ impl RouteSwapScreen {
         // The received variant renames the frame and puts the *arriving route's name* in the
         // subtitle slot (the rider didn't pick it, so the screen must say what landed); the
         // manual prompt explains the state instead — the rider just picked the route themselves.
-        let title = if self.is_received() { "ROUTE RECEIVED" } else { "ROUTE ACTIVE" };
+        let title =
+            if self.is_received() { rx.t(Msg::RouteSwapReceivedTitle) } else { rx.t(Msg::RouteSwapActiveTitle) };
         title_frame(cv, w, h, title, "");
         let mut sub: heapless::String<64> = heapless::String::new();
         if self.is_received() {
@@ -149,11 +149,11 @@ impl RouteSwapScreen {
                     sub = super::route_menu::fit_name(&route.name, max);
                 }
                 None => {
-                    let _ = sub.push_str("Route removed");
+                    let _ = sub.push_str(rx.t(Msg::RouteSwapRouteRemoved));
                 }
             }
         } else {
-            let _ = sub.push_str("Recording a ride");
+            let _ = sub.push_str(rx.t(Msg::RouteSwapRecording));
         }
         cv.text(&sub, Point::new(w / 2, super::TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
 
@@ -167,6 +167,11 @@ impl RouteSwapScreen {
             label_dx: 16,
             label_dy: 11,
         };
-        super::draw_guarded_rows(cv, &ITEMS, self.selected, rx.hold_progress, AMBER, geo);
+        let items = [
+            MenuItem { label: rx.t(Msg::RouteSwapSwap), guard: GUARDS[0] },
+            MenuItem { label: rx.t(Msg::RouteSwapSaveNew), guard: GUARDS[1] },
+            MenuItem { label: rx.t(Msg::RouteSwapCancel), guard: GUARDS[2] },
+        ];
+        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }

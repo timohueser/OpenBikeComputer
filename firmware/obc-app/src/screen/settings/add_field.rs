@@ -8,6 +8,7 @@ use crate::input::Gesture;
 use crate::screen::list::{self, ListGeometry, Separators};
 use crate::screen::{Ctx, Render, Transition};
 use crate::stat_fields::StatField;
+use crate::Msg;
 
 /// Per-row height — matches the Stat Fields list so the two read identically.
 const ROW_H: i32 = 46;
@@ -51,17 +52,18 @@ impl AddFieldScreen {
         let geo = ListGeometry::below_title(w, h, ROW_H, 6, super::ROW_X, Separators::None);
 
         let sel = if total == 0 { 0 } else { self.selected.min(total - 1) };
-        list::list_frame(cv, w, h, "ADD FIELD", sel + 1, total, geo.visible);
+        list::list_frame(cv, w, h, rx.t(Msg::AddFieldTitle), sel + 1, total, geo.visible);
 
         if total == 0 {
-            super::empty_state(cv, w, h, "All fields added", "Remove one to swap");
+            super::empty_state(cv, w, h, rx.t(Msg::AddFieldAllAdded), rx.t(Msg::AddFieldAllAddedSub));
             return;
         }
 
+        let lang = rx.settings.language;
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
             let f = avail[row.index];
-            super::row_label(cv, row.area, f.name(), None);
+            super::row_label(cv, row.area, f.name(lang), None);
             let badge_color = if row.selected { INK } else { SUBTEXT };
             super::span_badge(cv, row.area, f.span(), badge_color);
         });

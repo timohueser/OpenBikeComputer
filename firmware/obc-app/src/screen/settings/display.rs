@@ -8,6 +8,7 @@ use obc_render::{rect, text::Font, Surface};
 
 use crate::input::Gesture;
 use crate::screen::{title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::Msg;
 
 /// Row height — fits a two-line label (Body + sub-caption) plus a toggle / value cell with arrow room.
 const ROW_H: i32 = 58;
@@ -70,27 +71,27 @@ impl DisplayScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, "DISPLAY", "");
+        title_frame(cv, w, h, rx.t(Msg::DisplayTitle), "");
 
         // Row 0 — Clock (toggle). Label + sub kept as short as the GPS-fix row's so they clear the
         // right-hand toggle slider.
         let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
         super::row_cursor(cv, r0, self.selected == CLOCK, false);
-        super::row_label(cv, r0, "Clock", Some("on map"));
+        super::row_label(cv, r0, rx.t(Msg::DisplayClock), Some(rx.t(Msg::DisplayClockSub)));
         super::toggle_slider(cv, r0, rx.settings.map_clock);
 
         // Row 1 — Scale bar (toggle).
         let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         super::row_cursor(cv, r1, self.selected == SCALE_BAR, false);
-        super::row_label(cv, r1, "Scale bar", Some("on map"));
+        super::row_label(cv, r1, rx.t(Msg::DisplayScaleBar), Some(rx.t(Msg::DisplayScaleBarSub)));
         super::toggle_slider(cv, r1, rx.settings.map_scale_bar);
 
         // Row 2 — Idle return (value picker: 15 s / 30 s / 1 min / 5 min / Never).
         let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
         let editing = self.editing && self.selected == IDLE_RETURN;
         super::row_cursor(cv, r2, self.selected == IDLE_RETURN, editing);
-        super::row_label(cv, r2, "Idle", Some("timeout"));
-        let val = rx.settings.idle_return.name();
+        super::row_label(cv, r2, rx.t(Msg::DisplayIdle), Some(rx.t(Msg::DisplayIdleSub)));
+        let val = rx.settings.idle_return.name(rx.settings.language);
         let (cw, ch) = (76, 32);
         let cell = rect(r2.top_left.x + r2.size.width as i32 - cw - 6, r2.top_left.y + (ROW_H - ch) / 2, cw, ch);
         super::stepper_field(cv, cell, val, editing, Font::Label);

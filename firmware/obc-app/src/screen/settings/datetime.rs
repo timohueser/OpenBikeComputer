@@ -16,7 +16,8 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
-use crate::settings::{Settings, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP};
+use crate::settings::{Language, Settings, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP};
+use crate::{t, Msg};
 
 /// One row of the Date & Time screen. The set in play depends on `GPS clock`; the two info rows
 /// are present only in GPS mode and are never the cursor.
@@ -154,7 +155,8 @@ impl DateTimeScreen {
         let s = rx.settings;
         let rows = rows(s.gps_time);
         let has_fix = rx.state.user_fix.is_some();
-        title_frame(cv, w, h, "DATE & TIME", "");
+        title_frame(cv, w, h, rx.t(Msg::DatetimeTitle), "");
+        let lang = s.language;
 
         let mut y = LIST_TOP + 4;
         for (i, &kind) in rows.iter().enumerate() {
@@ -166,20 +168,20 @@ impl DateTimeScreen {
 
             match kind {
                 RowKind::Toggle => {
-                    super::row_label(cv, area, "GPS clock", None);
+                    super::row_label(cv, area, t(Msg::DatetimeGpsClock, lang), None);
                     super::toggle_slider(cv, area, s.gps_time);
                 }
-                RowKind::Date => draw_date(cv, area, s, editing),
-                RowKind::Time => draw_time(cv, area, s, editing),
+                RowKind::Date => draw_date(cv, area, s, editing, lang),
+                RowKind::Time => draw_time(cv, area, s, editing, lang),
                 RowKind::GpsFix => {
                     // The UTC anchor GPS supplies — fixed, independent of the offset.
                     let mut v: heapless::String<24> = heapless::String::new();
                     if has_fix {
-                        let _ = write!(v, "UTC {:02}:{:02}", s.clock.hour, s.clock.minute);
+                        let _ = write!(v, "{}{:02}:{:02}", t(Msg::DatetimeUtc, lang), s.clock.hour, s.clock.minute);
                     } else {
-                        let _ = v.push_str("Searching for fix");
+                        let _ = v.push_str(t(Msg::DatetimeSearching, lang));
                     }
-                    info_row(cv, area, "GPS fix", &v);
+                    info_row(cv, area, t(Msg::DatetimeGpsFix, lang), &v);
                 }
                 RowKind::LocalTime => {
                     // The offset can carry across midnight, so take the whole local stamp (date and
@@ -190,15 +192,15 @@ impl DateTimeScreen {
                         v,
                         "{} {} {}  {:02}:{:02}",
                         local.year,
-                        local.month_name(),
+                        local.month_name(lang),
                         local.day,
                         local.hour,
                         local.minute
                     );
-                    info_row(cv, area, "Local time", &v);
+                    info_row(cv, area, t(Msg::DatetimeLocalTime, lang), &v);
                 }
                 RowKind::Offset => {
-                    super::row_label(cv, area, "Offset", None);
+                    super::row_label(cv, area, t(Msg::DatetimeOffset, lang), None);
                     let (cw, ch) = (84, 32);
                     let cell = rect(
                         area.top_left.x + area.size.width as i32 - cw - 6,
@@ -259,23 +261,23 @@ fn draw_stepper_row(
     }
 }
 
-/// Draw the `DATE` row: `DATE` over year / month / day Body steppers.
-fn draw_date(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Option<u8>) {
+/// Draw the `DATE` row: `DATE` over year / month / day Body steppers, captioned in `lang`.
+fn draw_date(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Option<u8>, lang: Language) {
     let (mut yr, mut mo, mut da) =
         (heapless::String::<8>::new(), heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(yr, "{}", s.clock.year);
-    let _ = mo.push_str(s.clock.month_name());
+    let _ = mo.push_str(s.clock.month_name(lang));
     let _ = write!(da, "{}", s.clock.day);
-    draw_stepper_row(cv, area, "DATE", &[(&yr, 70), (&mo, 56), (&da, 44)], 8, editing);
+    draw_stepper_row(cv, area, t(Msg::DatetimeDate, lang), &[(&yr, 70), (&mo, 56), (&da, 44)], 8, editing);
 }
 
-/// Draw the `TIME` row: `TIME` over hour : minute Body steppers.
-fn draw_time(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Option<u8>) {
+/// Draw the `TIME` row: `TIME` over hour : minute Body steppers, captioned in `lang`.
+fn draw_time(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Option<u8>, lang: Language) {
     let (mut hh, mut mm) = (heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(hh, "{:02}", s.clock.hour);
     let _ = write!(mm, "{:02}", s.clock.minute);
     // The colon is drawn as a cell so the layout centres the whole "HH : MM" group.
-    draw_stepper_row(cv, area, "TIME", &[(&hh, 58), (":", 16), (&mm, 58)], 4, time_active(editing));
+    draw_stepper_row(cv, area, t(Msg::DatetimeTime, lang), &[(&hh, 58), (":", 16), (&mm, 58)], 4, time_active(editing));
 }
 
 /// Map the Time row's two editable fields (hour, minute) onto the three-cell layout (hour, colon,

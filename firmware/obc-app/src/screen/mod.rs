@@ -25,6 +25,7 @@ use crate::input::Gesture;
 use crate::ride::RideSummary;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings, Units};
+use crate::{t, Msg};
 
 mod climb;
 mod home;
@@ -255,6 +256,7 @@ impl Render<'_, '_> {
             waypoints: self.waypoints,
             next_waypoint: self.activity.next_waypoint,
             now: self.now,
+            language: self.settings.language,
         }
     }
 }
@@ -723,7 +725,7 @@ pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate:
     let (x, y) = (area.top_left.x, area.top_left.y);
     let (w, hgt) = (area.size.width as i32, area.size.height as i32);
     cv.round(area, 5, bg);
-    cv.text("WAYPOINTS", Point::new(x + 8, y + 8), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(t(Msg::TileWaypoints, cx.language), Point::new(x + 8, y + 8), Font::Label, TextAlign::Left, SUBTEXT);
 
     // The first waypoint ahead, guarded against a stale/out-of-range resolver index and the empty
     // table (no route loaded) — either way the panel falls back to a centred `--`.
@@ -1015,6 +1017,7 @@ mod tests {
             waypoints,
             next_waypoint: next,
             now: DateTime::default(),
+            language: crate::settings::Language::En,
         }
     }
 

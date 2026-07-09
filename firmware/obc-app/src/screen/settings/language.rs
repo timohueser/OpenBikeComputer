@@ -11,6 +11,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::Msg;
 
 /// The Language screen. Stateless — the value lives in [`Settings`](crate::Settings); the one row is
 /// always the cursor.
@@ -43,7 +44,7 @@ impl LanguageScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         let language = rx.settings.language;
-        title_frame(cv, w, h, "LANGUAGE", "");
+        title_frame(cv, w, h, rx.t(Msg::LanguageTitle), "");
 
         // The single value row — the current language's endonym centred, flanked by left/right arrows
         // to read as "rotate to switch".

@@ -115,6 +115,11 @@ impl WarningScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
+        // Intentionally English, not catalogued (epic #602): this is a boot-time hardware-diagnostic
+        // card (missing sensors / a slow map), grouped with the pre-`App` boot-fault copy in
+        // `fault.rs` — kept English in every language build so a diagnostic reads the same to anyone
+        // debugging a device, and so the sensor names line up with the datasheet. `rx.settings`
+        // exists here, but the epic deliberately leaves this copy out of the catalog.
         title_frame(cv, w, h, "WARNING", "");
 
         let line = Font::Body.line_height() as i32;

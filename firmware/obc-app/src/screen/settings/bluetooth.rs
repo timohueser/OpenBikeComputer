@@ -19,7 +19,8 @@ use obc_render::{
 use crate::ble::BleLink;
 use crate::input::Gesture;
 use crate::screen::{confirm_row, palette, title_frame, Ctx, Render, Transition, LIST_TOP};
-use crate::settings::Settings;
+use crate::settings::{Language, Settings};
+use crate::Msg;
 
 /// Toggle-row height — matches the other settings screens' two-line rows.
 const ROW_H: i32 = 58;
@@ -76,12 +77,12 @@ impl BluetoothScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, "BLUETOOTH", "");
+        title_frame(cv, w, h, rx.t(Msg::BluetoothTitle), "");
 
         // Row 0 — the radio switch.
         let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
         super::row_cursor(cv, r0, self.selected == TOGGLE, false);
-        super::row_label(cv, r0, "Bluetooth", Some("radio"));
+        super::row_label(cv, r0, rx.t(Msg::BluetoothRadio), Some(rx.t(Msg::BluetoothRadioSub)));
         super::toggle_slider(cv, r0, rx.settings.ble_enabled);
 
         // The read-only lines — stacked caption-over-value pairs (a right-aligned "Advertising"
@@ -89,17 +90,17 @@ impl BluetoothScreen {
         // Connected) and Paired (no phone name — deliberately not worth the protocol addition).
         let info_x = super::ROW_X + 10;
         let y0 = LIST_TOP + 8 + ROW_H + 16;
-        cv.text("Status", Point::new(info_x, y0), Font::Label, TextAlign::Left, SUBTEXT);
+        cv.text(rx.t(Msg::BluetoothStatus), Point::new(info_x, y0), Font::Label, TextAlign::Left, SUBTEXT);
         cv.text(
-            status_label(rx.settings, rx.state.ble_link),
+            status_label(rx.settings, rx.state.ble_link, rx.settings.language),
             Point::new(info_x, y0 + 24),
             Font::Body,
             TextAlign::Left,
             INK,
         );
         let y1 = y0 + 62;
-        cv.text("Paired", Point::new(info_x, y1), Font::Label, TextAlign::Left, SUBTEXT);
-        let paired = if rx.state.ble_paired { "yes" } else { "no" };
+        cv.text(rx.t(Msg::BluetoothPaired), Point::new(info_x, y1), Font::Label, TextAlign::Left, SUBTEXT);
+        let paired = if rx.state.ble_paired { rx.t(Msg::BluetoothYes) } else { rx.t(Msg::BluetoothNo) };
         cv.text(paired, Point::new(info_x, y1 + 24), Font::Body, TextAlign::Left, INK);
 
         // The Forget row — a guarded confirm row while a bond is stored (hold fills it
@@ -112,20 +113,20 @@ impl BluetoothScreen {
             super::row_cursor(cv, row, self.selected == FORGET, false);
         }
         let ink = if rx.state.ble_paired { INK } else { SUBTEXT };
-        cv.text_vcentered("Forget phone", w / 2, (fy, FORGET_H), Font::Body, TextAlign::Center, ink);
+        cv.text_vcentered(rx.t(Msg::BluetoothForget), w / 2, (fy, FORGET_H), Font::Body, TextAlign::Center, ink);
     }
 }
 
 /// The status line's text: `Off` whenever the rider's switch is off (or the radio already reports
 /// it), else the live link phase. Preferring the *setting* for Off means the line flips the moment
 /// the toggle does, without waiting a pass for the radio to wind down.
-fn status_label(settings: &Settings, link: BleLink) -> &'static str {
+fn status_label(settings: &Settings, link: BleLink, lang: Language) -> &'static str {
     if !settings.ble_enabled || link == BleLink::Off {
-        "Off"
+        crate::t(Msg::BluetoothOff, lang)
     } else if link == BleLink::Connected {
-        "Connected"
+        crate::t(Msg::BluetoothConnected, lang)
     } else {
-        "Advertising"
+        crate::t(Msg::BluetoothAdvertising, lang)
     }
 }
 
@@ -198,9 +199,10 @@ mod tests {
     fn status_line_prefers_the_switch_then_the_link() {
         let on = Settings::default();
         let off = Settings { ble_enabled: false, ..Settings::default() };
-        assert_eq!(status_label(&off, BleLink::Connected), "Off", "the switch wins even mid-drop");
-        assert_eq!(status_label(&on, BleLink::Off), "Off", "the radio's own Off reads Off too");
-        assert_eq!(status_label(&on, BleLink::Advertising), "Advertising");
-        assert_eq!(status_label(&on, BleLink::Connected), "Connected");
+        let en = Language::En;
+        assert_eq!(status_label(&off, BleLink::Connected, en), "Off", "the switch wins even mid-drop");
+        assert_eq!(status_label(&on, BleLink::Off, en), "Off", "the radio's own Off reads Off too");
+        assert_eq!(status_label(&on, BleLink::Advertising, en), "Advertising");
+        assert_eq!(status_label(&on, BleLink::Connected, en), "Connected");
     }
 }

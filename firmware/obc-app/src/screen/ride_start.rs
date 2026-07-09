@@ -10,10 +10,13 @@
 use obc_render::Surface;
 
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::{list, palette, title_frame, Ctx, MenuItem, Render, Transition};
 
-const ITEMS: [MenuItem; 2] = [MenuItem { label: "Start ride", guard: false }, MenuItem { label: "Back", guard: false }];
+/// The two option rows (Start ride / Back), neither guarded — labels looked up per language at draw
+/// time (see [`RideStartScreen::draw`]).
+const N_ITEMS: usize = 2;
 
 const START: usize = 0;
 
@@ -30,7 +33,7 @@ impl RideStartScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
                 // Begin a route-less tracking session and root the stack to [Home, Map] — the same
                 // clean landing the Route overview's START RIDE does, minus the route.
@@ -48,7 +51,7 @@ impl RideStartScreen {
 
         // Opaque full-screen card (matching the Route-swap prompt's chrome): the title bar, then two
         // option rows. No explainer line — the two labels say all there is to say.
-        title_frame(cv, w, h, "RIDE", "");
+        title_frame(cv, w, h, rx.t(Msg::RideStartTitle), "");
 
         let geo = super::GuardedRowsGeometry {
             x: 12,
@@ -59,7 +62,11 @@ impl RideStartScreen {
             label_dx: 16,
             label_dy: 11,
         };
-        super::draw_guarded_rows(cv, &ITEMS, self.selected, rx.hold_progress, AMBER, geo);
+        let items = [
+            MenuItem { label: rx.t(Msg::RideStartStartRide), guard: false },
+            MenuItem { label: rx.t(Msg::RideStartBack), guard: false },
+        ];
+        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 

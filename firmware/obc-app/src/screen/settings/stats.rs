@@ -18,6 +18,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::screen::{title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
 use crate::settings::{STAT_CYCLE_MAX, STAT_CYCLE_MIN};
+use crate::Msg;
 
 use super::StatFieldsScreen;
 
@@ -97,13 +98,13 @@ impl StatsScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use crate::screen::palette::*;
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, "STATS", "");
+        title_frame(cv, w, h, rx.t(Msg::SetStatsTitle), "");
 
         // Row 0 — Page cycle (single-line value row with a stepper on the right).
         let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
         let editing = self.editing_cycle && self.selected == PAGE_CYCLE;
         super::row_cursor(cv, r0, self.selected == PAGE_CYCLE, editing);
-        super::row_label(cv, r0, "Pages", Some("auto-flip"));
+        super::row_label(cv, r0, rx.t(Msg::SetStatsPages), Some(rx.t(Msg::SetStatsPagesSub)));
         let mut val: heapless::String<8> = heapless::String::new();
         let _ = write!(val, "{} s", rx.settings.stat_cycle_s);
         let (cw, ch) = (76, 32);
@@ -113,7 +114,7 @@ impl StatsScreen {
         // Row 1 — Fields (opens the panel manager).
         let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         super::row_cursor(cv, r1, self.selected == FIELDS, false);
-        super::row_label(cv, r1, "Fields", Some("panels & order"));
+        super::row_label(cv, r1, rx.t(Msg::SetStatsFields), Some(rx.t(Msg::SetStatsFieldsSub)));
         // A right-pointing chevron says "enters a sub-screen".
         let cx0 = r1.top_left.x + r1.size.width as i32 - 22;
         let midy = r1.top_left.y + r1.size.height as i32 / 2;
@@ -123,11 +124,12 @@ impl StatsScreen {
         // so — like the Units flip — the mode sits vcentered at the right, flanked by a ◄.
         let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
         super::row_cursor(cv, r2, self.selected == CLIMB_PANEL, false);
-        super::row_label(cv, r2, "Climb", Some("climb panel"));
+        super::row_label(cv, r2, rx.t(Msg::SetStatsClimb), Some(rx.t(Msg::SetStatsClimbSub)));
         let vx = r2.top_left.x + r2.size.width as i32 - 12;
         let vmidy = r2.top_left.y + r2.size.height as i32 / 2;
-        cv.text_vcentered(rx.settings.climb_mode.name(), vx, (r2.top_left.y, ROW_H), Font::Body, TextAlign::Right, INK);
-        let ax = vx - text_width(rx.settings.climb_mode.name(), Font::Body) as i32 - 14;
+        let climb_name = rx.settings.climb_mode.name(rx.settings.language);
+        cv.text_vcentered(climb_name, vx, (r2.top_left.y, ROW_H), Font::Body, TextAlign::Right, INK);
+        let ax = vx - text_width(climb_name, Font::Body) as i32 - 14;
         cv.triangle(Point::new(ax, vmidy - 8), Point::new(ax, vmidy + 8), Point::new(ax - 10, vmidy), INK);
 
         // Row 3 — Waypoints panel (press cycles Off / Approach / Always in place). Unlike Climb,
@@ -139,8 +141,8 @@ impl StatsScreen {
         // value can't all clear the 240 px row, and the ◄ affordance wins.)
         let r3 = super::row_rect(LIST_TOP + 8 + 3 * (ROW_H + 6), w, ROW_H);
         super::row_cursor(cv, r3, self.selected == WAYPOINT_PANEL, false);
-        super::row_label(cv, r3, "Waypoints", Some("chip"));
-        let name = rx.settings.waypoint_mode.name();
+        super::row_label(cv, r3, rx.t(Msg::SetStatsWaypoints), Some(rx.t(Msg::SetStatsWaypointsSub)));
+        let name = rx.settings.waypoint_mode.name(rx.settings.language);
         let sub_y = r3.top_left.y + 30;
         let vx = r3.top_left.x + r3.size.width as i32 - 8;
         cv.text(name, Point::new(vx, sub_y), Font::Label, TextAlign::Right, INK);

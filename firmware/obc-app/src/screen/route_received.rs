@@ -24,6 +24,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::{list, palette, title_frame, Ctx, MenuItem, Render, ScreenTick, Transition, UPLOAD_POPUP_TIMEOUT_MS};
 
@@ -47,11 +48,12 @@ pub(crate) fn popup_tick(opened_ms: u32, now_ms: u32) -> ScreenTick {
 /// Re-poll cadence once a popup is due but not yet removed (a hold deferred the sweep a tick).
 const POPUP_RETRY_MS: u32 = 50;
 
-// The start row is the epic's *Start navigation* action; the label is the Route overview's
-// established "start ride" verb because the literal phrase doesn't fit the panel (16 glyphs
-// × the Body row font's 14 px = 224 px, wider than the 200 px row interior).
-const ITEMS: [MenuItem; 2] =
-    [MenuItem { label: "Start ride", guard: false }, MenuItem { label: "Dismiss", guard: false }];
+/// The two option rows (Start ride / Dismiss), neither guarded — the labels are looked up per
+/// language at draw time (see [`RouteReceivedScreen::draw`]). The start row is the epic's *Start
+/// navigation* action; the label is the Route overview's established "start ride" verb because the
+/// literal phrase doesn't fit the panel (16 glyphs × the Body row font's 14 px = 224 px, wider than
+/// the 200 px row interior).
+const N_ITEMS: usize = 2;
 
 const START: usize = 0;
 
@@ -89,7 +91,7 @@ impl RouteReceivedScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, ITEMS.len()),
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
             // Start navigation — exactly the Route-menu start path, validated against the current
             // catalog: a route deleted while the popup was up (`route` remapped to `None`, or the
             // index out of range) dismisses instead of riding a stranger.
@@ -107,7 +109,7 @@ impl RouteReceivedScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        title_frame(cv, w, h, "ROUTE RECEIVED", "");
+        title_frame(cv, w, h, rx.t(Msg::RouteReceivedTitle), "");
         match self.route.and_then(|i| rx.routes.get(i)) {
             Some(route) => {
                 // Name first (names > metadata), one stats line under it.
@@ -121,7 +123,7 @@ impl RouteReceivedScreen {
             // Deleted from under the popup: say so — the Start row will just dismiss.
             None => {
                 cv.text(
-                    "Route removed",
+                    rx.t(Msg::RouteReceivedRouteRemoved),
                     Point::new(w / 2, super::TITLE_BAR_H + 24),
                     Font::Label,
                     TextAlign::Center,
@@ -139,7 +141,11 @@ impl RouteReceivedScreen {
             label_dx: 16,
             label_dy: 11,
         };
-        super::draw_guarded_rows(cv, &ITEMS, self.selected, rx.hold_progress, AMBER, geo);
+        let items = [
+            MenuItem { label: rx.t(Msg::RouteReceivedStartRide), guard: false },
+            MenuItem { label: rx.t(Msg::RouteReceivedDismiss), guard: false },
+        ];
+        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 
@@ -187,7 +193,7 @@ impl RouteUpdatedScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        title_frame(cv, w, h, "ROUTE UPDATED", "");
+        title_frame(cv, w, h, rx.t(Msg::RouteReceivedUpdatedTitle), "");
         // The route's name, then the plain two-line statement of what already happened.
         let name_top = h * 35 / 100;
         match self.route.and_then(|i| rx.routes.get(i)) {
@@ -197,12 +203,30 @@ impl RouteUpdatedScreen {
                 cv.text(&name, Point::new(w / 2, name_top), Font::Body, TextAlign::Center, INK);
             }
             None => {
-                cv.text("Active route", Point::new(w / 2, name_top), Font::Body, TextAlign::Center, INK);
+                cv.text(
+                    rx.t(Msg::RouteReceivedActiveRoute),
+                    Point::new(w / 2, name_top),
+                    Font::Body,
+                    TextAlign::Center,
+                    INK,
+                );
             }
         }
         let line = Font::Label.line_height() as i32;
         let cap_top = name_top + Font::Body.line_height() as i32 + 14;
-        cv.text("Navigation follows", Point::new(w / 2, cap_top), Font::Label, TextAlign::Center, SUBTEXT);
-        cv.text("the new version", Point::new(w / 2, cap_top + line), Font::Label, TextAlign::Center, SUBTEXT);
+        cv.text(
+            rx.t(Msg::RouteReceivedNavFollows),
+            Point::new(w / 2, cap_top),
+            Font::Label,
+            TextAlign::Center,
+            SUBTEXT,
+        );
+        cv.text(
+            rx.t(Msg::RouteReceivedNewVersion),
+            Point::new(w / 2, cap_top + line),
+            Font::Label,
+            TextAlign::Center,
+            SUBTEXT,
+        );
     }
 }

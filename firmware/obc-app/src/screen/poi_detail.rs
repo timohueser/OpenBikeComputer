@@ -34,6 +34,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
+use crate::Msg;
 
 use super::poi_list::{draw_bearing_arrow, ARROW_R};
 use super::{palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
@@ -103,7 +104,7 @@ impl PoiDetailScreen {
         self.ensure_schedule(rx);
 
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, "POI", "");
+        title_frame(cv, w, h, rx.t(Msg::PoiDetailTitle), "");
 
         // The subtype fallback label ("Supermarket", "Pharmacy", …) — the subtitle, and the whole
         // name line when the POI is unnamed.
@@ -156,9 +157,9 @@ impl PoiDetailScreen {
             None => &[],
         };
         let head = match schedule {
-            None => "Hours not listed",
-            Some(_) if intervals.is_empty() => "Closed today",
-            Some(_) => "Today",
+            None => rx.t(Msg::PoiDetailHoursNotListed),
+            Some(_) if intervals.is_empty() => rx.t(Msg::PoiDetailClosedToday),
+            Some(_) => rx.t(Msg::PoiDetailToday),
         };
         cv.text(head, Point::new(head_x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
 
@@ -175,7 +176,7 @@ impl PoiDetailScreen {
         if let Some(sched) = schedule {
             let minute = rx.now.hour as u16 * 60 + rx.now.minute as u16;
             let open = sched.is_open(weekday, minute);
-            let (text, bg) = if open { ("OPEN", ON) } else { ("CLOSED", SUBTEXT) };
+            let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), SUBTEXT) };
             let badge_y = row_y + 8;
             let badge_w = text.chars().count() as i32 * Font::Label.char_width() as i32 + 20;
             let badge_h = Font::Label.cap_height() as i32 + 12;
