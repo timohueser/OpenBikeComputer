@@ -100,10 +100,13 @@
 //!   stretch a frame push at all (only the ack's delivery, which is untimed).
 //!
 //! ## Flash / RAM
-//!   From the `nrf54l15-app-s` `memory.x`: FLASH 1524K @ 0x0000_0000, RAM 256K @ 0x2000_0000.
-//!   A future MCUboot retrofit re-partitions flash — don't hard-code flash assumptions (see
-//!   `memory.x`). RAM is tight (no external RAM): the single RGB222 framebuffer is ~75 KB and the
-//!   renderer scratch + caches must fit the rest — see the budget assert below.
+//!   From the `memory.x` build.rs emits (#617): the app's FLASH is 1484K @ **0x0000_8000** — the
+//!   32K below is the `obc-boot` bootloader (flash it once, then iterate here exactly as before;
+//!   see `../obc-boot/README.md`), and the RRAM top holds the `BOOT_STATE` (0x0017_B000) +
+//!   `SETTINGS` (0x0017_C000) pages. Don't hard-code flash addresses — the bootloader sets VTOR
+//!   to 0x8000 before the jump, so the linker map is the only authority. RAM 256K @ 0x2000_0000
+//!   is tight (no external RAM): the single RGB222 framebuffer is ~75 KB and the renderer
+//!   scratch + caches must fit the rest — see the budget assert below.
 
 #![no_std]
 #![no_main]

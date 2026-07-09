@@ -86,14 +86,15 @@ One-off runs against a real map:
 ## Format
 
 `rustfmt.toml` is committed (`max_width = 120`, `use_small_heuristics = "Max"`),
-so let rustfmt own style — don't hand-format. Formatting takes **two
-invocations**, and CI checks both (the workspace is a *virtual* manifest, so
-`--all` is required or it formats nothing; the board crate is excluded, so
-`--all` skips it):
+so let rustfmt own style — don't hand-format. Formatting takes **three
+invocations**, and CI checks all of them (the workspace is a *virtual* manifest,
+so `--all` is required or it formats nothing; the board crate and the bootloader
+are excluded, so `--all` skips them):
 
 ```sh
 cargo fmt --all                                    # the workspace
 cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml # the board crate, separately
+cargo fmt --manifest-path obc-boot/Cargo.toml      # the bootloader, separately
 ```
 
 ## Run the simulator

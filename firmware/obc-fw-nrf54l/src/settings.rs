@@ -4,8 +4,8 @@
 //!
 //! # Why RRAM (and why it's cheap)
 //!
-//! The nRF54L's program memory *is* RRAM (resistive RAM), not NOR flash — see the crate's
-//! `memory-default.x` (`FLASH … the application-core RRAM`). RRAM is **byte-writable with no
+//! The nRF54L's program memory *is* RRAM (resistive RAM), not NOR flash — see the memory map
+//! `build.rs` emits (`FLASH … the application-core RRAM`). RRAM is **byte-writable with no
 //! page-erase**, so a tiny key-value blob is genuinely cheap: a 4 KB page is carved off the top of
 //! the RRAM image (the named `SETTINGS` linker region, see below), the fixed-length
 //! [`obc_app::settings`] blob (version + fields + CRC, padded to the RRAM line) is written into it,
@@ -13,10 +13,11 @@
 //!
 //! # Region & power-loss safety
 //!
-//! `memory-default.x` / `build.rs` shrink `FLASH` to 1520 KB and reserve the top 4 KB as a named
-//! `SETTINGS` region, exporting `__settings_base` (= `ORIGIN(SETTINGS)`). [`region_offset`] reads
-//! that symbol's address at runtime, so nothing hard-codes the magic offset and a future MCUboot
-//! partition map can adopt the named region as-is.
+//! `build.rs` reserves the top 4 KB of RRAM (`0x0017_C000`, above both the app slot and the
+//! DFU `BOOT_STATE` page, #617) as a named `SETTINGS` region, exporting `__settings_base`
+//! (= `ORIGIN(SETTINGS)`). [`region_offset`] reads that symbol's address at runtime, so nothing
+//! hard-codes the magic offset — which is also why the address survived the #617 bootloader
+//! relocation unchanged (settings persist across the update).
 //!
 //! A **single slot** is used. The CRC already rejects a half-written blob (a power-loss mid-write
 //! → `decode` fails → the app boots [`Settings::default`]), and settings only change while the user

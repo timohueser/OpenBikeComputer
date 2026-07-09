@@ -32,13 +32,17 @@ where it belongs — don't re-explain the architecture in a README.
 ## Build & verify
 
 - Host crates + sim: `cargo build --release` and `cargo test` from `firmware/`.
-- The `firmware/` workspace **excludes** the board crate `obc-fw-nrf54l` — it's
-  standalone (own target + `.cargo/config.toml`), so workspace `cargo test`/`build`
-  does **not** touch it. Build it on its own. nRF specifics + on-glass gotchas:
-  [firmware/obc-fw-nrf54l/README.md](firmware/obc-fw-nrf54l/README.md).
-- `cargo fmt` is a **two-step**: `cargo fmt --all` for the workspace **plus** a
-  separate `cargo fmt` inside the excluded board crate, or the fmt CI guard
-  fails. (rustfmt config is committed — let it do style; don't hand-format.)
+- The `firmware/` workspace **excludes** the board crate `obc-fw-nrf54l` and the
+  bootloader `obc-boot` — both standalone (own target + `.cargo/config.toml`), so
+  workspace `cargo test`/`build` does **not** touch them. Build each on its own.
+  nRF specifics + on-glass gotchas:
+  [firmware/obc-fw-nrf54l/README.md](firmware/obc-fw-nrf54l/README.md); the
+  boot-chain layout + flash-once workflow:
+  [firmware/obc-boot/README.md](firmware/obc-boot/README.md).
+- `cargo fmt` is a **three-step**: `cargo fmt --all` for the workspace **plus** a
+  separate `cargo fmt` inside each excluded crate (board crate + `obc-boot`), or
+  the fmt CI guard fails. (rustfmt config is committed — let it do style; don't
+  hand-format.)
 - Required CI check is the `ci` job in `.github/workflows/ci.yml`.
 
 ## Keep the docs in sync with the code
