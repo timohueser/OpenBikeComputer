@@ -8,21 +8,17 @@
 
 use std::path::{Path, PathBuf};
 
-#[cfg(not(target_arch = "wasm32"))]
 use obc_route::gpx_to_obcr;
 use obc_route::{RouteStats, RouteSummary, SliceSource};
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::vec_sink::VecSink;
+use obc_host_core::VecSink;
 
 /// The reserved computed-route file the on-device router's output lands in (epic #116, R4):
 /// auto-overwritten on every plan, scanned into the catalog like any other route. The device's
 /// FatFs twin is `/routes/_NAV.OBR` (embedded-sdmmc can't write the 4-char LFN extension).
-#[cfg(not(target_arch = "wasm32"))]
 const NAV_ROUTE_FILE: &str = "_nav.obcr";
 
 /// The folder-backed route store: the catalog of summaries plus the bytes of the one active route.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct RouteStore {
     dir: PathBuf,
     catalog: Vec<RouteSummary>,
@@ -42,7 +38,6 @@ pub struct RouteStore {
     active_bytes: Option<Vec<u8>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl RouteStore {
     /// Open and scan the routes folder. A missing folder is fine (scans to an empty catalog);
     /// it's created lazily on the first import.
@@ -209,119 +204,19 @@ impl RouteStore {
     }
 }
 
-// --- Web (wasm32) route store ---------------------------------------------------
-//
-// No folder to scan, so the web build keeps the catalog + route bytes in memory. Same
-// public surface as the native store, so `gui.rs` drives both identically.
-#[cfg(target_arch = "wasm32")]
-pub struct RouteStore {
-    catalog: Vec<RouteSummary>,
-    ids: Vec<u16>,
-    bytes: Vec<Vec<u8>>,
-    active: Option<usize>,
-}
-
-/// The web store's reserved id for the in-memory nav route (out of the small positional band the
-/// embedded catalog uses), so a re-plan replaces the previous computed route in place.
-#[cfg(target_arch = "wasm32")]
-const WASM_NAV_ID: u16 = u16::MAX;
-
-#[cfg(target_arch = "wasm32")]
-impl RouteStore {
-    /// `dir` is ignored on the web; the signature matches the native store.
-    pub fn open(_dir: impl Into<PathBuf>) -> Self {
-        let mut s = RouteStore { catalog: Vec::new(), ids: Vec::new(), bytes: Vec::new(), active: None };
-        s.seed_embedded();
-        s
+/// The shared nav-plan commit path ([`obc_host_core::finish_nav_plan`]) drives the store through
+/// this trait, so the exact write→rescan→invalidate order lives in one place for both hosts.
+impl obc_host_core::NavRouteStore for RouteStore {
+    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
+        self.write_nav_route(bytes)
     }
-
-    /// Load the demo routes compiled into the wasm binary. Add `include_bytes!` entries to
-    /// grow the menu.
-    fn seed_embedded(&mut self) {
-        for route in [include_bytes!("../assets/grimsel-climb.obcr").as_slice()] {
-            if let Ok(sum) = RouteSummary::read(&SliceSource(route)) {
-                self.catalog.push(sum);
-                self.ids.push(self.ids.len() as u16); // fixed catalog → positional ids are stable
-                self.bytes.push(route.to_vec());
-            }
-        }
+    fn catalog(&self) -> &[RouteSummary] {
+        self.catalog()
     }
-
-    pub fn catalog(&self) -> &[RouteSummary] {
-        &self.catalog
+    fn ids(&self) -> &[u16] {
+        self.ids()
     }
-
-    /// Each catalog entry's id, parallel to [`catalog`](RouteStore::catalog) (fixed on the web).
-    pub fn ids(&self) -> &[u16] {
-        &self.ids
-    }
-
-    /// No folder to re-read on the web; the embedded catalog is fixed.
-    pub fn rescan(&mut self) {}
-
-    /// Upload injection is a native control-panel tool; the fixed web catalog has no store to move.
-    pub fn duplicate_route(&mut self, _i: usize) -> Option<u16> {
-        None
-    }
-
-    /// See [`duplicate_route`](RouteStore::duplicate_route) — unavailable on the web build.
-    pub fn touch_route(&mut self, _i: usize) -> Option<u16> {
-        None
-    }
-
-    /// GPX import (USB-drop equivalent) isn't wired up on the web yet — a file-input
-    /// upload path replaces the native dialog later.
-    pub fn import_gpx(&mut self, _gpx_path: &Path) -> Result<RouteStats, String> {
-        Err("GPX import is not available in the web build yet".into())
-    }
-
-    /// The in-memory twin of the native store's reserved `_nav.obcr` write: replace (or append)
-    /// the computed route under the fixed [`WASM_NAV_ID`] and return it.
-    pub fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
-        let sum = RouteSummary::read(&SliceSource(bytes)).ok()?;
-        match self.ids.iter().position(|&id| id == WASM_NAV_ID) {
-            Some(pos) => {
-                self.catalog[pos] = sum;
-                self.bytes[pos] = bytes.to_vec();
-            }
-            None => {
-                self.catalog.push(sum);
-                self.ids.push(WASM_NAV_ID);
-                self.bytes.push(bytes.to_vec());
-            }
-        }
-        Some(WASM_NAV_ID)
-    }
-
-    pub fn sync_active(&mut self, want: Option<usize>) {
-        self.active = want.filter(|&i| i < self.bytes.len());
-    }
-
-    /// See the native twin: force a re-read after the nav bytes are replaced under an unchanged
-    /// index (the web store serves bytes by index, so only the reset matters).
-    pub fn invalidate_active(&mut self) {
-        self.active = None;
-    }
-
-    /// Delete the route with id `id` from the in-memory catalog (the web build's face of the
-    /// on-device hold-to-delete, epic #447 P6). `true` = removed. The id isn't re-issued (the
-    /// embedded catalog is fixed and positional).
-    pub fn delete_by_id(&mut self, id: u16) -> bool {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
-        self.catalog.remove(pos);
-        self.ids.remove(pos);
-        self.bytes.remove(pos);
-        if self.active == Some(pos) {
-            self.active = None;
-        } else if let Some(a) = self.active.as_mut() {
-            if *a > pos {
-                *a -= 1;
-            }
-        }
-        true
-    }
-
-    pub fn active_source(&self) -> Option<SliceSource<'_>> {
-        self.active.and_then(|i| self.bytes.get(i)).map(|b| SliceSource(b.as_slice()))
+    fn invalidate_active(&mut self) {
+        self.invalidate_active()
     }
 }

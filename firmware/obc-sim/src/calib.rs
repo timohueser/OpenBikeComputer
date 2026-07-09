@@ -9,7 +9,6 @@
 //! the OS display-scaling (`pixels_per_point`) automatically — we never query DPI.
 //! (Re-calibrate on a different monitor.)
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 /// The reflective panel's active-area dimensions, in millimetres. Derived from a
@@ -26,7 +25,6 @@ pub const REF_BAR_POINTS: f32 = 500.0;
 
 /// Config file holding the one calibrated number (points-per-mm), so 1:1 survives
 /// restarts: `$XDG_CONFIG_HOME/obc-sim/calibration` (else `$HOME/.config/...`).
-#[cfg(not(target_arch = "wasm32"))]
 fn config_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -35,7 +33,6 @@ fn config_path() -> Option<PathBuf> {
 }
 
 /// Load the saved points-per-mm, or `None` if never calibrated / unreadable / invalid.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn load() -> Option<f32> {
     let s = std::fs::read_to_string(config_path()?).ok()?;
     s.trim().parse::<f32>().ok().filter(|v| v.is_finite() && *v > 0.0)
@@ -43,25 +40,12 @@ pub fn load() -> Option<f32> {
 
 /// Persist points-per-mm. Returns a human-readable error (for the panel to show) on
 /// failure; best-effort, never panics.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn save(points_per_mm: f32) -> Result<(), String> {
     let path = config_path().ok_or("no $HOME / $XDG_CONFIG_HOME for the config dir")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create config dir: {e}"))?;
     }
     std::fs::write(&path, format!("{points_per_mm}\n")).map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-/// Web build: there's no per-monitor config file, and 1:1 physical sizing makes no
-/// sense in a browser canvas, so calibration is never loaded and never persisted.
-#[cfg(target_arch = "wasm32")]
-pub fn load() -> Option<f32> {
-    None
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn save(_points_per_mm: f32) -> Result<(), String> {
-    Err("display calibration is not available in the web build".into())
 }
 
 #[cfg(test)]
