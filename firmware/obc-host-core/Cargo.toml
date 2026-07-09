@@ -1,0 +1,16 @@
+[package]
+name = "obc-host-core"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
+description = "Shared std host glue for the two simulator hosts (obc-sim desktop, obc-web-demo browser): GPX replay stepping, the frame-interleaved resumable NavPlan, the in-memory byte sink, and in-memory route/ride/track stores. No GUI dependencies — this is exactly the host logic both shells drive the shared no_std core with."
+
+[dependencies]
+obc-app = { path = "../obc-app" }
+obc-reader = { path = "../obc-reader" }
+# `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
+# (the ~39 KB A* table would overflow the wasm build's stack via a plain `Box::new`).
+obc-route = { path = "../obc-route", features = ["alloc"] }
+# Shared host GPX replay (the GpxPlayer / BaroSensor `replay_step` advances) — the same crate the
+# USB feeder (obc-usb-host) uses, so a recorded ride plays back identically on every host.
+obc-replay = { path = "../obc-replay" }

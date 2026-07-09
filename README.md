@@ -43,6 +43,8 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `firmware/obc-render/` | `no_std` — the **shared rendering path**: `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering, even-odd scanline polygon fill, weighted polylines, text. Generic over an `embedded-graphics` `DrawTarget` so host and MCU run identical drawing code. |
 | `firmware/obc-app/` | `no_std` — the **application + hardware-abstraction layer**: camera, camera mode (follow-user / free), screen stack, input model, route tracking. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
 | `firmware/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
+| `firmware/obc-web-demo/` | The website's **live-demo host**: the same shared crates compiled to wasm behind a small `obc_demo_*` API — the landing page's JS owns the frame loop and canvas, no GUI framework in the tree. |
+| `firmware/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
 | `firmware/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
 | `packer/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
 | `packer/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
@@ -54,9 +56,9 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `firmware/docs/`, `packer/docs/` | Design notes and handover docs (UI spec, rendering pipeline, line-style plans, packer port stages…). |
 
 The crate dependency direction is `obc-sim → obc-app → obc-render → obc-reader`
-(with `obc-route` shared alongside). The nRF54L firmware is a *second host*
-beside `obc-sim`, reusing `obc-app` / `obc-render` / `obc-reader` / `obc-route`
-unchanged.
+(with `obc-route` shared alongside). The nRF54L firmware and the website's
+`obc-web-demo` are *sibling hosts* beside `obc-sim`, reusing
+`obc-app` / `obc-render` / `obc-reader` / `obc-route` unchanged.
 
 ---
 
