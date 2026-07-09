@@ -235,11 +235,14 @@ fn fold_char(c: char) -> Option<&'static str> {
     })
 }
 
-/// Normalize an OSM `name` for the device font (Terminus, printable ASCII
-/// `0x20..=0x7F` — see `obc-render/src/font_data.rs`): ASCII-fold, replace
-/// anything unmappable with a word break, collapse whitespace, trim, cap at
-/// **24 bytes** (the v7 record's widened `Name` field). Empty after all that ⇒
-/// `None` (device shows the subtype label).
+/// Normalize an OSM `name` for the OBCM record's fixed-width, printable-ASCII
+/// `Name` field (`0x20..=0x7E`, one byte per char): ASCII-fold, replace anything
+/// unmappable with a word break, collapse whitespace, trim, cap at **24 bytes**
+/// (the v7 record's widened `Name` field). Empty after all that ⇒ `None` (device
+/// shows the subtype label). Note this fold is a *format* constraint, not a font
+/// one — the device font renders Latin-1/Latin Extended-A for phone-supplied
+/// route & ride names (see `obc-render/src/font_data.rs`); only these fixed-width
+/// packed POI names fold.
 pub fn normalize_name(raw: &str) -> Option<String> {
     let mut out = String::with_capacity(raw.len().min(28));
     let mut pending_space = false;
