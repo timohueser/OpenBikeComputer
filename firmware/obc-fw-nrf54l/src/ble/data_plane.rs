@@ -371,8 +371,8 @@ async fn run_echo(
     let mut rx = match Receiver::new(desc) {
         Ok(rx) => rx,
         Err(_) => {
-            // A nonsensical echo descriptor (e.g. offset past total_len) — answer error, leave the
-            // channel untouched (no bytes were promised).
+            // A nonsensical echo descriptor (a non-zero offset — echo restarts, never resumes) —
+            // answer error, leave the channel untouched (no bytes were promised).
             notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
