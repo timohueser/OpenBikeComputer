@@ -1,0 +1,14 @@
+[package]
+name = "obc-dfu"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal firmware crate — not published to crates.io
+description = "OBCU update-image container + boot-state RRAM page codec + boot-decision logic (SD-staged DFU, epic #615). no_std, core-only — shared by the obc-boot bootloader, the board crate, obc-app, and the obc-mkimage host tool."
+
+# Foundation crate for the DFU epic: the byte formats and the pure boot-decision logic
+# every other piece shares. `core`-only (no alloc, no heapless) so the 32 KB bootloader
+# links it cheaply; host-tested to the settings-codec bar. A workspace member so the plain
+# `cargo test` below exercises it on the host, exactly like obc-reader / obc-ble.
+[dependencies]
+
+[dev-dependencies]
