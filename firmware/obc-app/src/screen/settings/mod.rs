@@ -36,6 +36,7 @@ mod bluetooth;
 mod datetime;
 mod display;
 mod fields;
+mod language;
 mod power;
 mod reset;
 mod stats;
@@ -47,13 +48,16 @@ pub use bluetooth::BluetoothScreen;
 pub use datetime::DateTimeScreen;
 pub use display::DisplayScreen;
 pub use fields::StatFieldsScreen;
+pub use language::LanguageScreen;
 pub use power::PowerScreen;
 pub use reset::ResetScreen;
 pub use stats::StatsScreen;
 pub use units::UnitsScreen;
 
-/// The Settings list entries, in order. Each row pushes its sub-screen.
-const ITEMS: [&str; 8] = ["Date & Time", "Units", "Bike type", "Stats", "Display", "Power", "Bluetooth", "Reset"];
+/// The Settings list entries, in order. Each row pushes its sub-screen. Language sits just above the
+/// terminal (destructive) Reset row.
+const ITEMS: [&str; 9] =
+    ["Date & Time", "Units", "Bike type", "Stats", "Display", "Power", "Bluetooth", "Language", "Reset"];
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -78,6 +82,7 @@ impl SettingsScreen {
                 4 => Transition::Push(Screen::Display(DisplayScreen::new())),
                 5 => Transition::Push(Screen::Power(PowerScreen::new())),
                 6 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
+                7 => Transition::Push(Screen::Language(LanguageScreen::new())),
                 _ => Transition::Push(Screen::Reset(ResetScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu
