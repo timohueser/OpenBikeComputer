@@ -168,6 +168,16 @@ and `Image CRC-32` (so the installer reads them without re-decoding the header) 
 **MUST match** them; decoders MUST reject a `StagedRef` where either pair disagrees
 (a diverging record was never built from one coherent image).
 
+**What the extents cover.** The chain locates the **whole staged file**: the armer
+resolves `UPDATE.BIN` as-is, so the chain's byte stream begins with the file's own
+64-byte OBCU header (§1.1) followed by the raw image; any tail of the final block
+past `64 + Len` is FAT cluster slack and is ignored. `Len` / `Image CRC-32` remain
+**raw-image** values: the installer's verify pass reads the leading 64 bytes only to
+check they decode to exactly the `Header` recorded above, then CRCs the next `Len`
+bytes — and its flash pass writes those same `Len` bytes (the container header is
+skipped, never flashed) to the app slot. This is normative for both the armer (S4)
+and the bootloader; the skip arithmetic lives once, in `obc-dfu`'s install engine.
+
 ### 2.4 Decode rule and boot decision
 
 **`BootState::decode(&[u8]) -> BootState`** returns `Idle { installed: None }` for
@@ -200,7 +210,10 @@ becomes the next boot.
 `firmware/obc-dfu` (`no_std`, `core`-only): `image.rs` (`ImageHeader`,
 `MAX_IMAGE_LEN`, the vector-table SP check), `state.rs` (`BootState`, `StagedRef`,
 `Extent`, `MAX_EXTENTS`, `decide`, the 16-byte-line-aligned page codec), `crc32.rs`
-(the canonical DFU-side CRC-32/IEEE). The host tool `firmware/obc-mkimage` produces
+(the canonical DFU-side CRC-32/IEEE), `engine.rs` (the bootloader's install engine —
+the verify → flash → readback → state-transition sequencing over a small `InstallIo`
+trait, host-tested with mock IO in `tests/engine.rs`, including the §2.3 header-skip
+arithmetic). The host tool `firmware/obc-mkimage` produces
 and inspects §1 containers (`wrap` / `inspect`). Format-contract tests build blobs by
 hand and round-trip every variant (`obc-dfu/tests/boot_state.rs`, the unit tests in
 `image.rs`, `obc-mkimage/tests/cli.rs`); see `firmware/README.md` for the
