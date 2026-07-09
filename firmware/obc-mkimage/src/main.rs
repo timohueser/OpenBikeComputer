@@ -75,12 +75,22 @@ fn wrap(args: &[String]) -> Result<(), String> {
     // Vector-table sanity: a bare-metal .bin starts with the initial SP, which must point into RAM.
     // Warn only (an ELF or wrong-section-order strip fails this), never block.
     if !looks_like_vector_table(&image) {
-        let word0 = u32::from_le_bytes([image[0], image[1], image[2], image[3]]);
-        eprintln!(
-            "warning: first word 0x{word0:08X} is not an initial SP in {RAM_START:#010X}..{RAM_END:#010X} — \
-             is {} a vector-table-first raw binary? (a cargo-objcopy strip must be -O binary of the ELF)",
-            bin.display()
-        );
+        if image.len() < 4 {
+            // Shorter than the first vector-table word — there is no word0 to report.
+            eprintln!(
+                "warning: {} is only {} byte(s) — shorter than a vector table's first word; \
+                 is it a vector-table-first raw binary?",
+                bin.display(),
+                image.len()
+            );
+        } else {
+            let word0 = u32::from_le_bytes([image[0], image[1], image[2], image[3]]);
+            eprintln!(
+                "warning: first word 0x{word0:08X} is not an initial SP in {RAM_START:#010X}..{RAM_END:#010X} — \
+                 is {} a vector-table-first raw binary? (a cargo-objcopy strip must be -O binary of the ELF)",
+                bin.display()
+            );
+        }
     }
 
     let header = ImageHeader::new(&image, &version);

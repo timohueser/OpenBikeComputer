@@ -162,14 +162,20 @@ extents; 96 leaves headroom for a moderately fragmented card. The armer errors o
 past this (suggesting a re-copy to defragment) rather than truncating the chain, and
 the decoder rejects an Extent Count above `MAX_EXTENTS`.
 
+`Len` and `Image CRC-32` deliberately duplicate the embedded header's `Image Len`
+and `Image CRC-32` (so the installer reads them without re-decoding the header) and
+**MUST match** them; decoders MUST reject a `StagedRef` where either pair disagrees
+(a diverging record was never built from one coherent image).
+
 ### 2.4 Decode rule and boot decision
 
 **`BootState::decode(&[u8]) -> BootState`** returns `Idle { installed: None }` for
 **anything** but a clean read of this format: too short, bad magic, a Format Version
 other than `1`, a `Blob Len` that is out of range or not a multiple of 16, a failed
-whole-blob CRC, an unknown State Tag, an Extent Count over `MAX_EXTENTS`, or a nested
-`ImageHeader` whose own CRC fails. This is the torn-write safety net — the bootloader
-always receives a sane state.
+whole-blob CRC, an unknown State Tag, an Extent Count over `MAX_EXTENTS`, a
+`StagedRef` whose redundant `Len`/`Image CRC-32` disagree with its embedded header
+(§2.3), or a nested `ImageHeader` whose own CRC fails. This is the torn-write safety
+net — the bootloader always receives a sane state.
 
 The bootloader turns the decoded state into an action with the pure function
 **`decide(&BootState) -> BootDecision`**:
