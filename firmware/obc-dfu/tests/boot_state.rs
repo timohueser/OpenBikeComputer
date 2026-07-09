@@ -21,7 +21,8 @@ fn extents(n: usize) -> Vec<Extent> {
 
 fn staged(tag: &str, n_extents: usize) -> StagedRef {
     let h = header(tag, 123_456);
-    StagedRef::new(h, 123_456, 0xDEAD_BEEF, &extents(n_extents)).expect("within MAX_EXTENTS")
+    // len/crc32 must match the header's own fields (the redundancy consistency check).
+    StagedRef::new(h, h.image_len, h.image_crc32, &extents(n_extents)).expect("consistent + within MAX_EXTENTS")
 }
 
 /// Round-trip every variant, including full extent lists, through a page-sized buffer.
@@ -133,8 +134,36 @@ fn overlong_extent_count_is_idle() {
 /// `StagedRef::new` refuses more than `MAX_EXTENTS`.
 #[test]
 fn staged_ref_extent_cap() {
-    assert!(StagedRef::new(header("v", 1), 1, 0, &extents(MAX_EXTENTS)).is_some());
-    assert!(StagedRef::new(header("v", 1), 1, 0, &extents(MAX_EXTENTS + 1)).is_none());
+    let h = header("v", 1);
+    assert!(StagedRef::new(h, h.image_len, h.image_crc32, &extents(MAX_EXTENTS)).is_some());
+    assert!(StagedRef::new(h, h.image_len, h.image_crc32, &extents(MAX_EXTENTS + 1)).is_none());
+}
+
+/// `StagedRef::new` refuses `len`/`crc32` that disagree with the embedded header — the redundant
+/// fields must never diverge (spec §2.3), or the installer would silently pick one of two truths.
+#[test]
+fn staged_ref_rejects_inconsistent_fields() {
+    let h = header("v", 500);
+    assert!(StagedRef::new(h, h.image_len, h.image_crc32, &extents(1)).is_some());
+    assert!(StagedRef::new(h, h.image_len + 1, h.image_crc32, &extents(1)).is_none(), "len mismatch");
+    assert!(StagedRef::new(h, h.image_len, h.image_crc32 ^ 1, &extents(1)).is_none(), "crc mismatch");
+}
+
+/// A stored `StagedRef` whose redundant `len` disagrees with its embedded header decodes to `Idle`,
+/// even with the whole-blob CRC re-fixed — the consistency check itself must reject it.
+#[test]
+fn inconsistent_staged_len_is_idle() {
+    let page = BootState::Armed { generation: 1, update: staged("u", 2), rollback: None }.encode();
+    let mut b = page.as_bytes().to_vec();
+    // The update StagedRef's redundant `len` sits right after its 64-byte embedded header.
+    let len_off = 16 + 64;
+    let stored = u32::from_le_bytes([b[len_off], b[len_off + 1], b[len_off + 2], b[len_off + 3]]);
+    b[len_off..len_off + 4].copy_from_slice(&(stored + 1).to_le_bytes());
+    // Fix the whole-blob CRC so only the header-consistency check can reject it.
+    let blob_len = u32::from_le_bytes([b[8], b[9], b[10], b[11]]) as usize;
+    let crc = obc_dfu::crc32(&b[..blob_len - 4]);
+    b[blob_len - 4..blob_len].copy_from_slice(&crc.to_le_bytes());
+    assert_eq!(BootState::decode(&b), BootState::Idle { installed: None });
 }
 
 /// The full `decide()` matrix (epic #615 invariant 3).

@@ -117,6 +117,33 @@ fn wrap_rejects_oversize() {
     let _ = std::fs::remove_file(&bin_path);
 }
 
+/// wrap warns (on stderr) but still succeeds on an image shorter than the vector table's first word
+/// — there is no word0 to inspect, and it must not panic. (An *empty* image stays a hard error.)
+#[test]
+fn wrap_warns_on_tiny_image() {
+    let bin_path = scratch("tiny.bin");
+    let out_path = scratch("TINY.BIN");
+    std::fs::write(&bin_path, [0xAAu8, 0xBB]).unwrap(); // 2 bytes: shorter than one word
+
+    let w = bin()
+        .args(["wrap", "--bin"])
+        .arg(&bin_path)
+        .args(["--version", "v0", "--out"])
+        .arg(&out_path)
+        .output()
+        .unwrap();
+    assert!(w.status.success(), "a tiny image is warn-only, not a panic: {}", String::from_utf8_lossy(&w.stderr));
+    assert!(String::from_utf8_lossy(&w.stderr).contains("warning"), "expected a short-image warning");
+    assert!(out_path.exists(), "file is still written");
+
+    // The wrapped file still inspects clean (the container itself is valid).
+    let i = bin().arg("inspect").arg(&out_path).output().unwrap();
+    assert!(i.status.success());
+
+    let _ = std::fs::remove_file(&bin_path);
+    let _ = std::fs::remove_file(&out_path);
+}
+
 /// wrap warns (on stderr) but still succeeds when word0 isn't a plausible initial SP.
 #[test]
 fn wrap_warns_on_bad_vector_table() {

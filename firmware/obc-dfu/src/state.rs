@@ -81,10 +81,13 @@ pub struct StagedRef {
 
 impl StagedRef {
     /// Build a [`StagedRef`] from a slice of extents, or `None` if it exceeds [`MAX_EXTENTS`] (the
-    /// too-fragmented case the armer turns into a user-facing "re-copy the file" error, §S4). Unused
-    /// capacity is zero-filled so equality is defined solely by the live prefix.
+    /// too-fragmented case the armer turns into a user-facing "re-copy the file" error, §S4) or if
+    /// `len`/`crc32` disagree with the embedded header's own `image_len`/`image_crc32` — the fields
+    /// are deliberately redundant (the installer reads them without re-decoding the header), so a
+    /// record where they diverge was never built from one coherent image. Unused capacity is
+    /// zero-filled so equality is defined solely by the live prefix.
     pub fn new(header: ImageHeader, len: u32, crc32: u32, extents: &[Extent]) -> Option<StagedRef> {
-        if extents.len() > MAX_EXTENTS {
+        if extents.len() > MAX_EXTENTS || len != header.image_len || crc32 != header.image_crc32 {
             return None;
         }
         let mut store = [Extent::default(); MAX_EXTENTS];
@@ -136,6 +139,11 @@ impl StagedRef {
         let count = u16::from_le_bytes(body.get(c..c + 2)?.try_into().ok()?) as usize;
         c += 2;
         if count > MAX_EXTENTS {
+            return None;
+        }
+        // The redundant fields MUST agree with the embedded header (spec §2.3) — a diverging record
+        // would leave the installer silently picking one of two truths, so it decodes to Idle instead.
+        if len != header.image_len || crc != header.image_crc32 {
             return None;
         }
         let mut extents = [Extent::default(); MAX_EXTENTS];
