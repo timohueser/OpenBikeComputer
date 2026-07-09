@@ -1,38 +1,40 @@
-# OpenBikeComputer UI translation catalog — GERMAN.
+# OpenBikeComputer UI translation catalog - GERMAN.
 #
-# STUB: values are English copies for now — real German content lands in L4 (#606).
-# Every key in en.toml must appear here in the SAME order (the build enforces presence);
-# see en.toml for the key->Msg naming convention.
+# Real German content (epic #602, L4 #606). Every key in en.toml appears here in the
+# SAME order (the build enforces presence); see en.toml for the key->Msg naming
+# convention and the #601 font repertoire (Latin-1 + Latin Extended-A) rule.
+# Fixed-width layouts (stat-tile captions, settings values, the waypoint panel) are
+# abbreviated to fit; format glue (leading/trailing spaces, \n) is preserved verbatim.
 
 # --- The Menu overlay ---
 [menu]
-title = "MENU"
-routes = "Routes"
-rides = "Rides"
+title = "MENÜ"
+routes = "Routen"
+rides = "Fahrten"
 pois = "POIs"
-map = "Map"
-settings = "Settings"
+map = "Karte"
+settings = "Einstellungen"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
-metric = "Metric"
+metric = "Metrisch"
 imperial = "Imperial"
-title = "UNITS"
-distance = "Distance"
-speed = "Speed"
-elevation = "Elevation"
+title = "EINHEITEN"
+distance = "Distanz"
+speed = "Tempo"
+elevation = "Höhe"
 
 # --- ClimbMode enum labels (Stats settings row) ---
 [climb_mode]
-off = "Off"
-manual = "Manual"
+off = "Aus"
+manual = "Manuell"
 auto = "Auto"
 
 # --- WaypointMode enum labels (Stats settings row) ---
 [waypoint_mode]
-off = "Off"
-approach = "Approach"
-always = "Always"
+off = "Aus"
+approach = "Annähern"
+always = "Immer"
 
 # --- IdleReturn enum labels (Power settings picker) ---
 [idle]
@@ -40,176 +42,176 @@ s15 = "15 s"
 s30 = "30 s"
 m1 = "1 min"
 m5 = "5 min"
-never = "Never"
+never = "Nie"
 
 # --- Month abbreviations (Date & Time local-time row) ---
 [month]
 jan = "Jan"
 feb = "Feb"
-mar = "Mar"
+mar = "Mär"
 apr = "Apr"
-may = "May"
+may = "Mai"
 jun = "Jun"
 jul = "Jul"
 aug = "Aug"
 sep = "Sep"
-oct = "Oct"
+oct = "Okt"
 nov = "Nov"
-dec = "Dec"
+dec = "Dez"
 
 # --- StatField names (the Add-field picker / Fields list) ---
 [statfield]
-speed = "Speed"
-avg_speed = "Avg speed"
-dist_done = "Dist. done"
-dist_to_go = "Dist. to go"
-climbed = "Climbed"
-to_climb = "To climb"
-grade = "Grade"
-elevation = "Elevation"
-ride_time = "Ride time"
-clock = "Clock"
-next_waypoint = "Next waypoint"
-waypoint_list = "Waypoint list"
+speed = "Tempo"
+avg_speed = "Ø Tempo"
+dist_done = "Gefahren"
+dist_to_go = "Restweg"
+climbed = "Aufstieg"
+to_climb = "Restanstieg"
+grade = "Steigung"
+elevation = "Höhe"
+ride_time = "Fahrzeit"
+clock = "Uhrzeit"
+next_waypoint = "Nächster WP"
+waypoint_list = "WP-Liste"
 
 # --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
 [tile]
-avg = "AVG "
-done = " DONE"
-to_go = " TO GO"
-climbed = "CLIMBED"
-to_climb = "TO CLIMB"
-grade = "GRADE"
-elev = "ELEV "
-ride = "RIDE"
-time = "TIME"
-next_wpt = "NEXT WPT"
-waypoints = "WAYPOINTS"
+avg = "Ø "
+done = " GEF"
+to_go = " REST"
+climbed = "HM AUF"
+to_climb = "HM REST"
+grade = "STEIGUNG"
+elev = "HÖHE "
+ride = "FAHRZEIT"
+time = "UHRZEIT"
+next_wpt = "NÄ. WP"
+waypoints = "WEGPUNKTE"
 
 # --- The Climb (ClimbPro) riding screen ---
 [climb]
-title = "CLIMB"
-no_climb = "No climb"
-not_on_climb = "Not on a climb"
-to_climb = "TO CLIMB"
-to_go = " TO GO"
-grade = "GRADE"
-avg_grad = "AVG GRAD"
+title = "ANSTIEG"
+no_climb = "Kein Anstieg"
+not_on_climb = "Nicht im Anstieg"
+to_climb = "HM REST"
+to_go = " REST"
+grade = "STEIGUNG"
+avg_grad = "Ø STEIG."
 
 # --- The riding Map ---
 [map]
-no_gps_fix = "No GPS Fix"
-off_route = "off route "
+no_gps_fix = "Kein GPS-Fix"
+off_route = "abseits "
 
 # --- The Statistics riding screen ---
 [stats]
 title = "STATS"
-no_gps = "no GPS"
-no_route = "No route loaded"
-off = "off "
-grade = "grade "
+no_gps = "kein GPS"
+no_route = "Keine Route geladen"
+off = "ab "
+grade = "Steig. "
 
 # --- The Settings list ---
 [settings]
-title = "SETTINGS"
-datetime = "Date & Time"
-units = "Units"
-bike_type = "Bike type"
-stats = "Stats"
-display = "Display"
-power = "Power"
+title = "OPTIONEN"
+datetime = "Datum & Zeit"
+units = "Einheiten"
+bike_type = "Fahrradtyp"
+stats = "Statistik"
+display = "Anzeige"
+power = "Energie"
 bluetooth = "Bluetooth"
-language = "Language"
-reset = "Reset"
+language = "Sprache"
+reset = "Zurücksetzen"
 
 # --- Date & Time settings screen ---
 [datetime]
-title = "DATE & TIME"
-gps_clock = "GPS clock"
-gps_fix = "GPS fix"
-searching = "Searching for fix"
-local_time = "Local time"
+title = "DATUM & ZEIT"
+gps_clock = "GPS-Uhr"
+gps_fix = "GPS-Fix"
+searching = "Suche nach Fix"
+local_time = "Ortszeit"
 offset = "Offset"
-date = "DATE"
-time = "TIME"
+date = "DATUM"
+time = "ZEIT"
 utc = "UTC "
 
 # --- Stats settings screen ---
 [set_stats]
-title = "STATS"
-pages = "Pages"
-pages_sub = "auto-flip"
-fields = "Fields"
-fields_sub = "panels & order"
-climb = "Climb"
-climb_sub = "climb panel"
-waypoints = "Waypoints"
-waypoints_sub = "chip"
+title = "STATISTIK"
+pages = "Seiten"
+pages_sub = "autom."
+fields = "Felder"
+fields_sub = "Anordnung"
+climb = "Anstieg"
+climb_sub = "Panel"
+waypoints = "Wegpunkte"
+waypoints_sub = "Chip"
 
 # --- Display settings screen ---
 [display]
-title = "DISPLAY"
-clock = "Clock"
-clock_sub = "on map"
-scale_bar = "Scale bar"
-scale_bar_sub = "on map"
-idle = "Idle"
-idle_sub = "timeout"
+title = "ANZEIGE"
+clock = "Uhr"
+clock_sub = "auf Karte"
+scale_bar = "Maßstab"
+scale_bar_sub = "auf Karte"
+idle = "Ruhe"
+idle_sub = "Timeout"
 
 # --- Power settings screen ---
 [power]
-title = "POWER"
-gps_fix = "GPS Fix"
-gps_fix_sub = "interval"
-power_save = "Power save"
-power_save_sub = "low power"
+title = "ENERGIE"
+gps_fix = "GPS-Fix"
+gps_fix_sub = "Intervall"
+power_save = "Sparmodus"
+power_save_sub = "wenig Strom"
 
 # --- Bluetooth settings screen ---
 [bluetooth]
 title = "BLUETOOTH"
 radio = "Bluetooth"
-radio_sub = "radio"
+radio_sub = "Funk"
 status = "Status"
-paired = "Paired"
-yes = "yes"
-no = "no"
-forget = "Forget phone"
-off = "Off"
-connected = "Connected"
-advertising = "Advertising"
+paired = "Gekoppelt"
+yes = "ja"
+no = "nein"
+forget = "Entkoppeln"
+off = "Aus"
+connected = "Verbunden"
+advertising = "Sichtbar"
 
 # --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
 [language]
-title = "LANGUAGE"
+title = "SPRACHE"
 
 # --- Stat Fields editor screen ---
 [fields]
-title = "FIELDS"
-add = "ADD"
+title = "FELDER"
+add = "NEU"
 
 # --- Add-field picker screen ---
 [add_field]
-title = "ADD FIELD"
-all_added = "All fields added"
-all_added_sub = "Remove one to swap"
+title = "NEUES FELD"
+all_added = "Alle Felder aktiv"
+all_added_sub = "Erst eins entfernen"
 
 # --- Factory-reset settings screen ---
 [reset]
-title = "RESET"
-complete = "Reset complete"
-restarting = "Restarting"
-factory = "Factory reset"
-erases = "Erases all settings"
-saved_time = "& saved time."
-confirm = "Confirm"
-keep_holding = "Keep holding"
-hold_to_erase = "Hold to erase"
+title = "ZURÜCKSETZEN"
+complete = "Zurückgesetzt"
+restarting = "Neustart"
+factory = "Werksreset"
+erases = "Löscht alle Werte"
+saved_time = "& die Uhrzeit."
+confirm = "Bestätigen"
+keep_holding = "Weiter halten"
+hold_to_erase = "Zum Löschen halten"
 
 # --- Bike-type settings screen ---
 [bike_type]
-title = "BIKE TYPE"
-no_profiles = "No map profiles"
-no_profiles_sub = "Load a map to pick a bike type"
+title = "FAHRRADTYP"
+no_profiles = "Keine Profile"
+no_profiles_sub = "Karte laden für Radtyp"
 
 # --- POI category menu ---
 [poi_menu]
@@ -217,97 +219,97 @@ title = "POIS"
 
 # --- POI list screen ---
 [poi_list]
-no_position = "No position"
-no_position_sub = "No GPS fix yet"
-no_pois = "No POIs nearby"
-no_pois_sub = "None in this map"
+no_position = "Keine Position"
+no_position_sub = "Noch kein GPS-Fix"
+no_pois = "Keine POIs"
+no_pois_sub = "Keine in der Nähe"
 
 # --- POI detail screen ---
 [poi_detail]
 title = "POI"
-hours_not_listed = "Hours not listed"
-closed_today = "Closed today"
-today = "Today"
-open = "OPEN"
-closed = "CLOSED"
+hours_not_listed = "Zeiten unbekannt"
+closed_today = "Heute geschl."
+today = "Heute"
+open = "OFFEN"
+closed = "GESCHL."
 
 # --- BLE pairing passkey card ---
 [passkey]
-title = "PAIRING"
-enter_code = "Enter this code"
-on_phone = "on your phone"
+title = "KOPPLUNG"
+enter_code = "Code eingeben"
+on_phone = "am Handy"
 
 # --- Rides list screen ---
 [rides]
-title = "RIDES"
-no_rides = "No rides yet"
-no_rides_sub = "Record a ride to see it here"
-recording = "Recording"
-not_synced = "not synced"
+title = "FAHRTEN"
+no_rides = "Keine Fahrten"
+no_rides_sub = "Fahrt aufzeichnen"
+recording = "Aufnahme"
+not_synced = "nicht sync."
 
 # --- Route menu screen ---
 [route_menu]
-title = "ROUTES"
-no_routes = "No routes yet"
-no_routes_sub = "Import a GPX file"
-in_use = "In use"
+title = "ROUTEN"
+no_routes = "Keine Routen"
+no_routes_sub = "GPX-Datei laden"
+in_use = "Aktiv"
 
 # --- Route overview screen ---
 [route_overview]
 title = "ROUTE"
-no_route = "No route"
-no_route_sub = "Back to the list"
-distance = "DISTANCE"
-climb = "CLIMB"
-descent = "DESCENT"
-bike_type = "BIKE TYPE"
-start_ride = "START RIDE"
-loading_profile = "loading profile"
+no_route = "Keine Route"
+no_route_sub = "Zurück zur Liste"
+distance = "DISTANZ"
+climb = "ANSTIEG"
+descent = "ABSTIEG"
+bike_type = "FAHRRADTYP"
+start_ride = "LOSFAHREN"
+loading_profile = "Lade Profil"
 
 # --- Route-received / route-updated popups ---
 [route_received]
-title = "ROUTE RECEIVED"
-start_ride = "Start ride"
-dismiss = "Dismiss"
-route_removed = "Route removed"
-updated_title = "ROUTE UPDATED"
-active_route = "Active route"
-nav_follows = "Navigation follows"
-new_version = "the new version"
+title = "ROUTE ERHALTEN"
+start_ride = "Fahrt starten"
+dismiss = "Verwerfen"
+route_removed = "Route entfernt"
+updated_title = "ROUTE AKTUAL."
+active_route = "Aktive Route"
+nav_follows = "Navigation folgt"
+new_version = "der neuen Version"
 
 # --- Route swap / active-route prompt ---
 [route_swap]
-received_title = "ROUTE RECEIVED"
-active_title = "ROUTE ACTIVE"
-swap = "Swap route"
-save_new = "Save & new"
-cancel = "Cancel"
-route_removed = "Route removed"
-recording = "Recording a ride"
+received_title = "ROUTE ERHALTEN"
+active_title = "ROUTE AKTIV"
+swap = "Route tauschen"
+save_new = "Sichern & neu"
+cancel = "Abbrechen"
+route_removed = "Route entfernt"
+recording = "Fahrt läuft"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
 [nav_route]
-create_route = "Create route"
-cancel = "Cancel"
-title = "CREATE ROUTE"
-finding = "Finding a route..."
-too_far_1 = "Too far to"
-too_far_2 = "route here"
-not_found_1 = "Couldn't find"
-not_found_2 = "a route."
+create_route = "Route erstellen"
+cancel = "Abbrechen"
+title = "ROUTE ERSTELLEN"
+finding = "Suche Route..."
+too_far_1 = "Zu weit zum"
+too_far_2 = "Routen hier"
+not_found_1 = "Keine Route"
+not_found_2 = "gefunden."
 
 # --- Ride-control (pause) page ---
 [ride_control]
-title = "PAUSED"
-resume = "Resume"
-finish = "Finish"
-discard = "Discard"
-ride_time = "RIDE TIME"
-distance = "DISTANCE"
-climb = "CLIMB"
+title = "PAUSE"
+resume = "Weiter"
+finish = "Beenden"
+discard = "Verwerfen"
+ride_time = "FAHRZEIT"
+distance = "DISTANZ"
+climb = "ANSTIEG"
 
 # --- Route-less ride start card ---
 [ride_start]
-title = "RIDE"
-start_ride = "Start ride"
-back = "Back"
+title = "FAHRT"
+start_ride = "Fahrt starten"
+back = "Zurück"
