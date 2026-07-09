@@ -13,9 +13,10 @@
 # only as a deliberate, reviewed decision.
 #
 # Usage:
-#   ./repack.sh grimsel [switzerland.osm.pbf]
-#   ./repack.sh monaco  [monaco.osm.pbf]
-#   ./repack.sh all     [switzerland.osm.pbf] [monaco.osm.pbf]
+#   ./repack.sh grimsel      [switzerland.osm.pbf]
+#   ./repack.sh grimsel-demo [switzerland.osm.pbf]
+#   ./repack.sh monaco       [monaco.osm.pbf]
+#   ./repack.sh all          [switzerland.osm.pbf] [monaco.osm.pbf]
 #
 # With no source argument the current Geofabrik snapshot is downloaded (the
 # Switzerland file is ~600 MB). Requires `osmium` (brew install osmium-tool)
@@ -34,6 +35,14 @@ PRESET="$FIRMWARE_DIR/../packer/presets/default.json"
 # --- Pinned provenance (canonical — do not derive from fixture headers) -----
 GRIMSEL_SOURCE_URL="https://download.geofabrik.de/europe/switzerland-latest.osm.pbf"
 GRIMSEL_BBOX="8.15034,46.48261,8.46007,46.72070" # Grimsel Pass region (lon,lat,lon,lat)
+# grimsel-demo: the landing-page live-demo map (epic #624 S4, #629). A tight
+# corridor hand-picked around the `grimsel-climb.gpx` track (which spans
+# 8.291,46.561 -> 8.340,46.654), padded ~2 km each side so the demo tours have
+# accommodation POIs + a routable nav graph around the ride (verified: the POI
+# reroute plans a real route to the nearest Lodging). NOT a shared test fixture —
+# shipped in the wasm only; shrinks the payload ~5x vs the full grimsel.obcm.
+# Canonical + hand-picked — do NOT self-source from the grimsel-demo header.
+GRIMSEL_DEMO_BBOX="8.26,46.54,8.37,46.67" # Grimsel climb corridor, demo-only
 MONACO_SOURCE_URL="https://download.geofabrik.de/europe/monaco-latest.osm.pbf"
 MONACO_BBOX="7.39,43.71,7.47,43.77" # Monaco principality, tight
 # -----------------------------------------------------------------------------
@@ -66,6 +75,15 @@ do_grimsel() {
     repack grimsel "$src" "$GRIMSEL_BBOX"
 }
 
+do_grimsel_demo() {
+    local src="${1:-}"
+    if [[ -z "$src" ]]; then
+        src="$WORK/switzerland.osm.pbf"
+        fetch "$GRIMSEL_SOURCE_URL" "$src"
+    fi
+    repack grimsel-demo "$src" "$GRIMSEL_DEMO_BBOX"
+}
+
 do_monaco() {
     local src="${1:-}"
     if [[ -z "$src" ]]; then
@@ -77,13 +95,15 @@ do_monaco() {
 
 case "${1:-}" in
 grimsel) do_grimsel "${2:-}" ;;
+grimsel-demo) do_grimsel_demo "${2:-}" ;;
 monaco) do_monaco "${2:-}" ;;
 all)
     do_grimsel "${2:-}"
+    do_grimsel_demo "${2:-}"
     do_monaco "${3:-}"
     ;;
 *)
-    echo "usage: $0 grimsel|monaco|all [source.osm.pbf ...]" >&2
+    echo "usage: $0 grimsel|grimsel-demo|monaco|all [source.osm.pbf ...]" >&2
     exit 2
     ;;
 esac

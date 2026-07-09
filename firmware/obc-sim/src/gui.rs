@@ -334,7 +334,7 @@ impl SimGui {
     /// Everything below — app, render path, control panel — is shared with the native sim.
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn new_web() -> Self {
-        let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
+        let bytes = include_bytes!("../assets/grimsel-demo.obcm").to_vec();
         let mut g = SimGui::new(bytes, crate::Args::web_default());
 
         // Select the embedded demo route and open a session so its line + ride stats show.
@@ -344,7 +344,7 @@ impl SimGui {
         }
         // Auto-play the embedded ride so the page opens on a moving map. `render_to_texture`
         // restarts it at the summit (see there).
-        if let Ok(track) = Track::parse(include_str!("../assets/grimsel-climb.gpx")) {
+        if let Ok(track) = Track::parse(include_str!("../assets/grimsel-climb-demo.gpx")) {
             let mut player = GpxPlayer::new(track);
             // 3× a normal climbing pace keeps the map moving without a blur.
             player.set_speed(3.0);
