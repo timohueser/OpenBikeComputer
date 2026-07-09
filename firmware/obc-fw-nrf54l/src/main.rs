@@ -145,6 +145,11 @@ mod ride;
 // Persistent device settings over on-chip RRAM (the SD-independent settings store); boot-load +
 // save-on-dirty are wired in `run_app`.
 mod settings;
+// The app-side DFU armer (epic #615 S4, #619): the board driver over `obc_dfu::armer` — stage
+// scan + rollback snapshot (adapters in `sd.rs`), the boot-state page write (via `settings.rs`),
+// the debug-link status stream, and the ride loop's trial confirm. In every build; the
+// `dfu-install` trigger itself rides the `debug-uart` link until S5's UI lands.
+mod dfu;
 // Real GPS (SAM-M10Q) + altimeter (BMP581) on a shared TWIM30 I²C bus — the concrete transport + the
 // event-driven sensor task. Compiled only on the **real-sensor** build (the default: neither `synth`
 // nor `debug-uart`), since `synth`/`debug-uart` supply the location source instead.
@@ -553,16 +558,28 @@ async fn vcom_rx_task(mut rx: BufferedUarteRx<'static, peripherals::SERIAL20>) {
     }
 }
 
-/// VCOM TX ← telemetry: send one compact status line each time the app publishes telemetry (~2 Hz via
-/// `set_telemetry`), so the host's readout updates without the device polling or flooding the link. The
-/// buffered UARTE chunks the line to DMA itself, so no manual packet splitting is needed (the telemetry
-/// line ≤192 B fits the TX ring); just loop until the whole line is queued.
+/// VCOM TX ← telemetry + DFU status: send one compact line each time the app publishes telemetry
+/// (~2 Hz via `set_telemetry`) or the DFU armer queues a `D` status line (S4, #619 — the on-glass
+/// gate's phase/error readout), so the host's readout updates without the device polling or
+/// flooding the link. The buffered UARTE chunks the line to DMA itself, so no manual packet
+/// splitting is needed (both lines ≤192 B fit the TX ring); just loop until the whole line is queued.
 #[cfg(feature = "debug-uart")]
 #[embassy_executor::task]
 async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
+    use embassy_futures::select::{select, Either};
     loop {
-        let t = obc_platform::debug_link::wait_telemetry().await;
-        let line = obc_platform::debug_link::format_telemetry(&t);
+        let line: heapless::String<192> =
+            match select(obc_platform::debug_link::wait_telemetry(), obc_platform::debug_link::wait_dfu_status()).await
+            {
+                Either::First(t) => obc_platform::debug_link::format_telemetry(&t),
+                Either::Second(s) => {
+                    let mut d = heapless::String::new();
+                    let _ = d.push_str("D ");
+                    let _ = d.push_str(&s);
+                    let _ = d.push('\n');
+                    d
+                }
+            };
         let mut bytes = line.as_bytes();
         while !bytes.is_empty() {
             match tx.write(bytes).await {
@@ -599,6 +616,11 @@ async fn main(_spawner: Spawner) {
 
     // Paint the stack now (still shallow) so the ride loop's high-water guard can read the peak.
     stackmeter::paint();
+
+    // The boot banner: which build is running, as `pkg-version+fw_git` (the DIS Firmware Revision
+    // string, A4). This is the line the DFU on-glass gate reads to prove the device came back as
+    // the staged version after an install (epic #615 S4).
+    info!("obc-fw-nrf54l {=str}+{=str}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT"));
 
     // Why did this boot happen? (#349) `RESETREAS` @ 0x5010_E600 (the secure RESET block; raw MMIO
     // — the same precedent as the VPR00/EGU20 registers in `ls021_flpr`). A **watchdog** reset

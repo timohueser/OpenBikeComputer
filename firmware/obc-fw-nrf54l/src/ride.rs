@@ -416,6 +416,11 @@ pub(crate) async fn run_app(
     // just completed) gets one trailing redraw to clear its on-screen bar — the falling edge the
     // charging redraw below would otherwise miss now that a cancelled long-press emits no gesture.
     let mut prev_hold_p = 0.0f32;
+    // The DFU trial confirm (epic #615 S4, #619) is anchored at "first frame presented AND SD
+    // mounted" — precisely the first successful `render_present` below (main mounts the card and
+    // faults out *before* this loop can run, so storage being live is already implied here; a
+    // boot that can't reach a presented frame never confirms, and S3's rollback fires next boot).
+    let mut trial_confirm_pending = true;
 
     // Settings: seed the app from the persistent RRAM store at boot (a blank/corrupt page decodes to
     // `None` → defaults), then persist on any change the settings screens make. One brief lock,
@@ -804,6 +809,31 @@ pub(crate) async fn run_app(
             app.debug_start_nav(from, to, "Bench");
         }
 
+        // ── DFU install request (epic #615 S4, #619), the create-route drain shape ──
+        // The `dfu-install` debug command posts the *same app-level request* the S5 update screen
+        // will post; this drain is the single execution path either way, running with exclusive
+        // storage access under the pass's store lock. Guards mirror what S5's menu entry will
+        // grey out: never mid-recording (the arm ends in a reboot — a live ride would be lost)
+        // and never over an unconverted ride save (`pending_save` is RAM state; rebooting drops
+        // it and the next fresh ride would truncate the unconverted TRACK.OBT). On success
+        // `run_install` never returns (it resets into the bootloader); on failure it has already
+        // streamed the typed error and the loop just keeps riding.
+        #[cfg(feature = "debug-uart")]
+        if obc_platform::debug_link::take_dfu_install() {
+            app.request_dfu_install();
+        }
+        if app.take_dfu_request() {
+            if app.activity.is_tracking() {
+                crate::dfu::status("refused: a ride is recording -- finish it first");
+            } else if storage.as_ref().is_some_and(sd::Storage::has_pending_save) {
+                crate::dfu::status("refused: a ride save is pending -- try again in a moment");
+            } else if let Some(s) = storage.as_mut() {
+                crate::dfu::run_install(s, settings_store, &mut wdt).await;
+            } else {
+                crate::dfu::status("refused: no SD card");
+            }
+        }
+
         let active = app.activity.active_route;
         // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't yank the
         // camera off it (`synth` build only — the host feed and the real GPS stream absolute positions).
@@ -1059,6 +1089,19 @@ pub(crate) async fn run_app(
                 // reader-build failure rather than faulting.
                 if !fp.ok {
                     pending_map_redraw = true;
+                }
+
+                // ── DFU trial confirm (epic #615 S4, #619), once, at the health anchor ──
+                // A frame just landed on glass and the SD mounted at boot: if this boot is a
+                // trial (`Trial { installed, .. }` on the boot-state page), write
+                // `Idle { installed }` — the whole confirm — and hand the app the one-time
+                // "updated to vX" fact for S5's toast. A failed first present retries the
+                // anchor on a later pass; an unconfirmed trial rolls back next boot by design.
+                if trial_confirm_pending && fp.ok {
+                    trial_confirm_pending = false;
+                    if let Some(installed) = crate::dfu::confirm_trial(settings_store) {
+                        app.notify_update_confirmed(installed.fw_version_str());
+                    }
                 }
                 // A map frame carries the map render stats; a non-map (menu / Statistics / Home) frame
                 // is just a screen redraw + push, so log it as such — no meaningless lod/feat/chunks.
