@@ -401,6 +401,84 @@ impl IdleReturn {
     }
 }
 
+/// The UI language (epic #602). A device-only setting, cycled by the Language settings screen's
+/// value picker and persisted in the codec next to [`waypoint_mode`](Settings::waypoint_mode). Only
+/// the on-glass **preference** ships here (L1); the translation catalog that actually reads it lands
+/// later in the epic — until then every string stays English regardless of this value.
+///
+/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+/// byte always decodes to the same language (an unknown byte sanitises to the default, [`En`]).
+///
+/// [`En`]: Language::En
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Language {
+    /// English — the default.
+    En = 0,
+    /// German.
+    De = 1,
+    /// French.
+    Fr = 2,
+    /// Spanish.
+    Es = 3,
+}
+
+impl Default for Language {
+    /// **English** out of the box — the language every string is authored in; the other three are
+    /// opt-in once the catalog lands.
+    fn default() -> Self {
+        Language::En
+    }
+}
+
+impl Language {
+    /// The ordered picker values (the left/right walk order), English first.
+    const ORDER: [Language; 4] = [Language::En, Language::De, Language::Fr, Language::Es];
+
+    /// The label for the Language screen's value picker — each language's **endonym** (its own name
+    /// for itself), so the row reads to a speaker who can't yet read the current UI language. The
+    /// accented forms (`Français` / `Español`) render via the Latin font extension (#601).
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Language::En => "English",
+            Language::De => "Deutsch",
+            Language::Fr => "Français",
+            Language::Es => "Español",
+        }
+    }
+
+    /// Walk the picker `n` detents through [`ORDER`](Language::ORDER), wrapping at both ends — the
+    /// Language row's left/right value step.
+    #[inline]
+    pub fn stepped(self, n: i32) -> Self {
+        let i = Self::ORDER.iter().position(|&v| v == self).unwrap_or(0);
+        let len = Self::ORDER.len() as i32;
+        let j = (i as i32 + n).rem_euclid(len) as usize;
+        Self::ORDER[j]
+    }
+
+    /// The next language in the ring — the Language row's press action (one detent forward, like a
+    /// [`stepped(1)`](Language::stepped)).
+    #[inline]
+    pub fn cycled(self) -> Self {
+        self.stepped(1)
+    }
+
+    /// Rebuild from a stored byte, sanitising an unknown value to the default ([`En`](Language::En))
+    /// — the decode-side clamp, exactly like the other codec fields.
+    #[inline]
+    fn from_byte(b: u8) -> Self {
+        match b {
+            0 => Language::En,
+            1 => Language::De,
+            2 => Language::Fr,
+            3 => Language::Es,
+            _ => Language::default(),
+        }
+    }
+}
+
 /// Wrap `v` by `n` steps within the inclusive range `lo..=hi`. Shared by every
 /// [`DateTime`] stepper so a turn past either end rolls round (year 2099→2020, hour 23→0),
 /// matching the list selection's [`step_selection`](crate::screen::list::step_selection) feel.
@@ -715,6 +793,12 @@ pub struct Settings {
     /// pulls across — a BLE Config write must never flip the rider's on-glass chrome. Default
     /// **Approach** (the chip surfaces only as a waypoint nears).
     pub waypoint_mode: WaypointMode,
+    /// The UI language (epic #602, the Language settings screen cycles it). **Device-only**, like
+    /// [`climb_mode`](Settings::climb_mode): deliberately *not* one of the BLE-writable fields
+    /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across — the phone never repicks the
+    /// rider's on-device language. Default **English** (nothing consumes it yet; the catalog lands
+    /// later in the epic).
+    pub language: Language,
 }
 
 impl Default for Settings {
@@ -736,6 +820,7 @@ impl Default for Settings {
             map_scale_bar: true,
             bike_profile_idx: 0,
             waypoint_mode: WaypointMode::default(),
+            language: Language::default(),
         }
     }
 }
@@ -784,8 +869,9 @@ impl Settings {
 /// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
 /// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511); v6 appended
 /// the `idle_return` byte; v7 appended the `map_clock` + `map_scale_bar` bytes; v8 appended the
-/// `bike_profile_idx` byte (routing-v2 N5, #538); v9 appended the `waypoint_mode` byte (epic #523).
-pub const VERSION: u8 = 9;
+/// `bike_profile_idx` byte (routing-v2 N5, #538); v9 appended the `waypoint_mode` byte (epic #523);
+/// v10 appended the `language` byte (epic #602).
+pub const VERSION: u8 = 10;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -794,7 +880,7 @@ pub const VERSION: u8 = 9;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = WAYPOINT_OFF + 1;
+const PAYLOAD_LEN: usize = LANGUAGE_OFF + 1;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
@@ -815,6 +901,8 @@ const SCALE_BAR_OFF: usize = MAP_CLOCK_OFF + 1;
 const PROFILE_OFF: usize = SCALE_BAR_OFF + 1;
 /// Byte offset of the `waypoint_mode` byte (the v9 tail, right after `bike_profile_idx`).
 const WAYPOINT_OFF: usize = PROFILE_OFF + 1;
+/// Byte offset of the `language` byte (the v10 tail, right after `waypoint_mode`).
+const LANGUAGE_OFF: usize = WAYPOINT_OFF + 1;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -867,6 +955,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[PROFILE_OFF] = s.bike_profile_idx;
     // v9 tail: the Map waypoint-chip mode.
     b[WAYPOINT_OFF] = s.waypoint_mode as u8;
+    // v10 tail: the UI language.
+    b[LANGUAGE_OFF] = s.language as u8;
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -921,6 +1011,9 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // The v9 waypoint-chip mode: an unknown byte sanitises to the default (Approach), like the
         // other enum codec fields.
         waypoint_mode: WaypointMode::from_byte(b[WAYPOINT_OFF]),
+        // The v10 UI language: an unknown byte sanitises to the default (English), like the other
+        // enum codec fields.
+        language: Language::from_byte(b[LANGUAGE_OFF]),
     };
     s.sanitize();
     Some(s)
@@ -1162,6 +1255,7 @@ mod tests {
             map_scale_bar: false,
             bike_profile_idx: 3,
             waypoint_mode: WaypointMode::Always,
+            language: Language::De,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -1306,7 +1400,6 @@ mod tests {
     /// the rider's on-glass chrome).
     #[test]
     fn waypoint_mode_round_trips_and_is_device_only() {
-        assert_eq!(VERSION, 9, "the waypoint mode is the v9 layout (settings reset on flash)");
         assert_eq!(Settings::default().waypoint_mode, WaypointMode::Approach, "the chip defaults to Approach");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v8.
         assert_eq!(ENCODED_LEN, 96, "the v9 byte doesn't cross a 16-byte RRAM line");
@@ -1330,6 +1423,64 @@ mod tests {
         let mut app = Settings { waypoint_mode: WaypointMode::Off, ..Settings::default() };
         app.adopt_ble_fields(&Settings { waypoint_mode: WaypointMode::Always, ..Settings::default() });
         assert_eq!(app.waypoint_mode, WaypointMode::Off, "adopt_ble_fields leaves the waypoint mode alone");
+    }
+
+    /// The v10 tail: the UI language round-trips every value, defaults **English**, sanitises an
+    /// out-of-range byte back to English, and is device-only — [`adopt_ble_fields`] must never pull
+    /// it across (a phone can't repick the rider's on-device language). Also pins that the appended
+    /// byte still fits the same 16-byte RRAM line, so the device carve is unchanged.
+    #[test]
+    fn language_round_trips_and_is_device_only() {
+        assert_eq!(VERSION, 10, "the language is the v10 layout (settings reset on flash)");
+        assert_eq!(Settings::default().language, Language::En, "the UI language defaults to English");
+        // The one new byte still fits inside the same 16-byte RRAM line rounding as v9.
+        assert_eq!(ENCODED_LEN, 96, "the v10 byte doesn't cross a 16-byte RRAM line");
+
+        // Each language round-trips through the codec byte-for-byte.
+        for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
+            let s = Settings { language: lang, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "{lang:?} round-trips");
+        }
+
+        // An out-of-range stored byte (a newer writer, a bit-flip the CRC missed) sanitises to the
+        // default English — re-stamp the CRC so only the payload byte is "wrong".
+        let mut b = encode(&Settings { language: Language::De, ..Settings::default() });
+        b[LANGUAGE_OFF] = 200;
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        let got = decode(&b).expect("valid CRC → Some, just sanitised");
+        assert_eq!(got.language, Language::En, "an unknown language byte falls back to English");
+
+        // A v9 blob (the previous layout) is version-rejected → the host falls back to defaults, so
+        // the language reads English — the established cross-version contract (no in-place upgrade).
+        let mut old = encode(&Settings { language: Language::De, ..Settings::default() });
+        old[0] = 9;
+        let crc = crc16(&old[0..PAYLOAD_LEN]);
+        old[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode(&old), None, "an old-version blob is rejected (→ host uses defaults, language En)");
+
+        // Device-only: a BLE blob's language never lands via the #456 coherence merge.
+        let mut app = Settings { language: Language::De, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { language: Language::Es, ..Settings::default() });
+        assert_eq!(app.language, Language::De, "adopt_ble_fields leaves the language alone");
+    }
+
+    /// The picker's left/right walk order (wrapping at both ends) and the press cycle.
+    #[test]
+    fn language_stepping_and_cycling() {
+        // Right walks En → De → Fr → Es, wrapping back to English; left is the mirror.
+        assert_eq!(Language::En.stepped(1), Language::De);
+        assert_eq!(Language::Es.stepped(1), Language::En, "wraps past the last language");
+        assert_eq!(Language::En.stepped(-1), Language::Es, "wraps past the start");
+        assert_eq!(Language::En.stepped(2), Language::Fr, "multi-detent flicks compound");
+        // Press cycles one forward, exactly like a single right detent.
+        assert_eq!(Language::Fr.cycled(), Language::Es);
+        assert_eq!(Language::Es.cycled(), Language::En, "the press ring wraps");
+        // The endonyms, in order.
+        assert_eq!(Language::En.name(), "English");
+        assert_eq!(Language::De.name(), "Deutsch");
+        assert_eq!(Language::Fr.name(), "Français");
+        assert_eq!(Language::Es.name(), "Español");
     }
 
     /// The v3 device-name tail: set → truncate on a char boundary at the 48-byte cap, and a

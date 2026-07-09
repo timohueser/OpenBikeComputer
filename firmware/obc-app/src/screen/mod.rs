@@ -65,8 +65,8 @@ pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AddFieldScreen, BikeTypeScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, PowerScreen, ResetScreen,
-    SettingsScreen, StatFieldsScreen, StatsScreen, UnitsScreen,
+    AddFieldScreen, BikeTypeScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, LanguageScreen, PowerScreen,
+    ResetScreen, SettingsScreen, StatFieldsScreen, StatsScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use warning::{WarningFlags, WarningScreen};
@@ -401,6 +401,9 @@ screens! {
     Power(PowerScreen) => Settings,
     /// The Bluetooth screen: radio on/off, status line, Paired row, hold-guarded Forget phone.
     Bluetooth(BluetoothScreen) => Settings,
+    /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
+    /// the translation catalog that reads it lands later in the epic.
+    Language(LanguageScreen) => Settings,
     Reset(ResetScreen) => Settings,
 }
 
