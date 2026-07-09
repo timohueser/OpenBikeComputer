@@ -118,6 +118,13 @@ in seconds — the biggest UX win for a device switched off at each stop.
 
 ## Build & flash
 
+**One-time prerequisite (#617): flash the bootloader.** The app is linked at `0x8000` —
+the 32 KB below it belongs to [`obc-boot`](../obc-boot/README.md), which must be on the
+chip once (`cd ../obc-boot && cargo run --release`; it survives every app reflash, since
+probe-rs only writes each ELF's own address range). A device without it shows no LED
+blink and never boots; the recovery recipe is in that README. Everything below — flashing,
+RTT, `cargo rtt`, the flash-twice retry quirk — then works exactly as before.
+
 From this crate directory (it's a standalone crate built for `thumbv8m.main-none-eabihf`;
 `cargo run` flashes + streams defmt/RTT over the on-board J-Link via probe-rs):
 

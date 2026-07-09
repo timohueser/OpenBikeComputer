@@ -68,23 +68,35 @@ mod contract {
 /// #347 to 4 KB — the scan blob is ~820 B with a shallow leaf stack, and the M33's deep-render
 /// stack margin needs every carved KB back.) The M33 reaches the FLPR region only by hardcoded address (`memcpy` + the
 /// handshake word), never via the linker, so shrinking `RAM` is all that's needed here. It *also*
-/// carves the top **4 KB of FLASH** into the named `SETTINGS` region for the persistent settings
-/// store (#193).
+/// carves the RRAM tail (epic #615 S2, #617): the app is linked at **0x8000** — the 32 KB below
+/// belong to the `obc-boot` bootloader (`firmware/obc-boot`, its own static `memory.x` — keep the
+/// two maps in agreement) — and the top two 4 KB pages are the named `BOOT_STATE` (the obc-dfu
+/// handoff page, #617) and `SETTINGS` (the persistent settings store, #193) regions:
+///
+/// ```text
+///   0x0000_0000  obc-boot          32 KB
+///   0x0000_8000  app slot        1484 KB   (FLASH below)
+///   0x0017_B000  BOOT_STATE page    4 KB
+///   0x0017_C000  SETTINGS page      4 KB   (unchanged address — settings survive the carve)
+/// ```
 fn flpr_memory_x() -> String {
     use contract::*;
     format!(
         "\
 MEMORY
 {{
-    FLASH    : ORIGIN = 0x00000000, LENGTH = 1520K
-    SETTINGS : ORIGIN = 0x0017C000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
-    RAM      : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
+    FLASH      : ORIGIN = 0x00008000, LENGTH = 0x173000 /* app slot (1484K) above the 32K obc-boot (#617) */
+    BOOT_STATE : ORIGIN = 0x0017B000, LENGTH = 4K    /* DFU boot-state handoff page (#617, OBCU_Spec.md §2) */
+    SETTINGS   : ORIGIN = 0x0017C000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
+    RAM        : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
     /* Reserved for the FLPR (not linked by the M33; see the generated flpr.ld):
          FLPR_RAM {FLPR_RAM_BASE:#010X} .. {CONTROL_ADDR:#010X}  ({flpr_kb}K)   FLPR image + stack (INITPC = {FLPR_RAM_BASE:#010X})
          SHARED   {CONTROL_ADDR:#010X} .. {SRAM_TOP:#010X}  ({shared_kb}K)   cross-core handshake page */
 }}
 /* Base of the carved settings page (#193). */
 PROVIDE(__settings_base = ORIGIN(SETTINGS));
+/* Base of the carved boot-state page (#617) — the armer's write target (S4). */
+PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
 ",
         ram_kb = (FLPR_RAM_BASE - SRAM_BASE) / 1024,
         flpr_kb = (CONTROL_ADDR - FLPR_RAM_BASE) / 1024,
