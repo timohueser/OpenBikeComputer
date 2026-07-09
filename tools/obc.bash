@@ -1,23 +1,29 @@
 # Bash completion for the `obc` dev command (source from ~/.bashrc; `obc setup` does this).
 # Completes task names, flash options, and — the good part — the actual .obcm / .gpx /
 # .osm.pbf / preset files you'd pass, drawn from the repo root, the maps/ dir, and the
-# web-builder cache. Works for `obc`, `./obc`, and `just`.
+# web-builder cache. Works for `obc` and `./obc`.
 
-# Find the repo root from the `obc` on PATH (following symlinks).
-_obc_root() {
+# The tools/ dir (holds obc + justfile), found from the `obc` on PATH (following symlinks).
+_obc_toolsdir() {
   local o; o="$(command -v obc 2>/dev/null)" || return 1
   o="$(readlink -f "$o" 2>/dev/null)" || return 1
   local d; d="$(dirname "$o")"
   [[ -f "$d/justfile" ]] && printf '%s\n' "$d"
 }
 
+# The repo root — the parent of tools/ — used for map/gpx/preset paths.
+_obc_root() {
+  local t; t="$(_obc_toolsdir)" || return 1
+  dirname "$t"
+}
+
 # Task names, from the justfile (falls back to a static list).
 _obc_tasks() {
-  local root; root="$(_obc_root)"
-  if [[ -n "$root" ]] && command -v just >/dev/null 2>&1; then
-    just --justfile "$root/justfile" --summary 2>/dev/null && return
+  local t; t="$(_obc_toolsdir)"
+  if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
+    just --justfile "$t/justfile" --summary 2>/dev/null && return
   fi
-  echo "sim flash uart debug pack web build test fmt bench check-device doctor setup"
+  echo "sim flash uart debug rtt pack web build test fmt bench check check-device doctor setup"
 }
 
 # .obcm maps across the repo root, maps/, and the web-builder cache.

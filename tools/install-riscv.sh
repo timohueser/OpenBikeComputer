@@ -6,7 +6,7 @@
 set -euo pipefail
 
 VER="${RISCV_XPACK_VER:-14.2.0-3}"          # bump here if the pin ages out
-ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TOOLS="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # this tools/ dir (holds obc.local)
 DEST="$HOME/.local/xPacks"
 
 if command -v riscv-none-elf-gcc riscv64-elf-gcc riscv64-unknown-elf-gcc >/dev/null 2>&1; then
@@ -43,8 +43,8 @@ if [[ ! -x "$BIN" ]]; then
 fi
 [[ -x "$BIN" ]] || { echo "✗ toolchain not found at $BIN after extract" >&2; exit 1; }
 
-# Point obc.local at it (create/append, don't duplicate).
-LOCAL="$ROOT/obc.local"
+# Point tools/obc.local at it (create/append, don't duplicate).
+LOCAL="$TOOLS/obc.local"
 if ! { [[ -f "$LOCAL" ]] && grep -q '^RISCV_GCC=' "$LOCAL"; }; then
   printf 'RISCV_GCC="%s"\n' "$BIN" >> "$LOCAL"
   echo "» wrote RISCV_GCC to obc.local"

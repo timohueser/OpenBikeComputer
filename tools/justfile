@@ -1,13 +1,15 @@
-# OpenBikeComputer dev tasks — invoke with `obc <task>` (see `obc setup`), or `just <task>`.
-# Personal defaults (map/gpx/preset/toolchain paths) live in a gitignored `obc.local`
-# at the repo root — copy obc.local.example to obc.local and edit. `OBC_DRY_RUN=1 obc …`
-# prints the underlying commands without running them.
+# OpenBikeComputer dev tasks — invoke with `obc <task>` (see `obc setup`), or
+# `just --justfile tools/justfile <task>`. This lives in tools/; OBC_ROOT is its parent
+# (the repo root). Personal defaults (map/gpx/preset/toolchain paths) live in a gitignored
+# `tools/obc.local` — copy tools/obc.local.example and edit. `OBC_DRY_RUN=1 obc …` prints
+# the underlying commands without running them.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments := true
 
-export OBC_ROOT := justfile_directory()
-lib := justfile_directory() / "scripts/obc-dev.sh"
+export OBC_ROOT  := parent_directory(justfile_directory())   # the repo root
+export OBC_TOOLS := justfile_directory()                     # this tools/ dir
+lib := justfile_directory() / "obc-dev.sh"
 
 # List the available tasks.
 default:
@@ -292,8 +294,8 @@ doctor *args:
       wasm)     _run rustup target add wasm32-unknown-unknown ;;
       just)     _run cargo install just ;;
       probe)    _run cargo install probe-rs-tools --locked ;;
-      riscv)    _run bash "$OBC_ROOT/scripts/install-riscv.sh" ;;
-      geos)     _run bash "$OBC_ROOT/scripts/install-geos.sh" ;;
+      riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
+      geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
       venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/packer/requirements.txt" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
@@ -306,13 +308,12 @@ setup:
     set -euo pipefail
     source "{{lib}}"; obc_init
     mkdir -p "$HOME/.local/bin"
-    ln -sf "$OBC_ROOT/obc" "$HOME/.local/bin/obc"
-    _ok "linked ~/.local/bin/obc → $OBC_ROOT/obc"
-    comp="$OBC_ROOT/completions/obc.bash"
-    line="[ -f \"$comp\" ] && source \"$comp\""
-    if ! grep -qF "$comp" "$HOME/.bashrc" 2>/dev/null; then
-      printf '\n# OpenBikeComputer `obc` completion\n%s\n' "$line" >> "$HOME/.bashrc"
-      _ok "added completion to ~/.bashrc"
-    else _ok "completion already in ~/.bashrc"; fi
+    ln -sf "$OBC_TOOLS/obc" "$HOME/.local/bin/obc"
+    _ok "linked ~/.local/bin/obc → $OBC_TOOLS/obc"
+    comp="$OBC_TOOLS/obc.bash"; rc="$HOME/.bashrc"
+    # Strip any prior obc-completion lines first (so a relocated tools/ dir self-heals), then add.
+    if [[ -f "$rc" ]]; then grep -vE 'OpenBikeComputer `obc` completion|/obc\.bash"' "$rc" > "$rc.obc-tmp" || true; mv "$rc.obc-tmp" "$rc"; fi
+    printf '\n# OpenBikeComputer `obc` completion\n[ -f "%s" ] && source "%s"\n' "$comp" "$comp" >> "$rc"
+    _ok "completion wired into ~/.bashrc → $comp"
     case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) _warn "~/.local/bin is not on PATH — add it in ~/.bashrc";; esac
     _say "open a new shell (or: source ~/.bashrc) to pick up 'obc' + completion"

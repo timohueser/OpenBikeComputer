@@ -1,5 +1,6 @@
-# Personal defaults for the `obc` dev tasks. Copy to `obc.local` (gitignored) and edit.
+# Personal defaults for the `obc` dev tasks. Copy to `tools/obc.local` (gitignored) and edit.
 # This file is sourced as bash, so it's plain KEY=value (no `export` needed).
+# Paths are relative to the repo root (the parent of this tools/ dir).
 
 # Default map for `obc sim` when you don't pass one. If unset, obc uses the newest
 # .obcm in the repo root (then maps/, then the web-builder cache).

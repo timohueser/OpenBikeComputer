@@ -26,8 +26,9 @@ _run() {
 # ---- setup ------------------------------------------------------------------
 # Source personal defaults (gitignored). Do this first so OBC_* overrides win.
 obc_init() {
-  [[ -n "${OBC_ROOT:-}" ]] || { echo "obc: OBC_ROOT unset (run via ./obc)" >&2; return 1; }
-  [[ -f "$OBC_ROOT/obc.local" ]] && source "$OBC_ROOT/obc.local"
+  [[ -n "${OBC_ROOT:-}" ]] || { echo "obc: OBC_ROOT unset (run via the obc wrapper)" >&2; return 1; }
+  local local_file="${OBC_TOOLS:-$OBC_ROOT}/obc.local"
+  [[ -f "$local_file" ]] && source "$local_file"
   # remember where the user invoked us, before recipes cd around
   OBC_PWD="${OBC_PWD:-$PWD}"
   return 0
