@@ -79,6 +79,68 @@ fn center_and_right_align_about_the_anchor() {
     assert!(rmaxx <= 40, "right-aligned text ends at x<=40 (got {rmaxx})");
 }
 
+/// Latin-1 / Latin Extended-A coverage — European route, ride and POI names (issue #489).
+/// The three text tiers ship the extended glyph set; only the digits-only `Huge` clock tier stays
+/// ASCII. We assert on *glyph identity*: the set of painted pixels for a char, captured relative to
+/// the cell, so "renders as a real glyph, not the `?` fallback" is a concrete pixel comparison.
+mod latin {
+    use super::*;
+
+    /// Painted (`RED`) pixels of a single-char string in `font`, as sorted cell-relative coords.
+    fn glyph(s: &str, font: Font) -> Vec<(i32, i32)> {
+        let mut b = Buf::new(40, 72); // fits the tallest text cell (Display 16×32) with margin
+        draw_text(&mut b, s, Point::new(2, 2), font, TextAlign::Left, RED);
+        let mut px: Vec<(i32, i32)> =
+            (0..b.h).flat_map(|y| (0..b.w).map(move |x| (x, y))).filter(|&(x, y)| b.get(x, y) == RED).collect();
+        px.sort_unstable();
+        px
+    }
+
+    #[test]
+    fn umlauts_and_accents_render_as_their_own_glyphs() {
+        // Every umlaut/accent named in the issue draws a glyph distinct from the `?` fallback and
+        // from its bare ASCII base — i.e. the diacritic is really there, in every text tier.
+        let fallback = glyph("?", Font::Body);
+        for font in [Font::Label, Font::Body, Font::Display] {
+            for (accented, base) in [("ä", "a"), ("ö", "o"), ("ü", "u"), ("é", "e"), ("è", "e"), ("à", "a")] {
+                let g = glyph(accented, font);
+                assert!(!g.is_empty(), "{accented} in {font:?} drew nothing");
+                assert_ne!(g, glyph("?", font), "{accented} in {font:?} rendered as the '?' fallback");
+                assert_ne!(g, glyph(base, font), "{accented} in {font:?} looks identical to '{base}'");
+            }
+        }
+        // ß has no ASCII base but must still be its own glyph, not '?'.
+        assert_ne!(glyph("ß", Font::Body), fallback, "ß rendered as '?'");
+    }
+
+    #[test]
+    fn latin_extended_a_is_covered() {
+        // Beyond Latin-1: Czech/Polish/Hungarian diacritics common in Central-European place names.
+        for c in ["č", "š", "ž", "ł", "ő", "ű"] {
+            assert_ne!(glyph(c, Font::Body), glyph("?", Font::Body), "{c} rendered as the '?' fallback");
+        }
+    }
+
+    #[test]
+    fn hoehenweg_ride_name_is_not_mangled() {
+        // The #489 repro: the pinned ride fixture "Höhenweg" used to render "H?he..". The ö now
+        // carries pixels the '?' fallback never would.
+        let good = glyph("Höhenweg", Font::Body);
+        let mangled = glyph("H?henweg", Font::Body);
+        assert_ne!(good, mangled, "Höhenweg still renders like the old H?henweg");
+    }
+
+    #[test]
+    fn unmapped_chars_still_fall_back_to_question_mark() {
+        // The mapping only reaches Latin Extended-A; anything past it (€, an emoji, CJK) must still
+        // land on the '?' replacement glyph rather than a wrong slot or a panic.
+        let fallback = glyph("?", Font::Body);
+        for c in ["€", "→", "中", "🚲"] {
+            assert_eq!(glyph(c, Font::Body), fallback, "{c} should fall back to '?'");
+        }
+    }
+}
+
 /// Pack 8-bit RGB into RGB565 (the style/format color space the renderer quantizes from).
 fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)

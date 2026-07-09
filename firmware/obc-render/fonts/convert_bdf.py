@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 """Convert a BDF bitmap font into an embedded-graphics `ImageRaw<BinaryColor>` glyph strip.
 
-The on-device text path (`obc-render`) draws through embedded-graphics' `MonoFont`, whose
-built-in ASCII fonts are a 1bpp bitmap *strip*: the printable ASCII range (0x20..=0x7F, 96
-glyphs) laid out 16 glyphs per row over 6 rows, packed MSB-first with each strip row
-byte-aligned. We reuse eg's public `mapping::ASCII`, so matching that exact layout is all
-that is needed — no custom glyph table. Strip width is `16 * cell_w`, always a multiple of
-8, so the stride is exact and rows never need padding.
+The on-device text path (`obc-render`) draws through embedded-graphics' `MonoFont`, a 1bpp
+bitmap *strip*: glyphs laid out 16 per row, packed MSB-first with each strip row byte-aligned.
+A glyph's slot in the strip is its index in the font's `glyph_mapping`, so all we have to do is
+lay glyphs out in that same index order — no custom glyph table beyond the mapping string.
+Strip width is `16 * cell_w`, always a multiple of 8, so the stride is exact and rows never
+need padding.
+
+Two charsets, selected by `--charset` (default `ascii`), each matching an
+embedded-graphics `StrGlyphMapping` exactly so the strip and the mapping agree:
+
+  * `ascii` — printable ASCII 0x20..=0x7F (96 glyphs, 6 rows); eg's `mapping::ASCII`.
+  * `latin` — ASCII + Latin-1 Supplement (0xA0..=0xFF) + Latin Extended-A (0x100..=0x17F),
+    320 glyphs over 20 rows. Covers umlauts/accents for European route & POI names
+    (ä ö ü ß é è à č š ž ł ő ű …). Matches the custom `LATIN` mapping in `font_data.rs`;
+    its ASCII glyphs occupy the first 6 rows unchanged, so an `ascii` strip is a prefix
+    of the `latin` one (issue #489).
 
 Unlike a font whose every glyph fills the cell, a general BDF positions each glyph by its
 `BBX` offset relative to the baseline (`FONT_ASCENT` from the cell top). This compositor
@@ -18,16 +28,33 @@ reach sizes a font has no native cut for while keeping crisp pixel edges.
 `O`, for fonts like Terminus that draw a slashed/dotted zero.
 
 Usage:
-    python3 convert_bdf.py SRC.bdf OUT.raw [--scale N] [--deslash-zero]
+    python3 convert_bdf.py SRC.bdf OUT.raw [--charset ascii|latin] [--scale N] [--deslash-zero]
 """
 import sys
 
 GLYPHS_PER_ROW = 16
-FIRST, LAST = 0x20, 0x7F  # eg's printable ASCII range → 96 glyphs, 6 rows
+
+# Character sets as ordered inclusive codepoint ranges. The strip index of a codepoint is its
+# position when the ranges are walked in order — the exact scheme embedded-graphics'
+# `StrGlyphMapping` uses (see `font_data.rs`), so strip layout and glyph_mapping stay in lockstep.
+CHARSETS = {
+    "ascii": [(0x20, 0x7F)],
+    "latin": [(0x20, 0x7F), (0xA0, 0xFF), (0x100, 0x17F)],
+}
 
 
-def parse_bdf(path):
-    """Return (cell_w, cell_h, ascent, {codepoint: (bbx, rows)}).
+def charset_index(ranges):
+    """Map each codepoint in `ranges` to its consecutive strip index; return (index, count)."""
+    index, n = {}, 0
+    for lo, hi in ranges:
+        for cp in range(lo, hi + 1):
+            index[cp] = n
+            n += 1
+    return index, n
+
+
+def parse_bdf(path, wanted):
+    """Return (cell_w, cell_h, ascent, {codepoint: (bbx, rows)}) for codepoints in `wanted`.
 
     `bbx` is `(w, h, xoff, yoff)`; `rows[y]` a list of 0/1 of length `w`.
     """
@@ -60,7 +87,7 @@ def parse_bdf(path):
                 nbits = len(hexstr) * 4  # hex is byte-padded; MSB is the left pixel
                 rows.append([(val >> (nbits - 1 - x)) & 1 for x in range(bw)])
             i += 1 + bh
-            if FIRST <= (enc if enc is not None else -1) <= LAST:
+            if enc in wanted:
                 glyphs[enc] = (bbx, rows)
         i += 1
     if ascent is None:  # fall back to the bounding box: top of box above the baseline
@@ -95,8 +122,7 @@ def scale_grid(grid, s):
     return [[grid[y // s][x // s] for x in range(len(grid[0]) * s)] for y in range(len(grid) * s)]
 
 
-def build_strip(cell_w, cell_h, ascent, glyphs, scale):
-    count = LAST - FIRST + 1
+def build_strip(cell_w, cell_h, ascent, glyphs, index, count, scale):
     rows_of_glyphs = (count + GLYPHS_PER_ROW - 1) // GLYPHS_PER_ROW
     cw, ch = cell_w * scale, cell_h * scale
     strip_w, strip_h = GLYPHS_PER_ROW * cw, rows_of_glyphs * ch
@@ -104,8 +130,8 @@ def build_strip(cell_w, cell_h, ascent, glyphs, scale):
     grid = [[0] * strip_w for _ in range(strip_h)]
     for code, (bbx, rows) in glyphs.items():
         g = scale_grid(cell_grid(cell_w, cell_h, ascent, bbx, rows), scale)
-        gx0 = ((code - FIRST) % GLYPHS_PER_ROW) * cw
-        gy0 = ((code - FIRST) // GLYPHS_PER_ROW) * ch
+        gx0 = (index[code] % GLYPHS_PER_ROW) * cw
+        gy0 = (index[code] // GLYPHS_PER_ROW) * ch
         for y, gr in enumerate(g):
             for x, bit in enumerate(gr):
                 if bit:
@@ -135,19 +161,25 @@ def main():
         k = args.index("--scale")
         scale = int(args[k + 1])
         args = args[:k] + args[k + 2 :]
+    charset = "ascii"
+    if "--charset" in args:
+        k = args.index("--charset")
+        charset = args[k + 1]
+        args = args[:k] + args[k + 2 :]
     deslash = "--deslash-zero" in args
     args = [a for a in args if a != "--deslash-zero"]
-    if len(args) != 2:
+    if len(args) != 2 or charset not in CHARSETS:
         sys.exit(__doc__)
     src, dst = args
-    cell_w, cell_h, ascent, glyphs = parse_bdf(src)
+    index, count = charset_index(CHARSETS[charset])
+    cell_w, cell_h, ascent, glyphs = parse_bdf(src, set(index))
     if deslash and ord("O") in glyphs:
         glyphs[ord("0")] = glyphs[ord("O")]  # slash-free zero = the capital-O ring
-    data, (cw, ch), (sw, sh) = build_strip(cell_w, cell_h, ascent, glyphs, scale)
+    data, (cw, ch), (sw, sh) = build_strip(cell_w, cell_h, ascent, glyphs, index, count, scale)
     open(dst, "wb").write(data)
     cap = cap_height(cell_w, cell_h, ascent, glyphs) * scale
-    print(f"{dst}: cell {cw}x{ch} (x{scale})  strip {sw}x{sh}  {len(data)}B  "
-          f"cap={cap}px ({cap / 7.39:.2f}mm)  ascent={ascent * scale}")
+    print(f"{dst}: {charset} {len(glyphs)}/{count} glyphs  cell {cw}x{ch} (x{scale})  "
+          f"strip {sw}x{sh}  {len(data)}B  cap={cap}px ({cap / 7.39:.2f}mm)  ascent={ascent * scale}")
 
 
 if __name__ == "__main__":
