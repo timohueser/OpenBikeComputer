@@ -2,11 +2,15 @@
 
 The 32 KB first-stage bootloader for the SD-staged DFU path (epic #615): it reads
 the `BOOT_STATE` RRAM page, decodes it with the shared, host-tested
-[`obc-dfu`](../obc-dfu) crate (anything torn or blank decodes to `Idle`), blinks
-LED0 once as proof-of-life, and jumps to the app at `0x8000`. **S2 (#617) ships no
-install logic** — every decision currently resolves to the jump; S3 (#618) adds
-the verify → flash → trial → rollback engine. The byte formats and the boot
-decision table are normative in [`OBCU_Spec.md`](../../OBCU_Spec.md).
+[`obc-dfu`](../obc-dfu) crate (anything torn or blank decodes to `Idle`), and runs
+the **install engine** (S3, #618): `Armed` → CRC-verify the staged image over its
+raw SD block extents → flash the app slot via RRAMC → readback-verify → write
+`Trial` → reset; an unconfirmed `Trial` rolls back the same way. All install
+*sequencing* — pass ordering, retry counts, every failure edge — lives in
+`obc_dfu::engine` and is unit-tested there with mock IO; this crate only wires
+real SPI/RRAMC/GPIO into that engine (`src/sd.rs`, `src/install.rs`, `src/led.rs`)
+and acts on the outcome. The byte formats and the boot decision table are
+normative in [`OBCU_Spec.md`](../../OBCU_Spec.md).
 
 The RRAM layout (single source of truth for the app side:
 `../obc-fw-nrf54l/build.rs`; this crate's static [`memory.x`](memory.x) mirrors it):
@@ -17,6 +21,20 @@ The RRAM layout (single source of truth for the app side:
 0x0017_B000  BOOT_STATE page    4 KB   (the obc-dfu handoff page)
 0x0017_C000  SETTINGS page      4 KB   (the app's persistent settings, #193)
 ```
+
+## LED codes (LED0 — the bootloader's entire UI)
+
+| Pattern | Meaning |
+| :-- | :-- |
+| one short pulse | proof-of-life on every entry (then the app boots) |
+| slow heartbeat | verifying the staged image (nothing written yet) |
+| fast heartbeat | flashing the app slot / readback |
+| **2 blinks**, then boot | staged image invalid — arm cleared, old app intact |
+| **3 blinks**, pause, repeat | SD missing / read failing — retrying forever with backoff (reinsert card, or power cycle) |
+| **SOS**, forever | readback never matched after retries — halted; state still `Armed`, so a power cycle retries the install |
+
+Heartbeat rates scale with card throughput (a toggle per N 4 KB chunks); the
+counted codes and SOS are fixed-timing. No display, ever.
 
 ## Build
 
@@ -31,7 +49,8 @@ cd firmware/obc-boot
 cargo build --release
 
 # Debug build with defmt over RTT (never the shipping shape — the 32 KB budget is
-# measured with rtt OFF):
+# measured with rtt OFF). Also enables the DWT-based install throughput report
+# (verify/flash/readback wall time + KiB/s per phase).
 cargo build --release --features rtt
 ```
 
@@ -72,10 +91,19 @@ Symptoms of a missing piece: no LED blink and no boot at all → no bootloader a
 
 - **≤ 32 KB** flash (`.text` + `.rodata` + `.data`), CI-guarded via `llvm-size`.
   The `rtt` feature must never be load-bearing for the budget.
-- **Never panics**: all decode/decision logic lives upstream in `obc-dfu` (torn
-  page ⇒ `Idle` ⇒ jump), and unimplemented decision arms fall through to the jump
-  rather than `todo!()`.
+- **Never panics**: all decode/decision/sequencing logic lives upstream in
+  `obc-dfu` (torn page ⇒ `Idle` ⇒ jump; the engine is total over any page
+  content), and the IO adapters here carry no unwraps.
+- **Verify before erase**: the engine never writes the app slot until the staged
+  image's CRC has passed over the full extent chain — a bad `UPDATE.BIN` costs
+  nothing (host-tested, epic invariant 1).
 - **No executor, no timers, no FAT, no FLPR**: blocking embassy-nrf HAL only
-  (GPIO now; S3 adds blocking `Spim` + `Rramc`). The app starts the FLPR itself.
-- `main.rs` stays small (~150 lines) — review is the verification; there is no
-  on-target test harness.
+  (GPIO + blocking `Spim` + `Rramc`; the card delay source is a cycle-counted
+  busy-wait). `embedded_sdmmc::SdCard` is used **without** `VolumeManager` —
+  extents are pre-resolved absolute blocks, and `llvm-nm` on the release ELF
+  must show no FAT/volume symbols. The app starts the FLPR itself.
+- **Deliberate duplication**: SD pins/frequencies and the RRAM write idiom are
+  copied from the board crate (`obc-fw-nrf54l/src/sd.rs`, `src/main.rs`,
+  `src/settings.rs`) with cross-referencing comments — no shared pins module.
+- `main.rs` stays a thin driver (bring-up + outcome dispatch); review is the
+  verification for the wiring, the host tests are it for the sequencing.
