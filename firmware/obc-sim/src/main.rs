@@ -37,6 +37,9 @@ mod track;
 // In-memory `ByteSink` — the GPX import (native) and the nav router's emit (both builds) write
 // through it.
 mod vec_sink;
+// The JS ⇄ sim bridge for the landing page's guided feature demos (wasm only).
+#[cfg(target_arch = "wasm32")]
+mod web_api;
 use framebuffer::Framebuffer;
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::{RouteIndex, RouteReader};

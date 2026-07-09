@@ -88,36 +88,32 @@
     .nav-links .gh { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-weight: 600; }
     .nav-links .gh svg { width: 18px; height: 18px; }
 
-    /* ---------- hero ---------- */
-    .hero { position: relative; z-index: 1; }
-    .hero .wrap {
-      display: grid;
-      grid-template-columns: 1.08fr 0.92fr;
-      gap: 40px;
-      align-items: center;
-      padding: 40px 0 26px;
-    }
+    /* ---------- slim hero (text only; the device lives in the showcase below) ---------- */
+    .hero { position: relative; z-index: 1; text-align: center; }
+    .hero .wrap { padding: 34px 0 8px; }
     .eyebrow {
       text-transform: uppercase;
       letter-spacing: 0.26em;
       font-size: 12px;
       font-weight: 700;
       color: var(--forest);
-      margin: 0 0 16px;
+      margin: 0 0 14px;
     }
     h1 {
       font-family: var(--serif);
       font-weight: 700;
-      font-size: clamp(34px, 5vw, 56px);
-      line-height: 1.04;
+      font-size: clamp(30px, 4.4vw, 50px);
+      line-height: 1.05;
       letter-spacing: -0.01em;
-      margin: 0 0 18px;
+      margin: 0 auto 16px;
+      max-width: 18ch;
+      text-wrap: balance;
     }
     h1 em { font-style: italic; color: var(--coral); }
-    .lede { font-size: clamp(16px, 1.6vw, 18.5px); color: var(--ink-soft); max-width: 34rem; margin: 0 0 26px; }
+    .lede { font-size: clamp(15.5px, 1.5vw, 18px); color: var(--ink-soft); max-width: 40rem; margin: 0 auto 22px; }
     .lede strong { color: var(--ink); font-weight: 600; }
 
-    .cta { display: flex; flex-wrap: wrap; gap: 13px; align-items: center; }
+    .cta { display: flex; flex-wrap: wrap; gap: 13px; align-items: center; justify-content: center; }
     .btn {
       display: inline-flex; align-items: center; gap: 9px;
       font-family: var(--sans); font-size: 15px; font-weight: 600;
@@ -133,10 +129,13 @@
     .btn.ghost:hover { background: var(--parchment-3); }
     .btn.ghost svg { width: 18px; height: 18px; }
 
-    .microcopy { margin: 18px 0 0; font-size: 13.5px; color: var(--ink-soft); }
-    .microcopy b { color: var(--coral); font-weight: 700; }
+    /* ---------- showcase band: device + feature carousel, read together ---------- */
+    .showcase { position: relative; z-index: 1; padding: 28px 0 40px; }
+    .showcase-grid {
+      display: grid; grid-template-columns: 330px 1fr; gap: 46px; align-items: center;
+    }
 
-    /* ---------- device ---------- */
+    /* device */
     .device-col { display: flex; flex-direction: column; align-items: center; }
     .device-stage { position: relative; }
     canvas#device_canvas {
@@ -161,14 +160,15 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    .device-caption { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 22rem; }
-    .device-caption b { color: var(--ink); font-weight: 600; }
-
     /* On-screen device controls — drive the sim by tap (works on touch + desktop;
-       they dispatch the same key events the firmware already handles). */
+       they dispatch the same key events the firmware already handles). Greyed out while
+       a demo is driving the device; "take control" re-enables them. */
+    .controls-shell { margin-top: 14px; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 9px; }
     .controls {
-      margin: 13px 0 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+      display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+      transition: opacity .2s ease;
     }
+    .controls-shell.demo .controls { opacity: 0.38; pointer-events: none; }
     .ctl {
       font-family: var(--sans); font-size: 14px; font-weight: 600; color: var(--ink);
       background: var(--parchment-2); border: 1px solid var(--parchment-3);
@@ -180,11 +180,84 @@
     .ctl:hover { background: var(--parchment-3); }
     .ctl.pressed, .ctl:active { background: var(--wood); color: var(--parchment); transform: translateY(1px); }
     .ctl-arrow { font-size: 17px; line-height: 1; }
-    .ctl-hint { margin: 9px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
-    .ctl-hint kbd {
-      font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
-      background: var(--parchment-2); border: 1px solid var(--parchment-3);
-      border-radius: 4px; padding: 1px 5px;
+    .control-note { font-size: 12.5px; color: var(--ink-soft); display: flex; align-items: center; gap: 8px; min-height: 20px; text-align: center; }
+    .control-note .live { display: inline-flex; align-items: center; gap: 6px; color: var(--forest); font-weight: 700; }
+    .control-note .live .pulse {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--forest);
+      box-shadow: 0 0 0 0 rgba(60,107,57,0.5); animation: pulse 1.8s ease-out infinite;
+    }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(60,107,57,0.45); } 100% { box-shadow: 0 0 0 8px rgba(60,107,57,0); } }
+    .control-note button {
+      font-family: var(--sans); font-size: 12.5px; font-weight: 600; color: var(--forest);
+      background: none; border: none; cursor: pointer; padding: 0;
+      text-decoration: underline; text-underline-offset: 2px;
+    }
+
+    /* carousel */
+    .carousel { position: relative; }
+    .car-eyebrow {
+      text-transform: uppercase; letter-spacing: 0.2em; font-size: 11px; font-weight: 700;
+      color: var(--forest); margin: 0 0 12px;
+    }
+    .car-card {
+      background: linear-gradient(180deg, var(--parchment-2), var(--parchment));
+      border: 1px solid var(--parchment-3); border-radius: 18px; padding: 26px 28px 24px;
+      min-height: 316px; display: flex; flex-direction: column;
+      transition: opacity .22s ease, transform .22s ease;
+    }
+    .car-card.swap { opacity: 0; transform: translateY(6px); }
+    .car-card .kicker {
+      display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono);
+      font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: var(--coral);
+      text-transform: uppercase; margin: 0 0 10px;
+    }
+    .car-card .kicker .n { color: var(--ink-soft); }
+    .car-card h2 { font-family: var(--serif); font-size: clamp(22px, 2.6vw, 29px); margin: 0 0 10px; line-height: 1.12; }
+    .car-card .blurb { font-size: 15.5px; color: var(--ink-soft); margin: 0 0 18px; max-width: 34rem; }
+    .car-card .blurb b { color: var(--ink); font-weight: 600; }
+    .highlights { list-style: none; margin: 0 0 20px; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+    .highlights li { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: var(--ink); }
+    .highlights svg { flex: none; width: 17px; height: 17px; margin-top: 2px; stroke: var(--wood); fill: none; stroke-width: 2; }
+
+    /* live "now playing" strip inside the card */
+    .now {
+      margin-top: auto; display: flex; align-items: center; gap: 11px;
+      border-top: 1px solid var(--parchment-3); padding-top: 14px;
+    }
+    .now .badge {
+      flex: none; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+      color: var(--parchment); background: var(--wood); border-radius: 999px; padding: 4px 9px; text-transform: uppercase;
+    }
+    .now .label { font-size: 13.5px; color: var(--ink-soft); }
+    .now .label b { color: var(--ink); font-weight: 600; }
+    .ticks { display: flex; gap: 5px; margin-left: auto; flex: none; }
+    .ticks i { width: 15px; height: 5px; border-radius: 3px; background: var(--parchment-3); transition: background .2s ease; }
+    .ticks i.on { background: var(--coral); }
+    .ticks i.past { background: var(--wood); }
+
+    /* carousel nav */
+    .car-nav { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; }
+    .car-dots { display: flex; gap: 10px; }
+    .car-dots button {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--ink-soft);
+      background: none; border: none; cursor: pointer; padding: 4px 2px;
+    }
+    .car-dots button .pip { width: 9px; height: 9px; border-radius: 50%; background: var(--parchment-3); transition: background .16s; }
+    .car-dots button[aria-selected="true"] { color: var(--ink); }
+    .car-dots button[aria-selected="true"] .pip { background: var(--coral); }
+    .car-arrows { display: flex; gap: 8px; }
+    .arrow {
+      width: 40px; height: 40px; border-radius: 50%; cursor: pointer;
+      background: var(--parchment); border: 1.5px solid var(--wood); color: var(--ink);
+      display: inline-flex; align-items: center; justify-content: center; transition: background .14s ease;
+    }
+    .arrow:hover { background: var(--parchment-3); }
+    .arrow svg { width: 18px; height: 18px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .car-card, .arrow, .ctl, .controls { transition: none; }
+      .control-note .live .pulse, .spinner { animation: none !important; }
     }
 
     /* ---------- features ---------- */
@@ -213,21 +286,6 @@
     .card p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
     .card .tag { color: var(--coral); }
     .card .tag svg { stroke: var(--coral); }
-
-    /* ---------- the "one render path" highlight ---------- */
-    .highlight {
-      background: var(--ink); color: var(--parchment);
-      border-radius: 20px; padding: 38px clamp(24px, 4vw, 46px);
-      display: grid; grid-template-columns: 1.2fr 1fr; gap: 34px; align-items: center;
-    }
-    .highlight h2 { font-family: var(--serif); font-size: clamp(23px, 3vw, 30px); margin: 0 0 12px; color: #f3e9cf; }
-    .highlight p { margin: 0 0 14px; color: #d8caa8; font-size: 15.5px; }
-    .highlight .pipe {
-      font-family: var(--mono); font-size: 12.5px; line-height: 1.7;
-      color: #c7b88f; background: rgba(0,0,0,0.25); border: 1px solid rgba(234,223,192,0.12);
-      border-radius: 12px; padding: 16px 18px; white-space: pre; overflow-x: auto;
-    }
-    .highlight .pipe b { color: var(--amber); font-weight: 700; }
 
     /* ---------- specs strip ---------- */
     .specs { display: flex; flex-wrap: wrap; gap: 12px 30px; margin-top: 30px; }
@@ -263,12 +321,16 @@
     }
 
     /* ---------- responsive ---------- */
-    @media (max-width: 860px) {
-      .hero .wrap { grid-template-columns: 1fr; gap: 26px; padding-top: 26px; }
+    @media (max-width: 900px) {
+      .showcase-grid { grid-template-columns: 1fr; gap: 26px; justify-items: center; }
+      /* Device above the carousel on narrow screens. */
       .device-col { order: -1; }
-      .highlight { grid-template-columns: 1fr; gap: 22px; }
+      .carousel { width: min(480px, 100%); }
+      .car-card { min-height: 0; }
+    }
+    @media (max-width: 860px) {
       .features { grid-template-columns: 1fr; }
-      h1 { font-size: clamp(30px, 8vw, 40px); }
+      h1 { font-size: clamp(28px, 8vw, 40px); }
     }
     /* On phones the section links don't fit beside the brand — keep just the
        brand and the GitHub link, and let the page scroll to the sections. */
@@ -315,43 +377,76 @@
   </header>
 
   <main>
-    <!-- HERO -->
+    <!-- HERO (slim, text only) -->
     <section class="hero">
       <div class="wrap">
-        <div class="hero-copy">
-          <p class="eyebrow">Open-source bikepacking computer</p>
-          <h1>Your whole map.<br><em>Offline.</em> On your bars.</h1>
-          <p class="lede">
-            An open-source bikepacking computer with offline maps, route navigation, and
-            ride recording — built to go <strong>days off-grid</strong>. No account, no
-            subscription, no cloud. Your maps and your rides stay with you.
-          </p>
-          <div class="cta">
-            <a class="btn primary" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
-              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-              View on GitHub
-            </a>
-            <a class="btn ghost" href="docs/">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H12v18H5.5A1.5 1.5 0 0 1 4 19.5Z"/><path d="M20 4.5A1.5 1.5 0 0 0 18.5 3H12v18h6.5a1.5 1.5 0 0 0 1.5-1.5Z"/></svg>
-              Read the docs
-            </a>
-          </div>
-          <p class="microcopy"><b>Live, not a screenshot</b> — the device on the right is the actual firmware, compiled to your browser and replaying a ride.</p>
+        <p class="eyebrow">Live on the page — the actual firmware</p>
+        <h1>Your whole map. <em>Offline.</em> On your bars.</h1>
+        <p class="lede">
+          An open-source bikepacking computer with offline maps, route navigation, and
+          ride recording — built to go <strong>days off-grid</strong>. The device below is the
+          real firmware, compiled to your browser. Flip through the features and each plays out live.
+        </p>
+        <div class="cta">
+          <a class="btn primary" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            View on GitHub
+          </a>
+          <a class="btn ghost" href="docs/">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H12v18H5.5A1.5 1.5 0 0 1 4 19.5Z"/><path d="M20 4.5A1.5 1.5 0 0 0 18.5 3H12v18h6.5a1.5 1.5 0 0 0 1.5-1.5Z"/></svg>
+            Read the docs
+          </a>
         </div>
+      </div>
+    </section>
 
-        <div class="device-col">
-          <div class="device-stage">
-            <canvas id="device_canvas"></canvas>
-            <div id="loading_text"><span class="spinner"></span>Warming up the device…</div>
+    <!-- SHOWCASE: the live device + the feature carousel -->
+    <section class="showcase">
+      <div class="wrap">
+        <div class="showcase-grid">
+          <!-- device -->
+          <div class="device-col">
+            <div class="device-stage">
+              <canvas id="device_canvas"></canvas>
+              <div id="loading_text"><span class="spinner"></span>Warming up the device…</div>
+            </div>
+            <div class="controls-shell" id="controls_shell">
+              <div class="controls" role="group" aria-label="Device controls">
+                <button class="ctl ctl-arrow" data-key="ArrowLeft" aria-label="Scroll back" title="Scroll back">◂</button>
+                <button class="ctl" data-key="Enter">Select</button>
+                <button class="ctl" data-key="Backspace">Back</button>
+                <button class="ctl ctl-arrow" data-key="ArrowRight" aria-label="Scroll forward" title="Scroll forward">▸</button>
+              </div>
+              <div class="control-note" id="control_note"></div>
+            </div>
           </div>
-          <p class="device-caption"><b>Try it</b> — tap the controls to drive the device.</p>
-          <div class="controls" role="group" aria-label="Device controls">
-            <button class="ctl ctl-arrow" data-key="ArrowLeft" aria-label="Scroll back" title="Scroll back">◂</button>
-            <button class="ctl" data-key="Enter">Select</button>
-            <button class="ctl" data-key="Backspace">Back</button>
-            <button class="ctl ctl-arrow" data-key="ArrowRight" aria-label="Scroll forward" title="Scroll forward">▸</button>
+
+          <!-- feature carousel -->
+          <div class="carousel">
+            <p class="car-eyebrow">Feature tour</p>
+            <div class="car-card" id="car_card">
+              <span class="kicker" id="car_kicker"></span>
+              <h2 id="car_title"></h2>
+              <p class="blurb" id="car_blurb"></p>
+              <ul class="highlights" id="car_highlights"></ul>
+              <div class="now">
+                <span class="badge">On device</span>
+                <span class="label" id="now_label"></span>
+                <span class="ticks" id="now_ticks"></span>
+              </div>
+            </div>
+            <div class="car-nav">
+              <div class="car-dots" id="car_dots" role="tablist" aria-label="Choose a feature"></div>
+              <div class="car-arrows">
+                <button class="arrow" id="car_prev" aria-label="Previous feature">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+                </button>
+                <button class="arrow" id="car_next" aria-label="Next feature">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                </button>
+              </div>
+            </div>
           </div>
-          <p class="ctl-hint">Or on a keyboard: <kbd>←</kbd> <kbd>→</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back — hold for a long-press.</p>
         </div>
       </div>
     </section>
@@ -466,6 +561,232 @@
         btn.addEventListener('pointercancel', release);
         btn.addEventListener('click', function (e) { e.preventDefault(); });
       });
+    })();
+
+    // ---------------------------------------------------------------------------
+    // Feature carousel + auto-looping demo engine.
+    //
+    // Each feature owns a *sequence of gesture steps* that drives the real WASM sim
+    // through the JS⇄sim bridge (obc-sim's web_api.rs): `obc_tour_cmd(cmd)` pushes a
+    // gesture / playback / baseline command, and `obc_tour_state()` reports the sim's
+    // current screen name. A step issues its command(s) and then WAITS by polling
+    // obc_tour_state() until the sim reaches the target screen — never a fixed sleep —
+    // so the demo stays in lock-step with the device, including the real (variable-
+    // duration) route planner. After each screen is confirmed, we hold a deliberate
+    // dwell so a reader can follow along. The loop replays continuously; paging to
+    // another feature restarts it with that feature's sequence. `enter` resets the sim
+    // to a clean riding baseline before each run; `exit` (take control) hands the
+    // device back to the visitor and re-enables the manual controls.
+    // ---------------------------------------------------------------------------
+    (function () {
+      "use strict";
+
+      var DWELL_MS = 2900; // deliberate pause held AFTER each confirmed screen (unhurried).
+      var POLL_MS = 90;    // obc_tour_state() polling cadence.
+      var STEP_TIMEOUT_MS = 20000; // soft cap; a slow planner just keeps polling to the next loop.
+
+      // The bridge exports live on `window.wasmBindings` once Trunk's bootstrap has run
+      // the wasm module. Look them up defensively so the page can't throw before the sim
+      // has warmed up.
+      function bindings() { return window.wasmBindings || null; }
+      function cmd(s) { var b = bindings(); if (b && b.obc_tour_cmd) b.obc_tour_cmd(s); }
+      function screen() { var b = bindings(); return (b && b.obc_tour_state) ? b.obc_tour_state() : ""; }
+      function ready() { var b = bindings(); return !!(b && b.obc_tour_cmd && b.obc_tour_state); }
+
+      // The carousel pages. The FIRST page is *interactive* (no `steps`): the controls stay
+      // enabled and the sim just rides the ambient loop, for the visitor to drive. Each later page
+      // is a *staged demo* — an ordered step list that drives the real sim while the controls are
+      // greyed. Per step: `cmds` are pushed in order in one frame (the sim drains them in order);
+      // `until` is the screen to reach before the dwell; `label` is the "now playing" caption.
+      var FEATURES = [
+        {
+          tag: "Live",
+          title: "Ride it yourself",
+          blurb: "The device below is the real firmware, compiled to your browser, replaying a ride up the Grimsel Pass. <b>Drive it yourself</b> with the controls — exactly like the computer on your bars.",
+          highlights: [
+            "The map follows your position as you climb",
+            "Scroll to zoom · hold Back for the menu",
+            "Everything runs on-device — no signal, no cloud"
+          ]
+          // No `steps` → interactive: controls stay enabled and the sim just rides.
+        },
+        {
+          tag: "Navigation",
+          title: "Reroute to a point of interest",
+          blurb: "Need shelter halfway up a climb? Open the map's points of interest, pick the nearest one, and the device <b>plans a route there on the spot</b> — fully offline.",
+          highlights: [
+            "Nearest water, food & shelter, read from the offline map",
+            "On-device routing — no phone, no signal",
+            "The new route drops straight onto your map"
+          ],
+          steps: [
+            { cmds: ["enter"], until: "Map", label: "Riding the Grimsel climb" },
+            { cmds: ["backhold"], until: "Menu", label: "Hold Back to open the menu" },
+            { cmds: ["turn:2", "press"], until: "PoiMenu", label: "Open Points of Interest" },
+            { cmds: ["turn:2", "press"], until: "PoiList", label: "Browse to accommodation" },
+            { cmds: ["press"], until: "PoiDetail", label: "Open the nearest place" },
+            { cmds: ["press"], until: "NavConfirm", label: "Create a route to it" },
+            { cmds: ["press"], until: "NavPlanning", label: "Planning the route…" },
+            { cmds: [], until: ["RouteOverview", "NavFail"], label: "Your new route, on the map" }
+          ]
+        },
+        {
+          tag: "Climbing",
+          title: "See the climb ahead",
+          blurb: "One button cycles your riding views. Reach the <b>ClimbPro-style profile</b> and every ramp ahead is coloured by gradient, with distance and metres left to the summit.",
+          highlights: [
+            "Gradient-coloured bars, green through red",
+            "Distance and ascent remaining to the top",
+            "One button cycles map · stats · climb"
+          ],
+          steps: [
+            { cmds: ["enter"], until: "Map", label: "Riding the Grimsel climb" },
+            { cmds: ["back"], until: "Statistics", label: "Back → ride statistics" },
+            { cmds: ["back"], until: "Climb", label: "Back → the climb ahead" },
+            { cmds: ["back"], until: "Map", label: "Back closes the ring" }
+          ]
+        }
+      ];
+
+      // ---- elements ----
+      var card = document.getElementById("car_card");
+      var kicker = document.getElementById("car_kicker");
+      var titleEl = document.getElementById("car_title");
+      var blurbEl = document.getElementById("car_blurb");
+      var highlightsEl = document.getElementById("car_highlights");
+      var nowLabel = document.getElementById("now_label");
+      var ticksEl = document.getElementById("now_ticks");
+      var dotsEl = document.getElementById("car_dots");
+      var prevBtn = document.getElementById("car_prev");
+      var nextBtn = document.getElementById("car_next");
+      var controlsShell = document.getElementById("controls_shell");
+      var controlNote = document.getElementById("control_note");
+
+      var fi = 0;          // current feature index
+      var runToken = 0;    // bumped to cancel an in-flight loop on a feature switch
+
+      // Control-note copy per mode.
+      var LIVE_NOTE = '<span class="live"><span class="pulse"></span>Live</span> · your turn — ◂ ▸ scroll · Select · Back · hold Back for the menu';
+      var DEMO_NOTE = '<span class="live"><span class="pulse"></span>Playing demo</span> · controls paused — open “Ride it yourself” to drive';
+
+      function isInteractive(f) { return !f.steps || f.steps.length === 0; }
+
+      function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+      // Resolve once the sim reports one of `targets`, or after a soft timeout (we don't
+      // hard-fail: the loop just continues, and the next pass re-syncs from `enter`).
+      function until(target, token) {
+        var targets = Array.isArray(target) ? target : [target];
+        return new Promise(function (resolve) {
+          var t0 = performance.now();
+          (function poll() {
+            if (token !== runToken) return resolve(false);
+            if (targets.indexOf(screen()) >= 0) return resolve(true);
+            if (performance.now() - t0 > STEP_TIMEOUT_MS) return resolve(false);
+            setTimeout(poll, POLL_MS);
+          })();
+        });
+      }
+
+      function renderTicks(steps, active) {
+        while (ticksEl.firstChild) ticksEl.removeChild(ticksEl.firstChild);
+        steps.forEach(function (_, i) {
+          var b = document.createElement("i");
+          b.className = i < active ? "past" : i === active ? "on" : "";
+          ticksEl.appendChild(b);
+        });
+      }
+
+      function setNowStep(steps, i) {
+        nowLabel.innerHTML = "<b>" + steps[i].label + "</b>";
+        renderTicks(steps, i);
+      }
+
+      function setNowLive(label) {
+        nowLabel.innerHTML = "<b>" + label + "</b>";
+        renderTicks([], 0); // interactive page has no stages
+      }
+
+      // Loop a staged feature's demo until cancelled (runToken bumped by a feature switch).
+      async function runDemo(token) {
+        // Wait for the bridge to come up (the wasm may still be warming).
+        while (!ready() && token === runToken) { await sleep(150); }
+        var steps = FEATURES[fi].steps;
+        while (token === runToken) {
+          for (var i = 0; i < steps.length; i++) {
+            if (token !== runToken) return;
+            setNowStep(steps, i);
+            steps[i].cmds.forEach(cmd);
+            await until(steps[i].until, token);
+            if (token !== runToken) return;
+            await sleep(DWELL_MS);
+          }
+        }
+      }
+
+      // Reset the sim to the clean live ride (controls enabled) for an interactive page.
+      async function goAmbient(token) {
+        while (!ready() && token === runToken) { await sleep(150); }
+        if (token === runToken) cmd("ambient");
+      }
+
+      function renderCard(fade) {
+        var f = FEATURES[fi];
+        function fill() {
+          kicker.innerHTML = f.tag + ' <span class="n">· ' + (fi + 1) + " / " + FEATURES.length + "</span>";
+          titleEl.textContent = f.title;
+          blurbEl.innerHTML = f.blurb;
+          while (highlightsEl.firstChild) highlightsEl.removeChild(highlightsEl.firstChild);
+          f.highlights.forEach(function (h) {
+            var li = document.createElement("li");
+            li.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>' + h + "</span>";
+            highlightsEl.appendChild(li);
+          });
+          card.classList.remove("swap");
+        }
+        if (fade) { card.classList.add("swap"); setTimeout(fill, 150); } else { fill(); }
+        Array.prototype.forEach.call(dotsEl.children, function (c, i) {
+          c.setAttribute("aria-selected", i === fi ? "true" : "false");
+        });
+      }
+
+      // Enter the current page's mode: interactive (controls on, ambient live ride) or a staged
+      // demo (controls greyed, looping through the steps). Bumping runToken cancels any prior loop.
+      function applyMode() {
+        var token = ++runToken;
+        var f = FEATURES[fi];
+        if (isInteractive(f)) {
+          controlsShell.classList.remove("demo");
+          controlNote.innerHTML = LIVE_NOTE;
+          setNowLive("Navigating the Grimsel — your turn");
+          goAmbient(token);
+        } else {
+          controlsShell.classList.add("demo");
+          controlNote.innerHTML = DEMO_NOTE;
+          runDemo(token);
+        }
+      }
+
+      function goToFeature(i, fade) {
+        fi = (i + FEATURES.length) % FEATURES.length;
+        renderCard(fade);
+        applyMode();
+      }
+
+      // Build the feature dots (labelled with the feature's title).
+      FEATURES.forEach(function (f, i) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("role", "tab");
+        b.innerHTML = '<span class="pip"></span>' + f.title;
+        b.addEventListener("click", function () { goToFeature(i, true); });
+        dotsEl.appendChild(b);
+      });
+      prevBtn.addEventListener("click", function () { goToFeature(fi - 1, true); });
+      nextBtn.addEventListener("click", function () { goToFeature(fi + 1, true); });
+
+      renderCard(false);
+      applyMode(); // page 1 is interactive → controls enabled, ambient live ride
     })();
   </script>
 </body>

@@ -333,6 +333,15 @@ macro_rules! screens {
                     $( Screen::$variant(_) => ScreenKind::$kind, )+
                 }
             }
+
+            /// This screen's variant name (e.g. `"Map"`, `"PoiList"`, `"NavPlanning"`), generated
+            /// from the one table so it can't drift. The web simulator's guided-tour bridge publishes
+            /// it so the landing page can advance a demo only once the sim reached the target screen.
+            pub fn name(&self) -> &'static str {
+                match self {
+                    $( Screen::$variant(_) => stringify!($variant), )+
+                }
+            }
         }
     };
 }

@@ -40,6 +40,13 @@ mod units;
 
 use housing::Colorway;
 
+/// The GPX playback time (seconds) a guided-tour baseline seeks to: mid the demo route's first climb
+/// (~progress 5 km on `grimsel-climb.gpx`), so a climb is active for "See the climb ahead" and the
+/// map sits in the switchbacks. The map-matcher re-locks from this teleport within a few frames, so
+/// no fast-forward from the start is needed.
+#[cfg(target_arch = "wasm32")]
+const TOUR_BASELINE_S: f64 = 1500.0;
+
 /// The control panel's editable mirrors. The [`SimLocationSource`] stores the fix as
 /// integer microdegrees + `course`; egui widgets need `&mut` floats, so the panel edits
 /// these and pushes them into the source each frame.
@@ -220,6 +227,11 @@ struct SimGui {
     kbd_turn: i32,
     kbd_enc: bool,
     kbd_back: bool,
+    /// Web guided-tour mode (the landing page's feature demos): when set, the ambient auto-restart
+    /// loop is suppressed so the page's demo engine controls playback. Only ever true on wasm; the
+    /// native build never toggles it (the field stays for a single unconditional initializer).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    tour_active: bool,
 }
 
 impl SimGui {
@@ -319,6 +331,7 @@ impl SimGui {
             kbd_turn: 0,
             kbd_enc: false,
             kbd_back: false,
+            tour_active: false,
         };
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         gui.app.set_rides(gui.ride_store.catalog(), gui.ride_store.ids());
@@ -356,6 +369,122 @@ impl SimGui {
         // Tighten the fit-to-whole-tile zoom to a riding view so the switchbacks are visible.
         g.app.state.zoom *= 12.0;
         g
+    }
+
+    /// Drain the landing page's guided-tour command queue and apply each command to the live sim —
+    /// gestures through the app's deterministic [`apply_gesture`](obc_app::App::apply_gesture) seam,
+    /// playback through the shared [`GpxPlayer`], and `enter`/`exit` toggling the demo baseline.
+    #[cfg(target_arch = "wasm32")]
+    fn apply_tour_cmds(&mut self) {
+        use crate::web_api::TourCmd;
+        for cmd in crate::web_api::drain_cmds() {
+            match cmd {
+                TourCmd::Gesture(g) => self.app.apply_gesture(g),
+                TourCmd::Play => {
+                    if let Some(p) = self.gpx.as_mut() {
+                        p.play();
+                    }
+                }
+                TourCmd::Pause => {
+                    if let Some(p) = self.gpx.as_mut() {
+                        p.pause();
+                    }
+                }
+                TourCmd::Seek(t) => {
+                    if let Some(p) = self.gpx.as_mut() {
+                        p.seek(t);
+                    }
+                }
+                TourCmd::Enter => self.enter_tour_baseline(),
+                TourCmd::Exit => self.exit_tour(),
+                TourCmd::Ambient => self.enter_ambient(),
+            }
+        }
+    }
+
+    /// Enter guided-tour mode and reset to a clean demo baseline. Rebuilds the app to a fresh
+    /// `[Home, Map]` riding session on the demo route so a previous demo can't leak in — a created
+    /// reroute activates a new route, and an interrupted loop can leave the stack deep in a menu.
+    /// Uses **Manual** climb mode: the Climb screen stays in the Back-cycle (so "See the climb ahead"
+    /// can walk Map → Statistics → Climb) but Auto's auto-switch never yanks the starting screen off
+    /// the Map mid-climb — the demos need a deterministic Map baseline. Seeks the ride to a mid-climb
+    /// spot (so a climb is active and the map sits in the switchbacks); the matcher re-locks within a
+    /// few frames, so no long fast-forward is needed.
+    #[cfg(target_arch = "wasm32")]
+    fn enter_tour_baseline(&mut self) {
+        use obc_app::settings::{ClimbMode, Settings};
+
+        self.tour_active = true;
+
+        // Same opening camera + riding setup as `new_web`, rebuilt from scratch each entry.
+        let (cx, cy, zoom) = {
+            let src = SliceSource(&self.bytes);
+            let reader = Reader::new(&src, &self.map_tables, &self.map_cache);
+            crate::initial_camera(&reader, self.dev_w)
+        };
+        let mut state = AppState::new(cx, cy, zoom * 12.0);
+        state.mode = CameraMode::Follow;
+        state.heading_up = true;
+        let mut app = App::new(state);
+        app.set_nav_profiles(self.map_tables.nav_profiles());
+        app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+        app.set_settings(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() });
+        if !self.store.catalog().is_empty() {
+            app.activity.active_route = Some(0);
+            app.activity.start_session();
+        }
+        self.app = app;
+
+        if let Some(p) = self.gpx.as_mut() {
+            p.seek(TOUR_BASELINE_S);
+            p.play();
+        }
+    }
+
+    /// Leave guided-tour mode ("take control"): hand the device back to the visitor where the demo
+    /// left it (they keep driving with the keys / buttons) and restore the ambient auto-restart.
+    #[cfg(target_arch = "wasm32")]
+    fn exit_tour(&mut self) {
+        self.tour_active = false;
+        if let Some(p) = self.gpx.as_mut() {
+            p.play();
+        }
+    }
+
+    /// Reset to the ambient "just riding" state — the live Grimsel climb the page opens on, with the
+    /// visitor's controls enabled (`tour_active = false`, so the manual buttons drive it and the
+    /// summit auto-restart runs). Rebuilds the app like [`enter_tour_baseline`] but under **default**
+    /// settings (Auto climb mode, as the page shipped) and seeks the ride back to the start, so the
+    /// first carousel page ("Ride it yourself") always lands on a clean live ride — even after a demo
+    /// rebuilt the app onto a computed reroute.
+    #[cfg(target_arch = "wasm32")]
+    fn enter_ambient(&mut self) {
+        use obc_app::settings::Settings;
+
+        self.tour_active = false;
+
+        let (cx, cy, zoom) = {
+            let src = SliceSource(&self.bytes);
+            let reader = Reader::new(&src, &self.map_tables, &self.map_cache);
+            crate::initial_camera(&reader, self.dev_w)
+        };
+        let mut state = AppState::new(cx, cy, zoom * 12.0);
+        state.mode = CameraMode::Follow;
+        state.heading_up = true;
+        let mut app = App::new(state);
+        app.set_nav_profiles(self.map_tables.nav_profiles());
+        app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+        app.set_settings(Settings::default());
+        if !self.store.catalog().is_empty() {
+            app.activity.active_route = Some(0);
+            app.activity.start_session();
+        }
+        self.app = app;
+
+        if let Some(p) = self.gpx.as_mut() {
+            p.seek(0.0);
+            p.play();
+        }
     }
 
     /// Parse a GPX file and load it as the active replay (paused at the start), or record the
@@ -482,9 +611,12 @@ impl SimGui {
             );
             // Web demo: restart the climb at the summit so the page stays alive. It's
             // point-to-point, so bump the tracking session to clear the breadcrumb + totals
-            // (a fresh lap instead of dragging a trail across the map).
+            // (a fresh lap instead of dragging a trail across the map). Suppressed while a guided
+            // tour is running — the page's demo engine owns playback + baseline resets then, so an
+            // ambient restart mid-demo would fight it (a `start_session` could reset progress off the
+            // climb the "See the climb ahead" demo is standing on).
             #[cfg(target_arch = "wasm32")]
-            if !player.is_playing() {
+            if !self.tour_active && !player.is_playing() {
                 player.play();
                 self.app.activity.start_session();
             }
@@ -840,7 +972,18 @@ impl eframe::App for SimGui {
             }
         }
 
+        // Drain the landing page's guided-tour command queue before the frame ticks, so a demo's
+        // gesture / playback / baseline commands land this frame (the app's real state machine + the
+        // real route planner run in `render_to_texture` below, exactly as an on-device input would).
+        #[cfg(target_arch = "wasm32")]
+        self.apply_tour_cmds();
+
         self.render_to_texture(ctx);
+
+        // Publish the top screen's name for the page's demo engine to poll (it advances a step only
+        // once the sim reached the target screen — no fixed sleeps, and it waits out the planner).
+        #[cfg(target_arch = "wasm32")]
+        crate::web_api::publish_screen(self.app.top_screen().name());
 
         // The device window shows either the live screen or the size-calibration UI. Drawing the
         // device only reports its hit-test; folding that into the input recognizer + saving
