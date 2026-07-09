@@ -8,10 +8,11 @@
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
 
-  <!-- Trunk builds the obc-sim crate (in firmware/) to wasm — the live device demo.
-       wasm-opt only runs on --release builds, so dev (trunk serve) stays fast while
-       release ships a small, size-optimised binary. -->
-  <link data-trunk rel="rust" href="../firmware/obc-sim/Cargo.toml" data-wasm-opt="z" />
+  <!-- Trunk builds the obc-web-demo crate (in firmware/) to wasm — the live device demo:
+       the real firmware render path behind a thin obc_demo_* API (no egui/wgpu; the page's
+       JS below owns the frame loop and the canvas). wasm-opt only runs on --release builds,
+       so dev (trunk serve) stays fast while release ships a small, size-optimised binary. -->
+  <link data-trunk rel="rust" href="../firmware/obc-web-demo/Cargo.toml" data-wasm-opt="z" />
   <!-- Ship the placeholder docs page (dist/docs/index.html) until real docs exist. -->
   <link data-trunk rel="copy-dir" href="docs" />
   <base data-trunk-public-url />
@@ -137,22 +138,35 @@
     .microcopy b { color: var(--coral); font-weight: 700; }
 
     /* ---------- device ---------- */
+    /* The housing is plain DOM now (the wasm draws only the 240×320 screen) — a placeholder
+       terracotta shell until the S5 redesign styles it properly. */
     .device-col { display: flex; flex-direction: column; align-items: center; }
-    .device-stage { position: relative; }
+    .device-stage { position: relative; outline: none; }
+    #device_housing {
+      background: linear-gradient(165deg, #d97a3c, #c05f24);
+      border-radius: 30px;
+      padding: 30px 24px 42px;
+      box-shadow:
+        inset 0 2px 2px rgba(255, 235, 210, 0.35),
+        inset 0 -3px 6px rgba(60, 25, 5, 0.35),
+        0 22px 30px rgba(44, 33, 20, 0.30);
+    }
     canvas#device_canvas {
       display: block;
-      width: 330px;
-      height: 452px;
-      background: transparent;
+      width: 276px;  /* 240×320 device pixels, upscaled; keep the 3:4 ratio */
+      height: 368px;
+      background: var(--parchment);
+      border-radius: 6px;
       outline: none;
       touch-action: none;
-      /* shadow follows the device silhouette (transparent canvas) */
-      filter: drop-shadow(0 22px 30px rgba(44, 33, 20, 0.30));
+      image-rendering: pixelated; /* hard pixel edges, like the panel */
     }
+    /* focus ring for the keyboard-driven stage */
+    .device-stage:focus-visible #device_housing { box-shadow: 0 0 0 3px var(--amber), 0 22px 30px rgba(44, 33, 20, 0.30); }
     #loading_text {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center; gap: 10px;
-      font-family: var(--serif); font-size: 15px; color: var(--wood);
+      font-family: var(--serif); font-size: 15px; color: var(--parchment);
     }
     .spinner {
       width: 16px; height: 16px; border: 3px solid var(--wood);
@@ -164,8 +178,8 @@
     .device-caption { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 22rem; }
     .device-caption b { color: var(--ink); font-weight: 600; }
 
-    /* On-screen device controls — drive the sim by tap (works on touch + desktop;
-       they dispatch the same key events the firmware already handles). */
+    /* On-screen device controls — drive the demo by tap (works on touch + desktop;
+       they queue the same obc_demo_cmd gestures the keyboard does). */
     .controls {
       margin: 13px 0 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
     }
@@ -340,16 +354,19 @@
         </div>
 
         <div class="device-col">
-          <div class="device-stage">
-            <canvas id="device_canvas"></canvas>
+          <div class="device-stage" id="device_stage" tabindex="0" role="application"
+            aria-label="Live device demo — arrow keys scroll, Enter selects, Backspace goes back">
+            <div id="device_housing">
+              <canvas id="device_canvas" width="240" height="320"></canvas>
+            </div>
             <div id="loading_text"><span class="spinner"></span>Warming up the device…</div>
           </div>
           <p class="device-caption"><b>Try it</b> — tap the controls to drive the device.</p>
           <div class="controls" role="group" aria-label="Device controls">
-            <button class="ctl ctl-arrow" data-key="ArrowLeft" aria-label="Scroll back" title="Scroll back">◂</button>
-            <button class="ctl" data-key="Enter">Select</button>
-            <button class="ctl" data-key="Backspace">Back</button>
-            <button class="ctl ctl-arrow" data-key="ArrowRight" aria-label="Scroll forward" title="Scroll forward">▸</button>
+            <button class="ctl ctl-arrow" data-turn="-1" aria-label="Scroll back" title="Scroll back">◂</button>
+            <button class="ctl" data-btn="press">Select</button>
+            <button class="ctl" data-btn="back">Back</button>
+            <button class="ctl ctl-arrow" data-turn="1" aria-label="Scroll forward" title="Scroll forward">▸</button>
           </div>
           <p class="ctl-hint">Or on a keyboard: <kbd>←</kbd> <kbd>→</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back — hold for a long-press.</p>
         </div>
@@ -427,44 +444,104 @@
   </footer>
 
   <script>
-    // Drive the embedded device from the on-screen buttons. The sim already handles
-    // these keys (←/→ scroll the encoder, Enter = press, Backspace = back), so we just
-    // forward synthetic key events to the canvas — making it work on touch, where there's
-    // no keyboard and no wheel-scroll. Holding a button holds the key (long-press).
+    // The live demo: the wasm host (obc-web-demo) owns the device truth behind a tiny API;
+    // this page owns the frame loop, the canvas blit, and the input timing. ONE input path —
+    // buttons, keyboard, and (later) the tour engine all queue the same obc_demo_cmd strings;
+    // no synthetic KeyboardEvents anywhere. Long-press *timers* live here: the firmware fires
+    // Hold at the 500 ms threshold crossing (not on release), so we do the same and hand the
+    // crate only finished gestures.
     (function () {
       var canvas = document.getElementById('device_canvas');
-      if (!canvas) return;
-      var CODE = { ArrowLeft: 37, ArrowRight: 39, Enter: 13, Backspace: 8 };
-      var MIN_HOLD = 110; // ms — keep the key 'down' long enough for a frame to sample it
-      function send(type, key) {
-        canvas.dispatchEvent(new KeyboardEvent(type, {
-          key: key, code: key, keyCode: CODE[key], which: CODE[key],
-          bubbles: true, cancelable: true
-        }));
+      var stage = document.getElementById('device_stage');
+      if (!canvas || !stage) return;
+      var ctx = canvas.getContext('2d');
+      var HOLD_MS = 500; // the firmware's DEFAULT_HOLD_MS — crossing it turns a press into a hold
+      var api = null;
+
+      // --- frame loop: rAF-driven; the wasm renders on demand and reports whether the
+      // frame changed, so an idle demo costs neither a render nor a putImageData.
+      function frame(now) {
+        if (api.obc_demo_tick(now)) {
+          // The returned Uint8ClampedArray is a view over wasm memory — wrap and blit it
+          // immediately, never retain it across ticks.
+          ctx.putImageData(new ImageData(api.obc_demo_frame(), 240, 320), 0, 0);
+          var loading = document.getElementById('loading_text');
+          if (loading && api.obc_demo_ready()) loading.remove();
+        }
+        requestAnimationFrame(frame);
       }
-      document.querySelectorAll('.ctl[data-key]').forEach(function (btn) {
-        var key = btn.getAttribute('data-key'), downAt = 0, upTimer = null;
-        function press(e) {
-          e.preventDefault();
-          canvas.focus();
-          if (upTimer) { clearTimeout(upTimer); upTimer = null; }
-          downAt = performance.now();
-          btn.classList.add('pressed');
-          send('keydown', key);
-        }
-        function release(e) {
-          if (e) e.preventDefault();
-          var wait = Math.max(0, MIN_HOLD - (performance.now() - downAt));
-          upTimer = setTimeout(function () {
-            send('keyup', key);
-            btn.classList.remove('pressed');
-          }, wait);
-        }
-        btn.addEventListener('pointerdown', press);
-        btn.addEventListener('pointerup', release);
-        btn.addEventListener('pointerleave', release);
-        btn.addEventListener('pointercancel', release);
+      addEventListener('TrunkApplicationStarted', function () {
+        api = window.wasmBindings;
+        requestAnimationFrame(frame);
+      });
+
+      // --- press/back with the device's long-press semantics: a timer fires `hold` at the
+      // threshold while still down; releasing earlier sends the plain gesture instead.
+      function holdable(tap, hold, visual) {
+        var timer = null, held = false;
+        return {
+          down: function () {
+            if (timer) clearTimeout(timer);
+            held = false;
+            if (visual) visual.classList.add('pressed');
+            timer = setTimeout(function () {
+              held = true;
+              api.obc_demo_cmd(hold);
+            }, HOLD_MS);
+          },
+          up: function (cancelled) {
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (visual) visual.classList.remove('pressed');
+            if (!held && !cancelled) api.obc_demo_cmd(tap);
+            held = false;
+          }
+        };
+      }
+
+      // --- on-screen buttons (touch + mouse) ---
+      document.querySelectorAll('.ctl[data-btn]').forEach(function (btn) {
+        var g = btn.getAttribute('data-btn'); // 'press' | 'back'
+        var h = holdable(g, g === 'press' ? 'hold' : 'backhold', btn);
+        btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!api) return; stage.focus(); h.down(); });
+        btn.addEventListener('pointerup', function (e) { e.preventDefault(); if (!api) return; h.up(false); });
+        btn.addEventListener('pointerleave', function () { if (api) h.up(true); });
+        btn.addEventListener('pointercancel', function () { if (api) h.up(true); });
         btn.addEventListener('click', function (e) { e.preventDefault(); });
+      });
+      document.querySelectorAll('.ctl[data-turn]').forEach(function (btn) {
+        var dir = btn.getAttribute('data-turn'), repeat = null;
+        function stop() { if (repeat) { clearInterval(repeat); repeat = null; } btn.classList.remove('pressed'); }
+        btn.addEventListener('pointerdown', function (e) {
+          e.preventDefault();
+          if (!api) return;
+          stage.focus();
+          btn.classList.add('pressed');
+          api.obc_demo_cmd('turn:' + dir);
+          repeat = setInterval(function () { api.obc_demo_cmd('turn:' + dir); }, 160); // detents while held
+        });
+        ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { btn.addEventListener(ev, stop); });
+        btn.addEventListener('click', function (e) { e.preventDefault(); });
+      });
+
+      // --- keyboard, scoped to the focused device stage (so the page keeps its arrow keys —
+      // the egui host used to steal them globally) ---
+      var keys = { Enter: holdable('press', 'hold', null), Backspace: holdable('back', 'backhold', null) };
+      stage.addEventListener('keydown', function (e) {
+        if (!api) return;
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          api.obc_demo_cmd('turn:' + (e.key === 'ArrowRight' ? 1 : -1)); // key autorepeat = detents
+        } else if (keys[e.key]) {
+          e.preventDefault();
+          if (!e.repeat) keys[e.key].down();
+        }
+      });
+      stage.addEventListener('keyup', function (e) {
+        if (api && keys[e.key]) keys[e.key].up(false);
+      });
+      stage.addEventListener('blur', function () {
+        if (!api) return;
+        Object.keys(keys).forEach(function (k) { keys[k].up(true); }); // a focus steal cancels holds
       });
     })();
   </script>

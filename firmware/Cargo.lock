@@ -1486,10 +1486,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "wasi",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -2381,6 +2379,16 @@ name = "obc-dfu"
 version = "0.1.0"
 
 [[package]]
+name = "obc-host-core"
+version = "0.1.0"
+dependencies = [
+ "obc-app",
+ "obc-reader",
+ "obc-replay",
+ "obc-route",
+]
+
+[[package]]
 name = "obc-mkimage"
 version = "0.1.0"
 dependencies = [
@@ -2459,14 +2467,11 @@ dependencies = [
 name = "obc-sim"
 version = "0.1.0"
 dependencies = [
- "console_error_panic_hook",
  "eframe",
  "embedded-graphics",
- "getrandom 0.2.17",
- "heapless 0.8.0",
  "image",
- "log",
  "obc-app",
+ "obc-host-core",
  "obc-platform",
  "obc-reader",
  "obc-render",
@@ -2474,8 +2479,6 @@ dependencies = [
  "obc-route",
  "pollster",
  "rfd",
- "wasm-bindgen-futures",
- "web-time",
 ]
 
 [[package]]
@@ -2496,6 +2499,24 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "obc-route",
+]
+
+[[package]]
+name = "obc-web-demo"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "embedded-graphics",
+ "heapless 0.8.0",
+ "js-sys",
+ "obc-app",
+ "obc-host-core",
+ "obc-platform",
+ "obc-reader",
+ "obc-render",
+ "obc-replay",
+ "obc-route",
+ "wasm-bindgen",
 ]
 
 [[package]]
