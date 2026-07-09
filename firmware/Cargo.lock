@@ -2377,6 +2377,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-dfu"
+version = "0.1.0"
+
+[[package]]
+name = "obc-mkimage"
+version = "0.1.0"
+dependencies = [
+ "obc-dfu",
+]
+
+[[package]]
 name = "obc-pack"
 version = "0.1.0"
 dependencies = [

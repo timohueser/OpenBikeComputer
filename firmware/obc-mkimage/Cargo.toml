@@ -1,0 +1,10 @@
+[package]
+name = "obc-mkimage"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host tool — not published to crates.io
+description = "Host tool that wraps a raw app image into an OBCU update container (obc-mkimage wrap) and inspects one (obc-mkimage inspect). The producer side of the SD-staged DFU pipeline (epic #615)."
+
+[dependencies]
+# The shared OBCU codec — the exact bytes the armer and bootloader read back.
+obc-dfu = { path = "../obc-dfu" }
