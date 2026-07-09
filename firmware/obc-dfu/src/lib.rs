@@ -12,6 +12,9 @@
 //!   [`BootState`] blob (`Idle` / `Armed` / `Trial`) handed from the app to the bootloader, plus the
 //!   pure [`decide`] function that turns it into a [`BootDecision`].
 //! - [`crc32`] — the canonical DFU-side CRC-32/IEEE (the bootloader must not pull in the BLE stack).
+//! - [`engine`] — the bootloader's **install engine** (S3, #618): the verify → flash → readback →
+//!   state-transition sequencing as a pure driver over the [`engine::InstallIo`] trait, so the
+//!   whole failure matrix (power loss, bad stage, readback retries) is host-tested with mock IO.
 //!
 //! Everything is little-endian (repo convention, matching OBCM/OBCR). Both codecs follow the
 //! settings-store convention: a version + CRC frame, **valid CRC ⇒ `Some`/decoded**, anything else
@@ -20,10 +23,12 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod crc32;
+pub mod engine;
 pub mod image;
 pub mod state;
 
 pub use crc32::{crc32, Crc32};
+pub use engine::{InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE, RRAM_LINE_LEN, SD_BLOCK_LEN};
 pub use image::{
     looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, HEADER_VERSION, MAGIC, MAX_IMAGE_LEN, RAM_END,
     RAM_START,
