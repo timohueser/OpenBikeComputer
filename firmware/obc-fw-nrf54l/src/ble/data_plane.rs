@@ -145,7 +145,7 @@ async fn run_upload(
     mut rx: Receiver,
     buf: &mut [u8],
 ) -> TransferOutcome {
-    info!("ble: [coc] route upload start: {} bytes", desc.total_len);
+    info!("ble: [coc] upload start: {} bytes (type {})", desc.total_len, desc.ty.as_u8());
     // Open the SD temp here — at the first real byte of the transfer — rather than when the
     // control plane armed it: a peer that writes `transferControl` but never opens the CoC then
     // holds no storage handle (it only wedges its own link's one-transfer gate until it drops).
@@ -202,15 +202,26 @@ async fn run_upload(
             return TransferOutcome::Answered;
         }
     }
+    // The commit target is the object type: a `fwImage` promotes to /UPDATE.BIN in the card root
+    // (staging, no catalog id, no store-revision bump — spec §7.6); everything else is a route into the
+    // catalog. The CoC streaming above is identical either way.
+    let is_fwimage = desc.ty == ObjectType::FwImage;
     let (id, status) = {
         let mut guard = shared.lock().await;
-        store.borrow_mut().upload_finish(&mut guard, &rx)
+        let mut st = store.borrow_mut();
+        if is_fwimage {
+            (rx.object_id(), st.fwimage_finish(&mut guard, &rx))
+        } else {
+            st.upload_finish(&mut guard, &rx)
+        }
     };
     let committed = status == TransferStatus::Committed;
     info!("ble: [coc] upload finished: id {} -> {}", id, if committed { "committed" } else { "rejected" });
     let offset = if committed { rx.total_len() } else { 0 };
     notify_status(server, stack, transfer_result_at(id, status, offset)).await;
-    if committed {
+    // A committed route moves the object store (`storeChanged` + digest); a `fwImage` stage does not —
+    // /UPDATE.BIN is not a listed object, and the install is armed later by the confirmed `installFw`.
+    if committed && !is_fwimage {
         publish_store_change(stack, server, store, ObjectType::Route).await;
     }
     TransferOutcome::Answered
