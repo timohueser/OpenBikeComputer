@@ -3,7 +3,8 @@
 OBCU (OpenBikeComputer Update) is the byte format of a **field firmware update** —
 the SD-staged DFU foundation (epic #615). It has two parts, both defined here and
 both implemented by the shared `no_std` crate `firmware/obc-dfu` (host-tested to the
-same bar as the settings codec, and linked by the future `obc-boot` bootloader):
+same bar as the settings codec, and linked by the `obc-boot` bootloader,
+`firmware/obc-boot`):
 
 1. **The update-image container** (§1) — the `UPDATE.BIN` file on the SD card: a
    fixed **64-byte header** followed by the raw application image.
