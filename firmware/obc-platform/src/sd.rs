@@ -11,7 +11,7 @@
 //! and an [`SdTrackSink`] over the track log at once and feed both to one [`obc_app::App::tick`].
 
 use embedded_sdmmc::{BlockDevice, RawFile, TimeSource, VolumeManager};
-use obc_app::TrackSink;
+use obc_app::{TrackError, TrackSink};
 use obc_route::{encode_record, ByteSink, ByteSource, Error, TrackPoint};
 
 /// A random-access [`ByteSource`] over an open FatFs file — the device backing for
@@ -115,9 +115,10 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
 /// An [`obc_app::TrackSink`] writing each accepted fix to the open `.obct` ride log. The app encodes
 /// a [`TrackPoint`] and hands it here; this appends its fixed 16-byte record ([`encode_record`]).
 ///
-/// [`record`](TrackSink::record) is infallible by the app's contract, so a failed SD write can't
-/// propagate — it's latched in [`had_error`](Self::had_error) so the board can surface "the ride log
-/// dropped points" after the fact, rather than handling a write error mid-frame.
+/// A failed SD write is reported straight back through [`record`](TrackSink::record)'s
+/// `Result` — the app owns the reaction (it raises the "recording error" indicator so the rider
+/// knows the log dropped points; see issue #11). So this sink is a pure per-fix adapter with no
+/// state of its own, safe to rebuild each tick over the open handle.
 pub struct SdTrackSink<
     'a,
     D: BlockDevice,
@@ -128,7 +129,6 @@ pub struct SdTrackSink<
 > {
     vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
     file: RawFile,
-    error: bool,
 }
 
 impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>
@@ -136,22 +136,16 @@ impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: 
 {
     /// Wrap the open, append-mode `.obct` log file.
     pub fn new(vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>, file: RawFile) -> Self {
-        SdTrackSink { vmgr, file, error: false }
-    }
-
-    /// Whether any [`record`](TrackSink::record) write has failed since construction — a
-    /// latched "the log is incomplete" flag the board can read when the ride ends.
-    pub fn had_error(&self) -> bool {
-        self.error
+        SdTrackSink { vmgr, file }
     }
 }
 
 impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize> TrackSink
     for SdTrackSink<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
 {
-    fn record(&mut self, p: TrackPoint) {
-        if self.vmgr.write(self.file, &encode_record(&p)).is_err() {
-            self.error = true;
-        }
+    fn record(&mut self, p: TrackPoint) -> Result<(), TrackError> {
+        // A card pull / write error surfaces as `Err`; the app raises the recording-error indicator.
+        // Never `panic!` here — a hard fault mid-ride is never the right answer to a bad SD write.
+        self.vmgr.write(self.file, &encode_record(&p)).map_err(|_| TrackError)
     }
 }

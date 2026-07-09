@@ -141,10 +141,11 @@ struct Args {
     /// buttons; the catalog is already scanned, so this is exactly the device's rescan-then-event
     /// order.
     inject_upload: Option<(u16, bool)>,
-    /// Headless `--png` only: raise device warnings (issue #504) through the real
-    /// `App::notify_warning` seam after the script, so the advisory warning card renders. A
-    /// comma-list of `gps` / `altimeter` / `compass` / `map` (e.g. `gps,map`). Stands in for a
-    /// missing-sensor probe / a fragmented map the sim has no real hardware to produce.
+    /// Headless `--png` only: raise device warnings through the real `App::notify_warning` seam
+    /// after the script, so the advisory warning card renders. A comma-list of `gps` / `altimeter`
+    /// / `compass` / `map` (issue #504) / `rec` (the mid-ride ride-log write error, issue #11) —
+    /// e.g. `gps,map`. Stands in for hardware the sim can't trip for real. `rec` here renders the
+    /// card directly; to drive it through the *actual* record-failure path, use `--fail-track`.
     inject_warning: Option<obc_app::WarningFlags>,
     /// Headless `--png` only: render the standalone **boot fault** screen (`nocard` | `nomap` |
     /// `badmap`) instead of the app — the undismissable storage-failure screen `main` shows before
@@ -155,6 +156,12 @@ struct Args {
     /// before C5 wires the screen into the Back-cycle. A no-op unless the replay left a climb active
     /// (so pair it with a `--gpx`/`--at` that reaches one).
     open_climb: bool,
+    /// Headless `--gpx` replay: make **every ride-log write fail**, as if the SD card were pulled
+    /// mid-ride (issue #11). Each logged fix's `TrackSink::record` returns `Err`, so the app raises
+    /// the "recording error" warning through the real record path (not the `--inject-warning rec`
+    /// shortcut). Pair with a script that starts a ride and a `--gpx`/`--at` that logs a point —
+    /// e.g. `--gpx <t> --at 30 --script "p p p p" --fail-track --png out.png`.
+    fail_track: bool,
 }
 
 impl Default for Args {
@@ -200,6 +207,7 @@ impl Default for Args {
             inject_warning: None,
             boot_fault: None,
             open_climb: false,
+            fail_track: false,
         }
     }
 }
@@ -316,6 +324,7 @@ fn parse_args() -> Result<Args, String> {
             "--ble-connected" => a.ble_connected = true,
             "--nav-hold" => a.nav_hold = true,
             "--open-climb" => a.open_climb = true,
+            "--fail-track" => a.fail_track = true,
             "--inject-nav-fail" => {
                 let kind = it.next().ok_or("--inject-nav-fail needs exhausted|nopath")?;
                 if kind != "exhausted" && kind != "nopath" {
@@ -340,7 +349,8 @@ fn parse_args() -> Result<Args, String> {
                         "altimeter" | "baro" => obc_app::WarningFlags::NO_ALTIMETER,
                         "compass" | "imu" => obc_app::WarningFlags::NO_COMPASS,
                         "map" => obc_app::WarningFlags::MAP_SLOW,
-                        _ => return Err("--inject-warning tokens: gps|altimeter|compass|map".into()),
+                        "rec" | "record" => obc_app::WarningFlags::REC_ERROR,
+                        _ => return Err("--inject-warning tokens: gps|altimeter|compass|map|rec".into()),
                     };
                 }
                 a.inject_warning = Some(w);
@@ -578,6 +588,18 @@ fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
     // lists carries them, exactly as the device does (#454).
     let stats = matches!(action, Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
     tracks.reconcile(action, session, name.as_deref(), stats);
+}
+
+/// A [`TrackSink`] whose every append fails — the `--fail-track` stand-in for the SD card being
+/// pulled mid-ride (issue #11). It stores nothing and returns `Err`, so the app sees a genuine
+/// record failure and raises the recording-error card through the real path, not a shortcut.
+#[cfg(not(target_arch = "wasm32"))]
+struct FailTrackSink;
+#[cfg(not(target_arch = "wasm32"))]
+impl TrackSink for FailTrackSink {
+    fn record(&mut self, _p: obc_route::TrackPoint) -> Result<(), obc_app::TrackError> {
+        Err(obc_app::TrackError)
+    }
 }
 
 /// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so the
@@ -960,9 +982,15 @@ fn main() {
             p.play();
             let step = (replay_to / 400.0).clamp(1.0, 8.0);
             let mut t = 0.0;
+            // `--fail-track` (issue #11): feed the app a sink whose every write fails, as if the card
+            // were pulled mid-ride, so a logged fix drives the real `record → Err → recording-error
+            // card` path. Kept out of the store so the live log (and `--save-track`) still work.
+            let mut fail_sink = FailTrackSink;
             while t < replay_to {
                 reconcile_tracks(&mut app, &mut tracks);
-                replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), tracks.sink());
+                let sink: Option<&mut dyn TrackSink> =
+                    if args.fail_track { Some(&mut fail_sink) } else { tracks.sink() };
+                replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), sink);
                 t += step;
             }
         }

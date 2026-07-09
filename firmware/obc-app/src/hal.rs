@@ -123,14 +123,27 @@ pub trait FuelGauge {
     fn poll(&mut self) -> Option<u8>;
 }
 
+/// Why a [`TrackSink::record`] append couldn't be durably logged — an SD/FatFs write that failed
+/// (card pulled, write error, medium full). Deliberately coarse: the app reacts the same way to
+/// every cause (it can't retry the point, so it raises the "recording error" indicator once and
+/// keeps the ride going), so there's nothing to branch on. The *presence* of an error channel is
+/// the load-bearing part — see [issue #11].
+///
+/// [issue #11]: https://github.com/timohueser/OpenBikeComputer/issues/11
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackError;
+
 /// Sink for the recorded ride **track** — each accepted fix logged so the ride can be saved as a
 /// `.gpx`. The app encodes the [`TrackPoint`](obc_route::TrackPoint) and hands it here; the host
 /// appends to the log it owns (SD card on device, temp file in the sim). Begin / finalise / discard
 /// are driven separately by the host reconciling the [`Activity`](crate::Activity) session — this
 /// trait is just the per-fix append.
 pub trait TrackSink {
-    /// Append one recorded fix to the open ride log.
-    fn record(&mut self, p: obc_route::TrackPoint);
+    /// Append one recorded fix to the open ride log. `Err(TrackError)` means the point was **not**
+    /// durably written (the medium failed) — the app surfaces a "recording error" indicator so the
+    /// rider knows the log is now incomplete, rather than the point being silently dropped. The
+    /// host must not `panic!` here: a mid-ride hard fault is never the right answer to a card pull.
+    fn record(&mut self, p: obc_route::TrackPoint) -> Result<(), TrackError>;
 }
 
 /// The polled sensor set handed to [`App::tick`](crate::App::tick) each frame. Bundling the handles
