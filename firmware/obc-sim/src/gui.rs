@@ -718,11 +718,14 @@ impl SimGui {
                 let p = ui.painter_at(rect);
                 let col = ui.visuals().strong_text_color();
                 let y = rect.center().y;
-                p.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], egui::Stroke::new(3.0, col));
+                p.line_segment(
+                    [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                    egui::Stroke::new(3.0_f32, col),
+                );
                 for x in [rect.left(), rect.right()] {
                     p.line_segment(
                         [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                        egui::Stroke::new(2.0, col),
+                        egui::Stroke::new(2.0_f32, col),
                     );
                 }
 

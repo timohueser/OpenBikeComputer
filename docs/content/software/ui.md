@@ -558,6 +558,26 @@ pub trait SettingsStore {
 
 The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
 
+## The UI speaks four languages
+
+Every user-facing word — English, German, French, Spanish — is a *lookup*, not a literal. The **language** is a runtime setting, not a build flag: it lives in the same persisted `Settings` value as Units, RRAM-backed and switchable on-glass from the **Language** settings screen (a one-row value picker showing each language's own name — `English` / `Deutsch` / `Français` / `Español`, so the row reads to someone who can't yet read the current UI). Language and Units are orthogonal — English + Metric is a perfectly good combo.
+
+Because the render path is **stateless** (a screen is [a value, not a widget tree](#a-screen-is-a-value-not-a-widget-tree)), there is no ambient "current language" to set. Translation is a pure function of the message and the language, and the language rides along on the context every draw already receives:
+
+```rust
+// A message key + the language → the &'static str, a plain double index into a flash table.
+pub const fn t(msg: Msg, lang: Language) -> &'static str { TABLE[msg as usize][lang as usize] }
+
+// Draw-time convenience: `rx.t(Msg::…)` reads settings.language off the context the screen holds.
+draw_text(target, rx.t(Msg::MenuRoutes), at, Font::Body, TextAlign::Center, ink);
+```
+
+The `Msg` enum and the `TABLE` it indexes are **generated at compile time**. Four per-language catalogs — `obc-app/i18n/{en,de,fr,es}.toml` — hold the copy as `[section]` + `key = "value"` TOML; a small `build.rs` parses all four and emits one `Msg` variant per key plus `const TABLE: [[&str; 4]; N]`, the columns ordered to match the `Language` discriminants (En, De, Fr, Es). Because the table is `const`, the whole catalogue lands in flash `.rodata` — nothing touches the device's tight 256 KB RAM. English is the canonical key set: the build **fails with a named list of offenders** if any of de/fr/es is missing a key or carries an extra one, so a half-translated string can't ship silently. (A separate `obc-app` test walks the finished table and asserts every character is in the device font's repertoire — Latin-1 + Latin Extended-A — so a stray curly quote or em-dash fails CI rather than rendering as a `?` on-glass.)
+
+The words are translated; the *formats* are not. The 24-hour clock, ISO / `Mon DD` dates, and the metric/imperial unit suffixes (`KPH`, `km`, `m`) stay identical across languages — only the twelve month abbreviations are localized. Symbol-like labels (`KPH`) are language-independent by design; only word-bearing enum labels (a `Units` name, a `ClimbMode` name) route through the catalogue.
+
+**Adding a string:** add the key under the right `[section]` to **all four** `i18n/*.toml` files, then use `Msg::SectionKey` (PascalCased from `section.key`) via `rx.t(…)` at the draw site. Forget one file and the build stops with a `MISSING key` error naming it. **Adding a language** is a handful of matched edits: a new `xx.toml` catalog (with every English key), its code in the `build.rs` language list, a new `Language` enum variant carrying its endonym in `name()` and a slot in the picker's `ORDER`, and the one-byte codec's `from_byte` mapping — the append-only `Settings` codec already stores the language as a single byte, so no version bump is needed for the byte itself.
+
 ## Logic and drawing get different views of the world
 
 `handle` and `draw` are handed deliberately different contexts. `handle` gets `Ctx` — the **mutable** slice of app state a screen is allowed to change (the camera, the ride mode, the clock). `draw` gets `Render` — a **read-only** view plus the resources it needs to paint (the map reader, the renderer, the active route, its elevation profile, the active climb, the breadcrumb, the in-flight hold-progress). A screen literally cannot mutate state while drawing, because it isn't given the means to.
@@ -902,7 +922,8 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 - The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
 - The Rides screen and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
 - The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
-- The `Settings` value + its byte codec, and the `SettingsStore` seam: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs), [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The `Settings` value + its byte codec, the `Language` enum, and the `SettingsStore` seam: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs), [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The i18n catalogue + codegen — the per-language TOMLs, the `build.rs` that generates `Msg`/`TABLE`, and the `t()`/`rx.t()` lookup: [`obc-app/i18n/`](src:firmware/obc-app/i18n), [`obc-app/build.rs`](src:firmware/obc-app/build.rs), [`obc-app/src/i18n.rs`](src:firmware/obc-app/src/i18n.rs); the font-repertoire guard: [`obc-app/tests/i18n.rs`](src:firmware/obc-app/tests/i18n.rs)
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)
 - The input + overlay plane: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The app driver (frame loop, render-on-demand, compositing): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
