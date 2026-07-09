@@ -274,9 +274,10 @@ jobs:
       - name: cargo-deny (obc-boot bootloader)
         run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features check --config deny.toml
 
-  # The web sim is the firmware's own render path compiled to wasm; build it on PRs (not just on
-  # the deploy-to-Pages push) so a stack-size regression in firmware/.cargo/config.toml — which
-  # makes the sim silently trap at startup — is caught before merge.
+  # The web demo (firmware/obc-web-demo) is the firmware's own render path compiled to wasm
+  # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
+  # wasm-only breakage — bindgen surface, embedded assets, Trunk config — is caught before merge.
+  # (The `wasm` path filter's firmware/** covers firmware/obc-web-demo/** and every shared crate.)
   wasm:
     needs: changes
     if: needs.changes.outputs.wasm == 'true'
@@ -293,7 +294,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: trunk@0.21.14
-      - name: trunk build (obc-sim → wasm)
+      - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page

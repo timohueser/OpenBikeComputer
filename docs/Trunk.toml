@@ -1,7 +1,8 @@
-# Trunk configuration for the site (firmware/obc-sim is built to wasm as the live
-# device demo; index.html references its Cargo.toml via the data-trunk rust link).
-# Paths are resolved relative to this file's directory, so `trunk` can be invoked
-# from anywhere via `--config docs/Trunk.toml`.
+# Trunk configuration for the site (firmware/obc-web-demo — the thin wasm host around
+# the shared firmware crates — is built to wasm as the live device demo; index.html
+# references its Cargo.toml via the data-trunk rust link). Paths are resolved relative
+# to this file's directory, so `trunk` can be invoked from anywhere via
+# `--config docs/Trunk.toml`.
 
 [build]
 target = "index.html"

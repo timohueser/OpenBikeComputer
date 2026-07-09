@@ -685,7 +685,7 @@ mod tests {
         let track =
             Track::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.gpx"))).expect("gpx");
         let mut player = GpxPlayer::new(track);
-        player.set_speed(3.0); // the page's ambient pace (`new_web`)
+        player.set_speed(3.0); // the page's ambient pace (obc-web-demo's `DEMO_SPEED`)
         let mut baro = BaroSensor::new();
         let mut nav_plan: Option<crate::NavPlan> = None;
         let mut present = Present::new(W, H);

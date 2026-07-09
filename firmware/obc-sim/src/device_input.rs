@@ -9,9 +9,7 @@
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
 
-// web_time::Instant is std's on native and a JS-clock shim on wasm (std's panics
-// in the browser), so the device millis clock works in the web build unchanged.
-use web_time::Instant;
+use std::time::Instant;
 
 use obc_app::{Button, ButtonEvent, InputEvent, InputSource};
 

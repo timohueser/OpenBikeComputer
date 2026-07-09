@@ -7,14 +7,14 @@ description: How OpenBikeComputer is organised so a desktop simulator and a micr
 
 The whole project is shaped by one decision: **everything device-specific lives at the edges, and everything in the middle is shared.** The map reader, the route reader, the renderer, and the application logic are one body of `no_std` code that runs *byte-for-byte identically* on the desktop simulator and on the microcontroller. Only the outermost shell — where pixels land, where bytes come from, what a "fix" is — differs between them.
 
-That's what lets the simulator you can [run in your browser](../../) be the real thing rather than a mock-up, and it's what lets the nRF54L firmware reuse the entire stack unchanged. This page is the map of that structure.
+That's what lets the live demo you can [run in your browser](../../) — the landing page's `obc-web-demo` wasm host — be the real thing rather than a mock-up, and it's what lets the nRF54L firmware reuse the entire stack unchanged. This page is the map of that structure.
 
 ## The runtime stack
 
-The crates form a stack with dependencies pointing **one way — downward**. The foundation parses bytes; each layer up adds capability; the two *hosts* sit on top. Nothing in the shared core ever depends on a host.
+The crates form a stack with dependencies pointing **one way — downward**. The foundation parses bytes; each layer up adds capability; the *hosts* sit on top. Nothing in the shared core ever depends on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, two hosts — obc-sim (desktop and browser) and obc-fw-nrf54l plus obc-platform (device) — both depend on obc-app. obc-app depends on obc-render and also directly on obc-reader and obc-route. obc-render depends only on obc-reader — routes reach it through a narrow overlay seam the app implements. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
+<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, the hosts — obc-sim and obc-web-demo (the desktop simulator and the browser demo, sharing host glue in obc-host-core) and obc-fw-nrf54l plus obc-platform (device) — all depend on obc-app. obc-app depends on obc-render and also directly on obc-reader and obc-route. obc-render depends only on obc-reader — routes reach it through a narrow overlay seam the app implements. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
   <defs>
     <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -22,8 +22,8 @@ The crates form a stack with dependencies pointing **one way — downward**. The
 
   <!-- hosts -->
   <rect class="d-panel" x="150" y="52" width="180" height="50" rx="10" />
-  <text class="d-label" x="240" y="78" text-anchor="middle">obc-sim</text>
-  <text class="d-sub" x="240" y="93" text-anchor="middle">desktop + browser</text>
+  <text class="d-label" x="240" y="78" text-anchor="middle" style="font-size:11px">obc-sim · obc-web-demo</text>
+  <text class="d-sub" x="240" y="93" text-anchor="middle">desktop sim · browser demo</text>
   <rect class="d-panel" x="390" y="52" width="200" height="50" rx="10" />
   <text class="d-label" x="490" y="78" text-anchor="middle">obc-fw-nrf54l</text>
   <text class="d-sub" x="490" y="93" text-anchor="middle">+ obc-platform · device</text>
@@ -69,7 +69,7 @@ The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-m
 
 ## Two hosts, one core — and the seams between them
 
-A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and drives it. The simulator ([`obc-sim`](src:firmware/obc-sim)) is an `eframe`/`egui` desktop+wasm shell; the device firmware ([`obc-fw-nrf54l`](src:firmware/obc-fw-nrf54l), via [`obc-platform`](src:firmware/obc-platform)) is bare-metal on the nRF54LM20. (The seams were first proven on an STM32F429 prototype, since removed; the nRF is what the project ships on, and the *same* core ran unchanged on both.) Each owns its window/panel, its storage, and its sensors — and hands the core four small abstractions. Those four **seams** are the entire device-specific surface area; find them and you've found every boundary that matters.
+A "host" is whatever constructs an [`App`](src:firmware/obc-app/src/app.rs) and drives it. The simulator ([`obc-sim`](src:firmware/obc-sim)) is an `eframe`/`egui` desktop shell; the device firmware ([`obc-fw-nrf54l`](src:firmware/obc-fw-nrf54l), via [`obc-platform`](src:firmware/obc-platform)) is bare-metal on the nRF54LM20. (A third host, [`obc-web-demo`](src:firmware/obc-web-demo), puts the same core behind a small wasm API for the landing page's live demo — no GUI framework at all, the page's JS owns the canvas and the frame loop. Seam-wise it's a minimal sibling of the simulator, with in-memory stores and a GPX replay for sensors; the host logic the two share — replay stepping, the frame-interleaved route planner, the in-memory stores — lives in [`obc-host-core`](src:firmware/obc-host-core).) (The seams were first proven on an STM32F429 prototype, since removed; the nRF is what the project ships on, and the *same* core ran unchanged on both.) Each owns its window/panel, its storage, and its sensors — and hands the core four small abstractions. Those four **seams** are the entire device-specific surface area; find them and you've found every boundary that matters.
 
 <figure class="fig">
 <svg viewBox="0 0 720 372" role="img" aria-label="The shared core sits in the middle and connects through four seams to each host. DrawTarget carries pixels out: both hosts now render into a resident RGB222 framebuffer and present it through the shared DisplayDriver seam (the device packs it to the panel a band at a time; the simulator self-diffs it and uploads the changed rows to a texture). The colour function maps a 16-bit colour to a pixel — native RGB222 (64-colour) on both; the simulator's un-quantized true-colour reference stays on the headless PNG path. ByteSource brings bytes in (an in-memory slice in the sim; FatFs on the SD card on the device). The HAL traits bring the world in (the control panel, a GPX replay and the keyboard in the sim; GPS, a barometer and GPIO buttons on the device).">

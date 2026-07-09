@@ -9,7 +9,9 @@ in the [repo README](../README.md#repository-layout).
 
 The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
 (`obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
-(`obc-sim`), the map packer (`obc-pack`), and the test/host helpers. The
+(`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
+both simulator hosts share in `obc-host-core`), the map packer (`obc-pack`),
+and the test/host helpers. The
 **board crate** — `obc-fw-nrf54l` — is **`exclude`d** from the workspace (it has
 its own MCU target + `.cargo/config.toml`) and is built on its own; see
 [`obc-fw-nrf54l/README.md`](obc-fw-nrf54l/README.md) for the real-hardware target.
@@ -117,6 +119,24 @@ firmware runs. `../freiburg.obcm` is a current sample.
 Run `obc-sim --help` for the full flag set (routes/tracks folders, `--import`,
 `--physical`/`--calibrate`, `--script`/`--boot`, headless `--center`/`--zoom`).
 Packing maps and the web builder are covered in the [repo README](../README.md).
+
+## Run the web demo (`obc-web-demo`)
+
+The landing page's live demo is the same shared crates compiled to wasm behind a
+small `obc_demo_*` API (no egui/wgpu — the page's JS owns the frame loop). Trunk
+drives the build from the site config (`rustup target add wasm32-unknown-unknown`
++ `cargo install trunk` once):
+
+```sh
+# From the repo root. Dev server with rebuild-on-change:
+trunk serve --config docs/Trunk.toml           # http://127.0.0.1:8080/
+
+# The shipped, wasm-opt'd binary (what CI + Pages deploy build):
+trunk build --release --config docs/Trunk.toml # → docs/dist/
+```
+
+The demo core is target-independent, so its unit tests run in the plain
+`cargo test` above — no browser needed for the logic.
 
 ## Firmware update images (OBCU)
 

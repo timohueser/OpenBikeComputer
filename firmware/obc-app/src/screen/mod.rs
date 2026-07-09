@@ -333,6 +333,22 @@ macro_rules! screens {
                     $( Screen::$variant(_) => ScreenKind::$kind, )+
                 }
             }
+
+            /// This screen's variant name (e.g. `"Map"`, `"PoiList"`, `"NavPlanning"`), generated
+            /// from the one table so it can't drift. The web demo host (`obc-web-demo`) publishes it
+            /// (`obc_demo_state`) so the landing page can advance a guided demo only once the app
+            /// actually reached the target screen.
+            pub fn name(&self) -> &'static str {
+                match self {
+                    $( Screen::$variant(_) => stringify!($variant), )+
+                }
+            }
+
+            /// Every screen's variant name, in `screens!` table order — the same strings
+            /// [`name`](Screen::name) returns. The web demo host exports this
+            /// (`obc_demo_screens`) as the landing page's drift-guard: a tour scripted against a
+            /// screen name that no longer exists fails CI instead of silently stalling.
+            pub const NAMES: &'static [&'static str] = &[ $( stringify!($variant), )+ ];
         }
     };
 }
@@ -1100,6 +1116,20 @@ mod tests {
             assert_eq!(rec.calls[0].0.as_str(), "WAYPOINTS");
             assert_eq!((rec.calls[1].0.as_str(), rec.calls[1].2), ("--", TextAlign::Center), "a centred fallback dash");
         }
+    }
+
+    /// `Screen::NAMES` is a usable drift-guard key set: every name unique and non-empty, and the
+    /// table agrees with [`Screen::name`] (both are generated from the one `screens!` table, so
+    /// this pins the macro plumbing, not a hand-kept list).
+    #[test]
+    fn screen_names_are_unique_and_match_name() {
+        assert!(!Screen::NAMES.is_empty());
+        for (i, n) in Screen::NAMES.iter().enumerate() {
+            assert!(!n.is_empty());
+            assert!(!Screen::NAMES[..i].contains(n), "duplicate screen name {n}");
+        }
+        assert_eq!(Screen::Home(HomeScreen::new()).name(), "Home");
+        assert!(Screen::NAMES.contains(&"Home") && Screen::NAMES.contains(&"Map"));
     }
 
     /// A stat tile's caption fits its pixel budget: a short built-in caption passes through verbatim,
