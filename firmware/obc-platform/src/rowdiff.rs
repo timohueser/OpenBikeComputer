@@ -10,10 +10,12 @@
 //! re-presents its handful of rows instead of all 320 — on the LS021/FLPR, a few ms vs. a ~44 ms
 //! full frame.
 //!
-//! - [`row_hash`] — FNV-1a mixing over one row as `u32` words. 32-bit: 320 rows = 1.28 KB of store, and the only
-//!   failure mode (a changed row hashing equal, so skipped) is ~2⁻³² per row-change and
-//!   **self-healing** — caught systematically by the simulator's exact-diff CI oracle
-//!   ([`spans_missed_changes`]); only random collisions reach the field.
+//! - [`row_hash`] — FNV-1a mixing over one row as **pre-mixed** `u32` words. 32-bit: 320 rows =
+//!   1.28 KB of store, and the only failure mode (a changed row hashing equal, so skipped) is
+//!   ~2⁻³² per row-change and **self-healing** — caught systematically by the simulator's
+//!   exact-diff CI oracle ([`spans_missed_changes`]); only random collisions reach the field.
+//!   (The pre-mix is load-bearing: without it, word-FNV misses certain 2-pixel changes at ~2⁻⁸ —
+//!   see [`row_hash`] and issue #626.)
 //! - [`diff_rows`] — the core diff, generic over the hash fn (the oracle injects a colliding stub)
 //!   and the row count (a `&mut [u32]` store), so the device's fixed-size store and the simulator's
 //!   runtime-sized one share one implementation.
@@ -27,25 +29,47 @@
 //! pass *before* the present — word-at-a-time, well under a ms over the 75 KB device plane — and
 //! that extra read earns back far more than it costs against the ~44 ms full-frame push.
 
-/// FNV-1a (32-bit) over one framebuffer row, mixed a `u32` **word** at a time — the per-row hash
-/// the self-diff compares. The self-diffing present runs this over the *whole* framebuffer on every
-/// map-dirty present, so it's the diff pass's floor: folding four bytes per multiply (one word load
-/// on thumbv8m) instead of one cuts that pass ~4× (issue #350). The values differ from byte-FNV-1a,
-/// but the store never leaves this module, and the properties are the same in kind: any byte change
-/// changes the word stream, and misses stay ~2⁻³² per row-change — see the module docs for the
-/// collision-rate rationale.
+/// FNV-1a (32-bit) over one framebuffer row, mixed a **pre-avalanched** `u32` word at a time — the
+/// per-row hash the self-diff compares. The self-diffing present runs this over the *whole*
+/// framebuffer on every map-dirty present, so it's the diff pass's floor: folding four bytes per
+/// multiply (one word load on thumbv8m) instead of one cuts that pass ~4× (issue #350). The values
+/// differ from byte-FNV-1a, but the store never leaves this module.
+///
+/// **Why each word is pre-mixed before the FNV step (issue #626).** Plain word-FNV
+/// (`h = (h ^ w) * prime`) only ever moves information toward *higher* bits: XOR is bitwise and
+/// multiplying by an odd prime preserves the lowest set bit of a difference (its `2^24` term only
+/// adds bits further up). So two rows that differ **only in the top byte of their words** (pixel
+/// columns `x % 4 == 3`) keep their hash difference confined to bits 24..32 — 8 bits of
+/// discrimination — and a second such changed word cancels it with ~2⁻⁸ probability, not 2⁻³²
+/// (measured: 30 784 colliding pairs among the 8.4 M two-pixel variants of one row — e.g. from an
+/// all-0x00 row, `fb[3]=0x02, fb[7]=0x2E` hashed *equal*). Real frames hit that family constantly
+/// (any row whose change lands only on columns ≡ 3 mod 4: marker edges, glyph updates, dashes), and
+/// on a *static* screen the resulting skipped row never self-heals — a persistently stale row on
+/// glass, and the oracle panic the sim demo tripped. Multiplying each word by the golden-ratio
+/// constant and folding the high half down (`k ^= k >> 15`) avalanches every injected difference
+/// across the word *before* it meets the accumulator, so a cancellation again needs a full 32-bit
+/// match: structured-family scans (per-lane pairs, sparse two-byte changes, sliding dashes) come
+/// out collision-free / at the SipHash-reference rate. Cost: one extra multiply + shift-xor per
+/// word — the pass stays well under a ms over the 75 KB device plane.
 #[inline]
 pub fn row_hash(row: &[u8]) -> u32 {
+    /// Avalanche one injected word so no sparse difference survives confined to a byte lane:
+    /// golden-ratio multiply spreads low bits up, the shift-xor folds the high half back down.
+    #[inline(always)]
+    fn premix(w: u32) -> u32 {
+        let k = w.wrapping_mul(0x9e37_79b1);
+        k ^ (k >> 15)
+    }
     let mut h: u32 = 0x811c_9dc5; // FNV-1a offset basis
     let mut words = row.chunks_exact(4);
     for w in &mut words {
-        h ^= u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+        h ^= premix(u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
         h = h.wrapping_mul(0x0100_0193); // FNV prime
     }
     // Byte tail for strides that aren't a multiple of 4 — generality only; the device stride (240)
     // and the simulator stride (720) are both exact.
     for &b in words.remainder() {
-        h ^= b as u32;
+        h ^= premix(b as u32);
         h = h.wrapping_mul(0x0100_0193);
     }
     h
@@ -275,6 +299,37 @@ mod tests {
         }
         // Word-path position sensitivity: swapping bytes within a word changes the word value.
         assert_ne!(row_hash(&[1, 2, 3, 4]), row_hash(&[4, 3, 2, 1]));
+    }
+
+    /// Issue #626 regression: the pre-fix word-FNV hash collided on rows differing **only in the
+    /// top byte of their words** (pixel columns ≡ 3 mod 4) at ~2⁻⁸ within device-64 content —
+    /// e.g. an all-zero row vs. the same row with `[3] = 0x02, [7] = 0x2E` hashed equal, so the
+    /// self-diff skipped a genuinely changed row (a stale row on glass / the sim's oracle panic).
+    /// Pin the measured pair, then require the whole two-pixel family — every byte lane — to be
+    /// collision-free (the old hash had 30 784 duplicates in lane 3's 4 096-row family).
+    #[test]
+    fn byte_lane_confined_changes_never_collide() {
+        use std::collections::HashSet;
+
+        // The exact measured colliding pair of the pre-fix hash.
+        let zero = [0u8; 8];
+        let mut pair = zero;
+        pair[3] = 0x02;
+        pair[7] = 0x2E;
+        assert_ne!(row_hash(&pair), row_hash(&zero), "the #626 pair must not collide");
+
+        // Every two-word row whose device-64 pixels vary only in one byte lane hashes uniquely.
+        for lane in 0..4 {
+            let mut seen = HashSet::new();
+            for a in 0u8..64 {
+                for b in 0u8..64 {
+                    let mut r = [0u8; 8];
+                    r[lane] = a;
+                    r[4 + lane] = b;
+                    assert!(seen.insert(row_hash(&r)), "lane {lane} collision at a={a:#x} b={b:#x}");
+                }
+            }
+        }
     }
 
     #[test]
