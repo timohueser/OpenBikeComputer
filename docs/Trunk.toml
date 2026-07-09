@@ -16,6 +16,11 @@ stage = "pre_build"
 command = "python3"
 command_arguments = ["build_docs.py"]
 
+[watch]
+# build_docs.py regenerates docs/ (rendered HTML) on every pre_build hook run;
+# without ignoring it, trunk watches its own hook's output and rebuilds forever.
+ignore = ["docs"]
+
 [serve]
 addresses = ["127.0.0.1"]
 port = 8080
