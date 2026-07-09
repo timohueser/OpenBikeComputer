@@ -1,15 +1,30 @@
 //! Quadtree build — bucket a LOD's features into chunks.
 //!
-//! Insert every feature into a quadtree over the global bbox, splitting a leaf once
-//! its accumulated size (the per-feature [`packed_size_budget`], an upper bound on
-//! the real packed bytes including densify midpoints) exceeds the chunk size.
-//! Contained features go in as-is; straddling ones are clipped to the node box.
+//! A node holds every feature reaching it. If their combined [`packed_size_budget`]
+//! (an upper bound on the real packed bytes, including densify midpoints) fits the
+//! chunk size it becomes a leaf; otherwise it splits four ways and hands each child
+//! the features that reach it — contained ones whole, straddling ones clipped to the
+//! child box — and recurses. The four children are built **in parallel**.
+//!
+//! This is a batch reformulation of the older one-feature-at-a-time insert+split:
+//! since a leaf splits exactly when its features overflow the chunk and then
+//! redistributes *all* of them, "does the running total ever exceed the chunk" and
+//! "does the final total exceed the chunk" decide the same splits, and each child
+//! still receives its features in input order — so the tree (and its serialized
+//! bytes) are identical, only now the subtrees fan out across threads.
 //!
 //! Overlap/containment tests and clipping run in **degree space** (bbox / 1e6), so
 //! leaf membership matches the node bounds the reader recomputes at render time.
 
 use crate::geom::{clip_to_box, packed_size_budget, to_feature, Bounds, Geom};
 use crate::serialize::Node;
+
+/// Degree bounds `(min_lon, min_lat, max_lon, max_lat)` of an integer-µdeg box.
+type DegBox = (f64, f64, f64, f64);
+
+fn deg(bbox: (i64, i64, i64, i64)) -> DegBox {
+    (bbox.0 as f64 / 1e6, bbox.1 as f64 / 1e6, bbox.2 as f64 / 1e6, bbox.3 as f64 / 1e6)
+}
 
 struct StoredFeature {
     style_id: u8,
@@ -18,129 +33,131 @@ struct StoredFeature {
     bounds: Bounds,
 }
 
-struct QuadtreeNode {
+/// Below this many features a node builds its four children serially — the rayon
+/// fork/join overhead isn't worth it for a small subtree (the big top-of-tree nodes
+/// still fan out, which is where the time is).
+const PARALLEL_MIN_FEATURES: usize = 2048;
+
+/// Push a **simple** `geom` whose `bounds` are already known into the box `bbox`:
+/// dropped if it misses, kept whole if fully inside, else clipped to the box and
+/// flattened. `dbox` is `bbox` in degrees. The known `bounds` let the hot
+/// contained-feature path skip a full coordinate scan — only a clip (which changes
+/// the geometry) recomputes bounds, via [`flatten`].
+fn place(
     bbox: (i64, i64, i64, i64),
-    chunk_size: usize,
-    features: Vec<StoredFeature>,
-    children: Option<Box<[QuadtreeNode; 4]>>,
-    current_size: usize,
-    // Float boundaries (degrees), precomputed.
-    minxf: f64,
-    minyf: f64,
-    maxxf: f64,
-    maxyf: f64,
+    dbox: DegBox,
+    style_id: u8,
+    geom: Geom,
+    bounds: Bounds,
+    out: &mut Vec<StoredFeature>,
+) {
+    let (minxf, minyf, maxxf, maxyf) = dbox;
+    // Reject: bbox misses the box entirely.
+    if bounds.2 < minxf || bounds.0 > maxxf || bounds.3 < minyf || bounds.1 > maxyf {
+        return;
+    }
+    // Contain: fully inside ⇒ keep whole, no clip, no bounds recompute.
+    if bounds.0 >= minxf && bounds.2 <= maxxf && bounds.1 >= minyf && bounds.3 <= maxyf {
+        out.push(StoredFeature { style_id, geom, bounds });
+        return;
+    }
+    // Straddle: clip to the box and flatten whatever comes back.
+    let clipped = clip_to_box(&geom, bbox);
+    if !clipped.is_empty() {
+        flatten(style_id, clipped, out);
+    }
 }
 
-impl QuadtreeNode {
-    fn new(bbox: (i64, i64, i64, i64), chunk_size: usize) -> Self {
-        QuadtreeNode {
-            bbox,
-            chunk_size,
-            features: Vec::new(),
-            children: None,
-            current_size: 0,
-            minxf: bbox.0 as f64 / 1e6,
-            minyf: bbox.1 as f64 / 1e6,
-            maxxf: bbox.2 as f64 / 1e6,
-            maxyf: bbox.3 as f64 / 1e6,
+/// Append the simple parts of `geom` (recomputing each part's bounds) to `out`,
+/// flattening `Multi`s. Used for geometry whose bounds aren't already known: a clip
+/// result and each raw input feature at the root.
+fn flatten(style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
+    match geom {
+        Geom::Line(_) | Geom::Polygon { .. } => {
+            let bounds = geom.bounds();
+            out.push(StoredFeature { style_id, geom, bounds });
         }
-    }
-
-    fn insert(&mut self, style_id: u8, geom: Geom, bounds: Bounds) {
-        // Fast bbox-overlap reject (degree space).
-        if bounds.2 < self.minxf || bounds.0 > self.maxxf || bounds.3 < self.minyf || bounds.1 > self.maxyf {
-            return;
-        }
-        // Fast containment: fully inside ⇒ no clip, reuse the geometry + bounds.
-        if bounds.0 >= self.minxf && bounds.2 <= self.maxxf && bounds.1 >= self.minyf && bounds.3 <= self.maxyf {
-            self.flatten_and_process(style_id, geom, bounds);
-        } else {
-            let clipped = clip_to_box(&geom, self.bbox);
-            if clipped.is_empty() {
-                return;
-            }
-            let cb = clipped.bounds();
-            self.flatten_and_process(style_id, clipped, cb);
-        }
-    }
-
-    fn flatten_and_process(&mut self, style_id: u8, geom: Geom, bounds: Bounds) {
-        match geom {
-            Geom::Line(_) | Geom::Polygon { .. } => {
-                self.process_clipped(StoredFeature { style_id, geom, bounds });
-            }
-            Geom::Multi(parts) => {
-                for part in parts {
-                    if !part.is_empty() {
-                        let b = part.bounds();
-                        self.flatten_and_process(style_id, part, b);
-                    }
+        Geom::Multi(parts) => {
+            for p in parts {
+                if !p.is_empty() {
+                    flatten(style_id, p, out);
                 }
             }
-            Geom::Empty => {}
+        }
+        Geom::Empty => {}
+    }
+}
+
+/// Build the subtree for `bbox` from `feats` (already clipped to `bbox`, in input
+/// order). Leaf iff the features fit the chunk or the box hit the 10 µdeg split
+/// floor; otherwise split four ways and build the children in parallel.
+fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFeature>) -> Node {
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    // Recursion guard: don't split below 10 µdeg on either axis.
+    let splittable = max_lon - min_lon >= 10 && max_lat - min_lat >= 10;
+    let total: usize = feats.iter().map(|f| packed_size_budget(&f.geom)).sum();
+    if !splittable || total <= chunk_size {
+        let features = feats.iter().filter_map(|f| to_feature(f.style_id, &f.geom)).collect();
+        return Node::Leaf { bbox, features };
+    }
+    let n_feats = feats.len();
+
+    // Floor-division midpoints (`div_euclid` floors toward −∞, matching the reader).
+    let mid_lon = (min_lon + max_lon).div_euclid(2);
+    let mid_lat = (min_lat + max_lat).div_euclid(2);
+    let boxes = [
+        (min_lon, mid_lat, mid_lon, max_lat), // NW
+        (mid_lon, mid_lat, max_lon, max_lat), // NE
+        (min_lon, min_lat, mid_lon, mid_lat), // SW
+        (mid_lon, min_lat, max_lon, mid_lat), // SE
+    ];
+    let dboxes = [deg(boxes[0]), deg(boxes[1]), deg(boxes[2]), deg(boxes[3])];
+
+    // Hand each feature to the children it reaches, in NW,NE,SW,SE order, cloning
+    // into every reached child but the last (which takes it by move). A feature
+    // contained in one quadrant thus never allocates a throwaway copy.
+    let mut buckets: [Vec<StoredFeature>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for f in feats {
+        let StoredFeature { style_id, geom, bounds } = f;
+        let mut reached = [false; 4];
+        let mut last = None;
+        for (i, &(minxf, minyf, maxxf, maxyf)) in dboxes.iter().enumerate() {
+            let miss = bounds.2 < minxf || bounds.0 > maxxf || bounds.3 < minyf || bounds.1 > maxyf;
+            if !miss {
+                reached[i] = true;
+                last = Some(i);
+            }
+        }
+        let Some(last) = last else { continue };
+        let mut geom = Some(geom);
+        for i in 0..4 {
+            if !reached[i] {
+                continue;
+            }
+            let g = if i == last { geom.take().unwrap() } else { geom.as_ref().unwrap().clone() };
+            place(boxes[i], dboxes[i], style_id, g, bounds, &mut buckets[i]);
         }
     }
 
-    fn process_clipped(&mut self, f: StoredFeature) {
-        if let Some(children) = &mut self.children {
-            // Branch (split mid-insert): hand to every child; each rejects/clips.
-            for child in children.iter_mut() {
-                child.insert(f.style_id, f.geom.clone(), f.bounds);
-            }
-        } else {
-            // Leaf: accumulate, then split if over capacity.
-            let delta = packed_size_budget(&f.geom);
-            self.features.push(f);
-            self.current_size += delta;
-            if self.should_split() {
-                self.split();
-            }
-        }
-    }
-
-    fn should_split(&self) -> bool {
-        self.current_size > self.chunk_size
-    }
-
-    fn split(&mut self) {
-        let (min_lon, min_lat, max_lon, max_lat) = self.bbox;
-        // Recursion guard: don't split below 10 µdeg on either axis.
-        if max_lon - min_lon < 10 || max_lat - min_lat < 10 {
-            return;
-        }
-        // Floor-division midpoints (`div_euclid` floors toward −∞, matching the reader).
-        let mid_lon = (min_lon + max_lon).div_euclid(2);
-        let mid_lat = (min_lat + max_lat).div_euclid(2);
-        let cs = self.chunk_size;
-        self.children = Some(Box::new([
-            QuadtreeNode::new((min_lon, mid_lat, mid_lon, max_lat), cs), // NW
-            QuadtreeNode::new((mid_lon, mid_lat, max_lon, max_lat), cs), // NE
-            QuadtreeNode::new((min_lon, min_lat, mid_lon, mid_lat), cs), // SW
-            QuadtreeNode::new((mid_lon, min_lat, max_lon, mid_lat), cs), // SE
-        ]));
-
-        // Re-insert the accumulated features into the new children.
-        let moved = std::mem::take(&mut self.features);
-        let children = self.children.as_mut().unwrap();
-        for f in moved {
-            for child in children.iter_mut() {
-                child.insert(f.style_id, f.geom.clone(), f.bounds);
-            }
-        }
-    }
-
-    fn into_node(self) -> Node {
-        match self.children {
-            Some(children) => {
-                let [a, b, c, d] = *children;
-                Node::Branch(Box::new([a.into_node(), b.into_node(), c.into_node(), d.into_node()]))
-            }
-            None => {
-                let features = self.features.iter().filter_map(|f| to_feature(f.style_id, &f.geom)).collect();
-                Node::Leaf { bbox: self.bbox, features }
-            }
-        }
-    }
+    let [nw, ne, sw, se] = buckets;
+    // Build the four subtrees; big nodes fan out across threads (only plain `Geom`,
+    // which is Send, crosses threads, and each `clip_to_box` builds/consumes its GEOS
+    // geometry on its own thread), small ones stay serial to dodge the join overhead.
+    let children = if n_feats >= PARALLEL_MIN_FEATURES {
+        let ((nw, ne), (sw, se)) = rayon::join(
+            || (build_node(boxes[0], chunk_size, nw), build_node(boxes[1], chunk_size, ne)),
+            || (build_node(boxes[2], chunk_size, sw), build_node(boxes[3], chunk_size, se)),
+        );
+        [nw, ne, sw, se]
+    } else {
+        [
+            build_node(boxes[0], chunk_size, nw),
+            build_node(boxes[1], chunk_size, ne),
+            build_node(boxes[2], chunk_size, sw),
+            build_node(boxes[3], chunk_size, se),
+        ]
+    };
+    Node::Branch(Box::new(children))
 }
 
 /// Build one LOD's quadtree from its (already simplified) features and convert it
@@ -151,15 +168,37 @@ pub fn build_lod(
     global_bbox: (i64, i64, i64, i64),
     chunk_size: usize,
 ) -> Node {
-    let mut root = QuadtreeNode::new(global_bbox, chunk_size);
+    // Root: clip every feature to the global bbox (features at the truncated edge
+    // can poke just outside it) and flatten Multis to simple parts, in input order.
+    let dbox = deg(global_bbox);
+    let mut root = Vec::new();
     for (style_id, geom) in features {
-        if geom.is_empty() {
-            continue;
+        if !geom.is_empty() {
+            place_any(global_bbox, dbox, style_id, geom, &mut root);
         }
-        let bounds = geom.bounds();
-        root.insert(style_id, geom, bounds);
     }
-    root.into_node()
+    build_node(global_bbox, chunk_size, root)
+}
+
+/// Root entry: flatten a raw input `geom` (possibly a `Multi`) to its simple parts
+/// and [`place`] each against the box, computing per-part bounds. Split-level
+/// distribution uses [`place`] directly since it already knows each feature's
+/// bounds; only the root's raw inputs need this bounds-computing wrapper.
+fn place_any(bbox: (i64, i64, i64, i64), dbox: DegBox, style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
+    match geom {
+        Geom::Multi(parts) => {
+            for p in parts {
+                if !p.is_empty() {
+                    place_any(bbox, dbox, style_id, p, out);
+                }
+            }
+        }
+        Geom::Empty => {}
+        simple => {
+            let bounds = simple.bounds();
+            place(bbox, dbox, style_id, simple, bounds, out);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,11 +232,9 @@ mod tests {
     fn multilinestring_flattens_into_parts() {
         let mls =
             Geom::Multi(vec![line(&[(0.0001, 0.0001), (0.0002, 0.0002)]), line(&[(0.0003, 0.0003), (0.0004, 0.0004)])]);
-        let mut root = QuadtreeNode::new((0, 0, 1000, 1000), 4096);
-        let b = mls.bounds();
-        root.insert(1, mls, b);
-        let n = root.into_node();
-        assert_eq!(leaf_feature_count(&n), 2);
+        let n = build_lod([(1u8, mls)], (0, 0, 1000, 1000), 4096);
+        assert_eq!(leaf_feature_count(&n), 2, "the multilinestring flattens into its two line parts");
+        assert!(!is_branch(&n));
     }
 
     #[test]
@@ -217,10 +254,7 @@ mod tests {
             exterior: vec![(0.0001, 0.0001), (0.0005, 0.0001), (0.0005, 0.0005), (0.0001, 0.0005), (0.0001, 0.0001)],
             interiors: vec![],
         };
-        let mut root = QuadtreeNode::new((0, 0, 1000, 1000), 4096);
-        let b = poly.bounds();
-        root.insert(1, poly, b);
-        let n = root.into_node();
+        let n = build_lod([(1u8, poly)], (0, 0, 1000, 1000), 4096);
         match &n {
             Node::Leaf { features, .. } => {
                 assert_eq!(features.len(), 1);
@@ -239,12 +273,10 @@ mod tests {
 
     #[test]
     fn no_split_below_chunk_size() {
-        // 2-point line in a big bbox: 12 + 2*4 = 20 < 4096 → no split.
-        let mut root = QuadtreeNode::new((0, 0, 40000, 40000), 4096);
-        let g = line(&[(0.01, 0.01), (0.02, 0.02)]);
-        let b = g.bounds();
-        root.insert(1, g, b);
-        assert!(!root.should_split());
+        // 2-point line in a big bbox: 12 + 2*4 = 20 < 4096 → no split (stays a leaf).
+        let n = build_lod([(1u8, line(&[(0.01, 0.01), (0.02, 0.02)]))], (0, 0, 40000, 40000), 4096);
+        assert!(!is_branch(&n), "a feature under the chunk budget must not split the tree");
+        assert_eq!(leaf_feature_count(&n), 1);
     }
 
     // --- Split + straddle ⇒ real GEOS clip -----------------------------------
