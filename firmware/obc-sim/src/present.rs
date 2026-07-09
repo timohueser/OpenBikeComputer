@@ -65,6 +65,15 @@ pub struct Present {
     primed: bool,
     /// `rows`-long coverage scratch the oracle rewrites each present (no per-frame alloc).
     covered: Vec<bool>,
+    /// Per-row "this miss was already logged" dedupe flags for the oracle diagnostics. A missed row
+    /// stays byte-different every frame until it next changes, and on a parked static screen — the
+    /// exact scenario the diagnostics exist for — present() runs at frame rate, so an undeduped log
+    /// would flood the console (in `--release` the assert compiles out and nothing stops the loop).
+    /// Set when a row's miss is first reported, cleared the moment the row stops missing.
+    miss_reported: Vec<bool>,
+    /// How many `miss_reported` flags are set — lets the happy path (no miss ever reported, the
+    /// universal case) skip the clear sweep entirely.
+    misses_flagged: usize,
     /// Frame width in pixels — the device-64 row stride (one byte per pixel).
     width: usize,
     /// Frame height in rows.
@@ -86,6 +95,8 @@ impl Present {
             hashes: vec![0u32; rows],
             primed: false,
             covered: vec![false; rows],
+            miss_reported: vec![false; rows],
+            misses_flagged: 0,
             width,
             rows,
             stats: PresentStats::default(),
@@ -176,19 +187,37 @@ impl DisplayDriver for Present {
         if missed != 0 {
             // Diagnostics before the assert (kept in release too, where the assert compiles out and
             // the miss would otherwise be a silent stale row): which row, its stored hash, and the
-            // differing column range. `covered` still holds the oracle's span coverage.
+            // differing column range. `covered` still holds the oracle's span coverage. Deduped per
+            // row — a missed row on a parked screen stays byte-different until it next changes, so
+            // in release this branch runs every frame; log only when a row's miss FIRST appears.
             for (y, &cov) in self.covered[..rows].iter().enumerate() {
                 let r = y * stride..y * stride + stride;
-                if !cov && self.presented[r.clone()] != self.fb[r.clone()] {
-                    let differs = |c: &usize| self.presented[r.start + c] != self.fb[r.start + c];
-                    let first = (0..stride).find(differs).unwrap_or(0);
-                    let last = (0..stride).rev().find(differs).unwrap_or(0);
-                    eprintln!(
-                        "present self-diff MISS: row {y} (stored hash {:#010x} matches fb) differs from presented at cols {first}..={last}",
-                        self.hashes[y]
-                    );
+                let missing = !cov && self.presented[r.clone()] != self.fb[r.clone()];
+                match (missing, self.miss_reported[y]) {
+                    (true, false) => {
+                        let differs = |c: &usize| self.presented[r.start + c] != self.fb[r.start + c];
+                        let first = (0..stride).find(differs).unwrap_or(0);
+                        let last = (0..stride).rev().find(differs).unwrap_or(0);
+                        eprintln!(
+                            "present self-diff MISS: row {y} (stored hash {:#010x} matches fb) differs from presented at cols {first}..={last}",
+                            self.hashes[y]
+                        );
+                        self.miss_reported[y] = true;
+                        self.misses_flagged += 1;
+                    }
+                    (false, true) => {
+                        // The row healed (or was pushed/covered this frame): re-arm its report.
+                        self.miss_reported[y] = false;
+                        self.misses_flagged -= 1;
+                    }
+                    _ => {}
                 }
             }
+        } else if self.misses_flagged != 0 {
+            // Every previously-reported row healed this present: re-arm all reports in one sweep
+            // (skipped entirely on the universal no-miss-ever path).
+            self.miss_reported.fill(false);
+            self.misses_flagged = 0;
         }
         debug_assert_eq!(missed, 0, "self-diff missed {missed} changed row(s) — a systematic hash-diff bug");
         true
@@ -492,6 +521,36 @@ mod tests {
         p.fb_mut()[2 * 4..3 * 4].fill(0x30);
         block_on(p.present(None));
         assert_eq!(p.presented, p.fb, "one missed row healed itself; no cascade");
+    }
+
+    /// The oracle's miss diagnostics are deduped per row: a missed row on a parked static screen
+    /// stays byte-different every frame (in `--release` nothing stops the loop), so the report must
+    /// fire once when the miss appears, stay quiet while it persists, and re-arm when the row
+    /// heals. The `miss_reported` flags gate the log line 1:1, so pin the flag lifecycle.
+    #[test]
+    fn miss_diagnostics_are_deduped_per_row() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut p = Present::new(4, 6);
+        present_fill(&mut p, 0x01, None);
+        // Fabricate a persistent miss on row 2 (a collision's aftermath, as in the cascade test).
+        p.fb_mut()[2 * 4..3 * 4].fill(0x22);
+        p.hashes[2] = row_hash(&p.fb[2 * 4..3 * 4]);
+        // First present: the miss appears → reported (the debug assert also fires; catch it).
+        let _ = catch_unwind(AssertUnwindSafe(|| block_on(p.present(None))));
+        assert!(p.miss_reported[2], "the new miss is reported");
+        assert_eq!(p.misses_flagged, 1);
+        // The screen stays parked: the same miss persists — no re-report (the flag stays set).
+        for _ in 0..3 {
+            let _ = catch_unwind(AssertUnwindSafe(|| block_on(p.present(None))));
+            assert!(p.miss_reported[2], "the persisting miss stays flagged, not re-reported");
+            assert_eq!(p.misses_flagged, 1, "no duplicate report accumulates");
+        }
+        // The row changes → re-pushed, healed: the report re-arms.
+        p.fb_mut()[2 * 4..3 * 4].fill(0x30);
+        block_on(p.present(None));
+        assert!(!p.miss_reported[2], "a healed row re-arms its report");
+        assert_eq!(p.misses_flagged, 0);
     }
 
     /// #626 deterministic repro/regression: two frames that differ only in device-64 pixels at
