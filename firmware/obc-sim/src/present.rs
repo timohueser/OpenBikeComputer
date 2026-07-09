@@ -65,6 +65,15 @@ pub struct Present {
     primed: bool,
     /// `rows`-long coverage scratch the oracle rewrites each present (no per-frame alloc).
     covered: Vec<bool>,
+    /// Per-row "this miss was already logged" dedupe flags for the oracle diagnostics. A missed row
+    /// stays byte-different every frame until it next changes, and on a parked static screen — the
+    /// exact scenario the diagnostics exist for — present() runs at frame rate, so an undeduped log
+    /// would flood the console (in `--release` the assert compiles out and nothing stops the loop).
+    /// Set when a row's miss is first reported, cleared the moment the row stops missing.
+    miss_reported: Vec<bool>,
+    /// How many `miss_reported` flags are set — lets the happy path (no miss ever reported, the
+    /// universal case) skip the clear sweep entirely.
+    misses_flagged: usize,
     /// Frame width in pixels — the device-64 row stride (one byte per pixel).
     width: usize,
     /// Frame height in rows.
@@ -86,6 +95,8 @@ impl Present {
             hashes: vec![0u32; rows],
             primed: false,
             covered: vec![false; rows],
+            miss_reported: vec![false; rows],
+            misses_flagged: 0,
             width,
             rows,
             stats: PresentStats::default(),
@@ -120,9 +131,10 @@ impl DisplayDriver for Present {
 
     /// Self-diff the resident frame and "push" only the changed rows, exactly as the device does:
     /// diff every row against the hash store (updating it for **all** rows — the self-healing
-    /// property), clip each changed span around a live overlay's `exclude` rows, assert the oracle is
-    /// satisfied, then reconstruct the pushed rows into `presented` + the texture. Always `true` — a
-    /// host texture write never faults.
+    /// property), clip each changed span around a live overlay's `exclude` rows, reconstruct the
+    /// pushed rows into `presented` + the texture, then assert the oracle is satisfied — push
+    /// first, so a failed oracle can't desync later frames (#626). Always `true` — a host texture
+    /// write never faults.
     async fn present(&mut self, exclude: Option<(u16, u16)>) -> bool {
         let (stride, rows) = (self.width, self.rows);
 
@@ -143,18 +155,13 @@ impl DisplayDriver for Present {
             clip_span(y0, n, ex, &mut |s, c| spans.push((s, c)));
         }
 
-        // 3. Oracle: independently compute the rows that *actually* changed and assert the pushed
-        //    spans (plus the overlay's excluded rows, which the overlay plane owns) covered every
-        //    one. First present: `presented` is all-black, forced full-frame span.
-        let mut oracle_spans = spans.clone();
-        if let Some(ex) = exclude {
-            oracle_spans.push(ex);
-        }
-        let missed = spans_missed_changes(&self.presented, &self.fb, stride, rows, &oracle_spans, &mut self.covered);
-        debug_assert_eq!(missed, 0, "self-diff missed {missed} changed row(s) — a systematic hash-diff bug");
-
-        // 4. Push only the changed spans into `presented` (device-64) and the texture (RGB888). The
-        //    displayed texture is this partial-push buffer.
+        // 3. Push only the changed spans into `presented` (device-64) and the texture (RGB888). The
+        //    displayed texture is this partial-push buffer. The push runs BEFORE the oracle check
+        //    (#626): a failed check then aborts *after* the frame landed, so every diffed row is
+        //    already in `presented` and one miss can never desync — and re-assert on — every
+        //    subsequent present. (Pre-fix, the first assert fired between the hash-store update and
+        //    the push, leaving every changed row permanently stale: a self-sustaining panic cascade
+        //    whose steady-state `missed: 1` hid the real first failure.)
         let mut pushed_rows = 0;
         for &(y0, n) in &spans {
             for y in y0 as usize..y0 as usize + n as usize {
@@ -165,6 +172,54 @@ impl DisplayDriver for Present {
             pushed_rows += n as usize;
         }
         self.stats = PresentStats { pushed_rows, spans: spans.len(), total_rows: rows };
+
+        // 4. Oracle: independently compute the rows that *actually* changed and assert the pushed
+        //    spans (plus the overlay's excluded rows, which the overlay plane owns) covered every
+        //    one. Rows inside the spans were just pushed (now byte-equal, and covered anyway), so
+        //    checking after the push is equivalent — a miss is exactly an uncovered row whose bytes
+        //    still differ. Such a row stays self-healing: its store hash already tracks `fb`, so
+        //    the next time it changes it re-pushes cleanly.
+        let mut oracle_spans = spans.clone();
+        if let Some(ex) = exclude {
+            oracle_spans.push(ex);
+        }
+        let missed = spans_missed_changes(&self.presented, &self.fb, stride, rows, &oracle_spans, &mut self.covered);
+        if missed != 0 {
+            // Diagnostics before the assert (kept in release too, where the assert compiles out and
+            // the miss would otherwise be a silent stale row): which row, its stored hash, and the
+            // differing column range. `covered` still holds the oracle's span coverage. Deduped per
+            // row — a missed row on a parked screen stays byte-different until it next changes, so
+            // in release this branch runs every frame; log only when a row's miss FIRST appears.
+            for (y, &cov) in self.covered[..rows].iter().enumerate() {
+                let r = y * stride..y * stride + stride;
+                let missing = !cov && self.presented[r.clone()] != self.fb[r.clone()];
+                match (missing, self.miss_reported[y]) {
+                    (true, false) => {
+                        let differs = |c: &usize| self.presented[r.start + c] != self.fb[r.start + c];
+                        let first = (0..stride).find(differs).unwrap_or(0);
+                        let last = (0..stride).rev().find(differs).unwrap_or(0);
+                        eprintln!(
+                            "present self-diff MISS: row {y} (stored hash {:#010x} matches fb) differs from presented at cols {first}..={last}",
+                            self.hashes[y]
+                        );
+                        self.miss_reported[y] = true;
+                        self.misses_flagged += 1;
+                    }
+                    (false, true) => {
+                        // The row healed (or was pushed/covered this frame): re-arm its report.
+                        self.miss_reported[y] = false;
+                        self.misses_flagged -= 1;
+                    }
+                    _ => {}
+                }
+            }
+        } else if self.misses_flagged != 0 {
+            // Every previously-reported row healed this present: re-arm all reports in one sweep
+            // (skipped entirely on the universal no-miss-ever path).
+            self.miss_reported.fill(false);
+            self.misses_flagged = 0;
+        }
+        debug_assert_eq!(missed, 0, "self-diff missed {missed} changed row(s) — a systematic hash-diff bug");
         true
     }
 
@@ -438,6 +493,424 @@ mod tests {
         })
         .expect("nav walk over the whole bbox");
         assert!(nodes > 100, "a city extract yields a real junction set, got {nodes}");
+    }
+
+    /// #626 cascade-proofing: one failed oracle check must not desync — and re-assert on — later
+    /// presents. Fabricate the exact aftermath a row-hash collision produces (a changed row whose
+    /// store hash already matches, so the diff skips it) alongside an honestly-changed row: the
+    /// assert fires, but the honest row was pushed *before* it (the #626 reorder), and the one
+    /// stale row self-heals on its next change with no further panic.
+    #[test]
+    fn a_missed_row_cannot_poison_subsequent_presents() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut p = Present::new(4, 6);
+        present_fill(&mut p, 0x01, None);
+        // Row 2 changes but its store hash is (wrongly) already up to date — a simulated collision.
+        p.fb_mut()[2 * 4..3 * 4].fill(0x22);
+        p.hashes[2] = row_hash(&p.fb[2 * 4..3 * 4]);
+        // Row 4 changes honestly in the same frame.
+        p.fb_mut()[4 * 4..5 * 4].fill(0x2A);
+        let outcome = catch_unwind(AssertUnwindSafe(|| block_on(p.present(None))));
+        if cfg!(debug_assertions) {
+            assert!(outcome.is_err(), "the oracle assert fires on the fabricated miss");
+        }
+        // The reorder guarantee: the frame landed before the assert aborted the present.
+        assert_eq!(&p.presented[4 * 4..5 * 4], &[0x2A; 4], "the honest row was pushed despite the failed oracle");
+        // The stale row heals the moment it changes again — and nothing else re-asserts.
+        p.fb_mut()[2 * 4..3 * 4].fill(0x30);
+        block_on(p.present(None));
+        assert_eq!(p.presented, p.fb, "one missed row healed itself; no cascade");
+    }
+
+    /// The oracle's miss diagnostics are deduped per row: a missed row on a parked static screen
+    /// stays byte-different every frame (in `--release` nothing stops the loop), so the report must
+    /// fire once when the miss appears, stay quiet while it persists, and re-arm when the row
+    /// heals. The `miss_reported` flags gate the log line 1:1, so pin the flag lifecycle.
+    #[test]
+    fn miss_diagnostics_are_deduped_per_row() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut p = Present::new(4, 6);
+        present_fill(&mut p, 0x01, None);
+        // Fabricate a persistent miss on row 2 (a collision's aftermath, as in the cascade test).
+        p.fb_mut()[2 * 4..3 * 4].fill(0x22);
+        p.hashes[2] = row_hash(&p.fb[2 * 4..3 * 4]);
+        // First present: the miss appears → reported (the debug assert also fires; catch it).
+        let _ = catch_unwind(AssertUnwindSafe(|| block_on(p.present(None))));
+        assert!(p.miss_reported[2], "the new miss is reported");
+        assert_eq!(p.misses_flagged, 1);
+        // The screen stays parked: the same miss persists — no re-report (the flag stays set).
+        for _ in 0..3 {
+            let _ = catch_unwind(AssertUnwindSafe(|| block_on(p.present(None))));
+            assert!(p.miss_reported[2], "the persisting miss stays flagged, not re-reported");
+            assert_eq!(p.misses_flagged, 1, "no duplicate report accumulates");
+        }
+        // The row changes → re-pushed, healed: the report re-arms.
+        p.fb_mut()[2 * 4..3 * 4].fill(0x30);
+        block_on(p.present(None));
+        assert!(!p.miss_reported[2], "a healed row re-arms its report");
+        assert_eq!(p.misses_flagged, 0);
+    }
+
+    /// #626 deterministic repro/regression: two frames that differ only in device-64 pixels at
+    /// columns 3 and 7 (both ≡ 3 mod 4 — the top byte of a hash word). Under the pre-fix word-FNV
+    /// row hash this exact pair collided (measured: such deltas cancel with ~2⁻⁸ probability, not
+    /// 2⁻³²), so the diff skipped the row and the oracle assert fired — the guided tour's
+    /// "self-diff missed 1 changed row(s)" panic. The fixed hash must flag and push the row.
+    #[test]
+    fn lane3_confined_pixel_change_is_pushed() {
+        let mut p = Present::new(8, 4);
+        present_fill(&mut p, 0x00, None);
+        // Row 2: pixels x=3 → 0x02 and x=7 → 0x2E (a measured colliding pair of the old hash).
+        p.fb_mut()[2 * 8 + 3] = 0x02;
+        p.fb_mut()[2 * 8 + 7] = 0x2E;
+        block_on(p.present(None));
+        assert_eq!(p.stats.pushed_rows, 1, "the lane-3-confined change must be diffed and pushed");
+        let r = 2 * 8..3 * 8;
+        assert_eq!(p.presented[r.clone()], p.fb[r], "row 2 reconstructed");
+    }
+
+    /// One full sim frame, exactly the `gui.rs::render_to_texture` skeleton: drain nav
+    /// request/cancel, step an in-flight route plan, open the active route, advance the GPX replay +
+    /// tick, render into the backend's device-64 plane, then present. Before presenting it predicts
+    /// misses (see [`predicted_misses`]) and panics with full diagnostics on the FIRST one.
+    #[allow(clippy::too_many_arguments)]
+    fn tour_frame(
+        app: &mut obc_app::App,
+        present: &mut Present,
+        player: &mut obc_replay::GpxPlayer,
+        baro: &mut obc_replay::BaroSensor,
+        store: &mut crate::routes::RouteStore,
+        nav_plan: &mut Option<crate::NavPlan>,
+        reader: &obc_reader::Reader,
+        tour_active: bool,
+        frame_no: &mut usize,
+        label: &str,
+    ) {
+        use obc_route::{RouteIndex, RouteReader};
+
+        const W: u32 = obc_platform::FRAME_W as u32;
+        const H: u32 = obc_platform::FRAME_H as u32;
+
+        // Route planner drains + one bounded step per frame (gui.rs).
+        if let Some(req) = app.take_nav_request() {
+            *nav_plan = Some(crate::NavPlan::start(&req, app.settings().bike_profile_idx));
+        }
+        if app.take_nav_cancel() {
+            *nav_plan = None;
+        }
+        let step = nav_plan.as_mut().map(|plan| plan.step(reader));
+        match step {
+            None | Some(obc_route::Step::Running) => {}
+            Some(obc_route::Step::Done(stats)) => {
+                let plan = nav_plan.take().expect("just stepped it");
+                crate::finish_nav_plan(app, store, Ok(stats), plan.bytes(), plan.tile_stats());
+            }
+            Some(obc_route::Step::Failed(e)) => {
+                let plan = nav_plan.take().expect("just stepped it");
+                crate::finish_nav_plan(app, store, Err(e), plan.bytes(), plan.tile_stats());
+            }
+        }
+
+        // Open the active route's geometry (gui.rs re-opens per frame).
+        store.sync_active(app.activity.active_route);
+        let route_src = store.active_source();
+        let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
+        let route = match (route_index.as_ref(), route_src.as_ref()) {
+            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+            _ => None,
+        };
+
+        // Advance the replay + tick on the playback clock, then the wasm demo's ambient
+        // auto-restart (suppressed while a tour runs — the branch's `!tour_active` gate).
+        crate::replay_step(app, player, baro, None, 1.0 / 60.0, route.as_ref(), None);
+        if !tour_active && !player.is_playing() {
+            player.play();
+            app.activity.start_session();
+        }
+
+        // Render the whole frame into the backend's resident device-64 plane.
+        let mut fbdev = FbDevice64::new(present.fb_mut(), W, H);
+        app.render_frame(&mut fbdev, reader, route.as_ref(), W as f32, H as f32, |c| Rgb565::from(RawU16::new(c)));
+
+        // Present (the oracle inside asserts no miss, with row diagnostics on failure), then the
+        // full-strength postcondition: after a clean present the reconstruction equals the frame
+        // byte-for-byte on EVERY row — what the acceptance calls "texture matches the framebuffer".
+        block_on(present.present(None));
+        for y in 0..present.rows {
+            let r = y * present.width..(y + 1) * present.width;
+            assert!(
+                present.presented[r.clone()] == present.fb[r],
+                "presented != fb at row {y} after present (frame {frame_no} [{label}])"
+            );
+        }
+        *frame_no += 1;
+    }
+
+    /// #626 acceptance: drive the real `App` + renderer through the guided tour's exact command
+    /// sequences — the ambient ride, a demo-style app rebuild + mid-climb `GpxPlayer::seek` per
+    /// `enter`, the climb demo's Back-cycle, the reroute-to-POI demo including the frame-stepped
+    /// planner, and the ambient reset's backward seek — dwelling ≥300 presents on each tour screen
+    /// (Map, Statistics, Climb, Menu, PoiList, PoiDetail, RouteOverview). Every frame presents
+    /// under the oracle (debug asserts on) *and* the full byte-equality postcondition in
+    /// [`tour_frame`], so any diff miss — the pre-fix panic — fails here with row diagnostics.
+    #[test]
+    fn tour_screens_dwell_with_no_present_miss() {
+        use std::path::Path;
+
+        use obc_app::screen::Screen;
+        use obc_app::settings::{ClimbMode, Settings};
+        use obc_app::{App, AppState, CameraMode, Gesture};
+        use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+        use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
+
+        const W: u32 = obc_platform::FRAME_W as u32;
+        const H: u32 = obc_platform::FRAME_H as u32;
+        let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
+        let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
+        let cache = MapCache::new();
+        let src = SliceSource(&bytes);
+        let reader = Reader::new(&src, &tables, &cache);
+
+        // A folder-backed route store over a temp dir seeded with the demo route, so the planner's
+        // `_nav.obcr` write + rescan runs the real path.
+        let dir = std::env::temp_dir().join(format!("obc626-tour-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp routes dir");
+        std::fs::write(dir.join("grimsel-climb.obcr"), include_bytes!("../assets/grimsel-climb.obcr"))
+            .expect("seed demo route");
+        let mut store = crate::routes::RouteStore::open(&dir);
+
+        let track =
+            Track::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.gpx"))).expect("gpx");
+        let mut player = GpxPlayer::new(track);
+        player.set_speed(3.0); // the page's ambient pace (`new_web`)
+        let mut baro = BaroSensor::new();
+        let mut nav_plan: Option<crate::NavPlan> = None;
+        let mut present = Present::new(W, H);
+        let mut frame_no = 0usize;
+
+        let (cx, cy, zoom) = crate::initial_camera(&reader, W);
+        let build_app = |settings: Settings, store: &crate::routes::RouteStore| {
+            let mut state = AppState::new(cx, cy, zoom * 12.0);
+            state.mode = CameraMode::Follow;
+            state.heading_up = true;
+            let mut app = App::new(state);
+            app.set_nav_profiles(tables.nav_profiles());
+            app.set_routes_with_ids(store.catalog(), store.ids());
+            app.set_settings(settings);
+            if !store.catalog().is_empty() {
+                app.activity.active_route = Some(0);
+                app.activity.start_session();
+            }
+            app
+        };
+
+        // Run frames until the top screen matches (the page's closed-loop `until` polling), then
+        // park there for `$dwell` more presents (the tour's dwell — where a missed row would sit
+        // stale forever). Panics if the target screen is never reached: the sequences below must
+        // not drift, or the dwell wouldn't be testing the screen it claims.
+        macro_rules! until_then_dwell {
+            ($app:expr, $label:expr, $pat:pat, $dwell:expr) => {{
+                let mut reached = false;
+                for _ in 0..1200 {
+                    tour_frame(
+                        $app,
+                        &mut present,
+                        &mut player,
+                        &mut baro,
+                        &mut store,
+                        &mut nav_plan,
+                        &reader,
+                        true,
+                        &mut frame_no,
+                        $label,
+                    );
+                    if matches!($app.top_screen(), $pat) {
+                        reached = true;
+                        break;
+                    }
+                }
+                assert!(reached, "never reached {}", $label);
+                for _ in 0..$dwell {
+                    tour_frame(
+                        $app,
+                        &mut present,
+                        &mut player,
+                        &mut baro,
+                        &mut store,
+                        &mut nav_plan,
+                        &reader,
+                        true,
+                        &mut frame_no,
+                        $label,
+                    );
+                }
+            }};
+        }
+
+        // --- Page load: ambient ride from the start. ---
+        let mut app = build_app(Settings::default(), &store);
+        player.seek(0.0);
+        player.play();
+        for _ in 0..120 {
+            tour_frame(
+                &mut app,
+                &mut present,
+                &mut player,
+                &mut baro,
+                &mut store,
+                &mut nav_plan,
+                &reader,
+                false,
+                &mut frame_no,
+                "ambient",
+            );
+        }
+
+        // --- The "See the climb ahead" demo (`enter` → Back-cycle to the Climb park). Runs first,
+        // while route 0 is still the demo climb (after the reroute demo below, `_nav.obcr` sorts
+        // to index 0 and no climb is active, so Climb would leave the Back-cycle). ---
+        app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
+        player.seek(1500.0);
+        player.play();
+        until_then_dwell!(&mut app, "climb: Map", Screen::Map(_), 300);
+        app.apply_gesture(Gesture::Back);
+        until_then_dwell!(&mut app, "climb: Statistics", Screen::Statistics(_), 300);
+        app.apply_gesture(Gesture::Back);
+        until_then_dwell!(&mut app, "climb: Climb", Screen::Climb(_), 300);
+        app.apply_gesture(Gesture::Back);
+        until_then_dwell!(&mut app, "climb: Map again", Screen::Map(_), 60);
+
+        // --- The "Reroute to a POI" demo. Its `enter` is a demo-style reset from deep in the
+        // previous demo's session — the app rebuild plus a BACKWARD `GpxPlayer::seek`. ---
+        app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
+        player.seek(1500.0);
+        player.play();
+        until_then_dwell!(&mut app, "reroute: Map", Screen::Map(_), 60);
+        app.apply_gesture(Gesture::BackHold);
+        until_then_dwell!(&mut app, "reroute: Menu", Screen::Menu(_), 300);
+        app.apply_gesture(Gesture::Turn(2));
+        app.apply_gesture(Gesture::Press);
+        until_then_dwell!(&mut app, "reroute: PoiMenu", Screen::PoiMenu(_), 45);
+        app.apply_gesture(Gesture::Turn(2));
+        app.apply_gesture(Gesture::Press);
+        until_then_dwell!(&mut app, "reroute: PoiList", Screen::PoiList(_), 300);
+        app.apply_gesture(Gesture::Press);
+        until_then_dwell!(&mut app, "reroute: PoiDetail", Screen::PoiDetail(_), 300);
+        app.apply_gesture(Gesture::Press);
+        until_then_dwell!(&mut app, "reroute: NavConfirm", Screen::NavConfirm(_), 45);
+        app.apply_gesture(Gesture::Press);
+        // The frame-stepped planner runs inside the `until` frames; grimsel routes fine, so the
+        // outcome must be the computed-route overview, parked like the page's final step.
+        until_then_dwell!(&mut app, "reroute: RouteOverview", Screen::RouteOverview(_), 300);
+
+        // --- Back to the interactive page: ambient reset (seek 0 — a big backward jump). ---
+        app = build_app(Settings::default(), &store);
+        player.seek(0.0);
+        player.play();
+        for _ in 0..300 {
+            tour_frame(
+                &mut app,
+                &mut present,
+                &mut player,
+                &mut baro,
+                &mut store,
+                &mut nav_plan,
+                &reader,
+                false,
+                &mut frame_no,
+                "ambient reset",
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #626 regression (b): a demo-style reset — the mid-session `App` rebuild plus a
+    /// `GpxPlayer::seek` that `enter_tour_baseline` / `enter_ambient` perform — followed by
+    /// repeated presents, twice (forward to mid-climb, then backward to the start). Every present
+    /// runs under the oracle + the byte-equality postcondition in [`tour_frame`].
+    #[test]
+    fn demo_reset_rebuild_and_seek_present_clean() {
+        use std::path::Path;
+
+        use obc_app::settings::{ClimbMode, Settings};
+        use obc_app::{App, AppState, CameraMode};
+        use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+        use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
+
+        const W: u32 = obc_platform::FRAME_W as u32;
+        const H: u32 = obc_platform::FRAME_H as u32;
+        let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
+        let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
+        let cache = MapCache::new();
+        let src = SliceSource(&bytes);
+        let reader = Reader::new(&src, &tables, &cache);
+
+        let dir = std::env::temp_dir().join(format!("obc626-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp routes dir");
+        std::fs::write(dir.join("grimsel-climb.obcr"), include_bytes!("../assets/grimsel-climb.obcr"))
+            .expect("seed demo route");
+        let mut store = crate::routes::RouteStore::open(&dir);
+
+        let track =
+            Track::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.gpx"))).expect("gpx");
+        let mut player = GpxPlayer::new(track);
+        player.set_speed(3.0);
+        let mut baro = BaroSensor::new();
+        let mut nav_plan: Option<crate::NavPlan> = None;
+        let mut present = Present::new(W, H);
+        let mut frame_no = 0usize;
+
+        let (cx, cy, zoom) = crate::initial_camera(&reader, W);
+        let build_app = |settings: Settings, store: &crate::routes::RouteStore| {
+            let mut state = AppState::new(cx, cy, zoom * 12.0);
+            state.mode = CameraMode::Follow;
+            state.heading_up = true;
+            let mut app = App::new(state);
+            app.set_nav_profiles(tables.nav_profiles());
+            app.set_routes_with_ids(store.catalog(), store.ids());
+            app.set_settings(settings);
+            if !store.catalog().is_empty() {
+                app.activity.active_route = Some(0);
+                app.activity.start_session();
+            }
+            app
+        };
+        let mut run = |app: &mut App,
+                       present: &mut Present,
+                       player: &mut GpxPlayer,
+                       baro: &mut BaroSensor,
+                       store: &mut crate::routes::RouteStore,
+                       nav_plan: &mut Option<crate::NavPlan>,
+                       tour: bool,
+                       n: usize,
+                       label: &str| {
+            for _ in 0..n {
+                tour_frame(app, present, player, baro, store, nav_plan, &reader, tour, &mut frame_no, label);
+            }
+        };
+
+        // A short ambient ride, then the `enter` reset: rebuild + seek forward to mid-climb.
+        let mut app = build_app(Settings::default(), &store);
+        player.seek(0.0);
+        player.play();
+        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut nav_plan, false, 60, "ambient");
+        app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
+        player.seek(1500.0);
+        player.play();
+        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut nav_plan, true, 300, "after enter");
+
+        // The `ambient` reset: rebuild + seek backward to the start.
+        app = build_app(Settings::default(), &store);
+        player.seek(0.0);
+        player.play();
+        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut nav_plan, false, 300, "after ambient");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
