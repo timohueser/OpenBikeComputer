@@ -97,6 +97,24 @@ pub fn text_width(s: &str, font: Font) -> u32 {
     font.char_width() * s.chars().count() as u32
 }
 
+/// Whether the text tiers can render `c` as a real glyph rather than the silent `?` fallback.
+///
+/// The `Label` / `Body` / `Display` tiers share the one `LATIN` glyph strip added in #489/#601
+/// (ASCII `0x20..=0x7f` + Latin-1 Supplement `0xa0..=0xff` + Latin Extended-A `0x100..=0x17f`);
+/// any other char maps to `?`'s slot and paints as `?`. This reads that mapping off the **actual
+/// font**, so callers (e.g. the i18n repertoire test) are pinned to the real coverage, not a
+/// hand-copied range that could drift from the strip. The ASCII-only `Huge` clock tier is not
+/// consulted — it carries no user-facing copy.
+#[inline]
+pub fn glyph_supported(c: char) -> bool {
+    // Any text tier shares the `LATIN` mapping; the Body cut stands in for all three. An
+    // unmapped char resolves to `?`'s fallback slot — so `c` is covered iff it lands on a
+    // different slot, except `?` itself, which legitimately owns that slot. (`index` resolves
+    // on the `&dyn GlyphMapping` field, so its trait needs no import here.)
+    let mapping = Font::Body.mono().glyph_mapping;
+    c == '?' || mapping.index(c) != mapping.index('?')
+}
+
 /// Draw `s` anchored at `anchor`, in `font`, aligned `align` about `anchor.x`, in the
 /// already-resolved `color`. The text's **top** sits at `anchor.y` (top baseline), so layout reads
 /// as "y = row top". Returns the position just past the string for chaining runs; a draw error
