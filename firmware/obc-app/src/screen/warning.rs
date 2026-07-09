@@ -1,14 +1,17 @@
-//! The dismissable **warning** notice: the device booted and runs, but something a rider should
-//! know is off — a sensor the I²C probe never answered (GPS / altimeter / compass), or a map that
-//! loaded but reads slowly because it's fragmented (issue #504). Unlike a [`BootFault`](crate::fault),
-//! the device is fully usable; this is advisory. Any press/Back dismisses it (like the
-//! [`NavFailScreen`](super::NavFailScreen) card).
+//! The dismissable **warning** notice: the device runs, but something a rider should know is off —
+//! a sensor the I²C probe never answered (GPS / altimeter / compass), a map that loaded but reads
+//! slowly because it's fragmented (issue #504), or the ride log dropping points because an SD write
+//! failed mid-ride (issue #11). Unlike a [`BootFault`](crate::fault), the device is fully usable;
+//! this is advisory. Any press/Back dismisses it (like the [`NavFailScreen`](super::NavFailScreen)
+//! card).
 //!
-//! **Host-pushed**, coalesced: the host calls [`App::notify_warning`](crate::App::notify_warning)
-//! as each fault is discovered (sensor presence lands a moment after boot, the map-slow flag at
-//! open). Each distinct flag is shown **once per boot** — a dismissed notice doesn't nag, but a
-//! *new* flag arriving later re-opens the card (see `App::notify_warning`). The absent sensors are
-//! listed by name so the rider knows which module to check.
+//! **Raised as each fault is discovered**, coalesced onto one card: the host calls
+//! [`App::notify_warning`](crate::App::notify_warning) for the boot-time faults (sensor presence
+//! lands a moment after boot, the map-slow flag at open), and the app raises the recording-error
+//! flag itself the first time [`TrackSink::record`](crate::TrackSink::record) fails. Each distinct
+//! flag is shown **once per boot** — a dismissed notice doesn't nag, but a *new* flag arriving
+//! later re-opens the card (see `App::notify_warning`). The absent sensors are listed by name so
+//! the rider knows which module to check.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -21,7 +24,8 @@ use crate::input::Gesture;
 use super::{palette, title_frame, Ctx, Render, Transition};
 
 /// The set of active device warnings, a small bitmask so several coalesce onto one card. Absent
-/// sensors are distinct bits (the rider is told *which* to check); the map-slow advisory is its own.
+/// sensors are distinct bits (the rider is told *which* to check); the map-slow and recording-error
+/// advisories are each their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WarningFlags(u8);
 
@@ -37,6 +41,10 @@ impl WarningFlags {
     /// The map loaded but reads slowly — its extent table was refused (fragmented past the cap or
     /// failed verification), so reads fall back to the FAT-seek path (issue #504).
     pub const MAP_SLOW: WarningFlags = WarningFlags(1 << 3);
+    /// A ride-log append failed mid-ride, so at least one track point was dropped and the log is
+    /// now incomplete. Raised by the app the first time [`TrackSink::record`](crate::TrackSink::record)
+    /// returns an error (a card pull, a write error, a full medium) — issue #11.
+    pub const REC_ERROR: WarningFlags = WarningFlags(1 << 4);
 
     /// No bits set.
     pub const fn is_empty(self) -> bool {
@@ -149,6 +157,16 @@ impl WarningScreen {
             cv.text("Slow map reads", Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
             y += line + 2;
             cv.text("Re-copy the map.", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
+            y += line + line / 2; // advance past this block (+ gap) in case the recording error follows
+        }
+
+        // Recording-error advisory (issue #11): an SD append failed while riding, so the ride log
+        // dropped at least one point and is now incomplete. The headline is in the WARNING colour —
+        // it's a data loss the rider should act on (check the card), not a mere slowdown.
+        if self.flags.contains(WarningFlags::REC_ERROR) {
+            cv.text("Recording error", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
+            y += line + 2;
+            cv.text("Log incomplete", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
         }
     }
 }
@@ -177,6 +195,19 @@ mod tests {
         let f = WarningFlags::MAP_SLOW;
         assert!(!f.any_sensor());
         assert!(f.contains(WarningFlags::MAP_SLOW));
+    }
+
+    #[test]
+    fn rec_error_is_its_own_non_sensor_advisory() {
+        // The recording-error flag is a distinct bit, not a sensor-absence one, and coalesces with
+        // the map-slow advisory (both are SD/storage conditions that can be shown on one card).
+        let f = WarningFlags::REC_ERROR;
+        assert!(!f.any_sensor());
+        assert!(f.contains(WarningFlags::REC_ERROR));
+        assert!(!f.contains(WarningFlags::MAP_SLOW));
+        let both = WarningFlags::REC_ERROR | WarningFlags::MAP_SLOW;
+        assert!(both.contains(WarningFlags::REC_ERROR));
+        assert!(both.contains(WarningFlags::MAP_SLOW));
     }
 
     #[test]

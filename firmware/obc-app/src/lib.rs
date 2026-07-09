@@ -39,7 +39,7 @@ pub use dirty::Dirty;
 pub use fault::{draw_boot_fault, BootFault};
 pub use hal::{
     AltimeterSource, Button, ButtonEvent, ClockSource, CompassSource, Fix, FuelGauge, GpsTime, InputClock, InputEvent,
-    InputSource, LocationSource, RideClock, Sensors, SettingsStore, TemperatureSource, TrackSink,
+    InputSource, LocationSource, RideClock, Sensors, SettingsStore, TemperatureSource, TrackError, TrackSink,
 };
 pub use hold_hint::HoldHints;
 pub use i18n::{t, Msg};
