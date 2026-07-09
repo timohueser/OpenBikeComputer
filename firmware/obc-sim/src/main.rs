@@ -107,6 +107,11 @@ struct Args {
     /// the OPEN/CLOSED-now badge for a reproducible render. Defaults to the device default
     /// (2025-01-01 12:00, a Wednesday noon).
     clock: Option<obc_app::settings::DateTime>,
+    /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
+    /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
+    /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
+    /// omitting it leaves the English output byte-identical.
+    lang: Option<obc_app::settings::Language>,
     /// Headless `--png` only: render with a phone linked over BLE, so the connected indicator
     /// shows (the menu title bar / Home). Stands in for the sim control panel's "Phone connected"
     /// toggle when capturing a snapshot.
@@ -185,6 +190,7 @@ impl Default for Args {
             battery: None,
             home_seed: None,
             clock: None,
+            lang: None,
             ble_connected: false,
             ble_passkey: None,
             ble_paired: false,
@@ -241,6 +247,20 @@ fn parse_clock(s: &str) -> Result<obc_app::settings::DateTime, String> {
     Ok(obc_app::settings::DateTime { year, month, day, hour, minute })
 }
 
+/// Parse a `--lang` value into a [`Language`](obc_app::settings::Language). Accepts the four
+/// ISO-639-1 codes the catalog ships (`en`/`de`/`fr`/`es`); anything else is a located error rather
+/// than a silent fall back to English, so a typo in a snapshot script fails loudly.
+fn parse_lang(s: &str) -> Result<obc_app::settings::Language, String> {
+    use obc_app::settings::Language;
+    match s {
+        "en" => Ok(Language::En),
+        "de" => Ok(Language::De),
+        "fr" => Ok(Language::Fr),
+        "es" => Ok(Language::Es),
+        other => Err(format!("--lang needs en|de|fr|es, got `{other}`")),
+    }
+}
+
 fn parse_args() -> Result<Args, String> {
     let mut a = Args::default();
     let mut it = std::env::args().skip(1);
@@ -289,6 +309,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
+            }
+            "--lang" => {
+                a.lang = Some(parse_lang(&it.next().ok_or("--lang needs en|de|fr|es")?)?);
             }
             "--ble-connected" => a.ble_connected = true,
             "--nav-hold" => a.nav_hold = true,
@@ -677,7 +700,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
             std::process::exit(2);
         }
     };
@@ -818,11 +841,22 @@ fn main() {
         if let Some(seed) = args.home_seed {
             app.reseed_home(seed);
         }
-        // `--clock`: seed the local wall-clock in manual mode (`gps_time = false` ⇒ `local_clock()`
-        // returns it verbatim), pinning the POI-detail weekday + OPEN/CLOSED-now badge. `set_settings`
-        // restamps the WallClock from this local set-point (see `App::set_settings`).
-        if let Some(clock) = args.clock {
-            let settings = obc_app::settings::Settings { gps_time: false, clock, ..Default::default() };
+        // `--clock` / `--lang` seed the headless Settings. `--clock` pins the local wall-clock in
+        // manual mode (`gps_time = false` ⇒ `local_clock()` returns it verbatim) for the POI-detail
+        // weekday + OPEN/CLOSED-now badge; `--lang` selects the UI language (epic #602) so a scripted
+        // screen draws its de/fr/es copy. Both stay at the device default otherwise — with neither
+        // flag `set_settings` isn't called, and `--clock` alone still leaves `language` English, so
+        // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
+        // from this local set-point (see `App::set_settings`).
+        if args.clock.is_some() || args.lang.is_some() {
+            let mut settings = obc_app::settings::Settings::default();
+            if let Some(clock) = args.clock {
+                settings.gps_time = false;
+                settings.clock = clock;
+            }
+            if let Some(lang) = args.lang {
+                settings.language = lang;
+            }
             app.set_settings(settings);
         }
         // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label (N5).

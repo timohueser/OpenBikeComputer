@@ -226,4 +226,26 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --script "B l p r r r r p r r p" --png "$OUT/display-idle-return.png"
 "$SIM" "$MAP" --boot --script "B l p I"               --png "$OUT/idle-return-home.png"
 
-echo "ui-snapshots: 61 screens rendered into $OUT/"
+# Per-language sweep (epic #602, L5). The i18n catalog (obc-app/i18n/*.toml -> Msg/TABLE) renders
+# every screen in the runtime Language setting; `--lang de|fr|es` seeds it into the headless
+# Settings (English is the default the sweep above already captures, so it isn't re-shot). Re-render
+# the text-heaviest representative slice — Menu, the Settings list + a couple of value screens
+# (Units, Stats), Statistics, Climb, the off-route Map (warning chip + scale bar), and the Route
+# overview — in each of de/fr/es. These are the shots to eyeball for a stray `?` (a char outside the
+# Latin font's #601 repertoire, caught deterministically by `obc-app`'s i18n repertoire test) and for
+# clipped / overflowing rows now that the copy is longer. Scripts mirror the English lines above.
+for lang in de fr es; do
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B"             --png "$OUT/menu-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p"         --png "$OUT/settings-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r p"     --png "$OUT/units-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r p" --png "$OUT/stats-settings-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
+        --script "p p p p b"    --png "$OUT/statistics-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$CLIMBROUTES" --gpx "$GPX" --at 1500 --open-climb \
+        --script "p p p p"      --png "$OUT/climb-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
+        --script "p p p p"      --png "$OUT/map-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --png "$OUT/routeoverview-$lang.png"
+done
+
+echo "ui-snapshots: 85 screens rendered into $OUT/"
