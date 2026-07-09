@@ -1,0 +1,13 @@
+# OpenBikeComputer UI translation catalog — SPANISH.
+#
+# STUB: values are English copies for now — real Spanish content lands in L4 (#606).
+# Every key in en.toml must appear here (the build enforces it); see en.toml for the
+# key->Msg naming convention.
+
+[menu]
+title = "MENU"
+routes = "Routes"
+rides = "Rides"
+pois = "POIs"
+map = "Map"
+settings = "Settings"
