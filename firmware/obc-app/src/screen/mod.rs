@@ -850,6 +850,40 @@ pub(crate) fn ledger_row(
     }
 }
 
+/// Draw the shared card **warning glyph** — an amber triangle with an ink exclamation — centred at
+/// `center`, `k` the triangle's half-height (epic #678 T1's dialog anatomy kit). Drawn in the
+/// "glyph slot": horizontally centred, vertically in the band between the title bar and the card's
+/// text block. Pixel-for-pixel the glyph the DFU error cards established (the reference
+/// composition); the factory-Reset screen and the routing-failure / sensor-warning cards draw the
+/// identical sign through this one helper.
+pub(crate) fn card_triangle(cv: &mut impl Surface, center: Point, k: i32) {
+    use palette::*;
+    let (cx, cy) = (center.x, center.y);
+    cv.triangle(Point::new(cx, cy - k), Point::new(cx - k, cy + k), Point::new(cx + k, cy + k), AMBER);
+    // Exclamation: a bar over a dot.
+    cv.vline(cx, cy - k / 4, k / 2, 3, INK);
+    cv.disc(Point::new(cx, cy + k / 2 + 1), 2, INK);
+}
+
+/// Draw the shared card **check glyph** — an amber check mark, two strokes stepped out of discs
+/// (the canvas has no diagonal thick-line primitive) — centred near `center`, `k` its half-width.
+/// The success twin of [`card_triangle`], factored from the DFU "UPDATED" toast (the reference)
+/// and the Reset done state; the "ROUTE UPDATED" card draws the same mark.
+pub(crate) fn card_check(cv: &mut impl Surface, center: Point, k: i32) {
+    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32)) {
+        const N: i32 = 14;
+        for s in 0..=N {
+            let x = a.0 + (b.0 - a.0) * s / N;
+            let y = a.1 + (b.1 - a.1) * s / N;
+            cv.disc(Point::new(x, y), 3, palette::AMBER);
+        }
+    }
+    let (cx, cy) = (center.x, center.y);
+    // Down-stroke to the low point, then up-stroke to the top-right.
+    seg(cv, (cx - k, cy), (cx - k / 3, cy + k * 2 / 3));
+    seg(cv, (cx - k / 3, cy + k * 2 / 3), (cx + k, cy - k * 2 / 3));
+}
+
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
 /// "nothing to show yet" body the Route menu and Statistics draw under their header.
 pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hint: &str) {

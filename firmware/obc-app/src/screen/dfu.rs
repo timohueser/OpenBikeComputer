@@ -38,7 +38,10 @@ use crate::dfu::{DfuFailure, DfuScanError, DfuScanReport, Version};
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::{palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition, TITLE_BAR_H};
+use super::{
+    card_check, card_triangle, palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition,
+    TITLE_BAR_H,
+};
 
 // ── The shared indeterminate spinner (the Menu dial's needle, like the nav planner's #499) ──
 
@@ -308,7 +311,7 @@ impl DfuErrorScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuTitle), "");
-        draw_warning(cv, w / 2, TITLE_BAR_H + 46, 22);
+        card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 46), 22);
         let msg = match self.error {
             DfuScanError::NotFound => rx.t(Msg::DfuNotFound),
             DfuScanError::Unreadable => rx.t(Msg::DfuUnreadable),
@@ -352,7 +355,7 @@ impl DfuUpdatedScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuUpdatedTitle), "");
-        draw_check(cv, w / 2, TITLE_BAR_H + 56, 24);
+        card_check(cv, Point::new(w / 2, TITLE_BAR_H + 56), 24);
         cv.text(rx.t(Msg::DfuUpdated), Point::new(w / 2, TITLE_BAR_H + 104), Font::Body, TextAlign::Center, INK);
         // The version, verbatim (never translated).
         cv.text(&self.version, Point::new(w / 2, TITLE_BAR_H + 134), Font::Body, TextAlign::Center, AMBER);
@@ -393,7 +396,7 @@ impl DfuFailedScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuFailedTitle), "");
-        draw_warning(cv, w / 2, TITLE_BAR_H + 46, 22);
+        card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 46), 22);
         let msg = match self.why {
             DfuFailure::NotStarted => rx.t(Msg::DfuFailedNotStarted),
             DfuFailure::Reverted => rx.t(Msg::DfuFailedReverted),
@@ -404,30 +407,6 @@ impl DfuFailedScreen {
             cv.text(v, Point::new(w / 2, bottom + 22), Font::Body, TextAlign::Center, AMBER);
         }
     }
-}
-
-// ── Shared icons (mirrors of the reset screen's warning + check glyphs) ──
-
-/// An amber warning triangle with an ink exclamation, centred at `(cx, cy)`.
-fn draw_warning(cv: &mut impl Surface, cx: i32, cy: i32, sz: i32) {
-    use palette::*;
-    cv.triangle(Point::new(cx, cy - sz), Point::new(cx - sz, cy + sz), Point::new(cx + sz, cy + sz), AMBER);
-    cv.vline(cx, cy - sz / 4, sz / 2, 3, INK);
-    cv.disc(Point::new(cx, cy + sz / 2 + 1), 2, INK);
-}
-
-/// A check mark in amber, centred near `(cx, cy)` — two strokes stepped out of discs.
-fn draw_check(cv: &mut impl Surface, cx: i32, cy: i32, sz: i32) {
-    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32)) {
-        const N: i32 = 14;
-        for k in 0..=N {
-            let x = a.0 + (b.0 - a.0) * k / N;
-            let y = a.1 + (b.1 - a.1) * k / N;
-            cv.disc(Point::new(x, y), 3, palette::AMBER);
-        }
-    }
-    seg(cv, (cx - sz, cy), (cx - sz / 3, cy + sz * 2 / 3));
-    seg(cv, (cx - sz / 3, cy + sz * 2 / 3), (cx + sz, cy - sz * 2 / 3));
 }
 
 #[cfg(test)]
