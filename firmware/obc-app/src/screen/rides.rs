@@ -2,9 +2,11 @@
 //! stored rides, reached from the main Menu's Rides station. Each row is two lines: the ride
 //! **name** with width priority (two-dot truncation only when actually needed) and a small
 //! right-aligned **sync glyph** — a filled disc for a ride the phone has downloaded, a hollow
-//! ring for one it hasn't — then an olive metadata line, `date · distance · duration`, with the
-//! anti-cram rule: when the line would collide at the pane width the **rightmost** item drops
-//! (duration first, then distance) rather than any gap shrinking.
+//! ring for one it hasn't — then an olive metadata line, `D MON · distance` (the C1 re-cut: a
+//! short day-first date the 240 px pane can actually hold beside the distance; the full date
+//! lives on the detail's date·time line, the duration in its ledger), with the anti-cram rule:
+//! when the line would collide at the pane width the **rightmost** item drops (the distance, in
+//! a pathological overflow) rather than any gap shrinking — the date never yields.
 //!
 //! Rides come from the app's ride catalog ([`Render::rides`]/[`Ctx::rides`]), populated by the host
 //! from `/tracks/RD{id}.ORD` headers — the same source the BLE `rideList` serves. Each summary
@@ -25,9 +27,8 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::settings::{DateTime, Units};
-use crate::stat_fields::fmt_hms;
-use crate::Msg;
+use crate::settings::{DateTime, Language, Units};
+use crate::{t, Msg};
 
 use super::list::{self, ListGeometry, Separators};
 use super::route_menu::fit_name;
@@ -115,28 +116,28 @@ impl RidesScreen {
                 cv.disc(glyph_c, (GLYPH_R - 1) as u32, if row.selected { AMBER } else { PARCHMENT });
             }
 
-            // Line two: `date · distance · duration`, one olive Label run with the anti-cram
+            // Line two: `D MON · distance`, one olive Label run with the anti-cram
             // drop-rightmost rule (never a squeezed gap).
-            let meta = meta_line(ride.start_time, ride.distance_m, ride.moving_time_s, units, w - 24);
+            let meta = meta_line(ride.start_time, ride.distance_m, units, rx.settings.language, w - 24);
             cv.text(&meta, Point::new(12, y + 35), Font::Label, TextAlign::Left, accent);
         });
     }
 }
 
-/// Compose a row's metadata line — `date · distance · duration` — dropping the **rightmost** item
-/// first when the run would overflow `budget_px` (the C1 anti-cram rule: duration drops before
-/// distance, and gaps never shrink). Pure integer geometry over the monospace Label cell, so the
-/// drops are deterministic.
-fn meta_line(start_time: u32, dist_m: u32, moving_s: u32, units: Units, budget_px: i32) -> heapless::String<32> {
+/// Compose a row's metadata line — `D MON · distance` (e.g. `2 JUL · 42.5 km`) — dropping the
+/// **rightmost** item when the run would overflow `budget_px` (the C1 anti-cram guard: the
+/// distance drops whole in a pathological overflow; the date never does, and gaps never shrink).
+/// The worst legitimate run — a two-digit day, a four-char month, a three-digit-km distance —
+/// is exactly the 240 px pane's 18 Label cells, so the guard normally never fires. Pure integer
+/// geometry over the monospace Label cell, so any drop is deterministic.
+fn meta_line(start_time: u32, dist_m: u32, units: Units, lang: Language, budget_px: i32) -> heapless::String<32> {
     let cw = Font::Label.char_width() as i32;
     let mut dist: heapless::String<12> = heapless::String::new();
     write_distance(&mut dist, dist_m, units);
-    let dur = fmt_hms(moving_s as f32);
 
     let mut s: heapless::String<32> = heapless::String::new();
-    let date = fmt_date(start_time);
-    let _ = s.push_str(&date);
-    for part in [dist.as_str(), dur.as_str()] {
+    write_short_date(&mut s, start_time, lang);
+    for part in [dist.as_str()] {
         let want = s.chars().count() + 3 + part.chars().count(); // " · " + the item
         if want as i32 * cw > budget_px {
             break; // drop this item and everything right of it
@@ -145,6 +146,32 @@ fn meta_line(start_time: u32, dist_m: u32, moving_s: u32, units: Units, budget_p
         let _ = s.push_str(part);
     }
     s
+}
+
+/// The 12 uppercase month-abbreviation keys (the `[date]` catalog section) in calendar order —
+/// the short-date table the rides rows draw from (and the Home date line reuses, T5 / #683).
+/// Distinct from the Date & Time stepper's mixed-case `[month]` table.
+const DATE_MONTHS: [Msg; 12] = [
+    Msg::DateJan,
+    Msg::DateFeb,
+    Msg::DateMar,
+    Msg::DateApr,
+    Msg::DateMay,
+    Msg::DateJun,
+    Msg::DateJul,
+    Msg::DateAug,
+    Msg::DateSep,
+    Msg::DateOct,
+    Msg::DateNov,
+    Msg::DateDec,
+];
+
+/// Append a ride's unix `start_time` as the short day-first date `D MON` (UTC) — no leading zero,
+/// the month from the per-language uppercase table. Day-first in all four languages (the locked
+/// shared shape).
+fn write_short_date<const N: usize>(s: &mut heapless::String<N>, start_time: u32, lang: Language) {
+    let d = DateTime::from_unix(start_time);
+    let _ = write!(s, "{} {}", d.day, t(DATE_MONTHS[(d.month.clamp(1, 12) - 1) as usize], lang));
 }
 
 /// Format a ride's unix `start_time` as a compact `YYYY-MM-DD` (UTC) — the list's and the Ride
@@ -254,22 +281,23 @@ mod tests {
         assert_eq!(scr.selected, 1, "a vanished highlight clamps to the last row");
     }
 
-    /// The metadata line's anti-cram rule: the full `date · distance · duration` run stays whole
-    /// when it fits, drops **duration first** when the budget tightens, then distance — the date
-    /// never yields. Gaps are constant; only whole items drop.
+    /// The metadata line (the C1 re-cut): `D MON · distance` fits the 240 px pane's 18-cell
+    /// budget whole — including the worst legitimate run (two-digit day, four-char month,
+    /// three-digit-km distance) — and the drop-rightmost guard still sheds the distance (never
+    /// the date) in a pathological overflow. Months come from the per-language `[date]` table.
     #[test]
-    fn meta_line_drops_rightmost_first() {
+    fn meta_line_is_short_date_plus_distance() {
         let cw = Font::Label.char_width() as i32;
-        let full = "2024-07-03 · 42.5 km · 2:31";
-        let n = full.chars().count() as i32;
-        // Wide enough: all three items.
-        assert_eq!(meta_line(1_720_000_000, 42_500, 9_060, Units::Metric, n * cw).as_str(), full);
-        // One char short of the full run: duration drops first.
-        assert_eq!(
-            meta_line(1_720_000_000, 42_500, 9_060, Units::Metric, (n - 1) * cw).as_str(),
-            "2024-07-03 · 42.5 km"
-        );
-        // Too tight for distance too: the date stands alone (the 240 px panel's case).
-        assert_eq!(meta_line(1_720_000_000, 42_500, 9_060, Units::Metric, 216).as_str(), "2024-07-03");
+        let pane = 216; // the 240 px panel's line-2 budget (w − 24)
+                        // 1_720_000_000 = 2024-07-03 UTC.
+        assert_eq!(meta_line(1_720_000_000, 42_500, Units::Metric, Language::En, pane).as_str(), "3 JUL · 42.5 km");
+        // The worst legitimate run is exactly 18 cells — still whole. 1_735_257_600 = 2024-12-27.
+        let worst = meta_line(1_735_257_600, 142_500, Units::Metric, Language::En, pane);
+        assert_eq!(worst.as_str(), "27 DEC · 142.5 km");
+        assert!(worst.chars().count() as i32 * cw <= pane, "the worst run fits the pane");
+        // The month table is per-language (day-first everywhere): 1_709_596_800 = 2024-03-05.
+        assert_eq!(meta_line(1_709_596_800, 8_000, Units::Metric, Language::De, pane).as_str(), "5 MÄR · 8.0 km");
+        // Pathological overflow: the distance drops whole; the date never yields.
+        assert_eq!(meta_line(1_720_000_000, 42_500, Units::Metric, Language::En, 6 * cw).as_str(), "3 JUL");
     }
 }

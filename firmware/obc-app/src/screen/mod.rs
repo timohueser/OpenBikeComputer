@@ -397,7 +397,7 @@ screens! {
     NavFail(NavFailScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
     /// The Rides screen (Menu → Rides): the stored-rides list — name + sync glyph over an olive
-    /// `date · distance · duration` line; press opens the Ride detail. Epic #447 P7 (#454), rows
+    /// `D MON · distance` line; press opens the Ride detail. Epic #447 P7 (#454), rows
     /// redesigned by #680.
     Rides(RidesScreen) => Nav,
     /// The Ride detail (Rides → press, #680): the recorded sibling of the Route overview —

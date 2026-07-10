@@ -33,8 +33,12 @@ mkdir -p "$OUT"
 
 # A deterministic /tracks fixture for the Rides screen (#454): two stored ride objects. The pinned
 # `ride-v1.bin` protocol vector *is* a valid `RD{id}.ORD` (the stored file == the wire object), so we
-# copy it under two ids. No `SYNCED.SET` → both read as unsynced, which is what the warning-red delete
-# footer snapshot needs. Staged in a temp dir cleaned on exit.
+# copy it under two ids. No `SYNCED.SET` → both read as unsynced, so the rows draw the hollow
+# not-synced ring. RD1 gets its header `distance` patched (u32 LE at byte 16 = 3 + name_len 9 + 4;
+# 42500 → 17800 m) so the two same-day rides are visually distinct on the redesigned rows'
+# `D MON · distance` line (#680's C1 re-cut) — the exact ambiguity the re-cut exists to prevent.
+# Distance isn't part of the object's length validation, so the patched copy still reads as a valid
+# ride. Staged in a temp dir cleaned on exit.
 TRACKS="$(mktemp -d)"
 # A scratch routes dir for the create-route sweep below — the router writes its reserved
 # `_nav.obcr` there instead of littering a `routes/` in the working directory.
@@ -42,6 +46,7 @@ NAVDIR="$(mktemp -d)"
 trap 'rm -rf "$TRACKS" "$NAVDIR"' EXIT
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
+printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc status=none
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
@@ -55,9 +60,10 @@ cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 # at a fixed second column) with no footer — hold-to-delete moved to the Route overview (T3, #681).
 "$SIM" "$MAP" --boot --script "p p"          --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
 "$SIM" "$MAP" --boot --script "B w"          --png "$OUT/menu.png"
-# Rides screen (#454, rows redesigned by #680): the name + sync-glyph rows over the olive metadata
-# line (the tracks fixture's two unsynced rides draw the hollow ring; the drop-rightmost rule fires
-# at 240 px). `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
+# Rides screen (#454, rows redesigned by #680): the name + sync-glyph rows over the olive
+# `D MON · distance` line (the tracks fixture's two unsynced same-day rides draw the hollow ring
+# and distinct distances; the drop-rightmost guard normally never fires at this shape). `p` presses
+# into the Rides screen from the Menu (one `r` detent + `w` settle).
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p"     --png "$OUT/rides.png"
 # The Ride detail (#680): press the highlighted ride — RIDE bar with the "not synced" slot, name,
 # date · time, the recorded track's elevation band (the staged RD0.ORD fixture, host-filled), the
