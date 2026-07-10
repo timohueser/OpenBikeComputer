@@ -133,6 +133,16 @@
       "route_count": 3,
       "ride_count": 5
     },
+    "update-container-v1.bin": {
+      "format": "OBCU update container (spec 1) — fwImage payload (spec 7.6)",
+      "byte_len": 192,
+      "header_len": 64,
+      "image_len": 128,
+      "image_crc32": "0x5B990292",
+      "header_crc32": "0x56B035F8",
+      "fw_version": "1.2.0+abc1234",
+      "object_id": 0
+    },
     "route-list.bin": {
       "format": "routeList object (spec 7.4)",
       "byte_len": 148,

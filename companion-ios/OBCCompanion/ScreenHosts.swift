@@ -13,6 +13,7 @@ import OBCUI
 /// be rebuilt on every body pass.
 struct SettingsScreen: View {
     @State private var model: SettingsModel
+    private let onOpenFirmwareUpdate: () -> Void
     private let onOpenDevPanel: (() -> Void)?
 
     init(
@@ -20,6 +21,7 @@ struct SettingsScreen: View {
         bondStore: any BondStore,
         onDeviceRenamed: @escaping (String) -> Void,
         onForget: @escaping () -> Void,
+        onOpenFirmwareUpdate: @escaping () -> Void,
         onOpenDevPanel: (() -> Void)?
     ) {
         _model = State(initialValue: SettingsModel(
@@ -28,11 +30,34 @@ struct SettingsScreen: View {
             onDeviceRenamed: onDeviceRenamed,
             onForget: onForget
         ))
+        self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
         self.onOpenDevPanel = onOpenDevPanel
     }
 
     var body: some View {
-        SettingsView(model: model, onOpenDevPanel: onOpenDevPanel)
+        SettingsView(
+            model: model,
+            onOpenFirmwareUpdate: onOpenFirmwareUpdate,
+            onOpenDevPanel: onOpenDevPanel
+        )
+    }
+}
+
+/// Owns a stable `FirmwareUpdateModel` for the pushed S7 screen — same rule as
+/// the other hosts (a model built inline in `navigationDestination` would be
+/// rebuilt on every body pass, dropping an in-flight transfer). `deviceName` is
+/// passed through so the plain copy can name the device.
+struct FirmwareUpdateScreen: View {
+    @State private var model: FirmwareUpdateModel
+
+    init(transport: any DeviceTransport, deviceName: String, prestage: Data? = nil, autoSend: Bool = false) {
+        _model = State(initialValue: FirmwareUpdateModel(
+            transport: transport, deviceName: deviceName, prestage: prestage, autoSend: autoSend
+        ))
+    }
+
+    var body: some View {
+        FirmwareUpdateView(model: model)
     }
 }
 

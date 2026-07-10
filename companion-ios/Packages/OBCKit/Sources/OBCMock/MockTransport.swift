@@ -156,6 +156,17 @@ public struct MockTransport: DeviceTransport {
         control.beginRideDownload(ids)
     }
 
+    public func uploadFirmware(_ container: Data) -> TransferHandle {
+        control.beginFirmwareUpload(container)
+    }
+
+    public func installFirmware() async throws -> FirmwareInstallResult {
+        // Same prelude as every control-plane op, so an unreachable link or an
+        // armed fault behaves like the real `installFw` write.
+        try await preludeThrowing()
+        return control.installFirmware()
+    }
+
     // MARK: Shared op prelude
 
     /// Every control-plane / list op: apply latency, require a reachable link, then

@@ -41,7 +41,8 @@ struct OBCCompanionApp: App {
                 bondStore: Self.makeBondStore(),
                 library: Self.makeLibraryStore(),
                 reachability: Self.makeReachability(),
-                importAtLaunch: Self.launchImport()
+                importAtLaunch: Self.launchImport(),
+                firmwareDemoAtLaunch: Self.launchFirmwareDemo()
             )
             #if DEBUG
                 .devMockOverlay(
@@ -72,6 +73,19 @@ struct OBCCompanionApp: App {
         #if DEBUG
         guard let kind = launchOptions.importSample else { return nil }
         return SampleRouteFile.data(kind).map { ($0, SampleRouteFile.fileName(kind)) }
+        #else
+        return nil
+        #endif
+    }
+
+    /// The `-OBCFirmwareDemo [send]` hook: a pre-staged sample update for the S7
+    /// screen, so the flow can be screenshotted/demoed without a real
+    /// `UPDATE.BIN` in Files. `send` also fires the transfer. Debug-only, and only
+    /// under the mock (a forced-BLE run ignores it).
+    static func launchFirmwareDemo() -> (data: Data, autoSend: Bool)? {
+        #if DEBUG
+        guard let stage = launchOptions.firmwareDemo, mockControl != nil else { return nil }
+        return (SampleFirmwareFile.container(), stage == .sending)
         #else
         return nil
         #endif

@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import OBCDomain
+import OBCTransport
 
 /// A loaded fixture set — the domain objects the mock serves. Value type so the
 /// live `MockControl` can copy-mutate it (delete a route, rename, add a ride) under
@@ -180,6 +181,31 @@ public enum SampleRouteFile {
         case .bad:
             Data("socks · stove · sleeping bag — definitely not a route\n".utf8)
         }
+    }
+}
+
+/// A synthetic, fully valid OBCU update container (`OBCU_Spec.md` §1) for the
+/// `-OBCFirmwareDemo` launch hook and previews — the Files picker can't be driven
+/// from automation, so a demo/screenshot run needs a pre-staged file. Both CRCs
+/// are correct, so `StagedFirmware.validate` accepts it just like a real
+/// `UPDATE.BIN`. Not a real image — the raw body is a deterministic pattern.
+public enum SampleFirmwareFile {
+    /// A ~0.9 MB container tagged `version`, sized to feel like a real firmware
+    /// image so the transfer bar paces realistically.
+    public static func container(version: String = "0.5.0", imageBytes: Int = 900_000) -> Data {
+        var image = Data(capacity: imageBytes)
+        image.append(contentsOf: withUnsafeBytes(of: UInt32(0x2002_0000).littleEndian, Array.init))
+        image.append(contentsOf: (4..<imageBytes).map { UInt8($0 & 0xFF) })
+
+        var header = Data(count: 64)
+        header.replaceSubrange(0..<4, with: Array("OBCU".utf8))
+        header[4] = 1 // header_version LE
+        header.replaceSubrange(8..<12, with: withUnsafeBytes(of: UInt32(image.count).littleEndian, Array.init))
+        header.replaceSubrange(12..<16, with: withUnsafeBytes(of: CRC32.checksum(image).littleEndian, Array.init))
+        let v = Array(version.utf8.prefix(32))
+        header.replaceSubrange(16..<16 + v.count, with: v)
+        header.replaceSubrange(60..<64, with: withUnsafeBytes(of: CRC32.checksum(header[0..<60]).littleEndian, Array.init))
+        return header + image
     }
 }
 
