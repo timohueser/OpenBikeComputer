@@ -571,6 +571,11 @@ pub struct App {
     /// string, set by the board once the trial confirm has written `Idle { installed }`. The
     /// one-time fact S5's "updated to vX" toast takes; `None` on a normal boot.
     update_confirmed: Option<heapless::String<32>>,
+    /// The firmware update **this boot detected as failed** (the board's boot-outcome reconcile):
+    /// the typed [`DfuFailure`](crate::dfu::DfuFailure) verdict + the staged version the arm
+    /// marker recorded (if it survived). The one-time fact the "UPDATE FAILED" card takes; `None`
+    /// on a normal boot.
+    update_failed: Option<(crate::dfu::DfuFailure, Option<heapless::String<32>>)>,
 }
 
 /// One committed route upload, as [`notify_route_uploaded`](App::notify_route_uploaded) queues it
@@ -746,6 +751,7 @@ impl App {
             pending_warnings: WarningFlags::NONE,
             warned: WarningFlags::NONE,
             update_confirmed: None,
+            update_failed: None,
         }
     }
 
@@ -1566,6 +1572,15 @@ impl App {
         self.update_confirmed.take()
     }
 
+    /// Record that this boot **detected a failed firmware update** — the board's boot-outcome
+    /// reconcile found the armed update is not the running firmware (`why` says how far it got);
+    /// `staged` is the failed image's version string when the arm marker survived. The one-time
+    /// fact the "UPDATE FAILED" card takes, delivered by the same reconcile pass as the success
+    /// toast.
+    pub fn notify_update_failed(&mut self, why: crate::dfu::DfuFailure, staged: Option<&str>) {
+        self.update_failed = Some((why, staged.map(|s| crate::dfu::clamp(s))));
+    }
+
     /// **Debug bench** (#500): start a route plan from `from` to `to` (both `(lon, lat)` µdeg) exactly
     /// as the POI create-route confirm does — record the [`NavRequest`](crate::activity::NavRequest)
     /// **and** push the planning screen — so the host steps the resumable router with the same live
@@ -1961,25 +1976,34 @@ impl App {
         self.stack.iter().position(|s| matches!(s, Screen::Warning(_)))
     }
 
-    /// Surface the one-time "Updated to vX" toast (epic #615 S5, #620) if this boot confirmed a
-    /// freshly-installed update. The board calls
-    /// [`notify_update_confirmed`](App::notify_update_confirmed) at the health anchor (the first
-    /// frame with the SD mounted); the next [`advance_animations`](App::advance_animations) pass
-    /// drains that fact and pushes the [`DfuUpdated`](crate::screen::DfuUpdatedScreen) card once.
-    /// Deferred behind a
+    /// Surface the one-time post-update verdict — the "Updated to vX" toast (epic #615 S5, #620)
+    /// if this boot confirmed a freshly-installed update, or its failure twin, the "UPDATE FAILED"
+    /// card, if the boot-outcome reconcile found the armed update is not what's running. The board
+    /// calls [`notify_update_confirmed`](App::notify_update_confirmed) at the health anchor (the
+    /// first frame with the SD mounted) or [`notify_update_failed`](App::notify_update_failed) at
+    /// boot; the next [`advance_animations`](App::advance_animations) pass drains the fact and
+    /// pushes the card once. Deferred behind a
     /// passkey card or a live hold like [`reconcile_warning`](App::reconcile_warning), so it never
     /// covers the pairing code or lands mid-hold; a normal boot has no fact and does nothing.
     fn reconcile_update_toast(&mut self) {
-        if self.update_confirmed.is_none() {
+        if self.update_confirmed.is_none() && self.update_failed.is_none() {
             return;
         }
         if self.passkey_card_up() || self.hold_charging() {
             return; // retried next pass, once the card clears / the hold resolves
         }
-        let Some(version) = self.update_confirmed.take() else { return };
-        let r = self.stack.push(Screen::DfuUpdated(crate::screen::DfuUpdatedScreen::new(&version)));
-        debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
-        self.map_dirty = true;
+        if let Some(version) = self.update_confirmed.take() {
+            let r = self.stack.push(Screen::DfuUpdated(crate::screen::DfuUpdatedScreen::new(&version)));
+            debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+            self.map_dirty = true;
+        }
+        // The failure twin (the board's boot-outcome reconcile sets at most one of the two facts).
+        if let Some((why, staged)) = self.update_failed.take() {
+            let card = crate::screen::DfuFailedScreen::new(why, staged.as_deref());
+            let r = self.stack.push(Screen::DfuFailed(card));
+            debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+            self.map_dirty = true;
+        }
     }
 
     /// The stack index of the screen an incoming upload prompt **replaces**: any upload popup, or
@@ -2394,6 +2418,7 @@ impl App {
                     | Screen::DfuProgress(_)
                     | Screen::DfuError(_)
                     | Screen::DfuUpdated(_)
+                    | Screen::DfuFailed(_)
             )
         )
     }
@@ -4245,5 +4270,24 @@ mod tests {
         app.stack.pop(); // dismiss
         app.advance_animations(InputClock(3000));
         assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuUpdated(_))), "shown once — the fact was consumed");
+    }
+
+    /// The failure twin: a failed-update fact surfaces the "UPDATE FAILED" card once — with the
+    /// typed verdict the seam carries — and a normal boot pushes nothing.
+    #[test]
+    fn failed_update_pushes_the_card_once() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.advance_animations(InputClock(1000));
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuFailed(_))), "a normal boot shows no failure card");
+
+        app.notify_update_failed(crate::dfu::DfuFailure::Reverted, Some("v2.0.0-0-gccc"));
+        app.advance_animations(InputClock(2000));
+        match app.top_screen() {
+            Screen::DfuFailed(card) => assert_eq!(card.why(), crate::dfu::DfuFailure::Reverted),
+            _ => panic!("expected the failure card on top"),
+        }
+        app.stack.pop(); // dismiss
+        app.advance_animations(InputClock(3000));
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuFailed(_))), "shown once — the fact was consumed");
     }
 }
