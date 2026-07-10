@@ -262,9 +262,10 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
 "$SIM" "$MAP" --boot --ble-connected --clock "2025-07-10T09:41" --png "$OUT/home-ble.png" --battery 45
 "$SIM" "$MAP" --boot --ble-connected --battery 100 --script "B w" --png "$OUT/menu-ble.png"
-# BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge — grouped
-# `000 042` under the device<->phone pair glyph (#679). `--ble-passkey N` injects the passkey
-# exactly as the sim control-panel "Pairing" toggle does; the card auto-opens.
+# BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge — plain
+# `000042` (ungrouped, owner review round 1) under the device<->phone pair glyph (#679).
+# `--ble-passkey N` injects the passkey exactly as the sim control-panel "Pairing" toggle does;
+# the card auto-opens.
 "$SIM" "$MAP" --boot --ble-passkey 42 --png "$OUT/passkey-card.png"
 # Route-upload popups (#451), all three variants. `--inject-upload[-replace] ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. protocol-vectors holds
