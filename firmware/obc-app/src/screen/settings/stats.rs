@@ -171,7 +171,12 @@ impl StatsScreen {
 /// two cycle rows can't drift apart (owner review round 1). The sub-caption itself is drawn by
 /// `row_label` at the same `top + 30` line; `cycle_row_value_clears_the_sub_caption` pins the
 /// measured clearance between the two in every language.
-fn draw_subline_cycle_value(cv: &mut impl Surface, row: &embedded_graphics::primitives::Rectangle, val_r: i32, value: &str) {
+fn draw_subline_cycle_value(
+    cv: &mut impl Surface,
+    row: &embedded_graphics::primitives::Rectangle,
+    val_r: i32,
+    value: &str,
+) {
     use crate::screen::palette::INK;
     let sub_y = row.top_left.y + 30;
     cv.text(value, Point::new(val_r, sub_y), Font::Label, TextAlign::Right, INK);
@@ -280,19 +285,11 @@ mod tests {
             let rows: [(&str, &[&str]); 2] = [
                 (
                     t(Msg::SetStatsClimbSub, lang),
-                    &[
-                        ClimbMode::Off.name(lang),
-                        ClimbMode::Manual.name(lang),
-                        ClimbMode::Auto.name(lang),
-                    ],
+                    &[ClimbMode::Off.name(lang), ClimbMode::Manual.name(lang), ClimbMode::Auto.name(lang)],
                 ),
                 (
                     t(Msg::SetStatsWaypointsSub, lang),
-                    &[
-                        WaypointMode::Off.name(lang),
-                        WaypointMode::Approach.name(lang),
-                        WaypointMode::Always.name(lang),
-                    ],
+                    &[WaypointMode::Off.name(lang), WaypointMode::Approach.name(lang), WaypointMode::Always.name(lang)],
                 ),
             ];
             for (sub, values) in rows {
