@@ -50,7 +50,10 @@ use obc_app::{
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_platform::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
-use obc_route::{track_to_ride, ByteSource, RideInfo, RideStats, RouteIndex, RouteObjectInfo, RouteSummary, NAME_CAP};
+use obc_route::{
+    ride_elevation_profile, track_to_ride, ByteSource, Profile, RideInfo, RideStats, RouteIndex, RouteObjectInfo,
+    RouteSummary, NAME_CAP,
+};
 
 /// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
 /// [`Frequency`] ladder has no 400 kHz step, so [`Frequency::K250`] is the fastest in-spec choice
@@ -670,6 +673,37 @@ impl Storage {
         }
         self.forget_ride_synced(id); // tidy the sidecar (ids never reuse, so belt-and-braces)
         true
+    }
+
+    /// Build the stored ride `id`'s recorded-track elevation [`Profile`] — the Ride detail's band
+    /// fill (epic #678 T2 / #680), answering
+    /// [`App::take_ride_track_request`](obc_app::App::take_ride_track_request). Resolves the id
+    /// through the scan-parallel [`ride_ids`](Storage::ride_ids)/[`ride_files`](Storage::ride_files)
+    /// tables and streams the `RD{id}.ORD` once through the shared `ride_elevation_profile`
+    /// (~448 B per SD read, no whole-track buffer — the ~36 KB stack budget's discipline; the
+    /// returned `Profile` is the nrf-mem ~3 KB build). An in-flight BLE download's open handle is
+    /// read through rather than re-opened (embedded-sdmmc refuses a second open, #480), exactly as
+    /// [`scan_rides`](Storage::scan_rides) does. `None` = unknown id / unopenable / torn file —
+    /// the caller parks the failure so the read isn't ground against every pass.
+    pub fn ride_profile_by_id(&mut self, id: u16) -> Option<Profile> {
+        let pos = self.ride_ids.iter().position(|&x| x == id)?;
+        let name = self.ride_files[pos].clone();
+        let dir = self.tracks_dir?;
+        let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, &name, Mode::ReadOnly) {
+            Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
+            Err(_) => match &self.open_object {
+                Some((on, of, olen)) if *on == name => (*of, *olen, true),
+                _ => {
+                    defmt::warn!("SD: ride profile: cannot open {} — band stays empty", defmt::Debug2Format(&name));
+                    return None;
+                }
+            },
+        };
+        let profile = ride_elevation_profile(&SdByteSource::new(&self.vmgr, file, len)).ok();
+        if !borrowed {
+            let _ = self.vmgr.close_file(file);
+        }
+        profile
     }
 
     /// The **session-scoped** id for a side-loaded route file: the one already registered for this

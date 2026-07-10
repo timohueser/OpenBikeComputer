@@ -39,6 +39,7 @@ mod poi_detail;
 mod poi_list;
 mod poi_menu;
 mod ride_control;
+mod ride_detail;
 mod ride_start;
 mod rides;
 mod route_menu;
@@ -61,6 +62,7 @@ pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
+pub use ride_detail::RideDetailScreen;
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
@@ -199,6 +201,12 @@ pub struct Render<'a, 'd> {
     /// The active route's elevation profile (the Elevation screen draws it), rebuilt on route load
     /// and cached — `None` when no route is loaded. Resident, so the screen never re-reads to draw.
     pub profile: Option<&'a Profile>,
+    /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
+    /// detail's band source, host-filled into the app's single resident ride-profile buffer on
+    /// detail entry ([`App::set_ride_profile`](crate::App::set_ride_profile)) and invalidated on
+    /// exit. `None` while the fill is still streaming (the band shows its loading note) and on
+    /// every other screen.
+    pub ride_profile: Option<&'a Profile>,
     /// The climb the rider is currently on, or `None` between climbs (C3). Bundles the two things
     /// the Climb screen (C4) draws — the active [`ClimbSeg`] (base/top/gain/grade) and its resident
     /// detail [`ClimbProfile`] — behind one `Option` so a `Some` is exactly "a climb is being
@@ -388,9 +396,13 @@ screens! {
     /// route here." / "Couldn't find a route."), info-only — any press/Back returns to the detail.
     NavFail(NavFailScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
-    /// The Rides screen (Menu → Rides): a see-and-delete list of stored rides with a hold-to-delete
-    /// footer (greyed while recording, warning-red for an unsynced ride). Epic #447, P7 (#454).
+    /// The Rides screen (Menu → Rides): the stored-rides list — name + sync glyph over an olive
+    /// `D MON · distance` line; press opens the Ride detail. Epic #447 P7 (#454), rows
+    /// redesigned by #680.
     Rides(RidesScreen) => Nav,
+    /// The Ride detail (Rides → press, #680): the recorded sibling of the Route overview —
+    /// elevation band of the tracked ride, stat ledger, and the guarded Delete-ride row.
+    RideDetail(RideDetailScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
     /// The idle route-upload prompt (epic #447, P4): "ROUTE RECEIVED" — Start navigation / Dismiss.
@@ -478,7 +490,7 @@ impl Screen {
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Bluetooth(s) => s.selection_is_guarded(state.ble_paired),
             Screen::RouteOverview(s) => s.delete_enabled(activity, routes),
-            Screen::Rides(s) => s.selection_is_deletable(activity, rides.len()),
+            Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
             _ => false,
         }
     }

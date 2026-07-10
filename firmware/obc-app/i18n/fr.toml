@@ -59,6 +59,22 @@ oct = "oct"
 nov = "nov"
 dec = "déc"
 
+# --- Short-date month table (uppercase, day-first `D MON` shape) — the Rides rows' line-2
+# date; generic so the Home date line (T5, #683) reuses it ---
+[date]
+jan = "JAN"
+feb = "FÉV"
+mar = "MAR"
+apr = "AVR"
+may = "MAI"
+jun = "JUIN"
+jul = "JUIL"
+aug = "AOÛT"
+sep = "SEP"
+oct = "OCT"
+nov = "NOV"
+dec = "DÉC"
+
 # --- StatField names (the Add-field picker / Fields list) ---
 [statfield]
 speed = "Vitesse"
@@ -247,6 +263,11 @@ no_rides = "Aucune sortie"
 no_rides_sub = "Faites une sortie"
 recording = "Enreg."
 not_synced = "non sync."
+
+# --- Ride detail screen ---
+[ride_detail]
+synced = "sync."
+delete_ride = "Supprimer"
 
 # --- Route menu screen ---
 [route_menu]
