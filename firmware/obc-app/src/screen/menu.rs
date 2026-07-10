@@ -10,10 +10,12 @@
 //!   selected name in Display type below.
 //! * Card grid: the conventional icon-card layout under the standard title bar.
 
+use core::fmt::Write as _;
+
 use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Surface,
 };
 
@@ -145,10 +147,13 @@ impl MenuScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let ble = rx.state.ble_connected();
         let txt = MenuText::resolve(rx);
+        // The title bar's right readout: the battery percentage, in Home's `NN%` formatting.
+        let mut batt: heapless::String<8> = heapless::String::new();
+        let _ = write!(batt, "{}%", rx.state.battery_pct);
         if COMPASS {
-            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble, &txt);
+            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble, &batt, &txt);
         } else {
-            draw_grid(cv, rx.w, rx.h, self.selected, ble, &txt);
+            draw_grid(cv, rx.w, rx.h, self.selected, ble, &batt, &txt);
         }
     }
 }
@@ -173,11 +178,12 @@ fn open_map(cx: &mut Ctx) -> Transition {
     Transition::Push(Screen::Map(MapScreen::new()))
 }
 
-/// The compass-dial layout under the standard title bar: bezel ring, intercardinal ticks, needle,
-/// four icon stations, and the selected entry's name in Display type at the bottom. The ring sits
+/// The compass-dial layout under the standard title bar: bezel ring, station-midpoint ticks, needle,
+/// five icon stations, and the selected entry's name in Display type at the bottom. The ring sits
 /// centred between the bar and the name strip — which works out to exactly `h / 2`. The needle
 /// points at `needle_deg` (0° = N, clockwise) — mid-sweep that's between stations; the station
 /// highlight and the name snap to the selection immediately.
+#[allow(clippy::too_many_arguments)] // one flat draw fn; bundling the geometry+state adds no clarity
 fn draw_compass(
     cv: &mut impl Surface,
     w: i32,
@@ -185,25 +191,27 @@ fn draw_compass(
     selected: usize,
     needle_deg: f32,
     ble_connected: bool,
+    battery: &str,
     txt: &MenuText,
 ) {
     use palette::*;
-    title_frame_ble(cv, w, h, txt.title, "", ble_connected);
+    title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
 
     let c = Point::new(w / 2, h / 2);
 
     // Bezel ring: a wood disc with the parchment punched back out of the middle.
     cv.disc(c, 106, WOOD);
     cv.disc(c, 98, PARCHMENT);
-    // Intercardinal ticks just inside the bezel (the cardinal slots hold the stations) —
-    // doubled 1px lines for a visible 2px stroke; 62/68 are the 45° components of r 88→96.
-    for (sx, sy) in [(1, -1), (1, 1), (-1, 1), (-1, -1)] {
+    // Bezel ticks at the **station midpoints** — one per entry, at `36° + k·72°` (halfway between
+    // adjacent stations), so no tick sits under a station disc. Count + angle both derive from
+    // `N_ITEMS`. Doubled 1px lines for a visible 2px stroke, radial extent r 88→96, in WOOD.
+    for k in 0..N_ITEMS {
+        let a = (k as f32 + 0.5) / N_ITEMS as f32 * core::f32::consts::TAU;
+        let (dx, dy) = (libm::sinf(a), -libm::cosf(a));
+        let (ix, iy) = (si(1.0, dx * 88.0), si(1.0, dy * 88.0));
+        let (ox, oy) = (si(1.0, dx * 96.0), si(1.0, dy * 96.0));
         for off in 0..2 {
-            cv.line(
-                Point::new(c.x + sx * 62 + off, c.y + sy * 62),
-                Point::new(c.x + sx * 68 + off, c.y + sy * 68),
-                WOOD,
-            );
+            cv.line(Point::new(c.x + ix + off, c.y + iy), Point::new(c.x + ox + off, c.y + oy), WOOD);
         }
     }
 
@@ -227,7 +235,16 @@ fn draw_compass(
         draw_icon(cv, i, sc, 1.2, ink, bg);
     }
 
-    cv.text(txt.items[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, INK);
+    let label = txt.items[selected];
+    let label_top = h - 38;
+    cv.text(label, Point::new(w / 2, label_top), Font::Display, TextAlign::Center, INK);
+    // A2 selected-label treatment: a single 2 px amber underline bar, width = the measured label
+    // width + 8 px (4 px overhang each side), centred under the label, 3 px below the text block.
+    // Re-measured per label as the dial turns; ties "selected" into the device's amber-is-active
+    // grammar without a pill/box or a font change.
+    let bar_w = text_width(label, Font::Display) as i32 + 8;
+    let bar_y = label_top + Font::Display.cap_height() as i32 + 3;
+    cv.fill(rect(w / 2 - bar_w / 2, bar_y, bar_w, 2), AMBER);
 }
 
 /// Draw the compass **needle** centred at `c`, pointing `deg` (0° = N, clockwise): amber head of
@@ -257,9 +274,17 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
 
 /// The 2×2 card-grid layout under the standard title bar: amber fill on the selected card, a tan
 /// outline on the rest, each with its icon over a centred label.
-fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize, ble_connected: bool, txt: &MenuText) {
+fn draw_grid(
+    cv: &mut impl Surface,
+    w: i32,
+    h: i32,
+    selected: usize,
+    ble_connected: bool,
+    battery: &str,
+    txt: &MenuText,
+) {
     use palette::*;
-    title_frame_ble(cv, w, h, txt.title, "", ble_connected);
+    title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
     for (i, label) in txt.items.iter().enumerate() {
         let col = (i % 2) as i32;
         let row = (i / 2) as i32;
