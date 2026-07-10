@@ -785,6 +785,13 @@ fn main() {
         }
         // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label (N5).
         app.set_nav_profiles(tables.nav_profiles());
+        // Device-info built-ins for the System settings screen (T8 item 6): the running firmware
+        // version (the sim's own crate version stands in for the board's git-describe tag) and the
+        // loaded map's name (filename stem) + OBCM version from the parsed header. The card-free scan
+        // is answered after the script (below), mirroring the on-entry FAT scan seam.
+        app.set_fw_version(env!("CARGO_PKG_VERSION"));
+        let map_stem = std::path::Path::new(&args.map).file_stem().and_then(|s| s.to_str()).unwrap_or("map");
+        app.set_map_info(map_stem, tables.version);
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
@@ -875,6 +882,14 @@ fn main() {
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.
         if let Some(w) = args.inject_warning {
             app.notify_warning(w);
+        }
+
+        // Answer the System screen's card-free scan (T8 item 6). On the board this is a FAT
+        // free-cluster scan; the sim has no card, so a fixed built-in stands in (1.2 GB) — posted
+        // through the real `set_card_free` seam once the screen's on-entry request is drained.
+        if app.take_card_scan_request() {
+            const SIM_CARD_FREE: u64 = 1_288_490_188; // ~1.2 GiB → "1.2 GB"
+            app.set_card_free(Some(SIM_CARD_FREE));
         }
 
         // DFU sideload snapshots (epic #615 S5, #620). The scan runs board-side on the device; here

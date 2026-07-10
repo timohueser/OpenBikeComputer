@@ -356,6 +356,9 @@ back = "Back"
 title = "SYSTEM"
 install_update = "Install update from card"
 recording = "Recording"
+firmware = "Firmware"
+map = "Map"
+card_free = "Card free"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]

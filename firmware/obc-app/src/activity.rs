@@ -173,6 +173,12 @@ pub struct Activity {
     /// and aborts the in-flight plan (discarding the partial file, answering nothing — the rider
     /// is already back on the POI detail).
     nav_cancel: bool,
+    /// A one-shot **card-free scan request** (T8 item 6): posted when the System settings screen is
+    /// opened, so the host runs a FAT free-cluster scan *once on entry* (never per frame — the scan is
+    /// expensive) and answers through [`App::set_card_free`](crate::App::set_card_free). Drained via
+    /// [`App::take_card_scan_request`](crate::App::take_card_scan_request); until it answers the
+    /// System screen shows `--`.
+    card_scan_request: bool,
 
     // live map-match (from the GPS fix)
     /// Total distance of the active route (m), mirrored from its header so the riding views can
@@ -365,6 +371,17 @@ impl Activity {
     /// Take (and clear) the pending [`DfuAction`], if any.
     pub(crate) fn take_dfu_request(&mut self) -> Option<DfuAction> {
         self.dfu_request.take()
+    }
+
+    /// Record the one-shot **card-free scan request** (T8 item 6) — posted when the System settings
+    /// screen opens, drained by the host via [`App::take_card_scan_request`](crate::App::take_card_scan_request).
+    pub(crate) fn request_card_scan(&mut self) {
+        self.card_scan_request = true;
+    }
+
+    /// Take (and clear) the pending card-free scan request.
+    pub(crate) fn take_card_scan_request(&mut self) -> bool {
+        core::mem::take(&mut self.card_scan_request)
     }
 
     /// Non-consuming peek at whether a [`DfuAction`] is posted but undrained — the remote-check

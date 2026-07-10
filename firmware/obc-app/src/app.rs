@@ -589,6 +589,22 @@ pub struct App {
     /// marker recorded (if it survived). The one-time fact the "UPDATE FAILED" card takes; `None`
     /// on a normal boot.
     update_failed: Option<(crate::dfu::DfuFailure, Option<heapless::String<32>>)>,
+    /// The running firmware version string (T8 item 6) — the same value the DFU confirm shows as
+    /// "Installed", fed by the host at boot via [`set_fw_version`](App::set_fw_version). The System
+    /// settings screen's `Firmware` ledger row renders it (empty ⇒ `--`). Resident because that frame
+    /// draws without a `Reader`, like [`nav_profiles`](App::nav_profiles).
+    fw_version: heapless::String<32>,
+    /// The loaded map's display name (T8 item 6), fed on map load via
+    /// [`set_map_info`](App::set_map_info) — the left half of the System screen's `Map` row
+    /// (`grimsel · v10`). Empty until a map loads. Resident (the frame draws without a `Reader`).
+    map_name: heapless::String<24>,
+    /// The loaded map's OBCM format version, the right half of the `Map` row. `0` until a map loads.
+    map_obcm_version: u8,
+    /// Free space on the SD card in bytes (T8 item 6), answered by the host's FAT free-cluster scan
+    /// after the System screen posts its one-shot on entry
+    /// ([`take_card_scan_request`](App::take_card_scan_request) → [`set_card_free`](App::set_card_free)).
+    /// `None` until the host answers — the screen shows `--`.
+    card_free_bytes: Option<u64>,
 }
 
 /// One committed route upload, as [`notify_route_uploaded`](App::notify_route_uploaded) queues it
@@ -767,6 +783,10 @@ impl App {
             warned: WarningFlags::NONE,
             update_confirmed: None,
             update_failed: None,
+            fw_version: heapless::String::new(),
+            map_name: heapless::String::new(),
+            map_obcm_version: 0,
+            card_free_bytes: None,
         }
     }
 
@@ -853,6 +873,10 @@ impl App {
             // (Was missing until #680's field audit: the boot-verdict field must be initialized
             // like every other, or the board's first `reconcile_update_toast` reads uninit memory.)
             addr_of_mut!((*slot).update_failed).write(None);
+            addr_of_mut!((*slot).fw_version).write(heapless::String::new());
+            addr_of_mut!((*slot).map_name).write(heapless::String::new());
+            addr_of_mut!((*slot).map_obcm_version).write(0);
+            addr_of_mut!((*slot).card_free_bytes).write(None);
         }
     }
 
@@ -1293,6 +1317,45 @@ impl App {
     /// map so an open settings screen picks up the new names.
     pub fn set_nav_profiles(&mut self, profiles: &[obc_reader::MapProfile]) {
         self.nav_profiles.set_from(profiles);
+        self.map_dirty = true;
+    }
+
+    /// Feed the running firmware version string (T8 item 6) — the host calls this once at boot with
+    /// its build's `git describe` tag (the same value the DFU confirm shows as "Installed"). The
+    /// System settings screen's `Firmware` ledger row renders it (truncated to the 32-byte field,
+    /// wrapped to a second line if it doesn't fit — never ellipsized).
+    pub fn set_fw_version(&mut self, version: &str) {
+        self.fw_version.clear();
+        for ch in version.chars() {
+            if self.fw_version.push(ch).is_err() {
+                break;
+            }
+        }
+    }
+
+    /// Feed the loaded map's display name + OBCM format version (T8 item 6) — the host calls this on
+    /// map load. The System screen's `Map` row reads it as `name · vN` (e.g. `grimsel · v10`).
+    pub fn set_map_info(&mut self, name: &str, obcm_version: u8) {
+        self.map_name.clear();
+        for ch in name.chars() {
+            if self.map_name.push(ch).is_err() {
+                break;
+            }
+        }
+        self.map_obcm_version = obcm_version;
+    }
+
+    /// Drain the one-shot **card-free scan request** (T8 item 6) the System settings screen posts on
+    /// entry — the board answers a `true` with a FAT free-cluster scan → [`set_card_free`](App::set_card_free).
+    pub fn take_card_scan_request(&mut self) -> bool {
+        self.activity.take_card_scan_request()
+    }
+
+    /// Answer the card-free scan (T8 item 6): the host's free-space result in bytes, or `None` if the
+    /// scan failed / is unavailable (the System screen keeps showing `--`). Dirties the frame so an
+    /// open System screen repaints with the value.
+    pub fn set_card_free(&mut self, bytes: Option<u64>) {
+        self.card_free_bytes = bytes;
         self.map_dirty = true;
     }
 
@@ -2680,6 +2743,10 @@ impl App {
             waypoints,
             breadcrumb,
             poi_scratch,
+            fw_version,
+            map_name,
+            map_obcm_version,
+            card_free_bytes,
             ..
         } = self;
         // Bundle the active climb for the screens: the resident detail buffer is only meaningful
@@ -2713,6 +2780,10 @@ impl App {
             no_fix,
             clock,
             stats: RenderStats::default(),
+            fw_version: fw_version.as_str(),
+            map_name: map_name.as_str(),
+            map_obcm_version: *map_obcm_version,
+            card_free_bytes: *card_free_bytes,
         };
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).

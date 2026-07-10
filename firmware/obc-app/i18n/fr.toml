@@ -343,6 +343,9 @@ back = "Retour"
 title = "SYSTÈME"
 install_update = "Installer la mise à jour depuis la carte"
 recording = "Enreg."
+firmware = "Micrologiciel"
+map = "Carte"
+card_free = "Carte libre"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]
