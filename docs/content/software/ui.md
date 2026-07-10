@@ -691,7 +691,7 @@ A route arriving over BLE surfaces as one of three **advisory** cards — adviso
 
 ### The connected indicator
 
-A single **static** Bluetooth rune says "a phone is linked right now." It appears in exactly two places: the **main Menu's title bar** (the right slot of the framed header) and the **Home screen**, next to the battery gauge — the two screens a rider glances at between rides. It is deliberately **absent from the riding views**. That's not an oversight but a [render-on-demand](#render-on-demand-and-the-idle-path-is-free) decision: the Map and Statistics screens repaint only when something they show moves, and a phone connecting or dropping is *not* something the ride cares about — putting a link glyph there would dirty an expensive map frame on every BLE edge. So the indicator lives only where the panel is already cheap to redraw.
+A single **static** Bluetooth rune says "a phone is linked right now." It appears in exactly two places: the **main Menu's title bar** (the right slot of the framed header, inset left of the battery readout) and the **Home screen**, in a fixed top-right corner status slot — the two screens a rider glances at between rides. It is deliberately **absent from the riding views**. That's not an oversight but a [render-on-demand](#render-on-demand-and-the-idle-path-is-free) decision: the Map and Statistics screens repaint only when something they show moves, and a phone connecting or dropping is *not* something the ride cares about — putting a link glyph there would dirty an expensive map frame on every BLE edge. So the indicator lives only where the panel is already cheap to redraw.
 
 ### The Bluetooth settings screen
 
