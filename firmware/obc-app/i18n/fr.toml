@@ -248,6 +248,11 @@ no_rides_sub = "Faites une sortie"
 recording = "Enreg."
 not_synced = "non sync."
 
+# --- Ride detail screen ---
+[ride_detail]
+synced = "sync."
+delete_ride = "Supprimer"
+
 # --- Route menu screen ---
 [route_menu]
 title = "PARCOURS"

@@ -248,6 +248,11 @@ no_rides_sub = "Graba una salida"
 recording = "Grabando"
 not_synced = "sin sincr."
 
+# --- Ride detail screen ---
+[ride_detail]
+synced = "sincr."
+delete_ride = "Borrar salida"
+
 # --- Route menu screen ---
 [route_menu]
 title = "RUTAS"

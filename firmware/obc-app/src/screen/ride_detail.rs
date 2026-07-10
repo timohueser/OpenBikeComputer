@@ -1,0 +1,345 @@
+//! The Ride detail (epic #678 T2 / #680) — the recorded sibling of the
+//! [Route overview](super::route_overview), opened by *press* on a Rides-list row. Top to bottom:
+//! the `RIDE` title bar with the sync state in its right slot, the ride name, a `date · time`
+//! line, the recorded track's **elevation band** (the overview's composition — tan fill under an
+//! amber top stroke, max-elevation label at the band's top-right), a four-row stat ledger
+//! (DISTANCE / RIDE TIME / AVG / CLIMBED — all from the [`RideSummary`](crate::ride::RideSummary),
+//! no new stats), and the guarded **Delete ride** row at the bottom.
+//!
+//! The band's profile comes from the host: entering the screen sets
+//! [`Activity::viewed_ride`](crate::Activity::viewed_ride) (the Rides screen's press does), the
+//! host drains [`App::take_ride_track_request`](crate::App::take_ride_track_request), streams the
+//! ride's `RD{id}.ORD` once into the app's single resident ride-profile buffer
+//! ([`App::set_ride_profile`](crate::App::set_ride_profile)), and Back/delete clears `viewed_ride`
+//! so the buffer invalidates on exit — filled on entry, one buffer, never rebuilt per frame.
+//!
+//! **Delete** is the ride_control-pattern guarded row: the completed hold *is* the confirmation
+//! (its fill the live feedback), the host deletes `RD{id}.ORD` + its synced-set entry, and the
+//! screen pops back to the refreshed Rides list. While a ride is being recorded the row disables
+//! with the greyed treatment + `Recording` cue — the old footer's rule, verbatim: a live session
+//! holds `TRACK.OBT` open and its `RD{id}.ORD` isn't written until Finish, so deleting is neither
+//! meaningful nor legal then.
+//!
+//! Fit note: all six blocks don't fit 240×320 at the overview's spacing, so the **band height is
+//! shrunk** (90 → 34 px) and the ledger's row pitch compressed (42 → 33 px, hairline rules
+//! dropped) — the ledger *text* is untouched (the locked shrink order).
+
+use core::fmt::Write;
+
+use embedded_graphics::prelude::Point;
+use obc_render::{
+    rect,
+    text::{Font, TextAlign},
+    Surface,
+};
+
+use crate::activity::Activity;
+use crate::input::Gesture;
+use crate::stat_fields::fmt_hms;
+use crate::Msg;
+
+use super::{ledger_row, palette, title_frame, Ctx, MenuItem, Render, Transition, LIST_TOP};
+
+/// The recorded track's elevation band: the Route overview's composition at a shrunken height
+/// (the six-block fit — see the module doc).
+const BAND_TOP: i32 = 96;
+const BAND_BOT: i32 = 130;
+const SIDE_MARGIN: i32 = 12;
+
+/// The stat ledger: four caption/value rows between the band and the delete row. Pitch compressed
+/// from the overview's 42 (text size unchanged; the inter-row hairlines go with the lead).
+const ROWS_TOP: i32 = 138;
+const ROW_PITCH: i32 = 33;
+
+/// The guarded Delete-ride row at the bottom — the overview's button band footprint.
+const ROW_H: i32 = 34;
+
+/// The Ride detail. State is which catalog ride it shows; the delete row is the one selectable
+/// action, so there is no cursor.
+#[derive(Debug, Default)]
+pub struct RideDetailScreen {
+    ride: usize,
+}
+
+impl RideDetailScreen {
+    /// Open catalog ride `ride`'s detail. The caller (the Rides list's press) sets
+    /// [`Activity::viewed_ride`](crate::Activity::viewed_ride) alongside, keying the host's
+    /// track-profile fill.
+    pub fn new(ride: usize) -> Self {
+        RideDetailScreen { ride }
+    }
+
+    /// Re-point the shown ride after a live catalog rescan. A vanished subject becomes an
+    /// out-of-range index — the missing-ride path `draw`/`handle` already have (the empty state;
+    /// a hold does nothing).
+    pub(crate) fn remap_rides(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        self.ride = remap(self.ride).unwrap_or(usize::MAX);
+    }
+
+    /// Whether the Delete-ride row is **live**: the ride exists and no tracking session is
+    /// running (the old footer's "no delete while recording" rule — every delete stays legal).
+    fn delete_enabled(&self, activity: &Activity, len: usize) -> bool {
+        len > 0 && self.ride < len && !activity.is_tracking()
+    }
+
+    /// True while the delete row would fill for the current state — so
+    /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) repaints a charging hold here.
+    pub(crate) fn selection_is_guarded(&self, activity: &Activity, rides_len: usize) -> bool {
+        self.delete_enabled(activity, rides_len)
+    }
+
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            // A completed hold over the live Delete row requests the ride's deletion — the guarded
+            // hold is the confirmation (no popup), the row's fill its live feedback. Records the
+            // delete by index; the host resolves it to the durable object id, deletes `RD{id}.ORD`
+            // + its synced-set entry, and the rescan re-feeds the catalog — while this pops back to
+            // the Rides list (its remap keeps the highlight sane). A hold while recording (greyed
+            // row) does nothing.
+            Gesture::Hold if self.delete_enabled(cx.activity, cx.rides.len()) => {
+                cx.activity.request_ride_delete(self.ride.min(cx.rides.len() - 1));
+                cx.activity.viewed_ride = None; // leaving the page: the profile buffer invalidates
+                Transition::Pop
+            }
+            Gesture::Back => {
+                cx.activity.viewed_ride = None; // invalidate the resident ride profile on exit
+                Transition::Pop
+            }
+            _ => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+        let Some(ride) = rx.rides.get(self.ride) else {
+            // The shown ride vanished in a rescan (deleted from the phone mid-view): the Rides
+            // list's own empty-state copy, Back returns to the refreshed list.
+            title_frame(cv, w, h, rx.t(Msg::RideStartTitle), "");
+            super::empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
+            return;
+        };
+        let units = rx.settings.units;
+
+        // Title bar: `RIDE` + the sync state in the right slot (Label, bar text colour).
+        let sync = if ride.synced { rx.t(Msg::RideDetailSynced) } else { rx.t(Msg::RidesNotSynced) };
+        title_frame(cv, w, h, rx.t(Msg::RideStartTitle), sync);
+
+        // Ride name (Body, left inset, two-dot truncation at full card width).
+        let name = super::route_menu::fit_name(&ride.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
+        cv.text(&name, Point::new(14, LIST_TOP + 2), Font::Body, TextAlign::Left, INK);
+
+        // Date + start time on one olive Label line, e.g. `2025-07-02 · 14:12` — the list rows'
+        // date helper plus the wall clock's `HH:MM` shape, no new formats.
+        let d = crate::settings::DateTime::from_unix(ride.start_time);
+        let mut when: heapless::String<20> = heapless::String::new();
+        let _ = write!(when, "{} · {:02}:{:02}", super::rides::fmt_date(ride.start_time), d.hour, d.minute);
+        cv.text(&when, Point::new(14, LIST_TOP + 28), Font::Label, TextAlign::Left, SUBTEXT);
+
+        // The recorded track's elevation band — the overview's composition (tan fill under an
+        // amber top stroke), the host-filled resident ride profile as its source.
+        let chart_x = SIDE_MARGIN;
+        let chart_w = w - 2 * SIDE_MARGIN;
+        if let Some(profile) = rx.ride_profile {
+            let win = profile.window(0.5, 1.0, chart_w.max(1) as u32);
+            let span = (win.hi_frac - win.lo_frac).max(1e-6);
+            let span_ele = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
+            let ele_to_y = |e: i16| -> i32 {
+                let t = ((e - profile.min_ele_m) as f32 / span_ele).clamp(0.0, 1.0);
+                BAND_BOT - (t * (BAND_BOT - BAND_TOP) as f32) as i32
+            };
+            let mut prev_top: Option<i32> = None;
+            for px in 0..chart_w {
+                let f = win.lo_frac + span * (px as f32 / chart_w as f32);
+                let top_y = ele_to_y(profile.sample(win.level, f).1);
+                let x = chart_x + px;
+                cv.vline(x, top_y, BAND_BOT - top_y + 1, 1, PARCHMENT_SHADE);
+                // Amber top line, connected to the previous column so steep sections stay solid.
+                let (y0, y1) = prev_top.map_or((top_y, top_y), |p| (p.min(top_y), p.max(top_y)));
+                cv.vline(x, y0 - 1, (y1 - y0) + 2, 1, AMBER);
+                prev_top = Some(top_y);
+            }
+            // Max-elevation label at the band's top-right corner.
+            let mut peak: heapless::String<10> = heapless::String::new();
+            let _ = write!(peak, "{} {}", units.elev(profile.peak_ele_m() as f32) as i32, units.elev_label());
+            cv.text(&peak, Point::new(chart_x + chart_w - 2, BAND_TOP - 2), Font::Label, TextAlign::Right, SUBTEXT);
+        } else {
+            // Track still streaming in: keep the band's footprint so the page doesn't jump.
+            cv.text(
+                rx.t(Msg::RouteOverviewLoadingProfile),
+                Point::new(w / 2, (BAND_TOP + BAND_BOT) / 2 - 9),
+                Font::Label,
+                TextAlign::Center,
+                SUBTEXT,
+            );
+        }
+        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline under the band
+
+        // The four-row stat ledger — everything from the RideSummary, no new stats. AVG is the
+        // Statistics AVG tile's quotient (moving distance over moving time, here the stored
+        // totals) and its caption (`AVG ` + the unit label); `--` before any moving time.
+        let mut dist: heapless::String<8> = heapless::String::new();
+        let _ = write!(dist, "{:.1}", units.dist(ride.distance_m as f32 / 1000.0));
+        let dist_unit = if units.is_imperial() { "mi" } else { "km" };
+
+        let time = fmt_hms(ride.moving_time_s as f32);
+
+        let mut avg: heapless::String<8> = heapless::String::new();
+        if ride.moving_time_s > 0 {
+            let kmh = ride.distance_m as f32 / 1000.0 / (ride.moving_time_s as f32 / 3600.0);
+            let _ = write!(avg, "{:.1}", units.speed(kmh));
+        } else {
+            let _ = avg.push_str("--");
+        }
+        let mut avg_cap: heapless::String<12> = heapless::String::new();
+        let _ = avg_cap.push_str(rx.t(Msg::TileAvg));
+        let _ = avg_cap.push_str(units.speed_label());
+
+        let mut climb: heapless::String<8> = heapless::String::new();
+        let _ = write!(climb, "{}", (units.elev(ride.climb_m as f32) + 0.5) as u32);
+
+        let rows: [(&str, &str, &str, Option<bool>); 4] = [
+            (rx.t(Msg::RideControlDistance), &dist, dist_unit, None),
+            (rx.t(Msg::RideControlRideTime), &time, "", None),
+            (&avg_cap, &avg, "", None),
+            (rx.t(Msg::TileClimbed), &climb, units.elev_label(), Some(true)),
+        ];
+        for (i, (caption, value, unit, arrow)) in rows.iter().enumerate() {
+            ledger_row(cv, w, ROWS_TOP + i as i32 * ROW_PITCH, caption, value, unit, *arrow);
+        }
+
+        // The guarded Delete-ride row at the bottom (the ride_control pattern): its shaded base
+        // fills warning-red with the live hold. Greyed while recording — the old footer's exact
+        // disabled treatment, a dim trash + the `Recording` cue (the label + cue don't share a
+        // 240 px line, so the cue takes the row, as the footer had it).
+        let row_y = h - 10 - ROW_H;
+        if self.delete_enabled(rx.activity, rx.rides.len()) {
+            let geo = super::GuardedRowsGeometry {
+                x: 14,
+                w: w - 28,
+                top: row_y,
+                row_h: ROW_H,
+                gap: 0,
+                label_dx: 12,
+                label_dy: 5,
+            };
+            let items = [MenuItem { label: rx.t(Msg::RideDetailDeleteRide), guard: true }];
+            super::draw_guarded_rows(cv, &items, 0, rx.hold_progress, WARNING, geo);
+        } else {
+            draw_trash(cv, 14 + 16, row_y + ROW_H / 2, RULE);
+            cv.text_vcentered(
+                rx.t(Msg::RidesRecording),
+                14 + 36,
+                (row_y, ROW_H),
+                Font::Label,
+                TextAlign::Left,
+                SUBTEXT,
+            );
+        }
+    }
+}
+
+/// Draw a small trash-can glyph centred at `(cx, cy)` — the old Rides-footer glyph, carried into
+/// the delete row's disabled state so "can't delete now" keeps its established face.
+fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
+    let (bw, bh) = (11, 12);
+    let (bx, by) = (cx - bw / 2, cy - bh / 2 + 1);
+    cv.round_outline(rect(bx, by, bw, bh), 2, color); // can body
+    cv.hline(bx - 2, by - 2, bw + 4, color); // lid
+    cv.hline(cx - 2, by - 4, 5, color); // handle
+    cv.vline(cx - 2, by + 3, bh - 5, 1, color); // ribs
+    cv.vline(cx + 2, by + 3, bh - 5, 1, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::activity::Mode;
+    use crate::ride::RideSummary;
+    use crate::{AppState, Settings};
+
+    fn summary(name: &str) -> RideSummary {
+        RideSummary {
+            name: heapless::String::try_from(name).unwrap(),
+            start_time: 1_720_000_000,
+            distance_m: 42_500,
+            moving_time_s: 2 * 3600 + 31 * 60,
+            climb_m: 640,
+            synced: false,
+        }
+    }
+
+    fn run(scr: &mut RideDetailScreen, act: &mut Activity, rides: &[RideSummary], g: Gesture) -> Transition {
+        let mut st = AppState::new(0, 0, 1.0);
+        let mut settings = Settings::default();
+        let scratch = crate::screen::PoiScratch::new();
+        let mut cx = Ctx {
+            state: &mut st,
+            activity: act,
+            settings: &mut settings,
+            routes: &[],
+            rides,
+            nav_profiles: &crate::NavProfiles::EMPTY,
+            poi_scratch: &scratch,
+            now_ms: 0,
+        };
+        scr.handle(g, &mut cx)
+    }
+
+    /// A completed hold over the live Delete row records the delete, invalidates the profile key,
+    /// and pops back to the Rides list.
+    #[test]
+    fn hold_deletes_and_returns_to_the_list() {
+        let rides = [summary("A"), summary("B")];
+        let mut act = Activity::new(Mode::Idle);
+        act.viewed_ride = Some(1);
+        let mut scr = RideDetailScreen::new(1);
+        let t = run(&mut scr, &mut act, &rides, Gesture::Hold);
+        assert!(matches!(t, Transition::Pop), "the delete returns to the list");
+        assert_eq!(act.take_ride_delete(), Some(1), "the shown ride's index is requested");
+        assert_eq!(act.viewed_ride, None, "leaving the page invalidates the profile buffer");
+    }
+
+    /// The row is disabled — a hold does nothing — while a ride is being recorded; ending the
+    /// session re-arms it.
+    #[test]
+    fn hold_is_a_no_op_while_recording() {
+        let rides = [summary("A")];
+        let mut act = Activity::new(Mode::Riding);
+        act.start_session(); // now tracking
+        act.viewed_ride = Some(0);
+        let mut scr = RideDetailScreen::new(0);
+        assert!(!scr.selection_is_guarded(&act, rides.len()), "the row is greyed while recording");
+        let t = run(&mut scr, &mut act, &rides, Gesture::Hold);
+        assert!(matches!(t, Transition::None), "a hold while recording stays on the page");
+        assert_eq!(act.take_ride_delete(), None, "and records nothing");
+        assert_eq!(act.viewed_ride, Some(0), "the profile stays keyed to the open page");
+
+        act.end_session();
+        assert!(scr.selection_is_guarded(&act, rides.len()), "ending the ride re-arms the row");
+    }
+
+    /// Back pops and clears `viewed_ride`, so the resident ride profile invalidates on exit.
+    #[test]
+    fn back_pops_and_invalidates_the_profile_key() {
+        let rides = [summary("A")];
+        let mut act = Activity::new(Mode::Idle);
+        act.viewed_ride = Some(0);
+        let mut scr = RideDetailScreen::new(0);
+        let t = run(&mut scr, &mut act, &rides, Gesture::Back);
+        assert!(matches!(t, Transition::Pop));
+        assert_eq!(act.viewed_ride, None);
+    }
+
+    /// A vanished subject (out-of-range after a rescan) offers no delete.
+    #[test]
+    fn vanished_ride_has_no_delete() {
+        let mut act = Activity::new(Mode::Idle);
+        let mut scr = RideDetailScreen::new(0);
+        scr.remap_rides(&|_| None);
+        assert!(!scr.selection_is_guarded(&act, 1), "an out-of-range subject arms nothing");
+        let t = run(&mut scr, &mut act, &[summary("A")], Gesture::Hold);
+        assert!(matches!(t, Transition::None));
+        assert_eq!(act.take_ride_delete(), None);
+    }
+}
