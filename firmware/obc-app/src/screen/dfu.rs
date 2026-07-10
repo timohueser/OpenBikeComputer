@@ -103,35 +103,11 @@ impl Spinner {
     }
 }
 
-// ── Multi-line centred body copy (author each catalog string on one line; wrap at draw time) ──
+// ── Multi-line centred body copy: the shared `super::wrapped` (author each catalog string on one
+// line; wrap at draw time), always at `Font::Label` on these cards. ──
 
-/// Draw `text` word-wrapped into centred [`Font::Label`] lines within `width_px`, the first line at
-/// `top_y`, in `color`. Greedy over the monospace cell width; returns the `y` just past the last
-/// line so a caller can stack more below it. A single word wider than the budget is left to clip
-/// (versions and the like are short). Up to [`MAX_LINES`](Self) lines.
 fn wrapped(cv: &mut impl Surface, text: &str, cx: i32, top_y: i32, width_px: i32, color: u16) -> i32 {
-    const LH: i32 = 19; // Label line advance (cap ~18) + a hair of lead
-    let char_w = Font::Label.char_width() as i32;
-    let budget = (width_px / char_w).max(1) as usize;
-    let mut y = top_y;
-    let mut line: heapless::String<48> = heapless::String::new();
-    for word in text.split(' ') {
-        let extra = if line.is_empty() { word.len() } else { line.len() + 1 + word.len() };
-        if extra > budget && !line.is_empty() {
-            cv.text(&line, Point::new(cx, y), Font::Label, TextAlign::Center, color);
-            y += LH;
-            line.clear();
-        }
-        if !line.is_empty() {
-            let _ = line.push(' ');
-        }
-        let _ = line.push_str(word);
-    }
-    if !line.is_empty() {
-        cv.text(&line, Point::new(cx, y), Font::Label, TextAlign::Center, color);
-        y += LH;
-    }
-    y
+    super::wrapped(cv, text, cx, top_y, width_px, Font::Label, color)
 }
 
 // ── DfuCheck: the "Checking card..." wait ──

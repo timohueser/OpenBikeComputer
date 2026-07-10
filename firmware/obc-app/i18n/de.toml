@@ -294,10 +294,10 @@ create_route = "Route erstellen"
 cancel = "Abbrechen"
 title = "ROUTE ERSTELLEN"
 finding = "Suche Route..."
-too_far_1 = "Zu weit zum"
-too_far_2 = "Routen hier"
-not_found_1 = "Keine Route"
-not_found_2 = "gefunden."
+too_far = "Zu weit zum Routen hier."
+too_far_hint = "Ein näheres Ziel wählen."
+not_found = "Keine Route gefunden."
+not_found_hint = "Kein Weg in der Nähe - an einer Straße starten."
 
 # --- Ride-control (pause) page ---
 [ride_control]
