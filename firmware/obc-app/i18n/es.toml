@@ -272,7 +272,6 @@ on_phone = "en el móvil"
 title = "SALIDAS"
 no_rides = "Sin salidas"
 no_rides_sub = "Graba una salida"
-recording = "Grabando"
 not_synced = "sin sincr."
 
 # --- Ride detail screen ---
@@ -285,7 +284,6 @@ delete_ride = "Borrar salida"
 title = "RUTAS"
 no_routes = "Sin rutas"
 no_routes_sub = "Importa un GPX"
-in_use = "En uso"
 
 # --- Route overview screen ---
 [route_overview]

@@ -72,11 +72,12 @@ printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc st
 # The detail's delete charging: `H` partial-holds the encoder over the Delete-ride row, so its
 # warning-red fill draws mid-charge (the guarded-hold idiom, ride_control's pattern).
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p p H" --png "$OUT/ride-detail-delete.png"
-# The delete row greyed while a ride is being recorded (#680): ride route 0 (`p p p p` → Map, riding)
-# **with the GPX replay driving fixes** — the tracking session only starts once positions flow, and
-# `is_tracking` (the greying predicate) is `session.is_some()`, so without `--gpx` this frame would
-# wrongly show the live delete row. Then BackHold to the Menu (`B`), turn to the Rides station
-# (`r w`), press into the detail — the row shows the dim trash + "Recording" cue, and `H` fills nothing.
+# The delete row HIDDEN while a ride is being recorded (owner review round 1 — no greyed face):
+# ride route 0 (`p p p p` → Map, riding) **with the GPX replay driving fixes** — the tracking
+# session only starts once positions flow, and `is_tracking` (the hiding predicate) is
+# `session.is_some()`, so without `--gpx` this frame would wrongly show the live delete row. Then
+# BackHold to the Menu (`B`), turn to the Rides station (`r w`), press into the detail — the page
+# ends at the stat ledger with NO Delete-ride row at all, and `H` fills nothing.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p p B r w p p H" --png "$OUT/ride-detail-recording.png"
 "$SIM" "$MAP" --boot --script "B r r w"      --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
@@ -184,17 +185,15 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # deliberately long git-describe tag exercises the version wrap to a second centred line.
 "$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
-# The overview also carries the guarded Delete-route row (T3, #681): idle here, charging below, and
-# greyed "In use" while this is the active ride's route.
+# The overview also carries the guarded Delete-route row (T3 #681, reordered by owner review round
+# 1): the bottommost element, BELOW the raised START RIDE bar — idle here, charging below. While the
+# route is the active ride's the row is hidden entirely (no greyed face); that state is unreachable
+# by gesture (the active route's overview never opens from the menu), so it has no frame — the
+# route_overview delete_enabled tests pin the guard.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
 # The Delete row charging: `p p p H` opens the overview and partial-holds the encoder over it, so the
 # warning-red row fill draws under the "Delete route" label.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p H"   --png "$OUT/routeoverview-delete.png"
-# The Delete row greyed while riding this route: `p p p p` rides route 0 (session live), then
-# `--open-overview` reopens its overview (unreachable by gesture — the active route's overview never
-# opens from the menu), so the row wears the old footer's disabled face — a dim trash + the reused
-# left-aligned "In use" cue, no fill (the same face the Ride detail's `Recording` state shows).
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --open-overview --png "$OUT/routeoverview-delete-active.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
 # --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
 # (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —
@@ -341,4 +340,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 134 screens rendered into $OUT/"
+echo "ui-snapshots: 133 screens rendered into $OUT/"

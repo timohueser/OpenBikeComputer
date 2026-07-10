@@ -92,12 +92,13 @@ impl RouteOverviewScreen {
         self.computed
     }
 
-    /// Whether the guarded **Delete route** row is **live** — a real, non-computed catalog route
+    /// Whether the guarded **Delete route** row exists — a real, non-computed catalog route
     /// that isn't the actively-navigated route of a running tracking session. This is the exact
-    /// greying predicate the old Route-menu footer used, moved here (T3): deleting the file under an
-    /// open geometry handle mid-ride would break navigation, so the row greys out (a hold does
-    /// nothing) exactly while `is_tracking()` and this is the active route. Also the
-    /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) predicate for this screen.
+    /// predicate the old Route-menu footer greyed on, moved here (T3): deleting the file under an
+    /// open geometry handle mid-ride would break navigation. Since owner review round 1 the row is
+    /// **hidden entirely** while disallowed (no greyed face), and this guard keeps a hold a no-op
+    /// regardless. Also the [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) predicate
+    /// for this screen.
     pub(crate) fn delete_enabled(&self, activity: &Activity, routes: &[RouteSummary]) -> bool {
         !self.computed
             && self.route < routes.len()
@@ -151,7 +152,7 @@ impl RouteOverviewScreen {
             // no popup) records the delete by index. The host resolves it to the durable object id,
             // deletes the object — a created `_NAV.OBR` route the same way, no special casing — and
             // the store-changed rescan re-feeds the catalog. Restore the pre-preview active route and
-            // pop to the refreshed Routes list. A hold while the route is in use (greyed row) never
+            // pop to the refreshed Routes list. A hold while the route is in use (row hidden) never
             // reaches here.
             Gesture::Hold if self.delete_enabled(cx.activity, cx.routes) => {
                 cx.activity.request_route_delete(self.route);
@@ -297,10 +298,13 @@ impl RouteOverviewScreen {
         }
 
         // The guarded Delete-route row, the bottommost element (owner review round 1: delete ranks
-        // under the primary action), greyed with an "In use" cue while this is the active ride's
-        // route (a hold does nothing there). The START bar rides directly above it.
-        let in_use = rx.activity.is_tracking() && rx.activity.active_route == Some(self.route);
-        draw_delete_row(cv, w, h, rx.t(Msg::RouteOverviewDelete), rx.t(Msg::RouteMenuInUse), !in_use, rx.hold_progress);
+        // under the primary action). While the route is the active ride's the row is simply **not
+        // drawn** — no dim trash, no "In use" cue (owner review round 1: the state can't act, so it
+        // doesn't show) — and the `delete_enabled` guard keeps a hold a no-op regardless. The START
+        // bar rides directly above the row's slot either way, so nothing jumps when it re-arms.
+        if self.delete_enabled(rx.activity, rx.routes) {
+            draw_delete_row(cv, w, h, rx.t(Msg::RouteOverviewDelete), rx.hold_progress);
+        }
         draw_start_button_at(cv, w, start_button_y(h), rx.t(Msg::RouteOverviewStartRide));
     }
 }
@@ -318,35 +322,15 @@ fn start_button_y(h: i32) -> i32 {
 
 /// Draw the guarded **Delete route** row below the START button — the ride_control guarded-row
 /// idiom (a `PARCHMENT_SHADE` base filling warning-red with the live `hold` under the "Delete route"
-/// label). While the route is the active ride's (`enabled == false`) the row greys out with the old
-/// footer's exact disabled treatment — a dim trash + the reused "In use" cue (the label + cue don't
-/// share a 240 px line, so the cue takes the row, as the footer had it) — the same face the Ride
-/// detail's `Recording` state wears (the Q1 sibling). No fill draws; a hold does nothing.
-fn draw_delete_row(cv: &mut impl Surface, w: i32, h: i32, label: &str, in_use_cue: &str, enabled: bool, hold: f32) {
+/// label). Only ever called live: while the route can't be deleted the caller draws nothing at all
+/// (owner review round 1 — no greyed face).
+fn draw_delete_row(cv: &mut impl Surface, w: i32, h: i32, label: &str, hold: f32) {
     use palette::*;
     let x = 14;
     let y = delete_row_y(h);
-    if enabled {
-        let row = rect(x, y, w - 2 * x, DELETE_ROW_H);
-        super::confirm_row(cv, row, true, true, hold, WARNING, 6);
-        cv.text_vcentered(label, x + 12, (y, DELETE_ROW_H), Font::Body, TextAlign::Left, INK);
-    } else {
-        draw_trash(cv, x + 16, y + DELETE_ROW_H / 2, RULE);
-        cv.text_vcentered(in_use_cue, x + 36, (y, DELETE_ROW_H), Font::Label, TextAlign::Left, SUBTEXT);
-    }
-}
-
-/// Draw a small trash-can glyph centred at `(cx, cy)` — the old Route-menu-footer glyph, carried
-/// into the delete row's disabled state so "can't delete now" keeps its established face. The Ride
-/// detail's twin — kept local so the sibling screens stay independent.
-fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
-    let (bw, bh) = (11, 12);
-    let (bx, by) = (cx - bw / 2, cy - bh / 2 + 1);
-    cv.round_outline(rect(bx, by, bw, bh), 2, color); // can body
-    cv.hline(bx - 2, by - 2, bw + 4, color); // lid
-    cv.hline(cx - 2, by - 4, 5, color); // handle
-    cv.vline(cx - 2, by + 3, bh - 5, 1, color); // ribs
-    cv.vline(cx + 2, by + 3, bh - 5, 1, color);
+    let row = rect(x, y, w - 2 * x, DELETE_ROW_H);
+    super::confirm_row(cv, row, true, true, hold, WARNING, 6);
+    cv.text_vcentered(label, x + 12, (y, DELETE_ROW_H), Font::Body, TextAlign::Left, INK);
 }
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
