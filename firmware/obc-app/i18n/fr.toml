@@ -272,7 +272,6 @@ on_phone = "sur le tél."
 title = "SORTIES"
 no_rides = "Aucune sortie"
 no_rides_sub = "Faites une sortie"
-recording = "Enreg."
 not_synced = "non sync."
 
 # --- Ride detail screen ---
@@ -285,7 +284,6 @@ delete_ride = "Supprimer"
 title = "PARCOURS"
 no_routes = "Aucun parcours"
 no_routes_sub = "Importez un GPX"
-in_use = "Utilisé"
 
 # --- Route overview screen ---
 [route_overview]
@@ -353,8 +351,6 @@ gps = "GPS"
 fix = "fixe"
 searching = "recherche.."
 battery = "Batterie"
-card = "Carte"
-card_ok = "OK"
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]

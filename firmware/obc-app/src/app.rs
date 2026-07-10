@@ -1759,23 +1759,6 @@ impl App {
         self.map_dirty = true;
     }
 
-    /// **Debug / snapshot only** (epic #678 T3): open the [`RouteOverview`](crate::screen::RouteOverviewScreen)
-    /// for the active route directly. The overview of a route that is the *active ride's* route is
-    /// unreachable by gesture (the Route menu's tracking arm resumes the Map or opens the swap card,
-    /// never the overview), so the UI-snapshot sweep drives it through this seam (the sim's
-    /// `--open-overview` flag) to capture the greyed "In use" Delete-route row. Replaces the current
-    /// base view rather than stacking over it; a no-op with no active route. No production path
-    /// reaches this.
-    pub fn debug_open_route_overview(&mut self) {
-        let Some(route) = self.activity.active_route else {
-            return;
-        };
-        if let Some(top) = self.stack.last_mut() {
-            *top = Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(route, Some(route)));
-        }
-        self.map_dirty = true;
-    }
-
     /// Drain the pending **plan-cancel request** (#499) — recorded by the planning screen's Back
     /// (which already popped back to the POI detail). A `true` is the host's cue to abort the
     /// in-flight plan and discard the partial nav file; it answers **nothing** (there is no

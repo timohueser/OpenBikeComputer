@@ -140,38 +140,49 @@ impl StatsScreen {
         let midy = r1.top_left.y + r1.size.height as i32 / 2;
         cv.triangle(Point::new(cx0, midy - 9), Point::new(cx0, midy + 9), Point::new(cx0 + 11, midy), INK);
 
-        // Row 2 — Climb panel (press cycles Off / Manual / Auto in place). "Climb" is a short label,
-        // so — like the Units flip — the mode sits vcentered at the right, flanked by a ◄.
+        // Row 2 — Climb panel (press cycles Off / Manual / Auto in place). The mode rides at the
+        // right of the **sub-caption** line — exactly the Waypoints row's shape below, so the two
+        // press-to-cycle rows read as twins (owner review round 1: the old Body value vcentered on
+        // the row ran into the sub-caption — "Auto still clips the climb panel text"). The measured
+        // clearance between the sub-caption and the ◄ cue is pinned for all four languages by
+        // `cycle_row_value_clears_the_sub_caption` below.
         let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
         super::row_cursor(cv, r2, self.selected == CLIMB_PANEL, false);
         super::row_label(cv, r2, rx.t(Msg::SetStatsClimb), Some(rx.t(Msg::SetStatsClimbSub)));
-        let vmidy = r2.top_left.y + r2.size.height as i32 / 2;
         let climb_name = rx.settings.climb_mode.name(rx.settings.language);
-        cv.text_vcentered(climb_name, val_r, (r2.top_left.y, ROW_H), Font::Body, TextAlign::Right, INK);
-        // The `◄` press-to-cycle cue, a fixed CUE_GAP before the value's left edge (never glued to it).
-        let ax = val_r - text_width(climb_name, Font::Body) as i32 - CUE_GAP;
-        cv.triangle(Point::new(ax, vmidy - 8), Point::new(ax, vmidy + 8), Point::new(ax - 10, vmidy), INK);
+        draw_subline_cycle_value(cv, &r2, val_r, climb_name);
 
-        // Row 3 — Waypoints panel (press cycles Off / Approach / Always in place). Unlike Climb,
-        // "Waypoints" is a wide Body label, so a vcentered mode word would overprint it and the long
-        // Off/Approach/Always values won't share that line. The mode rides instead at the right of
-        // the **sub-caption** line — compact Label, ink against the grey caption — carrying the same
-        // ◄ "press to change" cue as the Climb row so the two read as siblings. (The caption is
+        // Row 3 — Waypoints panel (press cycles Off / Approach / Always in place): the same
+        // value-on-the-sub-caption-line shape as the Climb row above — compact Label at the shared
+        // value column, the ◄ "press to change" cue a fixed CUE_GAP before it. (The caption is
         // "chip", not "map chip": at Label width the 8-char caption + ◄ + the 8-char "Approach"
         // value can't all clear the 240 px row, and the ◄ affordance wins.)
         let r3 = super::row_rect(LIST_TOP + 8 + 3 * (ROW_H + 6), w, ROW_H);
         super::row_cursor(cv, r3, self.selected == WAYPOINT_PANEL, false);
         super::row_label(cv, r3, rx.t(Msg::SetStatsWaypoints), Some(rx.t(Msg::SetStatsWaypointsSub)));
         let name = rx.settings.waypoint_mode.name(rx.settings.language);
-        // The mode still rides on the sub-caption line (a vcentered Body word would overprint the wide
-        // "Waypoints" label — unchanged), but at the shared value column and with the same fixed
-        // CUE_GAP before its ◄ as the Climb row, so the two read as one column.
-        let sub_y = r3.top_left.y + 30;
-        cv.text(name, Point::new(val_r, sub_y), Font::Label, TextAlign::Right, INK);
-        let ax = val_r - text_width(name, Font::Label) as i32 - CUE_GAP;
-        let tmid = sub_y + Font::Label.cap_height() as i32 / 2;
-        cv.triangle(Point::new(ax, tmid - 6), Point::new(ax, tmid + 6), Point::new(ax - 8, tmid), INK);
+        draw_subline_cycle_value(cv, &r3, val_r, name);
     }
+}
+
+/// Draw a press-to-cycle row's mode `value` at the right of its **sub-caption** line — Label tier,
+/// ink, right-aligned on the shared `val_r` column — with the ◄ "press to change" cue a fixed
+/// [`CUE_GAP`] before the value's left edge. The Climb and Waypoints rows share this drawer so the
+/// two cycle rows can't drift apart (owner review round 1). The sub-caption itself is drawn by
+/// `row_label` at the same `top + 30` line; `cycle_row_value_clears_the_sub_caption` pins the
+/// measured clearance between the two in every language.
+fn draw_subline_cycle_value(
+    cv: &mut impl Surface,
+    row: &embedded_graphics::primitives::Rectangle,
+    val_r: i32,
+    value: &str,
+) {
+    use crate::screen::palette::INK;
+    let sub_y = row.top_left.y + 30;
+    cv.text(value, Point::new(val_r, sub_y), Font::Label, TextAlign::Right, INK);
+    let ax = val_r - text_width(value, Font::Label) as i32 - CUE_GAP;
+    let tmid = sub_y + Font::Label.cap_height() as i32 / 2;
+    cv.triangle(Point::new(ax, tmid - 6), Point::new(ax, tmid + 6), Point::new(ax - 8, tmid), INK);
 }
 
 #[cfg(test)]
@@ -254,6 +265,45 @@ mod tests {
         for expect in [WaypointMode::Always, WaypointMode::Off, WaypointMode::Approach] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
             assert_eq!(s.waypoint_mode, expect);
+        }
+    }
+
+    /// The two press-to-cycle rows' sub-caption lines clear their ◄value group by a **measured**
+    /// ≥ 8 px in every language and every mode value (owner review round 1: "the Auto still clips
+    /// the climb panel text"). Mirrors the draw math exactly: the sub-caption runs left-aligned
+    /// from `ROW_X + 10`; the value right-aligns on the shared column `w - ROW_X - VAL_INSET`, its
+    /// ◄ cue reaching `CUE_GAP + 8` px further left.
+    #[test]
+    fn cycle_row_value_clears_the_sub_caption() {
+        use crate::i18n::t;
+        use crate::settings::{ClimbMode, Language, WaypointMode};
+        const W: i32 = 240; // the panel width every layout constant is tuned for
+        const MIN_CLEAR: i32 = 8;
+        let val_r = W - super::super::ROW_X - VAL_INSET;
+        let lw = |s: &str| text_width(s, Font::Label) as i32;
+        for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
+            let rows: [(&str, &[&str]); 2] = [
+                (
+                    t(Msg::SetStatsClimbSub, lang),
+                    &[ClimbMode::Off.name(lang), ClimbMode::Manual.name(lang), ClimbMode::Auto.name(lang)],
+                ),
+                (
+                    t(Msg::SetStatsWaypointsSub, lang),
+                    &[WaypointMode::Off.name(lang), WaypointMode::Approach.name(lang), WaypointMode::Always.name(lang)],
+                ),
+            ];
+            for (sub, values) in rows {
+                let sub_right = super::super::ROW_X + 10 + lw(sub);
+                for value in values {
+                    let cue_tip = val_r - lw(value) - CUE_GAP - 8;
+                    assert!(
+                        cue_tip - sub_right >= MIN_CLEAR,
+                        "{lang:?}: sub-caption {sub:?} (ends {sub_right}) too close to \
+                         cue+value {value:?} (cue tip {cue_tip}) — clearance {} < {MIN_CLEAR}",
+                        cue_tip - sub_right
+                    );
+                }
+            }
         }
     }
 

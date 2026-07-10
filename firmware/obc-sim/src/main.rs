@@ -148,11 +148,6 @@ struct Args {
     /// before C5 wires the screen into the Back-cycle. A no-op unless the replay left a climb active
     /// (so pair it with a `--gpx`/`--at` that reaches one).
     open_climb: bool,
-    /// Headless `--png` only: after the script, open the [`RouteOverview`](obc_app::screen) for the
-    /// active route directly (epic #678 T3) via `App::debug_open_route_overview`, so the greyed
-    /// "In use" Delete-route row renders. The overview of the active ride's route is unreachable by
-    /// gesture, so pair with a script that starts a ride (`p p p p`) to arm the in-use guard.
-    open_overview: bool,
     /// Headless `--gpx` replay: make **every ride-log write fail**, as if the SD card were pulled
     /// mid-ride (issue #11). Each logged fix's `TrackSink::record` returns `Err`, so the app raises
     /// the "recording error" warning through the real record path (not the `--inject-warning rec`
@@ -221,7 +216,6 @@ impl Default for Args {
             inject_warning: None,
             boot_fault: None,
             open_climb: false,
-            open_overview: false,
             fail_track: false,
             dfu_scan: None,
             dfu_progress: false,
@@ -331,7 +325,6 @@ fn parse_args() -> Result<Args, String> {
             "--ble-connected" => a.ble_connected = true,
             "--nav-hold" => a.nav_hold = true,
             "--open-climb" => a.open_climb = true,
-            "--open-overview" => a.open_overview = true,
             "--fail-track" => a.fail_track = true,
             "--dfu-scan" => {
                 a.dfu_scan = Some(dfu::DfuScanKind::parse(&it.next().ok_or("--dfu-scan needs normal|same|first")?)?);
@@ -624,7 +617,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--open-overview]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
             std::process::exit(2);
         }
     };
@@ -957,13 +950,6 @@ fn main() {
         // C5 makes it reachable by gesture; until then this debug seam is the only way in.
         if args.open_climb {
             app.debug_open_climb();
-        }
-
-        // `--open-overview` (epic #678 T3): swap the base view for the active route's Route overview,
-        // so the greyed "In use" Delete-route row (unreachable by gesture — the overview of the
-        // active ride's route is never opened by the menu) captures for the snapshot sweep.
-        if args.open_overview {
-            app.debug_open_route_overview();
         }
 
         // `--save-track`: finalise the active ride to a `.gpx` (verifies the save loop).
