@@ -2471,6 +2471,7 @@ dependencies = [
  "embedded-graphics",
  "image",
  "obc-app",
+ "obc-dfu",
  "obc-host-core",
  "obc-platform",
  "obc-reader",

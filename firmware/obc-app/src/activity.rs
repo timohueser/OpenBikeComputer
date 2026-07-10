@@ -47,6 +47,22 @@ pub enum TrackAction {
     Discard,
 }
 
+/// Which phase of the SD-sideload firmware update (epic #615 S5, #620) a [`DfuAction`] one-shot
+/// asks the board to run. The two phases are separate so the UI can **confirm before arming**:
+/// [`Scan`](DfuAction::Scan) is read-only (validate `UPDATE.BIN`, cost nothing on failure) and
+/// answers a [`DfuScanReport`](crate::dfu::DfuScanReport); [`Install`](DfuAction::Install) is the
+/// irreversible arm-and-reboot (snapshot the rollback, write the boot-state page, reset into the
+/// bootloader). The `dfu-install` debug command posts `Install` directly (no confirm screen).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DfuAction {
+    /// Validate the staged `UPDATE.BIN` (header, full CRC-32, extents) without touching anything;
+    /// the board answers through [`App::notify_dfu_scan_result`](crate::App::notify_dfu_scan_result).
+    Scan,
+    /// Arm the update: snapshot the running image to `ROLLBACK.BIN`, write the `Armed` boot-state
+    /// record, and reboot into the bootloader. On success the board never returns (it resets).
+    Install,
+}
+
 /// A one-shot **route-planning request** (epic #116, R4): the POI create-route confirm asks the
 /// host to run the on-device router from the rider's fix to the POI. Coordinates are `(lon, lat)`
 /// microdegrees (the OBCM/renderer convention); the name is the POI's stored name (or its subtype
@@ -138,6 +154,14 @@ pub struct Activity {
     /// steps the resumable router, writes the reserved nav route, rescans, and answers through
     /// [`App::notify_nav_result`](crate::App::notify_nav_result).
     nav_request: Option<NavRequest>,
+    /// A one-shot **DFU request** (epic #615 S5, #620): the SD-sideload firmware-update flow. The
+    /// System settings screen posts [`DfuAction::Scan`] (validate `UPDATE.BIN`, answer through
+    /// [`App::notify_dfu_scan_result`](crate::App::notify_dfu_scan_result)); the confirm screen
+    /// posts [`DfuAction::Install`] (snapshot the rollback, arm the boot-state page, reboot into
+    /// the bootloader). The board's ride loop drains it via
+    /// [`App::take_dfu_request`](crate::App::take_dfu_request) — the same slot the `dfu-install`
+    /// debug command drives through [`App::request_dfu_install`](crate::App::request_dfu_install).
+    dfu_request: Option<DfuAction>,
     /// A one-shot **plan-cancel request** (#499): Back on the planning screen pops it *and*
     /// records this; the host drains it via [`App::take_nav_cancel`](crate::App::take_nav_cancel)
     /// and aborts the in-flight plan (discarding the partial file, answering nothing — the rider
@@ -322,6 +346,19 @@ impl Activity {
     /// Non-consuming peek at whether a route-planning request is pending.
     pub(crate) fn has_nav_request(&self) -> bool {
         self.nav_request.is_some()
+    }
+
+    /// Record a one-shot [`DfuAction`] (epic #615 S5, #620) — set by the System settings screen
+    /// (`Scan`) and the update-confirm screen (`Install`), drained by the board via
+    /// [`App::take_dfu_request`](crate::App::take_dfu_request). A later post overwrites an
+    /// undrained earlier one (there is never more than one DFU phase in flight).
+    pub(crate) fn request_dfu(&mut self, action: DfuAction) {
+        self.dfu_request = Some(action);
+    }
+
+    /// Take (and clear) the pending [`DfuAction`], if any.
+    pub(crate) fn take_dfu_request(&mut self) -> Option<DfuAction> {
+        self.dfu_request.take()
     }
 
     /// Record a one-shot plan-cancel (#499) — set by the planning screen's Back, drained by

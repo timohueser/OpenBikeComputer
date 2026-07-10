@@ -16,6 +16,7 @@ pub mod activity;
 pub mod app;
 pub mod ble;
 pub mod breadcrumb;
+pub mod dfu;
 pub mod dirty;
 pub mod fault;
 pub mod hal;
@@ -31,10 +32,11 @@ pub mod settings;
 pub mod stat_fields;
 pub mod wall_clock;
 
-pub use activity::{Activity, Mode, NavRequest, TrackAction};
+pub use activity::{Activity, DfuAction, Mode, NavRequest, TrackAction};
 pub use app::{App, AppState, CameraMode, Pan, PanAxis};
 pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;
+pub use dfu::{DfuScanError, DfuScanReport};
 pub use dirty::Dirty;
 pub use fault::{draw_boot_fault, BootFault};
 pub use hal::{

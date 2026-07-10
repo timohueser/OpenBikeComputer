@@ -122,6 +122,7 @@ display = "Anzeige"
 power = "Energie"
 bluetooth = "Bluetooth"
 language = "Sprache"
+system = "System"
 reset = "Zurücksetzen"
 
 # --- Date & Time settings screen ---
@@ -313,3 +314,30 @@ climb = "ANSTIEG"
 title = "FAHRT"
 start_ride = "Fahrt starten"
 back = "Zurück"
+
+# --- System settings screen (epic #615 S5, #620) ---
+[system]
+title = "SYSTEM"
+install_update = "Update von Karte installieren"
+recording = "Aufnahme"
+
+# --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
+[dfu]
+checking = "Karte wird geprüft..."
+installed = "Installiert"
+staged = "Update"
+confirm_title = "INSTALLIEREN"
+same_version = "Diese Version ist bereits installiert."
+no_undo = "Kein automatisches Zurücksetzen."
+light_blinks = "Das Licht blinkt während der Installation."
+install = "Installieren"
+cancel = "Abbrechen"
+preparing = "Update wird vorbereitet..."
+updated_title = "AKTUALISIERT"
+updated = "Aktualisiert auf"
+title = "UPDATE"
+not_found = "Keine Update-Datei auf der Karte."
+unreadable = "Update-Datei nicht lesbar."
+damaged = "Die Update-Datei ist beschädigt."
+too_large = "Die Update-Datei ist zu groß für dieses Gerät."
+fragmented = "Die Update-Datei ist zu fragmentiert. Lösche UPDATE.BIN und kopiere sie erneut auf die Karte."

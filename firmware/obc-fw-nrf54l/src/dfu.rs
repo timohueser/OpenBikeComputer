@@ -180,6 +180,56 @@ pub(crate) async fn run_install(
     }
 }
 
+/// The **scan-only** phase (epic #615 S5, #620) — the UI's read-only "Checking card..." step,
+/// posted as [`DfuAction::Scan`](obc_app::DfuAction) by the System settings screen. Validates
+/// `UPDATE.BIN` exactly as the arm's first step does (header, full CRC-32, extents) but touches
+/// nothing, and reads the boot-state page for the pre-arm no-rollback fact, returning the
+/// app-native [`DfuScanReport`](obc_app::DfuScanReport) the confirm screen shows — or a mapped
+/// [`DfuScanError`](obc_app::DfuScanError) for the error card. The board answers the app through
+/// [`App::notify_dfu_scan_result`](obc_app::App::notify_dfu_scan_result); a failed scan, like the
+/// arm's, costs nothing.
+pub(crate) fn run_scan(
+    storage: &mut sd::Storage,
+    settings: &mut RramSettingsStore,
+    wdt: &mut Option<wdt::WatchdogHandle>,
+) -> Result<obc_app::DfuScanReport, obc_app::DfuScanError> {
+    let staged = storage.dfu_scan_update().map_err(map_scan_error)?;
+    // The full CRC pass over a ~900 KB stage takes seconds — feed the dog before returning.
+    if let Some(h) = wdt.as_mut() {
+        h.pet();
+    }
+    // The no-rollback fact is knowable pre-arm from the boot-state page: `Idle { installed: None }`
+    // (a dev-flashed device, spec §2.4) — and, defensively, any non-`Idle` page — arms without a
+    // rollback, so an unconfirmed trial is accepted rather than rolled back. (The running-mismatch
+    // no-rollback case needs the slot CRC, too heavy pre-confirm, so it isn't surfaced — see the PR.)
+    let installed = match settings.read_boot_state() {
+        BootState::Idle { installed } => installed,
+        _ => None,
+    };
+    let mut staged_version: heapless::String<32> = heapless::String::new();
+    let _ = staged_version.push_str(staged.header.fw_version_str());
+    let mut installed_version: heapless::String<32> = heapless::String::new();
+    let _ = installed_version.push_str(env!("OBC_FW_GIT"));
+    Ok(obc_app::DfuScanReport {
+        installed: installed_version,
+        staged: staged_version,
+        first_install: installed.is_none(),
+    })
+}
+
+/// Fold `obc_dfu`'s finer [`ScanError`] variants into the five user-facing
+/// [`DfuScanError`](obc_app::DfuScanError) buckets the app's error card shows (issue #620 §2).
+fn map_scan_error(e: ScanError) -> obc_app::DfuScanError {
+    use obc_app::DfuScanError as U;
+    match e {
+        ScanError::Missing => U::NotFound,
+        ScanError::Io => U::Unreadable,
+        ScanError::BadHeader | ScanError::BadCrc | ScanError::Truncated => U::Damaged,
+        ScanError::Oversize => U::TooLarge,
+        ScanError::TooFragmented { .. } => U::TooFragmented,
+    }
+}
+
 /// One typed error, phrased for the harness (S5 reuses `ScanError::describe` verbatim).
 fn report_scan_error(phase: &str, e: ScanError) {
     match e {
