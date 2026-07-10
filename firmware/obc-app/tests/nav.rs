@@ -482,3 +482,48 @@ fn repeated_debug_requests_stack_one_planning_screen() {
     assert!(!app.take_dirty().map, "no stranded spinner keeps repainting");
     assert!(app.ms_until_next_wake(2_000).is_none(), "…or holds a short wake armed");
 }
+
+/// The shape-preview seam (#685 §4): a successful answer opens the computed overview
+/// **preview-missing** — the host's cue to decimate and hand the ≤ 64-point copy in — and
+/// `set_nav_preview` satisfies it (dirtying the frame). The cue never fires without a computed
+/// overview on the stack, and a rider leaving the overview retires it.
+#[test]
+fn nav_preview_seam_fires_once_per_plan() {
+    let bytes = fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    assert!(!app.nav_preview_missing(), "no computed overview, no cue");
+    open_detail(&mut app, &bytes);
+    let _req = request_route(&mut app);
+    nav_catalog(&mut app);
+    app.notify_nav_result(Ok(7));
+    assert!(app.nav_preview_missing(), "the fresh overview wants its preview");
+
+    let _ = app.take_dirty();
+    app.set_nav_preview(&[(0, 0), (100, 100), (200, 150)]);
+    assert!(!app.nav_preview_missing(), "fed once — the cue retires");
+    assert!(app.take_dirty().map, "the handed-in preview repaints the overview");
+
+    // Back off the overview: no computed overview up ⇒ no cue, even though the preview is stale.
+    app.apply_gesture(Gesture::Back);
+    assert!(!app.nav_preview_missing());
+}
+
+/// A re-plan clears the previous route's preview: the new overview starts preview-missing again,
+/// so a stale shape can never draw under fresh bytes (the same id/index can carry a re-route).
+#[test]
+fn a_new_plan_starts_preview_less() {
+    let bytes = fixture();
+    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    open_detail(&mut app, &bytes);
+    let _req = request_route(&mut app);
+    nav_catalog(&mut app);
+    app.notify_nav_result(Ok(7));
+    app.set_nav_preview(&[(0, 0), (1, 1)]);
+    assert!(!app.nav_preview_missing());
+
+    // Back to the detail, plan again (the reserved file is rewritten under the same id).
+    app.apply_gesture(Gesture::Back);
+    let _req = request_route(&mut app);
+    app.notify_nav_result(Ok(7));
+    assert!(app.nav_preview_missing(), "the re-plan's overview wants a fresh preview");
+}

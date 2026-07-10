@@ -75,7 +75,9 @@ pub trait NavRouteStore {
 /// Commit / report a finished plan and answer the app — the shared tail of the live hosts' stepped
 /// path and `obc-sim`'s headless one-shot: on success write the reserved nav route, rescan +
 /// re-feed the id-carrying catalog, and `notify_nav_result` (which swaps the planning screen for
-/// the computed-route overview or the failure card).
+/// the computed-route overview or the failure card), then hand the app the decimated shape
+/// preview (#685 §4) — the emitted OBCR bytes are still in RAM here, so the ≤ 64-point copy is
+/// decimated straight off them.
 pub fn finish_nav_plan(
     app: &mut obc_app::App,
     store: &mut dyn NavRouteStore,
@@ -101,4 +103,15 @@ pub fn finish_nav_plan(
         eprintln!("nav route: failed ({e:?})");
     }
     app.notify_nav_result(result);
+    // The computed-route overview's shape preview (#685 §4), decimated host-side from the
+    // just-committed bytes. After `notify_nav_result` (which activates the route and clears any
+    // stale preview) so the copy keys to the fresh `active_route`. Skipped when the answer was
+    // dropped (rider cancelled — no overview is up to draw it).
+    if result.is_ok() && app.nav_preview_missing() {
+        let src = obc_route::SliceSource(sink_bytes);
+        if let Ok(idx) = obc_route::RouteIndex::read(&src) {
+            let pts = obc_route::RouteReader::new(&idx, &src).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+            app.set_nav_preview(&pts);
+        }
+    }
 }

@@ -327,3 +327,30 @@ fn rejects_chunk_data_region_past_end() {
     let src = SliceSource(&bytes);
     assert_eq!(RouteIndex::read(&src).err(), Some(Error::BadOffset));
 }
+
+/// `preview_polyline` (#685 §4): the two-chunk fixture has 5 distinct points (the seam point
+/// deduped). `N` at/above that keeps all 5 verbatim; `N = 3` keeps first / middle / last; and
+/// every preview is a route-order subset with the endpoints exact.
+#[test]
+fn preview_polyline_decimates_uniformly_with_exact_endpoints() {
+    let bytes = two_chunk_route();
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    // The full distinct polyline, seam deduped.
+    let all: Vec<(i32, i32)> = vec![(10, 10), (20, 25), (40, 40), (60, 30), (90, 70)];
+
+    let keep_all = r.preview_polyline::<8>();
+    assert_eq!(keep_all.as_slice(), all.as_slice(), "N ≥ total keeps every distinct point once");
+
+    let three = r.preview_polyline::<3>();
+    assert_eq!(
+        three.as_slice(),
+        &[(10, 10), (40, 40), (90, 70)],
+        "N = 3 keeps first / middle / last (indices 0, 2, 4)"
+    );
+
+    let two = r.preview_polyline::<2>();
+    assert_eq!(two.as_slice(), &[(10, 10), (90, 70)], "N = 2 keeps exactly the endpoints");
+}

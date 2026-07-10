@@ -398,6 +398,17 @@ pub struct App {
     /// was **answered** for (a failed fill parks `None` under the same key, so a dead file isn't
     /// re-streamed every pass), remapped by identity across rescans like every held ride index.
     ride_profile_for: Option<usize>,
+    /// The computed route's decimated shape-preview polyline (#685 §4) — ≤ [`NAV_PREVIEW_MAX`]
+    /// `(lon, lat)` µdeg points, **decimated host-side** and handed in via
+    /// [`set_nav_preview`](App::set_nav_preview) after a successful plan. Drawn by the
+    /// computed-route overview; empty otherwise.
+    nav_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
+    /// The [`active_route`](Activity::active_route) the [`nav_preview`](App::nav_preview) was
+    /// handed in for — the staleness key ([`nav_preview_missing`](App::nav_preview_missing)
+    /// compares it, and the render gates on it so an old plan's shape can never draw under a
+    /// different route). Cleared by [`notify_nav_result`](App::notify_nav_result) so every plan
+    /// starts preview-less.
+    nav_preview_route: Option<usize>,
     /// The active route's detected climbs, segmented once on route load (one streaming chunk sweep,
     /// so never per frame). Empty when no route is loaded; [`climbs_route`](App::climbs_route)
     /// tracks which route the list was built for. The riding views query it (with hysteresis, via
@@ -635,6 +646,12 @@ const NO_FIX_INTERVALS: u32 = 3;
 /// minute at most. Independent of redraws: an unchanged reading repaints nothing.
 const BATTERY_POLL_MS: u32 = 30_000;
 
+/// Cap on the computed route's shape-preview polyline (#685 §4): the host decimates the planned
+/// polyline to at most this many points before handing it to
+/// [`set_nav_preview`](App::set_nav_preview) — plenty for the overview's ~212×90 px sketch, and a
+/// fixed ~512 B resident buffer here rather than a route-sized one.
+pub const NAV_PREVIEW_MAX: usize = 64;
+
 /// Enter/exit hysteresis for [`App::update_active_climb`] — the margins that turn the raw interval
 /// lookup ([`Climbs::active_at`], exact detected geometry, no slack) into a flap-free "on a climb
 /// now" state.
@@ -748,6 +765,8 @@ impl App {
             profile_route: None,
             ride_profile: None,
             ride_profile_for: None,
+            nav_preview: heapless::Vec::new(),
+            nav_preview_route: None,
             climbs: Climbs::new(),
             climbs_route: None,
             waypoints: Waypoints::new(),
@@ -1817,6 +1836,12 @@ impl App {
                 // while the page shows); `prev_active` restores whatever was loaded on cancel.
                 let prev = self.activity.active_route;
                 self.activity.active_route = Some(idx);
+                // Every plan starts preview-less (#685 §4): a re-route commits new bytes under
+                // the same id/index, so an old shape must never survive into the new overview.
+                // The host hands the fresh decimated polyline via `set_nav_preview` (the sim's
+                // commit tail does it in the same pass; the board on the next one).
+                self.nav_preview.clear();
+                self.nav_preview_route = None;
                 Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(idx, prev))
             }
             // Exhaustion is the device's honest "too far" — the range tier's trigger now that
@@ -1825,6 +1850,30 @@ impl App {
             Err(_) => Screen::NavFail(crate::screen::NavFailScreen::not_found()),
         };
         self.stack[i] = screen;
+        self.map_dirty = true;
+    }
+
+    /// Whether the computed-route overview is up **without** its shape preview (#685 §4) — the
+    /// host's per-pass cue to decimate the freshly-planned polyline
+    /// ([`RouteReader::preview_polyline`](obc_route::RouteReader::preview_polyline)) and hand it
+    /// to [`set_nav_preview`](App::set_nav_preview). `false` the moment the preview is in (or the
+    /// overview is gone), so the walk over the route's chunks runs once per plan, not per pass.
+    pub fn nav_preview_missing(&self) -> bool {
+        self.stack.iter().any(|s| matches!(s, Screen::RouteOverview(o) if o.is_computed()))
+            && self.nav_preview_route != self.activity.active_route
+    }
+
+    /// Hand in the computed route's decimated shape-preview polyline (#685 §4) — ≤
+    /// [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points (more are truncated), **decimated host-side**
+    /// (the sim's plan-commit tail; the board's ride loop). Keyed to the current
+    /// [`active_route`](Activity::active_route) — the route the plan just activated — so a later
+    /// route change stales it automatically.
+    pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
+        self.nav_preview.clear();
+        for &p in pts.iter().take(NAV_PREVIEW_MAX) {
+            let _ = self.nav_preview.push(p);
+        }
+        self.nav_preview_route = self.activity.active_route;
         self.map_dirty = true;
     }
 
@@ -2772,8 +2821,14 @@ impl App {
             map_name,
             map_obcm_version,
             card_free_bytes,
+            nav_preview,
+            nav_preview_route,
             ..
         } = self;
+        // The computed-route shape preview draws only for the route it was decimated for — a
+        // stale key (route changed, preview not re-fed yet) hands the screens an empty slice.
+        let nav_preview: &[(i32, i32)] =
+            if nav_preview_route.is_some() && *nav_preview_route == activity.active_route { nav_preview } else { &[] };
         // Bundle the active climb for the screens: the resident detail buffer is only meaningful
         // when a climb is active, so hand out the `(seg, profile)` pair exactly when `active_climb`
         // resolves to a live segment — a stale buffer is never reachable through `Render`.
@@ -2796,6 +2851,7 @@ impl App {
             climb,
             waypoints: &*waypoints,
             breadcrumb: &*breadcrumb,
+            nav_preview,
             poi_scratch,
             w: w as i32,
             h: h as i32,

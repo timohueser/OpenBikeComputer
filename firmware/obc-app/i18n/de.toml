@@ -299,6 +299,7 @@ bike_type = "FAHRRADTYP"
 start_ride = "LOSFAHREN"
 loading_profile = "Lade Profil"
 delete = "Route löschen"
+new_route = "NEUE ROUTE"
 
 # --- Route-received / route-updated popups ---
 [route_received]
