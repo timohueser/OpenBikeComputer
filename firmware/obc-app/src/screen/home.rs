@@ -13,6 +13,7 @@
 use core::fmt::Write as _;
 
 use embedded_graphics::prelude::Point;
+use obc_reader::weekday_from_ymd;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -22,8 +23,33 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::settings::DateTime;
 use crate::wall_clock::MinuteTicker;
+use crate::Msg;
 
 use super::{palette, Ctx, MenuScreen, Render, Screen, ScreenTick, Transition};
+
+/// The seven weekday-abbreviation catalog keys (the `[date]` section), Monday-first — the order
+/// [`weekday_from_ymd`] returns (`0` = Monday .. `6` = Sunday). Paired with [`DATE_MONTHS`] for the
+/// Home date line's per-language `WD D MON`.
+const DATE_WEEKDAYS: [Msg; 7] =
+    [Msg::DateMon, Msg::DateTue, Msg::DateWed, Msg::DateThu, Msg::DateFri, Msg::DateSat, Msg::DateSun];
+
+/// The 12 uppercase month-abbreviation keys (the `[date]` section) in calendar order — the same
+/// short-date table the Rides rows draw from (T5, #683 reuses it), distinct from the Date & Time
+/// stepper's mixed-case `[month]` table.
+const DATE_MONTHS: [Msg; 12] = [
+    Msg::DateJan,
+    Msg::DateFeb,
+    Msg::DateMar,
+    Msg::DateApr,
+    Msg::DateMay,
+    Msg::DateJun,
+    Msg::DateJul,
+    Msg::DateAug,
+    Msg::DateSep,
+    Msg::DateOct,
+    Msg::DateNov,
+    Msg::DateDec,
+];
 
 /// The idle home screen.
 #[derive(Debug, Default)]
@@ -84,7 +110,26 @@ impl HomeScreen {
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
         cv.text(&clock, Point::new(w / 2, clock_top), Font::Huge, TextAlign::Center, palette::PARCHMENT);
 
-        battery(cv, w, h * 64 / 100, rx.state.battery_pct, rx.state.ble_connected());
+        // The date line under the clock: abbreviated weekday + day + month (day-first in every
+        // language), centred in the dim contour-line grey. Drawn only when the wall clock has an
+        // established origin (`clock_set`) — a date with no trusted time would mislead, so a fresh
+        // clock shows the ticking `HH:MM` alone. A standard text-gap below the Huge clock cell.
+        if rx.clock_set {
+            let mut date: heapless::String<16> = heapless::String::new();
+            let wd = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day) as usize;
+            let mon = (rx.now.month.clamp(1, 12) - 1) as usize;
+            let _ = write!(date, "{} {} {}", rx.t(DATE_WEEKDAYS[wd]), rx.now.day, rx.t(DATE_MONTHS[mon]));
+            let date_y = clock_top + Font::Huge.cap_height() as i32 + 6;
+            cv.text(&date, Point::new(w / 2, date_y), Font::Label, TextAlign::Center, palette::CONTOUR);
+        }
+
+        battery(cv, w, h * 64 / 100, rx.state.battery_pct);
+
+        // The BLE connected rune lives in a fixed top-right status slot — 10 px inset from both
+        // edges, white, and only when a phone is linked (nothing else ever occupies this corner).
+        if rx.state.ble_connected() {
+            super::ble_glyph(cv, w - 10 - super::BLE_GLYPH_W, 10 + 8, palette::PARCHMENT);
+        }
     }
 }
 
@@ -95,10 +140,10 @@ const BARS: i32 = 5;
 
 /// Draw the battery gauge centred horizontally, body centred on `cy`: a white rounded shell + nub,
 /// all `BARS` segments drawn — the first `filled` in the level colour (red <20 %, green >80 %,
-/// amber between), the rest dim grey — and the `NN%` readout beside it in the level colour. When
-/// `ble_connected`, the Bluetooth rune sits just left of the shell (the Home half of the epic #447
-/// connected indicator), so the "phone linked" cue reads alongside the power state.
-fn battery(cv: &mut impl Surface, w: i32, cy: i32, pct: u8, ble_connected: bool) {
+/// amber between), the rest dim grey — and the `NN%` readout beside it in the level colour. The
+/// shell + nub, a fixed 8 px gap, and the readout form **one group**, centred at `w/2` — the BLE
+/// connected cue now lives in its own top-right corner slot ([`draw`](HomeScreen::draw)), not here.
+fn battery(cv: &mut impl Surface, w: i32, cy: i32, pct: u8) {
     let level = match pct {
         0..=19 => palette::WARNING,
         81..=u8::MAX => palette::ON,
@@ -106,23 +151,14 @@ fn battery(cv: &mut impl Surface, w: i32, cy: i32, pct: u8, ble_connected: bool)
     };
     let (bw, bh, pad, nub) = (98, 38, 5, 5);
 
-    // Lay the whole group (optional BLE rune + shell + nub + gap + label) out centred, so the gauge
-    // shifts right just enough to keep the composite balanced when the rune shows.
+    // Lay the whole group (shell + nub + gap + label) out centred at `w/2` as one unit.
     let mut label: heapless::String<8> = heapless::String::new();
     let _ = write!(label, "{pct}%");
-    let gap = 12;
+    let gap = 8;
     let lw = text_width(&label, Font::Body) as i32;
-    // The rune's slot: its width + an 8 px gap before the shell, only when connected.
-    let ble_slot = if ble_connected { super::BLE_GLYPH_W + 8 } else { 0 };
-    let group = ble_slot + bw + nub + gap + lw;
-    let x0 = (w - group) / 2;
-    let x = x0 + ble_slot; // the shell's left edge (past the rune slot)
+    let group = bw + nub + gap + lw;
+    let x = (w - group) / 2; // the shell's left edge
     let y = cy - bh / 2;
-
-    // The connected rune, vertically centred on the shell, in the same near-white as the shell.
-    if ble_connected {
-        super::ble_glyph(cv, x0, cy, palette::PARCHMENT);
-    }
 
     // Shell: a rounded outline body with a small nub on the right (the battery silhouette).
     cv.round_outline(rect(x, y, bw, bh), 6, palette::PARCHMENT);

@@ -2266,6 +2266,14 @@ impl App {
         self.wall_clock.now(self.now_ms)
     }
 
+    /// Whether the wall clock has an **established** set-point — a persisted/manual/GPS time has been
+    /// applied, versus a fresh clock that has never been told the time (see
+    /// [`WallClock::is_established`](crate::wall_clock::WallClock::is_established)). The Home date
+    /// line gates on this so it never shows a date with no trusted origin.
+    pub fn clock_is_set(&self) -> bool {
+        self.wall_clock.is_established()
+    }
+
     /// The current **UTC** unix seconds, from the wall clock. The clock's set-point is local
     /// time, so in GPS mode the persisted UTC offset is folded back out; a hand-set clock knows
     /// no zone, so its local reading is served as-is.
@@ -2736,6 +2744,7 @@ impl App {
 
         // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.now_ms);
+        let clock_set = self.wall_clock.is_established();
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
@@ -2791,6 +2800,7 @@ impl App {
             h: h as i32,
             now_ms: *now_ms,
             now,
+            clock_set,
             hold_progress,
             no_fix,
             clock,
