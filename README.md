@@ -50,9 +50,12 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `packer/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
 | `packer/web_builder/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
 | `firmware/obc-ble/` | `no_std` — the **BLE data-plane core** (epic #267): the S0 control-plane descriptor codecs, CRC-32, list objects, and the whole-object transfer state machine. Radio-free and host-tested; the board crate drives the L2CAP bytes through it. |
+| `firmware/obc-dfu/` | `no_std` — the **SD-staged DFU core** (epic #615): the `OBCU` update-image container + boot-state page codecs, the bootloader's install engine (verify → flash → readback → trial/rollback), and the app-side armer. Host-tested with mock IO; both `obc-boot` and the board crate are thin drivers over it. |
+| `firmware/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
+| `firmware/obc-boot/` | The **32 KB nRF54L bootloader** — reads the `BOOT_STATE` page, runs `obc-dfu`'s install engine, flashes the app slot via RRAMC (LED codes, no display). Workspace-excluded + standalone like the board crate; flashed once. |
 | `companion-ios/` | The **iOS companion app** (SwiftUI + the `OBCKit` package): import GPX/TCX, encode OBCR, and sync routes/rides with the device over BLE. |
 | `protocol-vectors/` | Shared binary fixtures pinning the BLE wire contract — asserted byte-exact by both `cargo test` and `swift test`. |
-| `OBCM_Spec.md` / `OBCR_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route format specifications and the BLE wire contract. |
+| `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route / firmware-update-image format specifications and the BLE wire contract. |
 | `firmware/docs/`, `packer/docs/` | Design notes and handover docs (UI spec, rendering pipeline, line-style plans, packer port stages…). |
 
 The crate dependency direction is `obc-sim → obc-app → obc-render → obc-reader`
@@ -257,6 +260,43 @@ cargo build --release --no-default-features --features ble
 
 Flashing, the dependency pins, and the on-glass verify steps live in the
 [board crate README](firmware/obc-fw-nrf54l/README.md).
+
+## Firmware updates
+
+The device updates itself in the field — no probe needed. An update ships as a
+single **`UPDATE.BIN`** file (an [`OBCU`](OBCU_Spec.md) container: a 64-byte
+header plus the raw app image). The trust model — verify before erase, a single
+trial boot with rollback — is the
+[firmware updates](https://timohueser.github.io/OpenBikeComputer/software/firmware-updates/)
+docs page.
+
+**Installing one (on the device):**
+
+1. Copy `UPDATE.BIN` to the **root** of the device's SD card (from any computer),
+   or push it from the companion app over BLE.
+2. On the device: **Settings → System → "Install update from card"**.
+3. Confirm on the glass. The device validates the image, snapshots the running
+   firmware, and reboots into the bootloader to flash it (its LED takes over while
+   the display is off). If the new image doesn't come up healthy, the next boot
+   rolls back automatically.
+
+**Cutting a release (maintainers):** push a `v*` tag. The
+[`release` workflow](.github/workflows/release.yml) builds the shipping firmware
+(`obc-fw-nrf54l` `--features ble`) and the `obc-boot` bootloader, wraps the app
+into `UPDATE.BIN` tagged with the version, gates on `obc-mkimage inspect`, and
+attaches `UPDATE.BIN`, both ELFs, and a `SHA256SUMS.txt` to the GitHub release:
+
+```sh
+git tag v0.4.0
+git push origin v0.4.0        # → the release + UPDATE.BIN appear on the Releases page
+```
+
+To dry-run the pipeline without tagging — validate that a candidate `UPDATE.BIN`
+builds and passes `inspect` — trigger the workflow manually (**Actions → Release →
+Run workflow**, with a version string, or `gh workflow run release.yml -f
+version=v0.4.0-rc1`); it uploads the same artifacts as a downloadable bundle and
+publishes no release. Building `UPDATE.BIN` by hand (the `objcopy → wrap`
+pipeline) is in the [firmware README](firmware/README.md#firmware-update-images-obcu).
 
 ## Testing
 

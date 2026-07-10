@@ -1,0 +1,151 @@
+name: Release
+
+# Field-update release pipeline (epic #615 S8, #623). Separate from ci.yml on purpose:
+# releases must NOT ride the PR path filters — a tag push builds the *shipping* firmware and
+# publishes an installable UPDATE.BIN, regardless of which paths changed.
+#
+# On a pushed `v*` tag it builds the two flashed images (the BLE board firmware — the shipping
+# shape — and the 32 KB obc-boot bootloader), wraps the app into an OBCU UPDATE.BIN tagged with
+# the tag, gates on `obc-mkimage inspect`, and attaches UPDATE.BIN + both ELFs + a SHA-256
+# manifest to the GitHub release.
+#
+# `workflow_dispatch` is the dry-run path: it runs the whole build + wrap + inspect gate for a
+# hand-typed version and uploads the same artifacts as a workflow artifact bundle — no tag, no
+# published release — so the pipeline (and a candidate UPDATE.BIN) can be validated off a branch.
+#
+# Toolchain + caching mirror ci.yml: the channel/targets come from //rust-toolchain.toml, the
+# board crate's FLPR `build.rs` needs the RISC-V gcc, and llvm-tools is found the same way the
+# `boot` size-guard finds llvm-size.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string for a dry-run build (no release is published)'
+        required: true
+        default: 'v0.0.0-dryrun'
+
+# Publishing a release + assets needs write; the dry-run path never reaches the publish step.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth 0 (full history + tags), deliberately — don't "optimize" this back to a
+      # shallow fetch. The app build embeds its git identity at build time
+      # (obc-fw-nrf54l/build.rs `emit_fw_git` → OBC_FW_GIT via `git rev-parse --short=7 HEAD`,
+      # falling back to "unknown" when .git is unreachable): that string is the DIS Firmware
+      # Revision / boot banner and the "installed" side of the S5 confirm screen's same-version
+      # check against the staged OBCU header's version. The checkout must therefore never
+      # degrade what git reports at build time, and tags must be present so any
+      # `git describe`-derived version string (the firmware README's manual wrap recipe)
+      # resolves the tag exactly instead of a bare hash.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Channel + rustfmt/clippy + the thumbv8m/wasm targets, pinned in //rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      # Cache each cargo root separately — the board crate and the bootloader are standalone
+      # (own target dir + Cargo.lock), the host workspace builds obc-mkimage.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            firmware
+            firmware/obc-fw-nrf54l
+            firmware/obc-boot
+          key: release
+
+      # The board crate's FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an
+      # rv32emc GNU gcc (same as ci.yml's `embedded` job). The bootloader needs no RISC-V blob.
+      - name: Install RISC-V GCC for the FLPR blob
+        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
+
+      # Tag push → the tag name; manual run → the typed input. Everything downstream reads $VERSION.
+      - name: Resolve the version string
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "This is a DRY RUN — no release will be published."
+          else
+            VERSION="${{ github.ref_name }}"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Release version: $VERSION"
+
+      # The shipping firmware shape: BLE build, release, --locked. From inside the crate dir so
+      # .cargo/config.toml selects the thumbv8m target (a --manifest-path build would target the host).
+      - name: Build obc-fw-nrf54l (release, ble)
+        working-directory: firmware/obc-fw-nrf54l
+        run: cargo build --release --locked --no-default-features --features ble
+
+      - name: Build obc-boot (release)
+        working-directory: firmware/obc-boot
+        run: cargo build --release --locked
+
+      # objcopy the app ELF → raw vector-table-first binary, wrap it into an OBCU container tagged
+      # with $VERSION, then INSPECT as the gate (non-zero exit on any header/CRC problem fails here).
+      - name: Wrap UPDATE.BIN (objcopy → obc-mkimage wrap → inspect gate)
+        run: |
+          set -euo pipefail
+          rustup component add llvm-tools
+          OBJCOPY=$(find "$(rustc --print sysroot)" -name llvm-objcopy | head -1)
+          APP_ELF=firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+          "$OBJCOPY" -O binary "$APP_ELF" app.bin
+          cargo run --manifest-path firmware/Cargo.toml -p obc-mkimage --release --locked -- \
+            wrap --bin app.bin --version "$VERSION" --out UPDATE.BIN
+          echo "::group::obc-mkimage inspect UPDATE.BIN"
+          cargo run --manifest-path firmware/Cargo.toml -p obc-mkimage --release --locked -- \
+            inspect UPDATE.BIN
+          echo "::endgroup::"
+
+      # Stage the release assets under dist/: the installable image, both ELFs (clearly named),
+      # and a SHA-256 manifest over all three.
+      - name: Stage release artifacts + checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp UPDATE.BIN dist/UPDATE.BIN
+          cp firmware/obc-boot/target/thumbv8m.main-none-eabihf/release/obc-boot dist/obc-boot.elf
+          cp firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l dist/obc-fw-nrf54l-ble.elf
+          ( cd dist && sha256sum UPDATE.BIN obc-boot.elf obc-fw-nrf54l-ble.elf > SHA256SUMS.txt )
+          echo "::group::SHA256SUMS.txt"
+          cat dist/SHA256SUMS.txt
+          echo "::endgroup::"
+
+      # Dry run (manual): keep the artifacts for download + inspection, publish nothing.
+      - name: Upload dry-run artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-release-${{ env.VERSION }}
+          path: dist/*
+          if-no-files-found: error
+
+      # Tag push: create the release (or top up an existing one) and attach every asset.
+      - name: Publish the GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/UPDATE.BIN dist/obc-boot.elf dist/obc-fw-nrf54l-ble.elf dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --generate-notes \
+              dist/UPDATE.BIN dist/obc-boot.elf dist/obc-fw-nrf54l-ble.elf dist/SHA256SUMS.txt
+          fi
