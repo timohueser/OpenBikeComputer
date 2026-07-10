@@ -307,10 +307,10 @@ create_route = "Create route"
 cancel = "Cancel"
 title = "CREATE ROUTE"
 finding = "Finding a route..."
-too_far_1 = "Too far to"
-too_far_2 = "route here"
-not_found_1 = "Couldn't find"
-not_found_2 = "a route."
+too_far = "Too far to route here."
+too_far_hint = "Try a closer destination."
+not_found = "Couldn't find a route."
+not_found_hint = "No rideable way nearby - try from a road."
 
 # --- Ride-control (pause) page ---
 [ride_control]

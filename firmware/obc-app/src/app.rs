@@ -1637,7 +1637,7 @@ impl App {
     /// unconditionally, the forced-adoption discipline of an active replace.
     ///
     /// `Err` swaps the confirm for the failure card — the locked two tiers:
-    /// [`Exhausted`](obc_route::nav::NavError::Exhausted) → "Too far to route here" (there is no
+    /// [`Exhausted`](obc_route::nav::NavError::Exhausted) → "Too far to route here." (there is no
     /// distance cap — running out of the router's fixed table **is** the device's range limit),
     /// everything else → "Couldn't find a route."
     ///

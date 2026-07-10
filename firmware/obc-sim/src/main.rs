@@ -122,7 +122,7 @@ struct Args {
     /// Headless `--png` only: inject a **routing failure** (`exhausted` | `nopath`) after the
     /// script runs, through the real `App::notify_nav_result` seam — so the two failure cards
     /// render deterministically for the snapshot net. Needed because the range tier ("Too far to
-    /// route here" = the router's fixed table exhausting) is unreachable on the small fixture
+    /// route here." = the router's fixed table exhausting) is unreachable on the small fixture
     /// graphs: grimsel plans even ~25 km routes inside the 1536-node table and monaco spans ~4 km.
     /// The script must leave the CREATE ROUTE confirm on top (the card replaces it).
     inject_nav_fail: Option<String>,
@@ -839,7 +839,7 @@ fn main() {
 
         // Inject a routing failure (epic #116, R4) after the script left the CREATE ROUTE
         // confirm on top: the answer goes through the real `notify_nav_result` seam, so the
-        // snapshot pins the exact error→tier mapping (`exhausted` → "Too far to route here",
+        // snapshot pins the exact error→tier mapping (`exhausted` → "Too far to route here.",
         // anything else → "Couldn't find a route.").
         if let Some(kind) = &args.inject_nav_fail {
             let err = if kind == "exhausted" { obc_route::NavError::Exhausted } else { obc_route::NavError::NoPath };
