@@ -45,9 +45,12 @@ use stroke::{draw_line, Stroker};
 //     **simulator builds this profile**, so it renders exactly what the LM20 will — features start
 //     dropping at the same busy coarse zooms (deliberate: an over-dense frame is slow on-glass, so
 //     the sim shows that limit rather than an unattainable host-fidelity map).
-//   - `nrf-mem`: constrained 256 KB nRF54L15-DK profile — culled ~3× harder (`~30 KB` scratch) so
-//     map + BLE still fit the 256 KB part; the board crate's budget assert is the binding check.
-//     The cost: features drop at busier coarse zooms than on the LM20 (see [`render`]).
+//   - `nrf-mem`: constrained 256 KB nRF54L15-DK profile — culled hard (~8.5 KB scratch after
+//     #677: the caps were quartered again so the freed `.bss` becomes MSP stack — the BLE
+//     pairing path (trouble-host's synchronous software-P256 SMP) needs the headroom, and
+//     on-glass pairing was the binding constraint, not map fidelity). The board crate's budget
+//     assert is the binding check. The cost: features drop at busier coarse zooms than on the
+//     LM20 (see [`render`]); the shipping 512 KB LM20 profile is untouched.
 // On `nrf-mem` even the single-feature decode buffers (`MAX_DECODE_*`) are trimmed below the
 // format's per-feature bound — see the truncation note at [`MAX_DECODE_POINTS`].
 
@@ -60,7 +63,7 @@ pub const MAX_SPANS: usize = 1152;
 // resident `RouteCache`/`RouteIndex` — and, on the combined image, the BLE stack — on the 256 KB
 // part; freeing scratch buys that headroom.
 #[cfg(feature = "nrf-mem")]
-pub const MAX_SPANS: usize = 384;
+pub const MAX_SPANS: usize = 96;
 
 /// Maximum total vertices across all visible features per frame (8 bytes each).
 ///
@@ -73,13 +76,13 @@ pub const MAX_SPANS: usize = 384;
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_POINTS: usize = 4768;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_POINTS: usize = 768;
+pub const MAX_FRAME_POINTS: usize = 192;
 
 /// Maximum total ring entries across all visible features per frame.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_RINGS: usize = 1024;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_RINGS: usize = 192;
+pub const MAX_FRAME_RINGS: usize = 48;
 
 /// Maximum vertices for a single feature during decode (reused per feature). On the host this
 /// equals `obc_reader::MAX_FEAT_PTS` (asserted below) — full format fidelity. On `nrf-mem` it is
@@ -90,7 +93,7 @@ pub const MAX_FRAME_RINGS: usize = 192;
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_DECODE_POINTS: usize = 2048;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_DECODE_POINTS: usize = 1024;
+pub const MAX_DECODE_POINTS: usize = 256;
 
 /// Maximum rings for a single feature during decode. Must equal `obc_reader::MAX_FEAT_RINGS`
 /// (asserted below).
@@ -103,7 +106,7 @@ pub const MAX_DECODE_RINGS: usize = 32;
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_SCREEN_POINTS: usize = 2048;
 #[cfg(feature = "nrf-mem")]
-pub const MAX_SCREEN_POINTS: usize = 1024;
+pub const MAX_SCREEN_POINTS: usize = 256;
 
 /// Maximum scanline crossings buffered for one polygon-fill row. A row whose
 /// outline crossings exceed this is skipped rather than mis-filled (see
