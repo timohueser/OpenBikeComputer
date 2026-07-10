@@ -286,7 +286,6 @@ on_phone = "on your phone"
 title = "RIDES"
 no_rides = "No rides yet"
 no_rides_sub = "Record a ride to see it here"
-recording = "Recording"
 not_synced = "not synced"
 
 # --- Ride detail screen ---
@@ -299,7 +298,6 @@ delete_ride = "Delete ride"
 title = "ROUTES"
 no_routes = "No routes yet"
 no_routes_sub = "Import a GPX file"
-in_use = "In use"
 
 # --- Route overview screen ---
 [route_overview]
