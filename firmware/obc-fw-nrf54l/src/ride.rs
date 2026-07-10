@@ -686,6 +686,13 @@ pub(crate) async fn run_app(
             }
         }
 
+        // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
+        // one bounded FAT free-cluster read off the card and answers through `set_card_free` (or a
+        // `None` → the screen keeps `--` when there's no card / no FSInfo free count).
+        if app.take_card_scan_request() {
+            app.set_card_free(storage.as_ref().and_then(|s| s.card_free_bytes()));
+        }
+
         // ── On-device ride delete (epic #447, P7 / #454), on the Rides-menu hold-to-delete edge ──
         // The same seam as the route delete, in the ride namespace: the app resolves the highlighted
         // ride's durable object id. On `ble`, post it to the BLE plane (it owns the `ObjectStore`
@@ -795,7 +802,11 @@ pub(crate) async fn run_app(
         // re-indexes it off the new bytes: the full forced-adoption chain, one pass.
         #[cfg(feature = "ble")]
         if let Some((id, replaced)) = crate::object_store::take_route_uploaded() {
-            app.notify_route_uploaded(id, replaced);
+            // Build the route's mini elevation band from the just-committed OBCR (#682) — one scoped
+            // stream at commit time — so the idle received card can draw it (the swap / active-
+            // replace variants ignore it). A missing store or a no-elevation route yields `None`.
+            let elevation = storage.as_mut().and_then(|s| s.route_elevation_sparkline(id));
+            app.notify_route_uploaded(id, replaced, elevation);
         }
 
         // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to

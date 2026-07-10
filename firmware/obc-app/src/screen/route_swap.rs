@@ -1,6 +1,6 @@
 //! The "route already active" prompt — shown when a new route is picked mid-ride. Loading a route
 //! while tracking is ambiguous: keep recording and re-navigate, or save and begin fresh. **Swap
-//! route** (press) keeps the session and only changes the navigated route; **Save & new** (hold-
+//! route** (press) keeps the session and only changes the navigated route; **Finish & new** (hold-
 //! guarded) finalises the current track (the host's Save) and starts a new session; **Cancel** (back)
 //! returns. Reached from [`RouteMenuScreen`](super::RouteMenuScreen) when a session is active and a
 //! *different* route is chosen — or **host-pushed** by
@@ -23,17 +23,17 @@ use crate::Msg;
 use super::route_received::{popup_expired, popup_tick};
 use super::{list, palette, title_frame, Ctx, MapScreen, MenuItem, Render, Screen, ScreenTick, Transition};
 
-/// Per-row guard flags (only *Save & new* is destructive). The labels are looked up per language at
-/// draw time (see [`RouteSwapScreen::draw`]) — the old `const ITEMS` couldn't stay const.
+/// Per-row guard flags (only *Finish & new* is destructive). The labels are looked up per language
+/// at draw time (see [`RouteSwapScreen::draw`]) — the old `const ITEMS` couldn't stay const.
 const GUARDS: [bool; 3] = [false, true, false];
 
 const SWAP: usize = 0;
-const SAVE_NEW: usize = 1;
+const FINISH_NEW: usize = 1;
 const CANCEL: usize = 2;
 
 /// The prompt. Carries the route the rider picked (`pending`) plus the highlighted option.
 /// `pending` is `None` once a live catalog rescan (#450) removed the picked route from under the
-/// prompt — Swap / Save & new then cancel out instead of navigating whatever slid into its index.
+/// prompt — Swap / Finish & new then cancel out instead of navigating whatever slid into its index.
 #[derive(Debug)]
 pub struct RouteSwapScreen {
     pending: Option<usize>,
@@ -98,9 +98,9 @@ impl RouteSwapScreen {
                 // Swap only: keep the session (no `start_session`), just re-navigate.
                 SWAP => self.swap_route(cx),
                 CANCEL => Transition::Pop,
-                _ => Transition::None, // Save & new is guarded — press does nothing
+                _ => Transition::None, // Finish & new is guarded — press does nothing
             },
-            Gesture::Hold if self.selected == SAVE_NEW => {
+            Gesture::Hold if self.selected == FINISH_NEW => {
                 // The picked route vanished under the prompt (rescan): cancel — don't finalise
                 // the ride for a swap that can no longer happen.
                 if self.pending.is_none() {
@@ -157,11 +157,19 @@ impl RouteSwapScreen {
         }
         cv.text(&sub, Point::new(w / 2, super::TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
 
+        // The picked / received route's stats line, directly under the subtitle — the same helper
+        // the idle received card uses, so the whole card family reads identically (#682). No
+        // sparkline here: three option rows + subtitle already fill the card (locked, idle-only).
+        if let Some(route) = self.pending.and_then(|i| rx.routes.get(i)) {
+            let stats = super::route_received::route_stats(route);
+            cv.text(&stats, Point::new(w / 2, super::TITLE_BAR_H + 38), Font::Label, TextAlign::Center, SUBTEXT);
+        }
+
         // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
         let geo = super::GuardedRowsGeometry {
             x: 12,
             w: w - 24,
-            top: super::TITLE_BAR_H + 46,
+            top: super::TITLE_BAR_H + 64,
             row_h: 46,
             gap: 8,
             label_dx: 16,
@@ -169,7 +177,7 @@ impl RouteSwapScreen {
         };
         let items = [
             MenuItem { label: rx.t(Msg::RouteSwapSwap), guard: GUARDS[0] },
-            MenuItem { label: rx.t(Msg::RouteSwapSaveNew), guard: GUARDS[1] },
+            MenuItem { label: rx.t(Msg::RouteSwapFinishNew), guard: GUARDS[1] },
             MenuItem { label: rx.t(Msg::RouteSwapCancel), guard: GUARDS[2] },
         ];
         super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);

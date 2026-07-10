@@ -26,6 +26,12 @@ use super::StatFieldsScreen;
 /// is kept short ("Pages") so the big Body glyphs clear the value box.
 const ROW_H: i32 = 58;
 
+/// Inset of the shared value column from the panel's right edge — every row right-aligns its value
+/// here (T8 item 3).
+const VAL_INSET: i32 = 12;
+/// Fixed gap between a press-to-cycle `◄` cue and the value to its right (never glued to the word).
+const CUE_GAP: i32 = 6;
+
 const PAGE_CYCLE: usize = 0;
 const FIELDS: usize = 1;
 const CLIMB_PANEL: usize = 2;
@@ -100,6 +106,11 @@ impl StatsScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::SetStatsTitle), "");
 
+        // ONE value column (T8 item 3): every row's value right-aligns at this inset from the panel
+        // edge, and each press-to-cycle `◄` sits a fixed [`CUE_GAP`] px before its value — so the four
+        // ragged rows ("5 s" floating mid-row, `◄Auto`/`◄Approach` glued flush-right) line up.
+        let val_r = w - super::ROW_X - VAL_INSET;
+
         // Row 0 — Page cycle (single-line value row with a stepper on the right).
         let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
         let editing = self.editing_cycle && self.selected == PAGE_CYCLE;
@@ -107,16 +118,25 @@ impl StatsScreen {
         super::row_label(cv, r0, rx.t(Msg::SetStatsPages), Some(rx.t(Msg::SetStatsPagesSub)));
         let mut val: heapless::String<8> = heapless::String::new();
         let _ = write!(val, "{} s", rx.settings.stat_cycle_s);
-        let (cw, ch) = (76, 32);
-        let cell = rect(r0.top_left.x + r0.size.width as i32 - cw - 6, r0.top_left.y + (ROW_H - ch) / 2, cw, ch);
-        super::stepper_field(cv, cell, &val, editing, Font::Label);
+        if editing {
+            // The open stepper keeps its box + centred text (a transient state with visible chrome,
+            // allowed to sit off the column — the ▲▼ box *is* the cursor then).
+            let (cw, ch) = (76, 32);
+            let cell = rect(val_r - cw, r0.top_left.y + (ROW_H - ch) / 2, cw, ch);
+            super::stepper_field(cv, cell, &val, true, Font::Label);
+        } else {
+            // Idle: the value itself right-aligns on the shared column — an inactive stepper_field
+            // would centre it in an invisible box, floating it left of the other rows' values.
+            cv.text_vcentered(&val, val_r, (r0.top_left.y, ROW_H), Font::Label, TextAlign::Right, INK);
+        }
 
         // Row 1 — Fields (opens the panel manager).
         let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         super::row_cursor(cv, r1, self.selected == FIELDS, false);
         super::row_label(cv, r1, rx.t(Msg::SetStatsFields), Some(rx.t(Msg::SetStatsFieldsSub)));
-        // A right-pointing chevron says "enters a sub-screen".
-        let cx0 = r1.top_left.x + r1.size.width as i32 - 22;
+        // A right-pointing chevron says "enters a sub-screen" — its tip parked on the value column so
+        // it shares the rows' right edge.
+        let cx0 = val_r - 11;
         let midy = r1.top_left.y + r1.size.height as i32 / 2;
         cv.triangle(Point::new(cx0, midy - 9), Point::new(cx0, midy + 9), Point::new(cx0 + 11, midy), INK);
 
@@ -125,11 +145,11 @@ impl StatsScreen {
         let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
         super::row_cursor(cv, r2, self.selected == CLIMB_PANEL, false);
         super::row_label(cv, r2, rx.t(Msg::SetStatsClimb), Some(rx.t(Msg::SetStatsClimbSub)));
-        let vx = r2.top_left.x + r2.size.width as i32 - 12;
         let vmidy = r2.top_left.y + r2.size.height as i32 / 2;
         let climb_name = rx.settings.climb_mode.name(rx.settings.language);
-        cv.text_vcentered(climb_name, vx, (r2.top_left.y, ROW_H), Font::Body, TextAlign::Right, INK);
-        let ax = vx - text_width(climb_name, Font::Body) as i32 - 14;
+        cv.text_vcentered(climb_name, val_r, (r2.top_left.y, ROW_H), Font::Body, TextAlign::Right, INK);
+        // The `◄` press-to-cycle cue, a fixed CUE_GAP before the value's left edge (never glued to it).
+        let ax = val_r - text_width(climb_name, Font::Body) as i32 - CUE_GAP;
         cv.triangle(Point::new(ax, vmidy - 8), Point::new(ax, vmidy + 8), Point::new(ax - 10, vmidy), INK);
 
         // Row 3 — Waypoints panel (press cycles Off / Approach / Always in place). Unlike Climb,
@@ -143,11 +163,12 @@ impl StatsScreen {
         super::row_cursor(cv, r3, self.selected == WAYPOINT_PANEL, false);
         super::row_label(cv, r3, rx.t(Msg::SetStatsWaypoints), Some(rx.t(Msg::SetStatsWaypointsSub)));
         let name = rx.settings.waypoint_mode.name(rx.settings.language);
+        // The mode still rides on the sub-caption line (a vcentered Body word would overprint the wide
+        // "Waypoints" label — unchanged), but at the shared value column and with the same fixed
+        // CUE_GAP before its ◄ as the Climb row, so the two read as one column.
         let sub_y = r3.top_left.y + 30;
-        let vx = r3.top_left.x + r3.size.width as i32 - 8;
-        cv.text(name, Point::new(vx, sub_y), Font::Label, TextAlign::Right, INK);
-        // The ◄ cue immediately left of the value — the Climb row's INK triangle at Label scale.
-        let ax = vx - text_width(name, Font::Label) as i32 - 10;
+        cv.text(name, Point::new(val_r, sub_y), Font::Label, TextAlign::Right, INK);
+        let ax = val_r - text_width(name, Font::Label) as i32 - CUE_GAP;
         let tmid = sub_y + Font::Label.cap_height() as i32 / 2;
         cv.triangle(Point::new(ax, tmid - 6), Point::new(ax, tmid + 6), Point::new(ax - 8, tmid), INK);
     }

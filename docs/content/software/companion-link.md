@@ -206,11 +206,14 @@ before it appears, so dismissing it loses nothing. It **auto-closes after 30
 seconds**, and that timeout *is* a dismiss. What the prompt offers depends on
 what the rider is doing:
 
-- **Not riding** → *"Route received — Start navigation / Dismiss."* Start
-  navigation behaves exactly like picking the route in the Route menu.
+- **Not riding** → *"Route received — View route / Dismiss."* The card shows the
+  route's name, its distance/climb, and a mini elevation sparkline; *View route*
+  opens the same **Route overview** picking the route in the Route menu opens
+  (where START RIDE is one press away) — it never starts a ride directly.
 - **Riding** → the same guarded **swap** shape a mid-ride route pick uses (*Swap
-  route / Save &amp; start new / Cancel*), retitled for a received route — so an
-  uploaded route mid-ride can't silently take over navigation.
+  route / Finish &amp; new / Cancel*), retitled for a received route and carrying the
+  route's distance/climb — so an uploaded route mid-ride can't silently take over
+  navigation.
 - **Replacing the route you're navigating** → an **info-only** card. The device
   has no choice here: the replace-commit already overwrote the file on the card,
   so the old bytes are gone. The device *adopts the new version immediately* —
@@ -219,12 +222,12 @@ what the rider is doing:
   recording session is untouched.
 
 Two rules keep the prompt from ever doing harm. It **never lands while a hold
-gesture is charging** — a popup appearing under a half-completed *Save &amp; start
-new* hold could complete onto the wrong action, so it waits a tick (the same
+gesture is charging** — a popup appearing under a half-completed *Finish &amp; new*
+hold could complete onto the wrong action, so it waits a tick (the same
 stack-change hold-cancel the [UI page](../ui/#hold-to-confirm) describes).
 And consecutive uploads **replace** the prompt rather than stacking — most
 recent wins, carried by object id, not menu position, so a live rescan can't
-point *Start navigation* at whatever route slid into the slot. A pending prompt
+point *View route* at whatever route slid into the slot. A pending prompt
 is also **outranked** by the passkey card: if pairing starts, the route prompt
 is dropped (not queued) — it's only advisory, and the route is safe in the menu.
 

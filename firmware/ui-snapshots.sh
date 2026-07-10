@@ -250,7 +250,8 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # Route-upload popups (#451), all three variants. `--inject-upload[-replace] ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. protocol-vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).
-# Idle: "ROUTE RECEIVED" — Start navigation / Dismiss.
+# Idle: "ROUTE RECEIVED" — a stats line, a mini elevation sparkline (route 0 has elevation), and
+# View route / Dismiss (#682).
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --inject-upload 0 --png "$OUT/route-received.png"
 # Tracking (riding id 0, id 1 arrives): the retitled Route-swap popup.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --inject-upload 1 --png "$OUT/routeswap-received.png"
@@ -295,6 +296,13 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p"      --png "$OUT/map-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --png "$OUT/routeoverview-$lang.png"
+    # The received-route card family (#682): the idle card's View route / Dismiss rows, and the
+    # mid-ride swap + ROUTE ACTIVE cards' Swap / Finish & new / Cancel rows — eyeball each for a
+    # clipped option row now that the copy is per-language.
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --inject-upload 0 --png "$OUT/route-received-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p" --inject-upload 1 \
+        --png "$OUT/routeswap-received-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p B p r p" --png "$OUT/routeswap-$lang.png"
     # The SD-sideload update flow (epic #615 S5): the System row, the first-install confirm (the
     # worst case for vertical fit — the two-row version table + the no-undo note, which wraps to two
     # Label lines in the longer translations), the progress spinner, an error card, and the
@@ -306,4 +314,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 114 screens rendered into $OUT/"
+echo "ui-snapshots: 123 screens rendered into $OUT/"
