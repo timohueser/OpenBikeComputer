@@ -5,7 +5,9 @@ the `BOOT_STATE` RRAM page, decodes it with the shared, host-tested
 [`obc-dfu`](../obc-dfu) crate (anything torn or blank decodes to `Idle`), and runs
 the **install engine** (S3, #618): `Armed` → CRC-verify the staged image over its
 raw SD block extents → flash the app slot via RRAMC → readback-verify → write
-`Trial` → reset; an unconfirmed `Trial` rolls back the same way. All install
+`Trial` → jump straight into the new image (the one trial boot — never a reset,
+which would re-enter the bootloader and read the fresh `Trial` as unconfirmed);
+a `Trial` still present at a *later* entry rolls back the same way. All install
 *sequencing* — pass ordering, retry counts, every failure edge — lives in
 `obc_dfu::engine` and is unit-tested there with mock IO; this crate only wires
 real SPI/RRAMC/GPIO into that engine (`src/sd.rs`, `src/install.rs`, `src/led.rs`)

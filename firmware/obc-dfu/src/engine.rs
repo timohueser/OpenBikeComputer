@@ -115,8 +115,10 @@ pub enum Outcome {
     /// to `Idle` and the old app is intact. Caller: error LED code, then jump.
     StageRejected,
     /// The image was flashed, readback-verified, and the follow-up state (`Trial` after an
-    /// install, `Idle` after a rollback) written. Caller: clean reset (`SCB::sys_reset()`) so the
-    /// bootloader re-enters and boots it.
+    /// install, `Idle` after a rollback) written. Caller: **jump straight to the app slot** —
+    /// never reset. A reset would re-enter the bootloader with the just-written `Trial`, which
+    /// [`decide`] reads as an *unconfirmed* trial and rolls straight back; the trial boot must
+    /// be the very next thing that runs.
     Installed,
     /// An SD read failed mid-pass. The state page was **not** touched (a transient card error
     /// must never clear a valid arm) — caller: LED code, back off, bring the card up again, and
