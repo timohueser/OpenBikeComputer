@@ -54,6 +54,15 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var discoveryWatchdog: DispatchWorkItem?
     private var channelWatchdog: DispatchWorkItem?
     private static let phaseTimeout: DispatchTimeInterval = .seconds(10)
+    /// The channel watchdog's budget across the gated PSM read while an
+    /// `authenticate()` is parked: on a fresh pair iOS holds that read pending
+    /// under the system passkey sheet while the rider reads the code off the
+    /// device and types it — human-paced, so the machine-stall budget above
+    /// would fail pairing at 10 s (and since the sheet stays up, pairing then
+    /// completed *behind* the failure screen, which is why a retry succeeded
+    /// instantly with no sheet). Once the read resolves, the watchdog re-arms
+    /// at `phaseTimeout` for the machine-only openL2CAPChannel → didOpen tail.
+    private static let pairingTimeout: DispatchTimeInterval = .seconds(90)
 
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
@@ -661,7 +670,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
         if bleChannel == nil, !openingChannel {
             openingChannel = true
-            armChannelWatchdog()
+            // The gated PSM read is what raises the passkey sheet on a fresh
+            // pair, so with an `authenticate()` parked the budget must cover
+            // the rider typing the passkey. A bonded background reconnect (no
+            // continuation) re-encrypts silently — tight budget.
+            armChannelWatchdog(after: authenticateContinuation != nil ? Self.pairingTimeout : Self.phaseTimeout)
             peripheral.readValue(for: psm)  // → PSM update → openL2CAPChannel → didOpen
         }
     }
@@ -690,7 +703,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// the open stalled (PSM read or `openL2CAPChannel` never yielded `didOpen`):
     /// clear the latch, fail the parked opens, and unwind a pending authenticate —
     /// the next transfer re-opens from scratch instead of parking forever.
-    private func armChannelWatchdog() {
+    /// `timeout` is `phaseTimeout` except across a fresh pair's PSM read, where
+    /// the passkey sheet makes the phase human-paced (`pairingTimeout`).
+    private func armChannelWatchdog(after timeout: DispatchTimeInterval = BLETransport.phaseTimeout) {
         channelWatchdog?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -702,7 +717,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             if self.authenticateContinuation != nil { self.failAuthenticate(.channelOpenFailed) }
         }
         channelWatchdog = item
-        queue.asyncAfter(deadline: .now() + Self.phaseTimeout, execute: item)
+        queue.asyncAfter(deadline: .now() + timeout, execute: item)
     }
 
     private func disarmChannelWatchdog() {
@@ -1149,6 +1164,12 @@ extension BLETransport: CBPeripheralDelegate {
         if uuid == GATT.psm, bleChannel == nil {
             if error == nil, let data = characteristic.value, data.count >= 2 {
                 let psm = UInt16(data[0]) | (UInt16(data[1]) << 8)
+                // The read resolved, so any passkey entry is behind us — re-arm
+                // tight for the machine-only openL2CAPChannel → didOpen tail
+                // (#302's actual wedge). Only while this open is still the one
+                // being watched; a stale resolve after the watchdog fired
+                // (openingChannel already dropped) opens unwatched, as before.
+                if openingChannel { armChannelWatchdog(after: Self.phaseTimeout) }
                 peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
             } else {
                 // The PSM characteristic is `authenticated` (A8): the read is the
