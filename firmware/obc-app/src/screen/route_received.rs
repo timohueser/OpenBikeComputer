@@ -194,6 +194,9 @@ impl RouteUpdatedScreen {
         let (w, h) = (rx.w, rx.h);
 
         title_frame(cv, w, h, rx.t(Msg::RouteReceivedUpdatedTitle), "");
+        // The shared check in the glyph slot (dialog anatomy, #678 T1): the update already
+        // succeeded — this card is the confirmation, so it carries the success mark.
+        super::card_check(cv, Point::new(w / 2, super::TITLE_BAR_H + 40), 24);
         // The route's name, then the plain two-line statement of what already happened.
         let name_top = h * 35 / 100;
         match self.route.and_then(|i| rx.routes.get(i)) {
