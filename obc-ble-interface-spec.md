@@ -354,7 +354,7 @@ physical **encoder press** by the rider. The reply codes map onto the existing
 
 | `installFw` outcome | `commandResult.status` | Meaning |
 |---|---|---|
-| `ok` | `ok` (0) | request accepted — the confirm card will show on the device |
+| `ok` | `ok` (0) | request accepted — the device opens its on-glass check → confirm flow promptly (it may briefly wait for the screen to be free, e.g. an active pairing card) |
 | `noStaged` | `notFound` (2) | no `UPDATE.BIN` on the card to install |
 | `busy` | `busy` (3) | a ride is recording, or an install request is already pending |
 | `invalid` | `error` (4) | the staged image is already known-unusable |
