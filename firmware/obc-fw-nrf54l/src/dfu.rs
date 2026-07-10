@@ -208,8 +208,17 @@ pub(crate) fn run_scan(
     };
     let mut staged_version: heapless::String<32> = heapless::String::new();
     let _ = staged_version.push_str(staged.header.fw_version_str());
+    // The installed side of the confirm screen — and its same-version equality check — must speak
+    // the same dialect as the staged side: the OBCU version string. After any confirmed install the
+    // boot-state page's `installed` header holds exactly the string the running image was wrapped
+    // with (a release tag like `v0.4.0`), so prefer it; `OBC_FW_GIT` — a bare `rev-parse` hash that
+    // can never equal a wrapped tag — is only the fallback for dev-flashed devices with no install
+    // history (where the README recipe wraps with a describe/hash string anyway).
     let mut installed_version: heapless::String<32> = heapless::String::new();
-    let _ = installed_version.push_str(env!("OBC_FW_GIT"));
+    let _ = installed_version.push_str(match installed.as_ref().map(|h| h.fw_version_str()) {
+        Some(v) if !v.is_empty() => v,
+        _ => env!("OBC_FW_GIT"),
+    });
     Ok(obc_app::DfuScanReport {
         installed: installed_version,
         staged: staged_version,
