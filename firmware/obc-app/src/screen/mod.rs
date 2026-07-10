@@ -235,6 +235,11 @@ pub struct Render<'a, 'd> {
     /// [`WallClock`](crate::WallClock)). The Home screensaver draws it as `HH:MM`; for boot-relative
     /// millis a screen uses [`now_ms`](Render::now_ms) instead.
     pub now: DateTime,
+    /// Whether [`now`](Render::now) has an **established** origin — a persisted/manual/GPS time has
+    /// been applied, versus a fresh clock that has never known the time (see
+    /// [`App::clock_is_set`](crate::App::clock_is_set)). The Home date line draws only when set, so a
+    /// date with no trusted origin is never shown; the `HH:MM` clock still draws either way.
+    pub clock_set: bool,
     pub hold_progress: f32,
     /// No current GPS fix this frame: no fix yet (acquiring) or the last has gone stale (lost). The
     /// riding views draw the "No GPS Fix" banner when set, and the Map suppresses the off-route pill

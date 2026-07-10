@@ -13,6 +13,7 @@
 use core::fmt::Write as _;
 
 use embedded_graphics::prelude::Point;
+use obc_reader::weekday_from_ymd;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -22,8 +23,33 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::settings::DateTime;
 use crate::wall_clock::MinuteTicker;
+use crate::Msg;
 
 use super::{palette, Ctx, MenuScreen, Render, Screen, ScreenTick, Transition};
+
+/// The seven weekday-abbreviation catalog keys (the `[date]` section), Monday-first — the order
+/// [`weekday_from_ymd`] returns (`0` = Monday .. `6` = Sunday). Paired with [`DATE_MONTHS`] for the
+/// Home date line's per-language `WD D MON`.
+const DATE_WEEKDAYS: [Msg; 7] =
+    [Msg::DateMon, Msg::DateTue, Msg::DateWed, Msg::DateThu, Msg::DateFri, Msg::DateSat, Msg::DateSun];
+
+/// The 12 uppercase month-abbreviation keys (the `[date]` section) in calendar order — the same
+/// short-date table the Rides rows draw from (T5, #683 reuses it), distinct from the Date & Time
+/// stepper's mixed-case `[month]` table.
+const DATE_MONTHS: [Msg; 12] = [
+    Msg::DateJan,
+    Msg::DateFeb,
+    Msg::DateMar,
+    Msg::DateApr,
+    Msg::DateMay,
+    Msg::DateJun,
+    Msg::DateJul,
+    Msg::DateAug,
+    Msg::DateSep,
+    Msg::DateOct,
+    Msg::DateNov,
+    Msg::DateDec,
+];
 
 /// The idle home screen.
 #[derive(Debug, Default)]
@@ -83,6 +109,19 @@ impl HomeScreen {
         let _ = write!(clock, "{:02}:{:02}", rx.now.hour, rx.now.minute);
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
         cv.text(&clock, Point::new(w / 2, clock_top), Font::Huge, TextAlign::Center, palette::PARCHMENT);
+
+        // The date line under the clock: abbreviated weekday + day + month (day-first in every
+        // language), centred in the dim contour-line grey. Drawn only when the wall clock has an
+        // established origin (`clock_set`) — a date with no trusted time would mislead, so a fresh
+        // clock shows the ticking `HH:MM` alone. A standard text-gap below the Huge clock cell.
+        if rx.clock_set {
+            let mut date: heapless::String<16> = heapless::String::new();
+            let wd = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day) as usize;
+            let mon = (rx.now.month.clamp(1, 12) - 1) as usize;
+            let _ = write!(date, "{} {} {}", rx.t(DATE_WEEKDAYS[wd]), rx.now.day, rx.t(DATE_MONTHS[mon]));
+            let date_y = clock_top + Font::Huge.cap_height() as i32 + 6;
+            cv.text(&date, Point::new(w / 2, date_y), Font::Label, TextAlign::Center, palette::CONTOUR);
+        }
 
         battery(cv, w, h * 64 / 100, rx.state.battery_pct);
 
