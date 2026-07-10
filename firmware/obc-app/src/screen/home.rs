@@ -123,7 +123,9 @@ impl HomeScreen {
             cv.text(&date, Point::new(w / 2, date_y), Font::Label, TextAlign::Center, palette::CONTOUR);
         }
 
-        battery(cv, w, h * 64 / 100, rx.state.battery_pct);
+        // The battery group, nudged 6 px below its old h*64/100 anchor (owner review round 1: a
+        // little more air between the date line and the gauge).
+        battery(cv, w, h * 64 / 100 + 6, rx.state.battery_pct);
 
         // The BLE connected rune lives in a fixed top-right status slot — 10 px inset from both
         // edges, white, and only when a phone is linked (nothing else ever occupies this corner).
