@@ -51,14 +51,9 @@ cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 # right screen edge) decays over a few frames, so scripts that snapshot within ~3 tokens of a `B`
 # end in `w` too, or the residue bakes into the PNG.
 "$SIM" "$MAP" --boot --png "$OUT/home.png" --battery 45
+# The Route list: arrow-less, column-aligned two-line rows (distance under the name, the climb group
+# at a fixed second column) with no footer — hold-to-delete moved to the Route overview (T3, #681).
 "$SIM" "$MAP" --boot --script "p p"          --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
-# Route menu hold-to-delete footer (#453): `p p H` opens the Menu, presses into the Route menu, and
-# partial-holds the encoder over the highlighted route, so the trash + warning-red delete bar draws.
-"$SIM" "$MAP" --boot --script "p p H"        --routes-dir "$ROUTES" --png "$OUT/routemenu-delete.png"
-# The footer greyed while the highlighted route is the active-ride route (#453): ride route 0
-# (`p p p p`), climb back to the Route menu (`B p`: Map back-hold → Menu, then press Routes) with it
-# still highlighted, then partial-hold — the footer shows the "In use" greyed state and no bar fills.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B p H" --png "$OUT/routemenu-delete-active.png"
 "$SIM" "$MAP" --boot --script "B w"          --png "$OUT/menu.png"
 # Rides screen (#454): the two-line list, then the two delete-footer states. The tracks fixture holds
 # two unsynced rides. `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
@@ -169,7 +164,16 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # deliberately long git-describe tag exercises the version wrap to a second centred line.
 "$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
+# The overview also carries the guarded Delete-route row (T3, #681): idle here, charging below, and
+# greyed "In use" while this is the active ride's route.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
+# The Delete row charging: `p p p H` opens the overview and partial-holds the encoder over it, so the
+# warning-red row fill draws under the "Delete route" label.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p H"   --png "$OUT/routeoverview-delete.png"
+# The Delete row greyed while riding this route: `p p p p` rides route 0 (session live), then
+# `--open-overview` reopens its overview (unreachable by gesture — the active route's overview never
+# opens from the menu), so the row dims and shows the reused "In use" cue with no fill.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --open-overview --png "$OUT/routeoverview-delete-active.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
 # --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
 # (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —
