@@ -7,8 +7,8 @@
 //! - [`DfuCheckScreen`] — the brief "Checking card..." wait (spinner) after the scan is posted; the
 //!   board's answer ([`App::notify_dfu_scan_result`](crate::App::notify_dfu_scan_result)) replaces
 //!   it with the confirm screen or the error card. **Back** cancels the wait.
-//! - [`DfuConfirmScreen`] — *installed → update* versions, the no-undo / same-version warnings, and
-//!   the "the light blinks while the update installs" note. Encoder **Install** arms (posts
+//! - [`DfuConfirmScreen`] — the *installed → update* version table and the no-undo / same-version
+//!   warnings. Encoder **Install** arms (posts
 //!   [`DfuAction::Install`](crate::activity::DfuAction) and swaps to the progress screen); **Back**
 //!   / **Cancel** returns to the System menu. The standard two-row confirm chrome, like
 //!   [`NavConfirmScreen`](super::NavConfirmScreen).
@@ -147,6 +147,10 @@ impl DfuCheckScreen {
 const N_CONFIRM_ITEMS: usize = 2;
 const INSTALL: usize = 0;
 
+/// Side inset (px) the confirm card's version table and notes keep from the panel edges — a version
+/// string is right-aligned to `w - INSET`, never edge-to-edge (spec §1).
+const INSET: i32 = 12;
+
 /// The install confirm. Carries the scan report (the versions + no-undo fact) and the highlighted
 /// option. Encoder **Install** posts [`DfuAction::Install`](crate::activity::DfuAction) and swaps to
 /// the progress screen; **Back** / **Cancel** returns to the System menu.
@@ -181,24 +185,25 @@ impl DfuConfirmScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuConfirmTitle), "");
 
-        // The two versions, stacked caption-over-value (a git-describe string is too wide to sit
-        // beside its caption). Installed first, then the staged update — what "install" replaces
-        // it with.
-        let mut y = TITLE_BAR_H + 6;
-        y = version_block(cv, w, y, rx.t(Msg::DfuInstalled), &self.report.installed);
-        y = version_block(cv, w, y + 2, rx.t(Msg::DfuStaged), &self.report.staged);
+        // The version table: two rows, an olive caption at the left inset labelling the right-
+        // aligned INK version. Installed first, then the staged update — what "install" replaces it
+        // with. A git-describe string too wide for its row wraps below the caption (never clipped).
+        let mut y = TITLE_BAR_H + 12;
+        y = version_row(cv, w, y, rx.t(Msg::DfuInstalled), &self.report.installed);
+        y = version_row(cv, w, y + 4, rx.t(Msg::DfuStaged), &self.report.staged);
 
-        // Warnings (each a wrapped line): the same-version note, then the no-undo note when this is
-        // a first install (no rollback snapshot exists — spec §2.4). Both warning-coloured.
-        y += 6;
+        // The conditional red note — the same-version note, then the no-undo note on a first install
+        // (no rollback snapshot exists — spec §2.4) — one type-step down (Label), with a blank line
+        // above it and the clearance to the Install row below. Both warning-coloured.
+        let note_y = y + Font::Label.cap_height() as i32 + 2;
         if self.report.same_version() {
-            y = wrapped(cv, rx.t(Msg::DfuSameVersion), w / 2, y, w - 24, WARNING);
+            let after = wrapped(cv, rx.t(Msg::DfuSameVersion), w / 2, note_y, w - 2 * INSET, WARNING);
+            if self.report.first_install {
+                wrapped(cv, rx.t(Msg::DfuNoUndo), w / 2, after, w - 2 * INSET, WARNING);
+            }
+        } else if self.report.first_install {
+            wrapped(cv, rx.t(Msg::DfuNoUndo), w / 2, note_y, w - 2 * INSET, WARNING);
         }
-        if self.report.first_install {
-            y = wrapped(cv, rx.t(Msg::DfuNoUndo), w / 2, y, w - 24, WARNING);
-        }
-        // The always-present note that the display goes dark + the LED blinks during the flash.
-        wrapped(cv, rx.t(Msg::DfuLightBlinks), w / 2, y + 2, w - 24, SUBTEXT);
 
         // The Install / Cancel rows, the standard confirm chrome (like the create-route confirm).
         let geo = super::GuardedRowsGeometry {
@@ -218,12 +223,60 @@ impl DfuConfirmScreen {
     }
 }
 
-/// Draw one "caption over version" block centred at `top_y`: the olive caption (Label) above the
-/// version string (Body, ink). Returns the `y` just past the block. Versions are never translated.
-fn version_block(cv: &mut impl Surface, w: i32, top_y: i32, caption: &str, version: &Version) -> i32 {
-    cv.text(caption, Point::new(w / 2, top_y), Font::Label, TextAlign::Center, palette::SUBTEXT);
-    cv.text(version, Point::new(w / 2, top_y + 15), Font::Body, TextAlign::Center, palette::INK);
-    top_y + 15 + Font::Body.cap_height() as i32
+/// Draw one version-table row: the olive caption (Label) at the left inset labelling the INK version
+/// right-aligned to `w - INSET`. A version that fits beside its caption shares the baseline; one too
+/// wide wraps onto its own line(s) below (right-aligned, `INSET`-px side insets — never ellipsized,
+/// never edge-to-edge). Returns the `y` just past the row. Versions are never translated.
+fn version_row(cv: &mut impl Surface, w: i32, top_y: i32, caption: &str, version: &Version) -> i32 {
+    use palette::*;
+    let lh = Font::Label.cap_height() as i32 + 2;
+    let char_w = Font::Label.char_width() as i32;
+    let cap_w = caption.chars().count() as i32 * char_w;
+    let ver_w = version.chars().count() as i32 * char_w;
+    cv.text(caption, Point::new(INSET, top_y), Font::Label, TextAlign::Left, SUBTEXT);
+    if ver_w <= w - 2 * INSET - cap_w - 10 {
+        // Fits beside the caption: right-aligned on the same baseline.
+        cv.text(version, Point::new(w - INSET, top_y), Font::Label, TextAlign::Right, INK);
+        top_y + lh
+    } else {
+        // Too wide: wrap onto its own line(s) below the caption, right-aligned within the insets.
+        version_lines(cv, version, w - INSET, top_y + lh, w - 2 * INSET, Font::Label, TextAlign::Right, INK)
+    }
+}
+
+/// Draw a version string char-wrapped to `width_px`, `align`ed at anchor `x`, stacking `font` lines
+/// from `top_y`. A git-describe tag is a single space-less token the word-wrapping [`wrapped`] can't
+/// break, so this splits it on the monospace cell budget — the versions never ellipsize. Returns the
+/// `y` just past the last line. Shared by the confirm table (right-aligned) and the "UPDATED" toast
+/// (centred).
+#[allow(clippy::too_many_arguments)] // a plain draw helper: surface + string + full text geometry
+fn version_lines(
+    cv: &mut impl Surface,
+    version: &str,
+    x: i32,
+    top_y: i32,
+    width_px: i32,
+    font: Font,
+    align: TextAlign,
+    color: u16,
+) -> i32 {
+    let budget = (width_px / font.char_width() as i32).max(1) as usize;
+    let lh = font.cap_height() as i32 + 2;
+    let mut y = top_y;
+    let mut line: heapless::String<48> = heapless::String::new();
+    for ch in version.chars() {
+        if line.chars().count() >= budget {
+            cv.text(&line, Point::new(x, y), font, align, color);
+            y += lh;
+            line.clear();
+        }
+        let _ = line.push(ch);
+    }
+    if !line.is_empty() {
+        cv.text(&line, Point::new(x, y), font, align, color);
+        y += lh;
+    }
+    y
 }
 
 // ── DfuProgress: "Preparing update..." until the board reboots ──
@@ -332,8 +385,9 @@ impl DfuUpdatedScreen {
         title_frame(cv, w, h, rx.t(Msg::DfuUpdatedTitle), "");
         card_check(cv, Point::new(w / 2, TITLE_BAR_H + 56), 24);
         cv.text(rx.t(Msg::DfuUpdated), Point::new(w / 2, TITLE_BAR_H + 104), Font::Body, TextAlign::Center, INK);
-        // The version, verbatim (never translated).
-        cv.text(&self.version, Point::new(w / 2, TITLE_BAR_H + 134), Font::Body, TextAlign::Center, AMBER);
+        // The version, verbatim (never translated) — a long tag wraps to a second centred line
+        // (`version_lines`), never running off the card's edge.
+        version_lines(cv, &self.version, w / 2, TITLE_BAR_H + 134, w - 2 * INSET, Font::Body, TextAlign::Center, AMBER);
     }
 }
 
