@@ -173,8 +173,8 @@ fn open_map(cx: &mut Ctx) -> Transition {
     Transition::Push(Screen::Map(MapScreen::new()))
 }
 
-/// The compass-dial layout under the standard title bar: bezel ring, intercardinal ticks, needle,
-/// four icon stations, and the selected entry's name in Display type at the bottom. The ring sits
+/// The compass-dial layout under the standard title bar: bezel ring, station-midpoint ticks, needle,
+/// five icon stations, and the selected entry's name in Display type at the bottom. The ring sits
 /// centred between the bar and the name strip — which works out to exactly `h / 2`. The needle
 /// points at `needle_deg` (0° = N, clockwise) — mid-sweep that's between stations; the station
 /// highlight and the name snap to the selection immediately.
@@ -195,15 +195,16 @@ fn draw_compass(
     // Bezel ring: a wood disc with the parchment punched back out of the middle.
     cv.disc(c, 106, WOOD);
     cv.disc(c, 98, PARCHMENT);
-    // Intercardinal ticks just inside the bezel (the cardinal slots hold the stations) —
-    // doubled 1px lines for a visible 2px stroke; 62/68 are the 45° components of r 88→96.
-    for (sx, sy) in [(1, -1), (1, 1), (-1, 1), (-1, -1)] {
+    // Bezel ticks at the **station midpoints** — one per entry, at `36° + k·72°` (halfway between
+    // adjacent stations), so no tick sits under a station disc. Count + angle both derive from
+    // `N_ITEMS`. Doubled 1px lines for a visible 2px stroke, radial extent r 88→96, in WOOD.
+    for k in 0..N_ITEMS {
+        let a = (k as f32 + 0.5) / N_ITEMS as f32 * core::f32::consts::TAU;
+        let (dx, dy) = (libm::sinf(a), -libm::cosf(a));
+        let (ix, iy) = (si(1.0, dx * 88.0), si(1.0, dy * 88.0));
+        let (ox, oy) = (si(1.0, dx * 96.0), si(1.0, dy * 96.0));
         for off in 0..2 {
-            cv.line(
-                Point::new(c.x + sx * 62 + off, c.y + sy * 62),
-                Point::new(c.x + sx * 68 + off, c.y + sy * 68),
-                WOOD,
-            );
+            cv.line(Point::new(c.x + ix + off, c.y + iy), Point::new(c.x + ox + off, c.y + oy), WOOD);
         }
     }
 
