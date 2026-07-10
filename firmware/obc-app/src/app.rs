@@ -1578,7 +1578,7 @@ impl App {
     /// fact the "UPDATE FAILED" card takes, delivered by the same reconcile pass as the success
     /// toast.
     pub fn notify_update_failed(&mut self, why: crate::dfu::DfuFailure, staged: Option<&str>) {
-        self.update_failed = Some((why, staged.map(|s| crate::dfu::clamp(s))));
+        self.update_failed = Some((why, staged.map(crate::dfu::clamp)));
     }
 
     /// **Debug bench** (#500): start a route plan from `from` to `to` (both `(lon, lat)` µdeg) exactly
