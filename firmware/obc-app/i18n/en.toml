@@ -240,6 +240,7 @@ hold_to_erase = "Hold to erase"
 # --- Bike-type settings screen ---
 [bike_type]
 title = "BIKE TYPE"
+routing_uses = "Routing uses this profile"
 no_profiles = "No map profiles"
 no_profiles_sub = "Load a map to pick a bike type"
 
@@ -355,6 +356,9 @@ back = "Back"
 title = "SYSTEM"
 install_update = "Install update from card"
 recording = "Recording"
+firmware = "Firmware"
+map = "Map"
+card_free = "Card free"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]

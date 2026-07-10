@@ -240,6 +240,12 @@ impl SimGui {
         // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
         // (a device re-runs it on every map load).
         app.set_nav_profiles(map_tables.nav_profiles());
+        // Device-info built-ins for the System settings screen (T8 item 6): firmware version (the
+        // sim's crate version) + the loaded map's name (filename stem) & OBCM version. The card-free
+        // scan is answered per-frame in `update` when the screen posts its on-entry request.
+        app.set_fw_version(env!("CARGO_PKG_VERSION"));
+        let map_stem = std::path::Path::new(&args.map).file_stem().and_then(|s| s.to_str()).unwrap_or("map");
+        app.set_map_info(map_stem, map_tables.version);
         // `--physical` only takes effect with a saved calibration; `--calibrate` opens the screen.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
@@ -348,6 +354,13 @@ impl SimGui {
         // board's per-pass drain. A failed read parks `None` so a dead file isn't re-read per frame.
         if let Some(id) = self.app.take_ride_track_request() {
             self.app.set_ride_profile(self.ride_store.profile_by_id(id));
+        }
+
+        // Answer the System screen's card-free scan (T8 item 6). The board runs a FAT free-cluster
+        // scan; the sim has no card, so a fixed ~1.2 GB built-in stands in — through the real
+        // `set_card_free` seam once the screen's on-entry request is drained.
+        if self.app.take_card_scan_request() {
+            self.app.set_card_free(Some(1_288_490_188));
         }
 
         // The resumable route planner (#499). A drained create-route request starts a plan; a

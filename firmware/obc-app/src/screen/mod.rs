@@ -249,6 +249,17 @@ pub struct Render<'a, 'd> {
     /// Reset to default by the host each frame; only the [`Map`](crate::screen::map) screen writes
     /// it — every other screen leaves it untouched.
     pub stats: RenderStats,
+    /// The running firmware version string (T8 item 6) — the System settings screen's `Firmware`
+    /// ledger row. Empty until the host feeds it via [`App::set_fw_version`](crate::App::set_fw_version).
+    pub fw_version: &'a str,
+    /// The loaded map's display name (T8 item 6) — the left half of the System screen's `Map` row.
+    /// Empty until [`App::set_map_info`](crate::App::set_map_info) runs on map load.
+    pub map_name: &'a str,
+    /// The loaded map's OBCM format version — the right half of the `Map` row (`0` = no map yet).
+    pub map_obcm_version: u8,
+    /// Free space on the SD card in bytes (T8 item 6), or `None` until the host answers the System
+    /// screen's on-entry scan ([`App::set_card_free`](crate::App::set_card_free)).
+    pub card_free_bytes: Option<u64>,
 }
 
 impl Render<'_, '_> {
@@ -713,13 +724,16 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
     }
 }
 
-/// Draw one stat tile — a rounded pane in `bg` with an olive caption over a big ink Display value,
-/// optionally prefixed by an up-triangle for climb figures (the panel font has no ↑ glyph). The
+/// Draw one stat tile — a rounded pane in `bg` with an olive caption over a big `value_color` Display
+/// value (`INK` on the live riding grid; the olive `SUBTEXT` for the Fields editor's ghost sample
+/// values, T8 item 4), optionally prefixed by an up-triangle for climb figures (the panel font has no
+/// ↑ glyph). The
 /// value sits at `value_align` (Left for the number-only fields; Right for the wide `NextWaypoint`
 /// distance, so it hugs the far edge clear of the name caption). Shared by the riding Statistics
 /// grid (tan panes) and the Fields editor (which draws the same tiles, amber under the cursor). The
 /// caption+value block is vertically centred, so the taller editor tiles and the chart-squeezed
 /// Statistics tiles both balance.
+#[allow(clippy::too_many_arguments)] // a plain draw helper: surface + rect + caption/value + style
 pub(crate) fn tile(
     cv: &mut impl Surface,
     area: Rectangle,
@@ -728,6 +742,7 @@ pub(crate) fn tile(
     arrow: bool,
     value_align: TextAlign,
     bg: u16,
+    value_color: u16,
 ) {
     use palette::*;
     let (x, y) = (area.top_left.x, area.top_left.y);
@@ -746,18 +761,30 @@ pub(crate) fn tile(
         // Right-aligned (the wide waypoint distance): anchor at the tile's far edge, so it can never
         // collide with the caption on the line above.
         TextAlign::Right => {
-            cv.text(value, Point::new(x + area.size.width as i32 - 8, vy), Font::Display, TextAlign::Right, INK);
+            cv.text(
+                value,
+                Point::new(x + area.size.width as i32 - 8, vy),
+                Font::Display,
+                TextAlign::Right,
+                value_color,
+            );
         }
         _ => {
             let vx = if arrow {
-                // Up-triangle sized to sit alongside the Display digits.
+                // Up-triangle sized to sit alongside the Display digits (dimmed with the value in the
+                // Fields editor's ghost tiles).
                 let ax = x + 8;
-                cv.triangle(Point::new(ax, vy + 26), Point::new(ax + 13, vy + 26), Point::new(ax + 6, vy + 6), INK);
+                cv.triangle(
+                    Point::new(ax, vy + 26),
+                    Point::new(ax + 13, vy + 26),
+                    Point::new(ax + 6, vy + 6),
+                    value_color,
+                );
                 x + 26
             } else {
                 x + 8
             };
-            cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, INK);
+            cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, value_color);
         }
     }
 }
@@ -809,6 +836,31 @@ pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate:
         let mut buf: heapless::String<24> = heapless::String::new();
         let name = fit_caption(wp.name.as_str(), budget, &mut buf, font);
         cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, INK);
+    }
+}
+
+/// The **Fields-editor ghost** of [`waypoint_panel`] (T8 item 4). In the editor there's no route
+/// loaded, so the real panel would read a lone `--`; like the ghost sample values the tiles show, it
+/// draws two fixed sample rows (`Brunnen  1.2km` emphasized [`Font::Body`], `Pass Summit  8.7km`
+/// [`Font::Label`]) in the olive `SUBTEXT` — so the placed panel is judged against realistic content,
+/// not a dash. Editor-only: the live Statistics grid always calls [`waypoint_panel`]. Chrome (the
+/// rounded pane + olive `WAYPOINTS` caption) matches it so the two read as one system.
+pub(crate) fn waypoint_panel_ghost(cv: &mut impl Surface, area: Rectangle, lang: crate::settings::Language, bg: u16) {
+    use palette::*;
+    let (x, y) = (area.top_left.x, area.top_left.y);
+    let (w, hgt) = (area.size.width as i32, area.size.height as i32);
+    cv.round(area, 5, bg);
+    cv.text(t(Msg::TileWaypoints, lang), Point::new(x + 8, y + 8), Font::Label, TextAlign::Left, SUBTEXT);
+    const HEAD: i32 = 30;
+    let stride = (hgt - HEAD - 6) / WAYPOINT_PANEL_ROWS as i32;
+    // Two sample waypoints ahead — name left, along-route distance-to-go right, the first emphasized;
+    // all in olive so the block reads as a placeholder preview, not live content.
+    let samples: [(&str, &str); 2] = [("Brunnen", "1.2km"), ("Pass Summit", "8.7km")];
+    for (i, (name, dist)) in samples.iter().enumerate() {
+        let font = if i == 0 { Font::Body } else { Font::Label };
+        let ry = y + HEAD + i as i32 * stride;
+        cv.text(dist, Point::new(x + w - 10, ry), font, TextAlign::Right, SUBTEXT);
+        cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, SUBTEXT);
     }
 }
 

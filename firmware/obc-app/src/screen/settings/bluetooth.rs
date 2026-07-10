@@ -103,17 +103,23 @@ impl BluetoothScreen {
         let paired = if rx.state.ble_paired { rx.t(Msg::BluetoothYes) } else { rx.t(Msg::BluetoothNo) };
         cv.text(paired, Point::new(info_x, y1 + 24), Font::Body, TextAlign::Left, INK);
 
-        // The Forget row — a guarded confirm row while a bond is stored (hold fills it
-        // warning-red); greyed out with nothing to forget.
+        // The Forget row — an **action row** in the card-dialog option-row chrome (the Install/Cancel
+        // and RideControl confirm idiom): a left-aligned Body label so it reads as pressable rather
+        // than a bare centred label (T8 item 5). While a bond is stored it's the guarded confirm row
+        // (a hold fills it warning-red — unchanged); greyed with nothing to forget. Copy unchanged.
         let fy = h - FORGET_H - 18;
         let row = super::row_rect(fy, w, FORGET_H);
-        if rx.state.ble_paired {
-            confirm_row(cv, row, self.selected == FORGET, true, rx.hold_progress, WARNING, 6);
-        } else {
-            super::row_cursor(cv, row, self.selected == FORGET, false);
-        }
-        let ink = if rx.state.ble_paired { INK } else { SUBTEXT };
-        cv.text_vcentered(rx.t(Msg::BluetoothForget), w / 2, (fy, FORGET_H), Font::Body, TextAlign::Center, ink);
+        let paired = rx.state.ble_paired;
+        confirm_row(cv, row, self.selected == FORGET, paired, rx.hold_progress, WARNING, 6);
+        let ink = if paired { INK } else { SUBTEXT };
+        cv.text_vcentered(
+            rx.t(Msg::BluetoothForget),
+            row.top_left.x + 16,
+            (fy, FORGET_H),
+            Font::Body,
+            TextAlign::Left,
+            ink,
+        );
     }
 }
 

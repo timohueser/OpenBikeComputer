@@ -227,6 +227,7 @@ hold_to_erase = "Tenez: effacer"
 # --- Bike-type settings screen ---
 [bike_type]
 title = "TYPE DE VÉLO"
+routing_uses = "Le routage utilise ce profil"
 no_profiles = "Aucun profil"
 no_profiles_sub = "Charger une carte"
 
@@ -342,6 +343,9 @@ back = "Retour"
 title = "SYSTÈME"
 install_update = "Installer la mise à jour depuis la carte"
 recording = "Enreg."
+firmware = "Micrologiciel"
+map = "Carte"
+card_free = "Carte libre"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]
