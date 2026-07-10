@@ -83,20 +83,29 @@ printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc st
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
 "$SIM" "$MAP" --boot --script "B r r w p"    --png "$OUT/poi-menu.png"
 "$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "B r r w p p" --png "$OUT/poi-list.png"
-# POI detail (#444): the hours + open/closed badge need the hours-rich monaco fixture (grimsel has
-# no shop hours). Pin the Resupply "Carrefour" supermarket (--center on it → row 0), a fix +heading
-# for the live arrow, and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into
-# the list, draws once to fill the lazy snapshot, then presses the POI into its detail.
+# POI detail (#444, reworked in #685): category glyph on the name row, the promoted distance +
+# bearing row, the hours + the OPEN/CLOSED pill, and the full-width "Route here" footer bar. The
+# hours/badge need the hours-rich monaco fixture (grimsel has no shop hours). Pin the Resupply
+# "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow, and a
+# deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws once
+# to fill the lazy snapshot, then presses the POI into its detail.
 MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B r r w p r r r p d p" --png "$OUT/poi-detail.png"
+# The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
+# pill wears its warning-red CLOSED face.
+"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T23:00" \
+    --script "B r r w p r r r p d p" --png "$OUT/poi-detail-closed.png"
 # POI create-route flow (epic #116, R4). The `d` token also drains a pending create-route request
 # (running the real A* router over the map's v8 nav graph), so one script walks the whole flow.
-# The confirm: detail of a resupply POI ~600 m away → press.
+# The confirm (#685: the category glyph in the T1 slot + the straight-line 'NNN m away' under
+# the name): detail of a resupply POI ~600 m away → press.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B r r w p r r r p d p p" --png "$OUT/nav-confirm.png"
-# The computed-route overview (length only — no elevation band, no climb/descent rows): confirm →
-# Create route → `d` runs the router; the answer swaps in the overview.
+# The computed-route overview (length only — no elevation band, no climb/descent rows; #685:
+# static NEW ROUTE title, the destination name as the first body line, metres below 1 km, and the
+# decimated route-shape preview polyline in the middle): confirm → Create route → `d` runs the
+# router; the answer swaps in the overview and hands the app the ≤64-point preview.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B r r w p r r r p d p p p d" --png "$OUT/nav-overview.png"
 # The planning screen (#499): accepting the confirm swaps to the spinning-needle wait while the
@@ -331,4 +340,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 133 screens rendered into $OUT/"
+echo "ui-snapshots: 134 screens rendered into $OUT/"

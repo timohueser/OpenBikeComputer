@@ -143,8 +143,8 @@ impl NavConfirmScreen {
 /// [`write_off_route`](super::write_off_route) thresholds). `away` is the catalog's trailing word,
 /// so the phrase translates as a unit-value + suffix.
 fn write_away<const N: usize>(s: &mut heapless::String<N>, d_m: u32, units: Units, away: &str) {
-    use core::fmt::Write;
     use crate::settings::{FT_PER_M, FT_PER_MI};
+    use core::fmt::Write;
     if units.is_imperial() {
         let ft = (d_m as f32 * FT_PER_M) as u32;
         if ft >= FT_PER_MI {
