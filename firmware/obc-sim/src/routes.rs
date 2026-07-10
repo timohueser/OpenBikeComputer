@@ -178,6 +178,16 @@ impl RouteStore {
         Some(self.ids[k])
     }
 
+    /// The mini elevation sparkline for the route with session id `id` (#682): read its `.obcr`
+    /// bytes and stream them once through [`obc_route::elevation_sparkline`] — the host side of the
+    /// route-upload seam, mirroring the board's build-at-commit-time. `None` when the id is unknown,
+    /// the read fails, or the route carries no elevation.
+    pub fn elevation_sparkline(&self, id: u16) -> Option<[u8; obc_route::SPARKLINE_BUCKETS]> {
+        let pos = self.ids.iter().position(|&x| x == id)?;
+        let bytes = std::fs::read(&self.paths[pos]).ok()?;
+        obc_route::elevation_sparkline(&SliceSource(&bytes))
+    }
+
     /// Make the active route match `want`, (re)reading its bytes from disk only on a change.
     /// Cheap to call every frame.
     pub fn sync_active(&mut self, want: Option<usize>) {

@@ -306,7 +306,7 @@ delete = "Delete route"
 # --- Route-received / route-updated popups ---
 [route_received]
 title = "ROUTE RECEIVED"
-start_ride = "Start ride"
+view_route = "View route"
 dismiss = "Dismiss"
 route_removed = "Route removed"
 updated_title = "ROUTE UPDATED"

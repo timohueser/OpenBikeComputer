@@ -940,6 +940,23 @@ impl Storage {
         RouteIndex::read(&src).ok()
     }
 
+    /// The mini elevation sparkline for the route with object id `id` (#682): open its `.obcr` on a
+    /// scoped handle, stream it once through [`obc_route::elevation_sparkline`], and close it — the
+    /// board side of the route-upload seam, built at commit time so the idle "ROUTE RECEIVED" card
+    /// can draw the band. `None` when the id is unknown, the file won't open (e.g. it's held by the
+    /// active geometry — that route replaces navigation and never draws the band anyway), or the
+    /// route carries no elevation. Cheap and one-shot: called once per upload, off the render path.
+    pub fn route_elevation_sparkline(&mut self, id: u16) -> Option<[u8; obc_route::SPARKLINE_BUCKETS]> {
+        let dir = self.routes_dir?;
+        let pos = self.route_ids.iter().position(|&x| x == id)?;
+        let name = self.route_files.get(pos)?.clone();
+        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let spark = obc_route::elevation_sparkline(&SdByteSource::new(&self.vmgr, file, len));
+        let _ = self.vmgr.close_file(file);
+        spark
+    }
+
     /// Open (truncating) the reserved computed-route file `/routes/_NAV.OBR` for the router's
     /// OBCR emit (epic #116, R4). Releases every handle this `Storage` may hold **on that file**
     /// first — the reserved route can be the actively-previewed/ridden route (its geometry open)
