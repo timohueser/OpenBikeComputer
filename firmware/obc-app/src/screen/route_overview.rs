@@ -34,16 +34,18 @@ const SIDE_MARGIN: i32 = 12;
 
 /// The stat ledger. Making room for the Delete row (T3) turned the three ledger rows into a two-row
 /// auto-flip pager (page 0 = DISTANCE + CLIMB, page 1 = DESCENT); [`ROW_PITCH`] is the row spacing
-/// within a page. Placed between the band and the Delete row.
+/// within a page. Placed between the band and the START bar.
 const ROWS_TOP: i32 = 150;
 const ROW_PITCH: i32 = 42;
 
-/// The guarded **Delete route** row, directly above the START button — the ride_control guarded-row
-/// idiom, same base geometry (row height + a bottom gap to the button).
+/// The guarded **Delete route** row, the bottommost element — below the START button (owner review
+/// round 1: the destructive row ranks under the primary action). The ride_control guarded-row
+/// idiom; [`DELETE_GAP`] separates it from the button above.
 const DELETE_ROW_H: i32 = 38;
 const DELETE_GAP: i32 = 8;
 
-/// The START RIDE button bar at the bottom.
+/// The START RIDE button bar. On the computed (length-only) page it sits at the screen bottom; the
+/// full page raises it by the Delete row + gap so Delete can sit under it (see [`start_button_y`]).
 const BUTTON_H: i32 = 34;
 
 /// The stat-ledger pager's dwell — a plain fixed constant (not user-configurable): each of the two
@@ -294,20 +296,27 @@ impl RouteOverviewScreen {
             }
         }
 
-        // The guarded Delete-route row, greyed with an "In use" cue while this is the active ride's
-        // route (a hold does nothing there).
+        // The guarded Delete-route row, the bottommost element (owner review round 1: delete ranks
+        // under the primary action), greyed with an "In use" cue while this is the active ride's
+        // route (a hold does nothing there). The START bar rides directly above it.
         let in_use = rx.activity.is_tracking() && rx.activity.active_route == Some(self.route);
         draw_delete_row(cv, w, h, rx.t(Msg::RouteOverviewDelete), rx.t(Msg::RouteMenuInUse), !in_use, rx.hold_progress);
-        draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
+        draw_start_button_at(cv, w, start_button_y(h), rx.t(Msg::RouteOverviewStartRide));
     }
 }
 
-/// The bottom-anchored y of the Delete-route row, sitting a [`DELETE_GAP`] above the START button.
+/// The y of the Delete-route row — the bottommost element, the standard 10 px above the card bottom.
 fn delete_row_y(h: i32) -> i32 {
-    (h - 10 - BUTTON_H) - DELETE_GAP - DELETE_ROW_H
+    h - 10 - DELETE_ROW_H
 }
 
-/// Draw the guarded **Delete route** row above the START button — the ride_control guarded-row
+/// The full page's START-bar top: raised above the Delete row by the standard [`DELETE_GAP`] (the
+/// computed page has no Delete row, so its bar stays at the screen-bottom anchor).
+fn start_button_y(h: i32) -> i32 {
+    delete_row_y(h) - DELETE_GAP - BUTTON_H
+}
+
+/// Draw the guarded **Delete route** row below the START button — the ride_control guarded-row
 /// idiom (a `PARCHMENT_SHADE` base filling warning-red with the live `hold` under the "Delete route"
 /// label). While the route is the active ride's (`enabled == false`) the row greys out with the old
 /// footer's exact disabled treatment — a dim trash + the reused "In use" cue (the label + cue don't
@@ -425,12 +434,17 @@ fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[
     cv.line(Point::new(d.x - k, d.y), Point::new(d.x, d.y - k), INK);
 }
 
-/// START RIDE: the page's one action, so it draws armed (amber) with a play wedge. Shared by the
-/// full page and the computed-route variant — and by the POI detail's `Route here` footer (#685),
-/// which is specified as exactly this bar, so the two can't drift.
+/// START RIDE at the screen-bottom anchor (`h - 10 - BUTTON_H`): the computed-route variant and the
+/// POI detail's `Route here` footer (#685), which is specified as exactly this bar, so the two can't
+/// drift. The full page draws the same bar via [`draw_start_button_at`], raised above its Delete row.
 pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
+    draw_start_button_at(cv, w, h - 10 - BUTTON_H, label);
+}
+
+/// START RIDE with its top edge at `by`: the page's one action, so it draws armed (amber) with a
+/// play wedge.
+fn draw_start_button_at(cv: &mut impl Surface, w: i32, by: i32, label: &str) {
     use palette::*;
-    let by = h - 10 - BUTTON_H;
     cv.round(rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H), 8, AMBER);
     let tx = w / 2 + 8;
     cv.text_vcentered(label, tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
