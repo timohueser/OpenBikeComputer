@@ -306,11 +306,11 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
-        run: cargo deny --manifest-path firmware/Cargo.toml --all-features check --config deny.toml
+        run: cargo deny --manifest-path firmware/Cargo.toml --all-features --config deny.toml check
       - name: cargo-deny (obc-fw-nrf54l board crate)
-        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features check --config deny.toml
+        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
       - name: cargo-deny (obc-boot bootloader)
-        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features check --config deny.toml
+        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config deny.toml check
 
   # The web demo (firmware/obc-web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
