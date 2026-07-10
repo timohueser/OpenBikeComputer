@@ -43,3 +43,6 @@ tools/obc.local
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
 packer/web_builder/frontend/node_modules/
 packer/web_builder/static/dist/
+
+# XcodeBuildMCP session defaults (local tool state)
+.xcodebuildmcp/
