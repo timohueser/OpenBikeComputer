@@ -14,7 +14,8 @@
         { "path": "software/rendering", "title": "Rendering pipeline" },
         { "path": "software/ui", "title": "The UI system" },
         { "path": "software/packer-routing", "title": "Packer & routing" },
-        { "path": "software/companion-link", "title": "The companion link" }
+        { "path": "software/companion-link", "title": "The companion link" },
+        { "path": "software/firmware-updates", "title": "Firmware updates" }
       ]
     },
     {
