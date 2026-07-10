@@ -430,6 +430,14 @@ pub(crate) async fn run_app(
         store.settings.load().unwrap_or_default()
     });
 
+    // The DFU boot-outcome reconcile: boot-state page + the armer's breadcrumb → the one-time
+    // post-update verdict card ("UPDATE FAILED" / the accepted-trial toast). A `Trial` boot is
+    // left alone — the health-anchor confirm below owns that verdict. Same brief-lock idiom.
+    {
+        let mut store = shared.lock().await;
+        crate::dfu::reconcile_boot_outcome(app, &mut store.settings);
+    }
+
     // Align the GPS to the persisted fix interval: push it to the sensor task once at boot (the task
     // boots at a 1 s default), then again whenever the Power screen edits it. `prev_interval` gates the
     // re-VALSET so an unrelated settings change (units, clock) doesn't reconfigure the M10.

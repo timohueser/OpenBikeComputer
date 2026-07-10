@@ -169,8 +169,13 @@ pub(crate) async fn run_install(
                 }
             }
             statusf!("armed gen={} -- rebooting into the bootloader", report.generation);
-            // The beat: nothing may run between the page write and the reset except this flush
-            // (issue #619 §3) — and a power cut here is exactly the armed-install path anyway.
+            // The armer's breadcrumb for the next boot's outcome reconcile (best-effort — a
+            // failed or torn write only costs the verdict card its precision, never the install:
+            // a power cut anywhere past the page write is exactly the armed-install path).
+            let marker = obc_app::settings::ArmMarker { generation: report.generation, staged: report.staged_version };
+            settings.write_arm_marker(&marker);
+            // The beat: nothing else may run between here and the reset except this flush
+            // (issue #619 §3).
             embassy_time::Timer::after_millis(400).await;
             cortex_m::peripheral::SCB::sys_reset();
         }
@@ -259,10 +264,57 @@ pub(crate) fn confirm_trial(settings: &mut RramSettingsStore) -> Option<ImageHea
     let (next, installed) = armer::confirm_trial(&current)?;
     if settings.write_boot_state(&next) {
         defmt::info!("dfu: trial confirmed — running {=str} is now the installed image", installed.fw_version_str());
+        // The arm's verdict is delivered (the success toast) — retire its breadcrumb.
+        settings.clear_arm_marker();
         Some(installed)
     } else {
         // The trial record stands; an unconfirmed trial rolls back next boot — safe, loud.
         defmt::error!("dfu: trial-confirm page write failed — next boot will roll back");
         None
+    }
+}
+
+/// The **boot-outcome reconcile**: called once per boot, before the ride loop runs, to turn the
+/// boot-state page + the armer's breadcrumb ([`ArmMarker`](obc_app::settings::ArmMarker)) into the
+/// one-time post-update verdict the UI shows.
+///
+/// - **`Trial`** — the install landed and this IS the trial boot: the health-anchor confirm owns
+///   the verdict (and the marker); nothing to do here.
+/// - **`Armed`** — the bootloader never consumed the arm (it can only be stale or missing: a
+///   healthy bootloader never jumps to the app with `Armed` intact). Loud failure card, and the
+///   leftover arm is downgraded to `Idle` so it can't fire by surprise on some later reboot (the
+///   rollback snapshot's header is carried into `installed`, mirroring the engine's reject path).
+/// - **`Idle` + a marker** — the bootloader consumed the arm but this boot isn't a trial. If the
+///   installed header IS the staged version, the image was accepted after an unconfirmed
+///   first-install trial (the AcceptAndClear path) — surface the success toast. Anything else
+///   was rejected before the erase or rolled back — the failure card.
+/// - **`Idle`, no marker** — a plain boot; nothing happened, nothing shows.
+pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut RramSettingsStore) {
+    let marker = settings.read_arm_marker();
+    match settings.read_boot_state() {
+        BootState::Trial { .. } => {}
+        BootState::Armed { update, rollback, .. } => {
+            defmt::warn!("dfu: Armed record survived into the app (gen stale?) — bootloader never ran the install");
+            settings.write_boot_state(&BootState::Idle { installed: rollback.map(|r| r.header) });
+            settings.clear_arm_marker();
+            app.notify_update_failed(obc_app::DfuFailure::NotStarted, Some(update.header.fw_version_str()));
+        }
+        BootState::Idle { installed } => {
+            let Some(marker) = marker else { return };
+            settings.clear_arm_marker();
+            match installed {
+                Some(h) if h.fw_version_str() == marker.staged.as_str() => {
+                    defmt::info!("dfu: staged {=str} accepted after an unconfirmed trial", marker.staged.as_str());
+                    app.notify_update_confirmed(marker.staged.as_str());
+                }
+                _ => {
+                    defmt::warn!(
+                        "dfu: staged {=str} is not the running image — rejected or rolled back",
+                        marker.staged.as_str()
+                    );
+                    app.notify_update_failed(obc_app::DfuFailure::Reverted, Some(marker.staged.as_str()));
+                }
+            }
+        }
     }
 }

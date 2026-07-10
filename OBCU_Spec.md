@@ -194,14 +194,16 @@ The bootloader turns the decoded state into an action with the pure function
 | State | Decision |
 | :-- | :-- |
 | `Idle` | `Jump` — run the app |
-| `Armed` | `Install(update)` — verify + flash the staged image, then write `Trial` and reset |
+| `Armed` | `Install(update)` — verify + flash the staged image, then write `Trial` and jump straight into it (the one trial boot) |
 | `Trial` with a rollback snapshot | `Rollback(snapshot)` — flash the snapshot back |
 | `Trial` with no snapshot | `AcceptAndClear` — accept the running image (first-install case) and clear to `Idle` |
 
 A healthy app confirms by writing `Idle { installed }` mid-run, so a `Trial` still
 present at the next bootloader entry is by definition *unconfirmed* — which is
-exactly why it means "roll back". A hardware watchdog guarantees a wedged trial boot
-becomes the next boot.
+exactly why it means "roll back". Load-bearing corollary: after writing `Trial` the
+install path must **jump into the new image, never reset** — a reset would re-enter
+the bootloader with the fresh `Trial` and roll the image back before it ever ran. A
+hardware watchdog guarantees a wedged trial boot becomes the next boot.
 
 ---
 
