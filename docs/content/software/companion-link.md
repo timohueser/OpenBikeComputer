@@ -290,7 +290,8 @@ and ride counts, on a characteristic the app can read *and* subscribe to.
 
 The device is the other half of this loop. A change doesn't only come *from* the
 phone — the rider can delete a stored route from the device's Route overview or a
-tracked ride from its Rides screen, both with the same guarded hold-to-delete (see the
+tracked ride from its Ride detail, each with the same guarded hold-to-delete row
+(see the
 [UI system](../ui/#deleting-things-the-hold-to-delete-footer)). A device-side
 delete goes **through the same object store** the wire commits do, so it bumps
 the `revision`, fires `storeChanged`, and shows up to the phone as *"the ride
@@ -311,8 +312,10 @@ on — a `storeChanged` the phone can trust never to lie about identity.
 
 A tracked ride is precious (unlike a route, the phone can't re-upload it), so the
 device keeps a **"synced" flag** per ride — has the phone downloaded this one at
-least once? It drives the *"not synced"* warning on the device's delete footer,
-so a rider deleting an un-downloaded ride is told what they're about to lose.
+least once? It drives the sync glyph on every Rides-list row (a filled disc =
+synced, a hollow ring = not) and the *"synced" / "not synced"* slot in the Ride
+detail's title bar, so a rider deleting an un-downloaded ride is told what
+they're about to lose.
 
 The naïve way to set that flag is to flip it when a ride download completes. But
 that makes it an *event inference* — and events are lossy. A ride synced before

@@ -72,7 +72,8 @@ screens! {
     PoiList(PoiListScreen) => Nav,         // one category's nearest-16, with live bearing arrows
     PoiDetail(PoiDetailScreen) => Nav,     // one POI: full name, subtype, arrow, today's hours + open/closed
     RouteMenu(RouteMenuScreen) => Nav,
-    Rides(RidesScreen) => Nav,             // see + delete stored rides (hold-to-delete, unsynced guard)
+    Rides(RidesScreen) => Nav,             // stored rides: name + sync glyph over date-metadata rows
+    RideDetail(RideDetailScreen) => Nav,   // one ride: elevation band + ledger + guarded Delete ride
     RouteOverview(RouteOverviewScreen) => Nav, // look-before-you-ride: profile + stats + START
     RouteSwap(RouteSwapScreen) => Nav,
     // Event-opened cards — raised by something happening, not a gesture: the BLE seam (route uploads
@@ -309,25 +310,28 @@ The factory **Reset** screen is the one place a hold guards a *destructive* acti
 
 ### Deleting things — the hold-to-delete footer
 
-The same guarded hold does duty as a **delete** control. Rather than a modal "are you sure?", a screen that can delete an item fills a *"hold to delete"* bar with the live hold-progress, exactly like a guarded confirm row — the completed hold *is* the confirmation, there is no second popup. This began on the Stats **Fields** editor (remove a panel) and now drives deletion with one shared idiom in two shapes: a reserved **footer band** below the list on **Fields** and the **Rides** screen, and — because a route is deleted from its *detail* page, not the list — a guarded **Delete route** row on the **Route overview**, directly above START RIDE. One hold, one muscle memory — a rider who learns it once knows it everywhere.
+The same guarded hold does duty as a **delete** control. Rather than a modal "are you sure?", a screen that can delete an item fills a *"hold to delete"* bar with the live hold-progress, exactly like a guarded confirm row — the completed hold *is* the confirmation, there is no second popup. This began on the Stats **Fields** editor (remove a panel) and now drives deletion with one shared idiom in two shapes: a reserved **footer band** below the **Fields** grid, and — because routes and rides are each deleted from their *detail* page, not the list — a guarded delete row: **Delete route** on the **Route overview**, directly above START RIDE, and **Delete ride** at the bottom of the **Ride detail** (the overview's recorded sibling — the tracked ride's elevation band over a DISTANCE / RIDE TIME / AVG / CLIMBED ledger, opened by pressing a Rides-list row). One hold, one muscle memory — a rider who learns it once knows it everywhere.
 
 Two behaviours make it safe to press without thinking:
 
-- **Greyed when the item is in use.** The control disables (a hold does nothing) when deleting would break live state: the Route overview greys its Delete row for the route you're *actively navigating* (deleting the file under an open geometry handle mid-ride would break navigation — but a route merely *previewed* from idle is still deletable), and the Rides screen greys its footer for the ride you're *currently recording* (its file isn't even written until Finish, and the filesystem refuses to delete an open handle).
-- **Warning-red when a ride is unsynced.** A tracked ride the phone hasn't downloaded yet is unrecoverable if deleted, so the Rides footer renders **warning-red with a "not synced" cue** for those — still deletable, just *informed*. (Routes get no such cue: the phone can always re-upload one.)
+- **Greyed when the item is in use.** The delete disables (a hold does nothing) when it would break live state: the Route overview greys its Delete row for the route you're *actively navigating* (deleting the file under an open geometry handle mid-ride would break navigation — but a route merely *previewed* from idle is still deletable), and the Ride detail greys its Delete row — a dim trash + a **"Recording"** cue — while a ride is being recorded (its file isn't even written until Finish, and the filesystem refuses to delete an open handle).
+- **Sync state is visible before you delete.** A tracked ride the phone hasn't downloaded yet is unrecoverable if deleted, so the Rides list marks every row with a small **sync glyph** — a filled disc for a downloaded ride, a hollow ring for one the phone doesn't hold — and the Ride detail's title bar repeats it in words (*synced* / *not synced*). Still deletable, just *informed*. (Routes get no such cue: the phone can always re-upload one.)
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="The hold-to-delete control. On the left, a list with a footer band below it holding a rule and a hold-to-delete row that fills with a progress bar as you hold. On the right, its three states stacked: normal — hold to delete, an in-use route or a recording ride greyed and disabled, and an unsynced ride shown warning-red with a not-synced cue.">
-  <text class="d-tag" x="20" y="24">One guarded hold — Rides · Fields footer, Route overview row</text>
+<svg viewBox="0 0 720 250" role="img" aria-label="The guarded hold-to-delete. On the left, a route list with a delete band that fills with a progress bar as you hold. On the right, its two states stacked: normal — hold to delete, and an in-use route or recording ride greyed and disabled.">
+  <text class="d-tag" x="20" y="24">One guarded hold — the Fields footer, the Route overview + Ride detail rows</text>
 
-  <!-- the screen with a footer -->
+  <!-- the one remaining footer screen: the Fields grid -->
   <rect class="d-panel" x="24" y="42" width="228" height="188" rx="11" />
-  <rect x="32" y="50" width="212" height="18" rx="3" style="fill:#aa5500" /><text class="d-sub" x="42" y="63" style="fill:#fff;font-size:9px">RIDES</text>
-  <rect x="32" y="74" width="212" height="30" rx="4" class="d-amber" />
-  <text class="d-sub" x="42" y="88" style="fill:#000;font-size:9.5px">Kandel Loop · Sat</text>
-  <text class="d-sub" x="42" y="100" style="fill:#000;font-size:8.5px">42 km · 3:10 · 780 m</text>
-  <text class="d-sub" x="42" y="126" style="font-size:9.5px">Rhine flats · Thu</text>
-  <text class="d-sub" x="42" y="152" style="font-size:9.5px">Vosges climb · Mon</text>
+  <rect x="32" y="50" width="212" height="18" rx="3" style="fill:#aa5500" /><text class="d-sub" x="42" y="63" style="fill:#fff;font-size:9px">FIELDS</text>
+  <rect x="32" y="74" width="102" height="44" rx="4" class="d-amber" />
+  <text class="d-sub" x="40" y="86" style="fill:#000;font-size:8px">SPEED</text><text class="d-sub" x="40" y="102" style="fill:#000;font-size:10px">24.3</text>
+  <rect x="142" y="74" width="102" height="44" rx="4" class="d-muted" />
+  <text class="d-sub" x="150" y="86" style="font-size:8px">AVG KPH</text><text class="d-sub" x="150" y="102" style="font-size:10px">17.0</text>
+  <rect x="32" y="126" width="102" height="44" rx="4" class="d-muted" />
+  <text class="d-sub" x="40" y="138" style="font-size:8px">KM DONE</text><text class="d-sub" x="40" y="154" style="font-size:10px">42.5</text>
+  <rect x="142" y="126" width="102" height="44" rx="4" class="d-muted" />
+  <text class="d-sub" x="150" y="138" style="font-size:8px">CLIMBED</text><text class="d-sub" x="150" y="154" style="font-size:10px">▲810</text>
   <!-- footer band -->
   <line x1="36" y1="182" x2="240" y2="182" stroke="#aaaa55" stroke-width="1" />
   <rect x="36" y="190" width="120" height="30" rx="6" style="fill:#c0492e" />
@@ -335,8 +339,8 @@ Two behaviours make it safe to press without thinking:
   <text class="d-sub" x="138" y="209" text-anchor="middle" style="fill:#fff;font-size:9px">hold to delete</text>
   <text class="d-sub" x="138" y="238" text-anchor="middle" style="font-size:8.5px">bar fills on the live hold</text>
 
-  <!-- the three footer states -->
-  <text class="d-tag" x="292" y="60">the footer, three states</text>
+  <!-- the guarded hold's two states -->
+  <text class="d-tag" x="292" y="60">the guarded hold, two states</text>
   <rect x="292" y="72" width="404" height="30" rx="6" class="d-muted" />
   <text class="d-sub" x="308" y="91" style="font-size:10px">hold to delete</text>
   <text class="d-sub" x="470" y="91" style="font-size:9px;fill:#6b7758">— normal · a completed hold deletes</text>
@@ -345,12 +349,8 @@ Two behaviours make it safe to press without thinking:
   <text class="d-sub" x="308" y="129" style="font-size:10px;fill:#9a9a86">hold to delete</text>
   <text class="d-sub" x="470" y="129" style="font-size:9px;fill:#6b7758">— greyed · item is active / recording</text>
 
-  <rect x="292" y="148" width="404" height="30" rx="6" style="fill:#f6e3dc;stroke:#c0492e;stroke-width:1.2" />
-  <path d="M306 157 l6 12 l-12 0 z" fill="#c0492e" /><text class="d-sub" x="303" y="167" style="font-size:8px;fill:#fff">!</text>
-  <text class="d-sub" x="322" y="167" style="font-size:10px;fill:#a9501c">hold to delete · not synced</text>
-  <text class="d-sub" x="322" y="176" style="font-size:8.5px;fill:#a9501c">— unsynced ride · deletes for good</text>
 </svg>
-<figcaption>The footer reuses the guarded-hold machinery wholesale — the same <code>confirm_row</code> fill, driven by the same live <code>hold_progress</code> — so there's no new gesture and no new confirmation dialog. What varies per screen is only the <b>guard</b>: greyed when the highlighted item is in use (an actively-navigated route, a recording ride), and warning-red for an unsynced ride. A device-side delete then flows through the object store, so the phone reconciles it on the next connect (see the <a href="../companion-link/#staying-in-sync-the-change-digest">companion link</a>).</figcaption>
+<figcaption>The footer reuses the guarded-hold machinery wholesale — the same <code>confirm_row</code> fill, driven by the same live <code>hold_progress</code> — so there's no new gesture and no new confirmation dialog. The Route overview's Delete-route and the Ride detail's Delete-ride rows are the same machinery in confirm-row clothes, with the same guards (greyed for the actively-navigated route, and while a ride records). A device-side delete then flows through the object store, so the phone reconciles it on the next connect (see the <a href="../companion-link/#staying-in-sync-the-change-digest">companion link</a>).</figcaption>
 </figure>
 
 ## The POIs browser
@@ -921,7 +921,7 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 - The waypoint UI — map diamonds + the approach chip: [`obc-app/src/screen/map.rs`](src:firmware/obc-app/src/screen/map.rs); the progress-bar ticks: [`obc-app/src/screen/statistics.rs`](src:firmware/obc-app/src/screen/statistics.rs); the next-waypoint tracking (approach radius, pass-linger): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs); the two stat fields: [`obc-app/src/stat_fields.rs`](src:firmware/obc-app/src/stat_fields.rs)
 - The host→app BLE seam (`BleStatus` — the connected indicator, passkey, paired): [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs)
 - The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
-- The Rides screen and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
+- The Rides screen, its Ride detail, and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/ride_detail.rs`](src:firmware/obc-app/src/screen/ride_detail.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
 - The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
 - The `Settings` value + its byte codec, the `Language` enum, and the `SettingsStore` seam: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs), [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
 - The i18n catalogue + codegen — the per-language TOMLs, the `build.rs` that generates `Msg`/`TABLE`, and the `t()`/`rx.t()` lookup: [`obc-app/i18n/`](src:firmware/obc-app/i18n), [`obc-app/build.rs`](src:firmware/obc-app/build.rs), [`obc-app/src/i18n.rs`](src:firmware/obc-app/src/i18n.rs); the font-repertoire guard: [`obc-app/tests/i18n.rs`](src:firmware/obc-app/tests/i18n.rs)
