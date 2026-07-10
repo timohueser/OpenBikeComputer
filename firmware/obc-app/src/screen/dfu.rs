@@ -38,7 +38,9 @@ use crate::dfu::{DfuFailure, DfuScanError, DfuScanReport, Version};
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::{palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition, TITLE_BAR_H};
+use super::{
+    card_check, card_triangle, palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition, TITLE_BAR_H,
+};
 
 // ── The shared indeterminate spinner (the Menu dial's needle, like the nav planner's #499) ──
 
@@ -100,35 +102,11 @@ impl Spinner {
     }
 }
 
-// ── Multi-line centred body copy (author each catalog string on one line; wrap at draw time) ──
+// ── Multi-line centred body copy: the shared `super::wrapped` (author each catalog string on one
+// line; wrap at draw time), always at `Font::Label` on these cards. ──
 
-/// Draw `text` word-wrapped into centred [`Font::Label`] lines within `width_px`, the first line at
-/// `top_y`, in `color`. Greedy over the monospace cell width; returns the `y` just past the last
-/// line so a caller can stack more below it. A single word wider than the budget is left to clip
-/// (versions and the like are short). Up to [`MAX_LINES`](Self) lines.
 fn wrapped(cv: &mut impl Surface, text: &str, cx: i32, top_y: i32, width_px: i32, color: u16) -> i32 {
-    const LH: i32 = 19; // Label line advance (cap ~18) + a hair of lead
-    let char_w = Font::Label.char_width() as i32;
-    let budget = (width_px / char_w).max(1) as usize;
-    let mut y = top_y;
-    let mut line: heapless::String<48> = heapless::String::new();
-    for word in text.split(' ') {
-        let extra = if line.is_empty() { word.len() } else { line.len() + 1 + word.len() };
-        if extra > budget && !line.is_empty() {
-            cv.text(&line, Point::new(cx, y), Font::Label, TextAlign::Center, color);
-            y += LH;
-            line.clear();
-        }
-        if !line.is_empty() {
-            let _ = line.push(' ');
-        }
-        let _ = line.push_str(word);
-    }
-    if !line.is_empty() {
-        cv.text(&line, Point::new(cx, y), Font::Label, TextAlign::Center, color);
-        y += LH;
-    }
-    y
+    super::wrapped(cv, text, cx, top_y, width_px, Font::Label, color)
 }
 
 // ── DfuCheck: the "Checking card..." wait ──
@@ -308,7 +286,7 @@ impl DfuErrorScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuTitle), "");
-        draw_warning(cv, w / 2, TITLE_BAR_H + 46, 22);
+        card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 46), 22);
         let msg = match self.error {
             DfuScanError::NotFound => rx.t(Msg::DfuNotFound),
             DfuScanError::Unreadable => rx.t(Msg::DfuUnreadable),
@@ -352,7 +330,7 @@ impl DfuUpdatedScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuUpdatedTitle), "");
-        draw_check(cv, w / 2, TITLE_BAR_H + 56, 24);
+        card_check(cv, Point::new(w / 2, TITLE_BAR_H + 56), 24);
         cv.text(rx.t(Msg::DfuUpdated), Point::new(w / 2, TITLE_BAR_H + 104), Font::Body, TextAlign::Center, INK);
         // The version, verbatim (never translated).
         cv.text(&self.version, Point::new(w / 2, TITLE_BAR_H + 134), Font::Body, TextAlign::Center, AMBER);
@@ -393,7 +371,7 @@ impl DfuFailedScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuFailedTitle), "");
-        draw_warning(cv, w / 2, TITLE_BAR_H + 46, 22);
+        card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 46), 22);
         let msg = match self.why {
             DfuFailure::NotStarted => rx.t(Msg::DfuFailedNotStarted),
             DfuFailure::Reverted => rx.t(Msg::DfuFailedReverted),
@@ -404,30 +382,6 @@ impl DfuFailedScreen {
             cv.text(v, Point::new(w / 2, bottom + 22), Font::Body, TextAlign::Center, AMBER);
         }
     }
-}
-
-// ── Shared icons (mirrors of the reset screen's warning + check glyphs) ──
-
-/// An amber warning triangle with an ink exclamation, centred at `(cx, cy)`.
-fn draw_warning(cv: &mut impl Surface, cx: i32, cy: i32, sz: i32) {
-    use palette::*;
-    cv.triangle(Point::new(cx, cy - sz), Point::new(cx - sz, cy + sz), Point::new(cx + sz, cy + sz), AMBER);
-    cv.vline(cx, cy - sz / 4, sz / 2, 3, INK);
-    cv.disc(Point::new(cx, cy + sz / 2 + 1), 2, INK);
-}
-
-/// A check mark in amber, centred near `(cx, cy)` — two strokes stepped out of discs.
-fn draw_check(cv: &mut impl Surface, cx: i32, cy: i32, sz: i32) {
-    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32)) {
-        const N: i32 = 14;
-        for k in 0..=N {
-            let x = a.0 + (b.0 - a.0) * k / N;
-            let y = a.1 + (b.1 - a.1) * k / N;
-            cv.disc(Point::new(x, y), 3, palette::AMBER);
-        }
-    }
-    seg(cv, (cx - sz, cy), (cx - sz / 3, cy + sz * 2 / 3));
-    seg(cv, (cx - sz / 3, cy + sz * 2 / 3), (cx + sz, cy - sz * 2 / 3));
 }
 
 #[cfg(test)]

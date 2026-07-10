@@ -385,7 +385,7 @@ screens! {
     /// or the failure card.
     NavPlanning(NavPlanningScreen) => Nav,
     /// The route-planning failure card (epic #116, R4): the locked two-tier copy ("Too far to
-    /// route here" / "Couldn't find a route."), info-only — any press/Back returns to the detail.
+    /// route here." / "Couldn't find a route."), info-only — any press/Back returns to the detail.
     NavFail(NavFailScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
     /// The Rides screen (Menu → Rides): a see-and-delete list of stored rides with a hold-to-delete
@@ -848,6 +848,79 @@ pub(crate) fn ledger_row(
         let (flat, tip) = if up { (y + 30, y + 12) } else { (y + 12, y + 30) };
         cv.triangle(Point::new(ax, flat), Point::new(ax + 13, flat), Point::new(ax + 6, tip), INK);
     }
+}
+
+/// Draw the shared card **warning glyph** — an amber triangle with an ink exclamation — centred at
+/// `center`, `k` the triangle's half-height (epic #678 T1's dialog anatomy kit). Drawn in the
+/// "glyph slot": horizontally centred, vertically in the band between the title bar and the card's
+/// text block. Pixel-for-pixel the glyph the DFU error cards established (the reference
+/// composition); the factory-Reset screen and the routing-failure / sensor-warning cards draw the
+/// identical sign through this one helper.
+pub(crate) fn card_triangle(cv: &mut impl Surface, center: Point, k: i32) {
+    use palette::*;
+    let (cx, cy) = (center.x, center.y);
+    cv.triangle(Point::new(cx, cy - k), Point::new(cx - k, cy + k), Point::new(cx + k, cy + k), AMBER);
+    // Exclamation: a bar over a dot.
+    cv.vline(cx, cy - k / 4, k / 2, 3, INK);
+    cv.disc(Point::new(cx, cy + k / 2 + 1), 2, INK);
+}
+
+/// Draw the shared card **check glyph** — an amber check mark, two strokes stepped out of discs
+/// (the canvas has no diagonal thick-line primitive) — centred near `center`, `k` its half-width.
+/// The success twin of [`card_triangle`], factored from the DFU "UPDATED" toast (the reference)
+/// and the Reset done state; the "ROUTE UPDATED" card draws the same mark.
+pub(crate) fn card_check(cv: &mut impl Surface, center: Point, k: i32) {
+    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32)) {
+        const N: i32 = 14;
+        for s in 0..=N {
+            let x = a.0 + (b.0 - a.0) * s / N;
+            let y = a.1 + (b.1 - a.1) * s / N;
+            cv.disc(Point::new(x, y), 3, palette::AMBER);
+        }
+    }
+    let (cx, cy) = (center.x, center.y);
+    // Down-stroke to the low point, then up-stroke to the top-right.
+    seg(cv, (cx - k, cy), (cx - k / 3, cy + k * 2 / 3));
+    seg(cv, (cx - k / 3, cy + k * 2 / 3), (cx + k, cy - k * 2 / 3));
+}
+
+/// Draw `text` word-wrapped into centred `font` lines within `width_px`, the first line at
+/// `top_y`, in `color` — the shared multi-line card body (author each catalog string on one line;
+/// wrap at draw time). Greedy over the monospace cell width; returns the `y` just past the last
+/// line so a caller can stack more below it. A single word wider than the budget is left to clip
+/// (versions and the like are short). The line advance is the font's cap height plus a hair of
+/// lead. Shared by the DFU cards (which established it) and the routing-failure card.
+pub(crate) fn wrapped(
+    cv: &mut impl Surface,
+    text: &str,
+    cx: i32,
+    top_y: i32,
+    width_px: i32,
+    font: Font,
+    color: u16,
+) -> i32 {
+    let lh = font.cap_height() as i32 + 1; // cap + a hair of lead (Label: the 19 px the DFU cards pinned)
+    let char_w = font.char_width() as i32;
+    let budget = (width_px / char_w).max(1) as usize;
+    let mut y = top_y;
+    let mut line: heapless::String<48> = heapless::String::new();
+    for word in text.split(' ') {
+        let extra = if line.is_empty() { word.len() } else { line.len() + 1 + word.len() };
+        if extra > budget && !line.is_empty() {
+            cv.text(&line, Point::new(cx, y), font, TextAlign::Center, color);
+            y += lh;
+            line.clear();
+        }
+        if !line.is_empty() {
+            let _ = line.push(' ');
+        }
+        let _ = line.push_str(word);
+    }
+    if !line.is_empty() {
+        cv.text(&line, Point::new(cx, y), font, TextAlign::Center, color);
+        y += lh;
+    }
+    y
 }
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared

@@ -233,8 +233,8 @@ fn draw_compass(
 /// Draw the compass **needle** centred at `c`, pointing `deg` (0° = N, clockwise): amber head of
 /// length `r`, grey counterweight, ink hub with a parchment cap. Screen coords: the direction is
 /// `(sin, -cos)` and its perpendicular `(cos, sin)`; `half_w` is the base half-width. Shared by
-/// the Menu compass dial and the nav **planning** screen's spinner (#499), so the two needles can
-/// never drift apart.
+/// the Menu compass dial, the nav **planning** screen's spinner (#499), and the warning card's
+/// mini compass glyph (#679), so the needles can never drift apart.
 pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, half_w: f32) {
     use palette::*;
     let rad = deg.to_radians();
@@ -245,8 +245,14 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
     let b2 = at(-px, -py, half_w);
     cv.triangle(at(dx, dy, r), b1, b2, AMBER);
     cv.triangle(at(-dx, -dy, r), b1, b2, CONTOUR);
-    cv.disc(c, 6, INK);
-    cv.disc(c, 2, PARCHMENT);
+    // The hub scales with the sweep radius so the warning card's mini needle (r ≈ 5) isn't
+    // swallowed by it; every full-size call site (r = 42) keeps the original 6 px ink hub +
+    // 2 px parchment cap, pixel-identical.
+    let hub = (r / 7.0) as i32;
+    cv.disc(c, hub.max(1) as u32, INK);
+    if hub >= 3 {
+        cv.disc(c, (hub / 3) as u32, PARCHMENT);
+    }
 }
 
 /// The 2×2 card-grid layout under the standard title bar: amber fill on the selected card, a tan
@@ -340,8 +346,9 @@ fn icon_poi(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
 
 /// A folded map with a "you are here" dot: an outlined sheet, two *hairline* fold creases inset
 /// from the edges (heavier bars read as a grill at this size), and a marker dot in the middle
-/// panel — Map-without-a-route is exactly "just you on the map".
-fn icon_map(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
+/// panel — Map-without-a-route is exactly "just you on the map". Also the warning card's tiny
+/// map-warning glyph (#679, at `k` ≈ 0.4), hence `pub(super)`.
+pub(super) fn icon_map(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
     let (hw, hh) = (si(k, 14.0), si(k, 10.0));
     cv.round_outline(rect(c.x - hw, c.y - hh, 2 * hw, 2 * hh), 2, color);
     cv.round_outline(rect(c.x - hw + 1, c.y - hh + 1, 2 * hw - 2, 2 * hh - 2), 2, color);

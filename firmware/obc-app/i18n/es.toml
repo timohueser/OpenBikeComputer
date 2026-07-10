@@ -294,10 +294,10 @@ create_route = "Crear ruta"
 cancel = "Cancelar"
 title = "CREAR RUTA"
 finding = "Buscando ruta..."
-too_far_1 = "Muy lejos"
-too_far_2 = "para rutar"
-not_found_1 = "No se encontró"
-not_found_2 = "la ruta."
+too_far = "Muy lejos para rutar."
+too_far_hint = "Prueba un destino más cercano."
+not_found = "No se encontró la ruta."
+not_found_hint = "No hay camino cerca - prueba desde una carretera."
 
 # --- Ride-control (pause) page ---
 [ride_control]
@@ -344,3 +344,11 @@ unreadable = "No se pudo leer el archivo de actualización."
 damaged = "El archivo de actualización está dañado."
 too_large = "El archivo de actualización es demasiado grande para este dispositivo."
 fragmented = "El archivo de actualización está muy fragmentado. Borra UPDATE.BIN y cópialo de nuevo en la tarjeta."
+# --- Boot-fault cards (pre-app; the device renders the English column) ---
+[fault]
+nocard_what = "Sin tarjeta SD"
+nocard_fix = "Inserta una tarjeta con mapa"
+nomap_what = "No hay mapa"
+nomap_fix = "Añade un archivo de mapa"
+badmap_what = "Mapa dañado"
+badmap_fix = "Cópialo de nuevo a la tarjeta"

@@ -14,7 +14,7 @@
 //!   ([`App::notify_nav_result`](crate::App::notify_nav_result)) replaces this screen with the
 //!   computed-route [overview](super::RouteOverviewScreen) (success) or the [`NavFailScreen`].
 //! - [`NavFailScreen`] — the locked **two-tier failure** card: `Exhausted` → "Too far to route
-//!   here" (there is no distance cap; the router's fixed table running out **is** the device's
+//!   here." (there is no distance cap; the router's fixed table running out **is** the device's
 //!   range limit), everything else → "Couldn't find a route." Info-only, like the
 //!   [`RouteUpdated`](super::route_received::RouteUpdatedScreen) card: any press/Back dismisses,
 //!   returning to the POI detail underneath.
@@ -239,7 +239,7 @@ impl NavPlanningScreen {
 /// to the POI detail).
 #[derive(Debug)]
 pub struct NavFailScreen {
-    /// `true` = the range tier ("Too far to route here"): the router's fixed table exhausted
+    /// `true` = the range tier ("Too far to route here."): the router's fixed table exhausted
     /// before the goal — with no distance cap, that **is** the device's range limit.
     /// `false` = every other failure ("Couldn't find a route.").
     too_far: bool,
@@ -257,7 +257,7 @@ impl NavFailScreen {
         NavFailScreen { too_far: false }
     }
 
-    /// Which tier the card shows (`true` = "Too far to route here") — lets the seam tests pin
+    /// Which tier the card shows (`true` = "Too far to route here.") — lets the seam tests pin
     /// the error→tier mapping without reading pixels.
     pub fn shows_too_far(&self) -> bool {
         self.too_far
@@ -275,15 +275,17 @@ impl NavFailScreen {
         let (w, h) = (rx.w, rx.h);
 
         title_frame(cv, w, h, rx.t(Msg::NavRouteTitle), "");
-        // The two-tier message, wrapped onto two Body lines (either single line overruns the
-        // 240 px panel).
-        let (l1, l2) = if self.too_far {
-            (rx.t(Msg::NavRouteTooFar1), rx.t(Msg::NavRouteTooFar2))
+        // The shared warning triangle in the glyph slot (dialog anatomy, #678 T1) — the DFU error
+        // cards' composition: title bar, gap, triangle, gap, message.
+        super::card_triangle(cv, Point::new(w / 2, super::TITLE_BAR_H + 46), 22);
+        // The two-tier message (ink, Body) over its one olive guidance line (Label) — each authored
+        // as one catalog string and word-wrapped at draw time (either overruns the 240 px panel).
+        let (msg, hint) = if self.too_far {
+            (rx.t(Msg::NavRouteTooFar), rx.t(Msg::NavRouteTooFarHint))
         } else {
-            (rx.t(Msg::NavRouteNotFound1), rx.t(Msg::NavRouteNotFound2))
+            (rx.t(Msg::NavRouteNotFound), rx.t(Msg::NavRouteNotFoundHint))
         };
-        let y = h * 35 / 100;
-        cv.text(l1, Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
-        cv.text(l2, Point::new(w / 2, y + Font::Body.line_height() as i32 + 6), Font::Body, TextAlign::Center, INK);
+        let y = super::wrapped(cv, msg, w / 2, super::TITLE_BAR_H + 84, w - 32, Font::Body, INK);
+        super::wrapped(cv, hint, w / 2, y + 12, w - 32, Font::Label, SUBTEXT);
     }
 }

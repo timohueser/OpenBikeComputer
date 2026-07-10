@@ -17,7 +17,7 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
+use crate::screen::{card_check, card_triangle, palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
 use crate::settings::Settings;
 use crate::Msg;
 
@@ -75,7 +75,7 @@ impl ResetScreen {
         // Body content is positioned from the title bar so the armed/idle layouts stack cleanly.
 
         if self.done {
-            draw_check(cv, w / 2, TITLE_BAR_H + 64, 26);
+            card_check(cv, Point::new(w / 2, TITLE_BAR_H + 64), 26);
             cv.text(rx.t(Msg::ResetComplete), Point::new(w / 2, TITLE_BAR_H + 110), Font::Body, TextAlign::Center, INK);
             cv.text(
                 rx.t(Msg::ResetRestarting),
@@ -88,7 +88,7 @@ impl ResetScreen {
         }
 
         // Warning icon + title (kept short so nothing overruns the 240 px panel).
-        draw_warning(cv, w / 2, TITLE_BAR_H + 50, 24);
+        card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 50), 24);
         cv.text(rx.t(Msg::ResetFactory), Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
 
         if !self.armed {
@@ -128,31 +128,6 @@ impl ResetScreen {
             cv.round(rect(bx, by, fill, bh), radius, WARNING);
         }
     }
-}
-
-/// Draw a warning sign — an amber triangle with an ink exclamation — centred at `(cx, cy)`.
-fn draw_warning(cv: &mut impl Surface, cx: i32, cy: i32, sz: i32) {
-    use palette::*;
-    cv.triangle(Point::new(cx, cy - sz), Point::new(cx - sz, cy + sz), Point::new(cx + sz, cy + sz), AMBER);
-    // Exclamation: a bar over a dot.
-    cv.vline(cx, cy - sz / 4, sz / 2, 3, INK);
-    cv.disc(Point::new(cx, cy + sz / 2 + 1), 2, INK);
-}
-
-/// Draw a check mark in amber, centred near `(cx, cy)` — two strokes stepped out of discs (the
-/// canvas has no diagonal line primitive).
-fn draw_check(cv: &mut impl Surface, cx: i32, cy: i32, sz: i32) {
-    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32)) {
-        const N: i32 = 14;
-        for k in 0..=N {
-            let x = a.0 + (b.0 - a.0) * k / N;
-            let y = a.1 + (b.1 - a.1) * k / N;
-            cv.disc(Point::new(x, y), 3, palette::AMBER);
-        }
-    }
-    // Down-stroke to the low point, then up-stroke to the top-right.
-    seg(cv, (cx - sz, cy), (cx - sz / 3, cy + sz * 2 / 3));
-    seg(cv, (cx - sz / 3, cy + sz * 2 / 3), (cx + sz, cy - sz * 2 / 3));
 }
 
 #[cfg(test)]
