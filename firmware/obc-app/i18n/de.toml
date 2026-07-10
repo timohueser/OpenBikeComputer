@@ -126,6 +126,7 @@ avg_grad = "Ø STEIG."
 [map]
 no_gps_fix = "Kein GPS-Fix"
 off_route = "abseits "
+press_to_start = "Drücken zum Starten"
 
 # --- The Statistics riding screen ---
 [stats]

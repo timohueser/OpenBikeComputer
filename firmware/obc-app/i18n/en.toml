@@ -139,6 +139,8 @@ avg_grad = "AVG GRAD"
 [map]
 no_gps_fix = "No GPS Fix"
 off_route = "off route "
+# The route-less browse map's one-shot start hint chip (auto-hides after a few seconds).
+press_to_start = "Press to start a ride"
 
 # --- The Statistics riding screen ---
 [stats]

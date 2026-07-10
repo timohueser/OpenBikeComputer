@@ -76,6 +76,64 @@ pub struct MapScreen {
     /// Fires a repaint of the clock digits each minute the wall clock rolls over (see
     /// [`tick_timers`](MapScreen::tick_timers)) so `HH:MM` advances without a full map redraw.
     ticker: MinuteTicker,
+    /// The route-less browse map's one-shot "press to start a ride" hint (T6, #684) — shown on
+    /// entry, auto-hidden after [`HINT_MS`]. A riding map's copy stays [`BrowseHint::Done`].
+    hint: BrowseHint,
+}
+
+/// How long the browse-map start hint stays up after entry, in milliseconds.
+const HINT_MS: u32 = 4_000;
+
+/// The route-less browse map's one-shot start-hint chip state (T6, #684). A fresh `MapScreen`
+/// starts [`Fresh`](BrowseHint::Fresh); its first [`tick`](BrowseHint::tick) classifies it — a
+/// browse map (not tracking) starts the timer and shows the chip, a riding map goes straight to
+/// [`Done`](BrowseHint::Done) so the chip never shows there. Re-entering the browse map is a fresh
+/// `MapScreen`, so the hint returns; a pop back from the start card is the same instance, so it
+/// doesn't reappear once expired.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum BrowseHint {
+    /// Not yet classified (a just-constructed screen).
+    #[default]
+    Fresh,
+    /// Up, armed at this boot-relative millisecond.
+    Showing(u32),
+    /// Expired or suppressed (a riding map) — never shows again on this instance.
+    Done,
+}
+
+impl BrowseHint {
+    /// Advance the hint one poll against `now_ms`. Arms on the first poll of a browse map (`!tracking`),
+    /// suppresses on a riding map, and expires [`HINT_MS`] after arming. Returns
+    /// `(changed, next_wake_ms)`: `changed` is the single repaint that clears the chip on expiry; the
+    /// residual wake keeps an event-driven host armed to fire it from warm sleep.
+    fn tick(&mut self, now_ms: u32, tracking: bool) -> (bool, Option<u32>) {
+        match *self {
+            BrowseHint::Fresh if tracking => {
+                *self = BrowseHint::Done;
+                (false, None)
+            }
+            BrowseHint::Fresh => {
+                *self = BrowseHint::Showing(now_ms);
+                (false, Some(HINT_MS))
+            }
+            BrowseHint::Showing(since) => {
+                let elapsed = now_ms.wrapping_sub(since);
+                if elapsed >= HINT_MS {
+                    *self = BrowseHint::Done;
+                    (true, None)
+                } else {
+                    (false, Some(HINT_MS - elapsed))
+                }
+            }
+            BrowseHint::Done => (false, None),
+        }
+    }
+
+    /// Whether the chip draws this frame — up while `Fresh` (the entry frame before the first tick)
+    /// or `Showing`. The caller still gates on `!tracking` / `!panning` / no higher-priority chip.
+    fn chip_up(self) -> bool {
+        matches!(self, BrowseHint::Fresh | BrowseHint::Showing(_))
+    }
 }
 
 impl MapScreen {
@@ -89,24 +147,38 @@ impl MapScreen {
     /// a minute rollover self-dirties just the [`clock_region`], and the host clips the repaint
     /// to it (the region path from #500/#513) so the map plane isn't re-rendered. When the pill is
     /// **hidden** the minute wake is not armed at all — a parked map isn't woken to no purpose.
+    #[allow(clippy::too_many_arguments)] // two timed tenants (clock overlay + browse hint) in one poll
     pub fn tick_timers(
         &mut self,
+        now_ms: u32,
         now: DateTime,
         ms_to_next_minute: u32,
         w: i32,
         pan_active: bool,
         map_clock: bool,
+        tracking: bool,
     ) -> ScreenTick {
-        if !map_clock || pan_active || w == 0 {
-            // Hidden (or no frame drawn yet): observe the minute so a later show doesn't fire a
-            // stale rollover, but claim nothing and arm no wake.
+        // Clock overlay: a minute rollover self-dirties just the pill region, armed only while the
+        // pill is visible (setting on, not panning, a frame drawn). Hidden, still observe the minute
+        // so a later show doesn't fire a stale rollover.
+        let (clk_changed, clk_wake, clk_region) = if !map_clock || pan_active || w == 0 {
             let _ = self.ticker.changed(now);
-            return ScreenTick::idle();
-        }
+            (false, None, None)
+        } else {
+            (self.ticker.changed(now), Some(ms_to_next_minute), Some(clock_region(w)))
+        };
+        // Browse-map start hint (T6 #684): the one-shot bottom chip, armed on entry and expiring
+        // HINT_MS later. Its expiry repaints the chip band + steps the scale bar back down, so it's a
+        // full-frame change (region `None`) — unlike the clock's region-clipped digit tick.
+        let (hint_changed, hint_wake) = self.hint.tick(now_ms, tracking);
+        let next_wake_ms = match (clk_wake, hint_wake) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         ScreenTick {
-            changed: self.ticker.changed(now),
-            next_wake_ms: Some(ms_to_next_minute),
-            region: Some(clock_region(w)),
+            changed: clk_changed || hint_changed,
+            next_wake_ms,
+            region: if hint_changed { None } else { clk_region },
         }
     }
 
@@ -264,15 +336,33 @@ impl MapScreen {
             draw_waypoint_chip(cv, rx.w, rx.h, rx.waypoints.as_slice()[k].name.as_str(), &dist);
         }
 
+        // Browse-map start hint (T6 #684): the lowest-priority bottom chip — `Press to start a ride`
+        // on the route-less browse map, shown on entry and auto-hidden after 4 s (the `hint` timer).
+        // Never while tracking or panning, and dropped whenever a warning / waypoint chip wants the
+        // slot (so it never collides). Its own timer drives the auto-hide; this only reads its state.
+        let hint_up =
+            !rx.activity.is_tracking() && !panning && !warning_up && wpt_chip.is_none() && self.hint.chip_up();
+        if hint_up {
+            draw_hint_chip(cv, rx.w, rx.h, rx.t(Msg::MapPressToStart));
+        }
+
         // Scale bar (bottom-left): the largest round distance that fits the target on-screen width
         // at the current zoom, in the units setting's system. Right in the corner — except while a
         // bottom chip is up (warning **or** waypoint), when it steps to just above the chip band so
         // a wide chip ("off route 153km", "◆ Pass Summit  0.4km") never runs under it. Visible in
         // pan mode too (where it's most useful) — the pan HUD's bottom chevron is centred, well
         // clear of the corner.
-        let any_chip_up = warning_up || wpt_chip.is_some();
+        // …stepped above whichever bottom chip is up. The hint's band is taller (two lines), so pass
+        // its band height rather than a bare bool, so a wide scale bar never runs under it.
+        let chip_band = if warning_up || wpt_chip.is_some() {
+            CHIP_H
+        } else if hint_up {
+            HINT_CHIP_H
+        } else {
+            0
+        };
         if rx.settings.map_scale_bar {
-            draw_scale_bar(cv, rx.h, any_chip_up, vp.meters_per_pixel(), rx.settings.units);
+            draw_scale_bar(cv, rx.h, chip_band, vp.meters_per_pixel(), rx.settings.units);
         }
 
         // Pan-mode HUD. Drawn last so it sits over the map + marker, and only while panning.
@@ -340,6 +430,54 @@ fn draw_status_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
     cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
     cv.round_outline(rect(px, py, pw, ph), 9, WARNING);
     cv.text(s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
+}
+
+/// The browse-map **start hint** band height (two [`Font::Label`] lines). Taller than the terse
+/// single-line alert chips ([`CHIP_H`]) because the full `Press to start a ride` sentence — 21 chars
+/// — cannot fit one line at 240 px in even the smallest font, so the hint wraps to two centred lines.
+const HINT_CHIP_H: i32 = 50;
+/// The per-line pitch and first-line top inset inside the two-line hint pill.
+const HINT_LINE_PITCH: i32 = 22;
+const HINT_LINE_TOP: i32 = 7;
+
+/// The browse-map **start hint** pill (T6 #684): calm ink on parchment — warning-orange stays
+/// reserved for the alert chip, matching the muted clock — at [`Font::Label`], the sentence wrapped
+/// to two centred lines (see [`HINT_CHIP_H`]). Same rounded bottom-centre pill idiom as
+/// [`draw_status_chip`], just two lines tall. Lowest chip priority; the caller only reaches here when
+/// no warning / waypoint chip is up.
+fn draw_hint_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
+    use super::palette::*;
+    let font = Font::Label;
+    let (l1, l2) = wrap2(s);
+    let tw = (text_width(l1, font) as i32).max(text_width(l2, font) as i32);
+    let pw = tw + 16;
+    let px = (w - pw) / 2;
+    let py = h - HINT_CHIP_H - CHIP_MARGIN;
+    cv.round(rect(px, py, pw, HINT_CHIP_H), 9, PARCHMENT);
+    cv.round_outline(rect(px, py, pw, HINT_CHIP_H), 9, INK);
+    cv.text(l1, Point::new(w / 2, py + HINT_LINE_TOP), font, TextAlign::Center, INK);
+    cv.text(l2, Point::new(w / 2, py + HINT_LINE_TOP + HINT_LINE_PITCH), font, TextAlign::Center, INK);
+}
+
+/// Split `s` into two balanced centred lines for the hint pill: pick the word break (space) whose
+/// resulting first line is closest to half the string (in characters), so neither line orphans a
+/// single word. A string with no space falls through as one line (never happens for the catalog
+/// copy). Char-count balance is a fine proxy for width here — the font is monospace.
+fn wrap2(s: &str) -> (&str, &str) {
+    let mid = s.chars().count() as i32 / 2;
+    let mut best: Option<(usize, i32)> = None; // (byte index of the space, |line1_len - mid|)
+    for (idx, (b, ch)) in s.char_indices().enumerate() {
+        if ch == ' ' {
+            let d = (idx as i32 - mid).abs();
+            if best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((b, d));
+            }
+        }
+    }
+    match best {
+        Some((b, _)) => (&s[..b], &s[b + 1..]),
+        None => (s, ""),
+    }
 }
 
 /// The status chip's band height and its inset from the bottom edge (above the panel frame, below
@@ -528,23 +666,24 @@ const SCALE_TARGET_MAX_PX: f32 = 90.0;
 /// The scale bar's left inset and the tick half-height.
 const SCALE_MARGIN_X: i32 = 12;
 /// Baseline inset from the bottom edge — right in the corner normally, stepped up past the chip
-/// band (its height + inset + a gap) while the warning chip is up.
+/// band (its height + inset + a gap) while a bottom chip is up.
 const SCALE_MARGIN_Y: i32 = 12;
-const SCALE_MARGIN_Y_CHIP: i32 = CHIP_H + CHIP_MARGIN + 12;
 const SCALE_TICK_H: i32 = 5;
 
 /// Draw the scale bar at the bottom-left: a horizontal ink line with end ticks and a length label,
 /// haloed in parchment so it reads over terrain. The distance is the largest 1/2/5 × 10ⁿ that fits
 /// [`SCALE_TARGET_MIN_PX`]..[`SCALE_TARGET_MAX_PX`] at the current `mpp` (metres per pixel), in the
 /// `units` system.
-fn draw_scale_bar(cv: &mut impl Surface, h: i32, chip_up: bool, mpp: f32, units: Units) {
+fn draw_scale_bar(cv: &mut impl Surface, h: i32, chip_band: i32, mpp: f32, units: Units) {
     use super::palette::*;
     let Some((bar_px, label)) = scale_bar_choice(mpp, units) else {
         return; // a degenerate zoom (non-finite mpp) — draw nothing rather than a bogus bar
     };
     let x0 = SCALE_MARGIN_X;
     let x1 = x0 + bar_px;
-    let y = h - if chip_up { SCALE_MARGIN_Y_CHIP } else { SCALE_MARGIN_Y };
+    // In the corner normally; stepped above the bottom chip band (its height + inset + a gap) when a
+    // chip is up (`chip_band > 0`) — a taller band (the two-line hint) steps the bar proportionally.
+    let y = h - if chip_band > 0 { chip_band + CHIP_MARGIN + 12 } else { SCALE_MARGIN_Y };
     // Parchment halo: the same strokes one pixel thicker/offset, drawn first.
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.line(Point::new(x0 + dx, y + dy), Point::new(x1 + dx, y + dy), PARCHMENT);
@@ -935,21 +1074,62 @@ mod tests {
     fn clock_tick_is_region_scoped_and_gated() {
         let w = 240;
         let mut scr = MapScreen::new();
+        // `tracking = true` throughout so the browse hint retires to `Done` on the first poll and
+        // never contends for the wake — this case pins the clock overlay alone.
         // First observation just initialises the baseline (no change), and arms the minute wake.
-        let t0 = scr.tick_timers(dt(14, 40), 20_000, w, false, true);
+        let t0 = scr.tick_timers(0, dt(14, 40), 20_000, w, false, true, true);
         assert!(!t0.changed);
         assert_eq!(t0.next_wake_ms, Some(20_000));
         // A minute rollover fires, region-clipped to the pill (never a full-frame None).
-        let t1 = scr.tick_timers(dt(14, 41), 60_000, w, false, true);
+        let t1 = scr.tick_timers(1_000, dt(14, 41), 60_000, w, false, true, true);
         assert!(t1.changed);
         assert_eq!(t1.region, Some(clock_region(w)));
         assert!(t1.region.unwrap().size.width < w as u32, "the pill region is a small band, not the whole width");
         // Hidden by the setting: no change, no wake, even across a rollover.
-        let off = scr.tick_timers(dt(14, 42), 60_000, w, false, false);
+        let off = scr.tick_timers(2_000, dt(14, 42), 60_000, w, false, false, true);
         assert_eq!(off, ScreenTick::idle());
         // Hidden by pan: same — the pan chevron owns the slot.
-        let panned = scr.tick_timers(dt(14, 43), 60_000, w, true, true);
+        let panned = scr.tick_timers(3_000, dt(14, 43), 60_000, w, true, true, true);
         assert_eq!(panned, ScreenTick::idle());
+    }
+
+    /// The browse-map start hint (T6 #684): the first poll of a **browse** map (not tracking) arms it
+    /// — the chip is up and a wake is asked for `HINT_MS` out — and it fires exactly one clearing
+    /// repaint at expiry, then stays down. The clock is off here (`map_clock = false`) to isolate the
+    /// hint's own wake.
+    #[test]
+    fn browse_hint_arms_on_entry_and_expires_once() {
+        let mut scr = MapScreen::new();
+        // Entry: armed, chip up, wake at HINT_MS — but nothing "changed" (it was drawn on entry).
+        let t0 = scr.tick_timers(0, dt(14, 40), 60_000, 240, false, false, false);
+        assert!(!t0.changed);
+        assert_eq!(t0.next_wake_ms, Some(HINT_MS));
+        assert!(scr.hint.chip_up(), "the chip is up on entry");
+        // Still up just before the deadline, with a shrinking residual wake.
+        let mid = scr.tick_timers(HINT_MS - 1, dt(14, 40), 60_000, 240, false, false, false);
+        assert!(!mid.changed);
+        assert_eq!(mid.next_wake_ms, Some(1));
+        assert!(scr.hint.chip_up());
+        // At the deadline: one clearing repaint (full-frame — the chip band + scale-bar step), then down.
+        let expire = scr.tick_timers(HINT_MS, dt(14, 40), 60_000, 240, false, false, false);
+        assert!(expire.changed);
+        assert_eq!(expire.region, None, "the expiry is a full-frame change, not a clock-region tick");
+        assert_eq!(expire.next_wake_ms, None);
+        assert!(!scr.hint.chip_up(), "the chip is down once expired");
+        // And it does not re-fire on a later poll (the same instance stays retired).
+        let after = scr.tick_timers(HINT_MS + 5_000, dt(14, 40), 60_000, 240, false, false, false);
+        assert!(!after.changed);
+        assert!(!scr.hint.chip_up());
+    }
+
+    /// A **riding** map (tracking) never shows the hint: the first poll retires it straight to `Done`,
+    /// so the chip is down from the start and arms no hint wake.
+    #[test]
+    fn riding_map_never_shows_the_browse_hint() {
+        let mut scr = MapScreen::new();
+        let t = scr.tick_timers(0, dt(14, 40), 60_000, 240, false, false, true);
+        assert!(!scr.hint.chip_up(), "tracking → the hint is suppressed");
+        assert_eq!(t.next_wake_ms, None, "no hint wake armed on a riding map");
     }
 
     fn wp(dist_along_m: u32, name: &str) -> WptEntry {
