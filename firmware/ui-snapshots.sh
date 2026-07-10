@@ -242,9 +242,10 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p"     --png "$OUT/map-browse.png"
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p w w w w w w" --png "$OUT/map-browse-settled.png"
 # (b) The start card (browse map → press, T6 #684): the hero bike (the selected profile's sprite +
-# colour) over its profile name, the three-row GPS / Battery / Card checklist, then Start ride / Back.
-# `--battery 45` pins the % and the `--gpx --at 30` fix makes GPS read `fix`; the second frame drops
-# the `--gpx` (no fix) so GPS reads `searching..` (and a low --battery to vary the row).
+# colour) over its profile name, the two-row GPS / Battery checklist (the static Card row dropped
+# in owner review round 1), then Start ride / Back. `--battery 45` pins the % and the `--gpx --at
+# 30` fix makes GPS read `fix`; the second frame drops the `--gpx` (no fix) so GPS reads
+# `searching..` (and a low --battery to vary the row).
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --battery 45 --script "B r r r w p p"   --png "$OUT/ride-start.png"
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --battery 8 --script "B r r r w p p"   --png "$OUT/ride-start-nofix.png"
 # (c) A route-less RIDING map (start card → Start ride): the follow map with the recorded breadcrumb,
@@ -322,7 +323,7 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p" --inject-upload 1 \
         --png "$OUT/routeswap-received-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p B p r p" --png "$OUT/routeswap-$lang.png"
-    # The ride-start card (T6 #684): the checklist labels/values (Battery/GPS/Card) are the copy to
+    # The ride-start card (T6 #684): the checklist labels/values (GPS/Battery) are the copy to
     # eyeball for clipped rows in the longer translations. --battery 100 pins the widest % value.
     "$SIM" "$MAP" --boot --lang "$lang" --battery 100 --script "B r r r w p p" --png "$OUT/ride-start-$lang.png"
     # The browse-map start hint chip (T6 #684): the two-line pill in each language, to eyeball for a

@@ -1,8 +1,9 @@
 //! The route-less **start card** — the pre-ride launchpad opened by pressing the browse Map (the
 //! Menu's Map station reached without a route). A small stack (T6, #684): the selected bike's hero
-//! sprite + its profile name, a three-row pre-ride checklist (GPS / Battery / Card), then the two
-//! option rows — **Start ride** begins a tracking session with no route attached, **Back** returns
-//! to the browse map.
+//! sprite + its profile name, a two-row pre-ride checklist (GPS / Battery — the static Card `OK`
+//! row was dropped in owner review round 1: this screen is unreachable without a mounted card, so
+//! the row informed nothing), then the two option rows — **Start ride** begins a tracking session
+//! with no route attached, **Back** returns to the browse map.
 //!
 //! Starting is a plain press, not a hold: it's reversible (the Paused page's Discard throws the
 //! fresh session away), so it needs no guard. *Start ride* takes the shared
@@ -33,8 +34,10 @@ const HERO_SCALE: i32 = 2;
 /// Top of the profile name (olive Label, centred) just below the hero.
 const NAME_TOP: i32 = 108;
 /// Top of the first checklist row, the per-row pitch, and the label/value inset from each edge (the
-/// values right-align to `w - CHECK_INSET_X`, the one shared value column).
-const CHECK_TOP: i32 = 138;
+/// values right-align to `w - CHECK_INSET_X`, the one shared value column). Dropping the Card row
+/// (owner review round 1) freed a row height; per the D5 layout rule the hero↔checklist gap absorbs
+/// the slack (138 + 26), so the checklist keeps its footing above the option block.
+const CHECK_TOP: i32 = 164;
 const CHECK_ROW_H: i32 = 26;
 const CHECK_INSET_X: i32 = 20;
 /// Top of the Start ride / Back option block, anchored so the two rows clear the bottom edge.
@@ -88,18 +91,14 @@ impl RideStartScreen {
         bike_icons::draw(cv, bike_icons::for_name(name), w / 2, HERO_TOP, HERO_SCALE, bike_icons::color_for(name));
         cv.text(name, Point::new(w / 2, NAME_TOP), Font::Label, TextAlign::Center, SUBTEXT);
 
-        // Checklist: three plain rows, label (olive) at the left inset, value (ink) right-aligned at
+        // Checklist: two plain rows, label (olive) at the left inset, value (ink) right-aligned at
         // the one shared value column. GPS reads its live fix state (the map chrome's `no_fix`);
-        // Battery the same `NN%` Home shows; Card is static `OK` — the card is mounted (this screen is
-        // unreachable without it), so it reassures without a live probe.
+        // Battery the same `NN%` Home shows. (The static Card `OK` row was dropped in owner review
+        // round 1 — the screen is unreachable without a mounted card, so it informed nothing.)
         let mut batt: heapless::String<8> = heapless::String::new();
         let _ = write!(batt, "{}%", rx.state.battery_pct);
         let gps = if rx.no_fix { rx.t(Msg::RideStartSearching) } else { rx.t(Msg::RideStartFix) };
-        let rows = [
-            (rx.t(Msg::RideStartGps), gps),
-            (rx.t(Msg::RideStartBattery), batt.as_str()),
-            (rx.t(Msg::RideStartCard), rx.t(Msg::RideStartCardOk)),
-        ];
+        let rows = [(rx.t(Msg::RideStartGps), gps), (rx.t(Msg::RideStartBattery), batt.as_str())];
         for (i, (label, value)) in rows.into_iter().enumerate() {
             let top = CHECK_TOP + i as i32 * CHECK_ROW_H;
             cv.text_vcentered(label, CHECK_INSET_X, (top, CHECK_ROW_H), Font::Label, TextAlign::Left, SUBTEXT);
