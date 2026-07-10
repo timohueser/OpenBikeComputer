@@ -9,6 +9,10 @@ import OBCTransport
 /// in as many words).
 public struct SettingsView: View {
     @Bindable private var model: SettingsModel
+    /// Push the firmware-update screen (S7). Wired by the composition root to the
+    /// navigation path; `nil` keeps the Firmware row a coming-soon placeholder
+    /// (previews / any wiring that doesn't host the update screen).
+    private let onOpenFirmwareUpdate: (() -> Void)?
     /// Debug-only: the hidden second entry into the mock dev panel (B1P's
     /// deferral) — five taps on the App version row. `nil` in Release wiring,
     /// where the gesture goes nowhere.
@@ -22,8 +26,13 @@ public struct SettingsView: View {
 
     private static let gitHubURL = URL(string: "https://github.com/timohueser/OpenBikeComputer")!
 
-    public init(model: SettingsModel, onOpenDevPanel: (() -> Void)? = nil) {
+    public init(
+        model: SettingsModel,
+        onOpenFirmwareUpdate: (() -> Void)? = nil,
+        onOpenDevPanel: (() -> Void)? = nil
+    ) {
         self.model = model
+        self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
         self.onOpenDevPanel = onOpenDevPanel
     }
 
@@ -137,14 +146,26 @@ public struct SettingsView: View {
     private var firmwareGroup: some View {
         OBCGroupedSection(
             "Firmware",
-            footer: "OTA updates will arrive in a later release. For now, flash from the desktop tool."
+            footer: onOpenFirmwareUpdate == nil
+                ? "OTA updates will arrive in a later release. For now, flash from the desktop tool."
+                : "Import an UPDATE.BIN to send new firmware to your device over Bluetooth."
         ) {
-            OBCListRow(
-                icon: "arrow.down.to.line",
-                iconColor: OBCTheme.amber,
-                label: "Update over the air",
-                comingSoon: true
-            )
+            if let onOpenFirmwareUpdate {
+                OBCListRow(
+                    icon: "arrow.down.to.line",
+                    iconColor: OBCTheme.amber,
+                    label: "Update firmware",
+                    showsChevron: true,
+                    action: onOpenFirmwareUpdate
+                )
+            } else {
+                OBCListRow(
+                    icon: "arrow.down.to.line",
+                    iconColor: OBCTheme.amber,
+                    label: "Update over the air",
+                    comingSoon: true
+                )
+            }
             OBCListRow(
                 icon: "clock",
                 iconColor: OBCTheme.parchment3,

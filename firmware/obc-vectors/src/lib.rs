@@ -111,6 +111,50 @@ pub fn config_v1() -> Vec<u8> {
     v
 }
 
+/// The `fw_version` string carried in the OBCU update-container fixture — a
+/// realistic `git describe` value the iOS picker + device DIS both display.
+pub const UPDATE_FW_VERSION: &str = "1.2.0+abc1234";
+
+/// The deterministic raw application image inside the OBCU container fixture: a
+/// 128-byte body whose first 32-bit word is a plausible Cortex-M initial stack
+/// pointer (`0x2002_0000`, inside the nRF54L15 DK RAM — see
+/// `obc_dfu::looks_like_vector_table`), then a byte ramp. Content is opaque to
+/// the transfer layer; it exists so the fixture exercises the image CRC too.
+pub fn update_raw_image() -> Vec<u8> {
+    let mut v = Vec::with_capacity(128);
+    v.extend_from_slice(&le32(0x2002_0000)); // plausible initial SP (vector-table-first)
+    for i in 4u32..128 {
+        v.push((i & 0xFF) as u8);
+    }
+    v
+}
+
+/// A full **OBCU update container** (`OBCU_Spec.md` §1, `UPDATE.BIN`): the fixed
+/// 64-byte header (magic `OBCU`, version 1, raw-image length + CRC-32, NUL-padded
+/// `fw_version`, header CRC-32 over bytes `0..60`) followed by [`update_raw_image`].
+/// Built straight from the spec's field table — independent of the `obc-dfu`
+/// production codec, which pins the same bytes from the other side. The iOS
+/// companion's `OBCUHeader` decoder validates this file identically.
+pub fn update_container_v1() -> Vec<u8> {
+    let image = update_raw_image();
+    let mut header = [0u8; 64];
+    header[0..4].copy_from_slice(b"OBCU");
+    header[4..6].copy_from_slice(&le16(1)); // header_version
+                                            // 6..8 reserved (0)
+    header[8..12].copy_from_slice(&le32(image.len() as u32));
+    header[12..16].copy_from_slice(&le32(crc32(&image)));
+    let vbytes = UPDATE_FW_VERSION.as_bytes();
+    header[16..16 + vbytes.len()].copy_from_slice(vbytes); // NUL-padded to 32
+                                                           // 48..60 reserved (0) — future signature-scheme marker
+    let hcrc = crc32(&header[..60]);
+    header[60..64].copy_from_slice(&le32(hcrc));
+
+    let mut v = Vec::with_capacity(64 + image.len());
+    v.extend_from_slice(&header);
+    v.extend_from_slice(&image);
+    v
+}
+
 /// A `transferControl` descriptor (spec §4.2): 16 bytes.
 pub fn transfer_control(op: u8, ty: u8, object_id: u16, total_len: u32, crc: u32, offset: u32) -> Vec<u8> {
     let mut v = Vec::new();
@@ -235,6 +279,10 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // Its answer: ok, detail = 3 newly-flagged rides.
         ("status-command-result-ack.bin", status_command_result(2, 0, 3)),
         ("object-store.bin", object_store(42, 3, 5)),
+        // The OBCU firmware-update container (spec §1) — a `fwImage` payload (spec
+        // §7.6, id 0): 64-byte header + a 128-byte raw image. Pinned on the device
+        // side by `obc-dfu` and on the app side by the iOS `OBCUHeader` decoder.
+        ("update-container-v1.bin", update_container_v1()),
         // Catalog for both stored route fixtures: fields from their OBCR headers
         // (distance 2207 m, ascent 76 m, 9 points), ids continuing from 7.
         (

@@ -19,10 +19,21 @@ import OBCDomain
 /// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
 /// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch (E1; `bad` → H5) |
 /// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
+/// | `-OBCFirmwareDemo` | (flag) | open the S7 firmware-update screen with a pre-staged sample update (the Files picker can't be automated) |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
-/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token), `OBC_NETWORK`.
+/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token), `OBC_NETWORK`,
+/// `OBC_FIRMWARE_DEMO=1`.
+/// How far the `-OBCFirmwareDemo` hook drives the S7 screen. Raw values are the
+/// launch tokens (`-OBCFirmwareDemo` bare = `staged`, `-OBCFirmwareDemo send`).
+public enum FirmwareDemoStage: String, Sendable, Equatable {
+    /// Pre-stage a sample update and stop — the "staged" screenshot.
+    case staged
+    /// Also fire Send, so a run walks transferring → awaiting-confirm → done.
+    case sending = "send"
+}
+
 public struct MockLaunchOptions: Equatable, Sendable {
     public var scenario: Scenario?
     public var fixtures: String?
@@ -43,6 +54,11 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// `NWPathMonitor`. Lets XCUITests exercise the fallback without real network
     /// flakiness.
     public var networkOnline: Bool?
+    /// Open the S7 firmware-update screen at launch with a pre-staged sample
+    /// update (the Files picker can't be driven from automation) — for the flow
+    /// screenshots + demos. `.staged` stops at the staged screen; `.sending`
+    /// also fires Send, so a run walks transfer → confirm → done. Debug-only.
+    public var firmwareDemo: FirmwareDemoStage?
 
     public init(
         scenario: Scenario? = nil,
@@ -52,7 +68,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         showDevPanel: Bool = false,
         showUIGallery: Bool = false,
         importSample: SampleRouteFile.Kind? = nil,
-        networkOnline: Bool? = nil
+        networkOnline: Bool? = nil,
+        firmwareDemo: FirmwareDemoStage? = nil
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -62,6 +79,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.showUIGallery = showUIGallery
         self.importSample = importSample
         self.networkOnline = networkOnline
+        self.firmwareDemo = firmwareDemo
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with
@@ -107,6 +125,20 @@ public struct MockLaunchOptions: Equatable, Sendable {
         case "online": true
         default: nil
         }
+        // Bare `-OBCFirmwareDemo` (or `OBC_FIRMWARE_DEMO=1`) stops at the staged
+        // screen; a `send` token also fires Send (unknown token → staged).
+        let firmwareDemo: FirmwareDemoStage? = {
+            if let index = arguments.firstIndex(of: "-OBCFirmwareDemo") {
+                if index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") {
+                    return FirmwareDemoStage(rawValue: arguments[index + 1]) ?? .staged
+                }
+                return .staged
+            }
+            guard let env = environment["OBC_FIRMWARE_DEMO"], !env.isEmpty, env != "0" else {
+                return nil
+            }
+            return FirmwareDemoStage(rawValue: env) ?? .staged
+        }()
 
         return MockLaunchOptions(
             scenario: scenario,
@@ -116,7 +148,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             showDevPanel: showPanel,
             showUIGallery: showGallery,
             importSample: importSample,
-            networkOnline: networkOnline
+            networkOnline: networkOnline,
+            firmwareDemo: firmwareDemo
         )
     }
 

@@ -31,6 +31,7 @@ A drift on either side fails that side's tests — the files are the contract.
 | `status-store-changed.bin` | `status` msg 2 §4.3 | route store changed, revision 42 |
 | `object-store.bin` | `objectStore` §4.5 | revision 42 · 3 routes · 5 rides |
 | `route-list.bin` | `routeList` object §7.4 | both stored route fixtures as catalog entries (ids 7 + 8, fields from their OBCR headers) |
+| `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1) | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader` |
 
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, UUIDs, and the CRC-32 check value) so a test suite can assert

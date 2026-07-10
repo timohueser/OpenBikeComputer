@@ -65,6 +65,13 @@ public final class MockControl: @unchecked Sendable {
     /// Every `ackRides` batch the transport sent, in order — the coordinator
     /// tests assert the connect-time possession ack lands here.
     private var _ackedRideBatches: [[RideID]] = []
+    /// The version string of the firmware the phone staged this session (from the
+    /// last completed `fwImage` upload) — what a modelled reboot reconnects on.
+    /// `nil` until an upload completes.
+    private var _firmwareStagedVersion: String?
+    /// What the next `installFw` request answers (S7). Default `accepted` — the
+    /// happy path, after which the modelled device reboots onto the staged version.
+    private var _firmwareInstallOutcome: FirmwareInstallResult = .accepted
 
     /// Build from a named `Scenario`, loading its fixture set and applying its knobs.
     public init(scenario: Scenario = .happyPath) {
@@ -382,6 +389,65 @@ public final class MockControl: @unchecked Sendable {
             assignedID.fulfill(objectID)
         }
         return handle
+    }
+
+    // MARK: Firmware update (S7)
+
+    /// What the next `installFw` request answers. Set from the debug panel / a
+    /// scenario to model `noStaged` / `busy` / etc.
+    public var firmwareInstallOutcome: FirmwareInstallResult {
+        get { lock.withLocked { _firmwareInstallOutcome } }
+        set { lock.withLocked { _firmwareInstallOutcome = newValue } }
+    }
+
+    /// Pace a `fwImage` upload (spec §7.6) like a route push. On completion,
+    /// remember the container's version so a modelled `installFw` reboot can
+    /// reconnect the device onto it.
+    func beginFirmwareUpload(_ container: Data) -> TransferHandle {
+        if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
+        if container.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }
+        let version = (try? StagedFirmware.validate(container))?.version
+        // Pace off the container, but never so briefly that the F bar can't be
+        // seen — a real image is ~850 KB, so a small fixture still feels like one.
+        let pacingBytes = max(container.count, 850_000)
+        let handle = startTransfer(total: pacingBytes, segments: [], rides: nil)
+        Task { [weak self] in
+            guard await handle.outcome == .completed else { return }
+            self?.lock.withLocked { self?._firmwareStagedVersion = version }
+        }
+        return handle
+    }
+
+    /// Answer an `installFw` request with the configured outcome. On `accepted`,
+    /// model the device's reboot: after a beat the link drops and comes back on
+    /// the staged version — the update view model's "done" detection.
+    func installFirmware() -> FirmwareInstallResult {
+        let outcome = lock.withLocked { _firmwareInstallOutcome }
+        if outcome == .accepted { scheduleFirmwareReboot() }
+        return outcome
+    }
+
+    /// Model the post-confirm reboot: drop the link, then reconnect reporting the
+    /// staged firmware version (DIS 0x2A26 reflects the newly-installed image).
+    /// A no-op if nothing was staged this session.
+    private func scheduleFirmwareReboot() {
+        let version = lock.withLocked { _firmwareStagedVersion }
+        guard let version else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard let self else { return }
+            connection = .outOfRange // the device reboots into the bootloader
+            try? await Task.sleep(for: .seconds(2.5))
+            let current = deviceInfo
+            deviceInfo = DeviceInfo(
+                name: current.name, firmwareVersion: version,
+                hardwareVersion: current.hardwareVersion, serial: current.serial,
+                protocolVersion: current.protocolVersion
+            )
+            connection = .connecting
+            try? await Task.sleep(for: .seconds(1))
+            connection = .connected
+        }
     }
 
     /// A committed upload landed on the (mock) device: remember the copy in the
