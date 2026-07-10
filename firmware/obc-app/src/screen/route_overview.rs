@@ -290,21 +290,35 @@ fn delete_row_y(h: i32) -> i32 {
 
 /// Draw the guarded **Delete route** row above the START button — the ride_control guarded-row
 /// idiom (a `PARCHMENT_SHADE` base filling warning-red with the live `hold` under the "Delete route"
-/// label). While the route is the active ride's (`enabled == false`) the row greys out: a faint
-/// outline carrying the reused "In use" cue in place of the label (the two don't both fit this
-/// width), and no fill draws (a hold does nothing).
+/// label). While the route is the active ride's (`enabled == false`) the row greys out with the old
+/// footer's exact disabled treatment — a dim trash + the reused "In use" cue (the label + cue don't
+/// share a 240 px line, so the cue takes the row, as the footer had it) — the same face the Ride
+/// detail's `Recording` state wears (the Q1 sibling). No fill draws; a hold does nothing.
 fn draw_delete_row(cv: &mut impl Surface, w: i32, h: i32, label: &str, in_use_cue: &str, enabled: bool, hold: f32) {
     use palette::*;
     let x = 14;
     let y = delete_row_y(h);
-    let row = rect(x, y, w - 2 * x, DELETE_ROW_H);
     if enabled {
+        let row = rect(x, y, w - 2 * x, DELETE_ROW_H);
         super::confirm_row(cv, row, true, true, hold, WARNING, 6);
         cv.text_vcentered(label, x + 12, (y, DELETE_ROW_H), Font::Body, TextAlign::Left, INK);
     } else {
-        cv.round_outline(row, 6, PARCHMENT_SHADE);
-        cv.text_vcentered(in_use_cue, w / 2, (y, DELETE_ROW_H), Font::Body, TextAlign::Center, SUBTEXT);
+        draw_trash(cv, x + 16, y + DELETE_ROW_H / 2, RULE);
+        cv.text_vcentered(in_use_cue, x + 36, (y, DELETE_ROW_H), Font::Label, TextAlign::Left, SUBTEXT);
     }
+}
+
+/// Draw a small trash-can glyph centred at `(cx, cy)` — the old Route-menu-footer glyph, carried
+/// into the delete row's disabled state so "can't delete now" keeps its established face. The Ride
+/// detail's twin — kept local so the sibling screens stay independent.
+fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
+    let (bw, bh) = (11, 12);
+    let (bx, by) = (cx - bw / 2, cy - bh / 2 + 1);
+    cv.round_outline(rect(bx, by, bw, bh), 2, color); // can body
+    cv.hline(bx - 2, by - 2, bw + 4, color); // lid
+    cv.hline(cx - 2, by - 4, 5, color); // handle
+    cv.vline(cx - 2, by + 3, bh - 5, 1, color); // ribs
+    cv.vline(cx + 2, by + 3, bh - 5, 1, color);
 }
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2

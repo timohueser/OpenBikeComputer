@@ -172,7 +172,8 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p H"   --png "$OUT/routeoverview-delete.png"
 # The Delete row greyed while riding this route: `p p p p` rides route 0 (session live), then
 # `--open-overview` reopens its overview (unreachable by gesture — the active route's overview never
-# opens from the menu), so the row dims and shows the reused "In use" cue with no fill.
+# opens from the menu), so the row wears the old footer's disabled face — a dim trash + the reused
+# left-aligned "In use" cue, no fill (the same face the Ride detail's `Recording` state shows).
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --open-overview --png "$OUT/routeoverview-delete-active.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
 # --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
