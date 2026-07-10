@@ -33,7 +33,7 @@ pub mod stat_fields;
 pub mod wall_clock;
 
 pub use activity::{Activity, DfuAction, Mode, NavRequest, TrackAction};
-pub use app::{App, AppState, CameraMode, Pan, PanAxis};
+pub use app::{App, AppState, CameraMode, Pan, PanAxis, NAV_PREVIEW_MAX};
 pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;
 pub use dfu::{DfuFailure, DfuScanError, DfuScanReport};

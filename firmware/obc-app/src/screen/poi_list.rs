@@ -294,19 +294,11 @@ pub(super) fn draw_bearing_arrow(
     };
     let tip = end(c, theta, rf);
     let tail = end(c, theta + core::f32::consts::PI, rf);
-    stroke2(cv, tail, tip, palette::WOOD);
+    super::stroke2(cv, tail, tip, palette::WOOD);
     // Barbs off the tip at ±135° from the direction, ~3/4 of the half-size long.
     for da in [3.0 * FRAC_PI_4, -3.0 * FRAC_PI_4] {
-        stroke2(cv, tip, end(tip, theta + da, rf * 0.75), palette::WOOD);
+        super::stroke2(cv, tip, end(tip, theta + da, rf * 0.75), palette::WOOD);
     }
-}
-
-/// Doubled-1-px stroke: the segment plus a twin offset 1 px across its dominant axis — the
-/// panel's 2 px line idiom (no thick-line primitive on the canvas).
-fn stroke2(cv: &mut impl Surface, a: Point, b: Point, color: u16) {
-    cv.line(a, b, color);
-    let off = if (b.x - a.x).abs() > (b.y - a.y).abs() { Point::new(0, 1) } else { Point::new(1, 0) };
-    cv.line(a + off, b + off, color);
 }
 
 /// Fit `s` into `max` chars, appending ".." when truncated (no ellipsis glyph). Truncates on a char

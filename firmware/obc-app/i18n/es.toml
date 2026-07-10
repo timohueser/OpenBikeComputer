@@ -299,6 +299,7 @@ bike_type = "TIPO BICI"
 start_ride = "EMPEZAR"
 loading_profile = "Cargando"
 delete = "Borrar ruta"
+new_route = "NUEVA RUTA"
 
 # --- Route-received / route-updated popups ---
 [route_received]

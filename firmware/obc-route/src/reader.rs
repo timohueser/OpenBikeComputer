@@ -341,6 +341,50 @@ impl<'a> RouteReader<'a> {
         }
         decode_chunk_from(self.src, m, n, out)
     }
+
+    /// The route's polyline decimated to at most `N` points — uniform by point index, the first
+    /// and last point always kept — the computed-route overview's shape-preview seam (#685 §4:
+    /// the host hands the app this bounded copy; ≤ 64 points is plenty for a ~212×90 px sketch).
+    ///
+    /// Streams every chunk once in route order (a chunk seam's shared point is skipped, so the
+    /// walk is over **distinct** points, matching the segment prefix sums) — call it once per
+    /// plan, never per frame. A chunk that fails to decode is skipped: the preview just loses
+    /// its points (a sketch, not navigation data).
+    pub fn preview_polyline<const N: usize>(&self) -> Vec<(i32, i32), N> {
+        let mut out: Vec<(i32, i32), N> = Vec::new();
+        // Distinct points = total segments + 1 (`cum_seg`'s trailing entry); an index with no
+        // chunks has nothing to walk.
+        if self.idx.index.is_empty() || N == 0 {
+            return out;
+        }
+        let total = *self.idx.cum_seg.last().unwrap_or(&0) as usize + 1;
+        let keep = N.min(total);
+        let mut kept = 0usize; // points pushed so far
+        let mut next = 0usize; // distinct-point index of the next kept point
+        let mut gi = 0usize; // running distinct-point index
+        let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
+        for k in 0..self.idx.index.len() {
+            if self.decode_chunk(k, &mut buf).is_err() {
+                continue;
+            }
+            // Chunk k>0 re-decodes chunk k−1's last point as its anchor — skip the duplicate.
+            let skip = usize::from(k > 0);
+            for p in buf.iter().skip(skip) {
+                if gi == next {
+                    let _ = out.push((p.lon, p.lat));
+                    kept += 1;
+                    if kept == keep {
+                        return out;
+                    }
+                    // The j-th kept point sits at j × (total−1) / (keep−1): endpoints exact,
+                    // the rest an even stride (keep ≥ 2 here — keep == 1 returned above).
+                    next = kept * (total - 1) / (keep - 1);
+                }
+                gi += 1;
+            }
+        }
+        out
+    }
 }
 
 /// Decode chunk `m` (its `n` points) from `src` into the already-cleared `out`: the anchor,
