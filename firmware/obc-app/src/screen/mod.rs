@@ -28,6 +28,7 @@ use crate::settings::{DateTime, Settings, Units};
 use crate::{t, Msg};
 
 mod climb;
+mod dfu;
 mod home;
 mod list;
 mod map;
@@ -49,6 +50,7 @@ mod statistics;
 mod warning;
 
 pub use climb::ClimbScreen;
+pub use dfu::{DfuCheckScreen, DfuConfirmScreen, DfuErrorScreen, DfuProgressScreen, DfuUpdatedScreen};
 pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::{MapScreen, ROUTE_WEIGHT};
@@ -67,7 +69,7 @@ pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AddFieldScreen, BikeTypeScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, LanguageScreen, PowerScreen,
-    ResetScreen, SettingsScreen, StatFieldsScreen, StatsScreen, UnitsScreen,
+    ResetScreen, SettingsScreen, StatFieldsScreen, StatsScreen, SystemScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use warning::{WarningFlags, WarningScreen};
@@ -422,7 +424,25 @@ screens! {
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Settings,
+    /// The System settings screen (epic #615 S5): the "Install update from card" door into the
+    /// SD-sideload firmware-update flow.
+    System(SystemScreen) => Settings,
     Reset(ResetScreen) => Settings,
+    /// The "Checking card..." scan wait (epic #615 S5): a spinner up while the board validates
+    /// `UPDATE.BIN`; the board's answer replaces it with the confirm screen or an error card.
+    DfuCheck(DfuCheckScreen) => Nav,
+    /// The install confirm (epic #615 S5): installed → update versions, the no-undo / same-version
+    /// warnings, and the standard two-row Install / Cancel chrome.
+    DfuConfirm(DfuConfirmScreen) => Nav,
+    /// The "Preparing update..." progress spinner (epic #615 S5): up while the drain snapshots the
+    /// rollback + arms; the board reboots into the bootloader when the arm lands.
+    DfuProgress(DfuProgressScreen) => Nav,
+    /// The scan-error card (epic #615 S5): a typed [`DfuScanError`](crate::dfu::DfuScanError) as a
+    /// plain sentence; Back dismisses.
+    DfuError(DfuErrorScreen) => Nav,
+    /// The one-time "Updated to vX" post-update toast (epic #615 S5), host-pushed on the first
+    /// healthy boot after an update.
+    DfuUpdated(DfuUpdatedScreen) => Nav,
 }
 
 impl Screen {
@@ -504,6 +524,11 @@ impl Screen {
             // region — the spinning needle's disc — so the multi-second plan's repaints stay
             // region-cheap (#500 follow-up).
             Screen::NavPlanning(s) => s.tick_timers(now_ms, w, h),
+            // The DFU wait spinners (epic #615 S5): free-run at frame cadence, reporting the
+            // needle disc as their dirty region like the nav planner, until the board's answer /
+            // reboot replaces them.
+            Screen::DfuCheck(s) => s.tick_timers(now_ms, w, h),
+            Screen::DfuProgress(s) => s.tick_timers(now_ms, w, h),
             _ => ScreenTick::idle(),
         }
     }
