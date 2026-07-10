@@ -78,6 +78,28 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedSto
             }
             Err(_) => (CommandStatus::Error, 0, None), // count promises more ids than the write carries
         },
+        (obc_ble::CMD_INSTALL_FW, _) => {
+            // installFw (epic #615 S6, #621): request the on-glass-confirmed install of the staged
+            // /UPDATE.BIN. Answer from cheaply-knowable edge state only — `busy` (a ride recording or an
+            // install already pending) and `noStaged` (a card-root existence check); the multi-second
+            // OBCU CRC scan is NOT run here (it belongs to the on-device flow), so `invalid` is never
+            // produced — the handler accepts and the scan surfaces a bad image on glass. On `ok` it
+            // posts a request the ride loop drains into `App::open_remote_dfu_check` — push the
+            // "Checking card..." wait + post `DfuAction::Scan`, the System menu's press arriving over
+            // the air — and nothing more. It never posts `DfuAction::Install` (that stays the confirm
+            // screen's press and the physical debug link's): the command never waits for the human and
+            // never arms/reboots on its own (spec §4.4 security posture — no silent installs, ever).
+            let has_staged = store.borrow().update_staged(shared);
+            let busy = state::recording() || crate::object_store::dfu_install_pending();
+            let status = obc_ble::install_fw_reply(has_staged, busy, false);
+            if matches!(status, CommandStatus::Ok) {
+                crate::object_store::request_dfu_install_ble();
+                info!("ble: [cmd] installFw accepted — install request posted (awaits on-glass confirm)");
+            } else {
+                info!("ble: [cmd] installFw rejected: {}", status.as_u8());
+            }
+            (status, 0, None)
+        }
         _ => (CommandStatus::UnknownCommand, 0, None),
     };
     CommandOutcome {
@@ -120,6 +142,14 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut Sha
     match (desc.op, desc.ty) {
         (Op::Upload, ObjectType::Echo) => TransferDisposition::Arm(Armed::Echo(desc)),
         (Op::Upload, ObjectType::Route) => match store.borrow_mut().upload_open(shared, &desc) {
+            Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
+            Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
+        },
+        // A firmware update image (epic #615 S6, #621): the size guard rejects an oversize object at
+        // announce, before any byte streams; a committed transfer promotes to /UPDATE.BIN (staging,
+        // not installing — see `fwimage_finish` + the `installFw` command). Same `Armed::Upload` arm as
+        // a route — the CoC streaming is identical; only the commit target differs (`desc.ty`).
+        (Op::Upload, ObjectType::FwImage) => match store.borrow_mut().fwimage_open(shared, &desc) {
             Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
             Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
         },

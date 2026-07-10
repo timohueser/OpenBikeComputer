@@ -59,6 +59,10 @@ pub use state::wait_status_change;
 // and rings the Bluetooth screen's Forget-phone request; the lifecycle loop below honours both.
 pub use state::{request_forget_bond, set_radio_enabled};
 
+// The ride-recording mirror (S6, #621): the ride loop pushes `is_tracking()` each pass; the
+// `installFw` command handler reads it as the `busy` gate's "a ride is recording" input.
+pub use state::set_recording;
+
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 

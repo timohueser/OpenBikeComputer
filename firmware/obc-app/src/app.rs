@@ -1483,6 +1483,43 @@ impl App {
         self.activity.request_dfu(crate::activity::DfuAction::Install);
     }
 
+    /// Open the on-glass DFU check flow from a **remote** request — the BLE `installFw` command
+    /// (epic #615 S6, #621): push the "Checking card..." wait and post
+    /// [`DfuAction::Scan`](crate::activity::DfuAction), exactly the System menu's press arriving
+    /// over the air. **Never `Install`** — a remote request can only open the scan → confirm flow;
+    /// the encoder press on the confirm screen is what posts the arm (spec §4.4: the phone can
+    /// request, only the rider installs; the direct-Install path stays the physical debug link's).
+    ///
+    /// Returns `true` when the flow opened (the board consumes its pending request); `false`
+    /// **defers** — the board keeps the request pending and retries next pass, so an inconvenient
+    /// moment delays the card, never drops or force-installs it. Deferred while:
+    /// - the passkey card is up or a hold is charging (the
+    ///   [`reconcile_update_toast`](App::reconcile_update_toast) politeness — never cover the
+    ///   pairing code, never land mid-hold),
+    /// - a DFU screen (check / confirm / progress / error) is already on the stack — never
+    ///   double-open, and never yank a flow the rider opened from the menu themself,
+    /// - a [`DfuAction`] is already posted but undrained (don't overwrite a phase in flight),
+    /// - a ride is recording (defensive: the BLE edge already answered `busy`, but recording can
+    ///   start between that reply and this drain).
+    pub fn open_remote_dfu_check(&mut self) -> bool {
+        let dfu_screen_up = self.stack.iter().any(|s| {
+            matches!(s, Screen::DfuCheck(_) | Screen::DfuConfirm(_) | Screen::DfuProgress(_) | Screen::DfuError(_))
+        });
+        if self.passkey_card_up()
+            || self.hold_charging()
+            || dfu_screen_up
+            || self.activity.has_dfu_request()
+            || self.activity.is_tracking()
+        {
+            return false;
+        }
+        self.activity.request_dfu(crate::activity::DfuAction::Scan);
+        let r = self.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
+        debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+        self.map_dirty = true;
+        true
+    }
+
     /// Drain the pending [`DfuAction`](crate::activity::DfuAction) — the board's per-pass one-shot,
     /// like [`take_nav_request`](App::take_nav_request). `Some(Scan)` runs the read-only validation
     /// and answers via [`notify_dfu_scan_result`](App::notify_dfu_scan_result); `Some(Install)`
@@ -4126,6 +4163,72 @@ mod tests {
             Screen::DfuError(e) => assert_eq!(e.error(), DfuScanError::TooFragmented),
             _ => panic!("Err swaps the wait for the error card"),
         }
+    }
+
+    /// The S6 remote-check seam (epic #615 S6, #621): a BLE `installFw` opens the **same** scan →
+    /// confirm flow the System menu's press does — push the DfuCheck wait + post
+    /// [`DfuAction::Scan`], never `Install` — exactly once per accepted call.
+    #[test]
+    fn remote_dfu_check_opens_scan_flow_once() {
+        use crate::activity::DfuAction;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        assert!(app.open_remote_dfu_check(), "an idle app opens the flow");
+        let checks = app.stack.iter().filter(|s| matches!(s, Screen::DfuCheck(_))).count();
+        assert_eq!(checks, 1, "exactly one wait screen pushed");
+        assert_eq!(app.take_dfu_request(), Some(DfuAction::Scan), "a Scan is posted — NEVER Install");
+        assert_eq!(app.take_dfu_request(), None, "…exactly once");
+    }
+
+    /// Remote-check deferral behind the passkey card (S6, #621): the request is *deferred*, not
+    /// dropped — `open_remote_dfu_check` returns `false` (the board keeps its pending flag and
+    /// retries), posts nothing, pushes nothing; once the card clears, the same call opens the flow.
+    #[test]
+    fn remote_dfu_check_defers_behind_the_passkey_card() {
+        use crate::activity::DfuAction;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(123_456)));
+        assert!(!app.open_remote_dfu_check(), "deferred while the pairing code shows");
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuCheck(_))), "nothing pushed");
+        assert_eq!(app.take_dfu_request(), None, "nothing posted");
+        // The card clears (pairing completed/failed) → the retried drain opens the flow.
+        app.stack.pop();
+        assert!(app.open_remote_dfu_check(), "opens once the card cleared");
+        assert!(matches!(app.top_screen(), Screen::DfuCheck(_)));
+        assert_eq!(app.take_dfu_request(), Some(DfuAction::Scan));
+    }
+
+    /// Remote-check never double-opens (S6, #621): while any DFU screen is on the stack — the wait
+    /// a previous call (or the rider's own menu press) pushed, or the confirm it swapped into — a
+    /// further remote request defers rather than stacking a second flow. Recording defers too
+    /// (defensive: the BLE edge answers `busy`, but recording can start between reply and drain).
+    #[test]
+    fn remote_dfu_check_never_double_pushes_and_defers_while_recording() {
+        use crate::activity::DfuAction;
+        // A remote-opened flow blocks a second remote open — even after its Scan drained.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        assert!(app.open_remote_dfu_check());
+        assert!(!app.open_remote_dfu_check(), "undrained Scan + wait screen ⇒ deferred");
+        assert_eq!(app.take_dfu_request(), Some(DfuAction::Scan), "the one Scan");
+        assert!(!app.open_remote_dfu_check(), "wait screen still up ⇒ still deferred");
+        assert_eq!(app.stack.iter().filter(|s| matches!(s, Screen::DfuCheck(_))).count(), 1);
+
+        // The rider's own confirm screen (menu-opened flow) blocks a remote open the same way.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mk = |v: &str| {
+            let mut s = heapless::String::new();
+            let _ = s.push_str(v);
+            s
+        };
+        let report = crate::dfu::DfuScanReport { installed: mk("v1"), staged: mk("v2"), first_install: false };
+        let _ = app.stack.push(Screen::DfuConfirm(crate::screen::DfuConfirmScreen::new(report)));
+        assert!(!app.open_remote_dfu_check(), "a confirm on the stack ⇒ deferred, never yanked");
+        assert_eq!(app.take_dfu_request(), None);
+
+        // Recording defers (the arm ends in a reboot — a live ride would be lost).
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.activity.start_session();
+        assert!(!app.open_remote_dfu_check(), "deferred while recording");
+        assert_eq!(app.take_dfu_request(), None);
     }
 
     /// The post-update toast (epic #615 S5): a confirmed-update fact surfaces the "Updated to vX"

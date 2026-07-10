@@ -106,7 +106,7 @@ Control service is encrypted once bonding lands (§8).
 
 | Characteristic | UUID | Value |
 |---|---|---|
-| Firmware Revision String | `0x2A26` | UTF-8 semver of the firmware, e.g. `0.4.0` |
+| Firmware Revision String | `0x2A26` | UTF-8 version of the **running** image, e.g. `0.4.0+abc1234`; after a confirmed DFU it reflects the newly-installed image (the app's device-version display, §7.6) |
 | Hardware Revision String | `0x2A27` | UTF-8 board id, e.g. `nrf54l15-dk`, `obc-lm20-r1` |
 | Serial Number String | `0x2A25` | 16 uppercase hex digits — the nRF `FICR.DEVICEID` |
 
@@ -173,7 +173,7 @@ Every bulk payload is a typed **object**:
 | `2` | `ride` | device → app | ride object v1, §7.2 |
 | `3` | `config` | — | reserved on the CoC; Config crosses GATT (§3.3) |
 | `4` | `diagnostics` | device → app | diagnostics blob, §7.5 |
-| `5` | `firmware` | — | **reserved** for OTA (M4); no layout in this spec |
+| `5` | `fwImage` | app → device (upload) | a complete `UPDATE.BIN` OBCU update image, §7.6 |
 | `6` | `routeList` | device → app | list object, §7.4 |
 | `7` | `rideList` | device → app | list object, §7.4 |
 | `8` | `echo` | both | dev/test only: device streams back what it received (A5's loopback) |
@@ -192,8 +192,10 @@ Conventions:
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
   object atomically (commit-then-swap; a failed CRC never touches the old copy).
-- Objects that exist once (`routeList`, `rideList`, `diagnostics`, `echo`) use
-  object id `0`.
+- Objects that exist once (`routeList`, `rideList`, `diagnostics`, `echo`, and
+  the `fwImage` staging slot) use object id `0`. A `fwImage` upload is a
+  singleton stage: the app sends object id `0`, the device assigns no id and the
+  `transferResult` echoes `0` (§7.6).
 - Ids `0xFF00`–`0xFFFE` are a **session-scoped** band for objects that exist on
   storage without a device-assigned identity (side-loaded dev files). They are
   valid transfer targets within a connection but must never be persisted by the
@@ -260,6 +262,19 @@ it, so updating a stored (or actively-navigated) route never hits the cap. The
 app surfaces this as "delete routes on the device"; the reference cap is 64
 routes.
 
+**`fwImage` staging (M4).** A `fwImage` upload (§7.6) stages a firmware update
+image to the card over the existing transfer machinery unchanged — whole-object
+CRC-32 at commit, no partial resume (an update is ~900 KB ≈ a large route). Two
+`fwImage`-specific rules ride the same descriptor path: (1) an announced
+`total_len` past the device's update-slot ceiling is rejected at the
+`transferControl` write with `error`, **before any bytes stream** — the ~900 KB
+would otherwise transfer only to fail at commit; and (2) a CRC-verified commit
+promotes the staged bytes to `/UPDATE.BIN` in the card root, **overwriting any
+existing `UPDATE.BIN`**. A torn or CRC-failed transfer leaves no visible
+`UPDATE.BIN` (the same commit-then-swap invisibility routes use). Staging does
+**not** install — installation is the separate, physically-confirmed `installFw`
+command (§4.4).
+
 ### 4.3 `status` — typed device → app notifications
 
 Every `status` notification is one message: a `u8` discriminator + fixed body.
@@ -303,7 +318,8 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 |---|---|---|---|
 | `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`); bumps the store revision. Ride (`2`) deletion over the link is **reserved** — the reference firmware answers `notFound`: rides are deleted only on the device itself (its Rides screen), and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
 | `2` | `ackRides` | `count u8 · count × object_id u16` | the app's **ride-possession ack**: the device marks every listed ride id it still stores as synced ("downloaded at least once"). `commandResult.detail` = the newly-flagged count (saturating at 255); a flag change bumps the **ride** store revision. See below |
-| `3`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
+| `3` | `installFw` | none (`cmd` byte only) | ask the device to install the staged `UPDATE.BIN` — runs the on-device scan + **on-glass confirm** flow (see below). The command only *requests*; it never waits for the human and never installs on its own |
+| `4`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
 
 **`ackRides` — possession reconciliation.** The device keeps a per-ride
 "synced" flag (it drives the delete-guard cue on the device's Rides screen).
@@ -327,6 +343,43 @@ connect (and after edits, as it likes). Rules:
 - **Unknown ids are ignored**, answered `ok`: the app may hold rides the
   device has since deleted. `error` is answered only for a malformed write
   (`count` promising more ids than the write carries).
+
+**`installFw` — install the staged update (M4).** After a `fwImage` upload
+(§7.6) lands `/UPDATE.BIN` on the card, the app sends `installFw` to ask the
+device to install it. The command returns as soon as the request is **accepted**
+— it does *not* wait for the human. The device then runs its on-device flow:
+scan + validate the staged image, show a **confirm card**, and install only on a
+physical **encoder press** by the rider. The reply codes map onto the existing
+`commandResult` status vocabulary (§4.3) — no new status byte:
+
+| `installFw` outcome | `commandResult.status` | Meaning |
+|---|---|---|
+| `ok` | `ok` (0) | request accepted — the device opens its on-glass check → confirm flow promptly (it may briefly wait for the screen to be free, e.g. an active pairing card) |
+| `noStaged` | `notFound` (2) | no `UPDATE.BIN` on the card to install |
+| `busy` | `busy` (3) | a ride is recording, or an install request is already pending |
+| `invalid` | `error` (4) | the staged image is already known-unusable |
+
+Precedence when several apply: **`busy` > `noStaged` > `invalid` > `ok`**. The
+device answers from **cheaply-knowable** edge state only: `busy` (recording /
+pending) and `noStaged` (a card-root existence check) are cheap; the full
+multi-second CRC scan is **not** run inside the command handler, so the reference
+firmware never returns `invalid` here — it accepts (`ok`) and lets the
+on-device scan surface a bad image on the confirm card. `invalid` is reserved for
+a device that *can* cheaply reject a stage. A device that predates the command
+answers `unknown` (§4.4 compat), which the app reads as "this device can't be
+updated over BLE".
+
+**Security posture — no silent installs, ever.** Staging a `fwImage` over BLE is
+authenticated only by the bonded, encrypted link (§8): a paired phone can drop an
+image on the card, nothing more. **Installing** is gated on **physical
+confirmation at the device** — the encoder press on the confirm card, symmetric
+with the pairing-passkey pattern (the phone can request, only the rider at the
+device acts). `installFw` therefore never arms or reboots on its own; it posts a
+request the on-device confirm flow must approve. Image authenticity beyond the
+link is out of scope for v1 (CRC-32 integrity only, no signature — matching the
+SD-sideload contract): physical possession of the card is already root on an open
+device, so the install-time gate is the human, not a cryptographic signature
+(`OBCU_Spec.md` reserves header bytes for a future signature scheme).
 
 ### 4.5 `objectStore` — the store digest
 
@@ -441,6 +494,11 @@ Config v1:
 The append-only rule is the version mechanism: fields are never reordered or
 resized, only appended, and absent trailing fields mean "device default".
 
+The Config object carries **no firmware-version field** (issue #622): the running
+image's version is the DIS **Firmware Revision String** (§3.1, `0x2A26`), which
+the app already reads on connect and which reflects the newly-installed image
+after a confirmed DFU. Duplicating it here would only risk the two disagreeing.
+
 ### 7.4 `routeList` / `rideList` — list objects
 
 Downloaded over the CoC (they outgrow the 512-byte ATT cap fast). Shared
@@ -492,6 +550,37 @@ No binary layout is pinned — it is a human-readable debugging artifact, not an
 Downloaded over the CoC like any object (object id `0`); may be empty
 (`total_len = 0`). The A9 soak rig reads it after every scenario and reconciles
 these counters with its own observations.
+
+### 7.6 `fwImage` — a firmware update image
+
+A `fwImage` object's payload is **exactly the bytes of an `UPDATE.BIN` OBCU
+container** — a 64-byte header (magic, raw-image length + CRC-32, `git describe`
+version string, header CRC-32) followed by the raw application image. The
+container format is normative in [`OBCU_Spec.md`](OBCU_Spec.md); the transfer
+layer stays **format-blind** — the container is self-describing and its internals
+are opaque to the protocol (§1 principle 2), exactly as a route's OBCR bytes are.
+The device writes the payload to the card verbatim and hands it to the bootloader
+unchanged.
+
+- **Direction**: app → device only (upload). There is no download direction — the
+  running firmware's version is read from DIS (§3.1), not by fetching the image.
+- **Singleton stage**: the app uploads with object id `0`; the device assigns no
+  id and the `transferResult` echoes `0`. There is one staging slot on the card.
+- **Commit**: a CRC-verified commit promotes the staged bytes to `/UPDATE.BIN` in
+  the card root, **replacing any existing `UPDATE.BIN`**. A torn or CRC-failed
+  transfer never becomes a visible `UPDATE.BIN` (§4.2).
+- **Size**: an announced object past the device's update-slot ceiling is rejected
+  at announce with `error`, before any bytes stream (§4.2).
+- **Install is separate**: staging never installs. Installation is the
+  physically-confirmed `installFw` command (§4.4). This mirrors the SD-sideload
+  contract — the same `/UPDATE.BIN` a user could copy onto the card by hand.
+
+**The running firmware version is not in a CoC object.** The connected device's
+running version is the **DIS Firmware Revision String** (§3.1, `0x2A26`), read
+over an open characteristic before or after pairing; after a confirmed update it
+reflects the newly-installed image on the next connect. The app displays that —
+there is no `fwImage` metadata object and no version field duplicated into the
+Config object (§7.3).
 
 ---
 
@@ -587,6 +676,11 @@ repin by design:
    CRC-32/IEEE (§6), the 244-byte chunk preference (§3.4), `protocol_version
    = 1` (§1), device name in Config / Delta 1 (§7.3), and phone-side GPX+TCX
    conversion / Delta 2 (§7.1).
+7. **New for M4 DFU** (no mirror entry yet — S7 adds it): the `fwImage` object
+   type (id `5`, §7.6, app → device upload of an `UPDATE.BIN`) and the
+   `installFw` command (cmd `3`, §4.4). Both are additive (a new object-type id
+   and a new command id do not bump `protocol_version`, §1); the app reads the
+   device's running version from DIS (§3.1), not a new object.
 
 ## Reference implementation
 

@@ -166,6 +166,52 @@ pub(crate) async fn wait_ride_saved() {
     RIDE_SAVED.wait().await
 }
 
+// ==================== BLE-initiated DFU install request (S6, #621) ====================
+//
+// The BLE→ride-loop half of the DFU seam: the `installFw` command handler ([`ble::control`]) posts an
+// install request here; the ride loop drains it into the **on-glass flow** via
+// [`App::open_remote_dfu_check`](obc_app::App::open_remote_dfu_check) — push the "Checking card..."
+// wait + post `DfuAction::Scan`, the System menu's press arriving over the air, **never**
+// `DfuAction::Install` (spec §4.4: the phone can request, only the rider installs; direct Install
+// stays the physical debug link's and the confirm screen's). The drain is a *deferral*, not a
+// take-and-hope: the flag is consumed only once the flow actually opened, so a request landing while
+// the passkey card is up (or a DFU screen is already showing) stays pending — which also keeps
+// [`dfu_install_pending`]'s `busy` answer accurate while it waits — and opens at the next drainable
+// pass. Posting records **intent only**; the BLE command never waits for the human and never installs
+// on its own (spec §4.4 security posture).
+//
+// Same lock-free module-static hand-off as [`STORE_CHANGED`]: the store lives behind the BLE plane's
+// `RefCell`, the app in the ride loop. `Relaxed` suffices — both are cooperative futures on the one
+// executor.
+
+/// A BLE `installFw` request, posted but not yet drained by the ride loop.
+static DFU_INSTALL_REQ: AtomicBool = AtomicBool::new(false);
+
+/// Post a BLE-initiated install request (the `installFw` command handler). Wakes a parked ride loop
+/// through the store wake ([`STORE_WAKE`]) so it drains promptly and the check → confirm flow appears
+/// without waiting for an unrelated event (the #450 rescan-wake pattern — an `installFw` commit is a
+/// store movement in spirit even though `/UPDATE.BIN` isn't a listed object, so it never bumps the
+/// revision).
+pub(crate) fn request_dfu_install_ble() {
+    DFU_INSTALL_REQ.store(true, Ordering::Relaxed);
+    STORE_WAKE.signal(());
+}
+
+/// Whether a BLE install request is posted but undrained — the `installFw` `busy` gate's "an install
+/// request is already pending" input (read at the BLE edge, spec §4.4). Stays `true` through a
+/// deferral (the ride loop consumes only once the on-glass flow opens), so a second `installFw`
+/// while the first waits behind e.g. the passkey card is answered `busy`, not double-queued.
+pub(crate) fn dfu_install_pending() -> bool {
+    DFU_INSTALL_REQ.load(Ordering::Relaxed)
+}
+
+/// Consume the pending BLE install request — called by the ride loop **after**
+/// [`App::open_remote_dfu_check`](obc_app::App::open_remote_dfu_check) returned `true` (the flow
+/// opened); on a deferral the flag is left set and the drain retries next pass.
+pub(crate) fn take_dfu_install_ble() -> bool {
+    DFU_INSTALL_REQ.swap(false, Ordering::Relaxed)
+}
+
 // ==================== settings-coherence signals (#456) ====================
 //
 // Settings are the one thing both thread-mode planes edit: the ride loop (the on-device Settings
@@ -626,6 +672,56 @@ impl ObjectStore {
                 (rx.object_id(), TransferStatus::Error)
             }
         }
+    }
+
+    // ==================== fwImage staging (epic #615 S6, #621) ====================
+
+    /// Validate + arm a `fwImage` upload (spec §4.2 / §7.6): the announce-time size guard — reject an
+    /// object past [`MAX_IMAGE_LEN`](obc_dfu::MAX_IMAGE_LEN) with `error` **before any byte streams**
+    /// (a ~900 KB update must not transfer only to fail at commit) — then a fresh [`Receiver`]. The SD
+    /// temp opens on the first CoC byte via [`upload_begin`](Self::upload_begin), exactly like a route,
+    /// so an armed-but-never-opened transfer holds no handle. A `fwImage` carries no object id and no
+    /// catalog slot: [`fwimage_finish`](Self::fwimage_finish) promotes it to `/UPDATE.BIN` in the card
+    /// root, not into the route catalog.
+    pub fn fwimage_open(&mut self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+        if let Some(status) = TransferStatus::fwimage_announce_reject(desc.total_len, obc_dfu::MAX_IMAGE_LEN) {
+            return Err(status);
+        }
+        // No card ⇒ nowhere to stage; answer now rather than after the CoC opens.
+        if shared.storage.is_none() {
+            return Err(TransferStatus::Error);
+        }
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// All bytes arrived: verify the whole-object CRC (via the [`Receiver`] outcome, same as a route)
+    /// and, on a match, promote the staged temp to `/UPDATE.BIN` in the card root, **overwriting any
+    /// existing one** ([`Storage::commit_fwimage`]). A CRC mismatch discards the temp and leaves no
+    /// `/UPDATE.BIN` — nothing durable. Returns the wire [`TransferStatus`] for the `transferResult`.
+    ///
+    /// Deliberately does **not** bump the store revision or notify `storeChanged`: `/UPDATE.BIN` is not
+    /// a listed object, and staging is not installing — the install is armed later by the
+    /// `installFw` command's on-glass-confirmed request, never by this commit (spec §7.6).
+    pub fn fwimage_finish(&mut self, shared: &mut SharedStore, rx: &Receiver) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        if outcome.status != TransferStatus::Committed {
+            self.upload_discard(shared); // CRC mismatch / not committed ⇒ no UPDATE.BIN
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        match storage.commit_fwimage() {
+            Some(_len) => TransferStatus::Committed,
+            None => TransferStatus::Error, // invalid OBCU container or a torn promote (temp dropped)
+        }
+    }
+
+    /// Whether a staged `/UPDATE.BIN` exists in the card root — the `installFw` `noStaged` cheap
+    /// existence check (spec §4.4). Purely presence; the full CRC scan is the on-device flow's.
+    pub fn update_staged(&self, shared: &SharedStore) -> bool {
+        shared.storage.as_ref().is_some_and(|s| s.has_update_bin())
     }
 
     // ==================== downloads ====================
