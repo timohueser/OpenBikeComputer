@@ -419,14 +419,16 @@ pub(crate) struct SharedStore {
 /// The shared-store handle threaded into [`ride::run_app`] and the BLE object plane (#270).
 pub(crate) type SharedStoreMutex = Mutex<NoopRawMutex, SharedStore>;
 
-/// Spawn-trampoline for the BLE stack (#270). [`ble::run`]'s future is ~31 KB; constructing its
-/// spawn token materializes that future as a **stack temporary in the constructing function's poll
-/// frame** — and Rust allocates a poll frame's full slot set at entry, so doing it in `main` cost
-/// `main` a ~31 KB frame from its first instruction and overflowed the combined build's ~40 KB
-/// stack before boot even reached the SD card (caught by DWT watchpoint: stack frames overwriting
-/// `.bss` task pools → a bogus "Busy" at the com_task spawn). This tiny task is polled directly by
-/// the executor at ~2 KB depth, where the one-shot 31 KB construction temporary is harmless; its
-/// own pool static holds just the arguments until the inner spawn moves them into `ble::run`'s.
+/// Spawn-trampoline for the BLE stack (#270). Constructing [`ble::run`]'s spawn token
+/// materializes its future as a **stack temporary in the constructing function's poll frame** —
+/// and Rust allocates a poll frame's full slot set at entry, so when that future was ~31 KB,
+/// doing it in `main` cost `main` a ~31 KB frame from its first instruction and overflowed the
+/// combined build's ~40 KB stack before boot even reached the SD card (caught by DWT watchpoint:
+/// stack frames overwriting `.bss` task pools → a bogus "Busy" at the com_task spawn). The #677
+/// evictions since shrank the future to ~4 KB (the big values live in `ble`'s `.bss` statics now),
+/// but the trampoline stays: it keeps `main`'s frame independent of whatever `ble::run`'s future
+/// grows to. This tiny task is polled directly by the executor at ~2 KB depth; its own pool
+/// static holds just the arguments until the inner spawn moves them into `ble::run`'s.
 #[cfg(feature = "ble")]
 #[embassy_executor::task]
 async fn spawn_ble_stack(
@@ -529,6 +531,24 @@ mod stackmeter {
         top() - bottom()
     }
 
+    /// Arm the ARMv8-M **MSPLIM** hardware stack-limit register (#677): any main-stack push or
+    /// `sp` move below the limit raises a STKOF UsageFault (→ HardFault here) **at the moment of
+    /// overflow**, instead of the overflow silently smashing whatever static tops `.bss` — which
+    /// is `defmt_rtt::BUFFER`, so the pre-#677 failure mode was a corrupted RTT ring, a trashed
+    /// MPSL exception frame, and a wild-prefetch crash with an unreadable backtrace. The limit
+    /// sits [`HANDLER_MARGIN`] above the true bottom so the fault handler + panic-probe's defmt
+    /// output have real stack to run on (exception-entry writes below MSPLIM are suppressed by
+    /// the core, so even that margin never corrupts the statics below `_stack_end`).
+    pub fn arm_limit() {
+        /// Room left below the limit for the STKOF exception frame + the HardFault/panic path
+        /// (≤104 B frame + defmt formatting). Costs 512 B of usable headroom — accounted as part
+        /// of `STACK_RESERVE`'s margin over the measured deep-path peak.
+        const HANDLER_MARGIN: usize = 512;
+        // SAFETY: raising a fault on genuine overflow is strictly safer than the silent
+        // corruption it replaces; nothing legitimately moves MSP below `_stack_end`.
+        unsafe { cortex_m::register::msplim::write((bottom() + HANDLER_MARGIN) as u32) };
+    }
+
     /// [`used`], but forcing a **fresh** full scan regardless of the [`SCAN_INTERVAL_MS`]
     /// throttle — for a caller that just finished a stack-notable operation (the nav router's
     /// per-plan RTT line) and wants the peak *including it* now, not up to a second late.
@@ -614,7 +634,10 @@ async fn main(_spawner: Spawner) {
         embassy_nrf::init(config)
     };
 
-    // Paint the stack now (still shallow) so the ride loop's high-water guard can read the peak.
+    // Arm the hardware stack limit first (#677 — overflow = an immediate, precise fault, never
+    // silent corruption of the statics below the stack), then paint the stack (still shallow) so
+    // the ride loop's high-water guard can read the peak.
+    stackmeter::arm_limit();
     stackmeter::paint();
 
     // The boot banner: which build is running, as `pkg-version+fw_git` (the DIS Firmware Revision

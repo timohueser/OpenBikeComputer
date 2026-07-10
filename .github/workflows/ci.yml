@@ -193,6 +193,39 @@ jobs:
       - name: "obc-fw-nrf54l: ${{ matrix.name }}"
         working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}
+      # #677 tripwire: the executor's steady-state poll frames live permanently under every deep
+      # call path on the one shared stack, so a giant async body (its construction temporaries
+      # become poll-frame slots, allocated at entry on every poll) is the board's known
+      # stack-overflow disease — ble::run's 30.5 KB poll frame + SMP's synchronous software-P256
+      # pairing chain overflowed the ble build's ~38 KB stack region into defmt_rtt::BUFFER.
+      # Guard: the largest single `sub sp` in any `TaskStorage<F>::poll` instantiation (the
+      # steady-state poll frames; ble::run's is one) must stay under 12 KB. A tripwire, not proof
+      # (it reads the biggest single sp-decrement per poll symbol) — the real discipline is in
+      # `ble::run`'s doc: big values go to `.bss` via `#[inline(never)]` init fns, never inline in
+      # a long-lived async body. MSPLIM (armed in `main`) is the on-glass backstop.
+      - name: "obc-fw-nrf54l: ble steady-state poll-frame guard (#677)"
+        if: matrix.name == 'build (ble, release)'
+        working-directory: firmware/obc-fw-nrf54l
+        run: |
+          rustup component add llvm-tools
+          OBJDUMP=$(find "$(rustc --print sysroot)" -name llvm-objdump | head -1)
+          ELF=target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+          "$OBJDUMP" --demangle -d "$ELF" | perl -ne '
+            if (/^[0-9a-f]+ <(.+)>:/) { $fn = $1 }
+            elsif (/sub(?:\.?w)?\s+sp,(?:\s*sp,)?\s*#(0x[0-9a-f]+|\d+)/) {
+              my $imm = $1;
+              my $v = ($imm =~ /^0x/) ? hex($imm) : $imm;
+              if ($fn =~ /TaskStorage.*poll/) { $seen = 1; $max{$fn} = $v if $v > ($max{$fn} // 0); }
+            }
+            END {
+              die "guard is stale: no TaskStorage<F>::poll symbols found — fix the symbol match in ci.yml\n" unless $seen;
+              my $limit = 12288; my $bad = 0;
+              for my $fn (sort { $max{$b} <=> $max{$a} } keys %max) {
+                printf "%6d B  %s\n", $max{$fn}, $fn;
+                $bad = 1 if $max{$fn} > $limit;
+              }
+              die "\na steady-state poll frame exceeds $limit B — a large value is being constructed inline in a long-lived async body. Move it to a .bss static behind a #[inline(never)] init fn (see ble::run docs + issue #677).\n" if $bad;
+            }'
 
   # The obc-boot bootloader (epic #615, #617): workspace-excluded like the board crate, built
   # from its own directory so its .cargo/config.toml selects thumbv8m. No test harness and no
