@@ -831,9 +831,19 @@
             // The planner honestly resolves to the route overview OR the failure card — captioned
             // differently by `labelFor` so a routing *failure* is never shown as success.
             {
-              cmds: [], until: ["RouteOverview", "NavFail"], label: 'Your new route, on the map',
-              labelFor: { RouteOverview: 'Your new route, on the map', NavFail: 'No route found — nothing routable nearby' }
-            }
+              cmds: [], until: ["RouteOverview", "NavFail"], label: 'The route is ready',
+              labelFor: { RouteOverview: 'The route is ready', NavFail: 'No route found — nothing routable nearby' }
+            },
+            // Complete the story: actually start riding the new route, then pull the map back a
+            // few ticks so the swap is visible. START RIDE opens the RouteSwap prompt (a ride is
+            // active, so the device asks) with "Swap route" pre-selected — the second paced press
+            // confirms it, and the beat between them lets the reader see the prompt. Mutating the
+            // session is safe — every staged run (`enter`) and every carousel switch (`ambient`)
+            // rebuilds the device from scratch. (On the theoretical NavFail path the press
+            // dismisses the card instead; the demo map is fully connected so a plan never fails
+            // there, and a timeout just re-syncs.)
+            { cmds: ['press', 'press'], until: ["Map"], label: 'Start riding it' },
+            { cmds: ['turn:-4'], until: ["Map"], label: 'Your new route, on the map' }
           ]
         }
       ];
@@ -848,6 +858,7 @@
       var pageVisible = !document.hidden;
       var stageOnscreen = true; // updated by the IntersectionObserver
       var pendingAutostart = false; // a #demo/<scenario> deep link waiting for readiness
+      var pendingAmbient = false;   // a switch-to-live reset requested while the loop was paused
 
       var LIVE_NOTE = '<span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls';
       var DEMO_NOTE = '<span class="mode-live playing"><span class="mode-dot"></span>Guided demo</span> — tap any control to take over';
@@ -962,6 +973,27 @@
         setStepLive();
       }
 
+      // The beat between scripted physical inputs — long enough to read as a human interaction,
+      // short enough not to drag a step out (a 2-detent + press menu hop takes ~1 s).
+      var CLICK_MS = 420;
+
+      // Unroll a step's cmds into individually-dispatchable inputs: `turn:<n>` becomes |n| single
+      // detents (so the reader sees the selection walk item by item), gestures are marked for
+      // pacing, and reset/playback commands stay instant.
+      function expandInputs(cmds) {
+        var out = [];
+        cmds.forEach(function (c) {
+          var m = /^turn:(-?\d+)$/.exec(c);
+          if (m) {
+            var n = parseInt(m[1], 10);
+            for (var j = 0; j < Math.abs(n); j++) out.push({ cmd: 'turn:' + (n < 0 ? -1 : 1), paced: true });
+          } else {
+            out.push({ cmd: c, paced: c === 'press' || c === 'back' || c === 'hold' || c === 'backhold' });
+          }
+        });
+        return out;
+      }
+
       // Resolve with a STATUS so the runner can tell a real timeout from a cancel: 'reached' |
       // 'timeout' | 'cancelled'.
       function until(targets, token) {
@@ -995,7 +1027,18 @@
           var step = s.steps[i];
           // Don't claim the target screen yet — keep the reader honest while we get there.
           if (i > 0 && demoRunning) setStep('Getting there…', i - 1);
-          step.cmds.forEach(cmd);
+          // Send the step's inputs like a person would: one physical input at a time, a beat
+          // apart, so the reader watches the selection walk and each click land instead of the
+          // screen teleporting. `turn:<n>` unrolls into single detents. Reset/playback commands
+          // (enter, ambient, play, pause, seek) stay instant — only gestures get the beat.
+          var inputs = expandInputs(step.cmds);
+          for (var k = 0; k < inputs.length; k++) {
+            if (token !== runToken) return;
+            while (rafId === null && token === runToken) { await sleep(150); }
+            if (token !== runToken) return;
+            cmd(inputs[k].cmd);
+            if (inputs[k].paced && k < inputs.length - 1) await sleep(CLICK_MS);
+          }
           var status = await until(step.until, token);
           if (status === 'cancelled') return;
           if (status === 'timeout') {
@@ -1035,9 +1078,12 @@
         runScript(token);
       }
 
-      // Select a scenario (the dots, or a deep link). The live ride (staged:false) just hands
-      // control back. A staged scenario auto-plays when motion is fine, but under reduced motion
-      // it only shows its card and waits for an explicit Play — no auto-running demo.
+      // Select a scenario (the dots, or a deep link). EVERY switch resets the device to a clean
+      // start-of-ride state — demos may mutate the session (the reroute one swaps the active
+      // route), so a switch must never inherit a previous demo's leftovers: staged scenarios
+      // reset via their step-0 `enter`; the live ride (and a staged card under reduced motion,
+      // which only arms its Play button — no auto-running demo) resets via `ambient`. Note this
+      // is switching only — taking control mid-demo deliberately keeps the current screen.
       // Switching updates the shareable fragment in place — replaceState never scrolls.
       function selectScenario(i) {
         if (i === scnIdx && demoRunning) return;
@@ -1047,7 +1093,13 @@
         setStepLive();
         if (history.replaceState) history.replaceState(null, '', '#demo/' + SCENARIOS[i].id);
         var s = SCENARIOS[i];
-        if (s.staged && !prefersReducedMotion()) startDemo();
+        if (s.staged && !prefersReducedMotion()) {
+          startDemo();          // step 0's `enter` is the reset
+        } else if (rafId !== null) {
+          cmd('ambient');       // clean ambient baseline, playing from the ride start
+        } else {
+          pendingAmbient = true; // loop paused (stage offscreen) — reset on resume instead
+        }
       }
 
       // A manual interaction while a demo plays takes control first, then the gesture applies to the
@@ -1116,7 +1168,10 @@
             if (SCENARIOS[scnIdx].staged && demoRunning && !prefersReducedMotion()) {
               resyncDemo();   // NOT startDemo() — its demoRunning guard would no-op every resume
             } else {
-              cmd('play');    // the inactive branch paused playback; a live/ambient ride resumes
+              // The inactive branch paused playback: resume it — or, if a switch-to-live reset
+              // was requested while paused, perform that reset now (it restarts playback itself).
+              cmd(pendingAmbient ? 'ambient' : 'play');
+              pendingAmbient = false;
             }
           }
         } else if (rafId !== null && inactiveTimer === null) {
