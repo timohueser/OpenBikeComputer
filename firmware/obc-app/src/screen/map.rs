@@ -222,7 +222,7 @@ impl MapScreen {
             draw_low_battery(cv);
         }
 
-        // Clock (top-centre): a small floating HH:MM — bare ink digits with a parchment halo, no
+        // Clock (top-centre): a floating HH:MM — bare ink digits with a 1 px parchment halo, no
         // pill, so it informs without drawing the eye. Shown when the setting is on. Hidden while
         // panning — the pan HUD's top chevron / compass own the top edge — so it never fights the
         // chevron; `tick_timers` mirrors that gate when arming the minute wake.
@@ -470,26 +470,27 @@ const CLOCK_TOP: i32 = 8;
 /// The rectangle the top-centre clock digits occupy, in panel pixels — the dirty region
 /// [`tick_timers`](MapScreen::tick_timers) reports so the host clips the minute repaint to just the
 /// digits instead of re-rendering the whole map plane. Sized for a fixed 5-glyph `HH:MM` in
-/// [`Font::Label`] — constant, so the region doesn't shift as the digits change (`11` vs `22`) —
+/// [`Font::Body`] — constant, so the region doesn't shift as the digits change (`11` vs `22`) —
 /// with two pixels of margin all round covering the halo strokes.
 pub fn clock_region(w: i32) -> Rectangle {
-    let tw = text_width("00:00", Font::Label) as i32;
-    let th = Font::Label.line_height() as i32;
+    let tw = text_width("00:00", Font::Body) as i32;
+    let th = Font::Body.line_height() as i32;
     Rectangle::new(Point::new((w - tw) / 2 - 2, CLOCK_TOP - 2), Size::new(tw as u32 + 4, th as u32 + 4))
 }
 
-/// Draw the small top-centre `HH:MM` clock: bare ink digits floating on the map — no pill, just the
-/// scale-bar label's parchment halo so they stay readable over dark terrain. Deliberately *muted*
-/// (the warning-orange of [`draw_status_chip`] stays reserved for alerts). "Small and simple, just
-/// readable."
+/// Draw the top-centre `HH:MM` clock: bare ink digits floating on the map — no pill, no white
+/// backing, just the scale-bar label's 1 px parchment halo so they stay readable over dark terrain.
+/// One font step up from the rest of the map chrome ([`Font::Body`]) so the time reads at a glance;
+/// deliberately *muted* otherwise (the warning-orange of [`draw_status_chip`] stays reserved for
+/// alerts). "Small and simple, just readable."
 fn draw_clock(cv: &mut impl Surface, w: i32, now: DateTime) {
     use super::palette::*;
     let mut s: heapless::String<8> = heapless::String::new();
     let _ = write!(s, "{:02}:{:02}", now.hour, now.minute);
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-        cv.text(&s, Point::new(w / 2 + dx, CLOCK_TOP + dy), Font::Label, TextAlign::Center, PARCHMENT);
+        cv.text(&s, Point::new(w / 2 + dx, CLOCK_TOP + dy), Font::Body, TextAlign::Center, PARCHMENT);
     }
-    cv.text(&s, Point::new(w / 2, CLOCK_TOP), Font::Label, TextAlign::Center, INK);
+    cv.text(&s, Point::new(w / 2, CLOCK_TOP), Font::Body, TextAlign::Center, INK);
 }
 
 // ---- Low-battery cue (top-left corner) -----------------------------------
