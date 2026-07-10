@@ -5,7 +5,8 @@
 //! decode it (anything torn/blank/garbage ⇒ `Idle`) and run the install engine
 //! (verify → flash → readback → trial/rollback — ALL sequencing lives in
 //! `obc_dfu::engine`, unit-tested with mock IO), then act on the returned outcome: jump to the
-//! app at [`APP_BASE`], reset into the freshly-written image, or park with an LED code. This
+//! app at [`APP_BASE`] (after an install, that IS the freshly-written image's one trial boot —
+//! never a reset, which would re-enter here and roll the trial back), or park with an LED code. This
 //! crate contributes only resource bring-up (SPI card, RRAMC, LED) via `sd`/`install`/`led`;
 //! the bootloader itself must never be able to panic on any page content.
 //!
@@ -81,8 +82,10 @@ fn main() -> ! {
     jump_to_app()
 }
 
-/// Decide + install. Returns only when the machine should jump to the app; the `Installed`
-/// (reset) and fatal (LED SOS park) outcomes diverge inside.
+/// Decide + install. Returns whenever the machine should jump to the app — the fast `Idle`
+/// path, a rejected stage (old app intact), and a completed install (the freshly-written
+/// image's trial boot) all end in the same jump; only the fatal outcomes (LED SOS park)
+/// diverge inside.
 fn boot(p: embassy_nrf::Peripherals) {
     // One short blink: visible proof the bootloader ran, even with nothing else working.
     let mut led = Led::new(Output::new(p.P2_09, Level::High, OutputDrive::Standard));
@@ -163,13 +166,15 @@ fn boot(p: embassy_nrf::Peripherals) {
             defmt::warn!("obc-boot: staged image invalid — arm cleared, booting the old app");
             led.blink_code(2);
         }
-        // The slot holds the readback-verified image and the follow-up state is written: a
-        // clean reset re-enters this bootloader, which sees Trial (or Idle after a rollback)
-        // and jumps — the one trial boot.
+        // The slot holds the readback-verified image and the follow-up state (`Trial` after an
+        // install, `Idle` after a rollback) is written: jump straight into it. Never reset
+        // here — a reset would re-enter this bootloader with the just-written `Trial`, which
+        // `decide` reads as an *unconfirmed* trial (`Rollback`), undoing the install before the
+        // new image ever ran. The jump IS the one trial boot; a later bootloader entry that
+        // still sees `Trial` then genuinely means the trial went unconfirmed.
         Outcome::Installed => {
             #[cfg(feature = "rtt")]
-            defmt::info!("obc-boot: install complete — resetting into the new image");
-            cortex_m::peripheral::SCB::sys_reset();
+            defmt::info!("obc-boot: install complete — jumping into the new image (trial boot)");
         }
         // Readback never matched (or the RRAM write path failed) after all retries. The state
         // page still holds the Armed record, so a power cycle retries the whole install; park

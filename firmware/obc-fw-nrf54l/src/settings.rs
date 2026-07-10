@@ -91,12 +91,26 @@ const BOOT_COUNT_MAGIC: [u8; 4] = *b"OBCD";
 /// reused after a delete (allocation = `max(scan_max + 1, stored floor)`; the phone's persisted
 /// `deviceObjectID` / ride tombstones key on these ids). Placed at the upper half's quarter mark,
 /// clear of the other residents; the carve layout is now: **settings slot @0** (low 2 KB reserved
-/// for its future two-slot upgrade) · **boot counter @2048** · **id high-water @2560** ·
+/// for its future two-slot upgrade) · **boot counter @2048** · **arm marker @2064** (48 B) ·
+/// **id high-water @2560** ·
 /// **BLE bond @3072** (64 B). Codec (magic/version/CRC, torn line → "no floor") lives host-tested
 /// in [`obc_app::settings`].
 const ID_MARKS_OFFSET: u32 = 2560;
 /// The id line is one RRAM write line by construction — pin it so a codec growth fails loud.
 const _: () = assert!(obc_app::settings::ID_MARKS_LEN == RRAM_WRITE_LINE);
+
+/// Byte offset of the **DFU arm-marker slot** within the reserved settings page — the armer's
+/// breadcrumb, written right after the `Armed` boot-state write and consumed by the boot-outcome
+/// reconcile (`dfu::reconcile_boot_outcome`) on the next boot. Placed on the line right after the
+/// boot counter (@2048, one line); the carve layout is now: **settings slot @0** (low 2 KB
+/// reserved) · **boot counter @2048** · **arm marker @2064** (48 B) · **id high-water @2560** ·
+/// **BLE bond @3072**. Codec (magic/version/CRC, torn slot → "no arm happened") lives host-tested
+/// in [`obc_app::settings`].
+const ARM_MARKER_OFFSET: u32 = 2064;
+/// The marker is whole RRAM write lines by construction — pin it so a codec growth fails loud,
+/// and pin that it stays clear of the id high-water line.
+const _: () = assert!(obc_app::settings::ARM_MARKER_LEN.is_multiple_of(RRAM_WRITE_LINE));
+const _: () = assert!(ARM_MARKER_OFFSET + obc_app::settings::ARM_MARKER_LEN as u32 <= ID_MARKS_OFFSET);
 
 /// Byte offset of the **BLE bond slot** within the reserved settings page: the one bonded peer's
 /// identity + keys (LTK/IRK), persisted so a power cycle or a firmware reflash lands straight back in
@@ -194,6 +208,44 @@ impl RramSettingsStore {
                 defmt::warn!("dfu: boot-state RRAM write failed: {}", e);
                 false
             }
+        }
+    }
+
+    /// Persist the DFU **arm marker** — the armer's breadcrumb, written right after the `Armed`
+    /// boot-state write so the next boot can tell a failed install apart from a plain boot.
+    /// Best-effort: the caller proceeds to the reboot either way (a missing marker only costs
+    /// the failure card its version string, never the install).
+    pub fn write_arm_marker(&mut self, marker: &obc_app::settings::ArmMarker) -> bool {
+        let off = region_offset() + ARM_MARKER_OFFSET;
+        match self.rram.write(off, &obc_app::settings::encode_arm_marker(marker)) {
+            Ok(()) => true,
+            Err(e) => {
+                defmt::warn!("dfu: arm-marker RRAM write failed: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Load the DFU arm marker, or `None` when the slot is blank / torn / a foreign layout —
+    /// "no arm happened", a plain boot.
+    pub fn read_arm_marker(&mut self) -> Option<obc_app::settings::ArmMarker> {
+        let off = region_offset() + ARM_MARKER_OFFSET;
+        let mut buf = [0u8; obc_app::settings::ARM_MARKER_LEN];
+        match self.rram.read(off, &mut buf) {
+            Ok(()) => obc_app::settings::decode_arm_marker(&buf),
+            Err(e) => {
+                defmt::warn!("dfu: arm-marker RRAM read failed: {} → treating as no marker", e);
+                None
+            }
+        }
+    }
+
+    /// Clear the DFU arm marker (a zeroed slot decodes to "no arm happened") — called wherever a
+    /// boot-outcome verdict is delivered, so each arm's card shows exactly once.
+    pub fn clear_arm_marker(&mut self) {
+        let off = region_offset() + ARM_MARKER_OFFSET;
+        if let Err(e) = self.rram.write(off, &[0u8; obc_app::settings::ARM_MARKER_LEN]) {
+            defmt::warn!("dfu: arm-marker RRAM clear failed: {}", e);
         }
     }
 

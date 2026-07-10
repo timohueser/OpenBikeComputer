@@ -157,6 +157,17 @@ displays is read from the standard [DIS](../companion-link/) Firmware Revision
 characteristic, so after a confirmed update it simply reflects the new image on the
 next connect.
 
+The reboot's outcome is never silent either. Before rebooting into the
+bootloader, the armer leaves a small breadcrumb (the staged version + the arm's
+generation) in the settings page; the first boot afterwards reconciles it against
+the boot-state page and shows a **one-time verdict card**: *"Updated to vX"* once
+the new image's first healthy frame confirms the trial (or when a first install
+was accepted after an unconfirmed trial), or *"UPDATE FAILED"* when the armed
+image is not what's running — either the arm was never consumed (a stale or
+missing bootloader, which the app then clears so it can't fire by surprise later)
+or the stage was rejected / rolled back. A plain boot has no breadcrumb and shows
+nothing.
+
 ## The RRAM layout
 
 The design fits in the device's non-volatile RRAM as a fixed partition the small
