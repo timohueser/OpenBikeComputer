@@ -20,6 +20,7 @@ use obc_render::text::{draw_text, Font, TextAlign};
 
 mod calib;
 mod device_input;
+mod dfu;
 mod framebuffer;
 mod gui;
 mod palette;
@@ -153,6 +154,24 @@ struct Args {
     /// shortcut). Pair with a script that starts a ride and a `--gpx`/`--at` that logs a point —
     /// e.g. `--gpx <t> --at 30 --script "p p p p" --fail-track --png out.png`.
     fail_track: bool,
+    /// Headless `--png` only: after the script left the "Checking card..." wait on top (System menu
+    /// → Install), answer the DFU scan (epic #615 S5, #620) through the real
+    /// `App::notify_dfu_scan_result` seam, swapping the wait for the confirm screen. The flavour
+    /// selects which warnings render: `normal` (a newer version, rollback available), `same` (the
+    /// installed version restaged → same-version warning), or `first` (no rollback → no-undo
+    /// warning). The board runs the scan for real; the sim stages a synthetic `UPDATE.BIN`.
+    dfu_scan: Option<dfu::DfuScanKind>,
+    /// Headless `--png` only: with `--dfu-scan`, press Install on the confirm so the "Preparing
+    /// update..." progress spinner renders (the sim never drains the arm, so it stays up).
+    dfu_progress: bool,
+    /// Headless `--png` only: answer the DFU scan with a typed error so the error card renders
+    /// (`notfound` | `unreadable` | `damaged` | `toolarge` | `fragmented`). Needs the "Checking
+    /// card..." wait on top (System menu → Install), like `--dfu-scan`.
+    dfu_error: Option<obc_app::DfuScanError>,
+    /// Headless `--png` only: raise the one-time post-update toast through the real
+    /// `App::notify_update_confirmed` seam, tagged with this version, so the "Updated to vX" card
+    /// renders (the first-healthy-boot toast).
+    dfu_confirmed: Option<String>,
 }
 
 impl Default for Args {
@@ -198,6 +217,10 @@ impl Default for Args {
             boot_fault: None,
             open_climb: false,
             fail_track: false,
+            dfu_scan: None,
+            dfu_progress: false,
+            dfu_error: None,
+            dfu_confirmed: None,
         }
     }
 }
@@ -303,6 +326,21 @@ fn parse_args() -> Result<Args, String> {
             "--nav-hold" => a.nav_hold = true,
             "--open-climb" => a.open_climb = true,
             "--fail-track" => a.fail_track = true,
+            "--dfu-scan" => {
+                a.dfu_scan = Some(dfu::DfuScanKind::parse(&it.next().ok_or("--dfu-scan needs normal|same|first")?)?);
+            }
+            "--dfu-progress" => a.dfu_progress = true,
+            "--dfu-error" => {
+                a.dfu_error = Some(match it.next().ok_or("--dfu-error needs a variant")?.as_str() {
+                    "notfound" => obc_app::DfuScanError::NotFound,
+                    "unreadable" => obc_app::DfuScanError::Unreadable,
+                    "damaged" => obc_app::DfuScanError::Damaged,
+                    "toolarge" => obc_app::DfuScanError::TooLarge,
+                    "fragmented" => obc_app::DfuScanError::TooFragmented,
+                    other => return Err(format!("--dfu-error: unknown variant `{other}`")),
+                });
+            }
+            "--dfu-confirmed" => a.dfu_confirmed = Some(it.next().ok_or("--dfu-confirmed needs a version")?),
             "--inject-nav-fail" => {
                 let kind = it.next().ok_or("--inject-nav-fail needs exhausted|nopath")?;
                 if kind != "exhausted" && kind != "nopath" {
@@ -818,6 +856,31 @@ fn main() {
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.
         if let Some(w) = args.inject_warning {
             app.notify_warning(w);
+        }
+
+        // DFU sideload snapshots (epic #615 S5, #620). The scan runs board-side on the device; here
+        // the script left the "Checking card..." wait on top (System menu → Install) and these
+        // answer it through the real `notify_dfu_scan_result` / `notify_update_confirmed` seams — so
+        // the confirm / progress / error / toast screens render off the same app state the device
+        // reaches. The sim stages a synthetic `UPDATE.BIN` and runs the real `obc-dfu` scan.
+        if let Some(kind) = args.dfu_scan {
+            app.notify_dfu_scan_result(kind.report());
+            if args.dfu_progress {
+                // Confirm (Install is the default selection) → the arm one-shot + the progress
+                // spinner. A tap: down, then up 80 ms later, well under the long-press threshold.
+                let now = 500_000u32;
+                feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Encoder))]);
+                feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Encoder))]);
+            }
+        }
+        if let Some(e) = args.dfu_error {
+            app.notify_dfu_scan_result(Err(e));
+        }
+        // The one-time post-update toast: raise the confirmed-update fact, then run one animation
+        // pass — `reconcile_update_toast` pushes the "Updated to vX" card there, like the device.
+        if let Some(version) = &args.dfu_confirmed {
+            app.notify_update_confirmed(version);
+            app.advance_animations(InputClock(500_000));
         }
         // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);

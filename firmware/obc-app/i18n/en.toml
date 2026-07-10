@@ -135,6 +135,7 @@ display = "Display"
 power = "Power"
 bluetooth = "Bluetooth"
 language = "Language"
+system = "System"
 reset = "Reset"
 
 # --- Date & Time settings screen ---
@@ -326,3 +327,30 @@ climb = "CLIMB"
 title = "RIDE"
 start_ride = "Start ride"
 back = "Back"
+
+# --- System settings screen (epic #615 S5, #620) ---
+[system]
+title = "SYSTEM"
+install_update = "Install update from card"
+recording = "Recording"
+
+# --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
+[dfu]
+checking = "Checking card..."
+installed = "Installed"
+staged = "Update"
+confirm_title = "INSTALL UPDATE"
+same_version = "This version is already installed."
+no_undo = "There is no automatic undo."
+light_blinks = "The light blinks while the update installs."
+install = "Install"
+cancel = "Cancel"
+preparing = "Preparing update..."
+updated_title = "UPDATED"
+updated = "Updated to"
+title = "UPDATE"
+not_found = "No update file on the card."
+unreadable = "Could not read the update file."
+damaged = "The update file is damaged."
+too_large = "The update file is too large for this device."
+fragmented = "The update file is too fragmented. Delete UPDATE.BIN and copy it to the card again."

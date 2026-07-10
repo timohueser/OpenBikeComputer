@@ -136,11 +136,35 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # the Forget-phone guarded hold mid-charge (select the Forget row, then a partial hold fills it).
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p"     --png "$OUT/bluetooth.png"
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
-# The Language screen (epic #602): the endonym value picker (row 7, above Reset). The default
-# (English), then two detents cycling to Français — pinning the ç glyph the Latin font (#601) adds.
+# The Language screen (epic #602): the endonym value picker (row 7). The default (English), then two
+# detents cycling to Français — pinning the ç glyph the Latin font (#601) adds.
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r p"     --png "$OUT/language.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r p r r" --png "$OUT/language-french.png"
-"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p H" --png "$OUT/reset-hold.png"
+# Factory Reset moved one row down (System inserted at index 8 by epic #615 S5), so Reset is now 9
+# detents from the Date&Time top: `r`x9, press in, arm (press), then partial-hold to fill the bar.
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r r p p H" --png "$OUT/reset-hold.png"
+# System settings screen (epic #615 S5, #620): "Install update from card" (row 8, above Reset).
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p" --png "$OUT/system.png"
+# The row greyed (disabled) while a ride records: ride route 0 (`p p p p`, GPX-driven so the session
+# is live), BackHold to the Menu, into Settings -> System — the row dims + shows the "Recording" cue.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 \
+    --script "p p p p B l p r r r r r r r r p" --png "$OUT/system-recording.png"
+# The SD-sideload update flow (epic #615 S5, #620). The scan/arm runs board-side; the script leaves
+# the "Checking card..." wait on top (System -> Install), and --dfu-scan / --dfu-error answer it
+# through the real notify_dfu_scan_result seam (the sim stages a synthetic UPDATE.BIN and runs the
+# real obc-dfu scan). --dfu-progress then presses Install so the "Preparing update..." spinner shows.
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --png "$OUT/dfu-check.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-scan normal --png "$OUT/dfu-confirm.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-scan same   --png "$OUT/dfu-confirm-same.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-scan first  --png "$OUT/dfu-confirm-first.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-error notfound   --png "$OUT/dfu-error-notfound.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-error unreadable --png "$OUT/dfu-error-unreadable.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-error damaged    --png "$OUT/dfu-error-damaged.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-error toolarge   --png "$OUT/dfu-error-toolarge.png"
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-error fragmented --png "$OUT/dfu-error-fragmented.png"
+# The one-time post-update toast, raised through the real notify_update_confirmed seam.
+"$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-2-gnew1234" --png "$OUT/dfu-updated.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
@@ -246,6 +270,15 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p"      --png "$OUT/map-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --png "$OUT/routeoverview-$lang.png"
+    # The SD-sideload update flow (epic #615 S5): the System row, the first-install confirm (the
+    # worst case for vertical fit — two version rows + the no-undo + light-blinks notes), the
+    # progress spinner, an error card, and the post-update toast — the text-heaviest DFU screens, to
+    # eyeball for clipped/overflowing copy now that the translations are longer.
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p" --png "$OUT/system-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p p" --dfu-scan first --png "$OUT/dfu-confirm-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p p" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p p" --dfu-error fragmented --png "$OUT/dfu-error-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-2-gnew1234" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 85 screens rendered into $OUT/"
+echo "ui-snapshots: 113 screens rendered into $OUT/"

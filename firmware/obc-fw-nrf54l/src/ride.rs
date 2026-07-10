@@ -822,16 +822,39 @@ pub(crate) async fn run_app(
         if obc_platform::debug_link::take_dfu_install() {
             app.request_dfu_install();
         }
-        if app.take_dfu_request() {
-            if app.activity.is_tracking() {
-                crate::dfu::status("refused: a ride is recording -- finish it first");
-            } else if storage.as_ref().is_some_and(sd::Storage::has_pending_save) {
-                crate::dfu::status("refused: a ride save is pending -- try again in a moment");
-            } else if let Some(s) = storage.as_mut() {
-                crate::dfu::run_install(s, settings_store, &mut wdt).await;
-            } else {
-                crate::dfu::status("refused: no SD card");
+        // Two phases share this one-shot slot (epic #615 S5, #620): the S5 UI posts `Scan` first
+        // (read-only validation → answer the app, which shows the confirm screen), then `Install`
+        // from the confirm; the `dfu-install` debug command posts `Install` directly (no confirm).
+        match app.take_dfu_request() {
+            Some(obc_app::DfuAction::Install) => {
+                // The irreversible arm-and-reboot. Guards mirror what the System menu greys out:
+                // never mid-recording (the arm ends in a reboot — a live ride would be lost) and
+                // never over an unconverted ride save (`pending_save` is RAM state; rebooting drops
+                // it and the next fresh ride would truncate the unconverted TRACK.OBT). On success
+                // `run_install` never returns (it resets into the bootloader); on failure it has
+                // already streamed the typed error and the loop just keeps riding.
+                if app.activity.is_tracking() {
+                    crate::dfu::status("refused: a ride is recording -- finish it first");
+                } else if storage.as_ref().is_some_and(sd::Storage::has_pending_save) {
+                    crate::dfu::status("refused: a ride save is pending -- try again in a moment");
+                } else if let Some(s) = storage.as_mut() {
+                    crate::dfu::run_install(s, settings_store, &mut wdt).await;
+                } else {
+                    crate::dfu::status("refused: no SD card");
+                }
             }
+            Some(obc_app::DfuAction::Scan) => {
+                // The UI's read-only "Checking card..." step: validate `UPDATE.BIN` and answer the
+                // app (the wait screen swaps to the confirm or an error card). No card ⇒ report the
+                // update file as missing. The scan touches nothing, so no ride-state guard is needed
+                // (the menu greys the row mid-ride anyway).
+                let result = match storage.as_mut() {
+                    Some(s) => crate::dfu::run_scan(s, settings_store, &mut wdt),
+                    None => Err(obc_app::DfuScanError::NotFound),
+                };
+                app.notify_dfu_scan_result(result);
+            }
+            None => {}
         }
 
         let active = app.activity.active_route;
