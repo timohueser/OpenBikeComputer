@@ -249,6 +249,17 @@ pub struct Render<'a, 'd> {
     /// Reset to default by the host each frame; only the [`Map`](crate::screen::map) screen writes
     /// it — every other screen leaves it untouched.
     pub stats: RenderStats,
+    /// The running firmware version string (T8 item 6) — the System settings screen's `Firmware`
+    /// ledger row. Empty until the host feeds it via [`App::set_fw_version`](crate::App::set_fw_version).
+    pub fw_version: &'a str,
+    /// The loaded map's display name (T8 item 6) — the left half of the System screen's `Map` row.
+    /// Empty until [`App::set_map_info`](crate::App::set_map_info) runs on map load.
+    pub map_name: &'a str,
+    /// The loaded map's OBCM format version — the right half of the `Map` row (`0` = no map yet).
+    pub map_obcm_version: u8,
+    /// Free space on the SD card in bytes (T8 item 6), or `None` until the host answers the System
+    /// screen's on-entry scan ([`App::set_card_free`](crate::App::set_card_free)).
+    pub card_free_bytes: Option<u64>,
 }
 
 impl Render<'_, '_> {

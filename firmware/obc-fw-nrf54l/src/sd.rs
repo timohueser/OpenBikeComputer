@@ -267,6 +267,10 @@ pub struct Storage {
     open_object: Option<(ShortFileName, RawFile, u32)>,
     /// The in-flight BLE upload's open [`UPLOAD_TMP`] handle.
     open_upload: Option<RawFile>,
+    /// The loaded map's display name — its filename stem, captured in [`open_map`](Storage::open_map)
+    /// (T8 item 6). Empty until a map opens; the System settings screen renders it (`grimsel · v10`)
+    /// via [`App::set_map_info`](obc_app::App::set_map_info).
+    map_name: String<24>,
     /// The real chip-select (P1_12), held LOW for the whole session so the card stays selected.
     /// embedded-sdmmc drives a no-op [`NoCs`] instead; toggling a real CS breaks CMD0 on embassy.
     /// Kept here only to keep the pin driven low — never touched after [`init`].
@@ -401,6 +405,7 @@ impl Storage {
             ride_saved: false,
             open_object: None,
             open_upload: None,
+            map_name: String::new(),
             _cs: cs,
         })
     }
@@ -737,14 +742,35 @@ impl Storage {
             return Some(len);
         }
         // The name to open, plus the directory-entry location the extent build reads the first
-        // cluster from (public `DirEntry` facts, captured in the same scan).
+        // cluster from (public `DirEntry` facts, captured in the same scan). The long name's stem is
+        // captured too for the System screen's `Map` row (T8 item 6).
         let mut found: Option<(ShortFileName, embedded_sdmmc::BlockIdx, u32)> = None;
+        let mut long_stem: String<24> = String::new();
         self.iter_dir_lfn(self.root, |e, long| {
             if found.is_none() && !e.attributes.is_directory() && long_has_ext(long, b".obcm") {
                 found = Some((e.name.clone(), e.entry_block, e.entry_offset));
+                if let Some(long) = long {
+                    long_stem.clear();
+                    // The stem before the `.obcm` extension (case-insensitive), truncated to the cap.
+                    let stem = long.rsplit_once('.').map(|(s, _)| s).unwrap_or(long);
+                    for ch in stem.chars() {
+                        if long_stem.push(ch).is_err() {
+                            break;
+                        }
+                    }
+                }
             }
         });
         let (name, entry_block, entry_offset) = found?;
+        // Fall back to the 8.3 short name's base (trailing padding trimmed) if there was no LFN.
+        if long_stem.is_empty() {
+            for &b in name.base_name().iter().take_while(|&&b| b != b' ') {
+                if long_stem.push(b as char).is_err() {
+                    break;
+                }
+            }
+        }
+        self.map_name = long_stem;
         let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
         let len = self.vmgr.file_length(file).unwrap_or(0);
         if len == 0 {
@@ -754,6 +780,52 @@ impl Storage {
         self.open_map = Some((file, len));
         self.build_map_extents(entry_block, entry_offset, file, len);
         Some(len)
+    }
+
+    /// The loaded map's display name (T8 item 6) — its filename stem, or `""` before a map opens.
+    pub fn map_name(&self) -> &str {
+        self.map_name.as_str()
+    }
+
+    /// Free space on the SD card in bytes (T8 item 6) — a bounded **FAT free-cluster** read: the
+    /// FAT32 FSInfo sector's cached free-cluster count × cluster size. Three single-block CMD17s (the
+    /// MBR partition entry, the volume BPB, then FSInfo) — never a full FAT walk, so it's cheap enough
+    /// to run on the System screen's on-entry request. Returns `None` unless the card is MBR + FAT32
+    /// with a valid FSInfo free count (the screen then keeps `--`).
+    pub fn card_free_bytes(&self) -> Option<u64> {
+        use embedded_sdmmc::{Block, BlockDevice, BlockIdx};
+        let read = |lba: u32, blk: &mut Block| self.card.read(core::slice::from_mut(blk), BlockIdx(lba)).ok();
+        let rd_u16 = |b: &[u8], o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+        let rd_u32 = |b: &[u8], o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+
+        let mut blk = Block::new();
+        // Sector 0: an MBR (partition 0 start LBA at +8 of the 446-offset entry) or, on a
+        // "superfloppy" (a BPB directly at LBA 0), the boot sector itself — detected by the FAT jump
+        // + "FAT32" type string, in which case the partition starts at LBA 0.
+        read(0, &mut blk)?;
+        let superfloppy = (blk.contents[0] == 0xEB || blk.contents[0] == 0xE9) && &blk.contents[82..87] == b"FAT32";
+        let part_lba = if superfloppy { 0 } else { rd_u32(&blk.contents, 446 + 8) };
+
+        // The volume BPB.
+        read(part_lba, &mut blk)?;
+        let bytes_per_sec = rd_u16(&blk.contents, 11) as u64;
+        let sec_per_clus = blk.contents[13] as u64;
+        let fsinfo_sec = rd_u16(&blk.contents, 48) as u32;
+        if bytes_per_sec == 0 || sec_per_clus == 0 || fsinfo_sec == 0 {
+            return None;
+        }
+
+        // The FSInfo sector — the FAT's cached free-cluster count (lead sig 0x41615252 @0, struct sig
+        // 0x61417272 @484). `0xFFFFFFFF` = unknown / uncomputed.
+        read(part_lba + fsinfo_sec, &mut blk)?;
+        if rd_u32(&blk.contents, 0) != 0x4161_5252 || rd_u32(&blk.contents, 484) != 0x6141_7272 {
+            return None;
+        }
+        let free_clusters = rd_u32(&blk.contents, 488);
+        if free_clusters == 0xFFFF_FFFF {
+            return None;
+        }
+        Some(free_clusters as u64 * sec_per_clus * bytes_per_sec)
     }
 
     /// Resolve the just-opened map's FAT chain into [`map_extents`](Storage::map_extents) — the
