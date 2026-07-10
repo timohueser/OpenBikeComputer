@@ -2308,6 +2308,29 @@ impl MapCache {
         MapCache { inner: RefCell::new(MapCacheInner::new()) }
     }
 
+    /// Allocate a fresh, empty cache **directly on the heap**, never on the stack.
+    ///
+    /// The cache is ≈277 KB, so `Box::new(MapCache::new())` first builds the whole value on the
+    /// stack and then copies it — and a debug build walks [`MapCacheInner::new`]'s `zeroed()`
+    /// interior across the stack several more un-elided-copy times — a silent overflow on a
+    /// small stack (the web demo's default 1 MiB wasm shadow stack, PR #661). Like `obc-route`'s
+    /// `NavScratch::new_boxed`, this owns the crate-private invariant that a zeroed allocation
+    /// *is* [`MapCache::new`]:
+    /// - a zeroed [`MapCacheInner`] is exactly [`MapCacheInner::new`] (which zero-inits — see
+    ///   the field-by-field argument there);
+    /// - the `RefCell` around it keeps its borrow state in a `Cell<isize>` whose *not borrowed*
+    ///   value is 0, so the zeroed wrapper reads as unborrowed. That is a `core` implementation
+    ///   detail rather than a documented guarantee — the `new_boxed_is_a_fresh_unborrowed_cache`
+    ///   test is the tripwire (its first `borrow_mut` panics if this ever changes).
+    ///
+    /// Host-only (`alloc` feature): the device `ptr::write`s its cache into a reserved region
+    /// and never calls this.
+    #[cfg(feature = "alloc")]
+    pub fn new_boxed() -> alloc::boxed::Box<Self> {
+        // SAFETY: an all-zero `MapCache` is bit-identical to a fresh `new()` — see above.
+        unsafe { alloc::boxed::Box::<Self>::new_zeroed().assume_init() }
+    }
+
     /// Drop every resident chunk + index slot. Slots are keyed only by `(lod, chunk_id, len)` /
     /// index offset, *not* by which map produced them, so a slot left resident across a map switch
     /// would cross-serve as a (wrong-geometry) hit — but [`Reader::new`] guards that structurally
@@ -2639,6 +2662,29 @@ mod tests {
             ChunkLoc::Slot(i) => assert_eq!(&inner.chunks[i].buf[..LEN], &k_old[..]),
             ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
         }
+    }
+
+    /// [`MapCache::new_boxed`] leans on a `core` implementation detail: a zeroed `RefCell`
+    /// borrow flag means *unborrowed*. This is the tripwire — the first `borrow_mut` panics if
+    /// that ever changes — plus a check that the zeroed allocation behaves like a fresh
+    /// [`MapCache::new`] (empty stats, first load is a miss into a slot with the right bytes).
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn new_boxed_is_a_fresh_unborrowed_cache() {
+        let cache = MapCache::new_boxed();
+        let mut inner = cache.borrow_mut(); // panics here if zeroed ≠ unborrowed
+        assert_eq!(inner.generation, 0, "a zeroed cache must sit at the never-live generation 0");
+        assert_eq!(inner.stats(), MapCache::new().stats(), "counters must start where `new()`'s do");
+
+        const LEN: usize = 64;
+        let data = [0xA5u8; LEN];
+        let src = SliceSource(&data);
+        let loc = inner.load_chunk(&src, 0, 0, 0, LEN).unwrap();
+        match loc {
+            ChunkLoc::Slot(i) => assert_eq!(&inner.chunks[i].buf[..LEN], &data[..]),
+            ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
+        }
+        assert_eq!(inner.stats().chunk_misses, 1, "an empty cache's first load is a miss");
     }
 
     /// Two maps sharing a chunk key `(lod, cid, len)` but holding *different* bytes must not
