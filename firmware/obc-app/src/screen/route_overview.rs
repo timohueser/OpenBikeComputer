@@ -19,7 +19,10 @@ use obc_render::{
     Surface,
 };
 
+use crate::activity::Activity;
 use crate::input::Gesture;
+use crate::route::RouteSummary;
+use crate::screen::ScreenTick;
 use crate::Msg;
 
 use super::{ledger_row, palette, title_frame, Ctx, Render, Transition, LIST_TOP};
@@ -29,12 +32,23 @@ const BAND_TOP: i32 = LIST_TOP + 8;
 const BAND_BOT: i32 = 140;
 const SIDE_MARGIN: i32 = 12;
 
-/// The stat ledger: three caption/value rows between the band and the START button.
+/// The stat ledger. Making room for the Delete row (T3) turned the three ledger rows into a two-row
+/// auto-flip pager (page 0 = DISTANCE + CLIMB, page 1 = DESCENT); [`ROW_PITCH`] is the row spacing
+/// within a page. Placed between the band and the Delete row.
 const ROWS_TOP: i32 = 150;
 const ROW_PITCH: i32 = 42;
 
+/// The guarded **Delete route** row, directly above the START button — the ride_control guarded-row
+/// idiom, same base geometry (row height + a bottom gap to the button).
+const DELETE_ROW_H: i32 = 38;
+const DELETE_GAP: i32 = 8;
+
 /// The START RIDE button bar at the bottom.
 const BUTTON_H: i32 = 34;
+
+/// The stat-ledger pager's dwell — a plain fixed constant (not user-configurable): each of the two
+/// pages shows this long before the auto-flip (T3). Reuses the Statistics screen-tick machinery.
+const PAGE_FLIP_MS: u32 = 5_000;
 
 /// The Route overview. State is which catalog route it previews, plus the `active_route` that was
 /// loaded when it opened (restored on `back`), and whether the route is a **computed** one (the
@@ -49,18 +63,54 @@ pub struct RouteOverviewScreen {
     /// omits the elevation band and the climb/descent rows rather than showing a flat band and
     /// "+0 m" (the locked "length only" overview).
     computed: bool,
+    /// Which stat-ledger page is showing (0 = DISTANCE + CLIMB, 1 = DESCENT); auto-flipped by
+    /// [`tick_timers`](Self::tick_timers). Unused on the computed (length-only) page.
+    page: usize,
+    /// Instant of the last page flip (wrap-safe). `None` until the first tick anchors it, so the
+    /// first page gets a full dwell on entry — mirrors the Statistics pager.
+    last_flip_ms: Option<u32>,
 }
 
 impl RouteOverviewScreen {
     /// Preview catalog route `route`; `prev_active` is the `active_route` to restore on cancel.
     pub fn new(route: usize, prev_active: Option<usize>) -> Self {
-        RouteOverviewScreen { route, prev_active, computed: false }
+        RouteOverviewScreen { route, prev_active, computed: false, page: 0, last_flip_ms: None }
     }
 
     /// Preview a **computed** route (the router's output): length only — no elevation band, no
     /// climb/descent rows. Opened by [`App::notify_nav_result`](crate::App::notify_nav_result).
     pub fn computed(route: usize, prev_active: Option<usize>) -> Self {
-        RouteOverviewScreen { route, prev_active, computed: true }
+        RouteOverviewScreen { route, prev_active, computed: true, page: 0, last_flip_ms: None }
+    }
+
+    /// Whether the guarded **Delete route** row is **live** — a real, non-computed catalog route
+    /// that isn't the actively-navigated route of a running tracking session. This is the exact
+    /// greying predicate the old Route-menu footer used, moved here (T3): deleting the file under an
+    /// open geometry handle mid-ride would break navigation, so the row greys out (a hold does
+    /// nothing) exactly while `is_tracking()` and this is the active route. Also the
+    /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) predicate for this screen.
+    pub(crate) fn delete_enabled(&self, activity: &Activity, routes: &[RouteSummary]) -> bool {
+        !self.computed
+            && self.route < routes.len()
+            && !(activity.is_tracking() && activity.active_route == Some(self.route))
+    }
+
+    /// Stat-ledger pager tick: flip the two pages every [`PAGE_FLIP_MS`], reporting the residual
+    /// dwell as the next wake (the Statistics auto-flip machinery). The computed (length-only) page
+    /// has a single distance row and no pager, so it never flips.
+    pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+        if self.computed {
+            return ScreenTick::idle();
+        }
+        let last = *self.last_flip_ms.get_or_insert(now_ms);
+        let changed = now_ms.wrapping_sub(last) >= PAGE_FLIP_MS;
+        if changed {
+            self.page ^= 1; // two pages
+            self.last_flip_ms = Some(now_ms);
+        }
+        let anchor = self.last_flip_ms.unwrap_or(now_ms);
+        let next = PAGE_FLIP_MS.saturating_sub(now_ms.wrapping_sub(anchor)).max(1);
+        ScreenTick { changed, next_wake_ms: Some(next), region: None }
     }
 
     /// Re-point both held indices after a live catalog rescan (#450). A vanished preview subject
@@ -87,6 +137,17 @@ impl RouteOverviewScreen {
                     return Transition::Push(super::Screen::RouteSwap(super::RouteSwapScreen::new(self.route)));
                 }
                 super::start_ride(cx, self.route)
+            }
+            // Delete: a completed hold over a live Delete row (the guarded hold is the confirmation,
+            // no popup) records the delete by index. The host resolves it to the durable object id,
+            // deletes the object — a created `_NAV.OBR` route the same way, no special casing — and
+            // the store-changed rescan re-feeds the catalog. Restore the pre-preview active route and
+            // pop to the refreshed Routes list. A hold while the route is in use (greyed row) never
+            // reaches here.
+            Gesture::Hold if self.delete_enabled(cx.activity, cx.routes) => {
+                cx.activity.request_route_delete(self.route);
+                cx.activity.active_route = self.prev_active;
+                Transition::Pop
             }
             // Cancel: put back whatever route was loaded before the preview.
             Gesture::Back => {
@@ -196,20 +257,53 @@ impl RouteOverviewScreen {
             }
         }
 
-        let rows: [(&str, &str, &str, Option<bool>); 3] = [
+        // The three figures don't fit alongside the new Delete row + START bar with standard row
+        // spacing, so they auto-flip as a two-row pager (T3): page 0 = DISTANCE + CLIMB, page 1 =
+        // DESCENT alone. The flip itself is the affordance — no page dots.
+        let entries: [(&str, &str, &str, Option<bool>); 3] = [
             (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
             (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
             (rx.t(Msg::RouteOverviewDescent), &desc, units.elev_label(), Some(false)),
         ];
-        for (i, (caption, value, unit, arrow)) in rows.iter().enumerate() {
-            let y = ROWS_TOP + i as i32 * ROW_PITCH;
-            ledger_row(cv, w, y, caption, value, unit, *arrow);
-            if i + 1 < rows.len() {
+        let page_rows: &[usize] = if self.page & 1 == 0 { &[0, 1] } else { &[2] };
+        for (slot, &e) in page_rows.iter().enumerate() {
+            let y = ROWS_TOP + slot as i32 * ROW_PITCH;
+            let (caption, value, unit, arrow) = entries[e];
+            ledger_row(cv, w, y, caption, value, unit, arrow);
+            if slot + 1 < page_rows.len() {
                 cv.hline(16, y + ROW_PITCH - 4, w - 32, RULE);
             }
         }
 
+        // The guarded Delete-route row, greyed with an "In use" cue while this is the active ride's
+        // route (a hold does nothing there).
+        let in_use = rx.activity.is_tracking() && rx.activity.active_route == Some(self.route);
+        draw_delete_row(cv, w, h, rx.t(Msg::RouteOverviewDelete), rx.t(Msg::RouteMenuInUse), !in_use, rx.hold_progress);
         draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
+    }
+}
+
+/// The bottom-anchored y of the Delete-route row, sitting a [`DELETE_GAP`] above the START button.
+fn delete_row_y(h: i32) -> i32 {
+    (h - 10 - BUTTON_H) - DELETE_GAP - DELETE_ROW_H
+}
+
+/// Draw the guarded **Delete route** row above the START button — the ride_control guarded-row
+/// idiom (a `PARCHMENT_SHADE` base filling warning-red with the live `hold` under the "Delete route"
+/// label). While the route is the active ride's (`enabled == false`) the row greys out: a faint
+/// outline carrying the reused "In use" cue in place of the label (the two don't both fit this
+/// width), and no fill draws (a hold does nothing).
+fn draw_delete_row(cv: &mut impl Surface, w: i32, h: i32, label: &str, in_use_cue: &str, enabled: bool, hold: f32) {
+    use palette::*;
+    let x = 14;
+    let y = delete_row_y(h);
+    let row = rect(x, y, w - 2 * x, DELETE_ROW_H);
+    if enabled {
+        super::confirm_row(cv, row, true, true, hold, WARNING, 6);
+        cv.text_vcentered(label, x + 12, (y, DELETE_ROW_H), Font::Body, TextAlign::Left, INK);
+    } else {
+        cv.round_outline(row, 6, PARCHMENT_SHADE);
+        cv.text_vcentered(in_use_cue, w / 2, (y, DELETE_ROW_H), Font::Body, TextAlign::Center, SUBTEXT);
     }
 }
 
@@ -234,4 +328,109 @@ fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
     let px = tx - 5 * Font::Body.char_width() as i32 - 16;
     let mid = by + BUTTON_H / 2;
     cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), INK);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::activity::Mode;
+    use crate::route::RouteSummary;
+    use crate::screen::PoiScratch;
+    use crate::settings::Settings;
+    use crate::AppState;
+    use obc_route::BBox;
+
+    fn summary() -> RouteSummary {
+        RouteSummary {
+            name: heapless::String::try_from("A").unwrap(),
+            distance_km: 10,
+            climb_m: 100,
+            bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 },
+            start_lon: 0,
+            start_lat: 0,
+        }
+    }
+
+    fn run(scr: &mut RouteOverviewScreen, act: &mut Activity, routes: &[RouteSummary], g: Gesture) -> Transition {
+        let mut st = AppState::new(0, 0, 1.0);
+        let mut settings = Settings::default();
+        let scratch = PoiScratch::new();
+        let mut cx = Ctx {
+            state: &mut st,
+            activity: act,
+            settings: &mut settings,
+            routes,
+            rides: &[],
+            nav_profiles: &crate::NavProfiles::EMPTY,
+            poi_scratch: &scratch,
+            now_ms: 0,
+        };
+        scr.handle(g, &mut cx)
+    }
+
+    /// A completed hold over the live Delete row records the route's index, restores the pre-preview
+    /// active route, and pops back to the Routes list.
+    #[test]
+    fn hold_deletes_the_previewed_route_and_pops() {
+        let routes = [summary(), summary()];
+        let mut act = Activity::new(Mode::Idle);
+        act.active_route = Some(1); // the menu preview
+        let mut scr = RouteOverviewScreen::new(1, Some(0)); // was previewing route 0 before
+        assert!(scr.delete_enabled(&act, &routes), "an Idle preview is deletable");
+        let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
+        assert!(matches!(t, Transition::Pop), "the delete pops back to the Routes list");
+        assert_eq!(act.take_route_delete(), Some(1), "records the previewed route's index");
+        assert_eq!(act.active_route, Some(0), "the pre-preview route is restored");
+    }
+
+    /// The Delete row is disabled — and a hold does nothing — while this route is the active route of
+    /// a running tracking session (the greying predicate moved off the old Route-menu footer).
+    #[test]
+    fn hold_over_the_active_ride_route_is_a_no_op() {
+        let routes = [summary(), summary()];
+        let mut act = Activity::new(Mode::Riding);
+        act.start_session(); // now tracking…
+        act.active_route = Some(0); // …route 0
+        let mut scr = RouteOverviewScreen::new(0, None);
+        assert!(!scr.delete_enabled(&act, &routes), "the active ride's route can't be deleted");
+        let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
+        assert!(matches!(t, Transition::None), "a hold over the in-use route does nothing");
+        assert_eq!(act.take_route_delete(), None);
+    }
+
+    /// A computed (length-only) overview has no Delete row, so it's never deletable and a hold is a
+    /// no-op — the locked length-only page stays exactly as-is.
+    #[test]
+    fn computed_overview_has_no_delete() {
+        let routes = [summary()];
+        let mut act = Activity::new(Mode::Idle);
+        let mut scr = RouteOverviewScreen::computed(0, None);
+        assert!(!scr.delete_enabled(&act, &routes));
+        run(&mut scr, &mut act, &routes, Gesture::Hold);
+        assert_eq!(act.take_route_delete(), None);
+    }
+
+    /// The two-row pager flips exactly at the dwell deadline and only once, re-arming a fresh dwell —
+    /// the Statistics auto-flip contract. The first poll anchors the dwell (page 0 gets a full one).
+    #[test]
+    fn pager_flips_once_at_the_deadline() {
+        let mut scr = RouteOverviewScreen::new(0, None);
+        assert_eq!(scr.page, 0);
+        assert!(!scr.tick_timers(0).changed, "the first poll only anchors the dwell");
+        assert!(!scr.tick_timers(PAGE_FLIP_MS - 1).changed, "still dwelling just before the deadline");
+        assert_eq!(scr.page, 0);
+        assert!(scr.tick_timers(PAGE_FLIP_MS).changed, "flips exactly at the deadline");
+        assert_eq!(scr.page, 1, "now on the DESCENT page");
+        assert!(!scr.tick_timers(PAGE_FLIP_MS + 1).changed, "and only once — a fresh dwell re-armed");
+        assert!(scr.tick_timers(2 * PAGE_FLIP_MS).changed, "flips back at the next deadline");
+        assert_eq!(scr.page, 0);
+    }
+
+    /// The computed page has a single distance row and no pager, so its tick never self-dirties.
+    #[test]
+    fn computed_overview_never_flips() {
+        let mut scr = RouteOverviewScreen::computed(0, None);
+        assert!(!scr.tick_timers(PAGE_FLIP_MS).changed);
+        assert_eq!(scr.tick_timers(PAGE_FLIP_MS), ScreenTick::idle());
+    }
 }

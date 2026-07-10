@@ -279,6 +279,7 @@ descent = "DESCENT"
 bike_type = "BIKE TYPE"
 start_ride = "START RIDE"
 loading_profile = "loading profile"
+delete = "Delete route"
 
 # --- Route-received / route-updated popups ---
 [route_received]
