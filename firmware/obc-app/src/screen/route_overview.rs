@@ -83,6 +83,13 @@ impl RouteOverviewScreen {
         RouteOverviewScreen { route, prev_active, computed: true, page: 0, last_flip_ms: None }
     }
 
+    /// Whether this overview previews a **computed** route — the variant that wants the
+    /// host-decimated shape preview (#685 §4). Read by
+    /// [`App::nav_preview_missing`](crate::App::nav_preview_missing).
+    pub(crate) fn is_computed(&self) -> bool {
+        self.computed
+    }
+
     /// Whether the guarded **Delete route** row is **live** — a real, non-computed catalog route
     /// that isn't the actively-navigated route of a running tracking session. This is the exact
     /// greying predicate the old Route-menu footer used, moved here (T3): deleting the file under an
@@ -167,31 +174,43 @@ impl RouteOverviewScreen {
             return;
         };
 
-        let name = super::route_menu::fit_name(&summary.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
-        title_frame(cv, w, h, &name, "");
-
         let chart_x = SIDE_MARGIN;
         let chart_w = w - 2 * SIDE_MARGIN;
 
         // A computed route (the on-device router's output) has no elevation data at all — the
-        // locked "length only" page: one DISTANCE row (meter-resolution from the opened geometry,
+        // locked "length only" page: a DISTANCE row (meter-resolution from the opened geometry,
         // where the whole-km catalog figure would read "0 km" on a short POI route), no elevation
-        // band, no climb/descent. The START button below is shared.
+        // band, no climb/descent — plus the shape preview (#685 §4). The START button is shared.
         if self.computed {
+            // Static NEW ROUTE title; the destination name moves into the body as the first line
+            // at full card width (#685 §4 — a title-bar name truncated to `Carrefour Mar..`).
+            title_frame(cv, w, h, rx.t(Msg::RouteOverviewNewRoute), "");
+            let x = 16;
+            let name =
+                super::route_menu::fit_name(&summary.name, ((w - 2 * x) / Font::Body.char_width() as i32) as usize);
+            cv.text(&name, Point::new(x, LIST_TOP + 4), Font::Body, TextAlign::Left, INK);
+
             let units = rx.settings.units;
             let total_m = rx.route.map(|r| r.total_distance_m).unwrap_or(summary.distance_km * 1000);
+            // Metres below 1 km (`600 m`, #685 §4 — `0.6 km` undersells a short POI route), the
+            // one-decimal km above; imperial twin: whole feet below a mile, one-decimal miles.
             let mut dist: heapless::String<8> = heapless::String::new();
-            let _ = write!(dist, "{:.1}", units.dist(total_m as f32 / 1000.0));
-            let dist_unit = if units.is_imperial() { "mi" } else { "km" };
-            ledger_row(cv, w, LIST_TOP + 16, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
+            let dist_unit = write_computed_distance(&mut dist, total_m, units);
+            let rows_top = LIST_TOP + 34;
+            ledger_row(cv, w, rows_top, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
             // The bike profile the route was planned under (routing-v2 N5): the rider must be able to
             // tell a Road route from an MTB one they picked by accident. The name resolves against the
             // loaded map for the current selection — which is the profile the just-finished plan used,
             // since planning uses `bike_profile_idx` and the overview opens straight off it.
-            draw_profile_label(cv, w, rx);
+            draw_profile_label(cv, w, rx, rows_top + ROW_PITCH);
+            // The route-shape preview fills the middle between the ledger and the START bar.
+            draw_route_preview(cv, w, rows_top + 2 * ROW_PITCH, h - 10 - BUTTON_H, rx.nav_preview);
             draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
             return;
         }
+
+        let name = super::route_menu::fit_name(&summary.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
+        title_frame(cv, w, h, &name, "");
 
         // The full-route elevation band — the Statistics silhouette without any of its live
         // layers (no traveled shading, no cursor, no progress bar). A small peak label gives the
@@ -322,24 +341,102 @@ fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
 }
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
-/// N5), drawn under the DISTANCE row on the length-only page in the same caption-left/value-right
-/// shape. A stale/out-of-range index shows **profile 0's name** — the profile the router actually
-/// fell back to for this plan (see [`NavProfiles::write_label`](crate::NavProfiles)).
-fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render) {
+/// N5), drawn at `y` under the DISTANCE row on the computed page in the same caption-left/
+/// value-right shape. A stale/out-of-range index shows **profile 0's name** — the profile the
+/// router actually fell back to for this plan (see [`NavProfiles::write_label`](crate::NavProfiles)).
+fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render, y: i32) {
     let mut name: heapless::String<20> = heapless::String::new();
     rx.nav_profiles.write_label(rx.settings.bike_profile_idx, &mut name);
-    ledger_row(cv, w, LIST_TOP + 16 + ROW_PITCH, rx.t(Msg::RouteOverviewBikeType), &name, "", None);
+    ledger_row(cv, w, y, rx.t(Msg::RouteOverviewBikeType), &name, "", None);
+}
+
+/// Write the computed page's DISTANCE value into `s`, returning its unit suffix: whole metres
+/// below 1 km (#685 §4), one-decimal km above — imperial twin: whole feet below a mile,
+/// one-decimal miles (the same thresholds as every other compacting readout).
+fn write_computed_distance(s: &mut heapless::String<8>, total_m: u32, units: crate::settings::Units) -> &'static str {
+    use crate::settings::{FT_PER_M, FT_PER_MI};
+    if units.is_imperial() {
+        let ft = (total_m as f32 * FT_PER_M) as u32;
+        if ft < FT_PER_MI {
+            let _ = write!(s, "{ft}");
+            "ft"
+        } else {
+            let _ = write!(s, "{:.1}", units.dist(total_m as f32 / 1000.0));
+            "mi"
+        }
+    } else if total_m < 1000 {
+        let _ = write!(s, "{total_m}");
+        "m"
+    } else {
+        let _ = write!(s, "{:.1}", total_m as f32 / 1000.0);
+        "km"
+    }
+}
+
+/// The route-shape preview's box size (#685 §4): ≈212×90 px, horizontally centred, vertically
+/// centred between the ledger rows and the START bar.
+const PREVIEW_W: i32 = 212;
+const PREVIEW_H: i32 = 90;
+
+/// Draw the computed route's shape preview: the host-decimated polyline (≤ 64 points) normalized
+/// and aspect-fit into the [`PREVIEW_W`]×[`PREVIEW_H`] box — lon scaled by cos(mid-lat) so the
+/// shape keeps its ground aspect — stroked 2 px INK (the doubled-1-px idiom), with a 4 px filled
+/// disc at the start and a 6 px hollow diamond at the destination. An empty/short slice (the
+/// frame or two before the host hands the preview in, or a stale one) draws nothing — the box
+/// just stays empty, like the full page's "loading profile" band footprint.
+fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
+    use palette::*;
+    if pts.len() < 2 {
+        return;
+    }
+    let x0 = (w - PREVIEW_W) / 2;
+    let y0 = top + ((bot - top - PREVIEW_H) / 2).max(0);
+    let (mut min_lon, mut max_lon, mut min_lat, mut max_lat) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+    for &(lon, lat) in pts {
+        min_lon = min_lon.min(lon);
+        max_lon = max_lon.max(lon);
+        min_lat = min_lat.min(lat);
+        max_lat = max_lat.max(lat);
+    }
+    // Aspect-fit: one scale for both axes (the smaller of the two fits), the fitted shape
+    // centred in the box. `max(1.0)` guards a degenerate straight north-south / east-west line.
+    let clat = obc_route::cos_lat((min_lat / 2) + (max_lat / 2));
+    let geo_w = ((max_lon - min_lon) as f32 * clat).max(1.0);
+    let geo_h = ((max_lat - min_lat) as f32).max(1.0);
+    let scale = (PREVIEW_W as f32 / geo_w).min(PREVIEW_H as f32 / geo_h);
+    let ox = x0 as f32 + (PREVIEW_W as f32 - geo_w * scale) / 2.0;
+    let oy = y0 as f32 + (PREVIEW_H as f32 - geo_h * scale) / 2.0;
+    let project = |(lon, lat): (i32, i32)| {
+        Point::new((ox + (lon - min_lon) as f32 * clat * scale) as i32, (oy + (max_lat - lat) as f32 * scale) as i32)
+    };
+    let mut prev = project(pts[0]);
+    for &p in &pts[1..] {
+        let cur = project(p);
+        super::stroke2(cv, prev, cur, INK);
+        prev = cur;
+    }
+    // Start: a 4 px filled disc. Destination: a 6 px hollow diamond (its four 1 px edges).
+    cv.disc(project(pts[0]), 2, INK);
+    let d = project(pts[pts.len() - 1]);
+    let k = 3;
+    cv.line(Point::new(d.x, d.y - k), Point::new(d.x + k, d.y), INK);
+    cv.line(Point::new(d.x + k, d.y), Point::new(d.x, d.y + k), INK);
+    cv.line(Point::new(d.x, d.y + k), Point::new(d.x - k, d.y), INK);
+    cv.line(Point::new(d.x - k, d.y), Point::new(d.x, d.y - k), INK);
 }
 
 /// START RIDE: the page's one action, so it draws armed (amber) with a play wedge. Shared by the
-/// full page and the computed-route (length-only) variant.
-fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
+/// full page and the computed-route variant — and by the POI detail's `Route here` footer (#685),
+/// which is specified as exactly this bar, so the two can't drift.
+pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
     use palette::*;
     let by = h - 10 - BUTTON_H;
     cv.round(rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H), 8, AMBER);
     let tx = w / 2 + 8;
     cv.text_vcentered(label, tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
-    let px = tx - 5 * Font::Body.char_width() as i32 - 16;
+    // Play wedge just left of the centred label — from its real half-width, so a longer
+    // translation (or the POI detail's `Route here`) can't run into it.
+    let px = tx - label.chars().count() as i32 * Font::Body.char_width() as i32 / 2 - 16;
     let mid = by + BUTTON_H / 2;
     cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), INK);
 }

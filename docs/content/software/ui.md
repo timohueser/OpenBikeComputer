@@ -412,7 +412,7 @@ Two behaviours make it safe to press without thinking:
 
 The list is a **static snapshot**, frozen the moment you enter. Membership, order and distances don't move — rows never reshuffle under the cursor as you turn, and the SD card isn't re-scanned every frame. Re-enter the category to refresh it against your current position. Under the hood the [nearest-16 query](../formats/#pois-a-nearest-list-not-a-map-layer) needs the streaming map `Reader`, which lives only in the [`draw` context](#logic-and-drawing-get-different-views-of-the-world) — so the snapshot is taken *lazily on the first draw* that has both a reader and a fix, into a single buffer the app owns (holding it per-screen would inflate every slot of the screen stack). Opening a list invalidates that buffer, so the next draw re-queries.
 
-The one thing that *is* live is the **bearing arrow** — recomputed every frame from the POI's stored coordinates and the rider's current heading, pure trig with zero SD access. It points from you toward the POI **relative to your heading**, so "straight up" means "dead ahead." That heading has two sources, and which one is used depends on whether you're moving:
+The one thing that *is* live is the **bearing arrow** — recomputed every frame from the POI's stored coordinates and the rider's current heading, pure trig with zero SD access. It points from you toward the POI **relative to your heading**, so "straight up" means "dead ahead." The drawn glyph **snaps to eight compass directions** (45° steps) and is a full arrow — shaft plus barbs, double-stroked to a 2 px line: at ~11 px a degree-true arrow just smudges, while the eight snapped shapes read without focusing. That heading has two sources, and which one is used depends on whether you're moving:
 
 <figure class="fig">
 <svg viewBox="0 0 720 210" role="img" aria-label="One POI list row, dissected. The row holds a name on the left, a bearing arrow, and a right-aligned distance. Below, the arrow's heading reference has two sources: while moving, the GPS course; while stationary, the electronic compass heading from the ICM-20948; when neither is known, the arrow is hidden rather than pointing wrong.">
@@ -451,10 +451,10 @@ The one thing that *is* live is the **bearing arrow** — recomputed every frame
 
 ### The POI detail view
 
-Pressing a list row opens the **detail view** for that POI — one more `Nav` screen, carrying the selected POI out of the frozen snapshot. It shows the same thing the row does, but unabridged: the **full stored name** (the row ellipsizes to fit its width; the detail wraps it to a second line instead of truncating), the **subtype label** as a muted subtitle, and the **same live bearing arrow** — the identical element and heading seam as the row, still hidden when neither course nor compass is known. What the row can't fit is the reason the detail exists: **today's opening hours** and whether the place is **open right now**.
+Pressing a list row opens the **detail view** for that POI — one more `Nav` screen, carrying the selected POI out of the frozen snapshot. It shows the same thing the row does, but unabridged: the **full stored name** with the **category's pixel icon** beside it (the row ellipsizes the name to fit its width; the detail wraps it to a second line instead of truncating), the **subtype label** as a muted subtitle, and — promoted to its own row directly under it — the **distance and the same live 8-way bearing arrow** at body size: the two numbers that decide *do I go*, with the identical heading seam as the row (arrow hidden when neither course nor compass is known). What the row can't fit is the reason the detail exists: **today's opening hours** and whether the place is **open right now** — a green **OPEN** pill, or a warning-red **CLOSED** one. At the bottom, a full-width **▶ Route here** bar — the Route overview's START RIDE bar, reused — makes the screen's press action visible: it opens the [create-route confirm](../architecture/#on-device-routing-the-router-seam).
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="The POI detail view. On the left, the screen: a full POI name at the top, a muted subtype subtitle beneath it, then a Today heading with a bearing arrow, one or two opening-hours ranges stacked below, and an OPEN or CLOSED badge at the bottom. On the right, the three heading states for the hours block: Today with time ranges when open some hours today, Closed today when the schedule has no interval for this weekday, and Hours not listed when the POI has no schedule at all. Below, the open-now badge is derived from the live local clock.">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POI detail view. On the left, the screen: the POI name with its category icon at the top, a muted subtype subtitle beneath it, then a promoted distance row with the 8-way bearing arrow, a Today heading with an opening-hours range below, a green OPEN pill, and a full-width amber Route here bar at the bottom. On the right, the three heading states for the hours block: Today with time ranges when open some hours today, Closed today when the schedule has no interval for this weekday, and Hours not listed when the POI has no schedule at all. Below, the open-now pill is derived from the live local clock.">
   <defs>
     <marker id="aPD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -463,16 +463,22 @@ Pressing a list row opens the **detail view** for that POI — one more `Nav` sc
   <!-- the screen mock -->
   <rect class="d-panel" x="24" y="40" width="232" height="196" rx="10" />
   <rect x="42" y="54" width="196" height="18" rx="3" style="fill:#aa5500" /><text class="d-sub" x="52" y="67" style="fill:#fff;font-size:9px">POI</text>
-  <text class="d-sub" x="42" y="98" font-family="var(--mono)" style="font-size:12px">Stadtbaeckerei</text>
+  <!-- name row: category icon + name -->
+  <circle cx="49" cy="93" r="6" fill="#3d3427" /><path d="M43 90 l6 -8 l6 8 z" fill="#3d3427" />
+  <text class="d-sub" x="64" y="98" font-family="var(--mono)" style="font-size:12px">Stadtbaeckerei</text>
   <text class="d-sub" x="42" y="114" style="font-size:9px">Bakery</text>
-  <!-- today + arrow -->
-  <path d="M52 138 l7 -7 l7 7 l-4 0 l0 9 l-6 0 l0 -9 z" fill="#cf6a2a" />
-  <text class="d-sub" x="72" y="146" style="font-size:9px">Today</text>
-  <text class="d-sub" x="42" y="168" font-family="var(--mono)" style="font-size:11px">08:00-12:00</text>
-  <text class="d-sub" x="42" y="184" font-family="var(--mono)" style="font-size:11px">14:00-18:00</text>
-  <!-- badge -->
-  <rect x="42" y="200" width="66" height="22" rx="6" style="fill:#3c6b39" />
-  <text class="d-sub" x="75" y="215" text-anchor="middle" style="fill:#fff;font-size:10px">OPEN</text>
+  <!-- promoted distance + 8-way arrow row -->
+  <path d="M52 136 l7 -7 l7 7 l-4 0 l0 9 l-6 0 l0 -9 z" fill="#cf6a2a" />
+  <text class="d-sub" x="74" y="144" font-family="var(--mono)" style="font-size:11px">850m</text>
+  <!-- hours -->
+  <text class="d-sub" x="42" y="164" style="font-size:9px">Today</text>
+  <text class="d-sub" x="42" y="182" font-family="var(--mono)" style="font-size:11px">08:00-18:00</text>
+  <!-- badge pill -->
+  <rect x="42" y="192" width="52" height="15" rx="3" style="fill:#3c6b39" />
+  <text class="d-sub" x="68" y="203" text-anchor="middle" style="fill:#fff;font-size:9px">OPEN</text>
+  <!-- footer action bar -->
+  <rect x="38" y="214" width="204" height="16" rx="5" style="fill:#e3a52b" />
+  <text class="d-sub" x="140" y="225" text-anchor="middle" style="fill:#3d3427;font-size:9px">&#9654; Route here</text>
 
   <!-- the three heading states -->
   <text class="d-tag" x="292" y="60">the hours heading — three states</text>
@@ -494,7 +500,7 @@ Pressing a list row opens the **detail view** for that POI — one more `Nav` sc
   <text class="d-sub" x="610" y="208" style="font-size:9.5px;fill:#a9501c">is_open?</text>
   <text class="d-sub" x="308" y="226" style="font-size:9px">read live every frame — the one part that isn't frozen</text>
 </svg>
-<figcaption>The hours block reads the POI's [pooled schedule](../formats/#opening-hours-a-pooled-weekly-schedule) once (lazily, on the first draw with a map <code>Reader</code> — the same reader-in-draw seam the list snapshot uses), then picks <b>today's</b> intervals. Three states: <b>Today</b> with the day's one or two ranges stacked (<code>08:00-12:00</code> / <code>14:00-18:00</code> — stacked because a two-range line won't fit the 240 px panel); <b>Closed today</b> when the schedule has no interval for this weekday; and <b>Hours not listed</b> when the POI had no parseable hours at all. The <b>OPEN / CLOSED</b> badge is the only live piece — recomputed every frame from the device's local wall-clock. That local time comes from the user's <b>UTC offset</b> plus the <b>GPS clock</b> (the same clock that sets the ride time), and <code>weekday_from_ymd</code> (Zeller's congruence, Mon = 0) picks today's row; the minute-of-day then decides open vs. closed, including overnight intervals that opened last evening.</figcaption>
+<figcaption>The hours block reads the POI's [pooled schedule](../formats/#opening-hours-a-pooled-weekly-schedule) once (lazily, on the first draw with a map <code>Reader</code> — the same reader-in-draw seam the list snapshot uses), then picks <b>today's</b> intervals. Three states: <b>Today</b> with the day's one or two ranges stacked (<code>08:00-12:00</code> / <code>14:00-18:00</code> — stacked because a two-range line won't fit the 240 px panel); <b>Closed today</b> when the schedule has no interval for this weekday; and <b>Hours not listed</b> when the POI had no parseable hours at all. The <b>OPEN / CLOSED</b> pill (green fill open, warning-red closed — a state, not just quieter text) is the only live piece — recomputed every frame from the device's local wall-clock. That local time comes from the user's <b>UTC offset</b> plus the <b>GPS clock</b> (the same clock that sets the ride time), and <code>weekday_from_ymd</code> (Zeller's congruence, Mon = 0) picks today's row; the minute-of-day then decides open vs. closed, including overnight intervals that opened last evening.</figcaption>
 </figure>
 
 ## Settings: a second level of focus
