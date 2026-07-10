@@ -521,7 +521,7 @@ pub struct App {
     /// Set by [`apply_gesture`](App::apply_gesture) whenever a gesture **changed the screen
     /// stack**: any hold charging at that moment was aimed at a screen that is no longer the
     /// top, so it must be cancelled rather than delivered to whatever replaced it (a hold aimed
-    /// at a popup's "Save & new" must never land on the Route menu's hold-to-delete footer —
+    /// at a popup's "Finish & new" must never land on the Route menu's hold-to-delete footer —
     /// issue #480). [`handle_input`](App::handle_input) drains it inline (cancelling `input`'s
     /// holds and dropping stray `Hold`/`BackHold`s later in the same batch); the two-plane
     /// firmware drains it via [`take_hold_cancel`](App::take_hold_cancel) and cancels its own
@@ -616,6 +616,11 @@ struct UploadEvent {
     /// The upload replaced the **actively-navigated** route (snapshotted at arrival): the
     /// info-only "ROUTE UPDATED" card instead of a choice prompt — adoption already happened.
     active_replace: bool,
+    /// The route's mini elevation sparkline ([`obc_route::elevation_sparkline`]), built by the host
+    /// from the just-committed OBCR at commit time (#682) — `None` when the route carries no
+    /// elevation. Carried with the event so the idle "ROUTE RECEIVED" card can draw it; the
+    /// mid-ride swap / active-replace variants ignore it.
+    elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
 }
 
 /// A fix older than this (map-plane millis) means "no current GPS fix". The window is the larger of
@@ -1992,7 +1997,17 @@ impl App {
     ///    [`RouteSwapScreen`](crate::screen::RouteSwapScreen) while tracking, or the idle
     ///    "ROUTE RECEIVED" prompt. Dropped while the passkey card shows; deferred a tick while a
     ///    hold charges.
-    pub fn notify_route_uploaded(&mut self, id: u16, replaced: bool) {
+    ///
+    /// `elevation` is the route's mini sparkline ([`obc_route::elevation_sparkline`], `None` when
+    /// the route has no elevation), which the host builds from the just-committed OBCR at commit
+    /// time and the idle "ROUTE RECEIVED" card draws (#682). Carried with the event so a
+    /// hold-deferred delivery still has it; the swap / active-replace variants ignore it.
+    pub fn notify_route_uploaded(
+        &mut self,
+        id: u16,
+        replaced: bool,
+        elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
+    ) {
         let active_id = self.activity.active_route.and_then(|i| self.catalog_ids.get(i).copied());
         let active_replace = replaced && active_id == Some(id);
         if active_replace {
@@ -2014,7 +2029,7 @@ impl App {
             self.activity.dist_to_route_m = 0;
             self.map_dirty = true; // the drawn route line + progress changed under the rider
         }
-        self.pending_upload = Some(UploadEvent { id, active_replace });
+        self.pending_upload = Some(UploadEvent { id, active_replace, elevation });
         self.reconcile_upload_prompt();
     }
 
@@ -2049,7 +2064,7 @@ impl App {
         } else if self.activity.is_tracking() {
             Screen::RouteSwap(crate::screen::RouteSwapScreen::received(idx, self.now_ms))
         } else {
-            Screen::RouteReceived(crate::screen::RouteReceivedScreen::new(idx, self.now_ms))
+            Screen::RouteReceived(crate::screen::RouteReceivedScreen::new(idx, self.now_ms, ev.elevation))
         };
         match self.upload_prompt_index() {
             Some(i) => self.stack[i] = screen,
@@ -4213,7 +4228,7 @@ mod tests {
     fn modal_cards_are_exempt_from_idle_return() {
         for card in [
             Screen::Passkey(PasskeyScreen::new(123_456)),
-            Screen::RouteReceived(RouteReceivedScreen::new(0, 0)),
+            Screen::RouteReceived(RouteReceivedScreen::new(0, 0, None)),
             Screen::NavPlanning(NavPlanningScreen::new("Route")),
             Screen::Warning(WarningScreen::new(WarningFlags::NO_GPS)),
         ] {

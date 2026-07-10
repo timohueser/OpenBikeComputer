@@ -293,7 +293,7 @@ delete = "Supprimer"
 # --- Route-received / route-updated popups ---
 [route_received]
 title = "PARCOURS REÇU"
-start_ride = "Démarrer"
+view_route = "Voir parcours"
 dismiss = "Ignorer"
 route_removed = "Parcours retiré"
 updated_title = "PARCOURS MAJ"

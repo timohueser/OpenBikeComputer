@@ -293,7 +293,7 @@ delete = "Route löschen"
 # --- Route-received / route-updated popups ---
 [route_received]
 title = "ROUTE ERHALTEN"
-start_ride = "Fahrt starten"
+view_route = "Route ansehen"
 dismiss = "Verwerfen"
 route_removed = "Route entfernt"
 updated_title = "ROUTE AKTUAL."
