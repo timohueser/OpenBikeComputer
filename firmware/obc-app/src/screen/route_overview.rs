@@ -332,14 +332,17 @@ fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render) {
 }
 
 /// START RIDE: the page's one action, so it draws armed (amber) with a play wedge. Shared by the
-/// full page and the computed-route (length-only) variant.
-fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
+/// full page and the computed-route variant — and by the POI detail's `Route here` footer (#685),
+/// which is specified as exactly this bar, so the two can't drift.
+pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
     use palette::*;
     let by = h - 10 - BUTTON_H;
     cv.round(rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H), 8, AMBER);
     let tx = w / 2 + 8;
     cv.text_vcentered(label, tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
-    let px = tx - 5 * Font::Body.char_width() as i32 - 16;
+    // Play wedge just left of the centred label — from its real half-width, so a longer
+    // translation (or the POI detail's `Route here`) can't run into it.
+    let px = tx - label.chars().count() as i32 * Font::Body.char_width() as i32 / 2 - 16;
     let mid = by + BUTTON_H / 2;
     cv.triangle(Point::new(px, mid - 7), Point::new(px, mid + 7), Point::new(px + 11, mid), INK);
 }

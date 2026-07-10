@@ -36,7 +36,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::poi_list::{draw_bearing_arrow, ARROW_R};
+use super::poi_list::draw_bearing_arrow;
 use super::{palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
 
 /// The POI detail. Carries the selected [`Poi`] (name / coords / subtype / `hours_ref`) plus a
@@ -112,12 +112,20 @@ impl PoiDetailScreen {
         let named = !self.poi.name.is_empty();
         let name = if named { self.poi.name.as_str() } else { label };
 
-        // Name — the screen's primary element, un-ellipsized (the list row ellipsizes; here it shows
-        // whole). Body-tier for a 24-byte name that stays on one line at 240 px; a genuinely long
-        // name wraps to a second Body line rather than truncating.
+        // Name row — the category's pixel icon (the poi_menu glyphs, drawn unscaled: their ~22 px
+        // box is a Body line's height) at the left inset, the name beside it (#685 §2). The name
+        // stays un-ellipsized: Body-tier, wrapping to a second line rather than truncating; a
+        // wrapped second line runs under the icon's column, which reads fine (the icon marks the
+        // row, not a margin).
         let x = 16;
         let name_top = LIST_TOP + 4;
-        let name_bot = draw_wrapped(cv, name, x, name_top, w - 2 * x, INK);
+        let mut name_x = x;
+        if let Some(cat) = obc_reader::category_of(self.poi.subtype) {
+            let icon_c = Point::new(x + 11, name_top + Font::Body.cap_height() as i32 / 2);
+            super::poi_menu::draw_category_icon(cv, cat, icon_c, INK, PARCHMENT);
+            name_x = x + 22 + 8;
+        }
+        let name_bot = draw_wrapped(cv, name, name_x, name_top, w - name_x - 16, INK);
 
         // Subtitle — the subtype label, muted, under the name. Skipped when the name line already IS
         // the label (unnamed POI), so it never repeats.
@@ -128,29 +136,36 @@ impl PoiDetailScreen {
             sub_bot = sub_y + Font::Label.cap_height() as i32;
         }
 
-        // Bearing arrow — the same live element the list row draws, hidden when there's no heading
-        // reference (GPS course while moving / compass while stopped, the #231 seam). Drawn on the
-        // "Today" heading row at the left; the heading text sits to its right.
-        let head_y = sub_bot + 22;
+        // Distance + bearing row — promoted directly under the category line (#685 §2: the two
+        // numbers that decide "do I go"). The same 8-way arrow as the list rows at Body-line size,
+        // then the distance in Body type (`1km`; metres below 1 km — the list's format). The arrow
+        // hides when there's no heading reference (GPS course while moving / compass while
+        // stopped, the #231 seam); the distance stays.
+        let dist_y = sub_bot + 14;
         let heading = rx.state.effective_heading_deg();
         let fix = rx.state.user_fix;
-        let mut head_x = x;
+        let arrow_r = Font::Body.cap_height() as i32 / 2;
+        let mut dist_x = x;
         if let (Some(fix), Some(heading)) = (fix, heading) {
-            let arrow_mid = head_y + Font::Label.cap_height() as i32 / 2;
+            let arrow_mid = dist_y + arrow_r;
             draw_bearing_arrow(
                 cv,
-                Point::new(x + ARROW_R, arrow_mid),
-                ARROW_R,
+                Point::new(x + arrow_r, arrow_mid),
+                arrow_r,
                 (fix.lon, fix.lat),
                 (self.poi.lon, self.poi.lat),
                 heading,
             );
-            head_x = x + 2 * ARROW_R + 10;
+            dist_x = x + 2 * arrow_r + 8;
         }
+        let mut dist: heapless::String<12> = heapless::String::new();
+        super::write_off_route(&mut dist, "", self.poi.distance_m, rx.settings.units);
+        cv.text(&dist, Point::new(dist_x, dist_y), Font::Body, TextAlign::Left, INK);
 
         // Today's hours — a muted heading row ("Today" / "Closed today" / "Hours not listed"), then
         // each open interval on its own Body row (`08:00 – 18:00`). Stacking the (up to two) ranges
         // keeps each within the 240 px panel, where a single two-range line wouldn't fit.
+        let head_y = dist_y + Font::Body.cap_height() as i32 + 16;
         let schedule = self.schedule.get().flatten();
         let weekday = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day);
         let intervals: &[Interval] = match &schedule {
@@ -162,7 +177,7 @@ impl PoiDetailScreen {
             Some(_) if intervals.is_empty() => rx.t(Msg::PoiDetailClosedToday),
             Some(_) => rx.t(Msg::PoiDetailToday),
         };
-        cv.text(head, Point::new(head_x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
+        cv.text(head, Point::new(x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
 
         let mut row_y = head_y + Font::Label.cap_height() as i32 + 8;
         for iv in intervals {
@@ -172,18 +187,25 @@ impl PoiDetailScreen {
             row_y += Font::Body.cap_height() as i32 + 6;
         }
 
-        // OPEN / CLOSED-now badge — only when the POI has a schedule. A small filled pill under the
-        // hours block: green "OPEN" vs muted "CLOSED", read from the live wall-clock this frame.
+        // OPEN / CLOSED-now badge — only when the POI has a schedule; read from the live wall-clock
+        // this frame. A rounded pill (#685 §2: 3 px radius, 18 px tall, 8 px horizontal padding),
+        // Label type on white — green fill when open, warning-red when closed, so the closed state
+        // reads as a state, not just quieter text.
         if let Some(sched) = schedule {
             let minute = rx.now.hour as u16 * 60 + rx.now.minute as u16;
             let open = sched.is_open(weekday, minute);
-            let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), SUBTEXT) };
+            let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), WARNING) };
             let badge_y = row_y + 8;
-            let badge_w = text.chars().count() as i32 * Font::Label.char_width() as i32 + 20;
-            let badge_h = Font::Label.cap_height() as i32 + 12;
-            cv.round(rect(x, badge_y, badge_w, badge_h), 6, bg);
+            let badge_w = text.chars().count() as i32 * Font::Label.char_width() as i32 + 16;
+            let badge_h = 18;
+            cv.round(rect(x, badge_y, badge_w, badge_h), 3, bg);
             cv.text_vcentered(text, x + badge_w / 2, (badge_y, badge_h), Font::Label, TextAlign::Center, PARCHMENT);
         }
+
+        // Footer action row — `▶Route here`, exactly the Route overview's START RIDE bar (#685 §2:
+        // the shared drawer, so the two can't drift). Press anywhere already opened the create-route
+        // confirm; the bar only makes that visible. Back still returns to the list.
+        super::route_overview::draw_start_button(cv, w, h, rx.t(Msg::PoiDetailRouteHere));
     }
 }
 
