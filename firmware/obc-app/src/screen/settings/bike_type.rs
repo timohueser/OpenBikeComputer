@@ -100,6 +100,14 @@ impl BikeTypeScreen {
             let bx = area.top_left.x + area.size.width as i32 - 18;
             cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), INK);
         }
+
+        // The centred olive teaching line under the picker — the screen otherwise never says what the
+        // choice *does*; this names it (the router weights edges by this profile — N5, epic #533). T8
+        // item 2. Authored as one line, but "Routing uses this profile" (and its de/fr/es
+        // translations) overruns a single 240 px Label line, so it centre-wraps to two rather than
+        // clip — the shared card body wrap, so every language stays inside the panel.
+        let sub_y = area.top_left.y + area.size.height as i32 + 14;
+        crate::screen::wrapped(cv, rx.t(Msg::BikeTypeRoutingUses), w / 2, sub_y, w - 24, Font::Label, SUBTEXT);
     }
 }
 

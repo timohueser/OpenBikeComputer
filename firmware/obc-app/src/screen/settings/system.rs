@@ -12,6 +12,8 @@
 //! up to three [`Font::Label`] lines inside the amber row rather than truncating — the whole action
 //! reads, in every language.
 
+use core::fmt::Write;
+
 use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
@@ -72,15 +74,91 @@ impl SystemScreen {
         draw_wrapped_label(cv, label, ROW_X + 10, LIST_TOP + 12, inner_w, color);
 
         // The disabled cue below the row, so the greyed state reads (the standard "Recording" cue).
+        let mut y = LIST_TOP + row_h + 10;
         if recording {
-            cv.text(
-                rx.t(Msg::SystemRecording),
-                Point::new(ROW_X + 10, LIST_TOP + row_h + 10),
-                Font::Label,
-                TextAlign::Left,
-                SUBTEXT,
-            );
+            cv.text(rx.t(Msg::SystemRecording), Point::new(ROW_X + 10, y), Font::Label, TextAlign::Left, SUBTEXT);
+            y += 28;
         }
+
+        // The read-only device-info ledger (T8 item 6): three rows in the `ledger_row` visual
+        // language (olive caption left, value right) but carrying text values — so a long firmware
+        // tag wraps to a second line rather than ellipsizing (the never-ellipsize rule, family with
+        // T9). No serial numbers, no uptime.
+        y += 8;
+        // Firmware — the running git-describe tag; `--` before the host feeds it.
+        let fw = if rx.fw_version.is_empty() { "--" } else { rx.fw_version };
+        y = ledger_info_row(cv, w, y, rx.t(Msg::SystemFirmware), fw);
+        // Map — "name . vN" from the loaded map header; `--` with no map loaded.
+        let mut map_val: heapless::String<32> = heapless::String::new();
+        if rx.map_name.is_empty() {
+            let _ = map_val.push_str("--");
+        } else {
+            let _ = write!(map_val, "{} \u{00b7} v{}", rx.map_name, rx.map_obcm_version);
+        }
+        y = ledger_info_row(cv, w, y, rx.t(Msg::SystemMap), &map_val);
+        // Card free — human-readable SD free space; `--` until the on-entry FAT scan answers.
+        let mut free_val: heapless::String<16> = heapless::String::new();
+        match rx.card_free_bytes {
+            Some(bytes) => fmt_bytes(&mut free_val, bytes),
+            None => {
+                let _ = free_val.push_str("--");
+            }
+        }
+        ledger_info_row(cv, w, y, rx.t(Msg::SystemCardFree), &free_val);
+    }
+}
+
+/// Draw one device-info ledger row (T8 item 6): the olive Label caption at the left inset and the
+/// INK Body value right-aligned to `w - INSET`. A value that fits shares the caption's baseline; one
+/// too wide to clear the caption wraps onto its own right-aligned line(s) below — char-wrapped on the
+/// monospace cell budget (firmware tags have no spaces), **never ellipsized**. Returns the `y` just
+/// past the row so the caller stacks the next.
+fn ledger_info_row(cv: &mut impl Surface, w: i32, top_y: i32, caption: &str, value: &str) -> i32 {
+    use palette::*;
+    const INSET: i32 = 16;
+    let char_w = Font::Body.char_width() as i32;
+    cv.text(caption, Point::new(INSET, top_y + 4), Font::Label, TextAlign::Left, SUBTEXT);
+    let cap_w = caption.chars().count() as i32 * Font::Label.char_width() as i32;
+    let val_w = value.chars().count() as i32 * char_w;
+    // Room for the value on the caption line: from just past the caption to the right inset.
+    let same_line_budget = (w - INSET) - (INSET + cap_w + 8);
+    if val_w <= same_line_budget {
+        cv.text(value, Point::new(w - INSET, top_y + 2), Font::Body, TextAlign::Right, INK);
+        return top_y + 32;
+    }
+    // Wrap the value onto right-aligned line(s) below the caption.
+    let per_line = ((w - 2 * INSET) / char_w).max(1) as usize;
+    let lh = Font::Body.cap_height() as i32 + 4;
+    let mut y = top_y + 28;
+    let mut line: heapless::String<48> = heapless::String::new();
+    for ch in value.chars() {
+        if line.chars().count() >= per_line {
+            cv.text(&line, Point::new(w - INSET, y), Font::Body, TextAlign::Right, INK);
+            y += lh;
+            line.clear();
+        }
+        let _ = line.push(ch);
+    }
+    if !line.is_empty() {
+        cv.text(&line, Point::new(w - INSET, y), Font::Body, TextAlign::Right, INK);
+        y += lh;
+    }
+    y + 4
+}
+
+/// Format a byte count as a compact `N.N GB` / `NNN MB` / `NNN KB` string (T8 item 6) — GB with one
+/// decimal at or above 1 GiB, whole MB / KB below (rounded).
+fn fmt_bytes(s: &mut heapless::String<16>, bytes: u64) {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB {
+        let tenths = (bytes * 10 + GIB / 2) / GIB; // round to 0.1 GB
+        let _ = write!(s, "{}.{} GB", tenths / 10, tenths % 10);
+    } else if bytes >= MIB {
+        let _ = write!(s, "{} MB", (bytes + MIB / 2) / MIB);
+    } else {
+        let _ = write!(s, "{} KB", (bytes + KIB / 2) / KIB);
     }
 }
 

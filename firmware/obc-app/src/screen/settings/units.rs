@@ -59,7 +59,9 @@ impl UnitsScreen {
         let bx = area.top_left.x + area.size.width as i32 - 18;
         cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), INK);
 
-        // What the system means for each readout — label left, unit right.
+        // What the system means for each readout — caption left, value right. The value is dimmed
+        // one step (INK → the olive SUBTEXT the captions use) so the block reads as a **read-only
+        // consequence preview** of the choice above, not three more editable rows (T8 item 1).
         let rows: [(&str, &str); 3] = [
             (rx.t(Msg::UnitsDistance), units.dist_label()),
             (rx.t(Msg::UnitsSpeed), units.speed_label()),
@@ -73,7 +75,7 @@ impl UnitsScreen {
                 Point::new(area.top_left.x + area.size.width as i32 - 12, ry),
                 Font::Body,
                 TextAlign::Right,
-                INK,
+                SUBTEXT,
             );
             ry += 44;
         }

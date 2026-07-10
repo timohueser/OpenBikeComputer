@@ -982,6 +982,16 @@ async fn main(_spawner: Spawner) {
             // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image
             // too — the setting renders there but is inert (no router in that build).
             app.set_nav_profiles(map_tables.nav_profiles());
+            // Device-info for the System settings screen (T8 item 6): the running firmware version
+            // (the same `git describe` tag the GATT device-info + DFU confirm use) and the loaded
+            // map's name + OBCM version. The card-free scan runs later, on the screen's entry request.
+            {
+                use core::fmt::Write as _;
+                let mut fw: heapless::String<32> = heapless::String::new();
+                let _ = write!(fw, "{}+{}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT"));
+                app.set_fw_version(&fw);
+                app.set_map_info(storage.map_name(), map_tables.version);
+            }
             // Issue #504: the map loaded but its extent table was refused (fragmented past the cap /
             // failed verification), so reads fall back to the slow FAT-seek path. Surface it once as a
             // dismissable notice — `notify_warning` pushes the card over Home; the ride loop shows it on

@@ -408,6 +408,7 @@ impl StatisticsScreen {
                 cell.arrow,
                 cell.value_align,
                 PARCHMENT_SHADE,
+                INK,
             );
         }
     }

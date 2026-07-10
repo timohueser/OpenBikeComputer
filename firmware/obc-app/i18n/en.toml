@@ -248,6 +248,7 @@ hold_to_erase = "Hold to erase"
 # --- Bike-type settings screen ---
 [bike_type]
 title = "BIKE TYPE"
+routing_uses = "Routing uses this profile"
 no_profiles = "No map profiles"
 no_profiles_sub = "Load a map to pick a bike type"
 
@@ -313,7 +314,7 @@ delete = "Delete route"
 # --- Route-received / route-updated popups ---
 [route_received]
 title = "ROUTE RECEIVED"
-start_ride = "Start ride"
+view_route = "View route"
 dismiss = "Dismiss"
 route_removed = "Route removed"
 updated_title = "ROUTE UPDATED"
@@ -326,7 +327,7 @@ new_version = "the new version"
 received_title = "ROUTE RECEIVED"
 active_title = "ROUTE ACTIVE"
 swap = "Swap route"
-save_new = "Save & new"
+finish_new = "Finish & new"
 cancel = "Cancel"
 route_removed = "Route removed"
 recording = "Recording a ride"
@@ -363,6 +364,9 @@ back = "Back"
 title = "SYSTEM"
 install_update = "Install update from card"
 recording = "Recording"
+firmware = "Firmware"
+map = "Map"
+card_free = "Card free"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]
