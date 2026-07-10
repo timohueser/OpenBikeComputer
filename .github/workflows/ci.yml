@@ -66,6 +66,9 @@ jobs:
             wasm:
               - 'firmware/**'
               - 'docs/**'
+              # The wasm shadow-stack flag lives in the root cargo config (see PR #661) — a
+              # change there must rebuild the wasm demo or a stack regression lands unbuilt.
+              - '.cargo/config.toml'
               - '.github/workflows/ci.yml'
             ios:
               - 'companion-ios/**'
