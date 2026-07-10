@@ -55,18 +55,23 @@ cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 # at a fixed second column) with no footer — hold-to-delete moved to the Route overview (T3, #681).
 "$SIM" "$MAP" --boot --script "p p"          --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
 "$SIM" "$MAP" --boot --script "B w"          --png "$OUT/menu.png"
-# Rides screen (#454): the two-line list, then the two delete-footer states. The tracks fixture holds
-# two unsynced rides. `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
+# Rides screen (#454, rows redesigned by #680): the name + sync-glyph rows over the olive metadata
+# line (the tracks fixture's two unsynced rides draw the hollow ring; the drop-rightmost rule fires
+# at 240 px). `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p"     --png "$OUT/rides.png"
-# The warning-red "not synced" delete footer: `p H` opens the Rides screen and partial-holds the
-# encoder over the highlighted (unsynced) ride, so the trash + red bar + "not synced" cue draw.
-"$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p H"   --png "$OUT/rides-delete-unsynced.png"
-# The footer greyed while a ride is being recorded (#454): ride route 0 (`p p p p` → Map, riding)
+# The Ride detail (#680): press the highlighted ride — RIDE bar with the "not synced" slot, name,
+# date · time, the recorded track's elevation band (the staged RD0.ORD fixture, host-filled), the
+# four-row ledger, and the guarded Delete-ride row.
+"$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p p"   --png "$OUT/ride-detail.png"
+# The detail's delete charging: `H` partial-holds the encoder over the Delete-ride row, so its
+# warning-red fill draws mid-charge (the guarded-hold idiom, ride_control's pattern).
+"$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p p H" --png "$OUT/ride-detail-delete.png"
+# The delete row greyed while a ride is being recorded (#680): ride route 0 (`p p p p` → Map, riding)
 # **with the GPX replay driving fixes** — the tracking session only starts once positions flow, and
 # `is_tracking` (the greying predicate) is `session.is_some()`, so without `--gpx` this frame would
-# wrongly show the live red footer. Then BackHold to the Menu (`B`), turn to the Rides station
-# (`r w`), press in, and partial-hold — the footer shows the "Recording" greyed state, no bar fills.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p p B r w p H" --png "$OUT/rides-delete-recording.png"
+# wrongly show the live delete row. Then BackHold to the Menu (`B`), turn to the Rides station
+# (`r w`), press into the detail — the row shows the dim trash + "Recording" cue, and `H` fills nothing.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p p B r w p p H" --png "$OUT/ride-detail-recording.png"
 "$SIM" "$MAP" --boot --script "B r r w"      --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
@@ -295,4 +300,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 113 screens rendered into $OUT/"
+echo "ui-snapshots: 114 screens rendered into $OUT/"
