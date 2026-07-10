@@ -385,8 +385,9 @@ impl DfuUpdatedScreen {
         title_frame(cv, w, h, rx.t(Msg::DfuUpdatedTitle), "");
         card_check(cv, Point::new(w / 2, TITLE_BAR_H + 56), 24);
         cv.text(rx.t(Msg::DfuUpdated), Point::new(w / 2, TITLE_BAR_H + 104), Font::Body, TextAlign::Center, INK);
-        // The version, verbatim (never translated).
-        cv.text(&self.version, Point::new(w / 2, TITLE_BAR_H + 134), Font::Body, TextAlign::Center, AMBER);
+        // The version, verbatim (never translated) — a long tag wraps to a second centred line
+        // (`version_lines`), never running off the card's edge.
+        version_lines(cv, &self.version, w / 2, TITLE_BAR_H + 134, w - 2 * INSET, Font::Body, TextAlign::Center, AMBER);
     }
 }
 
