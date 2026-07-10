@@ -819,7 +819,15 @@
             { cmds: ['turn:2', 'press'], until: ["PoiList"], label: 'Browse to a category' },
             { cmds: ['press'], until: ["PoiDetail"], label: 'Open the nearest place' },
             { cmds: ['press'], until: ["NavConfirm"], label: 'Create a route to it' },
-            { cmds: ['press'], until: ["NavPlanning"], label: 'Planning the route…' },
+            // NavPlanning is TRANSIENT — on the small demo map the planner can finish between two
+            // 90 ms state polls, so a step waiting on it alone races: miss it and the engine times
+            // out and restarts the whole scenario while the device already shows the route. Accept
+            // the stable end states here too; if planning is already done, the next step's `until`
+            // resolves instantly and the tick strip just advances.
+            {
+              cmds: ['press'], until: ["NavPlanning", "RouteOverview", "NavFail"], label: 'Planning the route…',
+              labelFor: { NavPlanning: 'Planning the route…', RouteOverview: 'Your new route, on the map', NavFail: 'No route found — nothing routable nearby' }
+            },
             // The planner honestly resolves to the route overview OR the failure card — captioned
             // differently by `labelFor` so a routing *failure* is never shown as success.
             {
@@ -978,6 +986,12 @@
         var i = 0;
         while (i < s.steps.length) {
           if (token !== runToken) return;
+          // Never send a step into a paused loop: cmd() drops commands while the frame loop is
+          // stopped (by design — a frozen sim must not accumulate a gesture burst), so a script
+          // that kept going would silently no-op its way into a timeout march. Wait for the loop;
+          // a pause normally also bumps the token, which ends this wait via cancellation.
+          while (rafId === null && token === runToken) { await sleep(150); }
+          if (token !== runToken) return;
           var step = s.steps[i];
           // Don't claim the target screen yet — keep the reader honest while we get there.
           if (i > 0 && demoRunning) setStep('Getting there…', i - 1);
@@ -1007,6 +1021,14 @@
 
       function startDemo() {
         if (!ready() || demoRunning) return;
+        resyncDemo();
+      }
+
+      // (Re)start the current scenario's script from step 0 unconditionally — the resume path's
+      // re-sync. This must NOT gate on `demoRunning`: a pause cancels the script (token bump) but
+      // deliberately leaves the mode on "Guided demo", so a guard like startDemo's would turn
+      // every resume into a no-op and freeze the tour at its last label forever.
+      function resyncDemo() {
         var token = ++runToken;
         setMode(true);
         setStep('Getting there…');
@@ -1078,16 +1100,32 @@
       // ---- visibility (tab hidden + scrolled offscreen) ----------------------------------------
       // The sim is "active" only when the page is visible AND the device is on (or near) screen.
       // Going inactive stops the loop, cancels pending steps, and pauses the sim; coming back
-      // resumes the loop and re-syncs a running demo from step 0.
+      // resumes the loop (and playback) and re-syncs a running demo from step 0.
+      //
+      // Going ACTIVE applies immediately; going INACTIVE only after a short grace period. A reader
+      // scrolling between the tour card and the device skims the stage past the viewport edge —
+      // without the grace, every skim cancelled the running script and forced a from-step-0
+      // re-sync, so a tour could die at the same early screen over and over.
+      var inactiveTimer = null;
       function applyActive() {
         var active = pageVisible && stageOnscreen && loaded && !failed;
-        if (active && rafId === null) {
-          startLoop();
-          if (SCENARIOS[scnIdx].staged && demoRunning && !prefersReducedMotion()) startDemo(); // re-sync
-        } else if (!active && rafId !== null) {
-          runToken++;                 // cancel any in-flight script (no late step on resume)
-          if (haveApi()) { api.obc_demo_cmd('pause'); api.obc_demo_tick(performance.now()); } // drain, then freeze
-          stopLoop();
+        if (active) {
+          if (inactiveTimer !== null) { clearTimeout(inactiveTimer); inactiveTimer = null; }
+          if (rafId === null) {
+            startLoop();
+            if (SCENARIOS[scnIdx].staged && demoRunning && !prefersReducedMotion()) {
+              resyncDemo();   // NOT startDemo() — its demoRunning guard would no-op every resume
+            } else {
+              cmd('play');    // the inactive branch paused playback; a live/ambient ride resumes
+            }
+          }
+        } else if (rafId !== null && inactiveTimer === null) {
+          inactiveTimer = setTimeout(function () {
+            inactiveTimer = null;
+            runToken++;                 // cancel any in-flight script (no late step on resume)
+            if (haveApi()) { api.obc_demo_cmd('pause'); api.obc_demo_tick(performance.now()); } // drain, then freeze
+            stopLoop();
+          }, 1200);
         }
       }
       document.addEventListener('visibilitychange', function () {
@@ -1095,12 +1133,14 @@
         applyActive();
       });
       if ('IntersectionObserver' in window) {
-        // Far offscreen = fully out of view; a small negative margin keeps it ticking while it's
-        // just peeking at the viewport edge.
+        // A POSITIVE margin EXPANDS the intersection root, so the stage still counts as on-screen
+        // while it's just peeking at (or slightly past) the viewport edge. (This shipped as
+        // '-10%', which shrinks the root and did the opposite: it paused — and killed the running
+        // tour — while the device was still partially visible.)
         var io = new IntersectionObserver(function (entries) {
           stageOnscreen = entries[0].isIntersecting;
           applyActive();
-        }, { rootMargin: '-10% 0px', threshold: 0 });
+        }, { rootMargin: '15% 0px', threshold: 0 });
         io.observe(stage);
       }
 
