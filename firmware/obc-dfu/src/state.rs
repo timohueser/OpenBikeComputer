@@ -383,8 +383,8 @@ impl BootState {
 pub enum BootDecision {
     /// Nothing pending — jump to the app (`Idle`).
     Jump,
-    /// Flash the staged image, then write `Trial` and reset (`Armed`). Idempotent: a power loss
-    /// mid-flash re-enters here next boot (invariant 2).
+    /// Flash the staged image, then write `Trial` and **jump into it** — the one trial boot
+    /// (`Armed`). Idempotent: a power loss mid-flash re-enters here next boot (invariant 2).
     Install(StagedRef),
     /// The trial boot went unconfirmed and a snapshot exists — flash it back (`Trial` with a rollback).
     Rollback(StagedRef),
@@ -402,7 +402,9 @@ pub enum BootDecision {
 ///   [`AcceptAndClear`](BootDecision::AcceptAndClear).
 ///
 /// (The confirm path — a healthy app writing `Idle{installed}` mid-run — never reaches the bootloader
-/// as a `Trial`, which is exactly why an *unconfirmed* `Trial` means "roll back".)
+/// as a `Trial`, which is exactly why an *unconfirmed* `Trial` means "roll back". Load-bearing
+/// corollary: the install path must **jump, never reset**, after writing `Trial` — a reset would
+/// re-enter the bootloader with the fresh `Trial` and roll the image back before it ever ran.)
 pub fn decide(state: &BootState) -> BootDecision {
     match state {
         BootState::Idle { .. } => BootDecision::Jump,
