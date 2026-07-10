@@ -53,13 +53,14 @@ impl PasskeyScreen {
         // prompt rather than a menu (no title-bar readout, no BLE glyph: the whole screen is the cue).
         super::title_frame(cv, w, h, rx.t(Msg::PasskeyTitle), "");
 
-        // The six digits, zero-padded and grouped `000 042` (three, space, three — leading zeros
-        // kept), in the Huge tier — the one oversized readout besides the Home clock. LESC passkeys
-        // are 000000–999999, so the seven 32 px cells (224 px) always fit the 240 px panel. Centred
-        // a touch above mid so the caption below it balances the card.
+        // The six digits, zero-padded and ungrouped `000042` (leading zeros kept — the owner's
+        // review round 1 reverted the `000 042` grouping), in the Huge tier — the one oversized
+        // readout besides the Home clock. LESC passkeys are 000000–999999, so the six 32 px cells
+        // (192 px) always fit the 240 px panel. Centred a touch above mid so the caption below it
+        // balances the card.
         let key = self.passkey.min(999_999);
         let mut code: heapless::String<8> = heapless::String::new();
-        let _ = write!(code, "{:03} {:03}", key / 1000, key % 1000);
+        let _ = write!(code, "{key:06}");
         let code_top = h * 42 / 100 - Font::Huge.cap_height() as i32 / 2;
         cv.text(&code, Point::new(w / 2, code_top), Font::Huge, TextAlign::Center, INK);
 
