@@ -136,3 +136,62 @@ fn over_long_name_is_truncated_on_a_char_boundary() {
     assert_eq!(info.name.as_str(), format!("a{}", "ü".repeat(23)));
     assert_eq!(ride.len() as u32, ride_object_len(47, 0));
 }
+
+/// The Ride detail's band source (epic #678 T2 / #680): `ride_elevation_profile` streams a stored
+/// ride object once and yields the same `Profile` shape the route band uses — y-range from the
+/// sweep, the peak where the track put it, elevation gaps carried, and the ascent curve pinned to
+/// the header's climb total.
+#[test]
+fn ride_elevation_profile_reads_the_recorded_track() {
+    use obc_route::ride_elevation_profile;
+    // Three points 0.01° of latitude apart on the equator (~1112 m per step), climbing to a
+    // mid-track peak. The header distance is set to the same geometric total so the columns
+    // bucket across the whole band (the builder trusts the header's total — the one knowable in
+    // a single pass).
+    let pts = [
+        TrackPoint { lon: 0, lat: 0, ele: 100, t_ms: 0, segment_start: true },
+        TrackPoint { lon: 0, lat: 10_000, ele: 300, t_ms: 60_000, segment_start: false },
+        TrackPoint { lon: 0, lat: 20_000, ele: 200, t_ms: 120_000, segment_start: false },
+    ];
+    let stats = RideStats { distance_m: 2_224, climb_m: 200, ..STATS };
+    let ride = to_ride(&log_of(&pts), "Bergtour", &stats);
+
+    let p = ride_elevation_profile(&SliceSource(&ride)).unwrap();
+    assert_eq!((p.min_ele_m, p.max_ele_m), (100, 300), "y-range from the sweep (the header stores none)");
+    assert_eq!(p.peak_ele_m(), 300);
+    let frac = p.peak_frac();
+    assert!((0.4..=0.6).contains(&frac), "the peak sits mid-track, got {frac}");
+    // Gap-fill: the first and last columns carry the track's ends, nothing is left at sentinels.
+    assert_eq!(p.at(0.0).0, 100, "the start column holds the first sample");
+    assert_eq!(p.at(1.0).1, 200, "the end column holds the last sample");
+    // The ascent curve normalizes to the header's climb total.
+    assert_eq!(p.ascent_to(1.0), 200);
+    assert_eq!(p.ascent_to(0.0), 0);
+}
+
+/// A `RIDE_ELE_NONE` point contributes distance but neither the y-range nor a column sample; a
+/// held-back (torn) version byte is rejected exactly as `RideInfo::read` rejects it.
+#[test]
+fn ride_elevation_profile_skips_ele_none_and_rejects_torn_saves() {
+    use obc_route::{ride_elevation_profile, RIDE_ELE_NONE};
+    let pts = [
+        TrackPoint { lon: 0, lat: 0, ele: 150, t_ms: 0, segment_start: true },
+        TrackPoint { lon: 0, lat: 10_000, ele: 0, t_ms: 60_000, segment_start: false },
+        TrackPoint { lon: 0, lat: 20_000, ele: 250, t_ms: 120_000, segment_start: false },
+    ];
+    let stats = RideStats { distance_m: 2_224, climb_m: 100, ..STATS };
+    let mut ride = to_ride(&log_of(&pts), "R", &stats);
+    // Patch the middle point's elevation to the "no elevation" sentinel (offset within its record:
+    // t_offset u32 + lat i32 + lon i32 = 12).
+    let mid = RIDE_HEADER_LEN + 1 + RIDE_POINT_LEN + 12;
+    ride[mid..mid + 2].copy_from_slice(&RIDE_ELE_NONE.to_le_bytes());
+
+    let p = ride_elevation_profile(&SliceSource(&ride)).unwrap();
+    assert_eq!((p.min_ele_m, p.max_ele_m), (150, 250), "the sentinel point is no sample");
+    // Mid-track columns gap-fill from the real neighbours — never the sentinel value.
+    let (lo, hi) = p.at(0.5);
+    assert!((150..=250).contains(&lo) && (150..=250).contains(&hi), "gap-filled mid col, got {lo}/{hi}");
+
+    ride[0] = 0; // a torn save's held-back version byte
+    assert!(ride_elevation_profile(&SliceSource(&ride)).is_err(), "a torn save is rejected");
+}

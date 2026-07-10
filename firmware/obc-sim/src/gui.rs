@@ -334,13 +334,20 @@ impl SimGui {
             }
         }
 
-        // Drain a hold-to-delete request from the Rides screen (#454): delete the `RD{id}.ORD` +
+        // Drain a hold-to-delete request from the Ride detail (#680): delete the `RD{id}.ORD` +
         // sidecar flag and re-feed the ride catalog, mirroring the route delete above (the device
         // routes this through `ObjectStore`; the sim deletes the file directly).
         if let Some(id) = self.app.take_ride_delete() {
             if self.ride_store.delete_by_id(id) {
                 self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
             }
+        }
+
+        // Fill an open Ride detail's track request (#680): stream the ride's `RD{id}.ORD` once
+        // into the app's resident ride profile — the detail's elevation band source, exactly the
+        // board's per-pass drain. A failed read parks `None` so a dead file isn't re-read per frame.
+        if let Some(id) = self.app.take_ride_track_request() {
+            self.app.set_ride_profile(self.ride_store.profile_by_id(id));
         }
 
         // The resumable route planner (#499). A drained create-route request starts a plan; a

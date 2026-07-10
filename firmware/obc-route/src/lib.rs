@@ -59,7 +59,7 @@ pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner};
 pub use matcher::{Match, RouteMatch};
 pub use nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
-pub use profile::{Profile, Window, PROFILE_COLS};
+pub use profile::{ride_elevation_profile, Profile, Window, PROFILE_COLS};
 pub use reader::{
     for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RouteReader, RouteSummary,
     Waypoint, Waypoints, WptEntry, CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,

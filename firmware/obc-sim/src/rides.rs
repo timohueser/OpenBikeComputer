@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use obc_app::{decode_synced_rides, encode_synced_rides, RideSummary, SyncedRides, SYNCED_RIDES_MAX_LEN};
-use obc_route::{RideInfo, SliceSource};
+use obc_route::{ride_elevation_profile, Profile, RideInfo, SliceSource};
 
 /// The synced-ride sidecar filename in the tracks folder — matches the device's `SYNCED_SET`.
 const SYNCED_SET: &str = "SYNCED.SET";
@@ -85,6 +85,18 @@ impl RideStore {
         }
         self.rescan();
         true
+    }
+
+    /// Build the ride with durable id `id`'s recorded-track elevation [`Profile`] — the Ride
+    /// detail's band fill (epic #678 T2 / #680), answering
+    /// [`App::take_ride_track_request`](obc_app::App::take_ride_track_request). One read of the
+    /// stored `RD{id}.ORD` through the shared `ride_elevation_profile` (the firmware streams the
+    /// same bytes off SD in chunks). `None` = unknown id / unreadable file — the caller parks the
+    /// failure via `set_ride_profile(None)`.
+    pub fn profile_by_id(&self, id: u16) -> Option<Profile> {
+        let pos = self.ids.iter().position(|&x| x == id)?;
+        let bytes = std::fs::read(&self.paths[pos]).ok()?;
+        ride_elevation_profile(&SliceSource(&bytes)).ok()
     }
 
     /// Read the synced-ride sidecar into a [`SyncedRides`] set (empty on a missing/torn file).

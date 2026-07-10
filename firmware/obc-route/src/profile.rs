@@ -282,6 +282,93 @@ impl RouteReader<'_> {
     }
 }
 
+/// Build a **recorded ride's** elevation [`Profile`] by streaming its stored ride object
+/// (`RD{id}.ORD` — the ride object v1, spec §7.2) from `src` once, in small fixed blocks — the
+/// Ride detail screen's band source (epic #678 T2 / #680).
+///
+/// The route twin is [`RouteReader::elevation_profile`]; this shares its whole tail (gap-fill,
+/// pyramid downsample, cumulative ascent, peak) and differs only in the sweep:
+/// - points are the ride object's 14-byte records (`lat, lon` at 10⁻⁷ °, converted to the
+///   microdegrees the shared distance core measures in; a [`RIDE_ELE_NONE`] point contributes
+///   distance but no elevation);
+/// - columns bucket by the accumulated segment distance over the **header's** `distance` total
+///   (the one total knowable in a single pass; the tail past it clamps into the last column and
+///   any unreached columns gap-fill);
+/// - the y-range is the sweep's own min/max (the ride header stores none) and the ascent curve
+///   normalizes to the header's `climb` total.
+///
+/// Reads ~448 B per `read_at` and holds no whole-track buffer, so the board can run it inside
+/// its pass without a stack spike beyond the returned `Profile` itself. Rejects what
+/// [`RideInfo::read`](crate::RideInfo::read) rejects (bad version, torn length).
+pub fn ride_elevation_profile(src: &dyn crate::ByteSource) -> Result<Profile, crate::Error> {
+    use crate::ride::{RIDE_ELE_NONE, RIDE_POINT_LEN};
+
+    let info = crate::RideInfo::read(src)?;
+    // Point records start after the 23 fixed header bytes + the on-disk name. Re-read the raw
+    // `name_len` — `RideInfo` clips its display copy to `NAME_CAP`, the file may store more.
+    let mut head = [0u8; 3];
+    src.read_at(0, &mut head)?;
+    let name_len = u16::from_le_bytes([head[1], head[2]]) as u32;
+    let points_at = 3 + name_len + 20;
+
+    let mut cols = [(i16::MAX, i16::MIN); TOTAL_COLS];
+    let mut casc = [0f32; ASCENT_COLS];
+    let total = info.distance_m.max(1) as f64;
+    let base_last = PROFILE_COLS - 1;
+    let asc_last = ASCENT_COLS - 1;
+    let (mut min_ele, mut max_ele) = (i16::MAX, i16::MIN);
+
+    // One sweep over the point records, a block per read — the distance runs through elevation
+    // gaps (a no-ele point still moves the rider), the ascent integrator only over real samples.
+    let mut ascent = DeadBand::<f32>::new();
+    let mut dist = 0f64;
+    let mut prev: Option<(i32, i32)> = None;
+    const BLOCK: usize = 32;
+    let mut buf = [0u8; BLOCK * RIDE_POINT_LEN];
+    let mut done: u32 = 0;
+    while done < info.point_count {
+        let n = ((info.point_count - done) as usize).min(BLOCK);
+        let bytes = &mut buf[..n * RIDE_POINT_LEN];
+        src.read_at(points_at + done * RIDE_POINT_LEN as u32, bytes)?;
+        for rec in bytes.chunks_exact(RIDE_POINT_LEN) {
+            let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
+            let lon = i32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
+            let ele = i16::from_le_bytes([rec[12], rec[13]]);
+            // 10⁻⁷ ° → microdegrees, the shared distance core's unit (a 0.1 µ° truncation —
+            // centimetres — under a band column's reach).
+            let p = (lon / 10, lat / 10);
+            if let Some(pr) = prev {
+                dist += seg_dist_m(pr, p) as f64;
+            }
+            prev = Some(p);
+            if ele == RIDE_ELE_NONE {
+                continue;
+            }
+            min_ele = min_ele.min(ele);
+            max_ele = max_ele.max(ele);
+            let frac = dist / total;
+            let col = ((frac * base_last as f64) as usize).min(base_last);
+            let slot = &mut cols[col];
+            slot.0 = slot.0.min(ele);
+            slot.1 = slot.1.max(ele);
+            let acol = ((frac * asc_last as f64) as usize).min(asc_last);
+            ascent.push(ele as f32);
+            casc[acol] = ascent.ascent();
+        }
+        done += n as u32;
+    }
+
+    // A ride with no elevation at all (every point the sentinel): a flat zero band, not i16 junk.
+    if min_ele > max_ele {
+        (min_ele, max_ele) = (0, 0);
+    }
+    fill_gaps(&mut cols[..PROFILE_COLS], (min_ele, max_ele));
+    downsample_levels(&mut cols);
+    let cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
+    let peak_col = peak_column(&cols[..PROFILE_COLS]);
+    Ok(Profile { cols, cum_ascent, min_ele_m: min_ele, max_ele_m: max_ele, peak_col })
+}
+
 /// Build the coarser pyramid levels in place: each level's column is the min/max merge of
 /// the two columns below it. The base level (already gap-filled) is read by level 1, level
 /// 1 by level 2, and so on — so every coarser level is gap-free without its own fill.

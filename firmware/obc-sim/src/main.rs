@@ -811,6 +811,12 @@ fn main() {
             // screen stays up (for its own snapshot, or for the injected answer to land in).
             let hold_nav = args.nav_hold || args.inject_nav_fail.is_some();
             let mut render = |app: &mut App| {
+                // A pending Ride-detail track request (#680) fills before the draw, so a `d` frame
+                // (and every gesture after it) sees the elevation band, mirroring the GUI's
+                // per-frame drain.
+                if let Some(id) = app.take_ride_track_request() {
+                    app.set_ride_profile(ride_store.profile_by_id(id));
+                }
                 let mut fb = Framebuffer::new(rw, rh);
                 let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
                 if !hold_nav {
@@ -835,12 +841,18 @@ fn main() {
                     app.set_routes_with_ids(store.catalog(), store.ids());
                 }
             }
-            // A scripted hold-to-delete in the Rides screen (#454) — same per-frame drain, ride
-            // namespace: delete the `RD{id}.ORD` + sidecar flag and re-feed the ride catalog.
+            // A scripted hold-to-delete on the Ride detail (#680) — same per-frame drain, ride
+            // namespace: delete the `RD{id}.ORD` + sidecar flag and re-feed the ride catalog (the
+            // detail popped back to the list, whose highlight the remap keeps sane).
             if let Some(id) = app.take_ride_delete() {
                 if ride_store.delete_by_id(id) {
                     app.set_rides(ride_store.catalog(), ride_store.ids());
                 }
+            }
+            // An open Ride detail's track request left by the script's last press (no trailing
+            // `d`): fill the resident ride profile now so the final render draws the band.
+            if let Some(id) = app.take_ride_track_request() {
+                app.set_ride_profile(ride_store.profile_by_id(id));
             }
         }
 
