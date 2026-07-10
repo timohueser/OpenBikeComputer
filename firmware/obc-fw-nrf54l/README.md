@@ -319,14 +319,28 @@ enumerates serial ports; the VCOM is the J-Link CDC port.
 ### Triggering a firmware update over the VCOM (`dfu-install`, S4 #619)
 
 With an `UPDATE.BIN` (see `../README.md` §Firmware update images) in the card root, the
-same link carries the DFU armer's trigger — no feeder GUI needed, any raw terminal works:
+same link carries the DFU armer's trigger — no feeder GUI needed. Two hard-won gotchas
+(both bit for real): the J-Link exposes **two** CDC ports and only one is live — on macOS
+it's the `cu.usbmodem*133` one (`*131` silently swallows writes; and use `cu.*`, never
+`tty.*`) — and plain `stty` + `printf`/`cat` does **not** work (macOS resets the termios
+on every open/close, so the line never arrives at 115200 raw). Use pyserial:
 
 ```sh
-PORT=/dev/tty.usbmodem<...>          # the J-Link CDC port
-stty -f "$PORT" 115200 raw -echo
-cat "$PORT" &                        # watch the `D …` status lines (and `T …` telemetry)
-printf 'dfu-install\n' > "$PORT"
+uv venv /tmp/dfu-venv && uv pip install --python /tmp/dfu-venv/bin/python pyserial
+/tmp/dfu-venv/bin/python - <<'EOF'
+import serial, time
+p = serial.Serial('/dev/cu.usbmodem<...>133', 115200, rtscts=False, timeout=1)
+p.write(b'dfu-install\n')
+end = time.time() + 90
+while time.time() < end:                 # watch the `D …` status lines back
+    if (line := p.readline()):
+        print(line.decode(errors='replace').rstrip())
+EOF
 ```
+
+If nothing comes back (and RTT shows no `dfu:` line either), the J-Link CDC path is in
+its known injection wedge — writes vanish while RTT keeps flowing; `probe-rs reset` does
+NOT clear it, only a physical DK power-cycle does.
 
 The device streams one `D` line per phase — scan result (staged version, size, extents),
 rollback snapshot, `armed gen=N` — then resets into `obc-boot`, which installs the image
