@@ -118,11 +118,17 @@ impl StatsScreen {
         super::row_label(cv, r0, rx.t(Msg::SetStatsPages), Some(rx.t(Msg::SetStatsPagesSub)));
         let mut val: heapless::String<8> = heapless::String::new();
         let _ = write!(val, "{} s", rx.settings.stat_cycle_s);
-        // The stepper box hangs its right edge on the value column (its centred glyphs then read at
-        // the same inset as the other rows' values).
-        let (cw, ch) = (76, 32);
-        let cell = rect(val_r - cw, r0.top_left.y + (ROW_H - ch) / 2, cw, ch);
-        super::stepper_field(cv, cell, &val, editing, Font::Label);
+        if editing {
+            // The open stepper keeps its box + centred text (a transient state with visible chrome,
+            // allowed to sit off the column — the ▲▼ box *is* the cursor then).
+            let (cw, ch) = (76, 32);
+            let cell = rect(val_r - cw, r0.top_left.y + (ROW_H - ch) / 2, cw, ch);
+            super::stepper_field(cv, cell, &val, true, Font::Label);
+        } else {
+            // Idle: the value itself right-aligns on the shared column — an inactive stepper_field
+            // would centre it in an invisible box, floating it left of the other rows' values.
+            cv.text_vcentered(&val, val_r, (r0.top_left.y, ROW_H), Font::Label, TextAlign::Right, INK);
+        }
 
         // Row 1 — Fields (opens the panel manager).
         let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
