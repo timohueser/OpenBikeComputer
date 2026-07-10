@@ -181,7 +181,7 @@ impl Demo {
         let mut demo = Box::new(Demo {
             bytes,
             tables,
-            cache: Box::new(MapCache::new()),
+            cache: MapCache::new_boxed(),
             // Placeholder app; `reset(Ambient)` below builds the real baseline (the one seam).
             app: Box::new(App::new(AppState::new(0, 0, 1.0))),
             routes,

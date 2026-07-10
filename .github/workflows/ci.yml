@@ -66,8 +66,10 @@ jobs:
             wasm:
               - 'firmware/**'
               - 'docs/**'
-              # The wasm shadow-stack flag lives in the root cargo config (see PR #661) — a
-              # change there must rebuild the wasm demo or a stack regression lands unbuilt.
+              # The root cargo config is gone (`MapCache::new_boxed` removed the wasm
+              # shadow-stack flag it carried — PRs #661/#666), but rustflags placed there
+              # reach the wasm build via cargo's config walk-up, so a re-introduced file
+              # must still rebuild the demo or a stack regression lands unbuilt.
               - '.cargo/config.toml'
               - '.github/workflows/ci.yml'
             ios:
