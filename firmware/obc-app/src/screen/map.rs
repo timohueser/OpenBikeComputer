@@ -357,7 +357,7 @@ impl MapScreen {
         let chip_band = if warning_up || wpt_chip.is_some() {
             CHIP_H
         } else if hint_up {
-            HINT_CHIP_H
+            hint_band_h(rx.t(Msg::MapPressToStart))
         } else {
             0
         };
@@ -432,31 +432,54 @@ fn draw_status_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
     cv.text(s, Point::new(w / 2, py + 5), font, TextAlign::Center, WARNING);
 }
 
-/// The browse-map **start hint** band height (two [`Font::Label`] lines). Taller than the terse
-/// single-line alert chips ([`CHIP_H`]) because the full `Press to start a ride` sentence — 21 chars
-/// — cannot fit one line at 240 px in even the smallest font, so the hint wraps to two centred lines.
-const HINT_CHIP_H: i32 = 50;
-/// The per-line pitch and first-line top inset inside the two-line hint pill.
+/// The per-line pitch inside the multi-line hint pill ([`Font::Label`] lines).
 const HINT_LINE_PITCH: i32 = 22;
-const HINT_LINE_TOP: i32 = 7;
+/// Visible padding (px) between the pill's edge and the text block's cap extents — the **same**
+/// above the first line and below the last, by construction: the pill height is derived from the
+/// wrapped line count (owner review round 1 — the old fixed 50 px pill left the second line ~2 px
+/// off the bottom edge while 11 px hung over the top).
+const HINT_PAD_Y: i32 = 8;
+/// Terminus [`Font::Label`] glyphs ink from 4 px below their cell-top anchor (the face's top
+/// bearing, measured on a rendered frame). The centering math offsets the line anchors by it so the
+/// *visible* text block sits symmetric in the pill — not the padded glyph-cell box.
+const HINT_TEXT_BEARING_Y: i32 = 4;
+
+/// The hint pill's height for `lines` wrapped [`Font::Label`] lines: the visible text block
+/// (cap-top of the first line to cap-bottom of the last) plus the symmetric [`HINT_PAD_Y`].
+fn hint_chip_h(lines: i32) -> i32 {
+    (lines - 1) * HINT_LINE_PITCH + Font::Label.cap_height() as i32 + 2 * HINT_PAD_Y
+}
+
+/// The hint pill's band height for the (language-dependent) hint copy `s` — [`hint_chip_h`] over
+/// the wrapped line count. Shared by [`draw_hint_chip`] and the scale bar's step-up, so the bar
+/// clears exactly the pill that draws.
+fn hint_band_h(s: &str) -> i32 {
+    hint_chip_h(if wrap2(s).1.is_empty() { 1 } else { 2 })
+}
 
 /// The browse-map **start hint** pill (T6 #684): calm ink on parchment — warning-orange stays
 /// reserved for the alert chip, matching the muted clock — at [`Font::Label`], the sentence wrapped
-/// to two centred lines (see [`HINT_CHIP_H`]). Same rounded bottom-centre pill idiom as
-/// [`draw_status_chip`], just two lines tall. Lowest chip priority; the caller only reaches here when
-/// no warning / waypoint chip is up.
+/// to two centred lines (the full `Press to start a ride` cannot fit one line at 240 px in even the
+/// smallest font). The pill height derives from the wrapped line count and the text block centres
+/// in it (see [`HINT_PAD_Y`]). Same rounded bottom-centre pill idiom as [`draw_status_chip`], just
+/// taller. Lowest chip priority; the caller only reaches here when no warning / waypoint chip is up.
 fn draw_hint_chip(cv: &mut impl Surface, w: i32, h: i32, s: &str) {
     use super::palette::*;
     let font = Font::Label;
     let (l1, l2) = wrap2(s);
+    let ph = hint_band_h(s);
     let tw = (text_width(l1, font) as i32).max(text_width(l2, font) as i32);
     let pw = tw + 16;
     let px = (w - pw) / 2;
-    let py = h - HINT_CHIP_H - CHIP_MARGIN;
-    cv.round(rect(px, py, pw, HINT_CHIP_H), 9, PARCHMENT);
-    cv.round_outline(rect(px, py, pw, HINT_CHIP_H), 9, INK);
-    cv.text(l1, Point::new(w / 2, py + HINT_LINE_TOP), font, TextAlign::Center, INK);
-    cv.text(l2, Point::new(w / 2, py + HINT_LINE_TOP + HINT_LINE_PITCH), font, TextAlign::Center, INK);
+    let py = h - ph - CHIP_MARGIN;
+    cv.round(rect(px, py, pw, ph), 9, PARCHMENT);
+    cv.round_outline(rect(px, py, pw, ph), 9, INK);
+    // First line's anchor: the visible cap top lands exactly HINT_PAD_Y under the pill edge.
+    let ty = py + HINT_PAD_Y - HINT_TEXT_BEARING_Y;
+    cv.text(l1, Point::new(w / 2, ty), font, TextAlign::Center, INK);
+    if !l2.is_empty() {
+        cv.text(l2, Point::new(w / 2, ty + HINT_LINE_PITCH), font, TextAlign::Center, INK);
+    }
 }
 
 /// Split `s` into two balanced centred lines for the hint pill: pick the word break (space) whose
