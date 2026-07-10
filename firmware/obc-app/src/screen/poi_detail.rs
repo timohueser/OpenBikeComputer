@@ -78,7 +78,11 @@ impl PoiDetailScreen {
                 } else {
                     self.poi.name.as_str()
                 };
-                Transition::Push(Screen::NavConfirm(super::NavConfirmScreen::new((self.poi.lon, self.poi.lat), name)))
+                Transition::Push(Screen::NavConfirm(super::NavConfirmScreen::new(
+                    (self.poi.lon, self.poi.lat),
+                    name,
+                    obc_reader::category_of(self.poi.subtype),
+                )))
             }
             Gesture::Back => Transition::Pop, // return to the POI list
             _ => Transition::None,
