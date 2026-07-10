@@ -57,7 +57,7 @@ UUID, which custom services must not use — `S0` replaced them:
 
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
-| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below) — spec §4.4 |
+| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below) — spec §4.4 |
 | `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult) — spec §4.3 |
 | `0003` | `objectStore` | read + notify | 10-byte store digest (revision + route/ride counts); **full lists are CoC objects** — they outgrow the 512-byte ATT attribute cap |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
@@ -122,7 +122,7 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
    TransferControl (16 bytes, little-endian):
      op         u8    1 = upload (app → device) · 2 = download · 3 = abort
      type       u8    { route 1, ride 2, config(reserved) 3, diagnostics 4,
-                        firmware(reserved) 5, routeList 6, rideList 7, echo 8 }
+                        fwImage 5, routeList 6, rideList 7, echo 8 }
      object_id  u16   0xFFFF on upload = "new" (device assigns the id)
      total_len  u32   upload: full object size · download request / abort: 0
      crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
@@ -161,8 +161,12 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
   exempt** (they reuse a slot). The app surfaces this as "delete routes on the
   device".
 
-`firmware` is **reserved** for a future OTA type — no codec in this epic; `echo`
-is the `A5` dev/test loopback. At most **one transfer is in flight at a time**.
+`fwImage` (type 5, S7) carries a firmware update — the whole OBCU `UPDATE.BIN`
+container (app → device, singleton `object_id = 0`); the transfer layer stays
+format-blind, and a CRC-verified commit promotes it to `/UPDATE.BIN` on the card.
+Installing is the separate, physically-confirmed `installFw` command (below), never
+part of staging. `echo` is the `A5` dev/test loopback. At most **one transfer is in
+flight at a time**.
 
 > **Ratified.** `S0` adopted this descriptor + raw-stream design (it supersedes the
 > earlier per-frame `{type, object_id, total_len, offset, chunk_len, crc32}` idea),
@@ -192,6 +196,20 @@ self-heal on the next connect, instead of the device permanently believing a
 ride the phone already holds was never synced. `deleteObject` for a ride
 (type 2) stays **reserved** — the app tombstones synced rides locally so a
 re-sync can't resurrect them.
+
+**Firmware delivery — `fwImage` + `installFw` (S7, spec §7.6 / §4.4).** The app
+imports an `UPDATE.BIN` (a Files pick — the whole OBCU container, `OBCU_Spec.md`
+§1), validates its 64-byte header **and both CRC-32s** before offering it, then
+streams it as a `fwImage` (type 5, `object_id 0`) exactly like a route upload
+(progress, cancel, whole-object restart). On commit the app sends `installFw`
+(cmd 3, no args); its `commandResult.status` maps to plain UI copy: `ok`(0) →
+"confirm on the device", `notFound`(2) → "the device doesn't see the update",
+`busy`(3) → "finish the current ride first", `error`(4) → "the device rejected
+it", `unknownCommand`(1) → "can't be updated over Bluetooth". **Installing is
+gated on a physical confirm at the device** — `installFw` only requests it — after
+which the device reboots and, on reconnect, DIS `0x2A26` reports the new version.
+The running firmware version is **only** the DIS Firmware Revision String, never a
+CoC object (there is no firmware download direction).
 
 ---
 
@@ -264,6 +282,8 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 | `TransferOutcome` | `TransferProgress.swift` | terminal transfer state (`TransferHandle.outcome`) — a drop stays unresolved/resumable |
 | `DeviceError` | `DeviceError.swift` | typed failures incl. `crcMismatch`, `protocolMismatch`, radio states |
 | `ConnectionState` | `ConnectionState.swift` | link lifecycle for `DeviceTransport.state` |
+| `FirmwareInstallResult` | `FirmwareInstall.swift` | mapped `installFw` request outcome (S7) |
+| `OBCUHeader` / `StagedFirmware` | `OBCTransport/Firmware/FirmwareImage.swift` | OBCU update-container header + validated update (both CRCs) — the `fwImage` payload (S7) |
 
 `RouteID` / `RideID` are thin `String` wrappers in the same files. **B1
 ([#237](https://github.com/timohueser/OpenBikeComputer/issues/237)) is landed:**
