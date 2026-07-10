@@ -84,7 +84,13 @@ impl HomeScreen {
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
         cv.text(&clock, Point::new(w / 2, clock_top), Font::Huge, TextAlign::Center, palette::PARCHMENT);
 
-        battery(cv, w, h * 64 / 100, rx.state.battery_pct, rx.state.ble_connected());
+        battery(cv, w, h * 64 / 100, rx.state.battery_pct);
+
+        // The BLE connected rune lives in a fixed top-right status slot — 10 px inset from both
+        // edges, white, and only when a phone is linked (nothing else ever occupies this corner).
+        if rx.state.ble_connected() {
+            super::ble_glyph(cv, w - 10 - super::BLE_GLYPH_W, 10 + 8, palette::PARCHMENT);
+        }
     }
 }
 
@@ -95,10 +101,10 @@ const BARS: i32 = 5;
 
 /// Draw the battery gauge centred horizontally, body centred on `cy`: a white rounded shell + nub,
 /// all `BARS` segments drawn — the first `filled` in the level colour (red <20 %, green >80 %,
-/// amber between), the rest dim grey — and the `NN%` readout beside it in the level colour. When
-/// `ble_connected`, the Bluetooth rune sits just left of the shell (the Home half of the epic #447
-/// connected indicator), so the "phone linked" cue reads alongside the power state.
-fn battery(cv: &mut impl Surface, w: i32, cy: i32, pct: u8, ble_connected: bool) {
+/// amber between), the rest dim grey — and the `NN%` readout beside it in the level colour. The
+/// shell + nub, a fixed 8 px gap, and the readout form **one group**, centred at `w/2` — the BLE
+/// connected cue now lives in its own top-right corner slot ([`draw`](HomeScreen::draw)), not here.
+fn battery(cv: &mut impl Surface, w: i32, cy: i32, pct: u8) {
     let level = match pct {
         0..=19 => palette::WARNING,
         81..=u8::MAX => palette::ON,
@@ -106,23 +112,14 @@ fn battery(cv: &mut impl Surface, w: i32, cy: i32, pct: u8, ble_connected: bool)
     };
     let (bw, bh, pad, nub) = (98, 38, 5, 5);
 
-    // Lay the whole group (optional BLE rune + shell + nub + gap + label) out centred, so the gauge
-    // shifts right just enough to keep the composite balanced when the rune shows.
+    // Lay the whole group (shell + nub + gap + label) out centred at `w/2` as one unit.
     let mut label: heapless::String<8> = heapless::String::new();
     let _ = write!(label, "{pct}%");
-    let gap = 12;
+    let gap = 8;
     let lw = text_width(&label, Font::Body) as i32;
-    // The rune's slot: its width + an 8 px gap before the shell, only when connected.
-    let ble_slot = if ble_connected { super::BLE_GLYPH_W + 8 } else { 0 };
-    let group = ble_slot + bw + nub + gap + lw;
-    let x0 = (w - group) / 2;
-    let x = x0 + ble_slot; // the shell's left edge (past the rune slot)
+    let group = bw + nub + gap + lw;
+    let x = (w - group) / 2; // the shell's left edge
     let y = cy - bh / 2;
-
-    // The connected rune, vertically centred on the shell, in the same near-white as the shell.
-    if ble_connected {
-        super::ble_glyph(cv, x0, cy, palette::PARCHMENT);
-    }
 
     // Shell: a rounded outline body with a small nub on the right (the battery silhouette).
     cv.round_outline(rect(x, y, bw, bh), 6, palette::PARCHMENT);
