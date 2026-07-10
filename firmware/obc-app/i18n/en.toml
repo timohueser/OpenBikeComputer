@@ -339,6 +339,7 @@ recording = "Recording a ride"
 [nav_route]
 create_route = "Create route"
 cancel = "Cancel"
+away = "away"
 title = "CREATE ROUTE"
 finding = "Finding a route..."
 too_far = "Too far to route here."

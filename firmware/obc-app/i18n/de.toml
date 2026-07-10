@@ -325,6 +325,7 @@ recording = "Fahrt läuft"
 [nav_route]
 create_route = "Route erstellen"
 cancel = "Abbrechen"
+away = "entfernt"
 title = "ROUTE ERSTELLEN"
 finding = "Suche Route..."
 too_far = "Zu weit zum Routen hier."
