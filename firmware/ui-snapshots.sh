@@ -187,8 +187,8 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # the marker — waypoints render as always-on ink furniture on the route line.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:00" --script "p p r p p" --gpx "$WPTGPX" --at 5   --png "$OUT/map-waypoints.png"
 # (b) The Approach chip: replayed to ~300 m short of Pass Summit (inside the 500 m approach radius),
-# default `Approach` mode → the calm `◆ Pass Summit  299m` pill counts down at bottom-centre, the
-# scale bar stepped up above the chip band.
+# default `Approach` mode → the calm `◆ Pass Summit  299m` pill counts down at bottom-centre with the
+# full name visible (#688 widened the name allocation), the scale bar stepped up above the chip band.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:03" --script "p p r p p" --gpx "$WPTGPX" --at 233 --png "$OUT/map-wpt-chip.png"
 # (c) Stats mid-route: the amber live-fraction progress bar carries a black tick per named waypoint
 # (Brunnen at the left edge, Pass Summit at its ~0.77 fraction) with the fill sweeping between them.
