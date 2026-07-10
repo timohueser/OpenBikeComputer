@@ -261,6 +261,43 @@ cargo build --release --no-default-features --features ble
 Flashing, the dependency pins, and the on-glass verify steps live in the
 [board crate README](firmware/obc-fw-nrf54l/README.md).
 
+## Firmware updates
+
+The device updates itself in the field — no probe needed. An update ships as a
+single **`UPDATE.BIN`** file (an [`OBCU`](OBCU_Spec.md) container: a 64-byte
+header plus the raw app image). The trust model — verify before erase, a single
+trial boot with rollback — is the
+[firmware updates](https://timohueser.github.io/OpenBikeComputer/software/firmware-updates/)
+docs page.
+
+**Installing one (on the device):**
+
+1. Copy `UPDATE.BIN` to the **root** of the device's SD card (from any computer),
+   or push it from the companion app over BLE.
+2. On the device: **Settings → System → "Install update from card"**.
+3. Confirm on the glass. The device validates the image, snapshots the running
+   firmware, and reboots into the bootloader to flash it (its LED takes over while
+   the display is off). If the new image doesn't come up healthy, the next boot
+   rolls back automatically.
+
+**Cutting a release (maintainers):** push a `v*` tag. The
+[`release` workflow](.github/workflows/release.yml) builds the shipping firmware
+(`obc-fw-nrf54l` `--features ble`) and the `obc-boot` bootloader, wraps the app
+into `UPDATE.BIN` tagged with the version, gates on `obc-mkimage inspect`, and
+attaches `UPDATE.BIN`, both ELFs, and a `SHA256SUMS.txt` to the GitHub release:
+
+```sh
+git tag v0.4.0
+git push origin v0.4.0        # → the release + UPDATE.BIN appear on the Releases page
+```
+
+To dry-run the pipeline without tagging — validate that a candidate `UPDATE.BIN`
+builds and passes `inspect` — trigger the workflow manually (**Actions → Release →
+Run workflow**, with a version string, or `gh workflow run release.yml -f
+version=v0.4.0-rc1`); it uploads the same artifacts as a downloadable bundle and
+publishes no release. Building `UPDATE.BIN` by hand (the `objcopy → wrap`
+pipeline) is in the [firmware README](firmware/README.md#firmware-update-images-obcu).
+
 ## Testing
 
 ```sh
