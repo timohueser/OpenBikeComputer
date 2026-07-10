@@ -876,7 +876,10 @@ fn main() {
         // is already riding when the event lands): the catalog above is the "already rescanned"
         // store, and this is the upload event with the id — the device's exact order.
         if let Some((id, replaced)) = args.inject_upload {
-            app.notify_route_uploaded(id, replaced);
+            // Build the route's mini elevation band from the committed OBCR at "commit time",
+            // exactly the seam the board fills (#682) — the idle card draws it.
+            let elevation = store.elevation_sparkline(id);
+            app.notify_route_uploaded(id, replaced, elevation);
         }
         // Raise device warnings (issue #504) through the real `notify_warning` seam, so the advisory
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.

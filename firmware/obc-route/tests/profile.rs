@@ -237,3 +237,32 @@ fn window_clamps_to_route_ends() {
     assert_eq!(end.hi_frac, 1.0);
     assert!((end.lo_frac - 0.75).abs() < 1e-4);
 }
+
+/// The received-route card's mini sparkline (#682): a min–max-normalized `u8` band whose peak
+/// pins to 255 at the route's high point (~mid on the zigzag) and whose ends read low.
+#[test]
+fn sparkline_normalizes_and_peaks_mid() {
+    use obc_route::{elevation_sparkline, SPARKLINE_BUCKETS};
+    let bytes = convert("Peaked Ridge", PEAKED);
+    let spark = elevation_sparkline(&SliceSource(&bytes)).expect("a route with elevation has a band");
+    assert_eq!(spark.len(), SPARKLINE_BUCKETS);
+    // The 300 m peak normalizes to the ceiling; the 200 m ends normalize to the floor.
+    assert_eq!(*spark.iter().max().unwrap(), 255, "the peak pins to 255");
+    assert_eq!(spark[0], 0, "the start sits at the min");
+    assert_eq!(spark[SPARKLINE_BUCKETS - 1], 0, "the end sits at the min");
+    // The peak lands near the middle bucket, not at an edge.
+    let peak_b = spark.iter().position(|&v| v == 255).unwrap();
+    assert!(
+        (SPARKLINE_BUCKETS * 3 / 8..=SPARKLINE_BUCKETS * 5 / 8).contains(&peak_b),
+        "peak bucket {peak_b} not near the middle"
+    );
+}
+
+/// A flat route (a real but constant elevation) and an unmeasured one (no `<ele>`) both carry no
+/// usable range, so the card omits the band rather than drawing a fake flat line.
+#[test]
+fn sparkline_is_none_without_a_range() {
+    use obc_route::elevation_sparkline;
+    assert!(elevation_sparkline(&SliceSource(&convert("Towpath", FLAT))).is_none(), "flat → no band");
+    assert!(elevation_sparkline(&SliceSource(&convert("Unmeasured", NO_ELE))).is_none(), "no <ele> → no band");
+}
