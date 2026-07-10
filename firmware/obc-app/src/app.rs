@@ -2487,8 +2487,9 @@ impl App {
         let (w, h) = self.frame_size;
         let mut next_wake = None;
         let pan_active = self.state.pan.is_some();
+        let tracking = self.activity.is_tracking();
         for scr in self.stack.iter_mut().skip(base) {
-            let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, &self.settings, w, h, pan_active);
+            let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, &self.settings, w, h, pan_active, tracking);
             // A change that promises a containing region accumulates apart from the full-frame
             // demand (#500 follow-up): `take_dirty` folds the two — any `map_dirty` overrides
             // every region, so a region-clipped repaint happens only when region ticks were the
@@ -4263,7 +4264,10 @@ mod tests {
         app.last_input_ms = 0;
         idle_tick(&mut app, 60_000);
         assert!(matches!(app.top_screen(), Screen::Map(_)), "the browse map is a deliberate view — never yanked");
-        assert_eq!(app.ms_until_next_wake(60_000), None, "and it arms no idle wake");
+        // The browse map's only pending wake is the one-shot start hint's auto-hide (T6, #684); once
+        // that window has elapsed it arms no wake at all — in particular no idle-return wake.
+        idle_tick(&mut app, 60_000 + 4_000);
+        assert_eq!(app.ms_until_next_wake(60_000 + 4_000), None, "and it arms no idle wake");
 
         // A menu over Home, by contrast, does return.
         *app.stack.last_mut().unwrap() = Screen::Menu(MenuScreen::new());
