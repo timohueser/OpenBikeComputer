@@ -165,8 +165,9 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-error damaged    --png "$OUT/dfu-error-damaged.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-error toolarge   --png "$OUT/dfu-error-toolarge.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r p p" --dfu-error fragmented --png "$OUT/dfu-error-fragmented.png"
-# The one-time post-update toast, raised through the real notify_update_confirmed seam.
-"$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-2-gnew1234" --png "$OUT/dfu-updated.png"
+# The one-time post-update toast, raised through the real notify_update_confirmed seam. A
+# deliberately long git-describe tag exercises the version wrap to a second centred line.
+"$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
@@ -284,7 +285,7 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p p" --dfu-scan first --png "$OUT/dfu-confirm-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p p" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p p" --dfu-error fragmented --png "$OUT/dfu-error-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-2-gnew1234" --png "$OUT/dfu-updated-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
 echo "ui-snapshots: 113 screens rendered into $OUT/"
