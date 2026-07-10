@@ -227,6 +227,7 @@ hold_to_erase = "Tenez: effacer"
 # --- Bike-type settings screen ---
 [bike_type]
 title = "TYPE DE VÉLO"
+routing_uses = "Le routage utilise ce profil"
 no_profiles = "Aucun profil"
 no_profiles_sub = "Charger une carte"
 

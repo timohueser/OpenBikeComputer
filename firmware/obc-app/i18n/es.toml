@@ -227,6 +227,7 @@ hold_to_erase = "Mantén: borrar"
 # --- Bike-type settings screen ---
 [bike_type]
 title = "TIPO DE BICI"
+routing_uses = "El enrutamiento usa este perfil"
 no_profiles = "Sin perfiles"
 no_profiles_sub = "Carga un mapa"
 
