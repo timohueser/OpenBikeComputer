@@ -157,11 +157,19 @@ impl RouteSwapScreen {
         }
         cv.text(&sub, Point::new(w / 2, super::TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
 
+        // The picked / received route's stats line, directly under the subtitle — the same helper
+        // the idle received card uses, so the whole card family reads identically (#682). No
+        // sparkline here: three option rows + subtitle already fill the card (locked, idle-only).
+        if let Some(route) = self.pending.and_then(|i| rx.routes.get(i)) {
+            let stats = super::route_received::route_stats(route);
+            cv.text(&stats, Point::new(w / 2, super::TITLE_BAR_H + 38), Font::Label, TextAlign::Center, SUBTEXT);
+        }
+
         // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
         let geo = super::GuardedRowsGeometry {
             x: 12,
             w: w - 24,
-            top: super::TITLE_BAR_H + 46,
+            top: super::TITLE_BAR_H + 64,
             row_h: 46,
             gap: 8,
             label_dx: 16,
