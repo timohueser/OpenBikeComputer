@@ -4,9 +4,34 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Parchment is the brand — the page is light-only, declared so dark-mode UAs
+       don't auto-darken form controls. -->
+  <meta name="color-scheme" content="light" />
   <title>OpenBikeComputer — a from-scratch bikepacking computer</title>
   <meta name="description"
     content="OpenBikeComputer (OBC) is an open-source bikepacking computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
+
+  <!-- Favicon: the OBC mark (forest rounded square, mono wordmark), inline SVG. -->
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233c6b39'/%3E%3Ctext x='32' y='42' font-family='ui-monospace,Menlo,Consolas,monospace' font-size='22' font-weight='700' letter-spacing='1' fill='%23ece8cf' text-anchor='middle'%3EOBC%3C/text%3E%3C/svg%3E" />
+
+  <!-- Open Graph / Twitter share card. og:image must be ABSOLUTE — scrapers don't
+       resolve relative URLs. The PNG is a real device render (native sim --png)
+       composed on parchment; regenerate alongside the poster if the demo map changes. -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://timohueser.github.io/OpenBikeComputer/" />
+  <meta property="og:title" content="OpenBikeComputer — your whole map, offline, on your bars" />
+  <meta property="og:description"
+    content="An open-source bikepacking computer with offline maps, on-device routing, and days of battery — try the real firmware live in your browser." />
+  <meta property="og:image" content="https://timohueser.github.io/OpenBikeComputer/og-card.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="The OpenBikeComputer device showing an offline map of the Grimsel Pass, beside the words: Your whole map. Offline. On your bars." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="OpenBikeComputer — your whole map, offline, on your bars" />
+  <meta name="twitter:description"
+    content="An open-source bikepacking computer with offline maps, on-device routing, and days of battery — try the real firmware live in your browser." />
+  <meta name="twitter:image" content="https://timohueser.github.io/OpenBikeComputer/og-card.png" />
 
   <!-- Trunk builds the obc-web-demo crate (in firmware/) to wasm — the live device demo:
        the real firmware render path behind a thin obc_demo_* API (no egui/wgpu; the page's
@@ -18,10 +43,13 @@
   <!-- The device poster (a real sim frame) — shown inside the housing from first paint, behind the
        readiness gate and the wasm fallback. copy-file lands it at the dist root as device-poster.png. -->
   <link data-trunk rel="copy-file" href="assets/device-poster.png" />
+  <!-- The share-card image the og:image/twitter:image meta above points at. -->
+  <link data-trunk rel="copy-file" href="assets/og-card.png" />
   <base data-trunk-public-url />
 
   <style>
     :root {
+      color-scheme: light;
       /* "Field guide" colourway — saturated greens lead, trail-marker orange pops,
          a moss-tinted cream base. Variable names kept from the old parchment theme so
          the rest of the sheet re-themes for free. */
@@ -71,7 +99,7 @@
     header {
       position: relative;
       z-index: 2;
-      padding: 22px 0 6px;
+      padding: 18px 0 4px;
     }
     header .wrap { display: flex; align-items: center; justify-content: space-between; }
     .brand { display: flex; align-items: baseline; gap: 11px; }
@@ -89,36 +117,43 @@
     .nav-links { display: flex; align-items: center; gap: 22px; font-size: 14px; }
     .nav-links a { color: var(--ink-soft); text-decoration: none; }
     .nav-links a:hover { color: var(--ink); }
-    .nav-links .gh { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-weight: 600; }
-    .nav-links .gh svg { width: 18px; height: 18px; }
 
-    /* ---------- hero ---------- */
+    /* ---------- showcase hero: one band, one viewport ----------
+       Grid areas so the mobile order (H1 → device → tour card → CTA) is pure CSS. */
     .hero { position: relative; z-index: 1; }
-    .hero .wrap {
+    .hero-grid {
       display: grid;
-      grid-template-columns: 1.08fr 0.92fr;
-      gap: 40px;
-      align-items: center;
-      padding: 40px 0 26px;
+      grid-template-columns: 1.05fr 0.95fr;
+      grid-template-areas: "head device" "cta device" "tour device";
+      grid-template-rows: auto auto 1fr;
+      column-gap: 44px;
+      row-gap: 20px;
+      align-items: start;
+      padding: 22px 0 34px;
     }
+    .hero-head { grid-area: head; }
+    .hero-cta { grid-area: cta; }
+    .tour { grid-area: tour; }
+    .device-col { grid-area: device; justify-self: center; }
+
     .eyebrow {
       text-transform: uppercase;
       letter-spacing: 0.26em;
       font-size: 12px;
       font-weight: 700;
       color: var(--forest);
-      margin: 0 0 16px;
+      margin: 0 0 12px;
     }
     h1 {
       font-family: var(--serif);
       font-weight: 700;
-      font-size: clamp(34px, 5vw, 56px);
-      line-height: 1.04;
+      font-size: clamp(32px, 4vw, 46px);
+      line-height: 1.05;
       letter-spacing: -0.01em;
-      margin: 0 0 18px;
+      margin: 0 0 12px;
     }
     h1 em { font-style: italic; color: var(--coral); }
-    .lede { font-size: clamp(16px, 1.6vw, 18.5px); color: var(--ink-soft); max-width: 34rem; margin: 0 0 26px; }
+    .lede { font-size: clamp(15.5px, 1.5vw, 17.5px); color: var(--ink-soft); max-width: 34rem; margin: 0; }
     .lede strong { color: var(--ink); font-weight: 600; }
 
     .cta { display: flex; flex-wrap: wrap; gap: 13px; align-items: center; }
@@ -137,30 +172,117 @@
     .btn.ghost:hover { background: var(--parchment-3); }
     .btn.ghost svg { width: 18px; height: 18px; }
 
-    .microcopy { margin: 18px 0 0; font-size: 13.5px; color: var(--ink-soft); }
-    .microcopy b { color: var(--coral); font-weight: 700; }
+    /* ---------- shared card chrome (tour card + feature grid) ---------- */
+    .card {
+      background: linear-gradient(180deg, var(--parchment-2), var(--parchment));
+      border: 1px solid var(--parchment-3);
+      border-radius: 16px;
+    }
 
-    /* ---------- device ---------- */
-    /* The housing is plain DOM now (the wasm draws only the 240×320 screen) — a placeholder
-       terracotta shell until the S5 redesign styles it properly. */
+    /* ---------- the feature-tour card ---------- */
+    .tour { padding: 18px 22px 14px; display: flex; flex-direction: column; }
+    .tour .kicker {
+      display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+      font-size: 11px; font-weight: 700; letter-spacing: 0.07em; color: var(--coral);
+      text-transform: uppercase; margin: 0 0 8px;
+    }
+    .tour .kicker .n { color: var(--ink-soft); }
+    .tour h2 { font-family: var(--serif); font-size: clamp(20px, 2.2vw, 25px); margin: 0 0 7px; line-height: 1.12; }
+    .tour .blurb { font-size: 14.5px; color: var(--ink-soft); margin: 0 0 12px; max-width: 34rem; }
+    .tour .blurb b { color: var(--ink); font-weight: 600; }
+    .highlights { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+    .highlights li { display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; color: var(--ink); }
+    .highlights svg { flex: none; width: 16px; height: 16px; margin-top: 2px; stroke: var(--wood); fill: none; stroke-width: 2; }
+
+    /* "on device" step strip — which step of a staged demo is actually confirmed on the
+       device (advanced only once `until` resolves, never on a timeout). */
+    .now {
+      margin-top: auto; display: flex; align-items: center; gap: 10px;
+      border-top: 1px solid var(--parchment-3); padding: 11px 0;
+    }
+    .now .badge {
+      flex: none; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+      color: var(--parchment); background: var(--wood); border-radius: 999px; padding: 3px 9px; text-transform: uppercase;
+    }
+    .now .label { font-size: 13px; color: var(--ink-soft); min-height: 20px; }
+    .now .label b { color: var(--ink); font-weight: 600; }
+    .ticks { display: flex; gap: 5px; margin-left: auto; flex: none; }
+    .ticks.hidden { display: none; }
+    .tick { width: 14px; height: 5px; border-radius: 3px; background: var(--parchment-3); transition: background .15s ease; }
+    .tick.done { background: var(--wood); }
+    .tick.at { background: var(--coral); }
+
+    /* scenario dots — the carousel nav, inside the card. Numbered pips + labels;
+       the labels drop on phones (numbered pips + the card title carry it). */
+    .dots { display: flex; gap: 6px; border-top: 1px solid var(--parchment-3); padding-top: 12px; }
+    .dot {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--ink-soft);
+      background: transparent; border: 1px solid transparent; border-radius: 9px;
+      cursor: pointer; padding: 6px 10px 6px 6px; min-height: 36px;
+      user-select: none; -webkit-user-select: none;
+      transition: background .12s ease, color .12s ease, border-color .12s ease;
+    }
+    .dot:hover { background: var(--parchment-3); }
+    .dot .pip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px; border-radius: 50%; flex: none;
+      font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+      color: var(--ink-soft); background: var(--parchment-3);
+      transition: background .15s ease, color .15s ease;
+    }
+    .dot[aria-selected="true"] { color: var(--ink); border-color: var(--parchment-3); background: var(--parchment); }
+    .dot[aria-selected="true"] .pip { background: var(--coral); color: var(--parchment); }
+
+    /* ---------- the device ----------
+       The housing is real DOM (the wasm draws only the 240×320 screen): a coral body,
+       side buttons, and the OBC wordmark — responsive (percentage paddings + aspect-ratio
+       keep the 3:4 screen registered at any width) and crisp on any DPI. The canvas
+       backing store stays 240×320; CSS scales it with hard pixel edges. */
     .device-col { display: flex; flex-direction: column; align-items: center; }
     .device-stage { position: relative; outline: none; }
-    #device_housing {
-      position: relative; /* anchors the poster overlay */
-      background: linear-gradient(165deg, #d97a3c, #c05f24);
-      border-radius: 30px;
-      padding: 30px 24px 42px;
+    .device-stage:focus-visible .device { outline: 3px solid var(--amber); outline-offset: 4px; }
+    .device {
+      position: relative;
+      width: min(330px, 88vw);
+      padding: 5.5% 7.5% 0;
+      background: linear-gradient(163deg, #dd8244 0%, var(--coral) 52%, #b85a1e 100%);
+      border-radius: clamp(20px, 8.5%, 30px);
       box-shadow:
-        inset 0 2px 2px rgba(255, 235, 210, 0.35),
-        inset 0 -3px 6px rgba(60, 25, 5, 0.35),
+        inset 0 2px 2px rgba(255, 235, 210, 0.4),
+        inset 0 -4px 8px rgba(60, 25, 5, 0.32),
         0 22px 30px rgba(44, 33, 20, 0.30);
     }
+    /* side buttons: the encoder knob (ridged, long) and the Back key below it. Decorative
+       twins of the real controls underneath — they depress when the matching control does. */
+    .side {
+      position: absolute; right: -7px; width: 7px;
+      background: #b3561d; border-radius: 0 4px 4px 0;
+      box-shadow: inset -2px 0 3px rgba(60, 25, 5, 0.35), 1px 1px 2px rgba(44, 33, 20, 0.25);
+      transition: transform .08s ease, background .08s ease;
+    }
+    .side-knob {
+      top: 15%; height: 18%;
+      background-image: repeating-linear-gradient(180deg, rgba(60,25,5,0.28) 0 2px, transparent 2px 6px);
+    }
+    .side-back { top: 38%; height: 8%; }
+    .side.pressed { transform: translateX(-3px); background: #a04c16; }
+    .side.held { transform: translateX(-4px); background: #8f420f; }
+    /* screen: a dark bezel recess holding the 3:4 panel */
+    .bezel {
+      position: relative;
+      background: #241c12;
+      border-radius: 10px;
+      padding: 4%;
+      box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.55), 0 1px 0 rgba(255, 235, 210, 0.28);
+    }
+    .panel { position: relative; aspect-ratio: 3 / 4; }
     canvas#device_canvas {
       display: block;
-      width: 276px;  /* 240×320 device pixels, upscaled; keep the 3:4 ratio */
-      height: 368px;
+      width: 100%;
+      height: 100%;
       background: var(--parchment);
-      border-radius: 6px;
+      border-radius: 3px;
       outline: none;
       touch-action: none;
       image-rendering: pixelated; /* hard pixel edges, like the panel */
@@ -171,60 +293,72 @@
        drivable. `.gone` removes it from a11y + paint once the canvas takes over. */
     #device_poster {
       position: absolute;
-      top: 30px; left: 24px;       /* == housing padding, so it registers with the canvas */
-      width: 276px; height: 368px;
-      border-radius: 6px;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 3px;
       image-rendering: pixelated;
       pointer-events: none;
     }
     #device_poster.gone { display: none; }
-    /* focus ring for the keyboard-driven stage */
-    .device-stage:focus-visible #device_housing { box-shadow: 0 0 0 3px var(--amber), 0 22px 30px rgba(44, 33, 20, 0.30); }
     #loading_text {
-      position: absolute; inset: 0;
-      display: flex; align-items: center; justify-content: center; gap: 10px;
-      font-family: var(--serif); font-size: 15px; color: var(--parchment);
+      position: absolute; left: 50%; bottom: 5%;
+      transform: translateX(-50%);
+      display: flex; align-items: center; gap: 8px; white-space: nowrap;
+      font-family: var(--sans); font-size: 12px; font-weight: 600; color: var(--parchment);
+      background: rgba(36, 28, 18, 0.78); border-radius: 999px; padding: 5px 12px;
     }
     .spinner {
-      width: 16px; height: 16px; border: 3px solid var(--wood);
+      width: 13px; height: 13px; border: 2.5px solid var(--amber);
       border-top-color: transparent; border-radius: 50%;
       animation: spin 1s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    /* chin: the wordmark, softly embossed into the body */
+    .chin { display: flex; align-items: center; justify-content: center; padding: 4.5% 0 6.5%; }
+    .wordmark {
+      font-family: var(--mono); font-size: clamp(13px, 5%, 16px); font-weight: 700;
+      letter-spacing: 0.34em; text-indent: 0.34em; /* re-centre the tracked glyphs */
+      color: rgba(60, 25, 5, 0.55);
+      text-shadow: 0 1px 0 rgba(255, 225, 195, 0.28);
+    }
 
-    .device-caption { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 22rem; }
+    /* the one caption line — the only place the page makes the real-firmware claim */
+    .device-caption { margin: 12px 0 0; font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
     .device-caption b { color: var(--ink); font-weight: 600; }
 
     /* On-screen device controls — drive the demo by tap (works on touch + desktop;
-       they queue the same obc_demo_cmd gestures the keyboard does). */
+       they queue the same obc_demo_cmd gestures the keyboard does). ≥44px touch targets. */
     .controls {
-      margin: 13px 0 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+      margin: 11px 0 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
     }
     .ctl {
       font-family: var(--sans); font-size: 14px; font-weight: 600; color: var(--ink);
       background: var(--parchment-2); border: 1px solid var(--parchment-3);
       border-radius: 10px; padding: 10px 15px; cursor: pointer;
-      min-width: 46px; min-height: 42px;
+      min-width: 48px; min-height: 44px;
       user-select: none; -webkit-user-select: none; touch-action: none;
       transition: background .12s ease, color .12s ease, transform .06s ease;
     }
     .ctl:hover { background: var(--parchment-3); }
     .ctl.pressed, .ctl:active { background: var(--wood); color: var(--parchment); transform: translateY(1px); }
+    /* held past the 500 ms threshold — the gesture has become a long-press */
+    .ctl.held { background: var(--coral); color: var(--parchment); }
     .ctl-arrow { font-size: 17px; line-height: 1; }
     /* While a guided demo drives, the manual controls dim but stay clickable — a tap on any of
        them takes control (see the demo engine). */
     .controls.paused .ctl { opacity: 0.45; }
     /* Before the live sim is drivable (poster still up) the controls are disabled — the readiness
        gate: no gesture can queue against a sim that isn't ticking yet. Enabled the moment ready. */
-    .ctl:disabled, .demo-toggle:disabled, .scn:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+    .ctl:disabled, .demo-toggle:disabled, .dot:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
 
-    /* Guided-demo toggle + live/demo mode indicator (minimal; S3 folds this into the card). */
-    .demo-bar { margin: 12px 0 0; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+    /* Take-control / play toggle + live-vs-guided mode line (the S2 seam's final form). */
+    .demo-bar { margin: 10px 0 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
     .demo-toggle {
       font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--parchment);
       background: var(--forest); border: 1px solid var(--forest);
-      border-radius: 10px; padding: 8px 15px; cursor: pointer;
-      display: inline-flex; align-items: center; gap: 8px; min-height: 38px;
+      border-radius: 10px; padding: 9px 16px; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 8px; min-height: 44px;
       user-select: none; -webkit-user-select: none;
       transition: background .12s ease, border-color .12s ease, transform .06s ease;
     }
@@ -240,27 +374,7 @@
     .mode-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 0 currentColor; animation: modepulse 1.8s ease-out infinite; }
     @keyframes modepulse { 0% { box-shadow: 0 0 0 0 rgba(60,107,57,0.5); } 70%, 100% { box-shadow: 0 0 0 7px rgba(60,107,57,0); } }
 
-    /* Scenario picker + step ticks (minimal — S5 folds this into the tour card). The picker names
-       the three stories (ride it · climb · reroute); the ticks show which step of a staged demo is
-       actually confirmed on the device (advanced only once `until` resolves, never on a timeout). */
-    .scenarios { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
-    .scn {
-      font-family: var(--sans); font-size: 12.5px; font-weight: 600; color: var(--ink-soft);
-      background: var(--parchment-2); border: 1px solid var(--parchment-3);
-      border-radius: 9px; padding: 6px 12px; cursor: pointer; min-height: 34px;
-      user-select: none; -webkit-user-select: none;
-      transition: background .12s ease, color .12s ease, border-color .12s ease;
-    }
-    .scn:hover { background: var(--parchment-3); }
-    .scn.active { background: var(--forest); border-color: var(--forest); color: var(--parchment); }
-    .scn-blurb { margin: 2px 0 0; font-size: 12.5px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
-    .scn-blurb b { color: var(--ink); font-weight: 600; }
-    .ticks { display: flex; gap: 6px; justify-content: center; min-height: 8px; }
-    .ticks.hidden { display: none; }
-    .tick { width: 8px; height: 8px; border-radius: 50%; background: var(--parchment-3); transition: background .15s ease; }
-    .tick.done { background: var(--wood); }
-    .tick.at { background: var(--coral); box-shadow: 0 0 0 3px rgba(207,106,42,0.22); }
-    .ctl-hint { margin: 9px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
+    .ctl-hint { margin: 8px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
     .ctl-hint kbd {
       font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
       background: var(--parchment-2); border: 1px solid var(--parchment-3);
@@ -278,11 +392,7 @@
     .features {
       display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;
     }
-    .card {
-      background: linear-gradient(180deg, var(--parchment-2), var(--parchment));
-      border: 1px solid var(--parchment-3);
-      border-radius: 16px; padding: 22px 22px 24px;
-    }
+    .features .card { padding: 22px 22px 24px; }
     .card .ico {
       width: 38px; height: 38px; border-radius: 10px;
       display: flex; align-items: center; justify-content: center;
@@ -294,26 +404,20 @@
     .card .tag { color: var(--coral); }
     .card .tag svg { stroke: var(--coral); }
 
-    /* ---------- the "one render path" highlight ---------- */
-    .highlight {
-      background: var(--ink); color: var(--parchment);
-      border-radius: 20px; padding: 38px clamp(24px, 4vw, 46px);
-      display: grid; grid-template-columns: 1.2fr 1fr; gap: 34px; align-items: center;
-    }
-    .highlight h2 { font-family: var(--serif); font-size: clamp(23px, 3vw, 30px); margin: 0 0 12px; color: #f3e9cf; }
-    .highlight p { margin: 0 0 14px; color: #d8caa8; font-size: 15.5px; }
-    .highlight .pipe {
-      font-family: var(--mono); font-size: 12.5px; line-height: 1.7;
-      color: #c7b88f; background: rgba(0,0,0,0.25); border: 1px solid rgba(234,223,192,0.12);
-      border-radius: 12px; padding: 16px 18px; white-space: pre; overflow-x: auto;
-    }
-    .highlight .pipe b { color: var(--amber); font-weight: 700; }
-
     /* ---------- specs strip ---------- */
     .specs { display: flex; flex-wrap: wrap; gap: 12px 30px; margin-top: 30px; }
     .spec { display: flex; flex-direction: column; }
     .spec .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--forest); font-weight: 700; }
     .spec .v { font-family: var(--serif); font-size: 17px; }
+
+    /* ---------- "how it's built" teaser — the bridge for the engineer audience ---------- */
+    .how { padding: 0 0 30px; }
+    .how-inner {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px;
+      padding: 18px 22px;
+    }
+    .how-inner h2 { font-family: var(--serif); font-size: 19px; margin: 0; }
+    .how-inner p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
 
     /* ---------- footer ---------- */
     footer { position: relative; z-index: 1; border-top: 1px solid var(--parchment-3); margin-top: 30px; padding: 30px 0 46px; }
@@ -343,21 +447,41 @@
     }
 
     /* ---------- responsive ---------- */
-    @media (max-width: 860px) {
-      .hero .wrap { grid-template-columns: 1fr; gap: 26px; padding-top: 26px; }
-      .device-col { order: -1; }
-      .highlight { grid-template-columns: 1fr; gap: 22px; }
+    @media (max-width: 900px) {
+      /* single column; the order the phone spec asks for: H1 → device → tour card → CTA */
+      .hero-grid {
+        grid-template-columns: 1fr;
+        grid-template-areas: "head" "device" "tour" "cta";
+        grid-template-rows: none;
+        row-gap: 24px;
+        padding-top: 18px;
+        justify-items: center;
+      }
+      .hero-head { text-align: center; }
+      .lede { margin: 0 auto; }
+      .cta { justify-content: center; }
+      .tour { width: min(480px, 100%); }
       .features { grid-template-columns: 1fr; }
       h1 { font-size: clamp(30px, 8vw, 40px); }
     }
-    /* On phones the section links don't fit beside the brand — keep just the
-       brand and the GitHub link, and let the page scroll to the sections. */
+    /* touch devices have no physical keyboard — drop the hint */
+    @media (hover: none) {
+      .ctl-hint { display: none; }
+    }
     @media (max-width: 600px) {
       header { padding-top: 16px; }
-      .nav-links a:not(.gh) { display: none; }
-      .nav-links { gap: 0; }
-      .brand .name { font-size: 16px; }
+      /* the long name collides with the nav on phones — the mark carries the brand */
+      .brand .name { display: none; }
+      .nav-links { gap: 16px; }
+      /* numbered pips + the current title (the card's h2) only — labels would wrap */
+      .dot .dot-label { display: none; }
+      .dot { padding: 6px; }
       footer .wrap { gap: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .btn, .ctl, .dot, .demo-toggle, .side, .tick { transition: none; }
+      .mode-dot, .spinner { animation: none !important; }
     }
   </style>
 </head>
@@ -377,6 +501,10 @@
     </g>
   </svg>
 
+  <!-- The only utility nav; nothing here repeats below the fold. While the build guide is a
+       stub, GitHub lives in the hero as the primary CTA instead of here (one destination,
+       once, above the fold) — when the guide lands, "Build your own" takes primary and the
+       GitHub link returns here. -->
   <header>
     <div class="wrap">
       <div class="brand">
@@ -384,83 +512,103 @@
         <span class="name">OpenBikeComputer</span>
       </div>
       <nav class="nav-links">
+        <a href="#demo">Demo</a>
         <a href="#features">Features</a>
         <a href="docs/">Docs</a>
-        <a class="gh" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
-          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-          GitHub
-        </a>
       </nav>
     </div>
   </header>
 
   <main>
-    <!-- HERO -->
-    <section class="hero">
-      <div class="wrap">
-        <div class="hero-copy">
+    <!-- SHOWCASE HERO — one band, one viewport: claim, proof, and the CTA together. -->
+    <section class="hero" id="demo">
+      <div class="wrap hero-grid">
+        <div class="hero-head">
           <p class="eyebrow">Open-source bikepacking computer</p>
           <h1>Your whole map.<br><em>Offline.</em> On your bars.</h1>
           <p class="lede">
-            An open-source bikepacking computer with offline maps, route navigation, and
-            ride recording — built to go <strong>days off-grid</strong>. No account, no
-            subscription, no cloud. Your maps and your rides stay with you.
+            Offline vector maps, on-device route planning, and ride recording on a device
+            built to go <strong>days off-grid</strong> — no account, no subscription, no cloud.
           </p>
-          <div class="cta">
-            <a class="btn primary" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
-              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-              View on GitHub
-            </a>
-            <a class="btn ghost" href="docs/">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H12v18H5.5A1.5 1.5 0 0 1 4 19.5Z"/><path d="M20 4.5A1.5 1.5 0 0 0 18.5 3H12v18h6.5a1.5 1.5 0 0 0 1.5-1.5Z"/></svg>
-              Read the docs
-            </a>
-          </div>
-          <p class="microcopy"><b>Live, not a screenshot</b> — the device on the right is the actual firmware, compiled to your browser and replaying a ride.</p>
         </div>
 
+        <!-- Exactly one primary CTA. "Build your own" ships as the quiet secondary while
+             docs/build/ is a coming-soon stub; it swaps into the primary slot (same layout,
+             new label/href — or "Order a kit") the day the guide lands. -->
+        <div class="cta hero-cta">
+          <a class="btn primary" href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            View on GitHub
+          </a>
+          <a class="btn ghost" href="docs/build/">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+            Build your own
+          </a>
+        </div>
+
+        <!-- The feature-tour card: what the device is showing and why it matters.
+             The dots switch scenarios; the step strip tracks the confirmed device screen. -->
+        <div class="card tour" id="tour_card">
+          <span class="kicker"><span id="tour_tag">Navigation</span><span class="n" id="tour_n">· 1 / 3</span></span>
+          <h2 id="tour_title">Ride it yourself</h2>
+          <p class="blurb" id="tour_blurb"></p>
+          <ul class="highlights" id="tour_highlights"></ul>
+          <div class="now">
+            <span class="badge">On device</span>
+            <span class="label" id="step_label">Warming up…</span>
+            <span class="ticks hidden" id="demo_ticks" aria-hidden="true"></span>
+          </div>
+          <div class="dots" id="scenarios" role="tablist" aria-label="Guided demos">
+            <button class="dot" type="button" role="tab" data-scn="0" disabled><span class="pip">1</span><span class="dot-label">Ride it</span></button>
+            <button class="dot" type="button" role="tab" data-scn="1" disabled><span class="pip">2</span><span class="dot-label">Climb ahead</span></button>
+            <button class="dot" type="button" role="tab" data-scn="2" disabled><span class="pip">3</span><span class="dot-label">Reroute</span></button>
+          </div>
+        </div>
+
+        <!-- The live device: DOM housing (coral body, side buttons, wordmark) around the
+             240×320 wasm canvas, the real controls, and the take-control seam. -->
         <div class="device-col">
           <div class="device-stage" id="device_stage" tabindex="0" role="application"
             aria-label="Live device demo — arrow keys scroll, Enter selects, Backspace goes back">
-            <div id="device_housing">
-              <canvas id="device_canvas" width="240" height="320"></canvas>
-              <!-- Poster: a real device frame (native sim --png), shown from first paint and swapped
-                   for the live canvas the instant the wasm sim is drivable. If wasm never loads (or
-                   JS is off, via the <noscript> below) it simply stays — the page still shows the
-                   device with a map. -->
-              <img id="device_poster" src="device-poster.png" width="240" height="320"
-                alt="OpenBikeComputer showing an offline map of the Grimsel Pass climb, following the rider up a switchback." />
+            <div class="device" id="device_housing">
+              <span class="side side-knob" id="side_knob" aria-hidden="true"></span>
+              <span class="side side-back" id="side_back" aria-hidden="true"></span>
+              <div class="bezel">
+                <div class="panel">
+                  <canvas id="device_canvas" width="240" height="320"></canvas>
+                  <!-- Poster: a real device frame (native sim --png), shown from first paint and swapped
+                       for the live canvas the instant the wasm sim is drivable. If wasm never loads (or
+                       JS is off, via the <noscript> below) it simply stays — the page still shows the
+                       device with a map. -->
+                  <img id="device_poster" src="device-poster.png" width="240" height="320"
+                    alt="OpenBikeComputer showing an offline map of the Grimsel Pass climb, following the rider up a switchback." />
+                  <div id="loading_text"><span class="spinner"></span>Warming up…</div>
+                </div>
+              </div>
+              <div class="chin"><span class="wordmark">OBC</span></div>
             </div>
-            <div id="loading_text"><span class="spinner"></span>Warming up the device…</div>
           </div>
           <noscript>
             <p class="device-caption">This live demo runs the real firmware in your browser and needs
               JavaScript. The image above is a real frame from the device — a map of the Grimsel Pass
               climb, rendered by the same code the hardware runs.</p>
           </noscript>
-          <p class="device-caption"><b>Try it</b> — tap the controls to drive the device.</p>
+          <!-- the one caption line: the page's only real-firmware claim -->
+          <p class="device-caption"><b>The real firmware, compiled to your browser</b> — not a video. Drive it with the controls.</p>
           <div class="controls" role="group" aria-label="Device controls">
             <button class="ctl ctl-arrow" data-turn="-1" aria-label="Scroll back" title="Scroll back" disabled>◂</button>
             <button class="ctl" data-btn="press" disabled>Select</button>
             <button class="ctl" data-btn="back" disabled>Back</button>
             <button class="ctl ctl-arrow" data-turn="1" aria-label="Scroll forward" title="Scroll forward" disabled>▸</button>
           </div>
-          <!-- Guided-demo picker + toggle + live/demo mode indicator. Three scenarios (ride it ·
-               climb · reroute) — the first is the live ambient ride (drive it yourself); the other
-               two are staged demos. Tapping the toggle (or any device control) while a demo plays
-               "takes control": the scripted step engine cancels and the visitor drives from where
-               the demo left off. Everything stays disabled until the sim reports ready. -->
+          <!-- Play / take-control toggle + live-vs-guided mode line. Tapping the toggle (or any
+               device control) while a demo plays "takes control": the scripted step engine cancels
+               and the visitor drives from where the demo left off. Everything stays disabled until
+               the sim reports ready. -->
           <div class="demo-bar">
-            <div class="scenarios" id="scenarios" role="group" aria-label="Guided demos">
-              <button class="scn" type="button" data-scn="0" disabled>Ride it</button>
-              <button class="scn" type="button" data-scn="1" disabled>Climb ahead</button>
-              <button class="scn" type="button" data-scn="2" disabled>Reroute</button>
-            </div>
-            <p class="scn-blurb" id="scn_blurb"><b>Ride it yourself.</b> The device below is the real firmware, replaying a ride up the Grimsel Pass — drive it with the controls.</p>
             <button class="demo-toggle" id="demo_toggle" type="button" disabled>
               <span class="dt-icon" aria-hidden="true">▶</span><span class="dt-label">Play guided demo</span>
             </button>
-            <div class="ticks hidden" id="demo_ticks" aria-hidden="true"></div>
             <p class="mode-note" id="mode_note" role="status" aria-live="polite">
               <span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls
             </p>
@@ -470,7 +618,8 @@
       </div>
     </section>
 
-    <!-- FEATURES -->
+    <!-- FEATURES — hardware & philosophy only; anything the tour demonstrates live
+         (navigation, the climb view, rerouting) stays out of this grid. -->
     <section class="band" id="features">
       <div class="wrap">
         <div class="section-head">
@@ -519,6 +668,17 @@
         </div>
       </div>
     </section>
+
+    <!-- HOW IT'S BUILT — one sentence + the bridge into the docs for the engineer audience. -->
+    <section class="band how">
+      <div class="wrap">
+        <div class="card how-inner">
+          <h2>How it's built</h2>
+          <p>One render path — the firmware, the desktop simulator, and the demo above all draw
+            from the same Rust crates. <a href="docs/software/architecture/">Read the architecture</a>.</p>
+        </div>
+      </div>
+    </section>
   </main>
 
   <section class="band wip-band">
@@ -542,7 +702,7 @@
 
   <script>
     // ============================================================================================
-    // The live demo — page-side sim lifecycle (epic #624, S3 / #628).
+    // The live demo — page-side sim lifecycle (epic #624: S3's engine under S5's chrome).
     //
     // The wasm host (obc-web-demo) owns the device truth behind a tiny API; this page owns the
     // frame loop, the canvas blit, the input timing, and the guided-tour engine. ONE input path:
@@ -550,7 +710,7 @@
     // synthetic KeyboardEvents. Long-press *timers* live here: the firmware fires Hold at the 500 ms
     // threshold crossing (not on release), so we do the same and hand the crate finished gestures.
     //
-    // What S3 adds over S2's take-control seam:
+    // The lifecycle rules (S3):
     //   • Readiness gate + poster — the committed device frame shows from first paint; the live
     //     canvas + the controls come alive exactly when `obc_demo_ready()` is true; no staged step
     //     starts before then.
@@ -565,8 +725,13 @@
     //   • Drift-guard — every screen name a scenario targets lives in a `until: [...]` array literal
     //     (see DRIFT-GUARD note below); a Rust test in obc-web-demo asserts each is a real
     //     `Screen::name()`, and here we console.error unknown targets at init.
-    //   • Reduced motion — under `prefers-reduced-motion: reduce`, staged demos never auto-run; the
-    //     visitor plays them explicitly. (The ambient live ride is not a staged demo — it rides on.)
+    //   • Reduced motion — under `prefers-reduced-motion: reduce`, staged demos never auto-run —
+    //     not from the dots and not from a `#demo/<scenario>` deep link (the link still selects
+    //     the scenario and scrolls; the visitor presses Play). The ambient ride rides on.
+    //
+    // What S5 adds: the tour card chrome (kicker/title/blurb/highlights + the step strip live in
+    // the card, scenario dots switch it), `#demo/<scenario>` deep links (open → scroll + start;
+    // switch → history.replaceState, no scroll jump), and the DOM housing's pressed/held states.
     // ============================================================================================
     (function () {
       var canvas = document.getElementById('device_canvas');
@@ -583,9 +748,16 @@
       var toggleLabel = toggle && toggle.querySelector('.dt-label');
       var toggleIcon = toggle && toggle.querySelector('.dt-icon');
       var modeNote = document.getElementById('mode_note');
-      var scnBlurb = document.getElementById('scn_blurb');
+      var tourTag = document.getElementById('tour_tag');
+      var tourN = document.getElementById('tour_n');
+      var tourTitle = document.getElementById('tour_title');
+      var tourBlurb = document.getElementById('tour_blurb');
+      var tourHighlights = document.getElementById('tour_highlights');
+      var stepLabel = document.getElementById('step_label');
       var ticksEl = document.getElementById('demo_ticks');
-      var scnButtons = Array.prototype.slice.call(document.querySelectorAll('.scn'));
+      var scnButtons = Array.prototype.slice.call(document.querySelectorAll('.dot'));
+      var sideKnob = document.getElementById('side_knob');
+      var sideBack = document.getElementById('side_back');
 
       // Read live (not cached) so it reflects the OS setting even if the visitor flips it after
       // load — and so a staged demo never auto-starts for a reduced-motion user.
@@ -600,16 +772,29 @@
       // `until:` array and asserts each quoted name is in `obc_app::Screen::NAMES`, so a screen
       // rename fails `cargo test` instead of silently turning a tour into a timeout march. Keep each
       // `until:` array on ONE line with plain "String" literals (no comments, no expressions).
+      //
+      // Scenario order tells the story: basic navigation → the climb ahead → route planning.
+      // Each scenario's `id` is its shareable deep link: #demo/ride, #demo/climb, #demo/reroute.
       // ------------------------------------------------------------------------------------------
       var SCENARIOS = [
         {
-          id: 'ride', tab: 'Ride it', title: 'Ride it yourself',
-          blurb: '<b>Ride it yourself.</b> The device below is the real firmware, replaying a ride up the Grimsel Pass — drive it with the controls.',
+          id: 'ride', tag: 'Navigation', title: 'Ride it yourself',
+          blurb: '<b>Ride it yourself.</b> The device is replaying a climb up the Grimsel Pass — drive it with the controls, exactly like the computer on your bars.',
+          highlights: [
+            'The map follows your position as you climb',
+            'Scroll to zoom · hold Back for the menu',
+            'Everything runs on-device — no signal needed'
+          ],
           staged: false, steps: []
         },
         {
-          id: 'climb', tab: 'Climb ahead', title: 'See the climb ahead',
-          blurb: '<b>See the climb ahead.</b> One button cycles your riding views — reach the ClimbPro-style profile with every ramp coloured by gradient.',
+          id: 'climb', tag: 'Climbing', title: 'See the climb ahead',
+          blurb: '<b>See the climb ahead.</b> One button cycles the riding views — ending on the ClimbPro-style profile of everything still between you and the top.',
+          highlights: [
+            'Gradient-coloured ramps, green through red',
+            'Distance and ascent remaining to the summit',
+            'One button cycles map · stats · climb'
+          ],
           staged: true,
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
@@ -619,8 +804,13 @@
           ]
         },
         {
-          id: 'reroute', tab: 'Reroute', title: 'Reroute to a point of interest',
+          id: 'reroute', tag: 'Route planning', title: 'Reroute to a point of interest',
           blurb: '<b>Reroute on the spot.</b> Open the map’s points of interest, pick the nearest, and the device plans a route there — fully offline.',
+          highlights: [
+            'Nearest food, water & shelter from the offline map',
+            'On-device route planning — no phone, no signal',
+            'The new route drops straight onto your map'
+          ],
           staged: true,
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
@@ -649,11 +839,10 @@
       var failed = false;     // wasm failed to load — fallback engaged
       var pageVisible = !document.hidden;
       var stageOnscreen = true; // updated by the IntersectionObserver
+      var pendingAutostart = false; // a #demo/<scenario> deep link waiting for readiness
 
       var LIVE_NOTE = '<span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls';
-      function demoNote(label) {
-        return '<span class="mode-live playing"><span class="mode-dot"></span>Guided demo</span> — ' + label;
-      }
+      var DEMO_NOTE = '<span class="mode-live playing"><span class="mode-dot"></span>Guided demo</span> — tap any control to take over';
 
       function haveApi() { return !!(api && api.obc_demo_cmd && api.obc_demo_state); }
       function ready() { return haveApi() && !!api.obc_demo_ready && api.obc_demo_ready(); }
@@ -666,7 +855,8 @@
 
       // ---- readiness gate ----------------------------------------------------------------------
       // Swap the poster for the live canvas and enable the controls exactly when the sim is
-      // drivable. Idempotent — called each frame until it fires once.
+      // drivable. Idempotent — called each frame until it fires once. A deep-linked scenario
+      // that was waiting on readiness starts here (never under reduced motion).
       var wentLive = false;
       function goLiveIfReady() {
         if (wentLive || !ready()) return;
@@ -674,6 +864,11 @@
         if (poster) poster.classList.add('gone');
         if (loading) loading.remove();
         setControlsEnabled(true);
+        setStepLive();
+        if (pendingAutostart) {
+          pendingAutostart = false;
+          if (SCENARIOS[scnIdx].staged && !prefersReducedMotion()) startDemo();
+        }
       }
       function setControlsEnabled(on) {
         document.querySelectorAll('.ctl').forEach(function (b) { b.disabled = !on; });
@@ -681,10 +876,10 @@
         scnButtons.forEach(function (b) { b.disabled = !on; });
       }
 
-      // ---- tick strip --------------------------------------------------------------------------
-      // Renders one dot per step of the current staged scenario; `at` = confirmed current step,
-      // earlier steps `done`. Advanced only after `until` resolves true (honest stepping), reset to
-      // -1 (nothing confirmed) on (re-)start.
+      // ---- the card's step strip ---------------------------------------------------------------
+      // One dot per step of the current staged scenario; `at` = confirmed current step, earlier
+      // steps `done`. Advanced only after `until` resolves true (honest stepping), reset to -1
+      // (nothing confirmed) on (re-)start.
       function renderTicks(confirmed) {
         if (!ticksEl) return;
         var s = SCENARIOS[scnIdx];
@@ -697,9 +892,21 @@
         }
         ticksEl.innerHTML = html;
       }
+      function setStep(html, confirmed) {
+        if (stepLabel) stepLabel.innerHTML = html;
+        renderTicks(typeof confirmed === 'number' ? confirmed : -1);
+      }
+      // The strip's live-mode line: on the ambient ride it's an invitation, on a staged
+      // scenario it points at Play.
+      function setStepLive() {
+        if (!wentLive) { setStep('Warming up…'); return; }
+        setStep(SCENARIOS[scnIdx].staged
+          ? 'Your turn — drive it, or press <b>Play</b> to watch'
+          : 'Your turn — drive it with the controls');
+      }
 
       // ---- mode / scenario UI ------------------------------------------------------------------
-      function setMode(running, label) {
+      function setMode(running) {
         demoRunning = running;
         if (controls) controls.classList.toggle('paused', running);
         if (toggle) {
@@ -713,15 +920,25 @@
             toggle.classList.remove('live');
           }
         }
-        if (modeNote) modeNote.innerHTML = running ? demoNote(label || SCENARIOS[scnIdx].title) : LIVE_NOTE;
+        if (modeNote) modeNote.innerHTML = running ? DEMO_NOTE : LIVE_NOTE;
       }
 
       function renderScenarioChrome() {
-        scnButtons.forEach(function (b) {
-          b.classList.toggle('active', +b.getAttribute('data-scn') === scnIdx);
-        });
-        if (scnBlurb) scnBlurb.innerHTML = SCENARIOS[scnIdx].blurb;
         var s = SCENARIOS[scnIdx];
+        scnButtons.forEach(function (b) {
+          b.setAttribute('aria-selected', +b.getAttribute('data-scn') === scnIdx ? 'true' : 'false');
+        });
+        if (tourTag) tourTag.textContent = s.tag;
+        if (tourN) tourN.textContent = '· ' + (scnIdx + 1) + ' / ' + SCENARIOS.length;
+        if (tourTitle) tourTitle.textContent = s.title;
+        if (tourBlurb) tourBlurb.innerHTML = s.blurb;
+        if (tourHighlights) {
+          var html = '';
+          s.highlights.forEach(function (h) {
+            html += '<li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>' + h + '</span></li>';
+          });
+          tourHighlights.innerHTML = html;
+        }
         // The toggle only makes sense for a staged scenario; on the live ride it's hidden.
         if (toggle) toggle.style.display = s.staged ? '' : 'none';
       }
@@ -734,12 +951,11 @@
         runToken++;
         if (demoRunning) cmd('exit');
         setMode(false);
-        renderTicks(-1);
+        setStepLive();
       }
 
       // Resolve with a STATUS so the runner can tell a real timeout from a cancel: 'reached' |
-      // 'timeout' | 'cancelled'. (S2 resolved a bare false for both and then advanced anyway — the
-      // "timeout marches on" dishonesty this replaces.)
+      // 'timeout' | 'cancelled'.
       function until(targets, token) {
         return new Promise(function (resolve) {
           var t0 = performance.now();
@@ -764,15 +980,14 @@
           if (token !== runToken) return;
           var step = s.steps[i];
           // Don't claim the target screen yet — keep the reader honest while we get there.
-          if (i > 0 && modeNote && demoRunning) modeNote.innerHTML = demoNote('Getting there…');
+          if (i > 0 && demoRunning) setStep('Getting there…', i - 1);
           step.cmds.forEach(cmd);
           var status = await until(step.until, token);
           if (status === 'cancelled') return;
           if (status === 'timeout') {
             // Re-sync: restage the scenario and restart from step 0 (step 0's `enter` rebuilds the
             // baseline). Never advance a label past a screen the device never reached.
-            if (modeNote && demoRunning) modeNote.innerHTML = demoNote('Re-syncing…');
-            renderTicks(-1);
+            if (demoRunning) setStep('Re-syncing…');
             await sleep(400);
             if (token !== runToken) return;
             i = 0;
@@ -782,8 +997,7 @@
           // advance the tick strip to this step.
           var reached = screenName();
           var label = (step.labelFor && step.labelFor[reached]) || step.label;
-          setMode(true, label);
-          renderTicks(i);
+          setStep('<b>' + label + '</b>', i);
           await sleep(2600); // deliberate dwell so a reader can follow
           if (token !== runToken) return;
           i++;
@@ -794,18 +1008,22 @@
       function startDemo() {
         if (!ready() || demoRunning) return;
         var token = ++runToken;
-        setMode(true, SCENARIOS[scnIdx].title);
+        setMode(true);
+        setStep('Getting there…');
         runScript(token);
       }
 
-      // Select a scenario. The live ride (staged:false) just hands control back. A staged scenario
-      // auto-plays when motion is fine, but under reduced motion it only shows its step list and
-      // waits for an explicit Play — no auto-running demo.
+      // Select a scenario (the dots, or a deep link). The live ride (staged:false) just hands
+      // control back. A staged scenario auto-plays when motion is fine, but under reduced motion
+      // it only shows its card and waits for an explicit Play — no auto-running demo.
+      // Switching updates the shareable fragment in place — replaceState never scrolls.
       function selectScenario(i) {
         if (i === scnIdx && demoRunning) return;
         takeControl();          // stop any running script, go live
         scnIdx = i;
         renderScenarioChrome();
+        setStepLive();
+        if (history.replaceState) history.replaceState(null, '', '#demo/' + SCENARIOS[i].id);
         var s = SCENARIOS[i];
         if (s.staged && !prefersReducedMotion()) startDemo();
       }
@@ -813,6 +1031,33 @@
       // A manual interaction while a demo plays takes control first, then the gesture applies to the
       // now-live device.
       function grabIfDemo() { if (demoRunning) takeControl(); }
+
+      // ---- deep links: #demo/<scenario> ----------------------------------------------------------
+      // Opening a scenario URL scrolls to the showcase and (once the sim is ready, and only under
+      // normal motion) starts that scenario. A plain #demo stays a native anchor.
+      function scenarioIndexFromHash() {
+        var m = /^#demo\/([\w-]+)$/.exec(location.hash || '');
+        if (!m) return -1;
+        for (var i = 0; i < SCENARIOS.length; i++) if (SCENARIOS[i].id === m[1]) return i;
+        return -1;
+      }
+      function scrollToShowcase(smooth) {
+        var el = document.getElementById('demo');
+        if (el) el.scrollIntoView(smooth && !prefersReducedMotion() ? { behavior: 'smooth' } : undefined);
+      }
+      var deepIdx = scenarioIndexFromHash();
+      if (deepIdx >= 0) {
+        scnIdx = deepIdx;
+        pendingAutostart = true; // consumed by goLiveIfReady (reduced motion re-checked there)
+        requestAnimationFrame(function () { scrollToShowcase(false); });
+      }
+      addEventListener('hashchange', function () {
+        var i = scenarioIndexFromHash();
+        if (i < 0) return;
+        scrollToShowcase(true);
+        if (ready()) { selectScenario(i); }
+        else { scnIdx = i; pendingAutostart = true; renderScenarioChrome(); }
+      });
 
       // ---- frame loop --------------------------------------------------------------------------
       function frame(now) {
@@ -869,8 +1114,9 @@
         if (loaded || failed) return;
         failed = true;
         clearTimeout(fallbackTimer);
-        if (loading) loading.remove();               // stop the endless "warming up" spinner
+        if (loading) loading.remove();               // stop the endless "warming up" pill
         if (modeNote) modeNote.innerHTML = '<span class="mode-live" style="color:var(--ink-soft)">Offline preview</span> — the live demo couldn’t load, but this is a real device frame.';
+        setStep('A real frame from the device — the live demo couldn’t load.');
         // Controls stay disabled (nothing to drive); the poster + scenario copy carry the story.
       }
       addEventListener('TrunkApplicationStarted', function () {
@@ -899,7 +1145,7 @@
         select: selectScenario, forceFallback: enterFallback, ticking: ticking
       };
 
-      // ---- scenario picker + toggle wiring -----------------------------------------------------
+      // ---- scenario dots + toggle wiring --------------------------------------------------------
       scnButtons.forEach(function (b) {
         b.addEventListener('click', function (e) {
           e.preventDefault();
@@ -918,18 +1164,24 @@
       renderScenarioChrome();
 
       // ---- press/back with the device's long-press semantics -----------------------------------
-      function holdable(tap, hold, visual) {
+      // `visuals` are the elements that mirror the gesture (the control button + the housing's
+      // side button): .pressed on touch, .held once the 500 ms threshold turns it into a hold.
+      function holdable(tap, hold, visuals) {
         var timer = null, held = false;
+        function cls(add, name) {
+          visuals.forEach(function (v) { if (v) v.classList[add ? 'add' : 'remove'](name); });
+        }
         return {
           down: function () {
             if (timer) clearTimeout(timer);
             held = false;
-            if (visual) visual.classList.add('pressed');
-            timer = setTimeout(function () { held = true; cmd(hold); }, HOLD_MS);
+            cls(true, 'pressed');
+            timer = setTimeout(function () { held = true; cls(true, 'held'); cmd(hold); }, HOLD_MS);
           },
           up: function (cancelled) {
             if (timer) { clearTimeout(timer); timer = null; }
-            if (visual) visual.classList.remove('pressed');
+            cls(false, 'pressed');
+            cls(false, 'held');
             if (!held && !cancelled) cmd(tap);
             held = false;
           }
@@ -939,7 +1191,7 @@
       // ---- on-screen buttons (touch + mouse) ---------------------------------------------------
       document.querySelectorAll('.ctl[data-btn]').forEach(function (btn) {
         var g = btn.getAttribute('data-btn'); // 'press' | 'back'
-        var h = holdable(g, g === 'press' ? 'hold' : 'backhold', btn);
+        var h = holdable(g, g === 'press' ? 'hold' : 'backhold', [btn, g === 'press' ? sideKnob : sideBack]);
         btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!ready()) return; stage.focus(); grabIfDemo(); h.down(); });
         btn.addEventListener('pointerup', function (e) { e.preventDefault(); if (!ready()) return; h.up(false); });
         btn.addEventListener('pointerleave', function () { if (ready()) h.up(true); });
@@ -948,13 +1200,18 @@
       });
       document.querySelectorAll('.ctl[data-turn]').forEach(function (btn) {
         var dir = btn.getAttribute('data-turn'), repeat = null;
-        function stop() { if (repeat) { clearInterval(repeat); repeat = null; } btn.classList.remove('pressed'); }
+        function stop() {
+          if (repeat) { clearInterval(repeat); repeat = null; }
+          btn.classList.remove('pressed');
+          if (sideKnob) sideKnob.classList.remove('pressed');
+        }
         btn.addEventListener('pointerdown', function (e) {
           e.preventDefault();
           if (!ready()) return;
           stage.focus();
           grabIfDemo();
           btn.classList.add('pressed');
+          if (sideKnob) sideKnob.classList.add('pressed'); // the encoder is the turning part
           cmd('turn:' + dir);
           repeat = setInterval(function () { cmd('turn:' + dir); }, 160); // detents while held
         });
@@ -963,7 +1220,10 @@
       });
 
       // ---- keyboard, scoped to the focused device stage ----------------------------------------
-      var keys = { Enter: holdable('press', 'hold', null), Backspace: holdable('back', 'backhold', null) };
+      var keys = {
+        Enter: holdable('press', 'hold', [sideKnob]),
+        Backspace: holdable('back', 'backhold', [sideBack])
+      };
       stage.addEventListener('keydown', function (e) {
         if (!ready()) return;
         if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
