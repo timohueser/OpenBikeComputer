@@ -15,6 +15,9 @@
   <link data-trunk rel="rust" href="../firmware/obc-web-demo/Cargo.toml" data-wasm-opt="z" />
   <!-- Ship the placeholder docs page (dist/docs/index.html) until real docs exist. -->
   <link data-trunk rel="copy-dir" href="docs" />
+  <!-- The device poster (a real sim frame) — shown inside the housing from first paint, behind the
+       readiness gate and the wasm fallback. copy-file lands it at the dist root as device-poster.png. -->
+  <link data-trunk rel="copy-file" href="assets/device-poster.png" />
   <base data-trunk-public-url />
 
   <style>
@@ -143,6 +146,7 @@
     .device-col { display: flex; flex-direction: column; align-items: center; }
     .device-stage { position: relative; outline: none; }
     #device_housing {
+      position: relative; /* anchors the poster overlay */
       background: linear-gradient(165deg, #d97a3c, #c05f24);
       border-radius: 30px;
       padding: 30px 24px 42px;
@@ -161,6 +165,19 @@
       touch-action: none;
       image-rendering: pixelated; /* hard pixel edges, like the panel */
     }
+    /* Poster: a REAL device frame (native sim --png), shown inside the housing from first paint —
+       so cold load, a wasm failure, and JS-off all show the device with a map, never an empty box.
+       Overlaid exactly on the canvas; hidden the instant obc_demo_ready() reports the live sim is
+       drivable. `.gone` removes it from a11y + paint once the canvas takes over. */
+    #device_poster {
+      position: absolute;
+      top: 30px; left: 24px;       /* == housing padding, so it registers with the canvas */
+      width: 276px; height: 368px;
+      border-radius: 6px;
+      image-rendering: pixelated;
+      pointer-events: none;
+    }
+    #device_poster.gone { display: none; }
     /* focus ring for the keyboard-driven stage */
     .device-stage:focus-visible #device_housing { box-shadow: 0 0 0 3px var(--amber), 0 22px 30px rgba(44, 33, 20, 0.30); }
     #loading_text {
@@ -197,6 +214,9 @@
     /* While a guided demo drives, the manual controls dim but stay clickable — a tap on any of
        them takes control (see the demo engine). */
     .controls.paused .ctl { opacity: 0.45; }
+    /* Before the live sim is drivable (poster still up) the controls are disabled — the readiness
+       gate: no gesture can queue against a sim that isn't ticking yet. Enabled the moment ready. */
+    .ctl:disabled, .demo-toggle:disabled, .scn:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
 
     /* Guided-demo toggle + live/demo mode indicator (minimal; S3 folds this into the card). */
     .demo-bar { margin: 12px 0 0; display: flex; flex-direction: column; align-items: center; gap: 7px; }
@@ -219,6 +239,27 @@
     .mode-live.playing { color: var(--coral); }
     .mode-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 0 currentColor; animation: modepulse 1.8s ease-out infinite; }
     @keyframes modepulse { 0% { box-shadow: 0 0 0 0 rgba(60,107,57,0.5); } 70%, 100% { box-shadow: 0 0 0 7px rgba(60,107,57,0); } }
+
+    /* Scenario picker + step ticks (minimal — S5 folds this into the tour card). The picker names
+       the three stories (ride it · climb · reroute); the ticks show which step of a staged demo is
+       actually confirmed on the device (advanced only once `until` resolves, never on a timeout). */
+    .scenarios { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+    .scn {
+      font-family: var(--sans); font-size: 12.5px; font-weight: 600; color: var(--ink-soft);
+      background: var(--parchment-2); border: 1px solid var(--parchment-3);
+      border-radius: 9px; padding: 6px 12px; cursor: pointer; min-height: 34px;
+      user-select: none; -webkit-user-select: none;
+      transition: background .12s ease, color .12s ease, border-color .12s ease;
+    }
+    .scn:hover { background: var(--parchment-3); }
+    .scn.active { background: var(--forest); border-color: var(--forest); color: var(--parchment); }
+    .scn-blurb { margin: 2px 0 0; font-size: 12.5px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
+    .scn-blurb b { color: var(--ink); font-weight: 600; }
+    .ticks { display: flex; gap: 6px; justify-content: center; min-height: 8px; }
+    .ticks.hidden { display: none; }
+    .tick { width: 8px; height: 8px; border-radius: 50%; background: var(--parchment-3); transition: background .15s ease; }
+    .tick.done { background: var(--wood); }
+    .tick.at { background: var(--coral); box-shadow: 0 0 0 3px rgba(207,106,42,0.22); }
     .ctl-hint { margin: 9px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
     .ctl-hint kbd {
       font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
@@ -383,23 +424,43 @@
             aria-label="Live device demo — arrow keys scroll, Enter selects, Backspace goes back">
             <div id="device_housing">
               <canvas id="device_canvas" width="240" height="320"></canvas>
+              <!-- Poster: a real device frame (native sim --png), shown from first paint and swapped
+                   for the live canvas the instant the wasm sim is drivable. If wasm never loads (or
+                   JS is off, via the <noscript> below) it simply stays — the page still shows the
+                   device with a map. -->
+              <img id="device_poster" src="device-poster.png" width="240" height="320"
+                alt="OpenBikeComputer showing an offline map of the Grimsel Pass climb, following the rider up a switchback." />
             </div>
             <div id="loading_text"><span class="spinner"></span>Warming up the device…</div>
           </div>
+          <noscript>
+            <p class="device-caption">This live demo runs the real firmware in your browser and needs
+              JavaScript. The image above is a real frame from the device — a map of the Grimsel Pass
+              climb, rendered by the same code the hardware runs.</p>
+          </noscript>
           <p class="device-caption"><b>Try it</b> — tap the controls to drive the device.</p>
           <div class="controls" role="group" aria-label="Device controls">
-            <button class="ctl ctl-arrow" data-turn="-1" aria-label="Scroll back" title="Scroll back">◂</button>
-            <button class="ctl" data-btn="press">Select</button>
-            <button class="ctl" data-btn="back">Back</button>
-            <button class="ctl ctl-arrow" data-turn="1" aria-label="Scroll forward" title="Scroll forward">▸</button>
+            <button class="ctl ctl-arrow" data-turn="-1" aria-label="Scroll back" title="Scroll back" disabled>◂</button>
+            <button class="ctl" data-btn="press" disabled>Select</button>
+            <button class="ctl" data-btn="back" disabled>Back</button>
+            <button class="ctl ctl-arrow" data-turn="1" aria-label="Scroll forward" title="Scroll forward" disabled>▸</button>
           </div>
-          <!-- Guided-demo toggle + live/demo mode indicator. Tapping the toggle (or any device
-               control) while a demo plays "takes control": the scripted step engine cancels and
-               the visitor drives from wherever the demo left off. -->
+          <!-- Guided-demo picker + toggle + live/demo mode indicator. Three scenarios (ride it ·
+               climb · reroute) — the first is the live ambient ride (drive it yourself); the other
+               two are staged demos. Tapping the toggle (or any device control) while a demo plays
+               "takes control": the scripted step engine cancels and the visitor drives from where
+               the demo left off. Everything stays disabled until the sim reports ready. -->
           <div class="demo-bar">
-            <button class="demo-toggle" id="demo_toggle" type="button">
+            <div class="scenarios" id="scenarios" role="group" aria-label="Guided demos">
+              <button class="scn" type="button" data-scn="0" disabled>Ride it</button>
+              <button class="scn" type="button" data-scn="1" disabled>Climb ahead</button>
+              <button class="scn" type="button" data-scn="2" disabled>Reroute</button>
+            </div>
+            <p class="scn-blurb" id="scn_blurb"><b>Ride it yourself.</b> The device below is the real firmware, replaying a ride up the Grimsel Pass — drive it with the controls.</p>
+            <button class="demo-toggle" id="demo_toggle" type="button" disabled>
               <span class="dt-icon" aria-hidden="true">▶</span><span class="dt-label">Play guided demo</span>
             </button>
+            <div class="ticks hidden" id="demo_ticks" aria-hidden="true"></div>
             <p class="mode-note" id="mode_note" role="status" aria-live="polite">
               <span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls
             </p>
@@ -480,12 +541,33 @@
   </footer>
 
   <script>
-    // The live demo: the wasm host (obc-web-demo) owns the device truth behind a tiny API;
-    // this page owns the frame loop, the canvas blit, and the input timing. ONE input path —
-    // buttons, keyboard, and (later) the tour engine all queue the same obc_demo_cmd strings;
-    // no synthetic KeyboardEvents anywhere. Long-press *timers* live here: the firmware fires
-    // Hold at the 500 ms threshold crossing (not on release), so we do the same and hand the
-    // crate only finished gestures.
+    // ============================================================================================
+    // The live demo — page-side sim lifecycle (epic #624, S3 / #628).
+    //
+    // The wasm host (obc-web-demo) owns the device truth behind a tiny API; this page owns the
+    // frame loop, the canvas blit, the input timing, and the guided-tour engine. ONE input path:
+    // buttons, keyboard, and the tour engine all queue the same `obc_demo_cmd` strings — no
+    // synthetic KeyboardEvents. Long-press *timers* live here: the firmware fires Hold at the 500 ms
+    // threshold crossing (not on release), so we do the same and hand the crate finished gestures.
+    //
+    // What S3 adds over S2's take-control seam:
+    //   • Readiness gate + poster — the committed device frame shows from first paint; the live
+    //     canvas + the controls come alive exactly when `obc_demo_ready()` is true; no staged step
+    //     starts before then.
+    //   • Fallback — if the wasm never loads (blocked / too old / JS off via <noscript>) the poster
+    //     stays and the scenario copy still tells the story.
+    //   • Visibility — a hidden tab or a device scrolled far offscreen STOPS the rAF loop, cancels
+    //     pending steps, and pauses the sim; returning resumes the loop and re-syncs the demo from
+    //     step 0. Commands are never queued against a non-ticking sim.
+    //   • Honest stepping — an `until()` timeout re-syncs (re-`enter`) instead of marching the label
+    //     forward; a step's label is shown only AFTER its screen is reached; a routing *failure* is
+    //     captioned as a failure. The tick strip reflects the actual confirmed step.
+    //   • Drift-guard — every screen name a scenario targets lives in a `until: [...]` array literal
+    //     (see DRIFT-GUARD note below); a Rust test in obc-web-demo asserts each is a real
+    //     `Screen::name()`, and here we console.error unknown targets at init.
+    //   • Reduced motion — under `prefers-reduced-motion: reduce`, staged demos never auto-run; the
+    //     visitor plays them explicitly. (The ambient live ride is not a staged demo — it rides on.)
+    // ============================================================================================
     (function () {
       var canvas = document.getElementById('device_canvas');
       var stage = document.getElementById('device_stage');
@@ -494,144 +576,348 @@
       var HOLD_MS = 500; // the firmware's DEFAULT_HOLD_MS — crossing it turns a press into a hold
       var api = null;
 
-      // -----------------------------------------------------------------------------------------
-      // Live ⇄ guided-demo mode (epic #624 S2). The page is in one of two modes: LIVE (the visitor
-      // drives with the controls) or a guided DEMO (a scripted step engine drives). `runToken` is a
-      // generation counter — every mode switch bumps it, and the async step runner re-checks it at
-      // every await boundary, so a cancelled script can NEVER fire a late step or a late label after
-      // the visitor takes control. Deliberately minimal: one scenario, one toggle, one status line.
-      // S3 (#628) reworks lifecycle/stepping and folds the indicator into the feature card — this is
-      // the local take-control seam it builds on, not the carousel.
-      // -----------------------------------------------------------------------------------------
-      var demoRunning = false;
-      var runToken = 0;
+      var poster = document.getElementById('device_poster');
+      var loading = document.getElementById('loading_text');
+      var controls = document.querySelector('.controls');
       var toggle = document.getElementById('demo_toggle');
       var toggleLabel = toggle && toggle.querySelector('.dt-label');
       var toggleIcon = toggle && toggle.querySelector('.dt-icon');
       var modeNote = document.getElementById('mode_note');
-      var controls = document.querySelector('.controls');
+      var scnBlurb = document.getElementById('scn_blurb');
+      var ticksEl = document.getElementById('demo_ticks');
+      var scnButtons = Array.prototype.slice.call(document.querySelectorAll('.scn'));
+
+      // Read live (not cached) so it reflects the OS setting even if the visitor flips it after
+      // load — and so a staged demo never auto-starts for a reduced-motion user.
+      function prefersReducedMotion() {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      }
+
+      // ------------------------------------------------------------------------------------------
+      // DRIFT-GUARD convention (read by firmware/obc-web-demo's `tour_targets_are_real_screens`
+      // test): every screen a guided step waits for is written as a double-quoted string inside a
+      // `until: [ ... ]` array literal below — and NOWHERE else. The test scans this file for every
+      // `until:` array and asserts each quoted name is in `obc_app::Screen::NAMES`, so a screen
+      // rename fails `cargo test` instead of silently turning a tour into a timeout march. Keep each
+      // `until:` array on ONE line with plain "String" literals (no comments, no expressions).
+      // ------------------------------------------------------------------------------------------
+      var SCENARIOS = [
+        {
+          id: 'ride', tab: 'Ride it', title: 'Ride it yourself',
+          blurb: '<b>Ride it yourself.</b> The device below is the real firmware, replaying a ride up the Grimsel Pass — drive it with the controls.',
+          staged: false, steps: []
+        },
+        {
+          id: 'climb', tab: 'Climb ahead', title: 'See the climb ahead',
+          blurb: '<b>See the climb ahead.</b> One button cycles your riding views — reach the ClimbPro-style profile with every ramp coloured by gradient.',
+          staged: true,
+          steps: [
+            { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
+            { cmds: ['back'], until: ["Statistics"], label: 'Back cycles to ride statistics' },
+            { cmds: ['back'], until: ["Climb"], label: 'Back again — the climb ahead' },
+            { cmds: ['back'], until: ["Map"], label: 'Back closes the ring' }
+          ]
+        },
+        {
+          id: 'reroute', tab: 'Reroute', title: 'Reroute to a point of interest',
+          blurb: '<b>Reroute on the spot.</b> Open the map’s points of interest, pick the nearest, and the device plans a route there — fully offline.',
+          staged: true,
+          steps: [
+            { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
+            { cmds: ['backhold'], until: ["Menu"], label: 'Hold Back to open the menu' },
+            { cmds: ['turn:2', 'press'], until: ["PoiMenu"], label: 'Open Points of Interest' },
+            { cmds: ['turn:2', 'press'], until: ["PoiList"], label: 'Browse to a category' },
+            { cmds: ['press'], until: ["PoiDetail"], label: 'Open the nearest place' },
+            { cmds: ['press'], until: ["NavConfirm"], label: 'Create a route to it' },
+            { cmds: ['press'], until: ["NavPlanning"], label: 'Planning the route…' },
+            // The planner honestly resolves to the route overview OR the failure card — captioned
+            // differently by `labelFor` so a routing *failure* is never shown as success.
+            {
+              cmds: [], until: ["RouteOverview", "NavFail"], label: 'Your new route, on the map',
+              labelFor: { RouteOverview: 'Your new route, on the map', NavFail: 'No route found — nothing routable nearby' }
+            }
+          ]
+        }
+      ];
+
+      // ---- engine state ------------------------------------------------------------------------
+      var scnIdx = 0;         // selected scenario
+      var demoRunning = false; // a staged script is driving
+      var runToken = 0;       // bumped on every mode switch / cancel; async runner re-checks it
+      var rafId = null;       // current rAF handle (null = loop stopped)
+      var loaded = false;     // wasm module started (TrunkApplicationStarted fired)
+      var failed = false;     // wasm failed to load — fallback engaged
+      var pageVisible = !document.hidden;
+      var stageOnscreen = true; // updated by the IntersectionObserver
 
       var LIVE_NOTE = '<span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls';
       function demoNote(label) {
         return '<span class="mode-live playing"><span class="mode-dot"></span>Guided demo</span> — ' + label;
       }
 
-      function ready() { return !!(api && api.obc_demo_cmd && api.obc_demo_state); }
-      function cmd(s) { if (api) api.obc_demo_cmd(s); }
-      function screenName() { return ready() ? api.obc_demo_state() : ''; }
+      function haveApi() { return !!(api && api.obc_demo_cmd && api.obc_demo_state); }
+      function ready() { return haveApi() && !!api.obc_demo_ready && api.obc_demo_ready(); }
+      function ticking() { return rafId !== null && haveApi(); }
+      // Never queue a command against a non-ticking sim — a paused/hidden sim isn't draining, so a
+      // queued gesture would pile up and burst on resume. The re-sync on resume restages anyway.
+      function cmd(s) { if (ticking()) api.obc_demo_cmd(s); }
+      function screenName() { return haveApi() ? api.obc_demo_state() : ''; }
       function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-      // One guided scenario for now — the riding Back-cycle (Map → Statistics → Climb → Map). Each
-      // step pushes its cmds in one frame (the host drains them in order, same tick) then WAITS for
-      // `until` — a rendered screen — before the next step. Gestures that consume draw-time lazy
-      // state must live in SEPARATE steps: see the gesture-batch caveat doc-comment on the host's
-      // command queue (firmware/obc-web-demo/src/demo.rs). `enter` (step 0) is the staged-tour
-      // baseline reset — the one demo-reset seam.
-      var SCENARIO = {
-        title: 'See the climb ahead',
-        steps: [
-          { cmds: ['enter'], until: ['Map'], label: 'Riding the Grimsel climb' },
-          { cmds: ['back'], until: ['Statistics'], label: 'Back cycles to ride statistics' },
-          { cmds: ['back'], until: ['Climb'], label: 'Back again — the climb ahead' },
-          { cmds: ['back'], until: ['Map'], label: 'Back closes the ring' }
-        ]
-      };
+      // ---- readiness gate ----------------------------------------------------------------------
+      // Swap the poster for the live canvas and enable the controls exactly when the sim is
+      // drivable. Idempotent — called each frame until it fires once.
+      var wentLive = false;
+      function goLiveIfReady() {
+        if (wentLive || !ready()) return;
+        wentLive = true;
+        if (poster) poster.classList.add('gone');
+        if (loading) loading.remove();
+        setControlsEnabled(true);
+      }
+      function setControlsEnabled(on) {
+        document.querySelectorAll('.ctl').forEach(function (b) { b.disabled = !on; });
+        if (toggle) toggle.disabled = !on;
+        scnButtons.forEach(function (b) { b.disabled = !on; });
+      }
 
-      // Resolve once the device reports one of `targets`, or on cancel (token bumped) / soft cap.
-      // The token check is what makes cancellation clean: a poll left over from a cancelled run
-      // resolves false and never advances the script.
+      // ---- tick strip --------------------------------------------------------------------------
+      // Renders one dot per step of the current staged scenario; `at` = confirmed current step,
+      // earlier steps `done`. Advanced only after `until` resolves true (honest stepping), reset to
+      // -1 (nothing confirmed) on (re-)start.
+      function renderTicks(confirmed) {
+        if (!ticksEl) return;
+        var s = SCENARIOS[scnIdx];
+        if (!s.staged || !demoRunning) { ticksEl.classList.add('hidden'); ticksEl.innerHTML = ''; return; }
+        ticksEl.classList.remove('hidden');
+        var html = '';
+        for (var i = 0; i < s.steps.length; i++) {
+          var cls = 'tick' + (i < confirmed ? ' done' : (i === confirmed ? ' at' : ''));
+          html += '<span class="' + cls + '"></span>';
+        }
+        ticksEl.innerHTML = html;
+      }
+
+      // ---- mode / scenario UI ------------------------------------------------------------------
+      function setMode(running, label) {
+        demoRunning = running;
+        if (controls) controls.classList.toggle('paused', running);
+        if (toggle) {
+          if (running) {
+            toggleIcon.textContent = '✋';
+            toggleLabel.textContent = 'Take control';
+            toggle.classList.add('live');
+          } else {
+            toggleIcon.textContent = '▶';
+            toggleLabel.textContent = 'Play guided demo';
+            toggle.classList.remove('live');
+          }
+        }
+        if (modeNote) modeNote.innerHTML = running ? demoNote(label || SCENARIOS[scnIdx].title) : LIVE_NOTE;
+      }
+
+      function renderScenarioChrome() {
+        scnButtons.forEach(function (b) {
+          b.classList.toggle('active', +b.getAttribute('data-scn') === scnIdx);
+        });
+        if (scnBlurb) scnBlurb.innerHTML = SCENARIOS[scnIdx].blurb;
+        var s = SCENARIOS[scnIdx];
+        // The toggle only makes sense for a staged scenario; on the live ride it's hidden.
+        if (toggle) toggle.style.display = s.staged ? '' : 'none';
+      }
+
+      // ---- take control ------------------------------------------------------------------------
+      // Cancel any running script (bump the token → no late step fires), hand the device to the
+      // visitor WHERE THE DEMO LEFT IT (`exit` is a no-rebuild command), re-enable controls, flip
+      // to Live. Idempotent when live.
+      function takeControl() {
+        runToken++;
+        if (demoRunning) cmd('exit');
+        setMode(false);
+        renderTicks(-1);
+      }
+
+      // Resolve with a STATUS so the runner can tell a real timeout from a cancel: 'reached' |
+      // 'timeout' | 'cancelled'. (S2 resolved a bare false for both and then advanced anyway — the
+      // "timeout marches on" dishonesty this replaces.)
       function until(targets, token) {
         return new Promise(function (resolve) {
           var t0 = performance.now();
           (function poll() {
-            if (token !== runToken) return resolve(false);           // cancelled
-            if (targets.indexOf(screenName()) >= 0) return resolve(true);
-            if (performance.now() - t0 > 20000) return resolve(false); // soft cap — don't hang
+            if (token !== runToken) return resolve('cancelled');
+            if (targets.indexOf(screenName()) >= 0) return resolve('reached');
+            if (performance.now() - t0 > 12000) return resolve('timeout');
             setTimeout(poll, 90);
           })();
         });
       }
 
-      function setMode(running, label) {
-        demoRunning = running;
-        if (!toggle) return;
-        if (running) {
-          if (controls) controls.classList.add('paused');
-          toggleIcon.textContent = '✋';
-          toggleLabel.textContent = 'Take control';
-          toggle.classList.add('live');
-          modeNote.innerHTML = demoNote(label || SCENARIO.title);
-        } else {
-          if (controls) controls.classList.remove('paused');
-          toggleIcon.textContent = '▶';
-          toggleLabel.textContent = 'Play guided demo';
-          toggle.classList.remove('live');
-          modeNote.innerHTML = LIVE_NOTE;
-        }
-      }
-
-      // Take control: cancel any running script (bump the token → no late step can fire), hand the
-      // device to the visitor WHERE THE DEMO LEFT IT — `exit` is a no-rebuild command, so the screen
-      // never jumps — re-enable the controls, flip the indicator to Live. Idempotent when live.
-      function takeControl() {
-        runToken++;                    // cancels the in-flight runScript at its next await
-        if (demoRunning) cmd('exit');
-        setMode(false);
-      }
-
+      // The staged-demo runner. Honest by construction: the label + tick advance only after the
+      // step's screen is actually reached; a timeout re-syncs from step 0 instead of advancing.
       async function runScript(token) {
+        var s = SCENARIOS[scnIdx];
         while (!ready() && token === runToken) { await sleep(120); }
-        var steps = SCENARIO.steps;
-        for (var i = 0; i < steps.length; i++) {
-          if (token !== runToken) return;    // cancelled before this step
-          setMode(true, steps[i].label);
-          steps[i].cmds.forEach(cmd);
-          await until(steps[i].until, token);
-          if (token !== runToken) return;    // cancelled during the wait
-          await sleep(2600);                 // deliberate dwell so a reader can follow
-          if (token !== runToken) return;    // cancelled during the dwell
+        if (token !== runToken) return;
+        renderTicks(-1);
+        var i = 0;
+        while (i < s.steps.length) {
+          if (token !== runToken) return;
+          var step = s.steps[i];
+          // Don't claim the target screen yet — keep the reader honest while we get there.
+          if (i > 0 && modeNote && demoRunning) modeNote.innerHTML = demoNote('Getting there…');
+          step.cmds.forEach(cmd);
+          var status = await until(step.until, token);
+          if (status === 'cancelled') return;
+          if (status === 'timeout') {
+            // Re-sync: restage the scenario and restart from step 0 (step 0's `enter` rebuilds the
+            // baseline). Never advance a label past a screen the device never reached.
+            if (modeNote && demoRunning) modeNote.innerHTML = demoNote('Re-syncing…');
+            renderTicks(-1);
+            await sleep(400);
+            if (token !== runToken) return;
+            i = 0;
+            continue;
+          }
+          // Reached: NOW set the confirmed label (caption RouteOverview vs NavFail honestly) and
+          // advance the tick strip to this step.
+          var reached = screenName();
+          var label = (step.labelFor && step.labelFor[reached]) || step.label;
+          setMode(true, label);
+          renderTicks(i);
+          await sleep(2600); // deliberate dwell so a reader can follow
+          if (token !== runToken) return;
+          i++;
         }
-        if (token === runToken) takeControl(); // scenario done → hand back, still where it ended
+        if (token === runToken) takeControl(); // scenario done → hand back where it ended
       }
 
       function startDemo() {
-        if (demoRunning) return;
+        if (!ready() || demoRunning) return;
         var token = ++runToken;
-        setMode(true, SCENARIO.steps[0].label);
+        setMode(true, SCENARIOS[scnIdx].title);
         runScript(token);
       }
 
-      // A manual interaction while a demo plays takes control first, then the gesture applies to the
-      // now-live device (both queue this frame: `exit` then the gesture). Returns nothing.
-      function grabIfDemo() { if (demoRunning) takeControl(); }
-
-      if (toggle) {
-        toggle.addEventListener('click', function (e) {
-          e.preventDefault();
-          if (!api) return;
-          if (demoRunning) takeControl(); else startDemo();
-        });
+      // Select a scenario. The live ride (staged:false) just hands control back. A staged scenario
+      // auto-plays when motion is fine, but under reduced motion it only shows its step list and
+      // waits for an explicit Play — no auto-running demo.
+      function selectScenario(i) {
+        if (i === scnIdx && demoRunning) return;
+        takeControl();          // stop any running script, go live
+        scnIdx = i;
+        renderScenarioChrome();
+        var s = SCENARIOS[i];
+        if (s.staged && !prefersReducedMotion()) startDemo();
       }
 
-      // --- frame loop: rAF-driven; the wasm renders on demand and reports whether the
-      // frame changed, so an idle demo costs neither a render nor a putImageData.
+      // A manual interaction while a demo plays takes control first, then the gesture applies to the
+      // now-live device.
+      function grabIfDemo() { if (demoRunning) takeControl(); }
+
+      // ---- frame loop --------------------------------------------------------------------------
       function frame(now) {
+        rafId = requestAnimationFrame(frame);
+        if (!haveApi()) return;
         if (api.obc_demo_tick(now)) {
           // The returned Uint8ClampedArray is a view over wasm memory — wrap and blit it
           // immediately, never retain it across ticks.
           ctx.putImageData(new ImageData(api.obc_demo_frame(), 240, 320), 0, 0);
-          var loading = document.getElementById('loading_text');
-          if (loading && api.obc_demo_ready()) loading.remove();
         }
-        requestAnimationFrame(frame);
+        goLiveIfReady();
+      }
+      function startLoop() { if (rafId === null) rafId = requestAnimationFrame(frame); }
+      function stopLoop() {
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+      }
+
+      // ---- visibility (tab hidden + scrolled offscreen) ----------------------------------------
+      // The sim is "active" only when the page is visible AND the device is on (or near) screen.
+      // Going inactive stops the loop, cancels pending steps, and pauses the sim; coming back
+      // resumes the loop and re-syncs a running demo from step 0.
+      function applyActive() {
+        var active = pageVisible && stageOnscreen && loaded && !failed;
+        if (active && rafId === null) {
+          startLoop();
+          if (SCENARIOS[scnIdx].staged && demoRunning && !prefersReducedMotion()) startDemo(); // re-sync
+        } else if (!active && rafId !== null) {
+          runToken++;                 // cancel any in-flight script (no late step on resume)
+          if (haveApi()) { api.obc_demo_cmd('pause'); api.obc_demo_tick(performance.now()); } // drain, then freeze
+          stopLoop();
+        }
+      }
+      document.addEventListener('visibilitychange', function () {
+        pageVisible = !document.hidden;
+        applyActive();
+      });
+      if ('IntersectionObserver' in window) {
+        // Far offscreen = fully out of view; a small negative margin keeps it ticking while it's
+        // just peeking at the viewport edge.
+        var io = new IntersectionObserver(function (entries) {
+          stageOnscreen = entries[0].isIntersecting;
+          applyActive();
+        }, { rootMargin: '-10% 0px', threshold: 0 });
+        io.observe(stage);
+      }
+
+      // ---- boot: readiness gate + fallback -----------------------------------------------------
+      // Trunk fires TrunkApplicationStarted once the wasm module is up. If it never fires (blocked
+      // fetch, instantiate failure, too-old browser) the timeout engages the fallback: the poster
+      // stays, the copy still tells the story, and the live-only affordances stay disabled.
+      var FALLBACK_MS = 10000;
+      var fallbackTimer = setTimeout(enterFallback, FALLBACK_MS);
+      function enterFallback() {
+        if (loaded || failed) return;
+        failed = true;
+        clearTimeout(fallbackTimer);
+        if (loading) loading.remove();               // stop the endless "warming up" spinner
+        if (modeNote) modeNote.innerHTML = '<span class="mode-live" style="color:var(--ink-soft)">Offline preview</span> — the live demo couldn’t load, but this is a real device frame.';
+        // Controls stay disabled (nothing to drive); the poster + scenario copy carry the story.
       }
       addEventListener('TrunkApplicationStarted', function () {
+        loaded = true;
+        clearTimeout(fallbackTimer);
         api = window.wasmBindings;
-        requestAnimationFrame(frame);
+        renderScenarioChrome();
+        // Dev-time drift check: warn (console.error) if a scenario targets a screen the host
+        // doesn't know — the CI test is the hard guard, this is the fast local signal.
+        if (api && api.obc_demo_screens) {
+          var known = api.obc_demo_screens();
+          SCENARIOS.forEach(function (s) {
+            s.steps.forEach(function (st) {
+              (st.until || []).forEach(function (name) {
+                if (known.indexOf(name) < 0) console.error('[obc-demo] scenario "' + s.id + '" targets unknown screen "' + name + '"');
+              });
+            });
+          });
+        }
+        applyActive(); // starts the loop if visible+onscreen; goLiveIfReady swaps the poster
       });
+      // Expose a tiny handle for automated verification (no analytics, no behaviour change).
+      window.__obcDemo = {
+        ready: ready, isLive: function () { return !demoRunning; }, failed: function () { return failed; },
+        loaded: function () { return loaded; }, screen: screenName, scenario: function () { return scnIdx; },
+        select: selectScenario, forceFallback: enterFallback, ticking: ticking
+      };
 
-      // --- press/back with the device's long-press semantics: a timer fires `hold` at the
-      // threshold while still down; releasing earlier sends the plain gesture instead.
+      // ---- scenario picker + toggle wiring -----------------------------------------------------
+      scnButtons.forEach(function (b) {
+        b.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (!ready()) return;
+          selectScenario(+b.getAttribute('data-scn'));
+          stage.focus();
+        });
+      });
+      if (toggle) {
+        toggle.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (!ready()) return;
+          if (demoRunning) takeControl(); else startDemo();
+        });
+      }
+      renderScenarioChrome();
+
+      // ---- press/back with the device's long-press semantics -----------------------------------
       function holdable(tap, hold, visual) {
         var timer = null, held = false;
         return {
@@ -639,28 +925,25 @@
             if (timer) clearTimeout(timer);
             held = false;
             if (visual) visual.classList.add('pressed');
-            timer = setTimeout(function () {
-              held = true;
-              api.obc_demo_cmd(hold);
-            }, HOLD_MS);
+            timer = setTimeout(function () { held = true; cmd(hold); }, HOLD_MS);
           },
           up: function (cancelled) {
             if (timer) { clearTimeout(timer); timer = null; }
             if (visual) visual.classList.remove('pressed');
-            if (!held && !cancelled) api.obc_demo_cmd(tap);
+            if (!held && !cancelled) cmd(tap);
             held = false;
           }
         };
       }
 
-      // --- on-screen buttons (touch + mouse) ---
+      // ---- on-screen buttons (touch + mouse) ---------------------------------------------------
       document.querySelectorAll('.ctl[data-btn]').forEach(function (btn) {
         var g = btn.getAttribute('data-btn'); // 'press' | 'back'
         var h = holdable(g, g === 'press' ? 'hold' : 'backhold', btn);
-        btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!api) return; stage.focus(); grabIfDemo(); h.down(); });
-        btn.addEventListener('pointerup', function (e) { e.preventDefault(); if (!api) return; h.up(false); });
-        btn.addEventListener('pointerleave', function () { if (api) h.up(true); });
-        btn.addEventListener('pointercancel', function () { if (api) h.up(true); });
+        btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!ready()) return; stage.focus(); grabIfDemo(); h.down(); });
+        btn.addEventListener('pointerup', function (e) { e.preventDefault(); if (!ready()) return; h.up(false); });
+        btn.addEventListener('pointerleave', function () { if (ready()) h.up(true); });
+        btn.addEventListener('pointercancel', function () { if (ready()) h.up(true); });
         btn.addEventListener('click', function (e) { e.preventDefault(); });
       });
       document.querySelectorAll('.ctl[data-turn]').forEach(function (btn) {
@@ -668,36 +951,35 @@
         function stop() { if (repeat) { clearInterval(repeat); repeat = null; } btn.classList.remove('pressed'); }
         btn.addEventListener('pointerdown', function (e) {
           e.preventDefault();
-          if (!api) return;
+          if (!ready()) return;
           stage.focus();
           grabIfDemo();
           btn.classList.add('pressed');
-          api.obc_demo_cmd('turn:' + dir);
-          repeat = setInterval(function () { api.obc_demo_cmd('turn:' + dir); }, 160); // detents while held
+          cmd('turn:' + dir);
+          repeat = setInterval(function () { cmd('turn:' + dir); }, 160); // detents while held
         });
         ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { btn.addEventListener(ev, stop); });
         btn.addEventListener('click', function (e) { e.preventDefault(); });
       });
 
-      // --- keyboard, scoped to the focused device stage (so the page keeps its arrow keys —
-      // the egui host used to steal them globally) ---
+      // ---- keyboard, scoped to the focused device stage ----------------------------------------
       var keys = { Enter: holdable('press', 'hold', null), Backspace: holdable('back', 'backhold', null) };
       stage.addEventListener('keydown', function (e) {
-        if (!api) return;
+        if (!ready()) return;
         if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
           e.preventDefault();
           grabIfDemo();
-          api.obc_demo_cmd('turn:' + (e.key === 'ArrowRight' ? 1 : -1)); // key autorepeat = detents
+          cmd('turn:' + (e.key === 'ArrowRight' ? 1 : -1)); // key autorepeat = detents
         } else if (keys[e.key]) {
           e.preventDefault();
           if (!e.repeat) { grabIfDemo(); keys[e.key].down(); }
         }
       });
       stage.addEventListener('keyup', function (e) {
-        if (api && keys[e.key]) keys[e.key].up(false);
+        if (ready() && keys[e.key]) keys[e.key].up(false);
       });
       stage.addEventListener('blur', function () {
-        if (!api) return;
+        if (!ready()) return;
         Object.keys(keys).forEach(function (k) { keys[k].up(true); }); // a focus steal cancels holds
       });
     })();
