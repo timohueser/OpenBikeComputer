@@ -15,7 +15,7 @@ use core::fmt::Write as _;
 use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Surface,
 };
 
@@ -235,7 +235,16 @@ fn draw_compass(
         draw_icon(cv, i, sc, 1.2, ink, bg);
     }
 
-    cv.text(txt.items[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, INK);
+    let label = txt.items[selected];
+    let label_top = h - 38;
+    cv.text(label, Point::new(w / 2, label_top), Font::Display, TextAlign::Center, INK);
+    // A2 selected-label treatment: a single 2 px amber underline bar, width = the measured label
+    // width + 8 px (4 px overhang each side), centred under the label, 3 px below the text block.
+    // Re-measured per label as the dial turns; ties "selected" into the device's amber-is-active
+    // grammar without a pill/box or a font change.
+    let bar_w = text_width(label, Font::Display) as i32 + 8;
+    let bar_y = label_top + Font::Display.cap_height() as i32 + 3;
+    cv.fill(rect(w / 2 - bar_w / 2, bar_y, bar_w, 2), AMBER);
 }
 
 /// Draw the compass **needle** centred at `c`, pointing `deg` (0° = N, clockwise): amber head of
@@ -265,7 +274,15 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
 
 /// The 2×2 card-grid layout under the standard title bar: amber fill on the selected card, a tan
 /// outline on the rest, each with its icon over a centred label.
-fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize, ble_connected: bool, battery: &str, txt: &MenuText) {
+fn draw_grid(
+    cv: &mut impl Surface,
+    w: i32,
+    h: i32,
+    selected: usize,
+    ble_connected: bool,
+    battery: &str,
+    txt: &MenuText,
+) {
     use palette::*;
     title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
     for (i, label) in txt.items.iter().enumerate() {
