@@ -7,8 +7,8 @@
 //! - [`DfuCheckScreen`] — the brief "Checking card..." wait (spinner) after the scan is posted; the
 //!   board's answer ([`App::notify_dfu_scan_result`](crate::App::notify_dfu_scan_result)) replaces
 //!   it with the confirm screen or the error card. **Back** cancels the wait.
-//! - [`DfuConfirmScreen`] — *installed → update* versions, the no-undo / same-version warnings, and
-//!   the "the light blinks while the update installs" note. Encoder **Install** arms (posts
+//! - [`DfuConfirmScreen`] — the *installed → update* version table and the no-undo / same-version
+//!   warnings. Encoder **Install** arms (posts
 //!   [`DfuAction::Install`](crate::activity::DfuAction) and swaps to the progress screen); **Back**
 //!   / **Cancel** returns to the System menu. The standard two-row confirm chrome, like
 //!   [`NavConfirmScreen`](super::NavConfirmScreen).
@@ -194,16 +194,16 @@ impl DfuConfirmScreen {
 
         // The conditional red note — the same-version note, then the no-undo note on a first install
         // (no rollback snapshot exists — spec §2.4) — one type-step down (Label), with a blank line
-        // above it. Both warning-coloured.
-        y += Font::Label.cap_height() as i32 + 2;
+        // above it and the clearance to the Install row below. Both warning-coloured.
+        let note_y = y + Font::Label.cap_height() as i32 + 2;
         if self.report.same_version() {
-            y = wrapped(cv, rx.t(Msg::DfuSameVersion), w / 2, y, w - 2 * INSET, WARNING);
+            let after = wrapped(cv, rx.t(Msg::DfuSameVersion), w / 2, note_y, w - 2 * INSET, WARNING);
+            if self.report.first_install {
+                wrapped(cv, rx.t(Msg::DfuNoUndo), w / 2, after, w - 2 * INSET, WARNING);
+            }
+        } else if self.report.first_install {
+            wrapped(cv, rx.t(Msg::DfuNoUndo), w / 2, note_y, w - 2 * INSET, WARNING);
         }
-        if self.report.first_install {
-            y = wrapped(cv, rx.t(Msg::DfuNoUndo), w / 2, y, w - 2 * INSET, WARNING);
-        }
-        // The always-present note that the display goes dark + the light blinks during the flash.
-        wrapped(cv, rx.t(Msg::DfuLightBlinks), w / 2, y + 2, w - 2 * INSET, SUBTEXT);
 
         // The Install / Cancel rows, the standard confirm chrome (like the create-route confirm).
         let geo = super::GuardedRowsGeometry {

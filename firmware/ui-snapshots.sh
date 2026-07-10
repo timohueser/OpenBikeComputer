@@ -277,9 +277,9 @@ for lang in de fr es; do
         --script "p p p p"      --png "$OUT/map-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --png "$OUT/routeoverview-$lang.png"
     # The SD-sideload update flow (epic #615 S5): the System row, the first-install confirm (the
-    # worst case for vertical fit — two version rows + the no-undo + light-blinks notes), the
-    # progress spinner, an error card, and the post-update toast — the text-heaviest DFU screens, to
-    # eyeball for clipped/overflowing copy now that the translations are longer.
+    # worst case for vertical fit — the two-row version table + the no-undo note, which wraps to two
+    # Label lines in the longer translations), the progress spinner, an error card, and the
+    # post-update toast — the text-heaviest DFU screens, to eyeball for clipped/overflowing copy.
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p" --png "$OUT/system-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p p" --dfu-scan first --png "$OUT/dfu-confirm-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r p p" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress-$lang.png"
