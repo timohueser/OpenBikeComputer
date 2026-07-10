@@ -41,6 +41,10 @@ struct RootView: View {
     /// A route file handed in at launch (`-OBCImportSample`) — opens E1 as soon
     /// as the main screen is up.
     private let importAtLaunch: (data: Data, fileName: String)?
+    /// A pre-staged firmware update handed in at launch (`-OBCFirmwareDemo`) —
+    /// pushes the S7 screen straight to its staged state (the Files picker can't
+    /// be driven from automation), optionally auto-sending. `nil` in normal runs.
+    private let firmwareDemoAtLaunch: (data: Data, autoSend: Bool)?
 
     init(
         transport: any DeviceTransport,
@@ -48,11 +52,13 @@ struct RootView: View {
         library: any LibraryStore = InMemoryLibraryStore(),
         reachability: any NetworkReachability = PathMonitorReachability(),
         backgroundTasks: any BackgroundTaskRunner = UIKitBackgroundTaskRunner(),
-        importAtLaunch: (data: Data, fileName: String)? = nil
+        importAtLaunch: (data: Data, fileName: String)? = nil,
+        firmwareDemoAtLaunch: (data: Data, autoSend: Bool)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
         self.importAtLaunch = importAtLaunch
+        self.firmwareDemoAtLaunch = firmwareDemoAtLaunch
         let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
         self.importer = importer
         let transferActivity = TransferActivity()
@@ -187,6 +193,12 @@ struct RootView: View {
             if let importAtLaunch {
                 importModel.open(data: importAtLaunch.data, fileName: importAtLaunch.fileName)
             }
+            // The `-OBCFirmwareDemo` hook: push the S7 screen (pre-staged) once
+            // the main screen is up — the demo/screenshot entry the Files picker
+            // can't provide from automation.
+            if firmwareDemoAtLaunch != nil, path.isEmpty {
+                path = [.firmwareUpdate]
+            }
         }
         // The foreground-only link (#459): only a real `.background` transition
         // suspends (the model ignores `.inactive` flickers — notification
@@ -272,7 +284,18 @@ struct RootView: View {
                     path.removeAll()
                     launchModel.forgetDevice()
                 },
+                // S7: push the firmware-update screen (its own destination so
+                // the host owns a stable model — an in-flight transfer survives
+                // Settings body passes).
+                onOpenFirmwareUpdate: { path.append(.firmwareUpdate) },
                 onOpenDevPanel: devPanelOpener
+            )
+        case .firmwareUpdate:
+            FirmwareUpdateScreen(
+                transport: transport,
+                deviceName: mainModel.deviceName,
+                prestage: firmwareDemoAtLaunch?.data,
+                autoSend: firmwareDemoAtLaunch?.autoSend ?? false
             )
         }
     }
@@ -297,6 +320,7 @@ enum MainDestination: Hashable {
     case ride(id: RideID)
     case trash
     case settings
+    case firmwareUpdate
 }
 
 #if DEBUG

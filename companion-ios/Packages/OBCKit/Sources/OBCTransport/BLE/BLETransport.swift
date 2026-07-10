@@ -357,6 +357,50 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         )
     }
 
+    public func uploadFirmware(_ container: Data) -> TransferHandle {
+        // A `fwImage` upload (spec §7.6): the whole OBCU container, the singleton
+        // object id `0` (the device assigns none and echoes `0`). Reuses the route
+        // upload's runner — the descriptor is the only difference. Success is the
+        // device's committed `transferResult`, which promotes the bytes to
+        // `/UPDATE.BIN`; staging never installs (that's `installFirmware`).
+        guard !container.isEmpty else {
+            return .immediatelyFinished(.failed(.transferRejected))
+        }
+        let descriptor = TransferControl(
+            op: .upload, type: .firmware, objectID: 0,
+            totalLen: UInt32(container.count), crc32: CRC32.checksum(container)
+        )
+        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+        let outcome = AsyncPromise<TransferOutcome>()
+        // The singleton stage assigns no id; the runner still takes a promise (it
+        // fulfills it with the echoed `0`), which no firmware caller reads.
+        let assignedID = AsyncPromise<DeviceObjectID?>()
+        let runner = UploadRunner(
+            transport: self, payload: container, descriptor: descriptor,
+            progress: continuation, outcome: outcome, assignedID: assignedID
+        )
+        Task { await runner.start() }
+        return TransferHandle(
+            progress: stream,
+            outcome: outcome,
+            onCancel: { Task { await runner.cancel() } },
+            onResume: { Task { await runner.start() } }
+        )
+    }
+
+    public func installFirmware() async throws -> FirmwareInstallResult {
+        // `installFw` (cmd 3): the `cmd` byte only — spec §4.4. Holds the transfer
+        // slot for `deleteRoute`'s reason (#302): command and transfer results
+        // share one `pendingStatuses` buffer, so an ungated command write could
+        // wipe a slot-holding transfer's buffered result. The command returns as
+        // soon as the request is accepted; it never waits for the on-glass confirm.
+        await acquireTransferSlot()
+        defer { releaseTransferSlot() }
+        clearPendingStatuses()
+        try await write(Data([3]), to: GATT.command)
+        return FirmwareInstallResult(commandStatus: try await nextCommandResult().status)
+    }
+
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
         // Real path (A7): one ride-object download per id, persisted ride-by-ride,
         // so a drop keeps what landed and "resume" re-requests only the missing

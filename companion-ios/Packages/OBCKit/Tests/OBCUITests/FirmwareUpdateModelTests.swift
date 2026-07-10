@@ -1,0 +1,252 @@
+import Foundation
+import Testing
+import OBCDomain
+import OBCTransport
+@testable import OBCUI
+
+/// The S7 firmware-update view-model state machine, driven against a hand-built
+/// transfer stub so every transition is deterministic: idle → staged →
+/// transferring → awaiting-confirm → done, plus the failure branches (bad import,
+/// dropped transfer, and each non-`accepted` `installFw` reply).
+@MainActor
+struct FirmwareUpdateModelTests {
+    // MARK: Helpers
+
+    /// A valid OBCU container tagged with `version` — both CRCs correct, so
+    /// `StagedFirmware.validate` accepts it and reports `version`.
+    private func container(version: String, imageLen: Int = 96) -> Data {
+        var image = Data()
+        image.append(contentsOf: le32(0x2002_0000)) // plausible initial SP
+        image.append(contentsOf: (4..<imageLen).map { UInt8($0 & 0xFF) })
+        var header = Data(count: 64)
+        header.replaceSubrange(0..<4, with: Array("OBCU".utf8))
+        header[4] = 1 // header_version LE
+        header.replaceSubrange(8..<12, with: le32(UInt32(image.count)))
+        header.replaceSubrange(12..<16, with: le32(CRC32.checksum(image)))
+        let v = Array(version.utf8.prefix(32))
+        header.replaceSubrange(16..<16 + v.count, with: v)
+        header.replaceSubrange(60..<64, with: le32(CRC32.checksum(header[0..<60])))
+        return header + image
+    }
+
+    private func le32(_ v: UInt32) -> [UInt8] { withUnsafeBytes(of: v.littleEndian, Array.init) }
+
+    /// Spin the run loop until `condition` holds or the timeout elapses (the model
+    /// advances on `AsyncStream` / `await` hops, not synchronously).
+    private func waitFor(_ condition: () -> Bool, within timeout: Duration = .seconds(2)) async {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    // MARK: Import
+
+    @Test func staysIdleAndSurfacesAnAlertForABadFile() {
+        let model = FirmwareUpdateModel(transport: StubTransport(), deviceName: "Trailhead")
+        model.stage(Data([0x01, 0x02, 0x03]))
+        #expect(model.phase == .idle)
+        #expect(model.staged == nil)
+        #expect(model.importError != nil)
+    }
+
+    @Test func stagesAValidFile() {
+        let model = FirmwareUpdateModel(transport: StubTransport(), deviceName: "Trailhead")
+        model.stage(container(version: "1.2.0"))
+        #expect(model.phase == .staged)
+        #expect(model.staged?.version == "1.2.0")
+        #expect(model.importError == nil)
+    }
+
+    // MARK: Happy path
+
+    @Test func runsIdleToStagedToTransferringToAwaitingToDone() async {
+        let stub = StubTransport()
+        stub.fwVersion = "0.4.2"
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
+        model.start()
+        await waitFor { model.connection == .connected }
+
+        // idle → staged
+        model.stage(container(version: "0.5.0"))
+        #expect(model.phase == .staged)
+
+        // staged → transferring
+        model.send()
+        #expect(model.phase == .transferring)
+
+        // transferring → (commit) → installFw accepted → awaiting-confirm
+        stub.installResult = .accepted
+        stub.completeUpload()
+        await waitFor { model.phase == .awaitingConfirm }
+        #expect(model.phase == .awaitingConfirm)
+
+        // awaiting-confirm: the device reboots (drop) then reconnects on the new
+        // version → done.
+        stub.push(.outOfRange)
+        stub.fwVersion = "0.5.0"
+        stub.push(.connected)
+        await waitFor { model.phase == .done }
+        #expect(model.phase == .done)
+        #expect(model.runningVersion == "0.5.0")
+    }
+
+    @Test func reconnectingOnTheOldVersionStaysAwaiting() async {
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        stub.completeUpload()
+        await waitFor { model.phase == .awaitingConfirm }
+
+        // A reconnect that still reports the OLD version isn't "done".
+        stub.push(.outOfRange)
+        stub.fwVersion = "0.4.2"
+        stub.push(.connected)
+        await waitFor({ model.phase == .done }, within: .milliseconds(300))
+        #expect(model.phase == .awaitingConfirm)
+    }
+
+    // MARK: Failure branches
+
+    @Test func aDroppedTransferInterruptsThenResumes() async {
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        #expect(model.phase == .transferring)
+
+        stub.push(.outOfRange) // link drops mid-transfer
+        await waitFor { model.phase == .interrupted }
+        #expect(model.phase == .interrupted)
+
+        model.resume()
+        #expect(model.phase == .transferring)
+    }
+
+    @Test func aFailedTransferShowsAFailureSentence() async {
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        stub.failUpload(.transferRejected)
+        await waitFor { model.phase == .failed }
+        #expect(model.phase == .failed)
+        #expect(model.failureMessage?.isEmpty == false)
+    }
+
+    @Test(arguments: [
+        (FirmwareInstallResult.busy, "ride"),
+        (.noStaged, "send it again"),
+        (.rejected, "rejected"),
+        (.unsupported, "Bluetooth"),
+    ])
+    func aNonAcceptedInstallReplyFailsWithMappedCopy(reply: FirmwareInstallResult, needle: String) async {
+        let stub = StubTransport()
+        stub.installResult = reply
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        stub.completeUpload()
+        await waitFor { model.phase == .failed }
+        #expect(model.phase == .failed)
+        #expect(model.failureMessage?.contains(needle) == true)
+    }
+
+    @Test func canRetryAfterAFailedInstall() async {
+        let stub = StubTransport()
+        stub.installResult = .busy
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        stub.completeUpload()
+        await waitFor { model.phase == .failed }
+
+        // The file is still staged — a retry re-enters transferring.
+        stub.installResult = .accepted
+        model.send()
+        #expect(model.phase == .transferring)
+        stub.completeUpload()
+        await waitFor { model.phase == .awaitingConfirm }
+        #expect(model.phase == .awaitingConfirm)
+    }
+}
+
+/// A minimal `DeviceTransport` for the model tests: a controllable link-state
+/// stream, a settable running version, and a firmware transfer whose completion /
+/// failure and `installFw` reply the test drives. Everything else is an inert stub.
+private final class StubTransport: DeviceTransport, @unchecked Sendable {
+    private let stateStream: AsyncStream<ConnectionState>
+    private let stateCont: AsyncStream<ConnectionState>.Continuation
+    var fwVersion = "0.4.2"
+    var installResult: FirmwareInstallResult = .accepted
+    var installError: DeviceError?
+
+    private var uploadProgress: AsyncStream<TransferProgress>.Continuation?
+    private var uploadOutcome = AsyncPromise<TransferOutcome>()
+
+    init() {
+        (stateStream, stateCont) = AsyncStream<ConnectionState>.makeStream()
+        stateCont.yield(.connected) // buffered until the model starts iterating
+    }
+
+    func push(_ state: ConnectionState) { stateCont.yield(state) }
+
+    func completeUpload() {
+        uploadProgress?.finish()
+        uploadOutcome.fulfill(.completed)
+    }
+
+    func failUpload(_ error: DeviceError) {
+        uploadProgress?.finish()
+        uploadOutcome.fulfill(.failed(error))
+    }
+
+    // MARK: DeviceTransport — the bits the model uses
+
+    var state: AsyncStream<ConnectionState> { stateStream }
+
+    func deviceInfo() async throws -> DeviceInfo {
+        DeviceInfo(name: "Trailhead", firmwareVersion: fwVersion)
+    }
+
+    func uploadFirmware(_ container: Data) -> TransferHandle {
+        let (stream, cont) = AsyncStream<TransferProgress>.makeStream()
+        uploadProgress = cont
+        uploadOutcome = AsyncPromise<TransferOutcome>()
+        return TransferHandle(
+            progress: stream,
+            outcome: uploadOutcome,
+            onCancel: { [uploadOutcome] in uploadOutcome.fulfill(.canceled) },
+            onResume: {}
+        )
+    }
+
+    func installFirmware() async throws -> FirmwareInstallResult {
+        if let installError { throw installError }
+        return installResult
+    }
+
+    // MARK: DeviceTransport — inert stubs
+
+    var battery: AsyncStream<Int> { AsyncStream { $0.finish() } }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
+    func connect() async throws {}
+    func disconnect() async {}
+    func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
+    func writeConfig(_ config: DeviceConfig) async throws {}
+    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
+    func uploadRoute(_ route: RouteBlob) -> TransferHandle { .immediatelyFinished(.failed(.notConnected)) }
+    func deleteRoute(_ id: DeviceObjectID) async throws {}
+    func listRides() async throws -> [RideSummary] { [] }
+    func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
+    func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
+    func readDiagnostics() async throws -> Data { Data() }
+}
