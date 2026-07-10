@@ -29,7 +29,7 @@ use embedded_graphics::prelude::Point;
 use obc_reader::{label_of, weekday_from_ymd, Interval, Poi, WeeklySchedule};
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Surface,
 };
 
@@ -192,18 +192,23 @@ impl PoiDetailScreen {
         }
 
         // OPEN / CLOSED-now badge — only when the POI has a schedule; read from the live wall-clock
-        // this frame. A rounded pill (#685 §2: 3 px radius, 18 px tall, 8 px horizontal padding),
-        // Label type on white — green fill when open, warning-red when closed, so the closed state
-        // reads as a state, not just quieter text.
+        // this frame. A rounded pill, Body type on white — green fill when open, warning-red when
+        // closed, so the closed state reads as a state, not just quieter text. Owner review round 1
+        // (t7): the #685 shrink to a Label-in-18px pill read terribly — the text is back at Body
+        // (the pre-epic weight) and the pill is sized *from* it: the measured text width plus a
+        // symmetric [`BADGE_PAD_X`], the Body cap plus a symmetric [`BADGE_PAD_Y`], and the anchor
+        // offset by the face's measured top bearing so the glyphs centre on both axes.
         if let Some(sched) = schedule {
             let minute = rx.now.hour as u16 * 60 + rx.now.minute as u16;
             let open = sched.is_open(weekday, minute);
             let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), WARNING) };
             let badge_y = row_y + 8;
-            let badge_w = text.chars().count() as i32 * Font::Label.char_width() as i32 + 16;
-            let badge_h = 18;
-            cv.round(rect(x, badge_y, badge_w, badge_h), 3, bg);
-            cv.text_vcentered(text, x + badge_w / 2, (badge_y, badge_h), Font::Label, TextAlign::Center, PARCHMENT);
+            let font = Font::Body;
+            let badge_w = text_width(text, font) as i32 + 2 * BADGE_PAD_X;
+            let badge_h = BADGE_TEXT_H + 2 * BADGE_PAD_Y;
+            cv.round(rect(x, badge_y, badge_w, badge_h), 6, bg);
+            let ty = badge_y + BADGE_PAD_Y - BADGE_TEXT_BEARING_Y;
+            cv.text(text, Point::new(x + badge_w / 2, ty), font, TextAlign::Center, PARCHMENT);
         }
 
         // Footer action row — `▶Route here`, exactly the Route overview's START RIDE bar (#685 §2:
@@ -212,6 +217,19 @@ impl PoiDetailScreen {
         super::route_overview::draw_start_button(cv, w, h, rx.t(Msg::PoiDetailRouteHere));
     }
 }
+
+/// The OPEN/CLOSED badge's symmetric horizontal padding — pill edge to the measured text width.
+const BADGE_PAD_X: i32 = 8;
+/// The badge's symmetric vertical padding — pill edge to the measured text extents, both sides.
+const BADGE_PAD_Y: i32 = 8;
+/// Measured ink height (px) of the badge's uppercase [`Font::Body`] text ("OPEN"/"CLOSED" — caps
+/// only, no descenders), read off a rendered frame: the nominal `cap_height` (22) overshoots the
+/// face's real uppercase extents by 4 px, which would sit the text visibly high in the pill.
+const BADGE_TEXT_H: i32 = 18;
+/// Uppercase [`Font::Body`] glyphs ink 4 px below their cell-top anchor (the measured top bearing);
+/// the badge's text anchor offsets by it so the *visible* caps centre in the pill, not the padded
+/// glyph-cell box.
+const BADGE_TEXT_BEARING_Y: i32 = 4;
 
 /// Format quarter-hours from midnight (`0..=96`, `96` = 24:00) as `HH:MM` into `s`.
 fn write_quarter<const N: usize>(s: &mut heapless::String<N>, q: u8) {

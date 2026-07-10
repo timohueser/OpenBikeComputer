@@ -15,10 +15,10 @@
 //!
 //! **Delete** is the ride_control-pattern guarded row: the completed hold *is* the confirmation
 //! (its fill the live feedback), the host deletes `RD{id}.ORD` + its synced-set entry, and the
-//! screen pops back to the refreshed Rides list. While a ride is being recorded the row disables
-//! with the greyed treatment + `Recording` cue — the old footer's rule, verbatim: a live session
-//! holds `TRACK.OBT` open and its `RD{id}.ORD` isn't written until Finish, so deleting is neither
-//! meaningful nor legal then.
+//! screen pops back to the refreshed Rides list. While a ride is being recorded the row is
+//! **hidden** (owner review round 1 — no greyed face): a live session holds `TRACK.OBT` open and
+//! its `RD{id}.ORD` isn't written until Finish, so deleting is neither meaningful nor legal then,
+//! and the `delete_enabled` guard keeps a hold a no-op regardless.
 //!
 //! Fit note: all six blocks don't fit 240×320 at the overview's spacing, so the **band height is
 //! shrunk** (90 → 34 px) and the ledger's row pitch compressed (42 → 33 px, hairline rules
@@ -28,7 +28,6 @@ use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
-    rect,
     text::{Font, TextAlign},
     Surface,
 };
@@ -209,11 +208,11 @@ impl RideDetailScreen {
         }
 
         // The guarded Delete-ride row at the bottom (the ride_control pattern): its shaded base
-        // fills warning-red with the live hold. Greyed while recording — the old footer's exact
-        // disabled treatment, a dim trash + the `Recording` cue (the label + cue don't share a
-        // 240 px line, so the cue takes the row, as the footer had it).
-        let row_y = h - 10 - ROW_H;
+        // fills warning-red with the live hold. While a ride is being recorded the row is simply
+        // **not drawn** — no dim trash, no `Recording` cue (owner review round 1: the state can't
+        // act, so it doesn't show) — and the `delete_enabled` guard keeps a hold a no-op regardless.
         if self.delete_enabled(rx.activity, rx.rides.len()) {
+            let row_y = h - 10 - ROW_H;
             let geo = super::GuardedRowsGeometry {
                 x: 14,
                 w: w - 28,
@@ -225,30 +224,8 @@ impl RideDetailScreen {
             };
             let items = [MenuItem { label: rx.t(Msg::RideDetailDeleteRide), guard: true }];
             super::draw_guarded_rows(cv, &items, 0, rx.hold_progress, WARNING, geo);
-        } else {
-            draw_trash(cv, 14 + 16, row_y + ROW_H / 2, RULE);
-            cv.text_vcentered(
-                rx.t(Msg::RidesRecording),
-                14 + 36,
-                (row_y, ROW_H),
-                Font::Label,
-                TextAlign::Left,
-                SUBTEXT,
-            );
         }
     }
-}
-
-/// Draw a small trash-can glyph centred at `(cx, cy)` — the old Rides-footer glyph, carried into
-/// the delete row's disabled state so "can't delete now" keeps its established face.
-fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
-    let (bw, bh) = (11, 12);
-    let (bx, by) = (cx - bw / 2, cy - bh / 2 + 1);
-    cv.round_outline(rect(bx, by, bw, bh), 2, color); // can body
-    cv.hline(bx - 2, by - 2, bw + 4, color); // lid
-    cv.hline(cx - 2, by - 4, 5, color); // handle
-    cv.vline(cx - 2, by + 3, bh - 5, 1, color); // ribs
-    cv.vline(cx + 2, by + 3, bh - 5, 1, color);
 }
 
 #[cfg(test)]
@@ -309,7 +286,7 @@ mod tests {
         act.start_session(); // now tracking
         act.viewed_ride = Some(0);
         let mut scr = RideDetailScreen::new(0);
-        assert!(!scr.selection_is_guarded(&act, rides.len()), "the row is greyed while recording");
+        assert!(!scr.selection_is_guarded(&act, rides.len()), "the row is hidden while recording");
         let t = run(&mut scr, &mut act, &rides, Gesture::Hold);
         assert!(matches!(t, Transition::None), "a hold while recording stays on the page");
         assert_eq!(act.take_ride_delete(), None, "and records nothing");

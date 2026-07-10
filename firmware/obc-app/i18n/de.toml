@@ -272,7 +272,6 @@ on_phone = "am Handy"
 title = "FAHRTEN"
 no_rides = "Keine Fahrten"
 no_rides_sub = "Fahrt aufzeichnen"
-recording = "Aufnahme"
 not_synced = "nicht sync."
 
 # --- Ride detail screen ---
@@ -285,7 +284,6 @@ delete_ride = "Fahrt löschen"
 title = "ROUTEN"
 no_routes = "Keine Routen"
 no_routes_sub = "GPX-Datei laden"
-in_use = "Aktiv"
 
 # --- Route overview screen ---
 [route_overview]
@@ -353,8 +351,6 @@ gps = "GPS"
 fix = "Fix"
 searching = "suche.."
 battery = "Akku"
-card = "Karte"
-card_ok = "OK"
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
