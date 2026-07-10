@@ -12,6 +12,11 @@ description = "OBCM map format reader (no_std + alloc) — pure-parse logic for 
 # scratch and the `RouteCache` — to fit alongside the 75 KB RGB222 framebuffer. Off by
 # default, so host / sim / tests keep the generous full-fidelity sizes.
 nrf-mem = []
+# Pull in `alloc` for the heap-boxed cache constructor (`MapCache::new_boxed`). A small-stack
+# host — the wasm web demo — enables this to build the zeroed ≈277 KB `MapCache` straight on
+# the heap; the device never does (it `ptr::write`s its cache into a reserved region), so
+# `alloc` stays off by default. Mirrors `obc-route`'s `alloc` / `NavScratch::new_boxed`.
+alloc = []
 
 [dependencies]
 heapless = "0.8"

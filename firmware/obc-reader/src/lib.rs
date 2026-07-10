@@ -35,6 +35,12 @@
 // `no_std` for every real target; the host test harness needs `std`, so allow it under `cfg(test)`.
 #![cfg_attr(not(test), no_std)]
 
+// `alloc` is opt-in (off on the device, which `ptr::write`s its cache into a reserved region):
+// it only backs the heap-boxed constructor a small-stack host — the wasm web demo — uses to
+// keep the ≈277 KB zero-initialised `MapCache` off its stack. See `MapCache::new_boxed`.
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 pub mod byte_io;
 pub mod codec;
 pub mod color;
