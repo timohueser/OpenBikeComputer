@@ -94,6 +94,9 @@ fn main() {
         out,
         "/// Translation table in flash `.rodata`: `TABLE[msg as usize][lang as usize]`,\n\
          /// columns ordered En, De, Fr, Es (the `Language` discriminants). Generated.\n\
+         // Only ever indexed (a place expression), never copied by value, so it isn't duplicated\n\
+         // per use — the const-vs-static lint is a false positive; kept `const` for the `const fn` lookup.\n\
+         #[allow(clippy::large_const_arrays)]\n\
          pub const TABLE: [[&str; 4]; {n}] = [",
         n = en_keys.len()
     )

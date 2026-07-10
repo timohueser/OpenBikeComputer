@@ -59,8 +59,9 @@ oct = "Okt"
 nov = "Nov"
 dec = "Dez"
 
-# --- Short-date month table (uppercase, day-first `D MON` shape) — the Rides rows' line-2
-# date; generic so the Home date line (T5, #683) reuses it ---
+# --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
+# line (T5, #683: abbreviated weekday + day + month, day-first). Months generic; the seven
+# weekday abbreviations (Monday-first) were added for the Home line ---
 [date]
 jan = "JAN"
 feb = "FEB"
@@ -74,6 +75,13 @@ sep = "SEP"
 oct = "OKT"
 nov = "NOV"
 dec = "DEZ"
+mon = "MO"
+tue = "DI"
+wed = "MI"
+thu = "DO"
+fri = "FR"
+sat = "SA"
+sun = "SO"
 
 # --- StatField names (the Add-field picker / Fields list) ---
 [statfield]

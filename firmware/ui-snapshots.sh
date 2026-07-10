@@ -55,7 +55,7 @@ printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc st
 # settles the needle sweep after a turn — and the back-hold charge indicator (a half-disc at the
 # right screen edge) decays over a few frames, so scripts that snapshot within ~3 tokens of a `B`
 # end in `w` too, or the residue bakes into the PNG.
-"$SIM" "$MAP" --boot --png "$OUT/home.png" --battery 45
+"$SIM" "$MAP" --boot --clock "2025-07-10T09:41" --png "$OUT/home.png" --battery 45
 # The Route list: arrow-less, column-aligned two-line rows (distance under the name, the climb group
 # at a fixed second column) with no footer — hold-to-delete moved to the Route overview (T3, #681).
 "$SIM" "$MAP" --boot --script "p p"          --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
@@ -241,7 +241,7 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h" --png "$OUT/map-pan.png"
 # BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
-"$SIM" "$MAP" --boot --ble-connected --png "$OUT/home-ble.png" --battery 45
+"$SIM" "$MAP" --boot --ble-connected --clock "2025-07-10T09:41" --png "$OUT/home-ble.png" --battery 45
 "$SIM" "$MAP" --boot --ble-connected --script "B w" --png "$OUT/menu-ble.png"
 # BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge — grouped
 # `000 042` under the device<->phone pair glyph (#679). `--ble-passkey N` injects the passkey

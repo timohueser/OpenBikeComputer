@@ -21,22 +21,36 @@ pub struct WallClock {
     base: DateTime,
     /// The monotonic millis at which [`base`](WallClock::base) was established.
     epoch_ms: u32,
+    /// Whether a set-point has ever been **established** — false for the bare boot construction, true
+    /// once [`set`](WallClock::set) has run (the persisted clock restored at boot, a manual edit, or
+    /// a GPS/BLE re-stamp). Distinguishes "the device has been told a time" from a fresh clock that
+    /// has never known one; the Home date line (#683) hides while this is false, since a date with no
+    /// trusted origin would mislead. (Finer GPS/BLE-only trust is auto-expiry epic #638's job.)
+    established: bool,
 }
 
 impl WallClock {
-    /// A clock whose set-point `base` is true at the boot origin (`epoch_ms = 0`). Seeded from the
-    /// persisted [`Settings::clock`](crate::Settings::clock) at boot; without an RTC the clock
-    /// resumes from the last-set value, off by however long the device was powered down until a GPS
-    /// fix (or the user) re-stamps it.
+    /// A clock whose set-point `base` is true at the boot origin (`epoch_ms = 0`), not yet
+    /// [`established`](WallClock::is_established). Seeded from the persisted
+    /// [`Settings::clock`](crate::Settings::clock) at boot; without an RTC the clock resumes from the
+    /// last-set value, off by however long the device was powered down until a GPS fix (or the user)
+    /// re-stamps it.
     pub fn new(base: DateTime) -> Self {
-        WallClock { base, epoch_ms: 0 }
+        WallClock { base, epoch_ms: 0, established: false }
     }
 
     /// Re-stamp: declare that `base` is the time **now** (`now_ms`), so the clock resumes ticking
-    /// from the freshly established value.
+    /// from the freshly established value — and mark it [`established`](WallClock::is_established).
     pub fn set(&mut self, base: DateTime, now_ms: u32) {
         self.base = base;
         self.epoch_ms = now_ms;
+        self.established = true;
+    }
+
+    /// Whether a set-point has ever been established (see the field) — the Home date line's
+    /// "do we know the date?" gate.
+    pub fn is_established(&self) -> bool {
+        self.established
     }
 
     /// The current wall-clock time at `now_ms`: the set-point advanced by the whole minutes elapsed
