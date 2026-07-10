@@ -24,7 +24,8 @@ use heapless::Vec;
 
 use crate::deadband::DeadBand;
 use crate::geo::seg_dist_m;
-use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::reader::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::ByteSource;
 
 /// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
 /// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
@@ -367,6 +368,75 @@ pub fn ride_elevation_profile(src: &dyn crate::ByteSource) -> Result<Profile, cr
     let cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
     let peak_col = peak_column(&cols[..PROFILE_COLS]);
     Ok(Profile { cols, cum_ascent, min_ele_m: min_ele, max_ele_m: max_ele, peak_col })
+}
+
+/// Buckets in the received-route card's mini elevation sparkline (#682): one min–max-normalized
+/// `u8` height per bucket, sampled left-to-right along the route. Small and fixed so the
+/// route-upload seam can carry the whole band by value with the event.
+pub const SPARKLINE_BUCKETS: usize = 64;
+
+/// Build the received-route card's mini elevation sparkline by streaming the route **once**:
+/// bucket every point into one of [`SPARKLINE_BUCKETS`] distance columns (keeping each column's
+/// peak height), fill any column no point landed in from its neighbour, then min–max-normalize the
+/// columns to `u8`. Returns `None` when the route carries no usable elevation range (a computed
+/// route, or a dead-flat one) — the card then omits the band rather than drawing a fake flat line.
+///
+/// Column placement mirrors [`RouteReader::elevation_profile`] (re-anchor each chunk to its
+/// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m), accumulate per-segment distance from
+/// there), so the mini band reads as a coarser copy of the full Route-overview band. `O(points)`,
+/// one pass over the geometry — call it once at commit time on the host, never on the render path.
+pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKETS]> {
+    let idx = RouteIndex::read(src).ok()?;
+    let lo = idx.min_ele_m as i32;
+    let span = idx.max_ele_m as i32 - lo;
+    if span <= 0 {
+        return None; // flat / no elevation — omit the band
+    }
+    let reader = RouteReader::new(&idx, src);
+    let total = idx.total_distance_m.max(1) as f64;
+    let last = SPARKLINE_BUCKETS - 1;
+    // Peak height per bucket; sentinel `i16::MIN` = "no point landed here" (gap-filled below).
+    let mut maxes = [i16::MIN; SPARKLINE_BUCKETS];
+    let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
+    for k in 0..reader.chunks().len() {
+        if reader.decode_chunk(k, &mut buf).is_err() {
+            continue;
+        }
+        let mut dist = reader.chunks()[k].cum_distance_m as f64;
+        let mut prev: Option<(i32, i32)> = None;
+        for p in &buf {
+            if let Some(pr) = prev {
+                dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+            }
+            prev = Some((p.lon, p.lat));
+            let b = ((dist / total) * last as f64) as usize;
+            let b = b.min(last);
+            if p.ele > maxes[b] {
+                maxes[b] = p.ele;
+            }
+        }
+    }
+    // Carry the last filled height across empty buckets (sparse geometry can skip one), forward
+    // then backward for any leading gap — the profile's gap-fill, one channel.
+    let mut carry: Option<i16> = None;
+    for m in maxes.iter_mut() {
+        match carry {
+            Some(c) if *m == i16::MIN => *m = c,
+            _ => carry = Some(*m),
+        }
+    }
+    let mut back: Option<i16> = None;
+    for m in maxes.iter_mut().rev() {
+        match back {
+            Some(b) if *m == i16::MIN => *m = b,
+            _ => back = Some(*m),
+        }
+    }
+    let mut out = [0u8; SPARKLINE_BUCKETS];
+    for (o, &m) in out.iter_mut().zip(maxes.iter()) {
+        *o = (((m as i32 - lo) * 255 / span).clamp(0, 255)) as u8;
+    }
+    Some(out)
 }
 
 /// Build the coarser pyramid levels in place: each level's column is the min/max merge of

@@ -364,7 +364,8 @@ impl SimGui {
         if replace {
             self.store.sync_active(None); // force the geometry reopen off the fresh bytes
         }
-        self.app.notify_route_uploaded(id, replace);
+        let elevation = self.store.elevation_sparkline(id);
+        self.app.notify_route_uploaded(id, replace, elevation);
     }
 
     /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and a 1×–10× speed
