@@ -47,7 +47,9 @@ cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
 # menu starts on). The compass menu is Routes / Rides / POIs / Map / Settings, so Settings is one ccw
 # detent (`l`, wrapping) from the Routes start, Rides is one cw (`r`), POIs two cw (`r r`). `w`
-# settles the needle sweep after a turn.
+# settles the needle sweep after a turn — and the back-hold charge indicator (a half-disc at the
+# right screen edge) decays over a few frames, so scripts that snapshot within ~3 tokens of a `B`
+# end in `w` too, or the residue bakes into the PNG.
 "$SIM" "$MAP" --boot --png "$OUT/home.png" --battery 45
 "$SIM" "$MAP" --boot --script "p p"          --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
 # Route menu hold-to-delete footer (#453): `p p H` opens the Menu, presses into the Route menu, and
@@ -57,7 +59,7 @@ cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 # (`p p p p`), climb back to the Route menu (`B p`: Map back-hold → Menu, then press Routes) with it
 # still highlighted, then partial-hold — the footer shows the "In use" greyed state and no bar fills.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B p H" --png "$OUT/routemenu-delete-active.png"
-"$SIM" "$MAP" --boot --script "B"            --png "$OUT/menu.png"
+"$SIM" "$MAP" --boot --script "B w"          --png "$OUT/menu.png"
 # Rides screen (#454): the two-line list, then the two delete-footer states. The tracks fixture holds
 # two unsynced rides. `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p"     --png "$OUT/rides.png"
@@ -108,7 +110,7 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
     --script "B r r w p p d p p p d" --png "$OUT/nav-nopath.png"
 # The Settings list (Date & Time, Units, Bike type, Stats, Display, Power, Bluetooth, Reset — Bike
 # type inserted at index 2 by routing-v2 N5 #538, so every row past Units shifts one turn further in).
-"$SIM" "$MAP" --boot --script "B l p"        --png "$OUT/settings.png"
+"$SIM" "$MAP" --boot --script "B l p w"      --png "$OUT/settings.png"
 "$SIM" "$MAP" --boot --script "B l p p"      --png "$OUT/datetime.png"
 "$SIM" "$MAP" --boot --script "B l p r p"    --png "$OUT/units.png"
 # Bike type (routing-v2 N5): the map's §8.6 profile names — grimsel ships Road/Gravel/MTB/Touring,
@@ -221,7 +223,7 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
 "$SIM" "$MAP" --boot --ble-connected --png "$OUT/home-ble.png" --battery 45
-"$SIM" "$MAP" --boot --ble-connected --script "B" --png "$OUT/menu-ble.png"
+"$SIM" "$MAP" --boot --ble-connected --script "B w" --png "$OUT/menu-ble.png"
 # BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge. `--ble-passkey N`
 # injects the passkey exactly as the sim control-panel "Pairing" toggle does; the card auto-opens.
 "$SIM" "$MAP" --boot --ble-passkey 42 --png "$OUT/passkey-card.png"
@@ -259,8 +261,8 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # Latin font's #601 repertoire, caught deterministically by `obc-app`'s i18n repertoire test) and for
 # clipped / overflowing rows now that the copy is longer. Scripts mirror the English lines above.
 for lang in de fr es; do
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B"             --png "$OUT/menu-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p"         --png "$OUT/settings-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B w"           --png "$OUT/menu-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p w"       --png "$OUT/settings-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r p"     --png "$OUT/units-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r p" --png "$OUT/stats-settings-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
