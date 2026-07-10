@@ -31,7 +31,9 @@ use super::{palette, Ctx, Render, Screen, Transition};
 pub(super) use super::empty_state;
 
 mod add_field;
-mod bike_icons;
+/// Shared with the route-less ride-start card (T6, #684), which draws the selected profile's hero
+/// bike from the same sprites + colours the Bike-type screen uses.
+pub(crate) mod bike_icons;
 mod bike_type;
 mod bluetooth;
 mod datetime;
