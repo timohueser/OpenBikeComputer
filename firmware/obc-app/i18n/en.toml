@@ -184,7 +184,10 @@ pages_sub = "auto-flip"
 fields = "Fields"
 fields_sub = "panels & order"
 climb = "Climb"
-climb_sub = "climb panel"
+# "panel", not "climb panel": the mode value + its ◄ cue share this sub-caption line (owner
+# review round 1), and the longer caption can't clear the 7-char "Manuell"/"Desact." values
+# at 240 px - de/fr/es already say just "panel".
+climb_sub = "panel"
 waypoints = "Waypoints"
 waypoints_sub = "chip"
 
