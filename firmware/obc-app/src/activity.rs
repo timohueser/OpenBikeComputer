@@ -121,6 +121,12 @@ pub struct Activity {
     /// Index into the route [`Catalog`](crate::route::Catalog) of the loaded route, or `None` when
     /// idle. The geometry is opened separately by the host (only the active route is resident).
     pub active_route: Option<usize>,
+    /// Index into the ride catalog of the ride whose **detail screen** is open, or `None` (epic
+    /// #678 T2 / #680) — the ride namespace's `active_route`: set on detail entry, cleared on
+    /// exit, and the key the host's one-shot track-profile fill hangs off
+    /// ([`App::take_ride_track_request`](crate::App::take_ride_track_request) → the host streams
+    /// `RD{id}.ORD` once → [`App::set_ride_profile`](crate::App::set_ride_profile)).
+    pub viewed_ride: Option<usize>,
 
     // tracking session (distinct from the navigated route)
     /// The active **tracking session** id, or `None` when not tracking. A session spans from a

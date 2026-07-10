@@ -142,6 +142,26 @@ pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     app.set_rides(&catalog, storage.ride_ids());
 }
 
+/// Fill an open Ride detail's pending **track-profile request** (epic #678 T2 / #680): drain the
+/// ride's durable id, stream its `RD{id}.ORD` once (chunked SD reads — no whole-track buffer),
+/// and answer `App::set_ride_profile` — a stream failure (or no card) answers `None`, so a dead
+/// file isn't ground against every pass and the band just keeps its loading note. A no-op on the
+/// dominant pass (no detail open / already answered).
+///
+/// Its **own `#[inline(never)]` frame**, the `load_routes`/`load_rides` stack discipline: the
+/// builder's column scratch + the returned profile (a few KB on the nrf-mem build) live here and
+/// are popped on return — never resident in [`run_app`]'s poll frame under the deep render path
+/// (the fill runs sequentially with, never beneath, the render).
+#[inline(never)]
+fn fill_ride_profile(storage: &mut Option<sd::Storage>, app: &mut App) {
+    let Some(id) = app.take_ride_track_request() else { return };
+    let profile = storage.as_mut().and_then(|s| s.ride_profile_by_id(id));
+    if profile.is_none() {
+        defmt::warn!("ride profile: fill for id {=u16} failed — the detail's band stays empty", id);
+    }
+    app.set_ride_profile(profile);
+}
+
 /// The on-device router's caller-owned buffers (epic #116, R4): the fixed A* table + graph-tile
 /// cache, `.bss` statics built in `main` and bundled so [`run_app`]'s signature and call sites
 /// stay identical across the `has_nav` gate.
@@ -686,6 +706,12 @@ pub(crate) async fn run_app(
                 }
             }
         }
+
+        // ── The Ride detail's track-profile fill (epic #678 T2 / #680), on the detail-entry edge ──
+        // An open detail wants its recorded track profiled for the elevation band: stream the
+        // `RD{id}.ORD` once into the app's resident buffer, in this pass, under the store lock —
+        // sequential with (never under) the render below, and a no-op on every other pass.
+        fill_ride_profile(storage, app);
 
         // ── The resumable route planner (#499), one bounded step per pass ──
         // A drained create-route request opens the reserved file, (re)writes the `.bss` planner
