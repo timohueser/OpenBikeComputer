@@ -171,8 +171,9 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
-# --clock), the bottom-left scale bar (corner normally, stepped above the chip band while a chip is
-# up), and — priority order unchanged — the bottom-centre one-slot warning chip.
+# --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
+# (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —
+# the bottom-centre one-slot warning chip.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
@@ -187,8 +188,8 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # the marker — waypoints render as always-on ink furniture on the route line.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:00" --script "p p r p p" --gpx "$WPTGPX" --at 5   --png "$OUT/map-waypoints.png"
 # (b) The Approach chip: replayed to ~300 m short of Pass Summit (inside the 500 m approach radius),
-# default `Approach` mode → the calm `◆ Pass Summit  299m` pill counts down at bottom-centre, the
-# scale bar stepped up above the chip band.
+# default `Approach` mode → the calm `◆ Pass Summit  299m` pill counts down at bottom-centre with the
+# full name visible (#688 widened the name allocation), the scale bar stepped up above the chip band.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:03" --script "p p r p p" --gpx "$WPTGPX" --at 233 --png "$OUT/map-wpt-chip.png"
 # (c) Stats mid-route: the amber live-fraction progress bar carries a black tick per named waypoint
 # (Brunnen at the left edge, Pass Summit at its ~0.77 fraction) with the fill sweeping between them.
@@ -196,10 +197,11 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # Climb screen (epic #506, C4). The default protocol-vectors routes don't match the Grimsel replay
 # (they're tiny test routes), so ride the committed grimsel-climb.obcr — the route the GPX follows,
 # giving the detector its three back-to-back climbs. `--at 1500` replays ~25 min in (progress ~5 km,
-# ~40 % up climb 0), so the cursor sits mid-profile with grade stripes on both sides. `--open-climb`
-# then swaps the base riding view for the Climb screen; it isn't reachable by gesture until C5 wires
-# the Back-cycle, so this debug seam opens it. Staged in a temp routes dir (the fixture lives in the
-# sim crate's assets, not protocol-vectors).
+# ~40 % up climb 0), so the cursor sits mid-profile with grade stripes on both sides. The title bar
+# carries the summit-flag glyph left of the summit elevation (#688). `--open-climb` then swaps the
+# base riding view for the Climb screen; it isn't reachable by gesture until C5 wires the Back-cycle,
+# so this debug seam opens it. Staged in a temp routes dir (the fixture lives in the sim crate's
+# assets, not protocol-vectors).
 CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$CLIMBROUTES"' EXIT
 cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"

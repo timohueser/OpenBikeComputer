@@ -26,7 +26,11 @@
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
-use obc_render::{rect, text::TextAlign, Surface};
+use obc_render::{
+    rect,
+    text::{text_width, Font, TextAlign},
+    Surface,
+};
 
 use crate::input::Gesture;
 use crate::screen::ActiveClimb;
@@ -42,6 +46,15 @@ const CHART_BOT: i32 = 168;
 /// The summit maps here (a few px below `CHART_TOP`) so the apex clears the cursor's top.
 const BAND_TOP: i32 = CHART_TOP + 4;
 const SIDE_MARGIN: i32 = 12;
+
+/// Right inset (px) of the title bar's readout slot — mirrors `title_frame_ble`'s `w - 14` anchor so
+/// the summit glyph lands exactly left of the right-aligned elevation.
+const TITLE_RIGHT_INSET: i32 = 14;
+/// Vertical centre (px) of the title bar text line — where the summit glyph centres, matching the
+/// bar's Label readout (top at `y = 10`, cap ≈ 18 → centre ≈ 19).
+const TITLE_TEXT_CY: i32 = 19;
+/// Gap (px) between the summit glyph and the elevation number it prefixes.
+const SUMMIT_FLAG_GAP: i32 = 4;
 
 /// Grade-band → stripe colour (the ClimbPro ramp). Maps a **local** grade % to one of five
 /// device-64 bands, hotter with steepness: green `< 3 %`, yellow `3–6 %`, amber `6–9 %`, orange
@@ -109,6 +122,12 @@ impl ClimbScreen {
         let mut readout: heapless::String<16> = heapless::String::new();
         let _ = write!(readout, "{} {}", units.elev(seg.top_ele_m as f32) as i32, units.elev_label());
         title_frame(cv, w, h, rx.t(Msg::ClimbTitle), &readout);
+        // A small summit-flag glyph just left of the elevation, in the bar's parchment text colour —
+        // so the figure reads as the *summit* height without a "top" label. The readout is
+        // right-aligned at the bar's `w - 14` slot (see `title_frame_ble`); the flag sits a 4 px gap
+        // left of its left edge, vertically centred on the bar text line.
+        let readout_left = (w - TITLE_RIGHT_INSET) - text_width(&readout, Font::Label) as i32;
+        summit_glyph(cv, readout_left - SUMMIT_FLAG_GAP, TITLE_TEXT_CY, PARCHMENT);
 
         // Elevation → y over the climb's own base..summit span (not the whole route's), so a small
         // climb still fills the chart. `.max(1)` guards a degenerate flat seg.
@@ -270,6 +289,23 @@ fn cap_dist(units: Units, tail: &str) -> heapless::String<12> {
     let _ = s.push_str(units.dist_label());
     let _ = s.push_str(tail);
     s
+}
+
+/// Draw the **summit-flag** glyph in `color`, its right edge at `right_x`, vertically centred on
+/// `cy` (the title-bar text line). A filled 10×7 triangle (the peak), a 1 px pole rising 6 px from
+/// its apex, and a 4×3 flag rect at the pole's top-right — total ≤12×14 px. Hand-plotted in the
+/// panel's own glyph idiom (like the grade stripes and POI bearing arrows) so it quantizes cleanly
+/// at the device pixel scale (#688 T10).
+fn summit_glyph(cv: &mut impl Surface, right_x: i32, cy: i32, color: u16) {
+    // The peak: a 10-wide, 7-tall filled triangle, apex up. Its base spans `right_x-10..right_x`, so
+    // the glyph's right edge is the base-right vertex; the apex sits centred over the base.
+    let base_y = cy + 6;
+    let apex_y = base_y - 7;
+    let apex_x = right_x - 5;
+    cv.triangle(Point::new(apex_x, apex_y), Point::new(apex_x - 5, base_y), Point::new(apex_x + 5, base_y), color);
+    // A 1 px pole rising 6 px from the apex, with the 4×3 flag at its top-right.
+    cv.vline(apex_x, apex_y - 6, 6, 1, color);
+    cv.fill(rect(apex_x + 1, apex_y - 6, 4, 3), color);
 }
 
 #[cfg(test)]
