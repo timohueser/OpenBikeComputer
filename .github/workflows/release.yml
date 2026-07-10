@@ -40,7 +40,18 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth 0 (full history + tags), deliberately — don't "optimize" this back to a
+      # shallow fetch. The app build embeds its git identity at build time
+      # (obc-fw-nrf54l/build.rs `emit_fw_git` → OBC_FW_GIT via `git rev-parse --short=7 HEAD`,
+      # falling back to "unknown" when .git is unreachable): that string is the DIS Firmware
+      # Revision / boot banner and the "installed" side of the S5 confirm screen's same-version
+      # check against the staged OBCU header's version. The checkout must therefore never
+      # degrade what git reports at build time, and tags must be present so any
+      # `git describe`-derived version string (the firmware README's manual wrap recipe)
+      # resolves the tag exactly instead of a bare hash.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Channel + rustfmt/clippy + the thumbv8m/wasm targets, pinned in //rust-toolchain.toml.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
