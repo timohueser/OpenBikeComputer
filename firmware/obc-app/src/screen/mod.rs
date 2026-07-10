@@ -458,7 +458,7 @@ impl Screen {
 
     /// Whether this screen's `draw` would fill a live hold bar for its **current** selection/state
     /// — the guarded confirm rows (Ride control, Route swap), the *armed* factory-Reset bar, the
-    /// Fields hold-to-delete footer over a deletable row, and the Route menu's hold-to-delete footer
+    /// Fields hold-to-delete footer over a deletable row, and the Route overview's Delete-route row
     /// over a deletable route. A render-on-demand host uses
     /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) to repaint a charging hold
     /// only when the fill would actually draw. Intentionally partial, like
@@ -477,7 +477,7 @@ impl Screen {
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Bluetooth(s) => s.selection_is_guarded(state.ble_paired),
-            Screen::RouteMenu(s) => s.selection_is_deletable(activity, routes.len()),
+            Screen::RouteOverview(s) => s.delete_enabled(activity, routes),
             Screen::Rides(s) => s.selection_is_deletable(activity, rides.len()),
             _ => false,
         }
@@ -523,6 +523,8 @@ impl Screen {
             Screen::RouteReceived(s) => s.tick_timers(now_ms),
             Screen::RouteUpdated(s) => s.tick_timers(now_ms),
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
+            // The Route overview's stat-ledger pager (T3): flips DISTANCE+CLIMB ↔ DESCENT every 5 s.
+            Screen::RouteOverview(s) => s.tick_timers(now_ms),
             // The nav planning spinner (#499): free-runs at frame cadence until the host's
             // answer (or a cancel) removes the screen. The one screen that reports a dirty
             // region — the spinning needle's disc — so the multi-second plan's repaints stay
