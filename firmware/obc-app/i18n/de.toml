@@ -344,3 +344,11 @@ unreadable = "Update-Datei nicht lesbar."
 damaged = "Die Update-Datei ist beschädigt."
 too_large = "Die Update-Datei ist zu groß für dieses Gerät."
 fragmented = "Die Update-Datei ist zu fragmentiert. Lösche UPDATE.BIN und kopiere sie erneut auf die Karte."
+# --- Boot-fault cards (pre-app; the device renders the English column) ---
+[fault]
+nocard_what = "Keine SD-Karte"
+nocard_fix = "Karte mit Kartendatei einlegen"
+nomap_what = "SD ohne Karte"
+nomap_fix = "Kartendatei hinzufügen"
+badmap_what = "Datei defekt"
+badmap_fix = "Neu auf die Karte kopieren"

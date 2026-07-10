@@ -357,3 +357,12 @@ unreadable = "Could not read the update file."
 damaged = "The update file is damaged."
 too_large = "The update file is too large for this device."
 fragmented = "The update file is too fragmented. Delete UPDATE.BIN and copy it to the card again."
+# --- Boot-fault cards (fault.rs; drawn pre-app, so the device renders the English
+# column in every build — catalogued so the repertoire test pins the copy) ---
+[fault]
+nocard_what = "No card found"
+nocard_fix = "Insert a card with a map file"
+nomap_what = "Card has no map"
+nomap_fix = "Add a map file"
+badmap_what = "Bad map file"
+badmap_fix = "Re-copy it to the card"

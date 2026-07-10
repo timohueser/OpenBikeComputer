@@ -344,3 +344,11 @@ unreadable = "Impossible de lire le fichier de mise à jour."
 damaged = "Le fichier de mise à jour est endommagé."
 too_large = "Le fichier de mise à jour est trop volumineux pour cet appareil."
 fragmented = "Le fichier de mise à jour est trop fragmenté. Supprimez UPDATE.BIN et recopiez-le sur la carte."
+# --- Boot-fault cards (pre-app; the device renders the English column) ---
+[fault]
+nocard_what = "Pas de carte SD"
+nocard_fix = "Insérez une carte avec un fichier carte"
+nomap_what = "Aucune carte"
+nomap_fix = "Ajoutez un fichier carte"
+badmap_what = "Carte illisible"
+badmap_fix = "Recopiez-le sur la carte"
