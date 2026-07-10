@@ -221,6 +221,10 @@ pub struct Render<'a, 'd> {
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
+    /// The computed route's decimated shape-preview polyline (#685 §4) — ≤ 64 `(lon, lat)` µdeg
+    /// points, host-decimated and keyed to the active route (the App hands an empty slice when
+    /// it's missing or stale). Only the computed-route overview draws it.
+    pub nav_preview: &'a [(i32, i32)],
     /// The single [`App`](crate::App)-owned POI-list snapshot buffer. Only the
     /// [`PoiList`](crate::screen::poi_list) screen touches it — it takes its static snapshot into
     /// this on the first draw with a `Reader` + fix (see [`PoiScratch`]); every other screen leaves
@@ -996,6 +1000,15 @@ pub(crate) fn wrapped(
         y += lh;
     }
     y
+}
+
+/// Doubled-1-px stroke: the segment plus a twin offset 1 px across its dominant axis — the
+/// panel's 2 px line idiom (the menu bezel ticks / passkey phone established it; the POI bearing
+/// arrows and the computed-route shape preview draw through this one helper).
+pub(crate) fn stroke2(cv: &mut impl Surface, a: Point, b: Point, color: u16) {
+    cv.line(a, b, color);
+    let off = if (b.x - a.x).abs() > (b.y - a.y).abs() { Point::new(0, 1) } else { Point::new(1, 0) };
+    cv.line(a + off, b + off, color);
 }
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared

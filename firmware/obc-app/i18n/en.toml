@@ -273,6 +273,7 @@ closed_today = "Closed today"
 today = "Today"
 open = "OPEN"
 closed = "CLOSED"
+route_here = "Route here"
 
 # --- BLE pairing passkey card ---
 [passkey]
@@ -312,6 +313,7 @@ bike_type = "BIKE TYPE"
 start_ride = "START RIDE"
 loading_profile = "loading profile"
 delete = "Delete route"
+new_route = "NEW ROUTE"
 
 # --- Route-received / route-updated popups ---
 [route_received]
@@ -338,6 +340,7 @@ recording = "Recording a ride"
 [nav_route]
 create_route = "Create route"
 cancel = "Cancel"
+away = "away"
 title = "CREATE ROUTE"
 finding = "Finding a route..."
 too_far = "Too far to route here."
