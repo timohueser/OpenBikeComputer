@@ -351,8 +351,6 @@ gps = "GPS"
 fix = "Fix"
 searching = "suche.."
 battery = "Akku"
-card = "Karte"
-card_ok = "OK"
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
