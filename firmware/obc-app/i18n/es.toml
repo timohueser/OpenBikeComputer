@@ -59,6 +59,22 @@ oct = "oct"
 nov = "nov"
 dec = "dic"
 
+# --- Short-date month table (uppercase, day-first `D MON` shape) — the Rides rows' line-2
+# date; generic so the Home date line (T5, #683) reuses it ---
+[date]
+jan = "ENE"
+feb = "FEB"
+mar = "MAR"
+apr = "ABR"
+may = "MAY"
+jun = "JUN"
+jul = "JUL"
+aug = "AGO"
+sep = "SEP"
+oct = "OCT"
+nov = "NOV"
+dec = "DIC"
+
 # --- StatField names (the Add-field picker / Fields list) ---
 [statfield]
 speed = "Velocidad"
