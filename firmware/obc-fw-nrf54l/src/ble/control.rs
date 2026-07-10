@@ -82,11 +82,13 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedSto
             // installFw (epic #615 S6, #621): request the on-glass-confirmed install of the staged
             // /UPDATE.BIN. Answer from cheaply-knowable edge state only — `busy` (a ride recording or an
             // install already pending) and `noStaged` (a card-root existence check); the multi-second
-            // OBCU CRC scan is NOT run here (it belongs to the on-device confirm flow), so `invalid` is
-            // never produced — the handler accepts and the scan surfaces a bad image on glass. On `ok`
-            // it posts the *same* app-level request S4 established (`App::request_dfu_install`) and
-            // nothing more: the command never waits for the human and never arms/reboots on its own —
-            // whatever confirm flow exists (S5) gates the install (spec §4.4 security posture).
+            // OBCU CRC scan is NOT run here (it belongs to the on-device flow), so `invalid` is never
+            // produced — the handler accepts and the scan surfaces a bad image on glass. On `ok` it
+            // posts a request the ride loop drains into `App::open_remote_dfu_check` — push the
+            // "Checking card..." wait + post `DfuAction::Scan`, the System menu's press arriving over
+            // the air — and nothing more. It never posts `DfuAction::Install` (that stays the confirm
+            // screen's press and the physical debug link's): the command never waits for the human and
+            // never arms/reboots on its own (spec §4.4 security posture — no silent installs, ever).
             let has_staged = store.borrow().update_staged(shared);
             let busy = state::recording() || crate::object_store::dfu_install_pending();
             let status = obc_ble::install_fw_reply(has_staged, busy, false);

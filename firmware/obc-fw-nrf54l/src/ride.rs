@@ -545,13 +545,18 @@ pub(crate) async fn run_app(
         {
             app.set_ble_status(crate::ble::app_ble_status());
             // Mirror the ride-recording state to the BLE plane's `installFw` busy-gate (S6, #621), and
-            // drain a BLE-initiated install request into S4's app-level request seam — the *same*
-            // `request_dfu_install` the debug-link `dfu-install` and S5's confirm card post. The DFU
-            // drain later this pass applies the guards and, with S5, the on-glass confirm; the BLE
-            // command only records intent (spec §4.4 — no silent installs).
+            // drain a BLE-initiated install request into the on-glass flow: `open_remote_dfu_check`
+            // pushes the "Checking card..." wait and posts `DfuAction::Scan` — the System menu's press
+            // arriving over the air, NEVER `DfuAction::Install` (spec §4.4: the phone can request, only
+            // the rider installs; direct Install stays the physical debug link's + the confirm screen's).
+            // The atomic is consumed only when the flow actually opened — a `false` is a *deferral*
+            // (passkey card up, a DFU screen already on the stack, a hold charging, recording), so the
+            // request stays pending, retries next pass, and keeps the BLE edge's `dfu_install_pending()`
+            // busy-gate accurate while it waits. The Scan posted here is drained by the DFU match below
+            // in this same pass, so the wait card swaps to the confirm/error promptly.
             crate::ble::set_recording(app.activity.is_tracking());
-            if crate::object_store::take_dfu_install_ble() {
-                app.request_dfu_install();
+            if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
+                let _ = crate::object_store::take_dfu_install_ble();
             }
             for _ in 0..crate::object_store::take_store_changed() {
                 app.notify_store_changed();

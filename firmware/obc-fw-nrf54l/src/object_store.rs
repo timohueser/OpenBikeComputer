@@ -169,11 +169,16 @@ pub(crate) async fn wait_ride_saved() {
 // ==================== BLE-initiated DFU install request (S6, #621) ====================
 //
 // The BLE→ride-loop half of the DFU seam: the `installFw` command handler ([`ble::control`]) posts an
-// install request here; the ride loop drains it each pass and calls
-// [`App::request_dfu_install`](obc_app::App::request_dfu_install) — the *same* app-level request the
-// `dfu-install` debug command and S5's confirm card post. Its DFU drain then applies the guards (never
-// mid-recording / mid-save) and, with S5, the on-glass confirm card. Posting records **intent only**;
-// the BLE command never waits for the human and never installs on its own (spec §4.4 security posture).
+// install request here; the ride loop drains it into the **on-glass flow** via
+// [`App::open_remote_dfu_check`](obc_app::App::open_remote_dfu_check) — push the "Checking card..."
+// wait + post `DfuAction::Scan`, the System menu's press arriving over the air, **never**
+// `DfuAction::Install` (spec §4.4: the phone can request, only the rider installs; direct Install
+// stays the physical debug link's and the confirm screen's). The drain is a *deferral*, not a
+// take-and-hope: the flag is consumed only once the flow actually opened, so a request landing while
+// the passkey card is up (or a DFU screen is already showing) stays pending — which also keeps
+// [`dfu_install_pending`]'s `busy` answer accurate while it waits — and opens at the next drainable
+// pass. Posting records **intent only**; the BLE command never waits for the human and never installs
+// on its own (spec §4.4 security posture).
 //
 // Same lock-free module-static hand-off as [`STORE_CHANGED`]: the store lives behind the BLE plane's
 // `RefCell`, the app in the ride loop. `Relaxed` suffices — both are cooperative futures on the one
@@ -183,7 +188,7 @@ pub(crate) async fn wait_ride_saved() {
 static DFU_INSTALL_REQ: AtomicBool = AtomicBool::new(false);
 
 /// Post a BLE-initiated install request (the `installFw` command handler). Wakes a parked ride loop
-/// through the store wake ([`STORE_WAKE`]) so it drains promptly and the confirm card (S5) appears
+/// through the store wake ([`STORE_WAKE`]) so it drains promptly and the check → confirm flow appears
 /// without waiting for an unrelated event (the #450 rescan-wake pattern — an `installFw` commit is a
 /// store movement in spirit even though `/UPDATE.BIN` isn't a listed object, so it never bumps the
 /// revision).
@@ -193,12 +198,16 @@ pub(crate) fn request_dfu_install_ble() {
 }
 
 /// Whether a BLE install request is posted but undrained — the `installFw` `busy` gate's "an install
-/// request is already pending" input (read at the BLE edge, spec §4.4).
+/// request is already pending" input (read at the BLE edge, spec §4.4). Stays `true` through a
+/// deferral (the ride loop consumes only once the on-glass flow opens), so a second `installFw`
+/// while the first waits behind e.g. the passkey card is answered `busy`, not double-queued.
 pub(crate) fn dfu_install_pending() -> bool {
     DFU_INSTALL_REQ.load(Ordering::Relaxed)
 }
 
-/// Drain the pending BLE install request (ride loop, once per pass) → `App::request_dfu_install`.
+/// Consume the pending BLE install request — called by the ride loop **after**
+/// [`App::open_remote_dfu_check`](obc_app::App::open_remote_dfu_check) returned `true` (the flow
+/// opened); on a deferral the flag is left set and the drain retries next pass.
 pub(crate) fn take_dfu_install_ble() -> bool {
     DFU_INSTALL_REQ.swap(false, Ordering::Relaxed)
 }

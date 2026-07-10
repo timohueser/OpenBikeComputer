@@ -361,6 +361,13 @@ impl Activity {
         self.dfu_request.take()
     }
 
+    /// Non-consuming peek at whether a [`DfuAction`] is posted but undrained — the remote-check
+    /// deferral gate (S6, #621): a BLE-initiated check must not overwrite a phase already in flight
+    /// (a later [`request_dfu`](Self::request_dfu) overwrites, by design, for the *rider's* posts).
+    pub(crate) fn has_dfu_request(&self) -> bool {
+        self.dfu_request.is_some()
+    }
+
     /// Record a one-shot plan-cancel (#499) — set by the planning screen's Back, drained by
     /// [`App::take_nav_cancel`](crate::App::take_nav_cancel).
     pub(crate) fn request_nav_cancel(&mut self) {
