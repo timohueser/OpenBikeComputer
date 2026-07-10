@@ -289,8 +289,8 @@ and ride counts, on a characteristic the app can read *and* subscribe to.
 </figure>
 
 The device is the other half of this loop. A change doesn't only come *from* the
-phone — the rider can delete a stored route from the device's Route menu or a
-tracked ride from its Rides screen, both with a hold-to-delete footer (see the
+phone — the rider can delete a stored route from the device's Route overview or a
+tracked ride from its Rides screen, both with the same guarded hold-to-delete (see the
 [UI system](../ui/#deleting-things-the-hold-to-delete-footer)). A device-side
 delete goes **through the same object store** the wire commits do, so it bumps
 the `revision`, fires `storeChanged`, and shows up to the phone as *"the ride

@@ -568,13 +568,13 @@ fn rescan_clamps_a_vanished_menu_selection() {
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight clamped to the last row");
 }
 
-// ==================== on-device route delete (epic #447, P6) ====================
+// ==================== on-device route delete (epic #447, P6; epic #678 T3) ====================
 //
-// The Route menu's hold-to-delete footer records a delete request the host drains as the route's
+// The Route overview's guarded Delete row records a delete request the host drains as the route's
 // durable object id; after the delete + rescan, P3's remap keeps `active_route` + the highlight on
-// the right routes.
+// the right routes. (T3 moved the hold-to-delete off the Route-menu footer onto the overview.)
 
-/// Holding the encoder over the highlighted route records a delete request the host drains as that
+/// A completed hold over the overview's Delete row records a delete request the host drains as that
 /// route's **durable object id** (not its index) — the id lookup is `App`'s.
 #[test]
 fn hold_delete_requests_the_highlighted_route_id() {
@@ -583,11 +583,13 @@ fn hold_delete_requests_the_highlighted_route_id() {
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
+    app.apply_gesture(Gesture::Press); // Beta → Route overview
     assert!(!app.has_route_delete(), "no request until the hold completes");
-    app.apply_gesture(Gesture::Hold); // guarded hold = delete Beta
+    app.apply_gesture(Gesture::Hold); // guarded hold on the Delete row = delete Beta
     assert!(app.has_route_delete(), "the hold recorded a delete request");
     assert_eq!(app.take_route_delete(), Some(20), "drained as Beta's durable id, not its index");
     assert_eq!(app.take_route_delete(), None, "the one-shot drains");
+    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the delete popped back to the Routes list");
 }
 
 /// The DoD case: deleting a *non-highlighted* route (the host removes it + re-feeds the catalog)
@@ -621,10 +623,12 @@ fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (id 30, last row)
-    app.apply_gesture(Gesture::Hold); // request its delete
+    app.apply_gesture(Gesture::Press); // Gamma → Route overview
+    app.apply_gesture(Gesture::Hold); // guarded hold on the Delete row = request its delete
     assert_eq!(app.take_route_delete(), Some(30));
 
-    // The host deletes Gamma and re-feeds the catalog: the highlight clamps to the new last row.
+    // The delete popped back to the Routes list; the host deletes Gamma and re-feeds the catalog,
+    // so the highlight clamps to the new last row.
     app.set_routes_with_ids(&routes[..2], &IDS3[..2]);
     app.apply_gesture(Gesture::Press); // open whatever is highlighted now
     let active = app.activity.active_route.expect("a clamped highlight still opens a real route");
