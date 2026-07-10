@@ -266,6 +266,7 @@ descent = "ABSTIEG"
 bike_type = "FAHRRADTYP"
 start_ride = "LOSFAHREN"
 loading_profile = "Lade Profil"
+delete = "Route löschen"
 
 # --- Route-received / route-updated popups ---
 [route_received]

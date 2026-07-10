@@ -379,48 +379,48 @@ fn a_pending_deferred_prompt_for_a_deleted_route_is_dropped() {
 
 // --- stray holds across a popup dismissal (the #480 vanishing-routes delete) --------------------
 
-/// The user-reported loss path: mid-ride, an upload popup covers the Route menu; the rider starts
-/// a hold on the popup (aiming at the hold-guarded "Save & new"), thinks better of it and taps
-/// **Back while the encoder is still held**. Back pops the popup — and the encoder hold then
-/// crosses its threshold with the Route menu as the new top, whose own hold is hold-to-**delete**:
-/// without the transition-cancels-holds rule, the highlighted route is silently deleted from SD.
+/// The user-reported loss path (T3-updated): an upload popup covers the Route overview; the rider
+/// starts a hold on the popup (aiming at its guarded action), thinks better of it and taps **Back
+/// while the encoder is still held**. Back pops the popup — and the encoder hold then crosses its
+/// threshold with the Route overview as the new top, whose own hold is the hold-to-**delete** row:
+/// without the transition-cancels-holds rule, the previewed route is silently deleted from SD.
 #[test]
 fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
-    let mut app = idle_app();
-    start_riding(&mut app); // tracking id 10 (index 0), stack [Home, Map]
+    let mut app = idle_app(); // idle, catalog ids 10/11/12
 
-    // Open the Route menu over the ride and highlight a non-active route (row 1, "Beta") — the
-    // hold-to-delete footer is live there (only the active-ride route's is greyed).
-    app.apply_gesture(Gesture::BackHold); // Menu
-    app.apply_gesture(Gesture::Press); // Routes
+    // Open the Route overview for a non-active route (index 1, "Beta") — its Delete row is live
+    // (not tracking, not the active ride's route).
+    app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+    app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(1)); // highlight index 1
-    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)));
+    app.apply_gesture(Gesture::Press); // → Route overview of Beta
+    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
-    // A route lands mid-ride: the swap popup covers the menu.
+    // A route lands while idle: the "ROUTE RECEIVED" popup covers the overview.
     app.notify_route_uploaded(12, false);
-    assert!(matches!(app.top_screen(), Screen::RouteSwap(_)));
+    assert!(matches!(app.top_screen(), Screen::RouteReceived(_)));
 
     // Encoder down (the hold starts charging on the popup)…
     app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Encoder)]));
-    // …then a Back tap while the encoder is still held: the popup pops, the Route menu is top.
+    // …then a Back tap while the encoder is still held: the popup pops, the overview is top.
     app.handle_input(InputClock(1_100), &mut keys(&[down(Button::Back)]));
     app.handle_input(InputClock(1_180), &mut keys(&[up(Button::Back)]));
-    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "Back dismissed the popup");
+    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "Back dismissed the popup");
 
-    // The encoder hold crosses its 500 ms threshold — over the Route menu now. It was aimed at
+    // The encoder hold crosses its 500 ms threshold — over the Route overview now. It was aimed at
     // the popup, so it must be cancelled by the transition, not delivered as a delete.
     app.handle_input(InputClock(1_700), &mut keys(&[]));
-    assert_eq!(app.take_route_delete(), None, "a stray hold must never delete the highlighted route");
-    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)));
+    assert_eq!(app.take_route_delete(), None, "a stray hold must never delete the previewed route");
+    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
     // And the eventual release stays silent — no surprise Press either.
     app.handle_input(InputClock(1_800), &mut keys(&[up(Button::Encoder)]));
-    assert!(matches!(app.top_screen(), Screen::RouteMenu(_)));
+    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
     // A fresh, deliberate hold afterwards still deletes (the cancel is one-shot, not a lockout).
     app.handle_input(InputClock(2_000), &mut keys(&[down(Button::Encoder)]));
     app.handle_input(InputClock(2_600), &mut keys(&[]));
-    assert_eq!(app.take_route_delete(), Some(11), "a real hold on the menu still requests its delete");
+    assert_eq!(app.take_route_delete(), Some(11), "a real hold on the overview still requests its delete");
 }
 
 /// The same rule holds within one recognition batch: a `Hold` recognised *behind* the
