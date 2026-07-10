@@ -72,8 +72,10 @@ impl PoiMenuScreen {
 
 /// Dispatch a category's pixel icon, centred at `c`. `bg` is the surface behind it, for punched-out
 /// details (the same authoring path as the main Menu's [`draw_icon`](super::menu)). Every glyph is
-/// hand-drawn from `Surface` primitives at a fixed ~20 px box, sized for one list row.
-fn draw_category_icon(cv: &mut impl Surface, cat: PoiCategory, c: Point, color: u16, bg: u16) {
+/// hand-drawn from `Surface` primitives at a fixed ~20 px box, sized for one list row — which is
+/// also a Body line's height, so the [POI detail](super::PoiDetailScreen)'s name row and the
+/// create-route confirm's glyph slot reuse these exact fns unscaled (#685).
+pub(super) fn draw_category_icon(cv: &mut impl Surface, cat: PoiCategory, c: Point, color: u16, bg: u16) {
     match cat {
         PoiCategory::Water => icon_water(cv, c, color, bg),
         PoiCategory::Campsite => icon_campsite(cv, c, color),

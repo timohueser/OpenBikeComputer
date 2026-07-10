@@ -273,6 +273,7 @@ closed_today = "Closed today"
 today = "Today"
 open = "OPEN"
 closed = "CLOSED"
+route_here = "Route here"
 
 # --- BLE pairing passkey card ---
 [passkey]
