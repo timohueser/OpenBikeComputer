@@ -388,8 +388,9 @@ screens! {
     /// route here." / "Couldn't find a route."), info-only — any press/Back returns to the detail.
     NavFail(NavFailScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
-    /// The Rides screen (Menu → Rides): a see-and-delete list of stored rides with a hold-to-delete
-    /// footer (greyed while recording, warning-red for an unsynced ride). Epic #447, P7 (#454).
+    /// The Rides screen (Menu → Rides): the stored-rides list — name + sync glyph over an olive
+    /// `date · distance · duration` line; press opens the Ride detail. Epic #447 P7 (#454), rows
+    /// redesigned by #680.
     Rides(RidesScreen) => Nav,
     RouteOverview(RouteOverviewScreen) => Nav,
     RouteSwap(RouteSwapScreen) => Nav,
@@ -478,7 +479,6 @@ impl Screen {
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Bluetooth(s) => s.selection_is_guarded(state.ble_paired),
             Screen::RouteOverview(s) => s.delete_enabled(activity, routes),
-            Screen::Rides(s) => s.selection_is_deletable(activity, rides.len()),
             _ => false,
         }
     }
