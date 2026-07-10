@@ -140,6 +140,7 @@ impl PoiDetailScreen {
             draw_bearing_arrow(
                 cv,
                 Point::new(x + ARROW_R, arrow_mid),
+                ARROW_R,
                 (fix.lon, fix.lat),
                 (self.poi.lon, self.poi.lat),
                 heading,
