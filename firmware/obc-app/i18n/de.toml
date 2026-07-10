@@ -227,6 +227,7 @@ hold_to_erase = "Zum Löschen halten"
 # --- Bike-type settings screen ---
 [bike_type]
 title = "FAHRRADTYP"
+routing_uses = "Routing nutzt dieses Profil"
 no_profiles = "Keine Profile"
 no_profiles_sub = "Karte laden für Radtyp"
 
@@ -342,6 +343,9 @@ back = "Zurück"
 title = "SYSTEM"
 install_update = "Update von Karte installieren"
 recording = "Aufnahme"
+firmware = "Firmware"
+map = "Karte"
+card_free = "Karte frei"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]

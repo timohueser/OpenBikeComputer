@@ -74,7 +74,7 @@ impl SettingsScreen {
         SettingsScreen { selected: 0 }
     }
 
-    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
@@ -86,7 +86,12 @@ impl SettingsScreen {
                 5 => Transition::Push(Screen::Power(PowerScreen::new())),
                 6 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
                 7 => Transition::Push(Screen::Language(LanguageScreen::new())),
-                8 => Transition::Push(Screen::System(SystemScreen::new())),
+                8 => {
+                    // Opening System triggers the one-shot card-free scan (T8 item 6): the host runs
+                    // the FAT free-cluster scan once on entry and answers via `App::set_card_free`.
+                    cx.activity.request_card_scan();
+                    Transition::Push(Screen::System(SystemScreen::new()))
+                }
                 _ => Transition::Push(Screen::Reset(ResetScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu

@@ -160,11 +160,24 @@ impl StatFieldsScreen {
                 let area = tile_rect(slot, f.span(), f.rows());
                 let is_sel = i == self.selected;
                 let bg = if is_sel { AMBER } else { PARCHMENT_SHADE };
+                // Editor-only ghost content (T8 item 4): the editor has no route/live fix, so instead
+                // of the `--` the real drawers would show, tiles render a fixed olive sample value and
+                // the placed panel two sample rows — so a layout is judged against realistic content.
                 if f.rows() > 1 {
-                    crate::screen::waypoint_panel(cv, area, &rdt, bg);
+                    crate::screen::waypoint_panel_ghost(cv, area, rdt.language, bg);
                 } else {
-                    let cell = f.cell(&rdt);
-                    crate::screen::tile(cv, area, &cell.caption, &cell.value, cell.arrow, cell.value_align, bg);
+                    let mut cell = f.cell(&rdt);
+                    ghost_value(*f, &mut cell);
+                    crate::screen::tile(
+                        cv,
+                        area,
+                        &cell.caption,
+                        &cell.value,
+                        cell.arrow,
+                        cell.value_align,
+                        bg,
+                        SUBTEXT,
+                    );
                 }
                 if is_sel && self.grabbed {
                     move_arrows(cv, area);
@@ -231,6 +244,54 @@ fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
     cv.hline(cx - 2, by - 4, 5, color); // handle
     cv.vline(cx - 2, by + 3, bh - 5, 1, color); // ribs
     cv.vline(cx + 2, by + 3, bh - 5, 1, color);
+}
+
+/// The Fields editor's **ghost sample values** (T8 item 4): in the editor — never live riding — each
+/// tile shows a fixed, realistic sample in place of the `--` a route-less editor would otherwise
+/// draw, so a layout is judged against real-looking content. Overwrites the cell's value in place
+/// (and, for the wide `NextWaypoint` tile, its name caption). Round, plausible numbers per variant:
+///
+/// | Field         | ghost sample            |
+/// |---------------|-------------------------|
+/// | Speed         | `23.4`                  |
+/// | AvgSpeed      | `19.2`                  |
+/// | DistDone      | `42.5`                  |
+/// | DistToGo      | `12.3`                  |
+/// | Climbed       | `810`  (▲ prefix)       |
+/// | ToClimb       | `95`   (▲ prefix)       |
+/// | Grade         | `4%`                    |
+/// | Elevation     | `1240`                  |
+/// | RideTime      | `2:14:30`               |
+/// | Clock         | `14:32`                 |
+/// | NextWaypoint  | `Pass Summit` + `8.7km` |
+/// | WaypointList  | (drawn by [`waypoint_panel_ghost`](crate::screen::waypoint_panel_ghost)) |
+///
+/// The captions (unit labels) stay whatever `cell()` produced, so metric/imperial re-captioning still
+/// shows; only the value is a placeholder. The tile drawer paints it in olive `SUBTEXT`.
+fn ghost_value(field: crate::stat_fields::StatField, cell: &mut crate::stat_fields::StatCell) {
+    use crate::stat_fields::StatField as F;
+    let sample: &str = match field {
+        F::Speed => "23.4",
+        F::AvgSpeed => "19.2",
+        F::DistDone => "42.5",
+        F::DistToGo => "12.3",
+        F::Climbed => "810",
+        F::ToClimb => "95",
+        F::Grade => "4%",
+        F::Elevation => "1240",
+        F::RideTime => "2:14:30",
+        F::Clock => "14:32",
+        F::NextWaypoint => {
+            // The wide waypoint tile is a name caption + a right-aligned distance value.
+            cell.caption.clear();
+            let _ = cell.caption.push_str("Pass Summit");
+            "8.7km"
+        }
+        // The page-sized panel is drawn by `waypoint_panel_ghost`, never as a caption+value tile.
+        F::WaypointList => return,
+    };
+    cell.value.clear();
+    let _ = cell.value.push_str(sample);
 }
 
 /// Draw the up/down move arrows on a grabbed row's right edge — the "rotate to move me" cue.
