@@ -251,6 +251,21 @@ builds on it:
   on-device router (`has_nav`): its ~14.3 KB of `NAV_*` statics don't fit beside the BLE stack on
   the 256 KB DK (see `build.rs`); the 512 KB LM20 relaxes the `has_nav` gate to run the router on
   every build too.
+- **Stack: keep big values out of long-lived async bodies (#677).** Every sizeable value
+  constructed inline in an async fn/block gets a construction-temporary slot in the generated
+  poll function's **stack frame**, allocated at entry on *every* poll — `ble::run` once carried a
+  30.5 KB poll frame this way, and SMP's synchronous software-P256 pairing chain (which runs in
+  the host runner's rx path, on the main stack) overflowed the region into `defmt_rtt::BUFFER`:
+  a HardFault with a corrupted backtrace on every pairing attempt. The discipline: big objects
+  live in `.bss` statics built by dedicated `#[inline(never)]` init fns (transient frame, boot
+  depth) and the async body holds only `&'static` handles — see `ble::run`'s doc. Three nets
+  catch a regression: the compile-time budget assert (floors the stack region), the CI
+  **poll-frame guard** on the ble ELF (largest `sub sp` in any `TaskStorage<F>::poll` ≤ 12 KB —
+  the `ci.yml` embedded job), and **MSPLIM** (armed first thing in `main`): the ARMv8-M hardware
+  stack-limit register turns any residual overflow into an immediate, precise fault instead of
+  silent `.bss` corruption. To check a frame by hand, disassemble the release ELF
+  (`cargo objdump --release --no-default-features --features ble -- -d --demangle`) and read the
+  `sub sp` at each `TaskStorage<F>::poll` entry.
 
 ## BLE — board-specific notes & on-glass verification
 

@@ -132,19 +132,79 @@ type Resources = HostResources<
 /// the map build's App/cache terms): the MPSL handle, the SDC memory block, TrouBLE's
 /// [`Resources`] arena, TrouBLE's **global `DEFAULT_POOL`** packet pool (`DefaultPacketPool` is a
 /// type alias for the concrete pool struct, so its `size_of` *is* the pool's ~4 KB — sized by the
-/// `default-packet-pool-mtu-251` feature), and the CRACEN RNG the LL's crypto pulls from. The
-/// SDC/host *stack* usage rides `main.rs`'s `STACK_RESERVE` like everything else.
+/// `default-packet-pool-mtu-251` feature), the CRACEN RNG the LL's crypto pulls from, and the
+/// #677 evictions: the `RefCell<ObjectStore>` (~12.8 KB), the GATT [`Server`] (~2.2 KB) and its
+/// pinned GAP name — all formerly `ble::run` locals whose construction temporaries gave the task's
+/// poll function a 30.5 KB entry frame (see [`run`]'s doc). Moving them here is ~zero-sum RAM-wise:
+/// the task's future (its `POOL` static) shrinks by what these statics grow. The SDC/host *stack*
+/// usage rides `main.rs`'s `STACK_RESERVE` like everything else.
 pub const RESIDENT_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLayer<'static>>()
     + SDC_MEM_SIZE
     + core::mem::size_of::<Resources>()
     + core::mem::size_of::<DefaultPacketPool>()
-    + core::mem::size_of::<cracen::Cracen<'static, Blocking>>();
+    + core::mem::size_of::<cracen::Cracen<'static, Blocking>>()
+    + core::mem::size_of::<core::cell::RefCell<ObjectStore>>()
+    + core::mem::size_of::<Server<'static>>()
+    + core::mem::size_of::<heapless::String<48>>();
 
 // The resident statics (see the module doc): written exactly once in [`run`], never aliased.
 static mut MPSL: MaybeUninit<MultiprotocolServiceLayer<'static>> = MaybeUninit::uninit();
 static mut RNG: MaybeUninit<cracen::Cracen<'static, Blocking>> = MaybeUninit::uninit();
 static mut SDC_MEM: MaybeUninit<sdc::Mem<SDC_MEM_SIZE>> = MaybeUninit::uninit();
 static mut RESOURCES: MaybeUninit<Resources> = MaybeUninit::uninit();
+// The #677 evictions (see [`run`]'s doc): the object store, the GATT server, and the GAP name the
+// server's attribute table borrows for its (now `'static`) life. Formerly `run` locals — their
+// construction temporaries lived in the task's steady-state poll frame.
+static mut STORE: MaybeUninit<core::cell::RefCell<ObjectStore>> = MaybeUninit::uninit();
+static mut GAP_NAME: MaybeUninit<heapless::String<48>> = MaybeUninit::uninit();
+static mut SERVER: MaybeUninit<Server<'static>> = MaybeUninit::uninit();
+static mut STACK: MaybeUninit<Stack<'static, nrf_sdc::SoftdeviceController<'static>, DefaultPacketPool>> =
+    MaybeUninit::uninit();
+
+/// Build the object store into its `.bss` slot ([`STORE`]). `#[inline(never)]` is load-bearing on
+/// this and the three init fns below: the ~12.8 KB construction temporary must land in **this**
+/// transient frame (popped before steady state, at boot's shallow depth), not in `run`'s poll
+/// frame — inlined (or via the `#[inline(always)]` `init_static` directly), LLVM reserves the
+/// temporary's slot in the poll frame **at entry, on every poll**, which is exactly the #677
+/// overflow. SAFETY: sole writer of `STORE`, called once from [`run`].
+#[inline(never)]
+fn init_store(shared: &mut crate::SharedStore) -> &'static core::cell::RefCell<ObjectStore> {
+    unsafe { init_static(core::ptr::addr_of_mut!(STORE), core::cell::RefCell::new(ObjectStore::new(shared))) }
+}
+
+/// Build the SDC memory block into `.bss` ([`SDC_MEM`]) off the poll frame (see [`init_store`]).
+/// SAFETY: sole writer of `SDC_MEM`, called once from [`run`].
+#[inline(never)]
+fn init_sdc_mem() -> &'static mut sdc::Mem<SDC_MEM_SIZE> {
+    unsafe { init_static(core::ptr::addr_of_mut!(SDC_MEM), sdc::Mem::new()) }
+}
+
+/// Build TrouBLE's host arena into `.bss` ([`RESOURCES`]) off the poll frame (see [`init_store`]).
+/// SAFETY: sole writer of `RESOURCES`, called once from [`run`].
+#[inline(never)]
+fn init_resources() -> &'static mut Resources {
+    unsafe { init_static(core::ptr::addr_of_mut!(RESOURCES), HostResources::new()) }
+}
+
+/// Pin the boot-time GAP name ([`GAP_NAME`]) and build the GATT server into `.bss` ([`SERVER`]) off
+/// the poll frame (see [`init_store`]). The server's attribute table borrows the name for its
+/// `'static` life; the *advertised* name is still re-read each advertise cycle, so a rename lands
+/// without a reboot (the GAP characteristic keeps the boot value — Config, not GAP, is
+/// authoritative). SAFETY: sole writer of `GAP_NAME`/`SERVER`, called once from [`run`].
+#[inline(never)]
+fn init_server(store: &core::cell::RefCell<ObjectStore>) -> &'static Server<'static> {
+    let name: &'static str =
+        unsafe { init_static(core::ptr::addr_of_mut!(GAP_NAME), advertised_name(&store.borrow())) }.as_str();
+    unsafe {
+        init_static(
+            core::ptr::addr_of_mut!(SERVER),
+            unwrap!(Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+                name,
+                appearance: &appearance::cycling::CYCLING_COMPUTER,
+            }))),
+        )
+    }
+}
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
@@ -175,11 +235,23 @@ fn build_sdc<'d, const N: usize>(
 /// link edge for the status UI. Joined against `run_status` on the thread-mode executor in
 /// `main.rs`. The MPSL/SDC peripheral sets are built in `main` (where the `Peripherals` struct
 /// is split) and handed in whole.
-/// An **embassy task**, not a plain future: its ~36 KB state machine must live in this task's
+/// An **embassy task**, not a plain future: its state machine must live in this task's
 /// `.bss` pool static, built **in place** by the spawn. As a `join`-ed local future in `main` it
 /// was a giant stack temporary inside `main`'s poll frame — which overflowed the combined build's
 /// ~36 KB stack straight into `.bss` before the first frame rendered (#270; caught by a DWT
 /// watchpoint — the corrupted task pool panicked "Busy" at the com_task spawn).
+///
+/// **#677 — keep the big values out of this function's body.** The task pool solves where the
+/// future's *state* lives, but every sizeable value constructed inline in the async body also gets
+/// a **construction-temporary slot in the generated poll function's stack frame** — and LLVM
+/// reserves all those slots at frame entry, on **every** poll, forever. With the object store
+/// (~12.8 KB), the GATT server (~2.2 KB), the SDC memory block (4.7 KB) and TrouBLE's arena
+/// (2.9 KB) built inline, the poll frame was **30,464 B** (`sub.w sp, sp, #0x7700`) of the ble
+/// build's ~38 KB stack region — and SMP's synchronous software-P256 pairing chain (~5–7 KB of
+/// frames, run inside `host_task`'s rx path on this same stack) overflowed the bottom into
+/// `defmt_rtt::BUFFER` on every pairing attempt. The rule: anything bigger than a few hundred
+/// bytes is built into a `.bss` static by a dedicated `#[inline(never)]` init fn (transient frame,
+/// boot-time depth), and this body only ever holds `&'static` handles.
 #[embassy_executor::task]
 pub async fn run(
     spawner: Spawner,
@@ -191,13 +263,13 @@ pub async fn run(
     // The object store: the catalog/upload/digest semantics behind a RefCell — both BLE planes (GATT
     // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
     // settings it operates on live in `shared` (the async mutex the ride loop shares), which each
-    // plane locks per call and passes into the store method (#270). Built **here**, not in `main`:
-    // the ~8 KB value then lives in this task's future (its pool static) and its construction
-    // temporary lands on this task's shallow poll frame — in `main` both cost stack the combined
-    // build doesn't have (see `spawn_ble_stack`).
-    let store = {
+    // plane locks per call and passes into the store method (#270). Built in `.bss` by
+    // `init_store`, not inline here: the ~12.8 KB construction temporary must not become a
+    // permanent slot in this poll frame (#677 — see the fn doc), and not in `main`'s either
+    // (see `spawn_ble_stack`).
+    let store: &'static core::cell::RefCell<ObjectStore> = {
         let mut guard = shared.lock().await;
-        core::cell::RefCell::new(ObjectStore::new(&mut guard))
+        init_store(&mut guard)
     };
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
@@ -237,26 +309,29 @@ pub async fn run(
         Err(e) => warn!("ble: sdc required_memory failed: {:?}", e),
     }
 
-    let sdc_mem = unsafe { init_static(core::ptr::addr_of_mut!(SDC_MEM), sdc::Mem::new()) };
+    let sdc_mem = init_sdc_mem();
     let sdc = unwrap!(build_sdc(sdc_p, rng, mpsl, sdc_mem));
 
-    let resources = unsafe { init_static(core::ptr::addr_of_mut!(RESOURCES), HostResources::new()) };
+    let resources = init_resources();
     let address = device_address();
-    // The GAP name is pinned at boot (the attribute borrows it for the server's life); the *advertised*
-    // name is re-read from the store each advertise cycle, so a rename lands without a reboot.
-    let name = advertised_name(&store.borrow());
-    info!("ble: host up as '{}', address {:?}", name.as_str(), address);
 
     // Register the CoC SPSM up front so `serve_coc` can accept on it once a link is up. IO =
     // DisplayOnly: the device shows a 6-digit passkey, the phone (keyboard) enters it → LESC
     // passkey-entry pairing, MITM-protected. Keep the static-random address (no device privacy) — the
     // phone stores our stable identity for instant reconnect; we resolve *its* rotating RPA from the
-    // stored peer IRK below.
-    let stack = trouble_host::new(sdc, resources)
-        .set_random_address(address)
-        .set_io_capabilities(IoCapabilities::DisplayOnly)
-        .register_l2cap_spsm(OBC_PSM)
-        .build();
+    // stored peer IRK below. In a static (it's all of 8 B — two references) because the `'static`
+    // [`SERVER`]'s advertise path needs a `Peripheral<'static>`, which only a `'static` stack lends.
+    // SAFETY: sole writer of `STACK`; `run` is called once from `main`.
+    let stack: &'static Stack<'static, nrf_sdc::SoftdeviceController<'static>, DefaultPacketPool> = unsafe {
+        init_static(
+            core::ptr::addr_of_mut!(STACK),
+            trouble_host::new(sdc, resources)
+                .set_random_address(address)
+                .set_io_capabilities(IoCapabilities::DisplayOnly)
+                .register_l2cap_spsm(OBC_PSM)
+                .build(),
+        )
+    };
 
     // Re-establish the stored bond: hand it to the host so the controller's resolving list resolves the
     // bonded phone's RPA on reconnect and re-encrypts with the stored LTK — no dialog, no interaction.
@@ -282,10 +357,11 @@ pub async fn run(
     let runner = stack.runner();
     let mut peripheral = stack.peripheral();
 
-    let server = unwrap!(Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: name.as_str(),
-        appearance: &appearance::cycling::CYCLING_COMPUTER,
-    })));
+    // The GAP name is pinned at boot (the attribute borrows it for the server's `'static` life);
+    // the *advertised* name is re-read from the store each advertise cycle, so a rename lands
+    // without a reboot.
+    let server: &'static Server<'static> = init_server(store);
+    info!("ble: host up as '{}', address {:?}", advertised_name(&store.borrow()).as_str(), address);
 
     // Seed the runtime attribute values the macro `value =` can't hold (DIS strings, the Config
     // blob from the persisted settings, the store digest). `server.set` writes the shared
@@ -309,15 +385,15 @@ pub async fn run(
     // task likewise, so a ride finished with the radio off still reaches the catalog + Rides menu.
     join5(
         host_task(runner),
-        route_delete_task(&stack, &server, &store, shared),
-        ride_delete_task(&stack, &server, &store, shared),
-        ride_saved_task(&stack, &server, &store, shared),
+        route_delete_task(stack, server, store, shared),
+        ride_delete_task(stack, server, store, shared),
+        ride_saved_task(stack, server, store, shared),
         async {
             loop {
                 // A Forget-phone request latched between phases: honour it before the next advertise,
                 // so the freshly-open pairing window never races a stale bond.
                 if FORGET_BOND.try_take().is_some() {
-                    forget_bond(&stack, &store, shared).await;
+                    forget_bond(stack, store, shared).await;
                 }
 
                 // The radio switch (#455): while off, publish Off and park — the advertiser is not
@@ -335,7 +411,7 @@ pub async fn run(
                         s.secured = false;
                     });
                     if let Either::Second(()) = select(state::radio_enabled_wait(), FORGET_BOND.wait()).await {
-                        forget_bond(&stack, &store, shared).await;
+                        forget_bond(stack, store, shared).await;
                     }
                     continue;
                 }
@@ -362,7 +438,7 @@ pub async fn run(
                 // advertiser future stops advertising), or a Forget request lands (handled, then this
                 // phase restarts — a moment of re-advertising is harmless).
                 let conn = match select3(
-                    advertise_lifecycle(adv_name.as_str(), &mut peripheral, &server),
+                    advertise_lifecycle(adv_name.as_str(), &mut peripheral, server),
                     state::radio_disabled(),
                     FORGET_BOND.wait(),
                 )
@@ -378,7 +454,7 @@ pub async fn run(
                     }
                     Either3::Second(()) => continue, // radio off — park at the loop top
                     Either3::Third(()) => {
-                        forget_bond(&stack, &store, shared).await;
+                        forget_bond(stack, store, shared).await;
                         continue;
                     }
                 };
@@ -414,12 +490,12 @@ pub async fn run(
                 // concurrently and never returns before the teardown, so `select` tears it all down the
                 // moment the link drops (any disconnect drops straight back to the loop top).
                 let reason = match select(
-                    serve_connection(&stack, &server, &conn, &store, shared),
+                    serve_connection(stack, server, &conn, store, shared),
                     join4(
-                        negotiate_link(&stack, &conn),
-                        serve_coc(&stack, &server, &conn, &store, shared),
-                        battery_task(&stack, &server, &conn),
-                        link_control(&stack, &conn, &store, shared),
+                        negotiate_link(stack, &conn),
+                        serve_coc(stack, server, &conn, store, shared),
+                        battery_task(stack, server, &conn),
+                        link_control(stack, &conn, store, shared),
                     ),
                 )
                 .await
