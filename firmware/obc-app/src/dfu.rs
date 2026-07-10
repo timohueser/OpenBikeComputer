@@ -15,7 +15,7 @@
 pub type Version = heapless::String<32>;
 
 /// Copy `s` into a [`Version`], truncating to the buffer's cap on a char boundary.
-fn clamp(s: &str) -> Version {
+pub(crate) fn clamp(s: &str) -> Version {
     let mut v = Version::new();
     let mut end = s.len().min(v.capacity());
     while end > 0 && !s.is_char_boundary(end) {
@@ -57,6 +57,23 @@ impl DfuScanReport {
     pub fn same_version(&self) -> bool {
         self.installed == self.staged
     }
+}
+
+/// Why an **armed update is not the running firmware** — the boot-time reconcile's verdict, shown
+/// once by the "UPDATE FAILED" card ([`DfuFailedScreen`](crate::screen::DfuFailedScreen)). The
+/// board derives it from the boot-state page + the arm marker it left before the install reboot
+/// (its `dfu::reconcile_boot_outcome`); the app only carries the fact to the card, like
+/// [`DfuScanError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DfuFailure {
+    /// The `Armed` record survived into a running app — the bootloader never consumed it (stale
+    /// or missing bootloader). The board clears the leftover arm so it can't fire by surprise on
+    /// some later reboot.
+    NotStarted,
+    /// The bootloader consumed the arm but the staged image is not what's running: it was
+    /// rejected before the erase (old app intact) or its trial boot went unconfirmed and was
+    /// rolled back.
+    Reverted,
 }
 
 /// Why the staging scan rejected `UPDATE.BIN`, phrased for the app's error card (issue #620 §2).

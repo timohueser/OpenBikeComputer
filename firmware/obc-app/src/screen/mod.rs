@@ -50,7 +50,7 @@ mod statistics;
 mod warning;
 
 pub use climb::ClimbScreen;
-pub use dfu::{DfuCheckScreen, DfuConfirmScreen, DfuErrorScreen, DfuProgressScreen, DfuUpdatedScreen};
+pub use dfu::{DfuCheckScreen, DfuConfirmScreen, DfuErrorScreen, DfuFailedScreen, DfuProgressScreen, DfuUpdatedScreen};
 pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::{MapScreen, ROUTE_WEIGHT};
@@ -443,6 +443,10 @@ screens! {
     /// The one-time "Updated to vX" post-update toast (epic #615 S5), host-pushed on the first
     /// healthy boot after an update.
     DfuUpdated(DfuUpdatedScreen) => Nav,
+    /// The one-time "UPDATE FAILED" card, host-pushed by the boot-outcome reconcile on the first
+    /// boot after an armed update that did not end with the staged image running (never started /
+    /// reverted).
+    DfuFailed(DfuFailedScreen) => Nav,
 }
 
 impl Screen {

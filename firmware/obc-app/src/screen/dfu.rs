@@ -2,7 +2,7 @@
 //! the DFU armer. Reached from **Settings → System → "Install update from card"**
 //! ([`SystemScreen`](super::SystemScreen)); the scan/arm machinery runs board-side.
 //!
-//! Five static screens (no map plane), each a small typed state through the normal screen stack:
+//! Six static screens (no map plane), each a small typed state through the normal screen stack:
 //!
 //! - [`DfuCheckScreen`] — the brief "Checking card..." wait (spinner) after the scan is posted; the
 //!   board's answer ([`App::notify_dfu_scan_result`](crate::App::notify_dfu_scan_result)) replaces
@@ -20,6 +20,10 @@
 //! - [`DfuUpdatedScreen`] — the one-time "Updated to vX" toast the first healthy boot after an
 //!   update shows (host-pushed via [`App::notify_update_confirmed`](crate::App::notify_update_confirmed));
 //!   any press/Back dismisses.
+//! - [`DfuFailedScreen`] — the one-time "UPDATE FAILED" card the first boot after a failed update
+//!   shows (host-pushed via [`App::notify_update_failed`](crate::App::notify_update_failed) from
+//!   the board's boot-outcome reconcile): a typed [`DfuFailure`](crate::dfu::DfuFailure) verdict —
+//!   never started vs reverted — plus the staged version; any press/Back dismisses.
 
 use embedded_graphics::{
     prelude::{Point, Size},
@@ -30,7 +34,7 @@ use obc_render::{
     Surface,
 };
 
-use crate::dfu::{DfuScanError, DfuScanReport, Version};
+use crate::dfu::{DfuFailure, DfuScanError, DfuScanReport, Version};
 use crate::input::Gesture;
 use crate::Msg;
 
@@ -352,6 +356,53 @@ impl DfuUpdatedScreen {
         cv.text(rx.t(Msg::DfuUpdated), Point::new(w / 2, TITLE_BAR_H + 104), Font::Body, TextAlign::Center, INK);
         // The version, verbatim (never translated).
         cv.text(&self.version, Point::new(w / 2, TITLE_BAR_H + 134), Font::Body, TextAlign::Center, AMBER);
+    }
+}
+
+// ── DfuFailed: the one-time boot-outcome failure card ──
+
+/// The one-time "UPDATE FAILED" card the first boot after a failed update shows (host-pushed via
+/// [`App::notify_update_failed`](crate::App::notify_update_failed) from the board's boot-outcome
+/// reconcile — the failure twin of [`DfuUpdatedScreen`]). Carries the typed [`DfuFailure`] verdict
+/// and, when the arm marker survived, the staged version that failed. Info-only; any press/Back
+/// dismisses.
+#[derive(Debug)]
+pub struct DfuFailedScreen {
+    why: DfuFailure,
+    staged: Option<Version>,
+}
+
+impl DfuFailedScreen {
+    pub fn new(why: DfuFailure, staged: Option<&str>) -> Self {
+        DfuFailedScreen { why, staged: staged.map(crate::dfu::clamp) }
+    }
+
+    /// The verdict this card shows — lets the seam tests pin the failure→card mapping.
+    pub fn why(&self) -> DfuFailure {
+        self.why
+    }
+
+    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Press | Gesture::Back => Transition::Pop,
+            _ => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+        title_frame(cv, w, h, rx.t(Msg::DfuFailedTitle), "");
+        draw_warning(cv, w / 2, TITLE_BAR_H + 46, 22);
+        let msg = match self.why {
+            DfuFailure::NotStarted => rx.t(Msg::DfuFailedNotStarted),
+            DfuFailure::Reverted => rx.t(Msg::DfuFailedReverted),
+        };
+        let bottom = wrapped(cv, msg, w / 2, TITLE_BAR_H + 84, w - 32, INK);
+        // The staged version that failed, verbatim (never translated) — when the marker survived.
+        if let Some(v) = &self.staged {
+            cv.text(v, Point::new(w / 2, bottom + 22), Font::Body, TextAlign::Center, AMBER);
+        }
     }
 }
 
