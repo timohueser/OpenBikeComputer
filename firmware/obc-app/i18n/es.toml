@@ -126,6 +126,7 @@ avg_grad = "P. MEDIA"
 [map]
 no_gps_fix = "Sin GPS"
 off_route = "fuera ruta "
+press_to_start = "Pulsa para empezar"
 
 # --- The Statistics riding screen ---
 [stats]
@@ -345,6 +346,12 @@ climb = "ASCENSO"
 title = "SALIDA"
 start_ride = "Empezar"
 back = "Atrás"
+gps = "GPS"
+fix = "fijo"
+searching = "buscando.."
+battery = "Batería"
+card = "Tarjeta"
+card_ok = "OK"
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]

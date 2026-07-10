@@ -537,13 +537,17 @@ impl Screen {
         w: i32,
         h: i32,
         pan_active: bool,
+        tracking: bool,
     ) -> ScreenTick {
         match self {
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
             // The Map's clock overlay ticks over each minute (region-clipped to the pill), armed only
-            // when the pill is visible — the setting on and not panning (the pan chevron owns the slot).
-            Screen::Map(s) => s.tick_timers(now, ms_to_next_minute, w, pan_active, settings.map_clock),
+            // when the pill is visible — the setting on and not panning (the pan chevron owns the slot);
+            // it also runs the route-less browse map's one-shot start-hint timer (T6, gated on `tracking`).
+            Screen::Map(s) => {
+                s.tick_timers(now_ms, now, ms_to_next_minute, w, pan_active, settings.map_clock, tracking)
+            }
             Screen::Menu(s) => s.tick_timers(now_ms),
             // The route-upload popups' 30 s auto-close deadline (epic #447, P4): the residual
             // wake keeps the event-driven host armed so the timeout-dismiss fires from warm
