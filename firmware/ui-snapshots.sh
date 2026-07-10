@@ -224,8 +224,9 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
 "$SIM" "$MAP" --boot --ble-connected --png "$OUT/home-ble.png" --battery 45
 "$SIM" "$MAP" --boot --ble-connected --script "B w" --png "$OUT/menu-ble.png"
-# BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge. `--ble-passkey N`
-# injects the passkey exactly as the sim control-panel "Pairing" toggle does; the card auto-opens.
+# BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge — grouped
+# `000 042` under the device<->phone pair glyph (#679). `--ble-passkey N` injects the passkey
+# exactly as the sim control-panel "Pairing" toggle does; the card auto-opens.
 "$SIM" "$MAP" --boot --ble-passkey 42 --png "$OUT/passkey-card.png"
 # Route-upload popups (#451), all three variants. `--inject-upload[-replace] ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. protocol-vectors holds
@@ -234,15 +235,18 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --inject-upload 0 --png "$OUT/route-received.png"
 # Tracking (riding id 0, id 1 arrives): the retitled Route-swap popup.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --inject-upload 1 --png "$OUT/routeswap-received.png"
-# Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card.
+# Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card, with
+# the shared check in the glyph slot (#679).
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p" --inject-upload-replace 0 --png "$OUT/route-updated.png"
 # Storage/sensor warnings (issue #504). The three undismissable boot faults are drawn standalone
 # (no app), exactly as `main` does at the fatal SD/map sites — `--boot-fault` bypasses render_frame.
+# Each carries the shared SD-card pictogram + the parallel what/fix copy family (#679).
 "$SIM" "$MAP" --boot-fault nocard --png "$OUT/fault-nocard.png"
 "$SIM" "$MAP" --boot-fault nomap  --png "$OUT/fault-nomap.png"
 "$SIM" "$MAP" --boot-fault badmap --png "$OUT/fault-badmap.png"
 # The dismissable warning card, raised through the real notify_warning seam: one missing sensor, and
-# the coalesced worst case (all three sensors absent + a slow/fragmented map).
+# the coalesced worst case (all three sensors absent + a slow/fragmented map) — the widest layout
+# for the #679 glyph-slot triangle + per-sensor leading glyphs, pinning that nothing collides.
 "$SIM" "$MAP" --boot --inject-warning gps --png "$OUT/warning-gps.png"
 "$SIM" "$MAP" --boot --inject-warning gps,altimeter,compass,map --png "$OUT/warning-all.png"
 

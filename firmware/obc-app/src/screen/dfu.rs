@@ -39,8 +39,7 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::{
-    card_check, card_triangle, palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition,
-    TITLE_BAR_H,
+    card_check, card_triangle, palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition, TITLE_BAR_H,
 };
 
 // ── The shared indeterminate spinner (the Menu dial's needle, like the nav planner's #499) ──

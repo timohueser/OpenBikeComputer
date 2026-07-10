@@ -890,7 +890,15 @@ pub(crate) fn card_check(cv: &mut impl Surface, center: Point, k: i32) {
 /// line so a caller can stack more below it. A single word wider than the budget is left to clip
 /// (versions and the like are short). The line advance is the font's cap height plus a hair of
 /// lead. Shared by the DFU cards (which established it) and the routing-failure card.
-pub(crate) fn wrapped(cv: &mut impl Surface, text: &str, cx: i32, top_y: i32, width_px: i32, font: Font, color: u16) -> i32 {
+pub(crate) fn wrapped(
+    cv: &mut impl Surface,
+    text: &str,
+    cx: i32,
+    top_y: i32,
+    width_px: i32,
+    font: Font,
+    color: u16,
+) -> i32 {
     let lh = font.cap_height() as i32 + 1; // cap + a hair of lead (Label: the 19 px the DFU cards pinned)
     let char_w = font.char_width() as i32;
     let budget = (width_px / char_w).max(1) as usize;
