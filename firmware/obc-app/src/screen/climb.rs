@@ -51,8 +51,12 @@ const SIDE_MARGIN: i32 = 12;
 /// the summit glyph lands exactly left of the right-aligned elevation.
 const TITLE_RIGHT_INSET: i32 = 14;
 /// Vertical centre (px) of the title bar text line — where the summit glyph centres, matching the
-/// bar's Label readout (top at `y = 10`, cap ≈ 18 → centre ≈ 19).
-const TITLE_TEXT_CY: i32 = 19;
+/// bar's Label readout. The readout's cell-top anchor is `y = 10`, but the face inks its digits
+/// 4 px below that (the measured top bearing): the rendered digit band is rows 14..28, middle 21 —
+/// the old `19` (naive `10 + cap/2`) hung the flag ~3 px high (owner review round 1: "move it down
+/// a few pixel"). The glyph spans `cy-7..cy+6` (its own middle at `cy - 0.5`), so `22` lands its
+/// measured middle at 21.5.
+const TITLE_TEXT_CY: i32 = 22;
 /// Gap (px) between the summit glyph and the elevation number it prefixes.
 const SUMMIT_FLAG_GAP: i32 = 4;
 
