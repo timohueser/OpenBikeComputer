@@ -1,18 +1,44 @@
-//! The route-less **start card** — the small confirm opened by pressing the browse Map (the Menu's
-//! Map station reached without a route). Two rows: **Start ride** begins a tracking session with no
-//! route attached, **Back** returns to the browse map.
+//! The route-less **start card** — the pre-ride launchpad opened by pressing the browse Map (the
+//! Menu's Map station reached without a route). A small stack (T6, #684): the selected bike's hero
+//! sprite + its profile name, a three-row pre-ride checklist (GPS / Battery / Card), then the two
+//! option rows — **Start ride** begins a tracking session with no route attached, **Back** returns
+//! to the browse map.
 //!
 //! Starting is a plain press, not a hold: it's reversible (the Paused page's Discard throws the
 //! fresh session away), so it needs no guard. *Start ride* takes the shared
 //! [`start_ride_routeless`](super::start_ride_routeless) path — the same session-begin the Route
 //! overview's START RIDE runs, minus the route load — landing on the clean `[Home, Map]` stack.
 
-use obc_render::Surface;
+use core::fmt::Write as _;
+
+use embedded_graphics::prelude::Point;
+use obc_render::{
+    text::{Font, TextAlign},
+    Surface,
+};
 
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::settings::bike_icons;
 use super::{list, palette, title_frame, Ctx, MenuItem, Render, Transition};
+
+/// Top of the hero bike, just under the title bar.
+const HERO_TOP: i32 = super::TITLE_BAR_H + 8;
+/// Art-pixel scale for the hero bike. 2× (→ 100×60 device px), smaller than the Bike-type screen's
+/// own 4× hero: that hero fills a screen with one row under it, but this card stacks five content
+/// rows (name + three checklist + two options) below it, so it renders the same sprite at half scale
+/// rather than cram the rows — the D5 mockup gate's "protect the rows/fonts over the hero" call.
+const HERO_SCALE: i32 = 2;
+/// Top of the profile name (olive Label, centred) just below the hero.
+const NAME_TOP: i32 = 108;
+/// Top of the first checklist row, the per-row pitch, and the label/value inset from each edge (the
+/// values right-align to `w - CHECK_INSET_X`, the one shared value column).
+const CHECK_TOP: i32 = 138;
+const CHECK_ROW_H: i32 = 26;
+const CHECK_INSET_X: i32 = 20;
+/// Top of the Start ride / Back option block, anchored so the two rows clear the bottom edge.
+const OPT_TOP: i32 = 222;
 
 /// The two option rows (Start ride / Back), neither guarded — labels looked up per language at draw
 /// time (see [`RideStartScreen::draw`]).
@@ -49,18 +75,46 @@ impl RideStartScreen {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
 
-        // Opaque full-screen card (matching the Route-swap prompt's chrome): the title bar, then two
-        // option rows. No explainer line — the two labels say all there is to say.
+        // Opaque full-screen card (matching the Route-swap prompt's chrome): the title bar over the
+        // hero + checklist + option rows.
         title_frame(cv, w, h, rx.t(Msg::RideStartTitle), "");
 
+        // Hero: the selected profile's pixel bike — the same sprite + hinting colour the Bike-type
+        // screen draws (matched by name) — with its profile name centred just below in olive Label.
+        // A router-less / no-map device has no profiles: `for_name("")` falls back to the generic
+        // bike in plain ink and the name draws empty.
+        let marked = rx.nav_profiles.effective(rx.settings.bike_profile_idx);
+        let name = rx.nav_profiles.name(marked).unwrap_or("");
+        bike_icons::draw(cv, bike_icons::for_name(name), w / 2, HERO_TOP, HERO_SCALE, bike_icons::color_for(name));
+        cv.text(name, Point::new(w / 2, NAME_TOP), Font::Label, TextAlign::Center, SUBTEXT);
+
+        // Checklist: three plain rows, label (olive) at the left inset, value (ink) right-aligned at
+        // the one shared value column. GPS reads its live fix state (the map chrome's `no_fix`);
+        // Battery the same `NN%` Home shows; Card is static `OK` — the card is mounted (this screen is
+        // unreachable without it), so it reassures without a live probe.
+        let mut batt: heapless::String<8> = heapless::String::new();
+        let _ = write!(batt, "{}%", rx.state.battery_pct);
+        let gps = if rx.no_fix { rx.t(Msg::RideStartSearching) } else { rx.t(Msg::RideStartFix) };
+        let rows = [
+            (rx.t(Msg::RideStartGps), gps),
+            (rx.t(Msg::RideStartBattery), batt.as_str()),
+            (rx.t(Msg::RideStartCard), rx.t(Msg::RideStartCardOk)),
+        ];
+        for (i, (label, value)) in rows.into_iter().enumerate() {
+            let top = CHECK_TOP + i as i32 * CHECK_ROW_H;
+            cv.text_vcentered(label, CHECK_INSET_X, (top, CHECK_ROW_H), Font::Label, TextAlign::Left, SUBTEXT);
+            cv.text_vcentered(value, w - CHECK_INSET_X, (top, CHECK_ROW_H), Font::Label, TextAlign::Right, INK);
+        }
+
+        // Options: Start ride (amber primary) / Back — unchanged behaviour, anchored at the bottom.
         let geo = super::GuardedRowsGeometry {
             x: 12,
             w: w - 24,
-            top: super::TITLE_BAR_H + 46,
-            row_h: 46,
+            top: OPT_TOP,
+            row_h: 42,
             gap: 8,
             label_dx: 16,
-            label_dy: 11,
+            label_dy: 10,
         };
         let items = [
             MenuItem { label: rx.t(Msg::RideStartStartRide), guard: false },

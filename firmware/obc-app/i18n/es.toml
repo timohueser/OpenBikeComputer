@@ -345,6 +345,12 @@ climb = "ASCENSO"
 title = "SALIDA"
 start_ride = "Empezar"
 back = "Atrás"
+gps = "GPS"
+fix = "fijo"
+searching = "buscando.."
+battery = "Batería"
+card = "Tarjeta"
+card_ok = "OK"
 
 # --- System settings screen (epic #615 S5, #620) ---
 [system]

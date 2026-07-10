@@ -227,8 +227,12 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # the follow camera + marker so the frames reproduce (no route → no magenta line, no off-route chip).
 # (a) The route-less BROWSE map: Menu → Map (not tracking) → the follow map with clock + scale bar.
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p"     --png "$OUT/map-browse.png"
-# (b) The start card (browse map → press): "RIDE" — Start ride / Back.
-"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p p"   --png "$OUT/ride-start.png"
+# (b) The start card (browse map → press, T6 #684): the hero bike (the selected profile's sprite +
+# colour) over its profile name, the three-row GPS / Battery / Card checklist, then Start ride / Back.
+# `--battery 45` pins the % and the `--gpx --at 30` fix makes GPS read `fix`; the second frame drops
+# the `--gpx` (no fix) so GPS reads `searching..` (and a low --battery to vary the row).
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --battery 45 --script "B r r r w p p"   --png "$OUT/ride-start.png"
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --battery 8 --script "B r r r w p p"   --png "$OUT/ride-start-nofix.png"
 # (c) A route-less RIDING map (start card → Start ride): the follow map with the recorded breadcrumb,
 # no route line and no off-route chip (there's no route to be off).
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B r r r w p p p" --png "$OUT/map-routeless.png"
@@ -303,6 +307,9 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p" --inject-upload 1 \
         --png "$OUT/routeswap-received-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p B p r p" --png "$OUT/routeswap-$lang.png"
+    # The ride-start card (T6 #684): the checklist labels/values (Battery/GPS/Card) are the copy to
+    # eyeball for clipped rows in the longer translations. --battery 100 pins the widest % value.
+    "$SIM" "$MAP" --boot --lang "$lang" --battery 100 --script "B r r r w p p" --png "$OUT/ride-start-$lang.png"
     # The SD-sideload update flow (epic #615 S5): the System row, the first-install confirm (the
     # worst case for vertical fit — the two-row version table + the no-undo note, which wraps to two
     # Label lines in the longer translations), the progress spinner, an error card, and the
@@ -314,4 +321,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 123 screens rendered into $OUT/"
+echo "ui-snapshots: 127 screens rendered into $OUT/"
