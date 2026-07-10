@@ -10,6 +10,8 @@
 //!   selected name in Display type below.
 //! * Card grid: the conventional icon-card layout under the standard title bar.
 
+use core::fmt::Write as _;
+
 use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
@@ -145,10 +147,13 @@ impl MenuScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let ble = rx.state.ble_connected();
         let txt = MenuText::resolve(rx);
+        // The title bar's right readout: the battery percentage, in Home's `NN%` formatting.
+        let mut batt: heapless::String<8> = heapless::String::new();
+        let _ = write!(batt, "{}%", rx.state.battery_pct);
         if COMPASS {
-            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble, &txt);
+            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble, &batt, &txt);
         } else {
-            draw_grid(cv, rx.w, rx.h, self.selected, ble, &txt);
+            draw_grid(cv, rx.w, rx.h, self.selected, ble, &batt, &txt);
         }
     }
 }
@@ -178,6 +183,7 @@ fn open_map(cx: &mut Ctx) -> Transition {
 /// centred between the bar and the name strip — which works out to exactly `h / 2`. The needle
 /// points at `needle_deg` (0° = N, clockwise) — mid-sweep that's between stations; the station
 /// highlight and the name snap to the selection immediately.
+#[allow(clippy::too_many_arguments)] // one flat draw fn; bundling the geometry+state adds no clarity
 fn draw_compass(
     cv: &mut impl Surface,
     w: i32,
@@ -185,10 +191,11 @@ fn draw_compass(
     selected: usize,
     needle_deg: f32,
     ble_connected: bool,
+    battery: &str,
     txt: &MenuText,
 ) {
     use palette::*;
-    title_frame_ble(cv, w, h, txt.title, "", ble_connected);
+    title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
 
     let c = Point::new(w / 2, h / 2);
 
@@ -258,9 +265,9 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
 
 /// The 2×2 card-grid layout under the standard title bar: amber fill on the selected card, a tan
 /// outline on the rest, each with its icon over a centred label.
-fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize, ble_connected: bool, txt: &MenuText) {
+fn draw_grid(cv: &mut impl Surface, w: i32, h: i32, selected: usize, ble_connected: bool, battery: &str, txt: &MenuText) {
     use palette::*;
-    title_frame_ble(cv, w, h, txt.title, "", ble_connected);
+    title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
     for (i, label) in txt.items.iter().enumerate() {
         let col = (i % 2) as i32;
         let row = (i / 2) as i32;
