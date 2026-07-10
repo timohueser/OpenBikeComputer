@@ -122,6 +122,7 @@ display = "Pantalla"
 power = "Energía"
 bluetooth = "Bluetooth"
 language = "Idioma"
+system = "Sistema"
 reset = "Restablecer"
 
 # --- Date & Time settings screen ---
@@ -313,3 +314,30 @@ climb = "ASCENSO"
 title = "SALIDA"
 start_ride = "Empezar"
 back = "Atrás"
+
+# --- System settings screen (epic #615 S5, #620) ---
+[system]
+title = "SISTEMA"
+install_update = "Instalar actualización desde la tarjeta"
+recording = "Grabando"
+
+# --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
+[dfu]
+checking = "Comprobando la tarjeta..."
+installed = "Instalada"
+staged = "Actualización"
+confirm_title = "ACTUALIZAR"
+same_version = "Esta versión ya está instalada."
+no_undo = "No hay deshacer automático."
+light_blinks = "La luz parpadea durante la instalación."
+install = "Instalar"
+cancel = "Cancelar"
+preparing = "Preparando la actualización..."
+updated_title = "ACTUALIZADO"
+updated = "Actualizado a"
+title = "ACTUALIZACIÓN"
+not_found = "No hay archivo de actualización en la tarjeta."
+unreadable = "No se pudo leer el archivo de actualización."
+damaged = "El archivo de actualización está dañado."
+too_large = "El archivo de actualización es demasiado grande para este dispositivo."
+fragmented = "El archivo de actualización está muy fragmentado. Borra UPDATE.BIN y cópialo de nuevo en la tarjeta."

@@ -567,11 +567,6 @@ pub struct App {
     /// dismissed notice doesn't nag — while a genuinely *new* flag (e.g. a late sensor timeout)
     /// still re-opens the card. Never cleared (the boot's warnings are the boot's).
     warned: WarningFlags,
-    /// A pending **install-update request** (epic #615 S4, #619) — the DFU one-shot, posted by
-    /// the S5 update screen (until then, by the `dfu-install` debug-link command) and drained
-    /// once per pass by the board's ride loop, which owns the exclusive storage + boot-state
-    /// access the arm needs. The create-route request shape, without a payload.
-    dfu_request: bool,
     /// The firmware update **this boot just confirmed** (S4, #619): the running image's version
     /// string, set by the board once the trial confirm has written `Idle { installed }`. The
     /// one-time fact S5's "updated to vX" toast takes; `None` on a normal boot.
@@ -750,7 +745,6 @@ impl App {
             pending_upload: None,
             pending_warnings: WarningFlags::NONE,
             warned: WarningFlags::NONE,
-            dfu_request: false,
             update_confirmed: None,
         }
     }
@@ -832,7 +826,6 @@ impl App {
             addr_of_mut!((*slot).pending_upload).write(None);
             addr_of_mut!((*slot).pending_warnings).write(WarningFlags::NONE);
             addr_of_mut!((*slot).warned).write(WarningFlags::NONE);
-            addr_of_mut!((*slot).dfu_request).write(false);
             addr_of_mut!((*slot).update_confirmed).write(None);
         }
     }
@@ -1480,19 +1473,40 @@ impl App {
         self.activity.has_nav_request()
     }
 
-    /// Post the **install-update request** (epic #615 S4, #619) — the one-shot the board's ride
-    /// loop drains to run the DFU armer (validate `UPDATE.BIN`, snapshot the rollback, arm the
-    /// boot-state page, reboot into the bootloader). The S5 update screen will post this; until
-    /// then the `dfu-install` debug-link command does. The create-route request shape: posting
-    /// records intent only — execution, guards (not mid-recording), and errors are the drain's.
+    /// Post the **install-update request** (epic #615 S4/S5) — the one-shot the board's ride loop
+    /// drains to run the DFU armer (validate `UPDATE.BIN`, snapshot the rollback, arm the
+    /// boot-state page, reboot into the bootloader). The `dfu-install` debug-link command posts it
+    /// **directly** (no confirm screen); the S5 UI reaches the same [`DfuAction::Install`] through
+    /// the confirm screen instead. Posting records intent only — execution, guards (not
+    /// mid-recording), and errors are the drain's.
     pub fn request_dfu_install(&mut self) {
-        self.dfu_request = true;
+        self.activity.request_dfu(crate::activity::DfuAction::Install);
     }
 
-    /// Drain the pending install-update request — the board's per-pass one-shot, like
-    /// [`take_nav_request`](App::take_nav_request).
-    pub fn take_dfu_request(&mut self) -> bool {
-        core::mem::take(&mut self.dfu_request)
+    /// Drain the pending [`DfuAction`](crate::activity::DfuAction) — the board's per-pass one-shot,
+    /// like [`take_nav_request`](App::take_nav_request). `Some(Scan)` runs the read-only validation
+    /// and answers via [`notify_dfu_scan_result`](App::notify_dfu_scan_result); `Some(Install)`
+    /// arms and reboots.
+    pub fn take_dfu_request(&mut self) -> Option<crate::activity::DfuAction> {
+        self.activity.take_dfu_request()
+    }
+
+    /// The board's answer to a drained [`DfuAction::Scan`](crate::activity::DfuAction) (epic #615
+    /// S5, #620) — the "Checking card..." wait's result. Mirrors
+    /// [`notify_nav_result`](App::notify_nav_result): the answer lands in the
+    /// [`DfuCheck`](crate::screen::DfuCheckScreen) screen the System menu pushed, **replacing** it
+    /// with the confirm screen (`Ok`) or the error card (`Err`). If that screen is gone — the rider
+    /// pressed Back out of the wait — the answer is dropped (nothing was armed; a scan costs
+    /// nothing).
+    pub fn notify_dfu_scan_result(&mut self, result: Result<crate::dfu::DfuScanReport, crate::dfu::DfuScanError>) {
+        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuCheck(_))) else {
+            return;
+        };
+        self.stack[i] = match result {
+            Ok(report) => Screen::DfuConfirm(crate::screen::DfuConfirmScreen::new(report)),
+            Err(e) => Screen::DfuError(crate::screen::DfuErrorScreen::new(e)),
+        };
+        self.map_dirty = true;
     }
 
     /// Record that this boot **confirmed a freshly-installed firmware update** (S4, #619): the
@@ -1910,6 +1924,27 @@ impl App {
         self.stack.iter().position(|s| matches!(s, Screen::Warning(_)))
     }
 
+    /// Surface the one-time "Updated to vX" toast (epic #615 S5, #620) if this boot confirmed a
+    /// freshly-installed update. The board calls
+    /// [`notify_update_confirmed`](App::notify_update_confirmed) at the health anchor (the first
+    /// frame with the SD mounted); the next [`advance_animations`](App::advance_animations) pass
+    /// drains that fact and pushes the [`DfuUpdated`](crate::screen::DfuUpdatedScreen) card once.
+    /// Deferred behind a
+    /// passkey card or a live hold like [`reconcile_warning`](App::reconcile_warning), so it never
+    /// covers the pairing code or lands mid-hold; a normal boot has no fact and does nothing.
+    fn reconcile_update_toast(&mut self) {
+        if self.update_confirmed.is_none() {
+            return;
+        }
+        if self.passkey_card_up() || self.hold_charging() {
+            return; // retried next pass, once the card clears / the hold resolves
+        }
+        let Some(version) = self.update_confirmed.take() else { return };
+        let r = self.stack.push(Screen::DfuUpdated(crate::screen::DfuUpdatedScreen::new(&version)));
+        debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+        self.map_dirty = true;
+    }
+
     /// The stack index of the screen an incoming upload prompt **replaces**: any upload popup, or
     /// the manual Route-swap prompt (the locked "same rule when the manual swap is up"). `None`
     /// when the prompt should push fresh.
@@ -2256,6 +2291,10 @@ impl App {
         // Before the idle sweep, so a warning that lands this pass is on top when the sweep checks
         // its exemptions — an unacknowledged card must not be yanked to Home by the idle return.
         self.reconcile_warning();
+        // The one-time post-update toast (epic #615 S5): land it after the warning reconcile so it
+        // sits on top when the idle sweep checks its exemptions (an unacknowledged card must not be
+        // yanked Home). A normal boot has no confirmed-update fact and this is a cheap no-op.
+        self.reconcile_update_toast();
         // The idle-return sweep (fire the return if we're past the deadline) and its residual wake,
         // folded into the deadline the event-driven host arms so a parked device wakes to return.
         self.apply_idle_return();
@@ -2311,6 +2350,13 @@ impl App {
                     | Screen::RouteSwap(_)
                     | Screen::NavPlanning(_)
                     | Screen::Warning(_)
+                    // The whole SD-sideload update flow (epic #615 S5): a card/wait the rider is
+                    // acting on — never yank it Home mid-flow (the progress screen ends in a reboot).
+                    | Screen::DfuCheck(_)
+                    | Screen::DfuConfirm(_)
+                    | Screen::DfuProgress(_)
+                    | Screen::DfuError(_)
+                    | Screen::DfuUpdated(_)
             )
         )
     }
@@ -4029,20 +4075,72 @@ mod tests {
         assert_eq!(app.ms_until_next_wake(10_000), Some(20_000), "wake armed 20 s out (30 s − 10 s elapsed)");
     }
 
-    /// The DFU one-shots (epic #615 S4, #619): the install request and the confirmed-update fact
-    /// are both drained exactly once — the create-route request contract.
+    /// The DFU one-shots (epic #615 S4/S5): the install request and the confirmed-update fact are
+    /// both drained exactly once — the create-route request contract. `request_dfu_install` (the
+    /// `dfu-install` debug path) posts the [`DfuAction::Install`] the board's drain matches on.
     #[test]
     fn dfu_request_and_confirmed_fact_are_take_once() {
+        use crate::activity::DfuAction;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        assert!(!app.take_dfu_request(), "nothing pending at boot");
+        assert_eq!(app.take_dfu_request(), None, "nothing pending at boot");
         app.request_dfu_install();
-        assert!(app.take_dfu_request(), "the posted request drains");
-        assert!(!app.take_dfu_request(), "…exactly once");
+        assert_eq!(app.take_dfu_request(), Some(DfuAction::Install), "the posted request drains");
+        assert_eq!(app.take_dfu_request(), None, "…exactly once");
 
         assert_eq!(app.take_update_confirmed(), None, "no confirmed update on a normal boot");
         app.notify_update_confirmed("v1.2.3-4-gabc1234");
         let v = app.take_update_confirmed().expect("the fact is set");
         assert_eq!(v.as_str(), "v1.2.3-4-gabc1234");
         assert_eq!(app.take_update_confirmed(), None, "taken once — the toast shows once");
+    }
+
+    /// The S5 scan-result seam (epic #615 S5, #620): `notify_dfu_scan_result` lands in the
+    /// "Checking card..." wait the System menu pushed, swapping it for the confirm screen (`Ok`) or
+    /// the error card (`Err`); with no wait on the stack it's a no-op (the rider pressed Back).
+    #[test]
+    fn dfu_scan_result_replaces_the_check_wait() {
+        use crate::dfu::{DfuScanError, DfuScanReport};
+        let mk = |v: &str| {
+            let mut s = heapless::String::new();
+            let _ = s.push_str(v);
+            s
+        };
+        let report =
+            DfuScanReport { installed: mk("v1.0.0-0-gaaa"), staged: mk("v1.1.0-3-gbbb"), first_install: false };
+
+        // No wait up → dropped.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.notify_dfu_scan_result(Ok(report.clone()));
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuConfirm(_))), "no wait ⇒ answer dropped");
+
+        // Wait up → Ok swaps in the confirm.
+        let _ = app.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
+        app.notify_dfu_scan_result(Ok(report));
+        assert!(matches!(app.top_screen(), Screen::DfuConfirm(_)), "Ok swaps the wait for the confirm");
+
+        // Wait up → Err swaps in the error card, carrying the variant.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
+        app.notify_dfu_scan_result(Err(DfuScanError::TooFragmented));
+        match app.top_screen() {
+            Screen::DfuError(e) => assert_eq!(e.error(), DfuScanError::TooFragmented),
+            _ => panic!("Err swaps the wait for the error card"),
+        }
+    }
+
+    /// The post-update toast (epic #615 S5): a confirmed-update fact surfaces the "Updated to vX"
+    /// card once on the next `advance_animations` pass; a normal boot (no fact) pushes nothing.
+    #[test]
+    fn confirmed_update_pushes_the_toast_once() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.advance_animations(InputClock(1000));
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuUpdated(_))), "a normal boot shows no toast");
+
+        app.notify_update_confirmed("v2.0.0-0-gccc");
+        app.advance_animations(InputClock(2000));
+        assert!(matches!(app.top_screen(), Screen::DfuUpdated(_)), "the confirmed update surfaces the toast");
+        app.stack.pop(); // dismiss
+        app.advance_animations(InputClock(3000));
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuUpdated(_))), "shown once — the fact was consumed");
     }
 }

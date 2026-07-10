@@ -41,6 +41,7 @@ mod language;
 mod power;
 mod reset;
 mod stats;
+mod system;
 mod units;
 
 pub use add_field::AddFieldScreen;
@@ -53,11 +54,13 @@ pub use language::LanguageScreen;
 pub use power::PowerScreen;
 pub use reset::ResetScreen;
 pub use stats::StatsScreen;
+pub use system::SystemScreen;
 pub use units::UnitsScreen;
 
 /// The number of Settings list entries. The row *labels* are looked up per-language at draw time
-/// (see [`SettingsScreen::draw`]); Language sits just above the terminal (destructive) Reset row.
-const N_ITEMS: usize = 9;
+/// (see [`SettingsScreen::draw`]); System (the firmware-update door, epic #615 S5) sits just above
+/// the terminal (destructive) Reset row.
+const N_ITEMS: usize = 10;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -83,6 +86,7 @@ impl SettingsScreen {
                 5 => Transition::Push(Screen::Power(PowerScreen::new())),
                 6 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
                 7 => Transition::Push(Screen::Language(LanguageScreen::new())),
+                8 => Transition::Push(Screen::System(SystemScreen::new())),
                 _ => Transition::Push(Screen::Reset(ResetScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu
@@ -102,6 +106,7 @@ impl SettingsScreen {
             rx.t(Msg::SettingsPower),
             rx.t(Msg::SettingsBluetooth),
             rx.t(Msg::SettingsLanguage),
+            rx.t(Msg::SettingsSystem),
             rx.t(Msg::SettingsReset),
         ];
         list::nav_list(cv, rx.w, rx.h, rx.t(Msg::SettingsTitle), &items, self.selected);
