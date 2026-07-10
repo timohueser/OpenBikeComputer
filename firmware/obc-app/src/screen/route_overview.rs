@@ -186,7 +186,8 @@ impl RouteOverviewScreen {
             // at full card width (#685 §4 — a title-bar name truncated to `Carrefour Mar..`).
             title_frame(cv, w, h, rx.t(Msg::RouteOverviewNewRoute), "");
             let x = 16;
-            let name = super::route_menu::fit_name(&summary.name, ((w - 2 * x) / Font::Body.char_width() as i32) as usize);
+            let name =
+                super::route_menu::fit_name(&summary.name, ((w - 2 * x) / Font::Body.char_width() as i32) as usize);
             cv.text(&name, Point::new(x, LIST_TOP + 4), Font::Body, TextAlign::Left, INK);
 
             let units = rx.settings.units;
@@ -406,10 +407,7 @@ fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[
     let ox = x0 as f32 + (PREVIEW_W as f32 - geo_w * scale) / 2.0;
     let oy = y0 as f32 + (PREVIEW_H as f32 - geo_h * scale) / 2.0;
     let project = |(lon, lat): (i32, i32)| {
-        Point::new(
-            (ox + (lon - min_lon) as f32 * clat * scale) as i32,
-            (oy + (max_lat - lat) as f32 * scale) as i32,
-        )
+        Point::new((ox + (lon - min_lon) as f32 * clat * scale) as i32, (oy + (max_lat - lat) as f32 * scale) as i32)
     };
     let mut prev = project(pts[0]);
     for &p in &pts[1..] {

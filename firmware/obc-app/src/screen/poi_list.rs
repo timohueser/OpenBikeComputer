@@ -290,7 +290,10 @@ pub(super) fn draw_bearing_arrow(
     let theta = bearing_octant(pos, poi, heading_deg) as f32 * FRAC_PI_4;
     let rf = r as f32;
     let end = |from: Point, ang: f32, len: f32| {
-        Point::new(from.x + libm::roundf(libm::sinf(ang) * len) as i32, from.y - libm::roundf(libm::cosf(ang) * len) as i32)
+        Point::new(
+            from.x + libm::roundf(libm::sinf(ang) * len) as i32,
+            from.y - libm::roundf(libm::cosf(ang) * len) as i32,
+        )
     };
     let tip = end(c, theta, rf);
     let tail = end(c, theta + core::f32::consts::PI, rf);
