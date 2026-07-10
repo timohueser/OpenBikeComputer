@@ -497,4 +497,74 @@ mod tests {
         d.tick(0.0);
         assert!(obc_app::Screen::NAMES.contains(&d.state()));
     }
+
+    /// **The tour drift-guard** (epic #624 S3 / #628). The landing page's guided scenarios wait on
+    /// screen-name strings; if the `screens!` table renames one, the page would silently turn that
+    /// tour into a timeout march. This test reads `docs/index.html`, extracts every screen name the
+    /// scenarios target, and asserts each is a real [`obc_app::Screen::NAMES`] entry — so a rename
+    /// fails `cargo test` in the `test` job instead.
+    ///
+    /// **Parseable convention** (documented identically in `docs/index.html`): every guided-step
+    /// target is a double-quoted string inside a `until: [ ... ]` array literal, and screen names
+    /// appear *nowhere else* in a parseable position. We find each `until:` immediately followed by
+    /// `[`, take up to the first `]`, and collect the quoted strings. (Doc-comment mentions of
+    /// `until: [ ... ]` carry no quoted strings, so they contribute nothing.)
+    #[test]
+    fn tour_targets_are_real_screens() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/index.html");
+        let html = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+
+        let targets = extract_until_targets(&html);
+        // Guard against a silent parser break (a convention change that finds nothing would let a
+        // real rename slip through vacuously): the reroute + climb scenarios give us many targets.
+        assert!(
+            targets.len() >= 8 && targets.contains(&"Map".to_string()),
+            "drift-guard parsed too few `until:` targets ({}) — the parseable convention in \
+             docs/index.html likely changed; keep every target a quoted string in a `until: [..]` \
+             array. Found: {targets:?}",
+            targets.len()
+        );
+        for name in &targets {
+            assert!(
+                obc_app::Screen::NAMES.contains(&name.as_str()),
+                "docs/index.html guided-tour targets screen {name:?}, which is not in \
+                 Screen::NAMES — rename the tour target or the screen. Known: {:?}",
+                obc_app::Screen::NAMES
+            );
+        }
+    }
+
+    /// Pull every screen name out of `until: [ "A", "B" ]` array literals in the page source. Only
+    /// a `until:` glued (modulo whitespace) to a `[` counts, so prose like "the `until:` array"
+    /// never opens a spurious match.
+    fn extract_until_targets(html: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let bytes = html.as_bytes();
+        let mut search = html;
+        let mut base = 0usize;
+        while let Some(rel) = search.find("until:") {
+            let after = base + rel + "until:".len();
+            base = after;
+            search = &html[after..];
+            // Require the next non-whitespace byte to be `[`.
+            let mut i = after;
+            while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+                i += 1;
+            }
+            if i >= bytes.len() || bytes[i] != b'[' {
+                continue;
+            }
+            let Some(close_rel) = html[i..].find(']') else { continue };
+            let arr = &html[i..i + close_rel];
+            // Collect the double-quoted strings in this array.
+            let mut rest = arr;
+            while let Some(q0) = rest.find('"') {
+                let tail = &rest[q0 + 1..];
+                let Some(q1) = tail.find('"') else { break };
+                out.push(tail[..q1].to_string());
+                rest = &tail[q1 + 1..];
+            }
+        }
+        out
+    }
 }
