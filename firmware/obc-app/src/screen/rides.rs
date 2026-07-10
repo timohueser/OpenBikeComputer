@@ -31,7 +31,7 @@ use crate::Msg;
 
 use super::list::{self, ListGeometry, Separators};
 use super::route_menu::fit_name;
-use super::{palette, Ctx, Render, Transition};
+use super::{palette, Ctx, Render, RideDetailScreen, Screen, Transition};
 
 /// Per-ride pane height (two lines: name + metadata), sized to fill the full list area (the old
 /// delete footer's band returned to rows).
@@ -62,8 +62,14 @@ impl RidesScreen {
         let len = cx.rides.len();
         match g {
             Gesture::Turn(n) => list::on_turn(&mut self.selected, n, len),
-            // Press opens the highlighted ride's detail — wired when the Ride detail screen
-            // lands (#680, the sibling commit).
+            // Press opens the highlighted ride's detail (#680). `viewed_ride` keys the host's
+            // track-profile fill — the detail's elevation band streams the ride's `RD{id}.ORD`
+            // once while the page is up (the Route overview's `active_route` idiom).
+            Gesture::Press if len > 0 => {
+                let i = self.selected.min(len - 1);
+                cx.activity.viewed_ride = Some(i);
+                Transition::Push(Screen::RideDetail(RideDetailScreen::new(i)))
+            }
             Gesture::Back => Transition::Pop, // return to the Menu
             _ => Transition::None,
         }
@@ -196,6 +202,29 @@ mod tests {
             now_ms: 0,
         };
         scr.handle(g, &mut cx)
+    }
+
+    /// Press opens the highlighted ride's detail and keys the host's track-profile fill on it
+    /// (`viewed_ride`) — the row is a door now, not a no-op (#680).
+    #[test]
+    fn press_opens_the_highlighted_rides_detail() {
+        let rides = [summary("A", true), summary("B", false)];
+        let mut act = Activity::new(Mode::Idle);
+        let mut scr = RidesScreen::new();
+        run(&mut scr, &mut act, &rides, Gesture::Turn(1)); // highlight row 1 ("B")
+        let t = run(&mut scr, &mut act, &rides, Gesture::Press);
+        assert!(matches!(t, Transition::Push(Screen::RideDetail(_))), "press pushes the Ride detail");
+        assert_eq!(act.viewed_ride, Some(1), "the detail's track request is keyed on the pressed row");
+    }
+
+    /// An empty catalog's press does nothing (no detail to open).
+    #[test]
+    fn press_on_an_empty_catalog_is_a_noop() {
+        let mut act = Activity::new(Mode::Idle);
+        let mut scr = RidesScreen::new();
+        let t = run(&mut scr, &mut act, &[], Gesture::Press);
+        assert!(matches!(t, Transition::None));
+        assert_eq!(act.viewed_ride, None);
     }
 
     /// The list carries no hold-to-delete anymore — a hold records nothing (deletes live on the

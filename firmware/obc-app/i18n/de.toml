@@ -248,6 +248,11 @@ no_rides_sub = "Fahrt aufzeichnen"
 recording = "Aufnahme"
 not_synced = "nicht sync."
 
+# --- Ride detail screen ---
+[ride_detail]
+synced = "sync."
+delete_ride = "Fahrt löschen"
+
 # --- Route menu screen ---
 [route_menu]
 title = "ROUTEN"

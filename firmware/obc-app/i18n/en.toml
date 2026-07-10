@@ -261,6 +261,11 @@ no_rides_sub = "Record a ride to see it here"
 recording = "Recording"
 not_synced = "not synced"
 
+# --- Ride detail screen ---
+[ride_detail]
+synced = "synced"
+delete_ride = "Delete ride"
+
 # --- Route menu screen ---
 [route_menu]
 title = "ROUTES"

@@ -385,6 +385,19 @@ pub struct App {
     /// The [`active_route`](Activity::active_route) the cached [`profile`](App::profile)
     /// was built for, so a route change triggers exactly one rebuild.
     profile_route: Option<usize>,
+    /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
+    /// detail's band source, and the app's **single** resident ride-profile buffer (the same
+    /// [`Profile`] type the route band uses; statics grow by exactly this one buffer). The app
+    /// can't build it itself — the track lives on the card — so the host fills it: on detail
+    /// entry [`take_ride_track_request`](App::take_ride_track_request) hands out the ride's
+    /// durable id, the host streams `RD{id}.ORD` once, and
+    /// [`set_ride_profile`](App::set_ride_profile) parks the result here. Invalidated when
+    /// [`Activity::viewed_ride`] leaves the ride (exit, or a rescan that vanished it).
+    ride_profile: Option<Profile>,
+    /// The [`viewed_ride`](Activity::viewed_ride) the [`ride_profile`](App::ride_profile) buffer
+    /// was **answered** for (a failed fill parks `None` under the same key, so a dead file isn't
+    /// re-streamed every pass), remapped by identity across rescans like every held ride index.
+    ride_profile_for: Option<usize>,
     /// The active route's detected climbs, segmented once on route load (one streaming chunk sweep,
     /// so never per frame). Empty when no route is loaded; [`climbs_route`](App::climbs_route)
     /// tracks which route the list was built for. The riding views query it (with hysteresis, via
@@ -712,6 +725,8 @@ impl App {
             stack,
             profile: None,
             profile_route: None,
+            ride_profile: None,
+            ride_profile_for: None,
             climbs: Climbs::new(),
             climbs_route: None,
             waypoints: Waypoints::new(),
@@ -790,6 +805,8 @@ impl App {
             let _ = (*slot).stack.push(Screen::Home(HomeScreen::new()));
             addr_of_mut!((*slot).profile).write(None);
             addr_of_mut!((*slot).profile_route).write(None);
+            addr_of_mut!((*slot).ride_profile).write(None);
+            addr_of_mut!((*slot).ride_profile_for).write(None);
             // The climb caches mirror the profile: an empty list + a zeroed detail buffer
             // (`Climbs::new`/`ClimbProfile::new` are const, so no large temporary is formed here).
             addr_of_mut!((*slot).climbs).write(Climbs::new());
@@ -833,6 +850,9 @@ impl App {
             addr_of_mut!((*slot).pending_warnings).write(WarningFlags::NONE);
             addr_of_mut!((*slot).warned).write(WarningFlags::NONE);
             addr_of_mut!((*slot).update_confirmed).write(None);
+            // (Was missing until #680's field audit: the boot-verdict field must be initialized
+            // like every other, or the board's first `reconcile_update_toast` reads uninit memory.)
+            addr_of_mut!((*slot).update_failed).write(None);
         }
     }
 
@@ -1418,8 +1438,11 @@ impl App {
             let _ = self.ride_catalog.push(s.clone());
             let _ = self.ride_catalog_ids.push(id);
         }
-        // Re-point the Rides menu's highlight by identity (its id in `old_ids` → new index), the
-        // ride-namespace twin of the route remap. Only the Rides screen holds a ride index.
+        // Re-point every held ride index by identity (its id in `old_ids` → new index), the
+        // ride-namespace twin of the route remap: the Rides menu's highlight, an open Ride
+        // detail's subject (#680 — a vanished subject becomes the detail's missing-ride state),
+        // and the viewed-ride/profile keys the detail's band hangs off (identity survives → the
+        // resident profile moves with it, no re-stream; vanished → the buffer drops below).
         let new_ids = &self.ride_catalog_ids;
         let remap = |i: usize| -> Option<usize> {
             let id = *old_ids.get(i)?;
@@ -1427,9 +1450,16 @@ impl App {
         };
         let new_len = new_ids.len();
         for s in self.stack.iter_mut() {
-            if let Screen::Rides(m) = s {
-                m.remap_rides(&remap, new_len);
+            match s {
+                Screen::Rides(m) => m.remap_rides(&remap, new_len),
+                Screen::RideDetail(d) => d.remap_rides(&remap),
+                _ => {}
             }
+        }
+        self.activity.viewed_ride = self.activity.viewed_ride.and_then(remap);
+        self.ride_profile_for = self.ride_profile_for.and_then(remap);
+        if self.ride_profile_for.is_none() {
+            self.ride_profile = None; // the profiled ride vanished (or none was profiled)
         }
         self.map_dirty = true;
     }
@@ -1460,6 +1490,33 @@ impl App {
     /// per-pass store work without draining the one-shot.
     pub fn has_ride_delete(&self) -> bool {
         self.activity.has_ride_delete()
+    }
+
+    /// The Ride detail's pending **track request** (epic #678 T2 / #680): the durable object id of
+    /// the ride whose recorded track the open detail screen wants profiled, or `None` when no
+    /// detail is open / the resident buffer is already answered for it. The host's cue to stream
+    /// `RD{id}.ORD` **once** (in chunks — never resident) and answer with
+    /// [`set_ride_profile`](App::set_ride_profile) — obc-route's `ride_elevation_profile` is the
+    /// shared builder. Resolved against the live [`ride_ids`](App::ride_ids), so a rescan racing
+    /// the entry can't profile the wrong ride (a vanished index yields `None`, and the detail
+    /// screen is showing its missing-ride state anyway). Re-polls until answered; answer `None`
+    /// on a failed stream so a dead file isn't ground against every pass.
+    pub fn take_ride_track_request(&mut self) -> Option<u16> {
+        let viewed = self.activity.viewed_ride?;
+        if self.ride_profile_for == Some(viewed) {
+            return None; // already answered for this ride (profile or a recorded failure)
+        }
+        self.ride_catalog_ids.get(viewed).copied()
+    }
+
+    /// Park the host's answer to [`take_ride_track_request`](App::take_ride_track_request) in the
+    /// app's single resident ride-profile buffer, keyed to the currently-viewed ride (`None` =
+    /// the stream failed; the band keeps its loading note and the request doesn't re-fire).
+    /// Dirties the map once — the open detail's band appears with the answer.
+    pub fn set_ride_profile(&mut self, profile: Option<Profile>) {
+        self.ride_profile = profile;
+        self.ride_profile_for = self.activity.viewed_ride;
+        self.map_dirty = true;
     }
 
     /// Drain the pending **route-planning request** (epic #116, R4) — the POI create-route
@@ -2591,6 +2648,13 @@ impl App {
             self.profile = route.map(|r| r.elevation_profile());
             self.profile_route = self.activity.active_route;
         }
+        // Invalidate the resident **ride** profile the moment it stops matching the viewed ride
+        // (#680): the detail exited (`viewed_ride` cleared) or moved subjects. Filling is the
+        // host's (`set_ride_profile`); only the drop lives here, so a stale band is never drawn.
+        if self.ride_profile_for != self.activity.viewed_ride {
+            self.ride_profile = None;
+            self.ride_profile_for = None;
+        }
 
         // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.now_ms);
@@ -2610,6 +2674,7 @@ impl App {
             stack,
             now_ms,
             profile,
+            ride_profile,
             climbs,
             climb_profile,
             waypoints,
@@ -2635,6 +2700,7 @@ impl App {
             nav_profiles,
             route,
             profile: profile.as_ref(),
+            ride_profile: ride_profile.as_ref(),
             climb,
             waypoints: &*waypoints,
             breadcrumb: &*breadcrumb,
@@ -4306,5 +4372,43 @@ mod tests {
         app.stack.pop(); // dismiss
         app.advance_animations(InputClock(3000));
         assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuFailed(_))), "shown once — the fact was consumed");
+    }
+
+    /// The Ride detail's track-request seam (#680): no request without an open detail; an open one
+    /// hands out the viewed ride's **durable id** and re-polls until answered; the host's answer
+    /// (even a failure's `None`) parks under the viewed key so a dead file isn't re-streamed every
+    /// pass; and a live rescan re-keys everything by identity, so the answer follows its ride.
+    #[test]
+    fn ride_track_request_hands_out_the_id_until_answered() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let ride = |name: &str| crate::ride::RideSummary {
+            name: heapless::String::try_from(name).unwrap(),
+            start_time: 1_720_000_000,
+            distance_m: 1_000,
+            moving_time_s: 600,
+            climb_m: 10,
+            synced: false,
+        };
+        app.set_rides(&[ride("A"), ride("B")], &[7, 9]);
+
+        assert_eq!(app.take_ride_track_request(), None, "no detail open — no request");
+
+        app.activity.viewed_ride = Some(1); // the Rides press's entry side-effect
+        assert_eq!(app.take_ride_track_request(), Some(9), "the viewed ride's durable id");
+        assert_eq!(app.take_ride_track_request(), Some(9), "re-polls until the host answers");
+
+        app.set_ride_profile(None); // a failed stream still answers — no per-pass grind
+        assert_eq!(app.take_ride_track_request(), None, "answered for this ride");
+
+        // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
+        // follow by identity, so nothing re-fires.
+        app.set_rides(&[ride("B")], &[9]);
+        assert_eq!(app.activity.viewed_ride, Some(0), "the viewed index follows the id");
+        assert_eq!(app.take_ride_track_request(), None, "the answer moved with it");
+
+        // The viewed ride itself vanishing clears the keys — nothing left to request.
+        app.set_rides(&[ride("A")], &[7]);
+        assert_eq!(app.activity.viewed_ride, None);
+        assert_eq!(app.take_ride_track_request(), None);
     }
 }
