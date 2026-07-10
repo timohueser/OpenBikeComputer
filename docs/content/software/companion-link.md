@@ -95,6 +95,7 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `2` | `ride` | device → app | the compact ride object (a tracked ride) |
 | `4` | `diagnostics` | device → app | an opaque text blob (boot count, link + storage counters, stack high-water…) |
 | `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed 72-byte entries |
+| `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
 | `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
 
 The key move is that **a route on the wire is the same bytes as a route on the
@@ -104,6 +105,17 @@ same way. There is no separate "detail" codec — the app's route-detail screen
 decodes the very OBCR bytes it uploaded. One layout, one truth. A tracked ride
 is the mirror in the other direction: the device stores each finished ride as
 the exact bytes it will later stream, so a ride download is a verbatim file copy.
+
+One object is not a stored file but a **firmware update**: a `fwImage` upload
+carries an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, which the device
+writes to the card root verbatim — the transfer layer stays format-blind, exactly
+as with a route's OBCR bytes. **Staging is not installing.** A committed `fwImage`
+only *places* the file; the app then sends a separate `installFw` command to
+*request* an install, and the device runs its own scan and shows a **confirm card**
+that the rider must approve with a physical encoder press. The phone can never arm
+or reboot the device on its own — the same on-glass gate the pairing passkey uses.
+The whole trust model, the two delivery paths, and the RRAM layout are on the
+[firmware updates](../firmware-updates/) page.
 
 **Object ids are durable.** Each stored object has a `u16` id the device assigns
 and keeps **stable across reboots** — the reference firmware encodes it right in

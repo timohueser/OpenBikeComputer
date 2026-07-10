@@ -50,9 +50,12 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `packer/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
 | `packer/web_builder/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
 | `firmware/obc-ble/` | `no_std` — the **BLE data-plane core** (epic #267): the S0 control-plane descriptor codecs, CRC-32, list objects, and the whole-object transfer state machine. Radio-free and host-tested; the board crate drives the L2CAP bytes through it. |
+| `firmware/obc-dfu/` | `no_std` — the **SD-staged DFU core** (epic #615): the `OBCU` update-image container + boot-state page codecs, the bootloader's install engine (verify → flash → readback → trial/rollback), and the app-side armer. Host-tested with mock IO; both `obc-boot` and the board crate are thin drivers over it. |
+| `firmware/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
+| `firmware/obc-boot/` | The **32 KB nRF54L bootloader** — reads the `BOOT_STATE` page, runs `obc-dfu`'s install engine, flashes the app slot via RRAMC (LED codes, no display). Workspace-excluded + standalone like the board crate; flashed once. |
 | `companion-ios/` | The **iOS companion app** (SwiftUI + the `OBCKit` package): import GPX/TCX, encode OBCR, and sync routes/rides with the device over BLE. |
 | `protocol-vectors/` | Shared binary fixtures pinning the BLE wire contract — asserted byte-exact by both `cargo test` and `swift test`. |
-| `OBCM_Spec.md` / `OBCR_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route format specifications and the BLE wire contract. |
+| `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route / firmware-update-image format specifications and the BLE wire contract. |
 | `firmware/docs/`, `packer/docs/` | Design notes and handover docs (UI spec, rendering pipeline, line-style plans, packer port stages…). |
 
 The crate dependency direction is `obc-sim → obc-app → obc-render → obc-reader`
