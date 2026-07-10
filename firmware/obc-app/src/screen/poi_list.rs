@@ -236,43 +236,77 @@ fn draw_poi_row(
     // just to its right.
     if let (Some(fix), Some(heading)) = (fix, heading) {
         let arrow_mid = line2_top + Font::Label.cap_height() as i32 / 2;
-        draw_bearing_arrow(cv, Point::new(x + ARROW_R, arrow_mid), (fix.lon, fix.lat), (poi.lon, poi.lat), heading);
+        draw_bearing_arrow(
+            cv,
+            Point::new(x + ARROW_R, arrow_mid),
+            ARROW_R,
+            (fix.lon, fix.lat),
+            (poi.lon, poi.lat),
+            heading,
+        );
         text_x = x + 2 * ARROW_R + 8;
     }
     cv.text(&dist, Point::new(text_x, line2_top), Font::Label, TextAlign::Left, SUBTEXT);
 }
 
-/// Half-size of the bearing-arrow glyph (px) — a chevron ~`2 * ARROW_R` across, ~2 chars wide.
-/// Shared with the [detail screen](super::PoiDetailScreen), which draws the same live arrow.
-pub(super) const ARROW_R: i32 = 7;
+/// Half-size of the list rows' bearing-arrow glyph (px) — an ≈11×11 box in the same slot before
+/// the distance. The [detail screen](super::PoiDetailScreen) draws the same arrow at Body-line
+/// size by passing a larger radius.
+pub(super) const ARROW_R: i32 = 5;
 
-/// Draw a 16-direction bearing chevron centred at `c`, pointing from the rider toward the POI
-/// **relative to the rider's heading** — a filled triangular arrowhead like the user-position
-/// marker, not a font glyph. `pos`/`poi` are `(lon, lat)` µdeg; `heading_deg` is CW from north.
+/// The 8-way quantized on-screen direction of the bearing from `pos` to the POI **relative to the
+/// rider's heading** — octant 0 = straight ahead (up), 1 = up-right, … clockwise in 45° steps
+/// (#685 §1: at glyph size a degree-true arrow just smudges; the 8 snapped directions read
+/// without focusing). `pos`/`poi` are `(lon, lat)` µdeg; `heading_deg` is CW from north.
 ///
 /// Geometry: the true bearing to the POI is `atan2(east, north)` (CW from north) with the east
 /// component scaled by `cos_lat` (local-equirectangular, matching the reader's distance metric);
-/// subtracting the heading gives the on-screen angle, where 0° points up and clockwise is positive,
-/// so the unit direction is `(sin θ, -cos θ)`.
-///
-/// Shared with the [detail screen](super::PoiDetailScreen) so the one arrow trig lives in one place.
-pub(super) fn draw_bearing_arrow(cv: &mut impl Surface, c: Point, pos: (i32, i32), poi: (i32, i32), heading_deg: f32) {
+/// subtracting the heading gives the on-screen angle, rounded to the nearest 45° step.
+pub(super) fn bearing_octant(pos: (i32, i32), poi: (i32, i32), heading_deg: f32) -> usize {
     let dlat = (poi.1 - pos.1) as f32;
     let dlon = (poi.0 - pos.0) as f32;
     let east = dlon * cos_lat(pos.1);
     // atan2(east, north): 0 = due north, +east (clockwise) positive — same convention as `heading`.
     let bearing = libm::atan2f(east, dlat);
     let theta = bearing - heading_deg.to_radians();
-    let (ux, uy) = (libm::sinf(theta), -libm::cosf(theta)); // screen: 0° up, CW positive
-    let (px, py) = (-uy, ux); // perpendicular = arrowhead base spread
+    (libm::roundf(theta / core::f32::consts::FRAC_PI_4) as i32).rem_euclid(8) as usize
+}
 
-    let r = ARROW_R as f32;
-    let tip = Point::new(c.x + (ux * r) as i32, c.y + (uy * r) as i32);
-    // Base corners behind the centre, spread to ~0.75 r — a compact solid arrowhead.
-    let back = (-r * 0.6, r * 0.75);
-    let bl = Point::new(c.x + (ux * back.0 - px * back.1) as i32, c.y + (uy * back.0 - py * back.1) as i32);
-    let br = Point::new(c.x + (ux * back.0 + px * back.1) as i32, c.y + (uy * back.0 + py * back.1) as i32);
-    cv.triangle(tip, bl, br, palette::WOOD);
+/// Draw the 8-way bearing arrow centred at `c` with half-size `r` — a full arrow (shaft + two
+/// 135° barbs) in the doubled-1-px stroke idiom (the menu bezel ticks / passkey phone), so it
+/// reads bold at glyph size where the old filled chevron was a smudge. Direction comes from
+/// [`bearing_octant`], so the drawn angles are exactly the 8 compass steps.
+///
+/// Shared with the [detail screen](super::PoiDetailScreen), which draws it at Body-line size.
+pub(super) fn draw_bearing_arrow(
+    cv: &mut impl Surface,
+    c: Point,
+    r: i32,
+    pos: (i32, i32),
+    poi: (i32, i32),
+    heading_deg: f32,
+) {
+    use core::f32::consts::FRAC_PI_4;
+    let theta = bearing_octant(pos, poi, heading_deg) as f32 * FRAC_PI_4;
+    let rf = r as f32;
+    let end = |from: Point, ang: f32, len: f32| {
+        Point::new(from.x + libm::roundf(libm::sinf(ang) * len) as i32, from.y - libm::roundf(libm::cosf(ang) * len) as i32)
+    };
+    let tip = end(c, theta, rf);
+    let tail = end(c, theta + core::f32::consts::PI, rf);
+    stroke2(cv, tail, tip, palette::WOOD);
+    // Barbs off the tip at ±135° from the direction, ~3/4 of the half-size long.
+    for da in [3.0 * FRAC_PI_4, -3.0 * FRAC_PI_4] {
+        stroke2(cv, tip, end(tip, theta + da, rf * 0.75), palette::WOOD);
+    }
+}
+
+/// Doubled-1-px stroke: the segment plus a twin offset 1 px across its dominant axis — the
+/// panel's 2 px line idiom (no thick-line primitive on the canvas).
+fn stroke2(cv: &mut impl Surface, a: Point, b: Point, color: u16) {
+    cv.line(a, b, color);
+    let off = if (b.x - a.x).abs() > (b.y - a.y).abs() { Point::new(0, 1) } else { Point::new(1, 0) };
+    cv.line(a + off, b + off, color);
 }
 
 /// Fit `s` into `max` chars, appending ".." when truncated (no ellipsis glyph). Truncates on a char
@@ -294,39 +328,23 @@ fn fit(s: &str, max: usize) -> heapless::String<24> {
 mod tests {
     use super::*;
 
-    /// Screen-space unit direction of the bearing arrow for a POI at `(poi_lon, poi_lat)` seen from
-    /// `pos` with `heading_deg` — the same math `draw_bearing_arrow` renders, exposed for the
-    /// geometry tests. `(0, -1)` is up, `(1, 0)` is right.
-    fn arrow_dir(pos: (i32, i32), poi: (i32, i32), heading_deg: f32) -> (f32, f32) {
-        let dlat = (poi.1 - pos.1) as f32;
-        let dlon = (poi.0 - pos.0) as f32;
-        let east = dlon * cos_lat(pos.1);
-        let bearing = libm::atan2f(east, dlat);
-        let theta = bearing - heading_deg.to_radians();
-        (libm::sinf(theta), -libm::cosf(theta))
-    }
-
-    fn approx(a: (f32, f32), b: (f32, f32)) {
-        assert!((a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02, "dir {a:?} != {b:?}");
-    }
-
-    /// A POI due north with a north-facing heading points straight up.
+    /// A POI due north with a north-facing heading points straight up (octant 0).
     #[test]
     fn due_north_north_course_points_up() {
         let pos = (7_000_000, 43_000_000);
         let north = (7_000_000, 43_010_000);
-        approx(arrow_dir(pos, north, 0.0), (0.0, -1.0));
+        assert_eq!(bearing_octant(pos, north, 0.0), 0);
     }
 
     /// The arrow rotates with the heading: same POI due north, but facing east ⇒ it points to the
-    /// rider's left (west on screen), and facing south ⇒ it points down.
+    /// rider's left (octant 6), facing south ⇒ down (octant 4), facing west ⇒ right (octant 2).
     #[test]
     fn arrow_rotates_with_heading() {
         let pos = (7_000_000, 43_000_000);
         let north = (7_000_000, 43_010_000);
-        approx(arrow_dir(pos, north, 90.0), (-1.0, 0.0)); // heading east ⇒ north is on the left
-        approx(arrow_dir(pos, north, 180.0), (0.0, 1.0)); // heading south ⇒ north is behind (down)
-        approx(arrow_dir(pos, north, 270.0), (1.0, 0.0)); // heading west ⇒ north is on the right
+        assert_eq!(bearing_octant(pos, north, 90.0), 6); // heading east ⇒ north is on the left
+        assert_eq!(bearing_octant(pos, north, 180.0), 4); // heading south ⇒ north is behind (down)
+        assert_eq!(bearing_octant(pos, north, 270.0), 2); // heading west ⇒ north is on the right
     }
 
     /// A POI due east with a north heading points right; the cos_lat scaling doesn't rotate a
@@ -335,6 +353,27 @@ mod tests {
     fn due_east_north_course_points_right() {
         let pos = (7_000_000, 43_000_000);
         let east = (7_010_000, 43_000_000);
-        approx(arrow_dir(pos, east, 0.0), (1.0, 0.0));
+        assert_eq!(bearing_octant(pos, east, 0.0), 2);
+    }
+
+    /// Quantization snaps to the **nearest** 45° step in both directions: a bearing a hair past
+    /// the 22.5° boundary rounds up to the diagonal, a hair before it stays cardinal, and a
+    /// slightly-west-of-north bearing wraps to octant 7 (up-left), not 0.
+    #[test]
+    fn bearing_quantizes_to_the_nearest_octant() {
+        let pos = (7_000_000, 43_000_000);
+        // cos_lat(43°) ≈ 0.731 — pick lon offsets whose *scaled* east component sets the angle.
+        // 30° east of north: east/north = tan(30°) = 0.577 ⇒ dlon = 0.577/0.731 × dlat.
+        let ne = (7_007_895, 43_010_000); // atan(0.7895 × 0.731 / 1.0) ≈ 30° ⇒ nearest is 45° (oct 1)
+        assert_eq!(bearing_octant(pos, ne, 0.0), 1);
+        // 10° east of north stays cardinal (oct 0): dlon = tan(10°)/0.731 × dlat ≈ 0.2413 × dlat.
+        let n10 = (7_002_413, 43_010_000);
+        assert_eq!(bearing_octant(pos, n10, 0.0), 0);
+        // 10° WEST of north wraps to… still octant 0 (nearest); 30° west snaps to octant 7.
+        let w30 = (6_992_105, 43_010_000);
+        assert_eq!(bearing_octant(pos, w30, 0.0), 7);
+        // A heading turn walks the octants: the 30°-east POI seen while heading 90° (east) sits
+        // 60° to the left ⇒ nearest step is −45° ⇒ octant 7.
+        assert_eq!(bearing_octant(pos, ne, 90.0), 7);
     }
 }
