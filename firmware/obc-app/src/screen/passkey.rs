@@ -15,6 +15,7 @@ use core::fmt::Write as _;
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
+    rect,
     text::{Font, TextAlign},
     Surface,
 };
@@ -52,13 +53,19 @@ impl PasskeyScreen {
         // prompt rather than a menu (no title-bar readout, no BLE glyph: the whole screen is the cue).
         super::title_frame(cv, w, h, rx.t(Msg::PasskeyTitle), "");
 
-        // The six digits, zero-padded, in the Huge tier — the one oversized readout besides the Home
-        // clock. LESC passkeys are 000000–999999, so `{:06}` always fits the six 32 px cells (192 px)
-        // inside the 240 px panel. Centred a touch above mid so the caption below it balances the card.
+        // The six digits, zero-padded and grouped `000 042` (three, space, three — leading zeros
+        // kept), in the Huge tier — the one oversized readout besides the Home clock. LESC passkeys
+        // are 000000–999999, so the seven 32 px cells (224 px) always fit the 240 px panel. Centred
+        // a touch above mid so the caption below it balances the card.
+        let key = self.passkey.min(999_999);
         let mut code: heapless::String<8> = heapless::String::new();
-        let _ = write!(code, "{:06}", self.passkey.min(999_999));
+        let _ = write!(code, "{:03} {:03}", key / 1000, key % 1000);
         let code_top = h * 42 / 100 - Font::Huge.cap_height() as i32 / 2;
         cv.text(&code, Point::new(w / 2, code_top), Font::Huge, TextAlign::Center, INK);
+
+        // The device↔phone pair in the glyph slot above the code (dialog anatomy, #678 T1): the
+        // Bluetooth rune, three dashes for the link, a phone outline — quiet, no animation.
+        pair_glyph(cv, w / 2, (super::TITLE_BAR_H + code_top) / 2);
 
         // The caption: the phone types this code (the device is DisplayOnly). Plain, functional, and
         // split across two lines so it fits the 240 px panel in the Label tier (≈ 20 chars/line).
@@ -67,4 +74,26 @@ impl PasskeyScreen {
         cv.text(rx.t(Msg::PasskeyEnterCode), Point::new(w / 2, cap_top), Font::Label, TextAlign::Center, SUBTEXT);
         cv.text(rx.t(Msg::PasskeyOnPhone), Point::new(w / 2, cap_top + line), Font::Label, TextAlign::Center, SUBTEXT);
     }
+}
+
+/// The **device↔phone pair**: the shared Bluetooth rune (this device) on the left, three
+/// horizontal 2 px dashes (the link), and a phone outline (a rounded ≈12×20 px rect in a 2 px INK
+/// stroke with a 1 px speaker line near the top) — centred as a group on `(cx, cy)`. All ink,
+/// static: the code is the star, this just says who talks to whom.
+fn pair_glyph(cv: &mut impl Surface, cx: i32, cy: i32) {
+    use palette::*;
+    // Group layout, left to right: rune (11) · gap (8) · dashes (5+3+5+3+5 = 21) · gap (8) ·
+    // phone (12) — 60 px total, centred on `cx`.
+    let x0 = cx - 30;
+    super::ble_glyph(cv, x0, cy, INK);
+    let mut x = x0 + super::BLE_GLYPH_W + 8;
+    for _ in 0..3 {
+        cv.fill(rect(x, cy - 1, 5, 2), INK);
+        x += 5 + 3;
+    }
+    // The phone: a doubled 1 px round-rect outline for the 2 px stroke, plus the speaker line.
+    let px = x + 5;
+    cv.round_outline(rect(px, cy - 10, 12, 20), 3, INK);
+    cv.round_outline(rect(px + 1, cy - 9, 10, 18), 2, INK);
+    cv.hline(px + 4, cy - 6, 4, INK);
 }
