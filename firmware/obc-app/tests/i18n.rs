@@ -118,6 +118,9 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
             compass: None,
             track: None,
             fuel: None,
+            hr: None,
+            power: None,
+            cadence: None,
         },
         None,
     );
