@@ -5,15 +5,14 @@
 //! §8 amendment).
 //!
 //! The toggle edits [`Settings`] in place like every settings screen — the host persists it and
-//! carries the change to the radio plane. Forget wears the guarded delete-row face (owner review
-//! round 2: "shouldn't it look like a button?") — the Route overview / Ride detail Delete rows'
-//! always-visible `PARCHMENT_SHADE` base with a left-aligned Body label, filling warning-red with
-//! the live hold; the completed hold sets [`AppState::ble_forget_pending`](crate::AppState) for
-//! the host to drain — no extra confirmation popup, the guarded hold *is* the confirmation. With
-//! **no bond stored the row isn't drawn at all** (the round-1 grammar: delete-class actions appear
-//! only when possible), and Turn has nothing to select below the toggle. Because the base is
-//! always visible (unlike the ride_control menus, where the shade doubles as the cursor), row
-//! focus is a 2 px ink outline around the button.
+//! carries the change to the radio plane. Forget is a **Pause-menu (ride_control) guarded row**
+//! (owner review round 3 — the round-2 always-visible base + focus outline retired with the rest
+//! of that idiom): a plain left-aligned Body label while unselected, the `PARCHMENT_SHADE` base
+//! filling warning-red with the live hold while selected; the completed hold sets
+//! [`AppState::ble_forget_pending`](crate::AppState) for the host to drain — no extra
+//! confirmation popup, the guarded hold *is* the confirmation. With **no bond stored the row
+//! isn't drawn at all** (the round-1 grammar: delete-class actions appear only when possible),
+//! and Turn has nothing to select below the toggle.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -126,19 +125,16 @@ impl BluetoothScreen {
         let paired = if rx.state.ble_paired { rx.t(Msg::BluetoothYes) } else { rx.t(Msg::BluetoothNo) };
         cv.text(paired, Point::new(info_x, y1 + 24), Font::Body, TextAlign::Left, INK);
 
-        // The Forget row — the guarded **delete-button face** (owner review round 2: visually the
-        // Route overview / Ride detail Delete row): the always-visible PARCHMENT_SHADE base at the
-        // delete rows' bottom anchor, a left-aligned Body label, warning-red hold fill. Drawn only
-        // while a bond is stored — with nothing to forget the row simply isn't there (the round-1
-        // only-when-possible grammar). Because the base never doubles as the cursor here, row
-        // focus is a 2 px ink outline around the button.
+        // The Forget row — the Pause-menu guarded-row treatment (owner review round 3: the round-2
+        // focus outline is retired everywhere): a plain left-aligned Body label while unselected,
+        // the shaded base + warning-red hold fill only while the cursor is on it — exactly the
+        // ride_control family's selected-guarded face, at the delete rows' bottom anchor. Drawn
+        // only while a bond is stored — with nothing to forget the row simply isn't there (the
+        // round-1 only-when-possible grammar).
         if rx.state.ble_paired {
             let fy = h - 10 - FORGET_H;
             let row = super::row_rect(fy, w, FORGET_H);
-            confirm_row(cv, row, true, true, rx.hold_progress, WARNING, 6);
-            if selected == FORGET {
-                crate::screen::focus_outline(cv, row, 6);
-            }
+            confirm_row(cv, row, selected == FORGET, true, rx.hold_progress, WARNING, 6);
             cv.text_vcentered(
                 rx.t(Msg::BluetoothForget),
                 row.top_left.x + 12,
