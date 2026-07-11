@@ -70,10 +70,12 @@ const N_ITEMS: usize = 2;
 
 const VIEW: usize = 0;
 
-/// The mini elevation band's footprint (#682): ≈180×32 px, centred, sitting a little below the
-/// stats line. [`SPARK_TOP`] is its top offset from the title bar's bottom.
+/// The mini elevation band's footprint (#682): ≈180 px wide, centred, sitting a little below the
+/// stats line. Grown 32 → 52 px tall in owner review round 2 ("the one from the route overview is
+/// bigger though, and it looks better") — the card's spare bottom air absorbs it, the option rows
+/// keep their spacing below. [`SPARK_TOP`] is its top offset from the title bar's bottom.
 const SPARK_W: i32 = 180;
-const SPARK_H: i32 = 32;
+const SPARK_H: i32 = 52;
 const SPARK_TOP: i32 = 62;
 
 /// The idle "ROUTE RECEIVED" prompt. Carries the received route as a remappable catalog index
