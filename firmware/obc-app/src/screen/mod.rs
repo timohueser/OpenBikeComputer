@@ -71,7 +71,8 @@ pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AddFieldScreen, BikeTypeScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, LanguageScreen, PowerScreen,
-    ResetScreen, SettingsScreen, StatFieldsScreen, StatsScreen, SystemScreen, UnitsScreen,
+    ResetScreen, SensorScanScreen, SensorsScreen, SettingsScreen, StatFieldsScreen, StatsScreen, SystemScreen,
+    UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use warning::{WarningFlags, WarningScreen};
@@ -152,6 +153,10 @@ pub struct Ctx<'a> {
     /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
     /// place `handle` reaches the draw-taken snapshot. Every other screen leaves it untouched.
     pub poi_scratch: &'a PoiScratch,
+    /// The live BLE **sensor scan hits** (epic #707, SE7), read-only here — the scan-list screen's
+    /// `Gesture::Press` reads the highlighted hit's address out of it to save + connect. Empty outside
+    /// a scan; every other screen leaves it untouched.
+    pub sensor_scan_hits: &'a [crate::sensors::SensorScanHit],
     pub now_ms: u32,
 }
 
@@ -237,6 +242,13 @@ pub struct Render<'a, 'd> {
     /// this on the first draw with a `Reader` + fix (see [`PoiScratch`]); every other screen leaves
     /// it untouched. `&mut` because that lazy fill is the one screen write that happens at draw time.
     pub poi_scratch: &'a mut PoiScratch,
+    /// The per-slot BLE **sensor status** (epic #707, SE7) — the Sensors settings screen draws the
+    /// HR / power / cadence rows' status lines from it. Fed each pass by the host; empty defaults
+    /// elsewhere, so the screen indexes it by slot unconditionally.
+    pub sensor_status: &'a [crate::sensors::SensorStatus],
+    /// The live BLE **sensor scan hits** (epic #707, SE7) — the scan-list screen's rows (name/address
+    /// + RSSI, filtered to the row's quantity). Empty outside a scan.
+    pub sensor_scan_hits: &'a [crate::sensors::SensorScanHit],
     /// Panel size in device pixels. Integer, because every screen lays out in whole pixels;
     /// the Map computes its `f32` viewport locally.
     pub w: i32,
@@ -461,6 +473,11 @@ screens! {
     Power(PowerScreen) => Settings,
     /// The Bluetooth screen: radio on/off, status line, Paired row, hold-guarded Forget phone.
     Bluetooth(BluetoothScreen) => Settings,
+    /// The Sensors screen (BLE sensors epic #707, SE7): the HR / power / cadence rows with their live
+    /// status; press → scan list, hold a saved row → forget.
+    Sensors(SensorsScreen) => Settings,
+    /// One quantity's live scan list (SE7): the discovered sensors of that kind; press saves + connects.
+    SensorScan(SensorScanScreen) => Settings,
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Settings,
@@ -517,6 +534,7 @@ impl Screen {
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Bluetooth(s) => s.selection_is_guarded(state.ble_paired),
+            Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(activity, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
             _ => false,

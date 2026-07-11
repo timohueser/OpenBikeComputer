@@ -582,6 +582,17 @@ pub struct App {
     /// never gates a map redraw; [`ble_passkey`](App::ble_passkey) exposes it for tests to observe
     /// the seam carrying it.
     ble_passkey: Option<u32>,
+    /// The per-slot BLE **sensor status** (BLE sensors epic #707, SE7): HR / power / cadence
+    /// connection phase + battery + live tick, fed each pass by the host through
+    /// [`set_sensor_status`](App::set_sensor_status) and drawn only by the Sensors settings screen.
+    /// Held off [`AppState`] like [`ble_passkey`](App::ble_passkey) so feeding it never gates a map
+    /// redraw on a non-sensor screen; the Sensors screen's repaint is gated on an actual change to a
+    /// slot while it is up.
+    sensor_status: [crate::sensors::SensorStatus; crate::settings::SENSOR_SLOTS],
+    /// The live **sensor scan hits** (SE7): the sensors discovered while the scan-list screen runs a
+    /// scan, fed by the host through [`set_sensor_scan_hits`](App::set_sensor_scan_hits). Empty
+    /// outside a scan; replaced wholesale each pass while one runs.
+    sensor_scan_hits: crate::sensors::SensorScanHits,
     /// Count of [`notify_store_changed`](App::notify_store_changed) calls not yet acted on. The host
     /// drains it once per pass via [`take_store_changed`](App::take_store_changed) and answers a
     /// non-zero count with a store rescan → [`set_routes_with_ids`](App::set_routes_with_ids) (#450).
@@ -816,6 +827,8 @@ impl App {
             prev_no_fix: true,
             poi_scratch: screen::PoiScratch::new(),
             ble_passkey: None,
+            sensor_status: [crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS],
+            sensor_scan_hits: crate::sensors::SensorScanHits::new(),
             store_changed_pending: 0,
             pending_upload: None,
             pending_warnings: WarningFlags::NONE,
@@ -912,6 +925,9 @@ impl App {
             addr_of_mut!((*slot).prev_no_fix).write(true);
             addr_of_mut!((*slot).poi_scratch).write(screen::PoiScratch::new());
             addr_of_mut!((*slot).ble_passkey).write(None);
+            addr_of_mut!((*slot).sensor_status)
+                .write([crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS]);
+            addr_of_mut!((*slot).sensor_scan_hits).write(crate::sensors::SensorScanHits::new());
             addr_of_mut!((*slot).store_changed_pending).write(0);
             addr_of_mut!((*slot).pending_upload).write(None);
             addr_of_mut!((*slot).pending_warnings).write(WarningFlags::NONE);
@@ -2050,6 +2066,76 @@ impl App {
         self.ble_passkey
     }
 
+    // ==================== BLE sensor seam (epic #707, SE7) ====================
+
+    /// Feed the host's per-slot **sensor status** ([`SensorStatus`](crate::sensors::SensorStatus)) —
+    /// the central manager's HR / power / cadence connection phase + battery + live tick, distilled to
+    /// app vocabulary and pushed each pass (the board's `ble::sensors` snapshot, or the sim's fake
+    /// manager). Stored app-side like [`set_ble_status`](App::set_ble_status); no radio type crosses
+    /// the seam. Up to [`SENSOR_SLOTS`](crate::settings::SENSOR_SLOTS) slots are copied (extra ignored).
+    ///
+    /// A change **while the Sensors screen is up** dirties the map so the status lines repaint; on any
+    /// other screen the status isn't drawn, so an update — fed every pass — repaints nothing.
+    pub fn set_sensor_status(&mut self, status: &[crate::sensors::SensorStatus]) {
+        let mut next = self.sensor_status;
+        for (dst, src) in next.iter_mut().zip(status) {
+            *dst = *src;
+        }
+        if next != self.sensor_status {
+            self.sensor_status = next;
+            if self.sensors_screen_up() {
+                self.map_dirty = true;
+            }
+        }
+    }
+
+    /// Feed the host's live **sensor scan hits** ([`SensorScanHit`](crate::sensors::SensorScanHit)) —
+    /// the sensors discovered while the scan-list screen runs a scan. Replaces the resident list
+    /// wholesale (up to [`SCAN_HITS_MAX`](crate::sensors::SCAN_HITS_MAX)); an empty slice clears it
+    /// (the host feeds `&[]` when no scan is active). A change while the scan screen is up dirties the
+    /// map so a freshly-found sensor appears without waiting for another input.
+    pub fn set_sensor_scan_hits(&mut self, hits: &[crate::sensors::SensorScanHit]) {
+        let changed =
+            self.sensor_scan_hits.len() != hits.len() || self.sensor_scan_hits.iter().zip(hits).any(|(a, b)| a != b);
+        if !changed {
+            return;
+        }
+        self.sensor_scan_hits.clear();
+        for h in hits.iter().take(crate::sensors::SCAN_HITS_MAX) {
+            let _ = self.sensor_scan_hits.push(h.clone());
+        }
+        if self.sensors_screen_up() {
+            self.map_dirty = true;
+        }
+    }
+
+    /// The per-slot sensor status as last fed to [`set_sensor_status`](App::set_sensor_status) — the
+    /// Sensors screen's row source, and how a test observes the seam end to end.
+    pub fn sensor_status(&self) -> &[crate::sensors::SensorStatus] {
+        &self.sensor_status
+    }
+
+    /// The live sensor scan hits as last fed to [`set_sensor_scan_hits`](App::set_sensor_scan_hits) —
+    /// the scan-list screen's rows.
+    pub fn sensor_scan_hits(&self) -> &[crate::sensors::SensorScanHit] {
+        &self.sensor_scan_hits
+    }
+
+    /// Whether the rider is on the **scan-list** screen and a scan should run (SE7) — the level the
+    /// Sensors screen raises on entry to a row and lowers on exit/Back
+    /// ([`Activity::request_sensor_scan`](crate::activity::Activity)). The host reads it each pass (the
+    /// `set_radio_enabled` shape): while `true` it keeps a discovery scan running and feeds the hits
+    /// back; when it falls it clears the app scan list.
+    pub fn sensor_scan_active(&self) -> bool {
+        self.activity.sensor_scan_active()
+    }
+
+    /// Whether the Sensors settings screen (its row list or a scan list) is the top screen — gates the
+    /// sensor-seam repaint so a status/scan-hit update dirties the map only where it's drawn.
+    fn sensors_screen_up(&self) -> bool {
+        matches!(self.stack.last(), Some(Screen::Sensors(_) | Screen::SensorScan(_)))
+    }
+
     /// Signal that the object store committed or deleted an object (epic #447) — rung from the board's
     /// `ObjectStore` commit/delete paths, the same edge that notifies the phone's `storeChanged`.
     ///
@@ -2523,8 +2609,19 @@ impl App {
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
-        let App { state, activity, settings, catalog, ride_catalog, nav_profiles, stack, now_ms, poi_scratch, .. } =
-            self;
+        let App {
+            state,
+            activity,
+            settings,
+            catalog,
+            ride_catalog,
+            nav_profiles,
+            stack,
+            now_ms,
+            poi_scratch,
+            sensor_scan_hits,
+            ..
+        } = self;
         let mut cx = Ctx {
             state,
             activity,
@@ -2533,6 +2630,7 @@ impl App {
             rides: ride_catalog.as_slice(),
             nav_profiles,
             poi_scratch,
+            sensor_scan_hits: sensor_scan_hits.as_slice(),
             now_ms: *now_ms,
         };
         let t = stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
@@ -2891,6 +2989,8 @@ impl App {
             nav_preview_route,
             ride_preview,
             ride_preview_for,
+            sensor_status,
+            sensor_scan_hits,
             ..
         } = self;
         // The shape previews draw only for the subject they were decimated for — a stale key
@@ -2924,6 +3024,8 @@ impl App {
             nav_preview,
             ride_preview,
             poi_scratch,
+            sensor_status: sensor_status.as_slice(),
+            sensor_scan_hits: sensor_scan_hits.as_slice(),
             w: w as i32,
             h: h as i32,
             now_ms: *now_ms,
