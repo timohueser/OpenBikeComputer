@@ -5,10 +5,15 @@
 //! §8 amendment).
 //!
 //! The toggle edits [`Settings`] in place like every settings screen — the host persists it and
-//! carries the change to the radio plane. Forget is the guarded-hold idiom (the RideControl /
-//! Route-swap confirm row): selecting the row and holding fills it warning-red; the completed hold
-//! sets [`AppState::ble_forget_pending`](crate::AppState) for the host to drain — no extra
-//! confirmation popup, the guarded hold *is* the confirmation.
+//! carries the change to the radio plane. Forget wears the guarded delete-row face (owner review
+//! round 2: "shouldn't it look like a button?") — the Route overview / Ride detail Delete rows'
+//! always-visible `PARCHMENT_SHADE` base with a left-aligned Body label, filling warning-red with
+//! the live hold; the completed hold sets [`AppState::ble_forget_pending`](crate::AppState) for
+//! the host to drain — no extra confirmation popup, the guarded hold *is* the confirmation. With
+//! **no bond stored the row isn't drawn at all** (the round-1 grammar: delete-class actions appear
+//! only when possible), and Turn has nothing to select below the toggle. Because the base is
+//! always visible (unlike the ride_control menus, where the shade doubles as the cursor), row
+//! focus is a 2 px ink outline around the button.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -24,14 +29,25 @@ use crate::Msg;
 
 /// Toggle-row height — matches the other settings screens' two-line rows.
 const ROW_H: i32 = 58;
-/// The Forget row's height (a single-line confirm row).
-const FORGET_H: i32 = 46;
+/// The Forget row's height + bottom anchor — the Route overview Delete row's geometry family
+/// (38 px tall, the standard 10 px above the card bottom), so the two button faces match.
+const FORGET_H: i32 = 38;
 
 /// The two selectable rows: the radio toggle and the Forget action (the status/paired lines
-/// between them are read-only).
+/// between them are read-only). The Forget row exists only while a bond is stored — see
+/// [`rows`].
 const TOGGLE: usize = 0;
 const FORGET: usize = 1;
-const ROWS: usize = 2;
+
+/// How many rows the cursor can reach: just the toggle without a stored bond (the Forget row is
+/// hidden entirely then — the round-1 only-when-possible grammar), both with one.
+fn rows(paired: bool) -> usize {
+    if paired {
+        2
+    } else {
+        1
+    }
+}
 
 /// The Bluetooth screen. State is just the highlighted row.
 #[derive(Debug, Default)]
@@ -54,7 +70,11 @@ impl BluetoothScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Turn(n) => {
-                self.selected = crate::screen::list::step_selection(self.selected, n, ROWS);
+                // The bond vanishing from under the cursor (a completed forget) clamps it back
+                // onto the toggle before the step, so a detent never walks a hidden row.
+                let len = rows(cx.state.ble_paired);
+                self.selected = self.selected.min(len - 1);
+                self.selected = crate::screen::list::step_selection(self.selected, n, len);
                 Transition::None
             }
             // The toggle is a click-to-flip; the edit lands in `Settings` and the host's
@@ -79,9 +99,12 @@ impl BluetoothScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::BluetoothTitle), "");
 
+        // A stale below-the-end cursor (the bond was just forgotten) reads as the toggle row.
+        let selected = self.selected.min(rows(rx.state.ble_paired) - 1);
+
         // Row 0 — the radio switch.
         let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
-        super::row_cursor(cv, r0, self.selected == TOGGLE, false);
+        super::row_cursor(cv, r0, selected == TOGGLE, false);
         super::row_label(cv, r0, rx.t(Msg::BluetoothRadio), Some(rx.t(Msg::BluetoothRadioSub)));
         super::toggle_slider(cv, r0, rx.settings.ble_enabled);
 
@@ -103,23 +126,28 @@ impl BluetoothScreen {
         let paired = if rx.state.ble_paired { rx.t(Msg::BluetoothYes) } else { rx.t(Msg::BluetoothNo) };
         cv.text(paired, Point::new(info_x, y1 + 24), Font::Body, TextAlign::Left, INK);
 
-        // The Forget row — an **action row** in the card-dialog option-row chrome (the Install/Cancel
-        // and RideControl confirm idiom): a left-aligned Body label so it reads as pressable rather
-        // than a bare centred label (T8 item 5). While a bond is stored it's the guarded confirm row
-        // (a hold fills it warning-red — unchanged); greyed with nothing to forget. Copy unchanged.
-        let fy = h - FORGET_H - 18;
-        let row = super::row_rect(fy, w, FORGET_H);
-        let paired = rx.state.ble_paired;
-        confirm_row(cv, row, self.selected == FORGET, paired, rx.hold_progress, WARNING, 6);
-        let ink = if paired { INK } else { SUBTEXT };
-        cv.text_vcentered(
-            rx.t(Msg::BluetoothForget),
-            row.top_left.x + 16,
-            (fy, FORGET_H),
-            Font::Body,
-            TextAlign::Left,
-            ink,
-        );
+        // The Forget row — the guarded **delete-button face** (owner review round 2: visually the
+        // Route overview / Ride detail Delete row): the always-visible PARCHMENT_SHADE base at the
+        // delete rows' bottom anchor, a left-aligned Body label, warning-red hold fill. Drawn only
+        // while a bond is stored — with nothing to forget the row simply isn't there (the round-1
+        // only-when-possible grammar). Because the base never doubles as the cursor here, row
+        // focus is a 2 px ink outline around the button.
+        if rx.state.ble_paired {
+            let fy = h - 10 - FORGET_H;
+            let row = super::row_rect(fy, w, FORGET_H);
+            confirm_row(cv, row, true, true, rx.hold_progress, WARNING, 6);
+            if selected == FORGET {
+                crate::screen::focus_outline(cv, row, 6);
+            }
+            cv.text_vcentered(
+                rx.t(Msg::BluetoothForget),
+                row.top_left.x + 12,
+                (fy, FORGET_H),
+                Font::Body,
+                TextAlign::Left,
+                INK,
+            );
+        }
     }
 }
 
@@ -173,19 +201,25 @@ mod tests {
     }
 
     /// Forget phone: the guarded hold records the one-shot request — but only while a bond is
-    /// stored, and only on the Forget row. A press there does nothing (hold is the action).
+    /// stored, and only on the Forget row. Without a bond the row is hidden and Turn can't even
+    /// reach it (the round-1 only-when-possible grammar); a press there does nothing (hold is
+    /// the action).
     #[test]
     fn forget_hold_is_guarded_and_paired_gated() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut scr = BluetoothScreen::new();
 
-        run(&mut scr, &mut st, &mut s, Gesture::Turn(1)); // → Forget row
-        assert!(!scr.selection_is_guarded(false), "unpaired: the row isn't an armed guard");
+        // Unpaired: the Forget row doesn't exist — a detent wraps within the one-row list.
+        run(&mut scr, &mut st, &mut s, Gesture::Turn(1));
+        assert_eq!(scr.selected, TOGGLE, "unpaired: the cursor can't leave the toggle");
+        assert!(!scr.selection_is_guarded(false), "unpaired: nothing armed");
         run(&mut scr, &mut st, &mut s, Gesture::Hold);
         assert!(!st.ble_forget_pending, "unpaired: a hold does nothing (nothing to forget)");
 
         st.ble_paired = true;
+        run(&mut scr, &mut st, &mut s, Gesture::Turn(1)); // → the (now present) Forget row
+        assert_eq!(scr.selected, FORGET);
         assert!(scr.selection_is_guarded(true), "paired + selected: the hold fill is live");
         run(&mut scr, &mut st, &mut s, Gesture::Press);
         assert!(!st.ble_forget_pending, "a plain press never forgets");
@@ -197,6 +231,22 @@ mod tests {
         run(&mut scr, &mut st, &mut s, Gesture::Turn(-1)); // back to the toggle
         run(&mut scr, &mut st, &mut s, Gesture::Hold);
         assert!(!st.ble_forget_pending, "a hold elsewhere doesn't forget");
+    }
+
+    /// The bond vanishing from under the cursor (the forget completing) clamps the stale Forget
+    /// selection back onto the toggle on the next detent — a hidden row is never walked.
+    #[test]
+    fn forget_completing_clamps_the_cursor() {
+        let mut st = AppState::new(0, 0, 1.0);
+        let mut s = Settings::default();
+        let mut scr = BluetoothScreen::new();
+        st.ble_paired = true;
+        run(&mut scr, &mut st, &mut s, Gesture::Turn(1));
+        assert_eq!(scr.selected, FORGET);
+        st.ble_paired = false; // the host drained the forget; the bond is gone
+        assert!(!scr.selection_is_guarded(false), "no fill on a hidden row");
+        run(&mut scr, &mut st, &mut s, Gesture::Turn(1));
+        assert_eq!(scr.selected, TOGGLE, "the detent lands on the one remaining row");
     }
 
     /// The status line: the rider's switch wins (Off the moment the toggle flips), else the live

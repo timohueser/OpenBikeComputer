@@ -509,7 +509,7 @@ impl Screen {
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Bluetooth(s) => s.selection_is_guarded(state.ble_paired),
-            Screen::RouteOverview(s) => s.delete_enabled(activity, routes),
+            Screen::RouteOverview(s) => s.selection_is_guarded(activity, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
             _ => false,
         }
@@ -561,6 +561,9 @@ impl Screen {
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             // The Route overview's stat-ledger pager (T3): flips DISTANCE+CLIMB ↔ DESCENT every 5 s.
             Screen::RouteOverview(s) => s.tick_timers(now_ms),
+            // The Ride detail's stat pager (owner review round 2): the same 5 s two-row flip,
+            // DISTANCE+RIDE TIME ↔ AVG+CLIMBED.
+            Screen::RideDetail(s) => s.tick_timers(now_ms),
             // The nav planning spinner (#499): free-runs at frame cadence until the host's
             // answer (or a cancel) removes the screen. The one screen that reports a dirty
             // region — the spinning needle's disc — so the multi-second plan's repaints stay
@@ -1070,6 +1073,20 @@ pub(crate) fn confirm_row(
     } else {
         cv.round(row, radius, palette::AMBER);
     }
+}
+
+/// The action-button **focus outline** (owner review round 2): a 2 px ink frame around a button
+/// whose face is always visible (the Route overview's START/Delete pair, the Bluetooth Forget
+/// button) — on those rows the base can't double as the selection cursor the way the
+/// ride_control-style menus' shade does, so focus is this outline. Two nested 1 px
+/// `round_outline`s (the panel's doubled-stroke idiom).
+pub(crate) fn focus_outline(cv: &mut impl Surface, row: Rectangle, radius: u32) {
+    cv.round_outline(row, radius, palette::INK);
+    cv.round_outline(
+        rect(row.top_left.x + 1, row.top_left.y + 1, row.size.width as i32 - 2, row.size.height as i32 - 2),
+        radius.saturating_sub(1),
+        palette::INK,
+    );
 }
 
 /// Layout of a guarded-action menu's option rows — the per-screen geometry
