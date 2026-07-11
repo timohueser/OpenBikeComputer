@@ -3,7 +3,7 @@
 //! ride through `obc-route`. The app's `swift test` consumes the same files.
 
 use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
-use obc_vectors::{all, crc32, dir, ride_v1};
+use obc_vectors::{all, crc32, dir, ride_v1, ride_v2};
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(dir().join(name)).unwrap_or_else(|e| {
@@ -104,25 +104,34 @@ fn upload_transcript_is_self_consistent() {
     assert_eq!(u32::from_le_bytes([result[4], result[5], result[6], result[7]]) as usize, route.len());
 }
 
-/// The ride object's length is fully determined by its header (spec §7.2).
+/// Each ride object's length is fully determined by its header + version (spec §7.2).
 #[test]
 fn ride_vector_length_is_self_describing() {
-    let ride = ride_v1();
-    assert_eq!(fixture("ride-v1.bin"), ride);
-    let name_len = u16::from_le_bytes([ride[1], ride[2]]) as usize;
+    let v1 = ride_v1();
+    assert_eq!(fixture("ride-v1.bin"), v1);
+    let name_len = u16::from_le_bytes([v1[1], v1[2]]) as usize;
     let count_off = 19 + name_len; // version + name_len + name + the five stat fields
-    let point_count = u32::from_le_bytes(ride[count_off..count_off + 4].try_into().unwrap());
-    // Header is 23 bytes + name; each point 14.
-    assert_eq!(ride.len(), 23 + name_len + 14 * point_count as usize);
+    let point_count = u32::from_le_bytes(v1[count_off..count_off + 4].try_into().unwrap());
+    // v1 header is 23 bytes + name; each point 14.
+    assert_eq!(v1.len(), 23 + name_len + 14 * point_count as usize);
+
+    let v2 = ride_v2();
+    assert_eq!(fixture("ride-v2.bin"), v2);
+    let name_len = u16::from_le_bytes([v2[1], v2[2]]) as usize;
+    let point_count = u32::from_le_bytes(v2[19 + name_len..23 + name_len].try_into().unwrap());
+    // v2 header is 31 bytes + name; each point 18.
+    assert_eq!(v2.len(), 31 + name_len + 18 * point_count as usize);
 }
 
-/// The ride vector reads through the production header reader (`obc_route::RideInfo`)
-/// with the manifest's values, and the production layout agrees byte-for-byte with
-/// the hand-built fixture.
+/// Both ride vectors read through the production header reader (`obc_route::RideInfo`) with the
+/// manifest's values, and the production layout agrees byte-for-byte with the hand-built fixtures.
+/// The v1 fixture pins the legacy decode (all sensor fields absent); v2 pins the sensor summary +
+/// the version-keyed length.
 #[test]
 fn ride_vector_reads_through_the_production_codec() {
-    let ride = fixture("ride-v1.bin");
-    let info = obc_route::RideInfo::read(&SliceSource(&ride)).unwrap();
+    let v1 = fixture("ride-v1.bin");
+    let info = obc_route::RideInfo::read(&SliceSource(&v1)).unwrap();
+    assert_eq!(info.version, 1);
     assert_eq!(info.name.as_str(), "Höhenweg");
     assert_eq!(info.start_time, 1_751_450_000);
     assert_eq!(info.distance_m, 42_500);
@@ -130,7 +139,33 @@ fn ride_vector_reads_through_the_production_codec() {
     assert_eq!(info.avg_speed_cms, 472);
     assert_eq!(info.climb_m, 810);
     assert_eq!(info.point_count, 3);
-    assert_eq!(ride.len() as u32, obc_route::ride_object_len(info.name.len(), info.point_count));
+    assert_eq!(
+        (info.avg_hr, info.max_hr, info.avg_cadence, info.avg_power, info.max_power),
+        (None, None, None, None, None),
+        "a v1 object has no sensor summary"
+    );
+    assert_eq!(v1.len() as u32, obc_route::ride_object_len(info.version, info.name.len(), info.point_count));
+
+    let v2 = fixture("ride-v2.bin");
+    let info = obc_route::RideInfo::read(&SliceSource(&v2)).unwrap();
+    assert_eq!(info.version, 2);
+    assert_eq!(info.name.as_str(), "Sensor Ride");
+    assert_eq!(info.start_time, 1_751_460_000);
+    assert_eq!(info.distance_m, 12_345);
+    assert_eq!(info.moving_time_s, 3_600);
+    assert_eq!(info.avg_speed_cms, 343);
+    assert_eq!(info.climb_m, 120);
+    assert_eq!(info.point_count, 3);
+    assert_eq!(
+        (info.avg_hr, info.max_hr, info.avg_cadence, info.avg_power, info.max_power),
+        (Some(142), Some(176), Some(85), Some(210), Some(480)),
+        "v2 carries the per-ride sensor summary"
+    );
+    assert_eq!(v2.len() as u32, obc_route::ride_object_len(info.version, info.name.len(), info.point_count));
+
+    // The elevation profile reader streams the v2 object's points (p2's ele sentinel is skipped).
+    let p = obc_route::ride_elevation_profile(&SliceSource(&v2)).unwrap();
+    assert_eq!((p.min_ele_m, p.max_ele_m), (214, 219), "the ele-sentinel point contributes no sample");
 }
 
 /// Rewrite every fixture from the builders. Run only after a deliberate spec change:

@@ -51,6 +51,24 @@
         { "t_offset_s": 120, "lat_1e7": 480020000, "lon_1e7": 78030000, "ele_m": null }
       ]
     },
+    "ride-v2.bin": {
+      "format": "ride object v2 (spec 7.2, epic #707) — BLE-sensor summary + per-point sensor fields; device may serve v1 or v2, the app must accept both",
+      "byte_len": 96,
+      "version": 2,
+      "name": "Sensor Ride",
+      "start_time_unix": 1751460000,
+      "distance_m": 12345,
+      "moving_time_s": 3600,
+      "avg_speed_cms": 343,
+      "climb_m": 120,
+      "sensor_summary": { "avg_hr": 142, "max_hr": 176, "avg_cad": 85, "avg_pwr": 210, "max_pwr": 480 },
+      "sensor_sentinels": { "hr": 255, "cad": 255, "pwr": 65535 },
+      "points": [
+        { "t_offset_s": 0, "lat_1e7": 480000000, "lon_1e7": 78000000, "ele_m": 214, "hr": 140, "cad": 84, "pwr": 205 },
+        { "t_offset_s": 60, "lat_1e7": 480010000, "lon_1e7": 78012000, "ele_m": 219, "hr": null, "cad": null, "pwr": null },
+        { "t_offset_s": 120, "lat_1e7": 480020000, "lon_1e7": 78030000, "ele_m": null, "hr": 150, "cad": null, "pwr": 215 }
+      ]
+    },
     "config-v1.bin": {
       "format": "Config v1 (spec 7.3)",
       "byte_len": 13,

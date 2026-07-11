@@ -170,7 +170,7 @@ Every bulk payload is a typed **object**:
 | `type` | Object | Direction | Payload |
 |---|---|---|---|
 | `1` | `route` | app → device (upload), device → app (detail read) | an OBCR v2 file, §7.1 |
-| `2` | `ride` | device → app | ride object v1, §7.2 |
+| `2` | `ride` | device → app | ride object v1 or v2, §7.2 |
 | `3` | `config` | — | reserved on the CoC; Config crosses GATT (§3.3) |
 | `4` | `diagnostics` | device → app | diagnostics blob, §7.5 |
 | `5` | `fwImage` | app → device (upload) | a complete `UPDATE.BIN` OBCU update image, §7.6 |
@@ -444,17 +444,25 @@ There is no separate detail codec — the app decodes waypoints and the
 elevation profile from the OBCR bytes it (in the upload direction) encoded
 itself. One layout, one truth.
 
-### 7.2 `ride` — ride object v1
+### 7.2 `ride` — ride object (v1 / v2)
 
 The compact tracked-ride layout (ratified from the app's B7 codec, byte-for-
 byte). Coordinates are stored as **degrees × 1e7** (units of 10⁻⁷ °) and the
 point order is `lat, lon` — this object is *not* OBCR and deliberately keeps
 the layout the app already pins; the extra digit over OBCR's microdegrees
-costs nothing at 14 bytes/point and buys a ~1 cm grid.
+costs nothing and buys a ~1 cm grid.
+
+**v2 (epic #707)** adds recorded BLE-sensor data — a per-ride heart-rate /
+cadence / power summary in the header and per-point `hr`/`cad`/`pwr` samples.
+It is a pure **additive object version** (§1 point 5): the version byte goes
+`1 → 2`, the header and point record each grow a fixed sensor tail, and there
+is **no `protocolVersion` bump**. **A device may serve either version and the
+app MUST accept both** — a device that has never seen a sensor keeps writing
+v1, and old v1 rides already on the card must still list, download and delete.
 
 ```
-Header (23 bytes + name):
-  version      u8   = 1
+Header (v1: 23 bytes + name  ·  v2: 31 bytes + name):
+  version      u8   = 1 or 2
   name_len     u16  · name UTF-8 (name_len bytes follow immediately)
   start_time   u32  unix seconds
   distance     u32  meters
@@ -462,20 +470,41 @@ Header (23 bytes + name):
   avg_speed    u16  cm/s
   climb        u16  meters
   point_count  u32
+  -- v2 only, the per-ride sensor summary: --
+  avg_hr       u8   bpm    · 0xFF   = no HR data this ride
+  max_hr       u8   bpm    · 0xFF   = no HR data
+  avg_cad      u8   rpm    · 0xFF   = no cadence data
+  pad          u8   = 0    (reserved)
+  avg_pwr      u16  watts  · 0xFFFF = no power data
+  max_pwr      u16  watts  · 0xFFFF = no power data
 
-Point record (14 bytes × point_count):
+Point record (v1: 14 bytes · v2: 18 bytes, × point_count):
   t_offset  u32  seconds since start_time
   lat       i32  degrees × 1e7
   lon       i32  degrees × 1e7
   ele       i16  meters · INT16_MIN (-32768) = no elevation
+  -- v2 only, the per-point sensor samples: --
+  hr        u8   bpm · 0xFF   = absent (no strap / stale)
+  cad       u8   rpm · 0xFF   = absent
+  pwr       u16  watts · 0xFFFF = absent
 ```
 
-The byte length is fully determined: `23 + name_len + 14 × point_count` —
-a decoder must reject a payload whose length disagrees.
+The byte length is fully determined **per version**: v1
+`23 + name_len + 14 × point_count`, v2 `31 + name_len + 18 × point_count` —
+a decoder reads the version byte first, then rejects a payload whose length
+disagrees for that version.
+
+Sensor values are **raw** (no zones / smoothing / NP / TSS); an absent value —
+a quantity with no sensor, or a per-point sample whose strap had dropped or
+gone stale (>5 s) — encodes as its sentinel (`0xFF` for the `u8` fields, `0xFFFF`
+for the `u16` fields), and decodes back to "no data". `pad` is a reserved `0`
+byte keeping the `u16` sensor fields 2-byte aligned.
 
 The reference firmware stores each tracked ride as **exactly these bytes**
 (`/tracks/RD{id}.ORD`, encoded once at ride Finish), so a ride download is a
 verbatim file stream — the §7.1 discipline in the device → app direction.
+`protocol-vectors/ride-v1.bin` and `ride-v2.bin` pin the two layouts (the v2
+fixture mixes present and absent sensor fields across its header and points).
 
 ### 7.3 `config` — the Config object
 
