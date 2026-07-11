@@ -55,6 +55,12 @@ pub struct Readout<'a> {
     pub next_waypoint: Option<usize>,
     /// The live wall-clock time (the [`Clock`](StatField::Clock) tile).
     pub now: DateTime,
+    /// The boot-relative millis this frame (the [`RideClock`](crate::RideClock) already threaded
+    /// through the ride loop) — the staleness clock the live sensor tiles
+    /// ([`HeartRate`](StatField::HeartRate) / [`Power`](StatField::Power) /
+    /// [`Cadence`](StatField::Cadence)) pass to [`Activity`](crate::activity::Activity)'s 5 s-gated
+    /// `live_*` accessors, so a dropped sensor reads `--` rather than its frozen last value.
+    pub now_ms: u32,
     /// The UI language (epic #602) — the word-bearing tile captions (`AVG`, `CLIMBED`, `TO GO`…)
     /// route through the catalog; the unit symbols glued to the value stay language-independent.
     pub language: Language,
@@ -105,11 +111,21 @@ pub enum StatField {
     /// ([`SLOTS_PER_PAGE`] slots), so it always begins a page — mirroring how a two-span tile always
     /// begins a row — which keeps the layout + reorder machinery tractable.
     WaypointList = 11,
+    /// Live heart rate (bpm) from a paired BLE sensor — a single-column raw-int tile (epic #707).
+    /// `--` with no sensor / no data / a reading older than the 5 s staleness gate.
+    HeartRate = 12,
+    /// Live power (W) from a paired BLE power meter — a single-column raw-int tile (epic #707).
+    /// `--` with no sensor / no data / stale.
+    Power = 13,
+    /// Live cadence (rpm) from a paired BLE sensor (or a power meter's crank data) — a
+    /// single-column raw-int tile (epic #707). `--` with no sensor / no data / stale; a fresh `0`
+    /// is a coasting rider and shows `0`, not `--`.
+    Cadence = 14,
 }
 
 impl StatField {
     /// Every field, in catalogue order — drives the "Add field" picker and decode validation.
-    pub const ALL: [StatField; 12] = [
+    pub const ALL: [StatField; 15] = [
         StatField::Speed,
         StatField::AvgSpeed,
         StatField::DistDone,
@@ -122,6 +138,9 @@ impl StatField {
         StatField::Clock,
         StatField::NextWaypoint,
         StatField::WaypointList,
+        StatField::HeartRate,
+        StatField::Power,
+        StatField::Cadence,
     ];
 
     /// Decode a persisted discriminant, or `None` for an unknown byte (a newer writer, a bit-flip
@@ -174,6 +193,9 @@ impl StatField {
             StatField::Clock => t(Msg::StatfieldClock, lang),
             StatField::NextWaypoint => t(Msg::StatfieldNextWaypoint, lang),
             StatField::WaypointList => t(Msg::StatfieldWaypointList, lang),
+            StatField::HeartRate => t(Msg::StatfieldHeartRate, lang),
+            StatField::Power => t(Msg::StatfieldPower, lang),
+            StatField::Cadence => t(Msg::StatfieldCadence, lang),
         }
     }
 
@@ -275,6 +297,24 @@ impl StatField {
                 // special-case `rows() > 1` and call that drawer instead). This arm exists only so
                 // `cell` stays total and no path can panic: a caption + `--`, echoing the empty state.
                 StatCell::new(cap(t(Msg::TileWaypoints, lang), ""), dashes(), false)
+            }
+            StatField::HeartRate => {
+                // Live bpm from the paired HR sensor, staleness-gated by `Activity` (SE2): `--` with
+                // no sensor, no reading, or a sample older than the 5 s gate. bpm is the implied
+                // unit (like `CLIMBED`'s metres) — no unit glued to the value.
+                let v = cx.activity.live_hr(cx.now_ms).map(|bpm| bpm as u32);
+                StatCell::new(cap(t(Msg::TileHr, lang), ""), fmt_int_opt(v), false)
+            }
+            StatField::Power => {
+                // Live watts from the paired power meter, same 5 s staleness gate → `--`.
+                let v = cx.activity.live_power(cx.now_ms).map(|w| w as u32);
+                StatCell::new(cap(t(Msg::TilePwr, lang), ""), fmt_int_opt(v), false)
+            }
+            StatField::Cadence => {
+                // Live rpm, same gate. A fresh `0` (coasting) is a real reading and shows `0`; only
+                // an absent/stale value reads `--`.
+                let v = cx.activity.live_cadence(cx.now_ms).map(|rpm| rpm as u32);
+                StatCell::new(cap(t(Msg::TileRpm, lang), ""), fmt_int_opt(v), false)
             }
         }
     }
@@ -622,6 +662,15 @@ fn fmt_int(m: u32) -> heapless::String<8> {
     s
 }
 
+/// A raw-integer live-sensor figure (bpm / watts / rpm) as plain digits, or `--` when the reading
+/// is absent or stale — the "no data" glyph the live speed/elevation tiles share.
+fn fmt_int_opt(v: Option<u32>) -> heapless::String<8> {
+    match v {
+        Some(v) => fmt_int(v),
+        None => dashes(),
+    }
+}
+
 /// A live-elevation figure: rounded to a whole unit (signed, so a sub-sea-level reading shows a
 /// `-` rather than wrapping), or `--` when there's no altimeter sample yet. Rounds
 /// half away from zero without `libm` (the codebase keeps elevation maths off the math lib).
@@ -812,6 +861,7 @@ mod tests {
             waypoints,
             next_waypoint: None,
             now: DateTime::default(),
+            now_ms: 0,
             language: Language::En,
         }
     }
@@ -1085,16 +1135,19 @@ mod tests {
         assert!(l.push(StatField::Grade)); // panel + 7 singles
         assert_eq!(page_count(&l), 3, "the seventh single spills to a third page");
 
-        // The full 12-field catalogue (nine singles, two wide tiles, the panel) — a legitimate
-        // MAX_STAT_FIELDS selection — reaches four pages. Nothing may cap at two.
+        // A maxed selection filled from the catalogue in order (the first MAX_STAT_FIELDS fields —
+        // nine singles, the two wide tiles, then the panel; `push` refuses the rest) reaches four
+        // pages. Nothing may cap at two. (The catalogue itself now carries more than MAX_STAT_FIELDS
+        // fields, so a full grid is a MAX_STAT_FIELDS-sized *subset*, not all of `ALL`.)
         let full = {
             let mut l = StatFieldList { ids: [StatField::Speed; MAX_STAT_FIELDS], len: 0 };
             for f in StatField::ALL {
-                assert!(l.push(f), "the whole catalogue fits MAX_STAT_FIELDS");
+                l.push(f); // silently refused once the grid is full
             }
             l
         };
-        assert_eq!(full.len(), MAX_STAT_FIELDS, "all twelve fields selected");
+        assert_eq!(full.len(), MAX_STAT_FIELDS, "the grid fills to its MAX_STAT_FIELDS cap");
+        assert!(full.contains(StatField::WaypointList), "the maxed selection includes the panel");
         assert_eq!(page_count(&full), 4, "a full selection with the panel spans four pages, not two");
     }
 
@@ -1197,5 +1250,73 @@ mod tests {
         assert_eq!(StatField::from_u8(11), Some(StatField::WaypointList));
         let list = StatFieldList::decode(1, &[11]);
         assert_eq!(list.as_slice(), &[StatField::WaypointList], "a decoded byte-11 selection keeps the panel");
+    }
+
+    // ── Live sensor tiles: HR / power / cadence (epic #707, SE5) ───────────────────────────────
+
+    /// The three sensor tiles are single-column, arrow-free, and caption HR / PWR / RPM — the
+    /// house all-caps register the neighbouring built-in captions use.
+    #[test]
+    fn sensor_tiles_are_single_column_captioned() {
+        let activity = Activity::new(Mode::Riding);
+        let empty = Waypoints::new();
+        let cx = readout(&activity, Units::Metric, &empty);
+        for f in [StatField::HeartRate, StatField::Power, StatField::Cadence] {
+            assert_eq!(f.span(), 1, "{f:?} is a single column");
+            assert_eq!(f.rows(), 1, "{f:?} is one row tall");
+            assert_eq!(f.slots(), 1, "{f:?} fills one slot");
+            assert!(!f.cell(&cx).arrow, "{f:?} has no climb triangle");
+        }
+        assert_eq!(StatField::HeartRate.cell(&cx).caption.as_str(), "HR");
+        assert_eq!(StatField::Power.cell(&cx).caption.as_str(), "PWR");
+        assert_eq!(StatField::Cadence.cell(&cx).caption.as_str(), "RPM");
+    }
+
+    /// The sensor tiles read raw ints through `Activity`'s staleness-gated `live_*` accessors: a
+    /// fresh sample shows the number, an absent or 5 s-stale one reads `--`, and a fresh coasting
+    /// `0` cadence shows `0` (distinct from the `--` no-sensor state).
+    #[test]
+    fn sensor_tiles_format_raw_ints_and_dash_when_stale() {
+        let mut activity = Activity::new(Mode::Riding);
+        let empty = Waypoints::new();
+        let val = |a: &Activity, now_ms: u32, f: StatField| {
+            f.cell(&Readout { now_ms, ..readout(a, Units::Metric, &empty) }).value
+        };
+
+        // No sensor yet → all three read `--`.
+        assert_eq!(val(&activity, 0, StatField::HeartRate).as_str(), "--", "no HR sensor → --");
+        assert_eq!(val(&activity, 0, StatField::Power).as_str(), "--", "no power meter → --");
+        assert_eq!(val(&activity, 0, StatField::Cadence).as_str(), "--", "no cadence sensor → --");
+
+        // Fresh samples → the raw numbers, no glued unit.
+        activity.record_hr(152, 1_000);
+        activity.record_power(210, 1_000);
+        activity.record_cadence(88, 1_000);
+        assert_eq!(val(&activity, 1_000, StatField::HeartRate).as_str(), "152");
+        assert_eq!(val(&activity, 1_000, StatField::Power).as_str(), "210");
+        assert_eq!(val(&activity, 1_000, StatField::Cadence).as_str(), "88");
+
+        // Just past the 5 s gate → stale → `--` (a dropped sensor never freezes its last value).
+        assert_eq!(val(&activity, 6_001, StatField::HeartRate).as_str(), "--", "HR older than 5 s reads --");
+        assert_eq!(val(&activity, 6_001, StatField::Power).as_str(), "--", "power older than 5 s reads --");
+        assert_eq!(val(&activity, 6_001, StatField::Cadence).as_str(), "--", "cadence older than 5 s reads --");
+
+        // A fresh coasting `0` cadence is a real reading — shows `0`, not `--`.
+        activity.record_cadence(0, 7_000);
+        assert_eq!(val(&activity, 7_000, StatField::Cadence).as_str(), "0", "a fresh coasting 0 shows 0, not --");
+    }
+
+    /// The sensor tiles' on-disk discriminants are 12 / 13 / 14 (append-only), decode through
+    /// `from_u8`, and survive a `StatFieldList` decode — a persisted grid carrying them reloads.
+    #[test]
+    fn sensor_tile_discriminants_round_trip() {
+        assert_eq!(StatField::HeartRate as u8, 12, "append-only: HR is byte 12");
+        assert_eq!(StatField::Power as u8, 13, "append-only: power is byte 13");
+        assert_eq!(StatField::Cadence as u8, 14, "append-only: cadence is byte 14");
+        assert_eq!(StatField::from_u8(12), Some(StatField::HeartRate));
+        assert_eq!(StatField::from_u8(13), Some(StatField::Power));
+        assert_eq!(StatField::from_u8(14), Some(StatField::Cadence));
+        let list = StatFieldList::decode(3, &[12, 13, 14]);
+        assert_eq!(list.as_slice(), &[StatField::HeartRate, StatField::Power, StatField::Cadence]);
     }
 }

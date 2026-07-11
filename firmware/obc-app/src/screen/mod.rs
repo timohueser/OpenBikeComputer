@@ -293,6 +293,7 @@ impl Render<'_, '_> {
             waypoints: self.waypoints,
             next_waypoint: self.activity.next_waypoint,
             now: self.now,
+            now_ms: self.now_ms,
             language: self.settings.language,
         }
     }
@@ -1234,6 +1235,7 @@ mod tests {
             waypoints,
             next_waypoint: next,
             now: DateTime::default(),
+            now_ms: 0,
             language: crate::settings::Language::En,
         }
     }
