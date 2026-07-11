@@ -265,6 +265,9 @@ fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
 /// | Clock         | `14:32`                 |
 /// | NextWaypoint  | `Pass Summit` + `8.7km` |
 /// | WaypointList  | (drawn by [`waypoint_panel_ghost`](crate::screen::waypoint_panel_ghost)) |
+/// | HeartRate     | `152`                   |
+/// | Power         | `210`                   |
+/// | Cadence       | `88`                    |
 ///
 /// The captions (unit labels) stay whatever `cell()` produced, so metric/imperial re-captioning still
 /// shows; only the value is a placeholder. The tile drawer paints it in olive `SUBTEXT`.
@@ -289,6 +292,9 @@ fn ghost_value(field: crate::stat_fields::StatField, cell: &mut crate::stat_fiel
         }
         // The page-sized panel is drawn by `waypoint_panel_ghost`, never as a caption+value tile.
         F::WaypointList => return,
+        F::HeartRate => "152",
+        F::Power => "210",
+        F::Cadence => "88",
     };
     cell.value.clear();
     let _ = cell.value.push_str(sample);

@@ -149,6 +149,12 @@ struct Args {
     /// before C5 wires the screen into the Back-cycle. A no-op unless the replay left a climb active
     /// (so pair it with a `--gpx`/`--at` that reaches one).
     open_climb: bool,
+    /// Headless `--gpx` replay only: feed a **fixed synthetic HR/power/cadence** through SE2's HAL
+    /// sensor traits for one final tick (epic #707, SE5), and pin the three new sensor stat tiles
+    /// (HR/PWR/RPM) onto the Statistics grid, so the tiles render live values in the snapshot. A
+    /// minimal stub — SE8 replaces it with the sim control panel's real sensor sliders. Requires a
+    /// `--gpx` (the fixed source rides on the replay's location + clock).
+    sensors_demo: bool,
     /// Headless `--gpx` replay: make **every ride-log write fail**, as if the SD card were pulled
     /// mid-ride (issue #11). Each logged fix's `TrackSink::record` returns `Err`, so the app raises
     /// the "recording error" warning through the real record path (not the `--inject-warning rec`
@@ -217,6 +223,7 @@ impl Default for Args {
             inject_warning: None,
             boot_fault: None,
             open_climb: false,
+            sensors_demo: false,
             fail_track: false,
             dfu_scan: None,
             dfu_progress: false,
@@ -326,6 +333,7 @@ fn parse_args() -> Result<Args, String> {
             "--ble-connected" => a.ble_connected = true,
             "--nav-hold" => a.nav_hold = true,
             "--open-climb" => a.open_climb = true,
+            "--sensors-demo" => a.sensors_demo = true,
             "--fail-track" => a.fail_track = true,
             "--dfu-scan" => {
                 a.dfu_scan = Some(dfu::DfuScanKind::parse(&it.next().ok_or("--dfu-scan needs normal|same|first")?)?);
@@ -766,7 +774,7 @@ fn main() {
         // flag `set_settings` isn't called, and `--clock` alone still leaves `language` English, so
         // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
         // from this local set-point (see `App::set_settings`).
-        if args.clock.is_some() || args.lang.is_some() {
+        if args.clock.is_some() || args.lang.is_some() || args.sensors_demo {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
                 settings.gps_time = false;
@@ -774,6 +782,27 @@ fn main() {
             }
             if let Some(lang) = args.lang {
                 settings.language = lang;
+            }
+            // `--sensors-demo` (epic #707, SE5): pin the three new sensor tiles onto the visible
+            // Statistics page so the snapshot shows them. A dedicated demo selection — HR / PWR /
+            // RPM first, then a few live neighbours — replacing the default six.
+            if args.sensors_demo {
+                use obc_app::StatField;
+                let mut sf = settings.stat_fields;
+                while !sf.is_empty() {
+                    sf.remove(0);
+                }
+                for f in [
+                    StatField::HeartRate,
+                    StatField::Power,
+                    StatField::Cadence,
+                    StatField::Speed,
+                    StatField::RideTime,
+                    StatField::Climbed,
+                ] {
+                    sf.push(f);
+                }
+                settings.stat_fields = sf;
             }
             app.set_settings(settings);
         }
@@ -954,6 +983,49 @@ fn main() {
                     if args.fail_track { Some(&mut fail_sink) } else { tracks.sink() };
                 replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), sink, ReplaySensors::default());
                 t += step;
+            }
+        }
+
+        // `--sensors-demo` (epic #707, SE5): one final tick fed a **fixed synthetic** HR/power/
+        // cadence through SE2's HAL sensor traits, so the three new stat tiles render live values in
+        // the Statistics-grid snapshot (the grid was pinned to HR/PWR/RPM in the settings seed
+        // above). Stamped at the replay's own `now_ms` so `Activity`'s 5 s staleness gate reads them
+        // fresh. Deliberately minimal — SE8 replaces this with the sim control panel's real sliders.
+        if args.sensors_demo {
+            if let Some(p) = player.as_mut() {
+                struct DemoHr;
+                impl obc_app::HeartRateSource for DemoHr {
+                    fn poll(&mut self) -> Option<u16> {
+                        Some(152)
+                    }
+                }
+                struct DemoPower;
+                impl obc_app::PowerSource for DemoPower {
+                    fn poll(&mut self) -> Option<u16> {
+                        Some(210)
+                    }
+                }
+                struct DemoCadence;
+                impl obc_app::CadenceSource for DemoCadence {
+                    fn poll(&mut self) -> Option<u8> {
+                        Some(88)
+                    }
+                }
+                let now_ms = (p.time() * 1000.0) as u32;
+                let (mut hr, mut power, mut cadence) = (DemoHr, DemoPower, DemoCadence);
+                let sensors = obc_app::Sensors {
+                    loc: p,
+                    altimeter: None,
+                    temperature: None,
+                    clock: None,
+                    compass: None,
+                    track: None,
+                    fuel: None,
+                    hr: Some(&mut hr),
+                    power: Some(&mut power),
+                    cadence: Some(&mut cadence),
+                };
+                app.tick(obc_app::RideClock(now_ms), sensors, route.as_ref());
             }
         }
 
