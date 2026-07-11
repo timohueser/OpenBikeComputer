@@ -48,6 +48,9 @@ fn marker_drawn_only_when_a_fix_is_set() {
             compass: None,
             track: None,
             fuel: None,
+            hr: None,
+            power: None,
+            cadence: None,
         },
         None,
     );
@@ -72,6 +75,9 @@ fn dot_and_chevron_glyphs_differ_by_course() {
             compass: None,
             track: None,
             fuel: None,
+            hr: None,
+            power: None,
+            cadence: None,
         },
         None,
     );
@@ -88,6 +94,9 @@ fn dot_and_chevron_glyphs_differ_by_course() {
             compass: None,
             track: None,
             fuel: None,
+            hr: None,
+            power: None,
+            cadence: None,
         },
         None,
     );
