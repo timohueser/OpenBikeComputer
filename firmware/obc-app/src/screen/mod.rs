@@ -1075,20 +1075,6 @@ pub(crate) fn confirm_row(
     }
 }
 
-/// The action-button **focus outline** (owner review round 2): a 2 px ink frame around a button
-/// whose face is always visible (the Route overview's START/Delete pair, the Bluetooth Forget
-/// button) — on those rows the base can't double as the selection cursor the way the
-/// ride_control-style menus' shade does, so focus is this outline. Two nested 1 px
-/// `round_outline`s (the panel's doubled-stroke idiom).
-pub(crate) fn focus_outline(cv: &mut impl Surface, row: Rectangle, radius: u32) {
-    cv.round_outline(row, radius, palette::INK);
-    cv.round_outline(
-        rect(row.top_left.x + 1, row.top_left.y + 1, row.size.width as i32 - 2, row.size.height as i32 - 2),
-        radius.saturating_sub(1),
-        palette::INK,
-    );
-}
-
 /// Layout of a guarded-action menu's option rows — the per-screen geometry
 /// [`draw_guarded_rows`] lays [`MenuItem`]s out with. The label offsets are from the row's
 /// top-left, hand-tuned per screen (the two panels frame their rows differently).

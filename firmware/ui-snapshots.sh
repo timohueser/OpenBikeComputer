@@ -162,11 +162,11 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
 "$SIM" "$MAP" --boot --script "B l p r r r r p"   --png "$OUT/display.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r p" --png "$OUT/power.png"
-# Bluetooth screen (#455, Forget refaced in owner review round 2): the main state (radio on,
-# advertising, a stored bond -> Paired: yes, the Forget button wearing the always-visible
-# delete-row face at the bottom anchor), the row focused (a turn puts the ink outline on it), the
-# guarded hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond,
-# so the Forget row isn't drawn at all (the round-1 only-when-possible grammar).
+# Bluetooth screen (#455, Forget restyled to the Pause-menu row family in owner review round 3):
+# the main state (radio on, advertising, a stored bond -> Paired: yes, the Forget row a plain label
+# at the bottom anchor), the row selected (a turn puts the shaded guarded base on it), the guarded
+# hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond, so the
+# Forget row isn't drawn at all (the round-1 only-when-possible grammar).
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p"     --png "$OUT/bluetooth.png"
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r"   --png "$OUT/bluetooth-forget-selected.png"
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
@@ -203,13 +203,14 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 # The overview also carries the guarded Delete-route row (T3 #681, reordered by owner review round
-# 1): the bottommost element, BELOW the raised START RIDE bar. Since owner review round 2 the two
-# action rows carry a cursor — entry selects START (its ink focus outline), a turn moves onto the
-# Delete row, and only then does a hold charge the delete. While the route is the active ride's the
-# row is hidden entirely (no greyed face); that state is unreachable by gesture (the active route's
-# overview never opens from the menu), so it has no frame — the route_overview guard tests pin it.
+# 1): the bottommost element, below the START RIDE row. Since owner review round 3 the two action
+# rows are the Pause-menu (ride_control) family — entry selects START (the standard amber-selected
+# row), a turn moves onto the Delete row (its shaded base draws only while selected), and only then
+# does a hold charge the delete. While the route is the active ride's the row is hidden entirely (no
+# greyed face); that state is unreachable by gesture (the active route's overview never opens from
+# the menu), so it has no frame — the route_overview guard tests pin it.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
-# The cursor on the Delete row (idle): `r` toggles the focus outline onto it, nothing charging.
+# The cursor on the Delete row (idle): `r` moves the selection onto it, nothing charging.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p r"   --png "$OUT/routeoverview-delete-selected.png"
 # The Delete row charging: `p p p r H` selects it, then partial-holds the encoder, so the
 # warning-red row fill draws under the "Delete route" label.
