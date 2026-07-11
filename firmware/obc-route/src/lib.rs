@@ -69,8 +69,13 @@ pub use reader::{
     MAX_WAYPOINTS, NAME_CAP, WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_CAP,
 };
 pub use ride::{
-    ride_object_len, track_to_ride, RideInfo, RideStats, RIDE_ELE_NONE, RIDE_HEADER_LEN, RIDE_POINT_LEN, RIDE_VERSION,
+    ride_header_len, ride_object_len, ride_point_len, track_to_ride, RideInfo, RideStats, RIDE_CAD_NONE, RIDE_ELE_NONE,
+    RIDE_HEADER_LEN_V1, RIDE_HEADER_LEN_V2, RIDE_HR_NONE, RIDE_POINT_LEN_V1, RIDE_POINT_LEN_V2, RIDE_PWR_NONE,
+    RIDE_VERSION,
 };
-pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_RECORD_LEN};
+pub use track::{
+    decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_CAD_NONE, TRACK_HR_NONE, TRACK_PWR_NONE,
+    TRACK_RECORD_LEN,
+};
 
 pub use obc_reader::BBox;

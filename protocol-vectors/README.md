@@ -21,6 +21,7 @@ A drift on either side fails that side's tests — the files are the contract.
 | `route-waypoints.obcr` | OBCR v2 | "Vector Loop", 9-point track at 48°N, 2 waypoints (`Brunnen` @ 0 m with ele 238, `Pass Summit` mid-route without ele) |
 | `route-plain.obcr` | OBCR v2 | the same track, no waypoints — must ride identically |
 | `ride-v1.bin` | ride object v1 (spec §7.2) | "Höhenweg", 3 points, the last without elevation |
+| `ride-v2.bin` | ride object v2 (spec §7.2, epic #707) | "Sensor Ride", 3 points, BLE-sensor summary + per-point hr/cad/pwr with mixed present/absent (0xFF/0xFFFF sentinels) — the app must accept v1 **and** v2 |
 | `config-v1.bin` | Config v1 (spec §7.3) | name "OBC Tourer", metric |
 | `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
 | `transfer-upload-resume.bin` | `transferControl` §4.2 | a non-zero-offset upload descriptor — pins the `offset` byte layout (uploads restart, not resume; the device rejects this) |

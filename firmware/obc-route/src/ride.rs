@@ -1,14 +1,14 @@
-//! The **ride object v1** — the compact tracked-ride layout a ride crosses the BLE link as
-//! (`obc-ble-interface-spec.md` §7.2) *and* the durable per-ride file the device stores at
+//! The **ride object** (v1 / v2) — the compact tracked-ride layout a ride crosses the BLE link
+//! as (`obc-ble-interface-spec.md` §7.2) *and* the durable per-ride file the device stores at
 //! Finish (`/tracks/RD{id}.ORD`). The stored file **is** the wire object, so a BLE ride
 //! download is a verbatim byte stream with no encode on the transfer path.
 //!
-//! Layout (little-endian; pinned by `protocol-vectors/ride-v1.bin` against the Swift
+//! Layout (little-endian; pinned by `protocol-vectors/ride-v{1,2}.bin` against the Swift
 //! `RideObjectCodec`):
 //!
 //! ```text
-//! Header (23 bytes + name):
-//!   version      u8   = 1
+//! Header (v1: 23 bytes + name  ·  v2: 31 bytes + name):
+//!   version      u8   = 1 or 2
 //!   name_len     u16  · name UTF-8 (name_len bytes follow immediately)
 //!   start_time   u32  unix seconds
 //!   distance     u32  meters
@@ -16,20 +16,35 @@
 //!   avg_speed    u16  cm/s
 //!   climb        u16  meters
 //!   point_count  u32
-//! Point record (14 bytes × point_count):
+//!   -- v2 only, the per-ride BLE-sensor summary (epic #707): --
+//!   avg_hr       u8   bpm    · 0xFF   = no data this ride
+//!   max_hr       u8   bpm    · 0xFF   = no data
+//!   avg_cad      u8   rpm    · 0xFF   = no data
+//!   pad          u8   = 0
+//!   avg_pwr      u16  W      · 0xFFFF = no data
+//!   max_pwr      u16  W      · 0xFFFF = no data
+//! Point record (v1: 14 bytes · v2: 18 bytes, × point_count):
 //!   t_offset  u32  seconds since start_time
 //!   lat       i32  degrees × 1e7
 //!   lon       i32  degrees × 1e7
 //!   ele       i16  meters · i16::MIN = no elevation
+//!   -- v2 only: --
+//!   hr        u8   bpm · 0xFF   = absent
+//!   cad       u8   rpm · 0xFF   = absent
+//!   pwr       u16  W   · 0xFFFF = absent
 //! ```
 //!
-//! The byte length is fully determined: `23 + name_len + 14 × point_count` — a decoder must
-//! reject a payload whose length disagrees (spec §7.2), which is also this file's power-cut
-//! guard (a torn write leaves a shorter file).
+//! The byte length is fully determined **per version**: v1 `23 + name_len + 14 × point_count`,
+//! v2 `31 + name_len + 18 × point_count` — a decoder must reject a payload whose length disagrees
+//! (spec §7.2), which is also this file's power-cut guard (a torn write leaves a shorter file).
+//! The device serves whichever version it wrote the file as; the app accepts both — old v1 rides
+//! on the card must still list, download and delete (v2 is an additive object version, no protocol
+//! bump, spec §1).
 //!
-//! [`track_to_ride`] is the Finish-time converter: one streaming pass over the recorded `.obct`
-//! log, no resident whole-ride buffer. Coordinate translation: track records store **microdegrees**
-//! in `lon, lat` order; ride points store **degrees × 1e7** in `lat, lon` order. The version byte
+//! [`track_to_ride`] is the Finish-time converter (it writes v2): one streaming pass over the
+//! recorded `.obct` log, no resident whole-ride buffer. Coordinate translation: track records
+//! store **microdegrees** in `lon, lat` order; ride points store **degrees × 1e7** in `lat, lon`
+//! order. Sensor fields carry 1:1 from the v2 track records (absent ↔ sentinel). The version byte
 //! is held back as `0` and patched in as the final write, so an interrupted save is rejected
 //! ([`Error::BadVersion`]) rather than masquerading as a ride.
 
@@ -39,18 +54,47 @@ use crate::byte_io::{ByteSink, ByteSource, Error};
 use crate::reader::NAME_CAP;
 use crate::track::{decode_record, TRACK_RECORD_LEN};
 
-/// The ride-object version this module writes (spec §7.2).
-pub const RIDE_VERSION: u8 = 1;
-/// Fixed header bytes (the name's `name_len` bytes ride between `name_len` and `start_time`).
-pub const RIDE_HEADER_LEN: usize = 23;
-/// One encoded point record.
-pub const RIDE_POINT_LEN: usize = 14;
+/// The ride-object version [`track_to_ride`] writes (spec §7.2). Bumped to 2 for the BLE-sensor
+/// summary + per-point sensor fields (epic #707); [`RideInfo::read`] still accepts v1.
+pub const RIDE_VERSION: u8 = 2;
+/// Fixed header bytes for a **v1** object (name's `name_len` bytes ride between `name_len` and
+/// `start_time`).
+pub const RIDE_HEADER_LEN_V1: usize = 23;
+/// Fixed header bytes for a **v2** object — v1's 23 plus the 8-byte sensor summary tail.
+pub const RIDE_HEADER_LEN_V2: usize = 31;
+/// One encoded **v1** point record.
+pub const RIDE_POINT_LEN_V1: usize = 14;
+/// One encoded **v2** point record — v1's 14 plus `hr u8 · cad u8 · pwr u16`.
+pub const RIDE_POINT_LEN_V2: usize = 18;
 /// The point `ele` sentinel for "no elevation recorded".
 pub const RIDE_ELE_NONE: i16 = i16::MIN;
+/// Sentinel for an absent `avg_hr` / `max_hr` / `avg_cad` header field or per-point `hr` / `cad`.
+pub const RIDE_HR_NONE: u8 = 0xFF;
+/// Sentinel for an absent cadence value (same byte as [`RIDE_HR_NONE`], named for the field).
+pub const RIDE_CAD_NONE: u8 = 0xFF;
+/// Sentinel for an absent `avg_pwr` / `max_pwr` header field or per-point `pwr`.
+pub const RIDE_PWR_NONE: u16 = 0xFFFF;
 
-/// The whole encoded object's size for a given name and point count.
-pub const fn ride_object_len(name_len: usize, point_count: u32) -> u32 {
-    (RIDE_HEADER_LEN + name_len) as u32 + RIDE_POINT_LEN as u32 * point_count
+/// Fixed header bytes for a given ride-object `version`. An unknown version sizes as v2 (the
+/// current writer); callers gate on [`RideInfo::read`]'s version check first.
+pub const fn ride_header_len(version: u8) -> usize {
+    match version {
+        1 => RIDE_HEADER_LEN_V1,
+        _ => RIDE_HEADER_LEN_V2,
+    }
+}
+
+/// One encoded point record's size for a given ride-object `version`.
+pub const fn ride_point_len(version: u8) -> usize {
+    match version {
+        1 => RIDE_POINT_LEN_V1,
+        _ => RIDE_POINT_LEN_V2,
+    }
+}
+
+/// The whole encoded object's size for a given `version`, name, and point count.
+pub const fn ride_object_len(version: u8, name_len: usize, point_count: u32) -> u32 {
+    (ride_header_len(version) + name_len) as u32 + ride_point_len(version) as u32 * point_count
 }
 
 /// The ride totals the header carries, plus the wall-clock anchor that turns the log's
@@ -69,12 +113,22 @@ pub struct RideStats {
     /// The monotonic millis (the [`TrackPoint::t_ms`](crate::TrackPoint::t_ms) clock) at which
     /// [`unix_at_anchor`](RideStats::unix_at_anchor) was read.
     pub anchor_ms: u32,
+    /// Per-ride BLE-sensor summary (epic #707, SE2's `Activity` accessors), written into the v2
+    /// header. `None` (→ sentinel) when the ride saw no fresh sample of that quantity.
+    pub avg_hr: Option<u8>,
+    pub max_hr: Option<u8>,
+    pub avg_cadence: Option<u8>,
+    pub avg_power: Option<u16>,
+    pub max_power: Option<u16>,
 }
 
 /// A stored ride object's header — what the BLE `rideList` entry serves without touching the
 /// point records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RideInfo {
+    /// The stored object's version (1 or 2). Point-record readers ([`ride_point_len`]) and the
+    /// point offset ([`ride_header_len`]) key off this.
+    pub version: u8,
     /// Truncated to [`NAME_CAP`] on a char boundary for display; the on-disk name may be longer
     /// (`name_len` is a `u16`), and the length validation always uses the on-disk length.
     pub name: String<NAME_CAP>,
@@ -84,26 +138,52 @@ pub struct RideInfo {
     pub avg_speed_cms: u16,
     pub climb_m: u16,
     pub point_count: u32,
+    /// Per-ride BLE-sensor summary (epic #707). Always `None` for a v1 object; for v2, decoded
+    /// from the header's sentinel-marked fields.
+    pub avg_hr: Option<u8>,
+    pub max_hr: Option<u8>,
+    pub avg_cadence: Option<u8>,
+    pub avg_power: Option<u16>,
+    pub max_power: Option<u16>,
 }
 
 impl RideInfo {
-    /// Read + validate a stored ride object's header: the version byte (a held-back `0` is
-    /// [`Error::BadVersion`]) and the fully-determined length (`23 + name_len + 14 × point_count`
-    /// must equal the source's — the torn-write guard). Point records are not touched.
+    /// Read + validate a stored ride object's header. Accepts **v1 and v2**: an unknown version
+    /// (including the held-back `0` of a torn save) is [`Error::BadVersion`]; the fully-determined
+    /// length for that version (`ride_object_len(version, name_len, point_count)`) must equal the
+    /// source's — the torn-write guard. A v1 object decodes with every sensor field `None`. Point
+    /// records are not touched.
     pub fn read(src: &dyn ByteSource) -> Result<RideInfo, Error> {
         let mut head = [0u8; 3];
         src.read_at(0, &mut head)?;
-        if head[0] != RIDE_VERSION {
+        let version = head[0];
+        if version != 1 && version != 2 {
             return Err(Error::BadVersion);
         }
         let name_len = u16::from_le_bytes([head[1], head[2]]) as usize;
-        // The 20 fixed tail bytes sit right after the name; a source too short is malformed.
-        let mut tail = [0u8; 20];
-        src.read_at(3 + name_len as u32, &mut tail).map_err(|_| Error::BadOffset)?;
+        // The fixed tail (20 B for v1, 28 B for v2) sits right after the name; a source too short
+        // is malformed. `point_count` is at tail offset 16 in both versions.
+        let tail_len = ride_header_len(version) - 3;
+        let mut tail = [0u8; RIDE_HEADER_LEN_V2 - 3];
+        let tail = &mut tail[..tail_len];
+        src.read_at(3 + name_len as u32, tail).map_err(|_| Error::BadOffset)?;
         let point_count = u32::from_le_bytes([tail[16], tail[17], tail[18], tail[19]]);
-        if src.len() != ride_object_len(name_len, point_count) {
+        if src.len() != ride_object_len(version, name_len, point_count) {
             return Err(Error::BadOffset);
         }
+        // v2 sensor summary (tail offset 20..28); v1 has no such bytes → all absent.
+        let (avg_hr, max_hr, avg_cadence, avg_power, max_power) = if version >= 2 {
+            (
+                opt_u8(tail[20], RIDE_HR_NONE),
+                opt_u8(tail[21], RIDE_HR_NONE),
+                opt_u8(tail[22], RIDE_CAD_NONE),
+                // tail[23] is the reserved pad (0), skipped.
+                opt_u16(u16::from_le_bytes([tail[24], tail[25]]), RIDE_PWR_NONE),
+                opt_u16(u16::from_le_bytes([tail[26], tail[27]]), RIDE_PWR_NONE),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
 
         let mut name = String::new();
         let show = name_len.min(NAME_CAP);
@@ -113,6 +193,7 @@ impl RideInfo {
             let _ = name.push_str(utf8_prefix(&buf[..show]));
         }
         Ok(RideInfo {
+            version,
             name,
             start_time: u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]),
             distance_m: u32::from_le_bytes([tail[4], tail[5], tail[6], tail[7]]),
@@ -120,8 +201,23 @@ impl RideInfo {
             avg_speed_cms: u16::from_le_bytes([tail[12], tail[13]]),
             climb_m: u16::from_le_bytes([tail[14], tail[15]]),
             point_count,
+            avg_hr,
+            max_hr,
+            avg_cadence,
+            avg_power,
+            max_power,
         })
     }
+}
+
+/// A sentinel-marked `u8` field → `None` when it equals `sentinel`, else `Some`.
+fn opt_u8(v: u8, sentinel: u8) -> Option<u8> {
+    (v != sentinel).then_some(v)
+}
+
+/// A sentinel-marked `u16` field → `None` when it equals `sentinel`, else `Some`.
+fn opt_u16(v: u16, sentinel: u16) -> Option<u16> {
+    (v != sentinel).then_some(v)
 }
 
 /// The longest valid-UTF-8 prefix of `b` — a byte-capped name may have split a multi-byte char.
@@ -136,7 +232,7 @@ fn utf8_prefix(b: &[u8]) -> &str {
 /// like the GPX converter's [`track_to_gpx`](crate::track_to_gpx) pass.
 const BLOCK_RECORDS: usize = 64;
 
-/// Convert a recorded `.obct` log into a ride object v1 written to `sink` — the Finish-time
+/// Convert a recorded `.obct` log into a **ride object v2** written to `sink` — the Finish-time
 /// sibling of [`track_to_gpx`](crate::track_to_gpx), one streaming pass, no whole-ride buffer.
 ///
 /// - `start_time` is the wall time of the **first record**: the anchor in `stats` back-dated by
@@ -147,8 +243,10 @@ const BLOCK_RECORDS: usize = 64;
 ///   the ride object's `lat, lon` order (track records are `lon, lat`).
 /// - `ele` is carried verbatim — the log stamps every point (0 before the first baro sample), so
 ///   the device never writes [`RIDE_ELE_NONE`]; the sentinel exists for other encoders (the app).
+/// - The per-ride sensor summary ([`RideStats::avg_hr`] etc.) heads the v2 header; per-point
+///   `hr`/`cad`/`pwr` carry 1:1 from the v2 track records, absent ↔ sentinel.
 /// - Segment breaks don't exist in the ride object; a trailing partial record is ignored (the
-///   log stays valid at any 16-byte boundary, same as the GPX pass).
+///   log stays valid at any 20-byte boundary, same as the GPX pass).
 /// - `name` is truncated to [`NAME_CAP`] bytes on a char boundary (the device's route-name cap).
 ///
 /// The version byte is written as `0` and patched to [`RIDE_VERSION`] as the **final** write —
@@ -177,8 +275,8 @@ pub fn track_to_ride(
     };
     let start_time = stats.unix_at_anchor.wrapping_sub(stats.anchor_ms.wrapping_sub(t0) / 1000);
 
-    // Header, version held back as 0 (patched below, after the body landed).
-    let mut head = [0u8; RIDE_HEADER_LEN + NAME_CAP];
+    // v2 header, version held back as 0 (patched below, after the body landed).
+    let mut head = [0u8; RIDE_HEADER_LEN_V2 + NAME_CAP];
     head[1..3].copy_from_slice(&(name.len() as u16).to_le_bytes());
     head[3..3 + name.len()].copy_from_slice(name.as_bytes());
     let f = 3 + name.len();
@@ -188,10 +286,17 @@ pub fn track_to_ride(
     head[f + 12..f + 14].copy_from_slice(&stats.avg_speed_cms.to_le_bytes());
     head[f + 14..f + 16].copy_from_slice(&stats.climb_m.to_le_bytes());
     head[f + 16..f + 20].copy_from_slice(&(total as u32).to_le_bytes());
-    sink.write(&head[..f + 20])?;
+    // v2 sensor summary tail (sentinel for an absent quantity); byte 23 is a reserved 0 pad.
+    head[f + 20] = stats.avg_hr.unwrap_or(RIDE_HR_NONE);
+    head[f + 21] = stats.max_hr.unwrap_or(RIDE_HR_NONE);
+    head[f + 22] = stats.avg_cadence.unwrap_or(RIDE_CAD_NONE);
+    head[f + 23] = 0;
+    head[f + 24..f + 26].copy_from_slice(&stats.avg_power.unwrap_or(RIDE_PWR_NONE).to_le_bytes());
+    head[f + 26..f + 28].copy_from_slice(&stats.max_power.unwrap_or(RIDE_PWR_NONE).to_le_bytes());
+    sink.write(&head[..f + 28])?;
 
     let mut buf = [0u8; BLOCK_RECORDS * TRACK_RECORD_LEN];
-    let mut out = [0u8; BLOCK_RECORDS * RIDE_POINT_LEN];
+    let mut out = [0u8; BLOCK_RECORDS * RIDE_POINT_LEN_V2];
     let mut done = 0usize;
     while done < total {
         let n = (total - done).min(BLOCK_RECORDS);
@@ -201,13 +306,16 @@ pub fn track_to_ride(
             let mut rec = [0u8; TRACK_RECORD_LEN];
             rec.copy_from_slice(&bytes[i * TRACK_RECORD_LEN..(i + 1) * TRACK_RECORD_LEN]);
             let p = decode_record(&rec);
-            let o = i * RIDE_POINT_LEN;
+            let o = i * RIDE_POINT_LEN_V2;
             out[o..o + 4].copy_from_slice(&(p.t_ms.wrapping_sub(t0) / 1000).to_le_bytes());
             out[o + 4..o + 8].copy_from_slice(&p.lat.saturating_mul(10).to_le_bytes());
             out[o + 8..o + 12].copy_from_slice(&p.lon.saturating_mul(10).to_le_bytes());
             out[o + 12..o + 14].copy_from_slice(&p.ele.to_le_bytes());
+            out[o + 14] = p.hr.unwrap_or(RIDE_HR_NONE);
+            out[o + 15] = p.cadence.unwrap_or(RIDE_CAD_NONE);
+            out[o + 16..o + 18].copy_from_slice(&p.power.unwrap_or(RIDE_PWR_NONE).to_le_bytes());
         }
-        sink.write(&out[..n * RIDE_POINT_LEN])?;
+        sink.write(&out[..n * RIDE_POINT_LEN_V2])?;
         done += n;
     }
 

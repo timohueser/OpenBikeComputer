@@ -113,7 +113,7 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
 }
 
 /// An [`obc_app::TrackSink`] writing each accepted fix to the open `.obct` ride log. The app encodes
-/// a [`TrackPoint`] and hands it here; this appends its fixed 16-byte record ([`encode_record`]).
+/// a [`TrackPoint`] and hands it here; this appends its fixed 20-byte record ([`encode_record`]).
 ///
 /// A failed SD write is reported straight back through [`record`](TrackSink::record)'s
 /// `Result` — the app owns the reaction (it raises the "recording error" indicator so the rider
