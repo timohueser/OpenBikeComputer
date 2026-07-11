@@ -97,6 +97,9 @@ ride_time = "Tiempo"
 clock = "Hora"
 next_waypoint = "Punto sig."
 waypoint_list = "Lista pts"
+heart_rate = "Frec. card."
+power = "Potencia"
+cadence = "Cadencia"
 
 # --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
 [tile]
@@ -111,6 +114,9 @@ ride = "TIEMPO"
 time = "HORA"
 next_wpt = "PTO SIG"
 waypoints = "PUNTOS"
+hr = "FC"
+pwr = "POT"
+rpm = "CAD"
 
 # --- The Climb (ClimbPro) riding screen ---
 [climb]

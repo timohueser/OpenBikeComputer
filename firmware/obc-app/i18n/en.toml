@@ -110,6 +110,9 @@ ride_time = "Ride time"
 clock = "Clock"
 next_waypoint = "Next waypoint"
 waypoint_list = "Waypoint list"
+heart_rate = "Heart rate"
+power = "Power"
+cadence = "Cadence"
 
 # --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
 [tile]
@@ -124,6 +127,9 @@ ride = "RIDE"
 time = "TIME"
 next_wpt = "NEXT WPT"
 waypoints = "WAYPOINTS"
+hr = "HR"
+pwr = "PWR"
+rpm = "RPM"
 
 # --- The Climb (ClimbPro) riding screen ---
 [climb]

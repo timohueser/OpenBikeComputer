@@ -97,6 +97,9 @@ ride_time = "Fahrzeit"
 clock = "Uhrzeit"
 next_waypoint = "Nächster WP"
 waypoint_list = "WP-Liste"
+heart_rate = "Herzfrequenz"
+power = "Leistung"
+cadence = "Trittfrequenz"
 
 # --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
 [tile]
@@ -111,6 +114,9 @@ ride = "FAHRZEIT"
 time = "UHRZEIT"
 next_wpt = "NÄ. WP"
 waypoints = "WEGPUNKTE"
+hr = "HF"
+pwr = "LEIST"
+rpm = "TF"
 
 # --- The Climb (ClimbPro) riding screen ---
 [climb]
