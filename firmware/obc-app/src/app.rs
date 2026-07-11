@@ -3550,6 +3550,82 @@ mod tests {
         assert_eq!(app.activity.climb_m(), 15.0, "only genuine post-resume climb adds through tick");
     }
 
+    // --- end-to-end BLE sensor seam through `tick` (SE2, #709) ---
+
+    /// A heart-rate strap that yields one sample then runs dry (the fresh-mailbox contract).
+    struct OneHr(Option<u16>);
+    impl crate::hal::HeartRateSource for OneHr {
+        fn poll(&mut self) -> Option<u16> {
+            self.0.take()
+        }
+    }
+
+    /// A power meter that yields one sample then runs dry.
+    struct OnePower(Option<u16>);
+    impl crate::hal::PowerSource for OnePower {
+        fn poll(&mut self) -> Option<u16> {
+            self.0.take()
+        }
+    }
+
+    /// A cadence sensor that yields one sample then runs dry.
+    struct OneCadence(Option<u8>);
+    impl crate::hal::CadenceSource for OneCadence {
+        fn poll(&mut self) -> Option<u8> {
+            self.0.take()
+        }
+    }
+
+    /// The `tick` → `poll` → `record_*` → `accumulate` wiring for all three BLE sensor drains. The
+    /// samples arrive **only on the tick that closes the moving interval**: because the drains run
+    /// *before* `record_motion`, that same tick's interval must book them — if the drain order ever
+    /// regressed to after the fix, the summary accessors would read `None` here.
+    #[test]
+    fn tick_drains_ble_sensors_into_live_values_and_summaries() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // boots Riding
+        const STEP_UD: i32 = 45; // ~5 m of latitude — one second at ~5 m/s, comfortably moving
+
+        // t = 1 s: the motion anchor, no sensor samples yet — everything reads `--`.
+        tick_fix(&mut app, Fix::at(0, 0), 1_000);
+        assert_eq!(app.activity.live_hr(1_000), None, "no sample yet → no live HR");
+        assert_eq!(app.activity.avg_hr(), None);
+
+        // t = 2 s: a moving fix *and* one fresh sample per sensor, all through `Sensors`.
+        app.now_ms = 2_000;
+        let mut loc = OneFix(Some(Fix::at(STEP_UD, 0)));
+        let mut hr = OneHr(Some(150));
+        let mut power = OnePower(Some(250));
+        let mut cadence = OneCadence(Some(90));
+        app.tick(
+            RideClock(2_000),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+                hr: Some(&mut hr),
+                power: Some(&mut power),
+                cadence: Some(&mut cadence),
+            },
+            None,
+        );
+
+        // Live: each poll landed in Activity, timestamped at this tick.
+        assert_eq!(app.activity.live_hr(2_000), Some(150), "tick drained the HR strap");
+        assert_eq!(app.activity.live_power(2_000), Some(250), "tick drained the power meter");
+        assert_eq!(app.activity.live_cadence(2_000), Some(90), "tick drained the cadence sensor");
+        // Summaries: the same-tick samples were booked into the same tick's moving interval —
+        // proving the drains run before `record_motion` (else `hr_ms` would still be 0 → `None`).
+        assert_eq!(app.activity.avg_hr(), Some(150), "the moving interval booked the fresh HR");
+        assert_eq!(app.activity.max_hr(), Some(150));
+        assert_eq!(app.activity.avg_power(), Some(250), "…and the fresh power");
+        assert_eq!(app.activity.max_power(), Some(250));
+        assert_eq!(app.activity.avg_cadence(), Some(90), "…and the fresh cadence");
+    }
+
     // --- settings persistence signal (the host's save trigger) ---
 
     /// A settings edit flags a save, but **debounced to leaving the settings subtree**: while still
