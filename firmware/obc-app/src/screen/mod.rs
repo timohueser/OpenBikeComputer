@@ -221,10 +221,17 @@ pub struct Render<'a, 'd> {
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
-    /// The computed route's decimated shape-preview polyline (#685 §4) — ≤ 64 `(lon, lat)` µdeg
-    /// points, host-decimated and keyed to the active route (the App hands an empty slice when
-    /// it's missing or stale). Only the computed-route overview draws it.
+    /// The previewed route's decimated shape polyline (#685 §4; #678 rework 3 widened it to
+    /// stored routes) — ≤ 64 `(lon, lat)` µdeg points, host-decimated and keyed to the active
+    /// route (the App hands an empty slice when it's missing or stale). Only the Route overview
+    /// draws it — the computed page's mid-gap sketch, the full page's track-pager band.
     pub nav_preview: &'a [(i32, i32)],
+    /// The viewed ride's decimated recorded-track shape polyline (#678 rework 3) — ≤ 64
+    /// `(lon, lat)` µdeg points, host-filled alongside the ride profile on detail entry
+    /// (`App::set_ride_preview`) and keyed to [`Activity::viewed_ride`](crate::Activity) (the App
+    /// hands an empty slice when it's missing or stale). Only the Ride detail's track pager page
+    /// draws it.
+    pub ride_preview: &'a [(i32, i32)],
     /// The single [`App`](crate::App)-owned POI-list snapshot buffer. Only the
     /// [`PoiList`](crate::screen::poi_list) screen touches it — it takes its static snapshot into
     /// this on the first draw with a `Reader` + fix (see [`PoiScratch`]); every other screen leaves
@@ -559,10 +566,11 @@ impl Screen {
             Screen::RouteReceived(s) => s.tick_timers(now_ms),
             Screen::RouteUpdated(s) => s.tick_timers(now_ms),
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
-            // The Route overview's stat-ledger pager (T3): flips DISTANCE+CLIMB ↔ DESCENT every 5 s.
+            // The Route overview's content-paired pager (T3, re-paired in #678 rework 3): flips
+            // track shape + DISTANCE ↔ elevation band + CLIMB + DESCENT every 5 s.
             Screen::RouteOverview(s) => s.tick_timers(now_ms),
-            // The Ride detail's stat pager (owner review round 2): the same 5 s two-row flip,
-            // DISTANCE+RIDE TIME ↔ AVG+CLIMBED.
+            // The Ride detail's content-paired pager (owner review rounds 2 + 3): the same 5 s
+            // flip, track shape + DISTANCE + RIDE TIME ↔ elevation band + AVG + CLIMBED.
             Screen::RideDetail(s) => s.tick_timers(now_ms),
             // The nav planning spinner (#499): free-runs at frame cadence until the host's
             // answer (or a cancel) removes the screen. The one screen that reports a dirty
@@ -1073,20 +1081,6 @@ pub(crate) fn confirm_row(
     } else {
         cv.round(row, radius, palette::AMBER);
     }
-}
-
-/// The action-button **focus outline** (owner review round 2): a 2 px ink frame around a button
-/// whose face is always visible (the Route overview's START/Delete pair, the Bluetooth Forget
-/// button) — on those rows the base can't double as the selection cursor the way the
-/// ride_control-style menus' shade does, so focus is this outline. Two nested 1 px
-/// `round_outline`s (the panel's doubled-stroke idiom).
-pub(crate) fn focus_outline(cv: &mut impl Surface, row: Rectangle, radius: u32) {
-    cv.round_outline(row, radius, palette::INK);
-    cv.round_outline(
-        rect(row.top_left.x + 1, row.top_left.y + 1, row.size.width as i32 - 2, row.size.height as i32 - 2),
-        radius.saturating_sub(1),
-        palette::INK,
-    );
 }
 
 /// Layout of a guarded-action menu's option rows — the per-screen geometry

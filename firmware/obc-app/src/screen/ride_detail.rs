@@ -1,18 +1,21 @@
 //! The Ride detail (epic #678 T2 / #680) — the recorded sibling of the
 //! [Route overview](super::route_overview), opened by *press* on a Rides-list row. Top to bottom:
 //! the `RIDE` title bar with the sync state in its right slot, the ride name, a `date · time`
-//! line, the recorded track's **elevation band** (the overview's composition — tan fill under an
-//! amber top stroke, max-elevation label at the band's top-right), a two-row auto-flip stat
-//! **pager** (page 0 = DISTANCE + RIDE TIME, page 1 = AVG + CLIMBED — all from the
-//! [`RideSummary`](crate::ride::RideSummary), no new stats), and the guarded **Delete ride** row
-//! at the bottom.
+//! line, the **content-paired pager** (owner review round 3 — the media band flips WITH its
+//! stats): page A the recorded track's **shape preview** (the overview's aspect-fit sketch,
+//! start disc + end diamond) over DISTANCE + RIDE TIME, page B the recorded **elevation band**
+//! (the overview's composition — tan fill under an amber top stroke, max-elevation label at the
+//! band's top-right) over AVG + CLIMBED — all stats from the
+//! [`RideSummary`](crate::ride::RideSummary), no new figures — and the guarded **Delete ride**
+//! row at the bottom.
 //!
-//! The band's profile comes from the host: entering the screen sets
+//! The band's profile **and** the track shape come from the host: entering the screen sets
 //! [`Activity::viewed_ride`](crate::Activity::viewed_ride) (the Rides screen's press does), the
-//! host drains [`App::take_ride_track_request`](crate::App::take_ride_track_request), streams the
-//! ride's `RD{id}.ORD` once into the app's single resident ride-profile buffer
-//! ([`App::set_ride_profile`](crate::App::set_ride_profile)), and Back/delete clears `viewed_ride`
-//! so the buffer invalidates on exit — filled on entry, one buffer, never rebuilt per frame.
+//! host drains [`App::take_ride_track_request`](crate::App::take_ride_track_request), streams
+//! the ride's `RD{id}.ORD` into the app's resident ride-profile + ride-preview buffers
+//! ([`App::set_ride_profile`](crate::App::set_ride_profile) /
+//! [`App::set_ride_preview`](crate::App::set_ride_preview)), and Back/delete clears `viewed_ride`
+//! so both invalidate on exit — filled on entry, one buffer each, never rebuilt per frame.
 //!
 //! **Delete** is the ride_control-pattern guarded row: the completed hold *is* the confirmation
 //! (its fill the live feedback), the host deletes `RD{id}.ORD` + its synced-set entry, and the
@@ -24,8 +27,9 @@
 //! Fit note (reworked in owner review round 2 — "very busy"): the four ledger rows don't fit
 //! beside a readable band, so they auto-flip as the Route overview's **two-row pager** (5 s fixed
 //! dwell, no page dots — the flip is the affordance) and the reclaimed vertical space goes back
-//! into the elevation band (34 → 82 px, near the overview's 90 px reference look). The ledger
-//! *text* is untouched (the locked shrink order).
+//! into the media band (34 → 82 px, near the overview's 90 px reference look). Round 3 paired the
+//! band with the stats: the track shape belongs to the distance/time page, the elevation band to
+//! the climb page. The ledger *text* is untouched (the locked shrink order).
 
 use core::fmt::Write;
 
@@ -43,13 +47,14 @@ use crate::Msg;
 
 use super::{ledger_row, palette, title_frame, Ctx, MenuItem, Render, Transition, LIST_TOP};
 
-/// The recorded track's elevation band: the Route overview's composition, regrown near its
-/// reference height by the pager rework (owner review round 2 — see the module doc).
+/// The content-paired media band (track shape / elevation): the Route overview's composition,
+/// regrown near its reference height by the pager rework (owner review round 2 — see the module
+/// doc). Both pages draw in this same slot, so nothing jumps on the flip.
 const BAND_TOP: i32 = 96;
 const BAND_BOT: i32 = 178;
 const SIDE_MARGIN: i32 = 12;
 
-/// The stat pager: two caption/value rows per page between the band and the delete row, at the
+/// The stat half of the pager: two caption/value rows per page between the band and the delete row, at the
 /// overview's row pitch (the compressed 33 px pitch retired with the four-row ledger).
 const ROWS_TOP: i32 = 186;
 const ROW_PITCH: i32 = 42;
@@ -66,8 +71,8 @@ const PAGE_FLIP_MS: u32 = 5_000;
 #[derive(Debug, Default)]
 pub struct RideDetailScreen {
     ride: usize,
-    /// Which stat page is showing (0 = DISTANCE + RIDE TIME, 1 = AVG + CLIMBED); auto-flipped by
-    /// [`tick_timers`](Self::tick_timers).
+    /// Which content-paired page is showing (0 = track shape + DISTANCE + RIDE TIME, 1 =
+    /// elevation band + AVG + CLIMBED); auto-flipped by [`tick_timers`](Self::tick_timers).
     page: usize,
     /// Instant of the last page flip (wrap-safe). `None` until the first tick anchors it, so the
     /// first page gets a full dwell on entry — mirrors the Route overview's pager.
@@ -82,9 +87,9 @@ impl RideDetailScreen {
         RideDetailScreen { ride, page: 0, last_flip_ms: None }
     }
 
-    /// Stat pager tick: flip the two pages every [`PAGE_FLIP_MS`], reporting the residual dwell as
-    /// the next wake — exactly the Route overview's `tick_timers` (T3's Statistics-derived
-    /// machinery), on the recorded sibling.
+    /// Content-paired pager tick: flip the two pages every [`PAGE_FLIP_MS`], reporting the
+    /// residual dwell as the next wake — exactly the Route overview's `tick_timers` (T3's
+    /// Statistics-derived machinery), on the recorded sibling.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         let last = *self.last_flip_ms.get_or_insert(now_ms);
         let changed = now_ms.wrapping_sub(last) >= PAGE_FLIP_MS;
@@ -164,11 +169,18 @@ impl RideDetailScreen {
         let _ = write!(when, "{} · {:02}:{:02}", super::rides::fmt_date(ride.start_time), d.hour, d.minute);
         cv.text(&when, Point::new(14, LIST_TOP + 28), Font::Label, TextAlign::Left, SUBTEXT);
 
-        // The recorded track's elevation band — the overview's composition (tan fill under an
-        // amber top stroke), the host-filled resident ride profile as its source.
+        // The content-paired media band (owner review round 3): page A the recorded track's
+        // shape preview (the overview's sketch — start disc, end diamond), page B its elevation
+        // band (the overview's composition, tan fill under an amber top stroke) — both from the
+        // host-filled residents, both in the same slot so nothing jumps on the flip.
         let chart_x = SIDE_MARGIN;
         let chart_w = w - 2 * SIDE_MARGIN;
-        if let Some(profile) = rx.ride_profile {
+        let page_b = self.page & 1 == 1;
+        if !page_b {
+            // Page A: an empty slice (the frame or two before the host's fill lands) just leaves
+            // the slot blank, like the shape preview always has.
+            super::route_overview::draw_route_preview(cv, w, BAND_TOP, BAND_BOT, rx.ride_preview);
+        } else if let Some(profile) = rx.ride_profile {
             let win = profile.window(0.5, 1.0, chart_w.max(1) as u32);
             let span = (win.hi_frac - win.lo_frac).max(1e-6);
             let span_ele = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
@@ -201,9 +213,9 @@ impl RideDetailScreen {
                 SUBTEXT,
             );
         }
-        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline under the band
+        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline marks the band slot on both pages
 
-        // The stat pager — everything from the RideSummary, no new stats. AVG is the
+        // The stat half of the pager — everything from the RideSummary, no new stats. AVG is the
         // Statistics AVG tile's quotient (moving distance over moving time, here the stored
         // totals) and its caption (`AVG ` + the unit label); `--` before any moving time.
         let mut dist: heapless::String<8> = heapless::String::new();
@@ -226,16 +238,18 @@ impl RideDetailScreen {
         let mut climb: heapless::String<8> = heapless::String::new();
         let _ = write!(climb, "{}", (units.elev(ride.climb_m as f32) + 0.5) as u32);
 
-        // Two rows per page, auto-flipped every 5 s (owner review round 2: the Route overview's
-        // pager mechanics — the flip itself is the affordance, no page dots), with the overview's
-        // hairline rule between a page's two rows.
+        // Two rows per page, auto-flipped every 5 s with the media band above (owner review
+        // rounds 2 + 3: the Route overview's pager mechanics — the flip itself is the affordance,
+        // no page dots), with the overview's hairline rule between a page's two rows. The stats
+        // pair with their media: DISTANCE + RIDE TIME belong to the track shape, AVG + CLIMBED to
+        // the elevation band.
         let entries: [(&str, &str, &str, Option<bool>); 4] = [
             (rx.t(Msg::RideControlDistance), &dist, dist_unit, None),
             (rx.t(Msg::RideControlRideTime), &time, "", None),
             (&avg_cap, &avg, "", None),
             (rx.t(Msg::TileClimbed), &climb, units.elev_label(), Some(true)),
         ];
-        let page_rows: [usize; 2] = if self.page & 1 == 0 { [0, 1] } else { [2, 3] };
+        let page_rows: [usize; 2] = if page_b { [2, 3] } else { [0, 1] };
         for (slot, &e) in page_rows.iter().enumerate() {
             let y = ROWS_TOP + slot as i32 * ROW_PITCH;
             let (caption, value, unit, arrow) = entries[e];

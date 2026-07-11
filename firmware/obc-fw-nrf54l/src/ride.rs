@@ -160,6 +160,11 @@ fn fill_ride_profile(storage: &mut Option<sd::Storage>, app: &mut App) {
         defmt::warn!("ride profile: fill for id {=u16} failed — the detail's band stays empty", id);
     }
     app.set_ride_profile(profile);
+    // The track-shape preview (#678 rework 3) rides the same drain: a second forward stream of
+    // the `RD{id}.ORD` into the ≤ 64-point resident (a 512 B copy + the ~448 B block buffer in
+    // this same popped frame — small next to the profile builder's column scratch above).
+    let preview = storage.as_mut().map(|s| s.ride_preview_by_id(id)).unwrap_or_default();
+    app.set_ride_preview(&preview);
 }
 
 /// The on-device router's caller-owned buffers (epic #116, R4): the fixed A* table + graph-tile
@@ -987,11 +992,13 @@ pub(crate) async fn run_app(
             (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
             _ => None,
         };
-        // The computed-route overview's shape preview (#685 §4): `nav_finish` above answered the
-        // app and forced this pass's index rebuild, so the fresh plan's reader exists right here —
-        // decimate its polyline (≤ 64 points, one chunk walk through the resident cache) and hand
-        // the copy over. `nav_preview_missing` is false once fed (and on every non-overview
-        // frame), so this runs once per plan, not per pass.
+        // The Route overview's shape preview (#685 §4; widened to stored routes by #678 rework 3's
+        // track/elevation pager): a computed plan's `nav_finish` above answered the app and forced
+        // this pass's index rebuild, and a stored route's overview entry pointed `active_route` at
+        // it (same rebuild) — either way the previewed route's reader exists right here. Decimate
+        // its polyline (≤ 64 points, one chunk walk through the resident cache) and hand the copy
+        // over. `nav_preview_missing` is false once fed (and on every non-overview frame), so this
+        // runs once per overview entry / plan, not per pass.
         if app.nav_preview_missing() {
             if let Some(r) = route.as_ref() {
                 let pts = r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();

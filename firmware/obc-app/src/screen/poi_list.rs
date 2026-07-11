@@ -32,9 +32,11 @@ use crate::Msg;
 use super::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};
 
-/// Per-POI row height — two lines (name above, bearing arrow + distance below) with margin to keep
-/// the distance clear of the row separator / selected-row fill; the nearest-16 still page through
-/// the list widget.
+/// Per-POI **nominal** row height — two lines (name above, bearing arrow + distance below) with
+/// margin to keep the distance clear of the row separator / selected-row fill; the nearest-16
+/// still page through the list widget. The drawn pitch stretches from this so the rows consume
+/// the whole viewport (owner review round 3: no dead band under the last row) — on the 320 px
+/// panel that's 68 px rows, four flush to the bottom margin.
 const ROW_H: i32 = 64;
 
 /// The [`App`](crate::App)-owned snapshot of one category's nearest-16. **One** buffer, shared by
@@ -157,7 +159,7 @@ impl PoiListScreen {
         let pois: &[Poi] = if queried { &rx.poi_scratch.pois } else { &[] };
         let total = pois.len();
 
-        let geo = ListGeometry::below_title(w, h, ROW_H, 6, 14, Separators::All);
+        let geo = ListGeometry::filling_below_title(w, h, ROW_H, 6, 14, Separators::All);
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
         list::list_frame(cv, w, h, self.category.name(), pos, total, geo.visible);
 
@@ -257,10 +259,11 @@ fn draw_poi_row(
     cv.text(&dist, Point::new(text_x, line2_top), Font::Label, TextAlign::Left, SUBTEXT);
 }
 
-/// Half-size of the list rows' bearing-arrow glyph (px) — an ≈11×11 box in the same slot before
-/// the distance. The [detail screen](super::PoiDetailScreen) draws the same arrow at Body-line
-/// size by passing a larger radius.
-pub(super) const ARROW_R: i32 = 5;
+/// Half-size of the list rows' bearing-arrow glyph (px) — an ≈15×15 box in the same slot before
+/// the distance (grown from 5 in owner review round 3, with the taller rows). The
+/// [detail screen](super::PoiDetailScreen) draws the same arrow at Body-line size by passing its
+/// own radius.
+pub(super) const ARROW_R: i32 = 7;
 
 /// The 8-way quantized on-screen direction of the bearing from `pos` to the POI **relative to the
 /// rider's heading** — octant 0 = straight ahead (up), 1 = up-right, … clockwise in 45° steps
