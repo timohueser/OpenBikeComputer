@@ -203,14 +203,17 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 # The overview also carries the guarded Delete-route row (T3 #681, reordered by owner review round
-# 1): the bottommost element, BELOW the raised START RIDE bar — idle here, charging below. While the
-# route is the active ride's the row is hidden entirely (no greyed face); that state is unreachable
-# by gesture (the active route's overview never opens from the menu), so it has no frame — the
-# route_overview delete_enabled tests pin the guard.
+# 1): the bottommost element, BELOW the raised START RIDE bar. Since owner review round 2 the two
+# action rows carry a cursor — entry selects START (its ink focus outline), a turn moves onto the
+# Delete row, and only then does a hold charge the delete. While the route is the active ride's the
+# row is hidden entirely (no greyed face); that state is unreachable by gesture (the active route's
+# overview never opens from the menu), so it has no frame — the route_overview guard tests pin it.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
-# The Delete row charging: `p p p H` opens the overview and partial-holds the encoder over it, so the
+# The cursor on the Delete row (idle): `r` toggles the focus outline onto it, nothing charging.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p r"   --png "$OUT/routeoverview-delete-selected.png"
+# The Delete row charging: `p p p r H` selects it, then partial-holds the encoder, so the
 # warning-red row fill draws under the "Delete route" label.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p H"   --png "$OUT/routeoverview-delete.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p r H" --png "$OUT/routeoverview-delete.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
 # --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
 # (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —

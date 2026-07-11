@@ -422,7 +422,9 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     app.handle_input(InputClock(1_800), &mut keys(&[up(Button::Encoder)]));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
-    // A fresh, deliberate hold afterwards still deletes (the cancel is one-shot, not a lockout).
+    // A fresh, deliberate delete afterwards still works (the cancel is one-shot, not a lockout):
+    // select the Delete row (owner review round 2 — no hold-anywhere), then hold.
+    app.apply_gesture(Gesture::Turn(1));
     app.handle_input(InputClock(2_000), &mut keys(&[down(Button::Encoder)]));
     app.handle_input(InputClock(2_600), &mut keys(&[]));
     assert_eq!(app.take_route_delete(), Some(11), "a real hold on the overview still requests its delete");
