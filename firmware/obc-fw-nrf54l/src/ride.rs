@@ -1025,6 +1025,9 @@ pub(crate) async fn run_app(
                 compass: Some(&mut debug_compass),
                 track: track_dyn,
                 fuel: Some(&mut fuel),
+                hr: None,
+                power: None,
+                cadence: None,
             },
             route.as_ref(),
         );
@@ -1039,6 +1042,9 @@ pub(crate) async fn run_app(
                 compass: Some(&mut mag_compass), // ICM-20948 / AK09916 heading while stopped
                 track: track_dyn,
                 fuel: Some(&mut fuel),
+                hr: None, // BLE central lands in SE6 — no sensor link yet
+                power: None,
+                cadence: None,
             },
             route.as_ref(),
         );
@@ -1053,6 +1059,9 @@ pub(crate) async fn run_app(
                 compass: None,
                 track: track_dyn,
                 fuel: Some(&mut fuel),
+                hr: None,
+                power: None,
+                cadence: None,
             },
             route.as_ref(),
         );

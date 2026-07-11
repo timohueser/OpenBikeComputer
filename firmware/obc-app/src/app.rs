@@ -339,6 +339,9 @@ const GESTURE_BUF: usize = 16;
 ///         compass: Some(&mut compass),
 ///         track: Some(&mut track_log),
 ///         fuel: Some(&mut fuel_gauge),
+///         hr: None,
+///         power: None,
+///         cadence: None,
 ///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
 ///     app.handle_input(InputClock(now_ms), &mut input_source); // encoder + Back → gestures
@@ -1022,7 +1025,7 @@ impl App {
             }
         }
 
-        let Sensors { loc, altimeter, temperature, clock, compass, track, fuel } = sensors;
+        let Sensors { loc, altimeter, temperature, clock, compass, track, fuel, hr, power, cadence } = sensors;
         // Battery charge from the PMIC gauge, on the slow ~30 s cadence. A reading only repaints
         // Home — the one screen that draws the gauge — when the level **actually changes** (the
         // `shows_live_data` gate below is for the riding views, not Home, so dirty it here).
@@ -1057,6 +1060,26 @@ impl App {
         if let Some(temperature) = temperature {
             if let Some(c) = temperature.poll() {
                 self.temp_c = Some(c);
+            }
+        }
+        // BLE sensors → the live values Activity staleness-gates + the per-ride summaries. Drained
+        // here beside the altimeter/temperature so `record_motion` (below, on a fresh fix) sees this
+        // tick's samples. `Some` only on a fresh reading; a dropped strap simply stops reporting and
+        // the staleness gate expires the last value. No screen consumes these yet (SE4+); the ride
+        // record stamping is SE3.
+        if let Some(hr) = hr {
+            if let Some(bpm) = hr.poll() {
+                self.activity.record_hr(bpm, now_ms);
+            }
+        }
+        if let Some(power) = power {
+            if let Some(watts) = power.poll() {
+                self.activity.record_power(watts, now_ms);
+            }
+        }
+        if let Some(cadence) = cadence {
+            if let Some(rpm) = cadence.poll() {
+                self.activity.record_cadence(rpm, now_ms);
             }
         }
         // GPS UTC time → the wall clock, but **only** in "Set from GPS" mode (so a manual clock is
@@ -3105,6 +3128,9 @@ mod tests {
                 compass: None,
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3167,6 +3193,9 @@ mod tests {
                 compass: None,
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3186,6 +3215,9 @@ mod tests {
                 compass: None,
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3291,6 +3323,9 @@ mod tests {
                 compass: None,
                 track: Some(&mut sink),
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3312,6 +3347,9 @@ mod tests {
                 compass: None,
                 track: Some(&mut sink),
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3344,6 +3382,9 @@ mod tests {
                 compass: None,
                 track: Some(&mut sink),
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3374,6 +3415,9 @@ mod tests {
                 compass: None,
                 track: Some(&mut sink),
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3435,6 +3479,9 @@ mod tests {
                 compass: Some(&mut compass),
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3515,6 +3562,9 @@ mod tests {
                 compass: None,
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3550,6 +3600,82 @@ mod tests {
         tick_alt(&mut app, 160.0, 5000); // re-anchors at the current height
         tick_alt(&mut app, 165.0, 6000); // a real +5 m after resuming
         assert_eq!(app.activity.climb_m(), 15.0, "only genuine post-resume climb adds through tick");
+    }
+
+    // --- end-to-end BLE sensor seam through `tick` (SE2, #709) ---
+
+    /// A heart-rate strap that yields one sample then runs dry (the fresh-mailbox contract).
+    struct OneHr(Option<u16>);
+    impl crate::hal::HeartRateSource for OneHr {
+        fn poll(&mut self) -> Option<u16> {
+            self.0.take()
+        }
+    }
+
+    /// A power meter that yields one sample then runs dry.
+    struct OnePower(Option<u16>);
+    impl crate::hal::PowerSource for OnePower {
+        fn poll(&mut self) -> Option<u16> {
+            self.0.take()
+        }
+    }
+
+    /// A cadence sensor that yields one sample then runs dry.
+    struct OneCadence(Option<u8>);
+    impl crate::hal::CadenceSource for OneCadence {
+        fn poll(&mut self) -> Option<u8> {
+            self.0.take()
+        }
+    }
+
+    /// The `tick` → `poll` → `record_*` → `accumulate` wiring for all three BLE sensor drains. The
+    /// samples arrive **only on the tick that closes the moving interval**: because the drains run
+    /// *before* `record_motion`, that same tick's interval must book them — if the drain order ever
+    /// regressed to after the fix, the summary accessors would read `None` here.
+    #[test]
+    fn tick_drains_ble_sensors_into_live_values_and_summaries() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // boots Riding
+        const STEP_UD: i32 = 45; // ~5 m of latitude — one second at ~5 m/s, comfortably moving
+
+        // t = 1 s: the motion anchor, no sensor samples yet — everything reads `--`.
+        tick_fix(&mut app, Fix::at(0, 0), 1_000);
+        assert_eq!(app.activity.live_hr(1_000), None, "no sample yet → no live HR");
+        assert_eq!(app.activity.avg_hr(), None);
+
+        // t = 2 s: a moving fix *and* one fresh sample per sensor, all through `Sensors`.
+        app.now_ms = 2_000;
+        let mut loc = OneFix(Some(Fix::at(STEP_UD, 0)));
+        let mut hr = OneHr(Some(150));
+        let mut power = OnePower(Some(250));
+        let mut cadence = OneCadence(Some(90));
+        app.tick(
+            RideClock(2_000),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+                hr: Some(&mut hr),
+                power: Some(&mut power),
+                cadence: Some(&mut cadence),
+            },
+            None,
+        );
+
+        // Live: each poll landed in Activity, timestamped at this tick.
+        assert_eq!(app.activity.live_hr(2_000), Some(150), "tick drained the HR strap");
+        assert_eq!(app.activity.live_power(2_000), Some(250), "tick drained the power meter");
+        assert_eq!(app.activity.live_cadence(2_000), Some(90), "tick drained the cadence sensor");
+        // Summaries: the same-tick samples were booked into the same tick's moving interval —
+        // proving the drains run before `record_motion` (else `hr_ms` would still be 0 → `None`).
+        assert_eq!(app.activity.avg_hr(), Some(150), "the moving interval booked the fresh HR");
+        assert_eq!(app.activity.max_hr(), Some(150));
+        assert_eq!(app.activity.avg_power(), Some(250), "…and the fresh power");
+        assert_eq!(app.activity.max_power(), Some(250));
+        assert_eq!(app.activity.avg_cadence(), Some(90), "…and the fresh cadence");
     }
 
     // --- settings persistence signal (the host's save trigger) ---
@@ -4214,6 +4340,9 @@ mod tests {
                     compass: None,
                     track: None,
                     fuel: None,
+                    hr: None,
+                    power: None,
+                    cadence: None,
                 },
                 route,
             );

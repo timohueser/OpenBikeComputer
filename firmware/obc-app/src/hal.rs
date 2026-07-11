@@ -97,6 +97,37 @@ pub trait ClockSource {
     fn poll(&mut self) -> Option<GpsTime>;
 }
 
+/// Source of the rider's **heart rate** in beats per minute — a chest strap or optical armband over
+/// BLE. Polled each tick, fresh-mailbox: `Some(bpm)` **only on the tick a new sample arrived**,
+/// `None` otherwise (mirrors [`AltimeterSource`]). The app timestamps each `Some` and applies a
+/// staleness gate ([`Activity::live_hr`](crate::Activity::live_hr)), so a dropped strap reads `--`
+/// rather than freezing its last value. `None` on a host with no strap wired.
+pub trait HeartRateSource {
+    /// The latest heart rate in bpm, or `None` if no new sample this tick.
+    fn poll(&mut self) -> Option<u16>;
+}
+
+/// Source of the rider's **power** in watts — a crank / pedal / hub meter over BLE. Polled each
+/// tick, fresh-mailbox like [`HeartRateSource`]: `Some(watts)` only on the tick a fresh sample
+/// arrived. Values are non-negative (the host clamps a signed meter reading at `0`). The app
+/// timestamps + staleness-gates each sample ([`Activity::live_power`](crate::Activity::live_power)).
+/// `None` on a host with no meter wired.
+pub trait PowerSource {
+    /// The latest power in watts, or `None` if no new sample this tick.
+    fn poll(&mut self) -> Option<u16>;
+}
+
+/// Source of the rider's pedalling **cadence** in rpm — a cadence sensor (or a combined
+/// speed/cadence unit) over BLE. Polled each tick, fresh-mailbox like [`HeartRateSource`]:
+/// `Some(rpm)` only on the tick a fresh sample arrived. A coasting rider reads a fresh `Some(0)`
+/// (feet still), distinct from `None` (no sensor / stale) — the app's summary averages cadence over
+/// *cadence-present* moving time, so coasting-at-0 counts but a missing strap doesn't.
+/// `None` on a host with no sensor wired.
+pub trait CadenceSource {
+    /// The latest cadence in rpm, or `None` if no new sample this tick.
+    fn poll(&mut self) -> Option<u8>;
+}
+
 /// Source of the rider's **heading** from a magnetometer (electronic compass). Its one job is the
 /// heading when the GPS can't supply a course: a real receiver drops [`Fix::course`] to `None`
 /// below walking pace, so a stationary rider's heading-up map would otherwise snap to north. While
@@ -169,6 +200,15 @@ pub struct Sensors<'a> {
     /// The battery fuel gauge, or `None` when none is wired (holds the last value). Read on the slow
     /// ~30 s cadence, on every screen, since the Home screensaver shows the battery while idle.
     pub fuel: Option<&'a mut dyn FuelGauge>,
+    /// The heart-rate strap, or `None` when no HR sensor is wired — the tile then shows `--` and the
+    /// ride records no heart rate.
+    pub hr: Option<&'a mut dyn HeartRateSource>,
+    /// The power meter, or `None` when no power sensor is wired — the tile then shows `--` and the
+    /// ride records no power.
+    pub power: Option<&'a mut dyn PowerSource>,
+    /// The cadence sensor, or `None` when no cadence sensor is wired — the tile then shows `--` and
+    /// the ride records no cadence.
+    pub cadence: Option<&'a mut dyn CadenceSource>,
 }
 
 /// Persistent store for the device [`Settings`] — the seam between the shared settings model and

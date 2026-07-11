@@ -23,6 +23,10 @@ const MAX_SPEED_MPS: f32 = 30.0;
 /// Below this implied speed (m/s) the rider is stopped; don't count the time toward the
 /// moving average, so red lights and rests don't drag Avg. Speed down.
 const MOVING_MIN_MPS: f32 = 0.8;
+/// A BLE sensor sample (HR / power / cadence) older than this (ms) is stale: the live accessors
+/// read `None` and the summary stops accumulating it. A dropped strap must show `--` on the tile
+/// and record *absent* into the log, never freeze its last value.
+const SENSOR_STALE_MS: u32 = 5_000;
 
 /// The device's operating mode (`docs/ui_framework_brief.md` §"Operating modes").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -230,6 +234,36 @@ pub struct Activity {
     /// `true` when a dropped fix (GPS gap / teleport) left a hole, so the next logged point starts a
     /// fresh track segment.
     segment_break: bool,
+
+    // live BLE sensor values (staleness-gated) — HR / power / cadence. Each holds the last sample +
+    // the [`RideClock`] ms it arrived; the `live_*` accessors return `None` once it's older than
+    // [`SENSOR_STALE_MS`] so a dropped strap reads `--` rather than freezing.
+    /// Latest heart rate (bpm) + the ms it arrived, or `None` before the first sample.
+    hr_last: Option<u16>,
+    hr_at_ms: u32,
+    /// Latest power (W) + the ms it arrived, or `None` before the first sample.
+    power_last: Option<u16>,
+    power_at_ms: u32,
+    /// Latest cadence (rpm) + the ms it arrived, or `None` before the first sample.
+    cadence_last: Option<u8>,
+    cadence_at_ms: u32,
+
+    // per-ride sensor summary accumulators — time-weighted over **moving time** (the `avg_speed`
+    // discipline), accruing only while a *fresh* value is present, in the same accepted-fix path as
+    // `moving_s`. The weight is the interval's Δms (`_ms`); the sum is value×Δms (`_ms_sum`); the
+    // quotient is the moving-time average. Reset with the session. No zones / smoothing / NP / TSS.
+    /// Σ(bpm × Δms) over HR-present moving time, and its Δms denominator + running max.
+    hr_ms_sum: u64,
+    hr_ms: u32,
+    max_hr: u16,
+    /// Σ(W × Δms) over power-present moving time, and its Δms denominator + running max.
+    power_ms_sum: u64,
+    power_ms: u32,
+    max_power: u16,
+    /// Σ(rpm × Δms) over cadence-present moving time, and its Δms denominator. Coasting-at-0 counts
+    /// (a fresh `0`), strap-absent doesn't. No max — no consumer needs it.
+    cadence_ms_sum: u64,
+    cadence_ms: u32,
 }
 
 impl Activity {
@@ -266,6 +300,71 @@ impl Activity {
     /// [`Elevation`](crate::stat_fields::StatField::Elevation) tile.
     pub fn current_elevation_m(&self) -> Option<f32> {
         self.last_alt
+    }
+
+    /// Live heart rate (bpm) for the tile, or `None` when none has arrived or the last sample is
+    /// older than [`SENSOR_STALE_MS`] — a dropped strap reads `--`, never its frozen last value.
+    /// `now_ms` is the current [`RideClock`](crate::RideClock) already threaded through `tick`.
+    pub fn live_hr(&self, now_ms: u32) -> Option<u16> {
+        self.hr_last.filter(|_| now_ms.saturating_sub(self.hr_at_ms) <= SENSOR_STALE_MS)
+    }
+
+    /// Live power (W) for the tile, or `None` when stale / never seen — the staleness twin of
+    /// [`live_hr`](Activity::live_hr).
+    pub fn live_power(&self, now_ms: u32) -> Option<u16> {
+        self.power_last.filter(|_| now_ms.saturating_sub(self.power_at_ms) <= SENSOR_STALE_MS)
+    }
+
+    /// Live cadence (rpm) for the tile, or `None` when stale / never seen. A fresh `Some(0)` is a
+    /// coasting rider (distinct from `None`), so the tile shows `0`, not `--`.
+    pub fn live_cadence(&self, now_ms: u32) -> Option<u8> {
+        self.cadence_last.filter(|_| now_ms.saturating_sub(self.cadence_at_ms) <= SENSOR_STALE_MS)
+    }
+
+    /// Average heart rate (bpm) over HR-present moving time, or `None` before any sample. Saturates
+    /// into the ride object's `u8` field (SE3); bpm never realistically exceeds 255.
+    pub fn avg_hr(&self) -> Option<u8> {
+        (self.hr_ms > 0).then(|| (self.hr_ms_sum / self.hr_ms as u64).min(u8::MAX as u64) as u8)
+    }
+
+    /// Peak heart rate (bpm) seen during moving time, or `None` before any sample. Saturating `u8`.
+    pub fn max_hr(&self) -> Option<u8> {
+        (self.hr_ms > 0).then(|| self.max_hr.min(u8::MAX as u16) as u8)
+    }
+
+    /// Average power (W) over power-present moving time, or `None` before any sample.
+    pub fn avg_power(&self) -> Option<u16> {
+        (self.power_ms > 0).then(|| (self.power_ms_sum / self.power_ms as u64).min(u16::MAX as u64) as u16)
+    }
+
+    /// Peak power (W) seen during moving time, or `None` before any sample.
+    pub fn max_power(&self) -> Option<u16> {
+        (self.power_ms > 0).then_some(self.max_power)
+    }
+
+    /// Average cadence (rpm) over cadence-present moving time — coasting-at-0 counts — or `None`
+    /// before any sample. Saturating `u8`.
+    pub fn avg_cadence(&self) -> Option<u8> {
+        (self.cadence_ms > 0).then(|| (self.cadence_ms_sum / self.cadence_ms as u64).min(u8::MAX as u64) as u8)
+    }
+
+    /// Store a fresh heart-rate sample, timestamped for the staleness gate. Called from `App::tick`
+    /// when [`HeartRateSource::poll`](crate::HeartRateSource::poll) yields `Some`.
+    pub(crate) fn record_hr(&mut self, bpm: u16, now_ms: u32) {
+        self.hr_last = Some(bpm);
+        self.hr_at_ms = now_ms;
+    }
+
+    /// Store a fresh power sample, timestamped for the staleness gate.
+    pub(crate) fn record_power(&mut self, watts: u16, now_ms: u32) {
+        self.power_last = Some(watts);
+        self.power_at_ms = now_ms;
+    }
+
+    /// Store a fresh cadence sample, timestamped for the staleness gate.
+    pub(crate) fn record_cadence(&mut self, rpm: u8, now_ms: u32) {
+        self.cadence_last = Some(rpm);
+        self.cadence_at_ms = now_ms;
     }
 
     /// Begin a fresh tracking session, assigning the next monotonic
@@ -426,6 +525,16 @@ impl Activity {
         self.last_ms = None;
         self.last_alt = None;
         self.segment_break = false;
+        // Per-ride sensor summaries start fresh with the session. The live values self-heal via the
+        // staleness gate (a >5 s old sample already reads `None`), so only the accumulators reset.
+        self.hr_ms_sum = 0;
+        self.hr_ms = 0;
+        self.max_hr = 0;
+        self.power_ms_sum = 0;
+        self.power_ms = 0;
+        self.max_power = 0;
+        self.cadence_ms_sum = 0;
+        self.cadence_ms = 0;
     }
 
     /// Store the latest map-match result (cursor + off-route readout).
@@ -469,6 +578,12 @@ impl Activity {
                     // creep adds to `ridden_m` but not here, so distance and time stay paired.
                     self.moving_m += dist;
                     self.moving_s += dt;
+                    // Sensor summaries share the moving-time weight (this interval's Δms) and accrue
+                    // only while a *fresh* value is present — so a red-light stop (below the gate)
+                    // and a dropped strap (stale) both stop the average cleanly. `record_motion`
+                    // runs after the tick's sensor drains, so `now_ms` gates against this tick's
+                    // samples.
+                    self.accumulate_sensors(now_ms, now_ms.saturating_sub(prev_ms));
                 }
                 counted = true;
             }
@@ -482,6 +597,28 @@ impl Activity {
         self.last_fix = Some(fix);
         self.last_ms = Some(now_ms);
         Motion { log, segment_start }
+    }
+
+    /// Fold this moving interval's fresh sensor values into the per-ride summaries, weighted by
+    /// `dt_ms` (the same Δms `moving_s` books). Called from the accepted-fix, above-threshold path
+    /// of [`record_motion`](Activity::record_motion), so it accrues only over moving time. A stale
+    /// value (its `live_*` accessor reads `None`) contributes nothing — the average then reflects
+    /// only the time a sensor was actually reporting.
+    fn accumulate_sensors(&mut self, now_ms: u32, dt_ms: u32) {
+        if let Some(bpm) = self.live_hr(now_ms) {
+            self.hr_ms_sum += bpm as u64 * dt_ms as u64;
+            self.hr_ms += dt_ms;
+            self.max_hr = self.max_hr.max(bpm);
+        }
+        if let Some(watts) = self.live_power(now_ms) {
+            self.power_ms_sum += watts as u64 * dt_ms as u64;
+            self.power_ms += dt_ms;
+            self.max_power = self.max_power.max(watts);
+        }
+        if let Some(rpm) = self.live_cadence(now_ms) {
+            self.cadence_ms_sum += rpm as u64 * dt_ms as u64;
+            self.cadence_ms += dt_ms;
+        }
     }
 
     /// Integrate one barometric altitude sample into the climbed total, dead-banded so sensor noise
@@ -833,6 +970,124 @@ mod tests {
         // The unwrapped longitude delta is ~360° → an enormous implied speed → over the gate.
         assert!(!m.log, "an unwrapped date-line crossing reads as a teleport and is dropped");
         assert_eq!(a.ridden_m, 0.0, "no planet-circling distance is ever booked");
+    }
+
+    // BLE sensor seam (SE2, #709) — live staleness gate + moving-time-weighted summaries. These
+    // mirror the `avg_kmh` / `avg_speed_cms` suite: a real fix stream drives the accumulation, and
+    // the sensor sources are simulated by stamping `record_*` at the tick's `now_ms`.
+
+    /// A fresh sample reads live and, over moving intervals, folds into the average and the max. A
+    /// steady 150 bpm over a moving 1 Hz stream reads back an average and peak of 150.
+    #[test]
+    fn hr_fresh_value_reads_live_and_accumulates() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_motion(Fix::at(BASE_LAT, LON), 0); // anchor, books no time
+        for step in 1..=4u32 {
+            let now = step * 1000;
+            a.record_hr(150, now); // the strap reports each tick, freshly stamped
+            a.record_motion(Fix::at(BASE_LAT + STEP_UD * step as i32, LON), now);
+            assert_eq!(a.live_hr(now), Some(150), "a just-stamped sample reads live");
+        }
+        assert_eq!(a.avg_hr(), Some(150), "a steady 150 bpm averages to 150");
+        assert_eq!(a.max_hr(), Some(150), "and peaks at 150");
+    }
+
+    /// The staleness gate: a sample older than `SENSOR_STALE_MS` reads `None` live and stops
+    /// accumulating, so a dropped strap neither freezes its tile nor drags the average.
+    #[test]
+    fn stale_sample_reads_none_and_stops_accumulating() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_motion(Fix::at(BASE_LAT, LON), 0);
+        a.record_power(200, 1000); // one fresh sample at t=1s
+        a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 1000);
+        assert_eq!(a.live_power(1000), Some(200), "fresh at arrival");
+        // Still fresh at exactly the staleness horizon (<=), booked into the moving interval.
+        assert_eq!(a.live_power(6000), Some(200), "5 s old is exactly at the gate, still fresh");
+        // One millisecond past the horizon: the strap is now stale.
+        assert_eq!(a.live_power(6001), None, "just past 5 s → stale, tile reads --");
+
+        let avg_before = a.avg_power();
+        assert_eq!(avg_before, Some(200), "the one fresh interval booked 200 W");
+        // A later, unambiguously-moving fix (~25 m over 6 s ≈ 4 m/s) with the sample now stale
+        // (7 s > 5 s) must not accumulate power — the staleness gate, not the moving gate, stops it.
+        a.record_motion(Fix::at(BASE_LAT + 6 * STEP_UD, LON), 7000);
+        assert_eq!(a.avg_power(), avg_before, "a stale sample books no further power average");
+    }
+
+    /// The average is time-weighted over *moving* time: an interval below the moving threshold (and
+    /// a stopped stretch) contributes no sensor weight, exactly as it contributes no `moving_s`.
+    #[test]
+    fn summary_is_weighted_over_moving_time_only() {
+        // Two moving intervals with the strap present, then a sub-threshold creep with it still
+        // present: the creep must not pull the average, because it books no moving time.
+        const CREEP_UD: i32 = 5; // ~0.56 m/s < MOVING_MIN_MPS
+        let mut a = Activity::new(Mode::Riding);
+        a.record_hr(100, 0);
+        a.record_motion(Fix::at(BASE_LAT, LON), 0); // anchor
+        a.record_hr(100, 1000);
+        a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 1000); // moving, 100 bpm
+        a.record_hr(200, 2000);
+        a.record_motion(Fix::at(BASE_LAT + 2 * STEP_UD, LON), 2000); // moving, 200 bpm
+                                                                     // A creep interval at a wild 40 bpm — below the moving gate, so it must not count.
+        a.record_hr(40, 3000);
+        a.record_motion(Fix::at(BASE_LAT + 2 * STEP_UD + CREEP_UD, LON), 3000);
+        assert_eq!(a.avg_hr(), Some(150), "avg = mean of the two moving-interval samples, creep ignored");
+        assert_eq!(a.max_hr(), Some(200), "max tracks the peak of the counted intervals");
+    }
+
+    /// Coasting reads a fresh `Some(0)` cadence, which *does* count toward the average (feet still,
+    /// sensor present) — distinct from a strap-absent `None`, which doesn't.
+    #[test]
+    fn cadence_zero_while_coasting_counts_into_the_average() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_cadence(90, 0);
+        a.record_motion(Fix::at(BASE_LAT, LON), 0); // anchor
+        a.record_cadence(90, 1000);
+        a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 1000); // pedalling at 90
+        a.record_cadence(0, 2000); // coasting: a real, fresh 0
+        a.record_motion(Fix::at(BASE_LAT + 2 * STEP_UD, LON), 2000);
+        // Two equal moving intervals at 90 and 0 → average 45. The coasting 0 pulls it down (it
+        // counts) rather than being dropped as absent.
+        assert_eq!(a.avg_cadence(), Some(45), "a fresh coasting 0 counts, averaging 90 and 0 to 45");
+    }
+
+    /// A session start (`reset_ride`) wipes the summary accumulators, so a second ride doesn't
+    /// inherit the first's average or peak.
+    #[test]
+    fn reset_ride_clears_the_sensor_summaries() {
+        let mut a = Activity::new(Mode::Riding);
+        a.record_hr(180, 0);
+        a.record_motion(Fix::at(BASE_LAT, LON), 0);
+        a.record_hr(180, 1000);
+        a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 1000);
+        assert_eq!(a.avg_hr(), Some(180));
+        assert_eq!(a.max_hr(), Some(180));
+
+        a.reset_ride();
+        assert_eq!(a.avg_hr(), None, "a fresh session has no HR average yet");
+        assert_eq!(a.max_hr(), None, "nor a peak");
+
+        // Ride two accumulates from scratch.
+        a.record_hr(120, 10_000);
+        a.record_motion(Fix::at(BASE_LAT, LON), 10_000);
+        a.record_hr(120, 11_000);
+        a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 11_000);
+        assert_eq!(a.avg_hr(), Some(120), "ride two measures its own samples");
+    }
+
+    /// Before any sample every summary accessor is `None` (the header codec maps that to its
+    /// sentinels in SE3) and every live accessor is `None` (the tile shows `--`).
+    #[test]
+    fn none_before_any_sample() {
+        let a = Activity::new(Mode::Riding);
+        assert_eq!(a.avg_hr(), None);
+        assert_eq!(a.max_hr(), None);
+        assert_eq!(a.avg_power(), None);
+        assert_eq!(a.max_power(), None);
+        assert_eq!(a.avg_cadence(), None);
+        assert_eq!(a.live_hr(0), None);
+        assert_eq!(a.live_power(0), None);
+        assert_eq!(a.live_cadence(0), None);
     }
 
     /// `ground_dist_m` near the pole: longitude lines converge, so a microdegree of longitude is
