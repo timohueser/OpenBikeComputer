@@ -13,6 +13,13 @@
 //!   "unknown" (a real receiver drops both at a standstill). Trailing fields may be omitted.
 //! - `A <meters>` — a barometric-altitude sample (float metres).
 //! - `C <deg>` — a compass heading (float degrees CW from north).
+//! - `H <bpm>` — a heart-rate sample (integer bpm, `u16`). Fake BLE sensor injection (epic #707
+//!   SE8): parsed and dispatched to the shared `sensor_values` mailboxes — the *same* ones the
+//!   board's BLE central manager (SE6) feeds — so the app wiring is identical whether a value comes
+//!   from an injected line or a real strap (last-writer-wins).
+//! - `P <watts>` — a power sample (integer watts, `u16`; a signed meter reading is clamped at `0`
+//!   host-side).
+//! - `R <rpm>` — a cadence sample (integer rpm, `u8`).
 //! - `K t <n>` / `K e <d|u>` / `K b <d|u>` — **input injection**: an encoder turn of `n` detents
 //!   (signed), or an encoder/Back button down/up edge. These feed the gesture recogniser exactly
 //!   like the physical buttons, so a host can drive the UI (taps and — via a delayed up — holds)
@@ -76,6 +83,12 @@ pub enum Msg {
     Alt(f32),
     /// A compass heading, degrees CW from north.
     Compass(f32),
+    /// A heart-rate sample in bpm (fake BLE sensor injection, epic #707 SE8).
+    Hr(u16),
+    /// A power sample in watts (fake BLE sensor injection, epic #707 SE8).
+    Power(u16),
+    /// A cadence sample in rpm (fake BLE sensor injection, epic #707 SE8).
+    Cadence(u8),
     /// An injected raw input event (encoder turn or a button down/up edge).
     Input(InputEvent),
     /// A debug camera-scale command: set the map viewport to exactly this meters-per-pixel.
@@ -104,6 +117,11 @@ pub fn parse_line(line: &str) -> Option<Msg> {
         }
         "A" => Some(Msg::Alt(it.next()?.parse::<f32>().ok()?)),
         "C" => Some(Msg::Compass(it.next()?.parse::<f32>().ok()?)),
+        // Fake BLE sensor injection (epic #707 SE8) — integer bpm / watts / rpm, parse-tolerant like
+        // the peers (a missing / malformed value drops the line rather than faulting).
+        "H" => Some(Msg::Hr(it.next()?.parse::<u16>().ok()?)),
+        "P" => Some(Msg::Power(it.next()?.parse::<u16>().ok()?)),
+        "R" => Some(Msg::Cadence(it.next()?.parse::<u8>().ok()?)),
         "Z" => Some(Msg::Zoom(it.next()?.parse::<f32>().ok()?)),
         // `N <from_lon> <from_lat> <to_lon> <to_lat>` — LON FIRST (the OBCM `(lon, lat)` tuple
         // convention, matching `nav_repro`), unlike the lat-first `F` fix line.
@@ -175,6 +193,32 @@ pub fn format_fix(f: &Fix) -> heapless::String<48> {
     let _ = s.push(' ');
     push_opt(&mut s, f.speed_mps, 2);
     let _ = s.push('\n');
+    s
+}
+
+/// Encode a heart-rate sample as an `H` line (the exact inverse of the `H` arm of [`parse_line`]):
+/// `H <bpm>\n`. Authored device-side next to [`format_fix`] so the USB feeder and the device share
+/// one canonical codec and the two halves can't drift. Cap sized to the worst case (`H 65535` = 8
+/// bytes; 16 leaves slack) so the `write!` cannot truncate.
+pub fn format_hr(bpm: u16) -> heapless::String<16> {
+    let mut s = heapless::String::new();
+    let _ = writeln!(s, "H {bpm}");
+    s
+}
+
+/// Encode a power sample as a `P` line (the inverse of the `P` arm of [`parse_line`]): `P <watts>\n`.
+/// See [`format_hr`] for the canonical-codec rationale.
+pub fn format_power(watts: u16) -> heapless::String<16> {
+    let mut s = heapless::String::new();
+    let _ = writeln!(s, "P {watts}");
+    s
+}
+
+/// Encode a cadence sample as an `R` line (the inverse of the `R` arm of [`parse_line`]): `R <rpm>\n`.
+/// See [`format_hr`] for the canonical-codec rationale.
+pub fn format_cadence(rpm: u8) -> heapless::String<16> {
+    let mut s = heapless::String::new();
+    let _ = writeln!(s, "R {rpm}");
     s
 }
 
@@ -383,6 +427,34 @@ mod handoff {
                 COMPASS.signal(c);
                 EVENT.signal(());
             }
+            // Fake BLE sensor injection (epic #707 SE8): route into the shared `sensor_values`
+            // mailboxes — the same ones the board's BLE central manager (SE6) feeds — so the app's
+            // `Sensors` wiring is identical for injected and radio values (last-writer-wins). Pulse
+            // the debug-link `EVENT` too: a `debug-uart` ride loop selects on *this* wake, so an
+            // injected sample must pull it out of warm sleep exactly like a fix does. (The
+            // `sensor_values` dispatch additionally pulses `sensor_link`'s wake, for the `ble`
+            // build whose loop selects on that instead.)
+            Msg::Hr(bpm) => {
+                #[cfg(feature = "sensor-link")]
+                crate::sensor_values::dispatch_hr(bpm);
+                #[cfg(not(feature = "sensor-link"))]
+                let _ = bpm;
+                EVENT.signal(());
+            }
+            Msg::Power(w) => {
+                #[cfg(feature = "sensor-link")]
+                crate::sensor_values::dispatch_power(w);
+                #[cfg(not(feature = "sensor-link"))]
+                let _ = w;
+                EVENT.signal(());
+            }
+            Msg::Cadence(rpm) => {
+                #[cfg(feature = "sensor-link")]
+                crate::sensor_values::dispatch_cadence(rpm);
+                #[cfg(not(feature = "sensor-link"))]
+                let _ = rpm;
+                EVENT.signal(());
+            }
             Msg::Zoom(z) => {
                 ZOOM.signal(z);
                 EVENT.signal(());
@@ -544,6 +616,43 @@ mod tests {
     fn parses_alt_and_compass() {
         assert_eq!(parse_line("A 612.5"), Some(Msg::Alt(612.5)));
         assert_eq!(parse_line("C 270"), Some(Msg::Compass(270.0)));
+    }
+
+    #[test]
+    fn parses_sensor_lines() {
+        // Fake BLE sensor injection (SE8): integer bpm / watts / rpm.
+        assert_eq!(parse_line("H 156"), Some(Msg::Hr(156)));
+        assert_eq!(parse_line("P 240"), Some(Msg::Power(240)));
+        assert_eq!(parse_line("R 92"), Some(Msg::Cadence(92)));
+        // Extremes: u16 for H/P, u8 for R.
+        assert_eq!(parse_line("H 65535"), Some(Msg::Hr(u16::MAX)));
+        assert_eq!(parse_line("P 1000"), Some(Msg::Power(1000)));
+        assert_eq!(parse_line("R 255"), Some(Msg::Cadence(u8::MAX)));
+    }
+
+    #[test]
+    fn rejects_malformed_sensor_lines() {
+        assert_eq!(parse_line("H"), None, "missing bpm");
+        assert_eq!(parse_line("P x"), None, "non-numeric watts");
+        assert_eq!(parse_line("R -5"), None, "cadence is unsigned");
+        assert_eq!(parse_line("H 70000"), None, "bpm above u16 rejects the line");
+        assert_eq!(parse_line("R 300"), None, "rpm above u8 rejects the line");
+    }
+
+    #[test]
+    fn format_sensor_lines_round_trip_through_parse() {
+        // Each `format_*` is the exact inverse of its `parse_line` arm — the USB feeder writes what
+        // the device reads back, one canonical codec so the halves can't drift.
+        assert_eq!(format_hr(156).as_str(), "H 156\n");
+        assert_eq!(format_power(240).as_str(), "P 240\n");
+        assert_eq!(format_cadence(92).as_str(), "R 92\n");
+        assert_eq!(parse_line(format_hr(156).as_str().trim_end()), Some(Msg::Hr(156)));
+        assert_eq!(parse_line(format_power(240).as_str().trim_end()), Some(Msg::Power(240)));
+        assert_eq!(parse_line(format_cadence(92).as_str().trim_end()), Some(Msg::Cadence(92)));
+        // Widest values still fit their 16-byte caps and survive the round-trip.
+        assert_eq!(format_hr(u16::MAX).as_str(), "H 65535\n");
+        assert_eq!(parse_line(format_hr(u16::MAX).as_str().trim_end()), Some(Msg::Hr(u16::MAX)));
+        assert_eq!(parse_line(format_cadence(u8::MAX).as_str().trim_end()), Some(Msg::Cadence(u8::MAX)));
     }
 
     #[test]

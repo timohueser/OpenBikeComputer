@@ -141,6 +141,14 @@ pub async fn wait_fix() -> Fix {
     FIX.wait().await
 }
 
+/// Pulse the shared "a datapoint arrived" wake ([`EVENT`]) without publishing a GPS value — the hook
+/// [`crate::sensor_values`] uses so a BLE-fed HR/power/cadence sample wakes the same event-driven
+/// ride loop the GPS fix does. `pub(crate)` so only the sibling sensor mailboxes reach it; external
+/// callers publish through a typed `dispatch_*`.
+pub(crate) fn wake_event() {
+    EVENT.signal(());
+}
+
 /// Await the next *any-sensor* datapoint — the single wake the event-driven main loop selects on.
 /// Completes on any `dispatch_*`, so one await covers the whole set; the loop then drains the typed
 /// mailboxes via `poll`. Prefer this over [`wait_fix`]: a heading- or time-only update (no position

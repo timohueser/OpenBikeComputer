@@ -624,7 +624,16 @@ mod tests {
 
         // Advance the replay + tick on the playback clock, then the wasm demo's ambient
         // auto-restart (suppressed while a tour runs — the branch's `!tour_active` gate).
-        crate::replay_step(app, player, baro, None, 1.0 / 60.0, route.as_ref(), None);
+        crate::replay_step(
+            app,
+            player,
+            baro,
+            None,
+            1.0 / 60.0,
+            route.as_ref(),
+            None,
+            obc_host_core::ReplaySensors::default(),
+        );
         if !tour_active && !player.is_playing() {
             player.play();
             app.activity.start_session();

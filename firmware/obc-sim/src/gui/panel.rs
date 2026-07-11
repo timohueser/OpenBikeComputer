@@ -205,6 +205,12 @@ impl SimGui {
 
                         separator_above(ui);
 
+                        egui::CollapsingHeader::new("Sensors")
+                            .default_open(false)
+                            .show(ui, |ui| self.show_sensor_controls(ui));
+
+                        separator_above(ui);
+
                         self.show_display_controls(ui);
 
                         separator_above(ui);
@@ -366,6 +372,37 @@ impl SimGui {
         }
         let elevation = self.store.elevation_sparkline(id);
         self.app.notify_route_uploaded(id, replace, elevation);
+    }
+
+    /// The synthetic BLE-sensor controls (epic #707 SE8): the sim's face of the HR / power /
+    /// cadence seam. One **effort follows speed** switch synthesizes all three from the replayed GPX
+    /// speed (plus light noise) — the no-slider-babysitting path for a plausible recorded ride; with
+    /// it off, each quantity has an enable toggle + a fixed-value slider. The values feed
+    /// [`SimSensors`](crate::sim_sensors::SimSensors) each tick at the ~1 Hz fresh-mailbox cadence, so
+    /// toggling one off mid-ride makes its tile go stale → `--` (the app's 5 s gate) and the log drop
+    /// it. Injected values share the app's `Sensors` wiring with the future BLE central (SE6).
+    fn show_sensor_controls(&mut self, ui: &mut egui::Ui) {
+        let cfg = &mut self.sim_sensors.cfg;
+        ui.checkbox(&mut cfg.effort_follows_speed, "Effort follows speed");
+        ui.weak("synthesize HR/power/cadence from the replayed GPX speed (with light noise)");
+
+        // With the synth on, the per-quantity toggles/sliders are ignored, so grey them out.
+        ui.add_enabled_ui(!cfg.effort_follows_speed, |ui| {
+            ui.add_space(4.0);
+            // One row per quantity: an enable toggle + a fixed-value slider (bpm / W / rpm).
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut cfg.hr_enabled, "HR");
+                ui.add(egui::Slider::new(&mut cfg.hr_bpm, 40..=220).suffix(" bpm"));
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut cfg.power_enabled, "Power");
+                ui.add(egui::Slider::new(&mut cfg.power_w, 0..=1000).suffix(" W"));
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut cfg.cadence_enabled, "Cadence");
+                ui.add(egui::Slider::new(&mut cfg.cadence_rpm, 0..=130).suffix(" rpm"));
+            });
+        });
     }
 
     /// The loaded-track controls: play/pause (auto-follows), a seek scrubber, and a 1×–10× speed

@@ -1,6 +1,6 @@
 //! One replay frame: advance the GPX playback and tick the shared app on the playback clock.
 
-use obc_app::{App, CompassSource, RideClock, Sensors, TrackSink};
+use obc_app::{App, CadenceSource, CompassSource, HeartRateSource, PowerSource, RideClock, Sensors, TrackSink};
 use obc_replay::{BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
 
@@ -15,10 +15,27 @@ pub fn initial_camera(reader: &obc_reader::Reader, width: u32) -> (i32, i32, f32
     (cam_lon as i32, cam_lat as i32, width as f32 / span_lon)
 }
 
+/// The optional synthetic BLE-sensor sources (HR / power / cadence) a host can drive alongside the
+/// replay (epic #707 SE8). Bundled so [`replay_step`]'s signature doesn't grow three parameters;
+/// every field defaults to `None` (a plain GPX replay with no sensors — the [`Default`]).
+#[derive(Default)]
+pub struct ReplaySensors<'s> {
+    pub hr: Option<&'s mut dyn HeartRateSource>,
+    pub power: Option<&'s mut dyn PowerSource>,
+    pub cadence: Option<&'s mut dyn CadenceSource>,
+}
+
 /// Advance the GPX replay by `dt` seconds and run one app tick on the **playback**
 /// clock. The millis derive from playback-time (not wall-clock), so Avg. Speed isn't
 /// scaled by the replay-speed multiplier. Shared by the live hosts' frame loops and
 /// `obc-sim`'s headless `--png` replay.
+///
+/// `sensors` carries the optional synthetic HR/power/cadence sources (SE8); pass
+/// [`ReplaySensors::default()`] for a plain replay. A host feeds those sources on the same playback
+/// clock **before** calling this (so a sample is stamped onto the point this tick logs).
+// Each argument models a distinct sensor seam the app tick binds together; bundling them further
+// would just relocate the same fan-out behind an opaque struct.
+#[allow(clippy::too_many_arguments)]
 pub fn replay_step<'s>(
     app: &mut App,
     player: &'s mut GpxPlayer,
@@ -27,6 +44,7 @@ pub fn replay_step<'s>(
     dt: f64,
     route: Option<&RouteReader>,
     track: Option<&'s mut dyn TrackSink>,
+    sensors: ReplaySensors<'s>,
 ) {
     // The sensor handles share one lifetime `'s` so the invariant `Sensors<'a>` can bind them
     // together. The compass only matters while stationary (GPS course drops to `None`).
@@ -41,9 +59,9 @@ pub fn replay_step<'s>(
         compass,
         track,
         fuel: None,
-        hr: None,
-        power: None,
-        cadence: None,
+        hr: sensors.hr,
+        power: sensors.power,
+        cadence: sensors.cadence,
     };
     app.tick(RideClock(now_ms), sensors, route);
 }
