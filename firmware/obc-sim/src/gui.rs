@@ -456,8 +456,8 @@ impl SimGui {
                 track: self.tracks.sink(),
                 // Battery is set once from `--battery`; no live sim gauge.
                 fuel: None,
-                // No BLE sensors in manual control — HR/power/cadence tiles read `--` (SE6 wires
-                // the panel; SE8 the board's BLE central).
+                // No BLE sensors in manual control — HR/power/cadence tiles read `--` (SE8 wires
+                // the panel; SE6 the board's BLE central).
                 hr: None,
                 power: None,
                 cadence: None,
