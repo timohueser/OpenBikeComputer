@@ -1,8 +1,15 @@
 //! The Route overview — the look-before-you-ride page between picking a route and tracking it.
 //! Shows the route's name, its full elevation profile (the Statistics band, **non-interactive**:
-//! no cursor, no zoom, no live shading), the headline stats (distance, climb, descent), and a
-//! START RIDE button. *Press* starts the session and drops into the riding Map — exactly what
-//! picking a route used to do directly; *back* cancels and returns to the Route menu.
+//! no cursor, no zoom, no live shading), the headline stats (distance, climb, descent), a
+//! START RIDE button, and (when deletable) the Delete-route button under it. The two action rows
+//! carry a **cursor** (owner review round 2 — a hold-anywhere delete "feels super unintuitive"):
+//! entry selects START RIDE; *turn* toggles between the two buttons (a 2 px ink focus outline —
+//! both faces are always visible, so the base can't double as the cursor); *press* starts the
+//! session only from the START row and drops into the riding Map — exactly what picking a route
+//! used to do directly; *hold* charges the delete only while the Delete row is selected; *back*
+//! cancels and returns to the Route menu. With the Delete row hidden (in use / computed) there is
+//! nothing to toggle: press starts, hold is a no-op, and no focus outline draws (a single action
+//! needs no cursor).
 //!
 //! Entering the overview sets [`Activity::active_route`](crate::Activity::active_route) — the
 //! hosts key geometry loading on it, so the route streams open and the profile builds while the
@@ -52,6 +59,11 @@ const BUTTON_H: i32 = 34;
 /// pages shows this long before the auto-flip (T3). Reuses the Statistics screen-tick machinery.
 const PAGE_FLIP_MS: u32 = 5_000;
 
+/// The two action rows the cursor walks (owner review round 2): the START RIDE bar and, when the
+/// route is deletable, the guarded Delete-route button under it.
+const START: usize = 0;
+const DELETE: usize = 1;
+
 /// The Route overview. State is which catalog route it previews, plus the `active_route` that was
 /// loaded when it opened (restored on `back`), and whether the route is a **computed** one (the
 /// on-device router's output, epic #116 R4) — which has no elevation data, so the page shows
@@ -71,18 +83,21 @@ pub struct RouteOverviewScreen {
     /// Instant of the last page flip (wrap-safe). `None` until the first tick anchors it, so the
     /// first page gets a full dwell on entry — mirrors the Statistics pager.
     last_flip_ms: Option<u32>,
+    /// The action-row cursor ([`START`] / [`DELETE`], owner review round 2). Entry selects START;
+    /// meaningful only while the Delete row exists — with it hidden the cursor pins to START.
+    selected: usize,
 }
 
 impl RouteOverviewScreen {
     /// Preview catalog route `route`; `prev_active` is the `active_route` to restore on cancel.
     pub fn new(route: usize, prev_active: Option<usize>) -> Self {
-        RouteOverviewScreen { route, prev_active, computed: false, page: 0, last_flip_ms: None }
+        RouteOverviewScreen { route, prev_active, computed: false, page: 0, last_flip_ms: None, selected: START }
     }
 
     /// Preview a **computed** route (the router's output): length only — no elevation band, no
     /// climb/descent rows. Opened by [`App::notify_nav_result`](crate::App::notify_nav_result).
     pub fn computed(route: usize, prev_active: Option<usize>) -> Self {
-        RouteOverviewScreen { route, prev_active, computed: true, page: 0, last_flip_ms: None }
+        RouteOverviewScreen { route, prev_active, computed: true, page: 0, last_flip_ms: None, selected: START }
     }
 
     /// Whether this overview previews a **computed** route — the variant that wants the
@@ -97,12 +112,18 @@ impl RouteOverviewScreen {
     /// predicate the old Route-menu footer greyed on, moved here (T3): deleting the file under an
     /// open geometry handle mid-ride would break navigation. Since owner review round 1 the row is
     /// **hidden entirely** while disallowed (no greyed face), and this guard keeps a hold a no-op
-    /// regardless. Also the [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) predicate
-    /// for this screen.
+    /// regardless.
     pub(crate) fn delete_enabled(&self, activity: &Activity, routes: &[RouteSummary]) -> bool {
         !self.computed
             && self.route < routes.len()
             && !(activity.is_tracking() && activity.active_route == Some(self.route))
+    }
+
+    /// True while a hold would charge the Delete row — it exists **and the cursor is on it**
+    /// (owner review round 2: no more hold-anywhere) — the
+    /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) predicate for this screen.
+    pub(crate) fn selection_is_guarded(&self, activity: &Activity, routes: &[RouteSummary]) -> bool {
+        self.selected == DELETE && self.delete_enabled(activity, routes)
     }
 
     /// Stat-ledger pager tick: flip the two pages every [`PAGE_FLIP_MS`], reporting the residual
@@ -133,8 +154,19 @@ impl RouteOverviewScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // Start: the session begin that Route-menu `press` used to do — riding camera on the
-            // route's start, tracking on, and a clean [Home, Map] stack. The shared
+            // The action-row cursor (owner review round 2): a detent toggles START ↔ Delete. With
+            // the Delete row hidden (in use / computed) there is one row and the step is a no-op —
+            // the cursor also clamps back to START first, in case the row vanished under it (the
+            // route became the active ride's via the swap flow).
+            Gesture::Turn(n) => {
+                let len = if self.delete_enabled(cx.activity, cx.routes) { 2 } else { 1 };
+                self.selected = self.selected.min(len - 1);
+                self.selected = super::list::step_selection(self.selected, n, len);
+                Transition::None
+            }
+            // Start — only from the selected START row (a press on the Delete row does nothing;
+            // it's hold-guarded): the session begin that Route-menu `press` used to do — riding
+            // camera on the route's start, tracking on, and a clean [Home, Map] stack. The shared
             // [`start_ride`](super::start_ride) path, also the upload popup's *Start navigation*.
             //
             // Mid-ride (a computed-route overview can open while tracking — the POI flow, epic
@@ -142,19 +174,20 @@ impl RouteOverviewScreen {
             // it opens the **same** save/swap prompt instead of silently restarting the session;
             // the Route menu's tracking arm never reaches an overview, so this arm fires only on
             // that flow today.
-            Gesture::Press => {
+            Gesture::Press if self.selected == START => {
                 if cx.activity.is_tracking() {
                     return Transition::Push(super::Screen::RouteSwap(super::RouteSwapScreen::new(self.route)));
                 }
                 super::start_ride(cx, self.route)
             }
-            // Delete: a completed hold over a live Delete row (the guarded hold is the confirmation,
-            // no popup) records the delete by index. The host resolves it to the durable object id,
-            // deletes the object — a created `_NAV.OBR` route the same way, no special casing — and
-            // the store-changed rescan re-feeds the catalog. Restore the pre-preview active route and
-            // pop to the refreshed Routes list. A hold while the route is in use (row hidden) never
-            // reaches here.
-            Gesture::Hold if self.delete_enabled(cx.activity, cx.routes) => {
+            // Delete: a completed hold with the cursor on the live Delete row (the guarded hold is
+            // the confirmation, no popup — but never hold-anywhere, owner review round 2) records
+            // the delete by index. The host resolves it to the durable object id, deletes the
+            // object — a created `_NAV.OBR` route the same way, no special casing — and the
+            // store-changed rescan re-feeds the catalog. Restore the pre-preview active route and
+            // pop to the refreshed Routes list. A hold while the route is in use (row hidden)
+            // never reaches here.
+            Gesture::Hold if self.selection_is_guarded(cx.activity, cx.routes) => {
                 cx.activity.request_route_delete(self.route);
                 cx.activity.active_route = self.prev_active;
                 Transition::Pop
@@ -300,12 +333,16 @@ impl RouteOverviewScreen {
         // The guarded Delete-route row, the bottommost element (owner review round 1: delete ranks
         // under the primary action). While the route is the active ride's the row is simply **not
         // drawn** — no dim trash, no "In use" cue (owner review round 1: the state can't act, so it
-        // doesn't show) — and the `delete_enabled` guard keeps a hold a no-op regardless. The START
-        // bar rides directly above the row's slot either way, so nothing jumps when it re-arms.
+        // doesn't show) — and the `selection_is_guarded` guard keeps a hold a no-op regardless. The
+        // START bar rides directly above the row's slot either way, so nothing jumps when it
+        // re-arms. With both rows up the cursor's ink focus outline marks the selected one; with
+        // only START there is no cursor to show (owner review round 2).
         if self.delete_enabled(rx.activity, rx.routes) {
-            draw_delete_row(cv, w, h, rx.t(Msg::RouteOverviewDelete), rx.hold_progress);
+            draw_delete_row(cv, w, h, rx.t(Msg::RouteOverviewDelete), rx.hold_progress, self.selected == DELETE);
+            draw_start_button_at(cv, w, start_button_y(h), rx.t(Msg::RouteOverviewStartRide), self.selected == START);
+        } else {
+            draw_start_button_at(cv, w, start_button_y(h), rx.t(Msg::RouteOverviewStartRide), false);
         }
-        draw_start_button_at(cv, w, start_button_y(h), rx.t(Msg::RouteOverviewStartRide));
     }
 }
 
@@ -322,14 +359,18 @@ fn start_button_y(h: i32) -> i32 {
 
 /// Draw the guarded **Delete route** row below the START button — the ride_control guarded-row
 /// idiom (a `PARCHMENT_SHADE` base filling warning-red with the live `hold` under the "Delete route"
-/// label). Only ever called live: while the route can't be deleted the caller draws nothing at all
-/// (owner review round 1 — no greyed face).
-fn draw_delete_row(cv: &mut impl Surface, w: i32, h: i32, label: &str, hold: f32) {
+/// label), plus the cursor's ink focus outline when `focused` (owner review round 2 — the base is
+/// always visible, so it can't double as the cursor). Only ever called live: while the route can't
+/// be deleted the caller draws nothing at all (owner review round 1 — no greyed face).
+fn draw_delete_row(cv: &mut impl Surface, w: i32, h: i32, label: &str, hold: f32, focused: bool) {
     use palette::*;
     let x = 14;
     let y = delete_row_y(h);
     let row = rect(x, y, w - 2 * x, DELETE_ROW_H);
     super::confirm_row(cv, row, true, true, hold, WARNING, 6);
+    if focused {
+        super::focus_outline(cv, row, 6);
+    }
     cv.text_vcentered(label, x + 12, (y, DELETE_ROW_H), Font::Body, TextAlign::Left, INK);
 }
 
@@ -420,16 +461,22 @@ fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[
 
 /// START RIDE at the screen-bottom anchor (`h - 10 - BUTTON_H`): the computed-route variant and the
 /// POI detail's `Route here` footer (#685), which is specified as exactly this bar, so the two can't
-/// drift. The full page draws the same bar via [`draw_start_button_at`], raised above its Delete row.
+/// drift. Never focused — these pages have a single action, so there is no cursor to draw. The full
+/// page draws the same bar via [`draw_start_button_at`], raised above its Delete row.
 pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
-    draw_start_button_at(cv, w, h - 10 - BUTTON_H, label);
+    draw_start_button_at(cv, w, h - 10 - BUTTON_H, label, false);
 }
 
-/// START RIDE with its top edge at `by`: the page's one action, so it draws armed (amber) with a
-/// play wedge.
-fn draw_start_button_at(cv: &mut impl Surface, w: i32, by: i32, label: &str) {
+/// START RIDE with its top edge at `by`: the page's primary action, so it draws armed (amber) with
+/// a play wedge — plus the cursor's ink focus outline when `focused` (owner review round 2: the
+/// amber bar is the button's identity, always on, so focus is the outline here too).
+fn draw_start_button_at(cv: &mut impl Surface, w: i32, by: i32, label: &str, focused: bool) {
     use palette::*;
-    cv.round(rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H), 8, AMBER);
+    let bar = rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H);
+    cv.round(bar, 8, AMBER);
+    if focused {
+        super::focus_outline(cv, bar, 8);
+    }
     let tx = w / 2 + 8;
     cv.text_vcentered(label, tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
     // Play wedge just left of the centred label — from its real half-width, so a longer
@@ -477,23 +524,49 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// A completed hold over the live Delete row records the route's index, restores the pre-preview
-    /// active route, and pops back to the Routes list.
+    /// The action cursor (owner review round 2): entry selects START and a hold there does
+    /// **nothing** — deleting takes a turn onto the Delete row first, then the completed hold
+    /// records the route's index, restores the pre-preview active route, and pops back to the
+    /// Routes list.
     #[test]
-    fn hold_deletes_the_previewed_route_and_pops() {
+    fn hold_deletes_only_from_the_selected_delete_row() {
         let routes = [summary(), summary()];
         let mut act = Activity::new(Mode::Idle);
         act.active_route = Some(1); // the menu preview
         let mut scr = RouteOverviewScreen::new(1, Some(0)); // was previewing route 0 before
         assert!(scr.delete_enabled(&act, &routes), "an Idle preview is deletable");
+        assert!(!scr.selection_is_guarded(&act, &routes), "entry selects START — nothing armed");
+        let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
+        assert!(matches!(t, Transition::None), "a hold with START selected does not delete");
+        assert_eq!(act.take_route_delete(), None);
+
+        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // → the Delete row
+        assert!(scr.selection_is_guarded(&act, &routes), "the hold fill is live on the Delete row");
         let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::Pop), "the delete pops back to the Routes list");
         assert_eq!(act.take_route_delete(), Some(1), "records the previewed route's index");
         assert_eq!(act.active_route, Some(0), "the pre-preview route is restored");
     }
 
-    /// The Delete row is disabled — and a hold does nothing — while this route is the active route of
-    /// a running tracking session (the greying predicate moved off the old Route-menu footer).
+    /// A press fires the START action only from the START row — with the cursor on Delete a press
+    /// does nothing (the row is hold-guarded), and a turn brings the cursor back.
+    #[test]
+    fn press_on_the_delete_row_is_a_no_op() {
+        let routes = [summary()];
+        let mut act = Activity::new(Mode::Idle);
+        let mut scr = RouteOverviewScreen::new(0, None);
+        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // → Delete
+        let t = run(&mut scr, &mut act, &routes, Gesture::Press);
+        assert!(matches!(t, Transition::None), "press on the Delete row starts nothing");
+        assert!(!act.is_tracking(), "no session began");
+        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // wrap back → START
+        let t = run(&mut scr, &mut act, &routes, Gesture::Press);
+        assert!(!matches!(t, Transition::None), "press on START starts the ride");
+    }
+
+    /// The Delete row is hidden — a turn has nothing to select and a hold does nothing — while
+    /// this route is the active route of a running tracking session (the greying predicate moved
+    /// off the old Route-menu footer).
     #[test]
     fn hold_over_the_active_ride_route_is_a_no_op() {
         let routes = [summary(), summary()];
@@ -502,19 +575,23 @@ mod tests {
         act.active_route = Some(0); // …route 0
         let mut scr = RouteOverviewScreen::new(0, None);
         assert!(!scr.delete_enabled(&act, &routes), "the active ride's route can't be deleted");
+        run(&mut scr, &mut act, &routes, Gesture::Turn(1));
+        assert_eq!(scr.selected, START, "with the Delete row hidden there is nothing to toggle");
         let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::None), "a hold over the in-use route does nothing");
         assert_eq!(act.take_route_delete(), None);
     }
 
-    /// A computed (length-only) overview has no Delete row, so it's never deletable and a hold is a
-    /// no-op — the locked length-only page stays exactly as-is.
+    /// A computed (length-only) overview has no Delete row, so a turn stays on START and a hold is
+    /// a no-op — the locked length-only page stays exactly as-is.
     #[test]
     fn computed_overview_has_no_delete() {
         let routes = [summary()];
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RouteOverviewScreen::computed(0, None);
         assert!(!scr.delete_enabled(&act, &routes));
+        run(&mut scr, &mut act, &routes, Gesture::Turn(1));
+        assert_eq!(scr.selected, START, "no Delete row — the turn is a no-op");
         run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert_eq!(act.take_route_delete(), None);
     }

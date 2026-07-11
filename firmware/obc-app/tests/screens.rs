@@ -585,7 +585,10 @@ fn hold_delete_requests_the_highlighted_route_id() {
     app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
     app.apply_gesture(Gesture::Press); // Beta → Route overview
     assert!(!app.has_route_delete(), "no request until the hold completes");
-    app.apply_gesture(Gesture::Hold); // guarded hold on the Delete row = delete Beta
+    app.apply_gesture(Gesture::Hold); // hold with START selected (the entry state) — round 2: no delete
+    assert!(!app.has_route_delete(), "a hold with START selected records nothing");
+    app.apply_gesture(Gesture::Turn(1)); // cursor → the Delete row
+    app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = delete Beta
     assert!(app.has_route_delete(), "the hold recorded a delete request");
     assert_eq!(app.take_route_delete(), Some(20), "drained as Beta's durable id, not its index");
     assert_eq!(app.take_route_delete(), None, "the one-shot drains");
@@ -624,7 +627,8 @@ fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
     app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (id 30, last row)
     app.apply_gesture(Gesture::Press); // Gamma → Route overview
-    app.apply_gesture(Gesture::Hold); // guarded hold on the Delete row = request its delete
+    app.apply_gesture(Gesture::Turn(1)); // cursor → the Delete row (round 2: no hold-anywhere)
+    app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = request its delete
     assert_eq!(app.take_route_delete(), Some(30));
 
     // The delete popped back to the Routes list; the host deletes Gamma and re-feeds the catalog,

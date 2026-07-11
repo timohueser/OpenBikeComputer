@@ -137,17 +137,7 @@ impl BluetoothScreen {
             let row = super::row_rect(fy, w, FORGET_H);
             confirm_row(cv, row, true, true, rx.hold_progress, WARNING, 6);
             if selected == FORGET {
-                cv.round_outline(row, 6, INK);
-                cv.round_outline(
-                    obc_render::rect(
-                        row.top_left.x + 1,
-                        row.top_left.y + 1,
-                        row.size.width as i32 - 2,
-                        row.size.height as i32 - 2,
-                    ),
-                    5,
-                    INK,
-                );
+                crate::screen::focus_outline(cv, row, 6);
             }
             cv.text_vcentered(
                 rx.t(Msg::BluetoothForget),
