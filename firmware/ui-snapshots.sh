@@ -209,7 +209,12 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # does a hold charge the delete. While the route is the active ride's the row is hidden entirely (no
 # greyed face); that state is unreachable by gesture (the active route's overview never opens from
 # the menu), so it has no frame — the route_overview guard tests pin it.
+# Entry shows the content-paired pager's page A (owner review round 3): the route's track-shape
+# preview (host-decimated, start disc + destination diamond) over its DISTANCE row.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
+# Page B after the 5 s dwell (each `w` elapses ~800 ms; seven cross the flip): the elevation band
+# over CLIMB + DESCENT — the same band slot, so nothing jumps.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p w w w w w w w" --png "$OUT/routeoverview-elevation.png"
 # The cursor on the Delete row (idle): `r` moves the selection onto it, nothing charging.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p r"   --png "$OUT/routeoverview-delete-selected.png"
 # The Delete row charging: `p p p r H` selects it, then partial-holds the encoder, so the
@@ -362,4 +367,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 137 screens rendered into $OUT/"
+echo "ui-snapshots: 138 screens rendered into $OUT/"

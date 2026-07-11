@@ -1,7 +1,12 @@
 //! The Route overview — the look-before-you-ride page between picking a route and tracking it.
-//! Shows the route's name, its full elevation profile (the Statistics band, **non-interactive**:
-//! no cursor, no zoom, no live shading), the headline stats (distance, climb, descent), a
-//! START RIDE row, and (when deletable) the Delete-route row under it. The two action rows are
+//! Shows the route's name, a **content-paired pager** (owner review round 3): the media band and
+//! the stat rows flip together every 5 s — page A is the route's **track-shape preview** (the
+//! host-decimated polyline, the NEW ROUTE page's sketch) over its DISTANCE, page B the full
+//! **elevation profile** (the Statistics band, **non-interactive**: no cursor, no zoom, no live
+//! shading) over CLIMB + DESCENT. (EST TIME was investigated for page A and omitted: the §8.6
+//! nav profiles carry only dimensionless edge-weight multipliers — no speed model exists
+//! anywhere in the format, so there is no defensible estimate.) Below the pager, a START RIDE
+//! row and (when deletable) the Delete-route row under it. The two action rows are
 //! the **Pause-menu (ride_control) row family** (owner review round 3 — the round-2 focus
 //! outline read as one-off chrome): unselected rows are plain labels, the selected row wears the
 //! standard amber fill, and the guarded Delete row shows its shaded base + warning hold-fill
@@ -40,10 +45,12 @@ const BAND_TOP: i32 = LIST_TOP + 8;
 const BAND_BOT: i32 = 140;
 const SIDE_MARGIN: i32 = 12;
 
-/// The stat ledger. Making room for the Delete row (T3) turned the three ledger rows into a two-row
-/// auto-flip pager (page 0 = DISTANCE + CLIMB, page 1 = DESCENT); [`ROW_PITCH`] is the row spacing
-/// within a page. Placed between the band and the START bar.
-const ROWS_TOP: i32 = 150;
+/// The stat ledger under the media band — the content-paired pager's stat half (owner review
+/// round 3): page A (track shape) carries DISTANCE, page B (elevation) CLIMB + DESCENT;
+/// [`ROW_PITCH`] is the row spacing within a page. Placed between the band and the action rows
+/// (whose Pause-family block sits 4 px higher than the old START bar — the ledger moved up with
+/// it, keeping the same breathing gap above the amber row).
+const ROWS_TOP: i32 = 146;
 const ROW_PITCH: i32 = 42;
 
 /// The two action rows — the Pause-menu (ride_control) row family's exact geometry (owner review
@@ -80,8 +87,9 @@ pub struct RouteOverviewScreen {
     /// omits the elevation band and the climb/descent rows rather than showing a flat band and
     /// "+0 m" (the locked "length only" overview).
     computed: bool,
-    /// Which stat-ledger page is showing (0 = DISTANCE + CLIMB, 1 = DESCENT); auto-flipped by
-    /// [`tick_timers`](Self::tick_timers). Unused on the computed (length-only) page.
+    /// Which content-paired page is showing (0 = track shape + DISTANCE, 1 = elevation band +
+    /// CLIMB + DESCENT); auto-flipped by [`tick_timers`](Self::tick_timers). Unused on the
+    /// computed (length-only) page.
     page: usize,
     /// Instant of the last page flip (wrap-safe). `None` until the first tick anchors it, so the
     /// first page gets a full dwell on entry — mirrors the Statistics pager.
@@ -103,13 +111,6 @@ impl RouteOverviewScreen {
         RouteOverviewScreen { route, prev_active, computed: true, page: 0, last_flip_ms: None, selected: START }
     }
 
-    /// Whether this overview previews a **computed** route — the variant that wants the
-    /// host-decimated shape preview (#685 §4). Read by
-    /// [`App::nav_preview_missing`](crate::App::nav_preview_missing).
-    pub(crate) fn is_computed(&self) -> bool {
-        self.computed
-    }
-
     /// Whether the guarded **Delete route** row exists — a real, non-computed catalog route
     /// that isn't the actively-navigated route of a running tracking session. This is the exact
     /// predicate the old Route-menu footer greyed on, moved here (T3): deleting the file under an
@@ -129,9 +130,10 @@ impl RouteOverviewScreen {
         self.selected == DELETE && self.delete_enabled(activity, routes)
     }
 
-    /// Stat-ledger pager tick: flip the two pages every [`PAGE_FLIP_MS`], reporting the residual
-    /// dwell as the next wake (the Statistics auto-flip machinery). The computed (length-only) page
-    /// has a single distance row and no pager, so it never flips.
+    /// Content-paired pager tick: flip the two pages (track shape + DISTANCE / elevation band +
+    /// CLIMB + DESCENT) every [`PAGE_FLIP_MS`], reporting the residual dwell as the next wake
+    /// (the Statistics auto-flip machinery). The computed (length-only) page has a single fixed
+    /// layout and no pager, so it never flips.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         if self.computed {
             return ScreenTick::idle();
@@ -251,10 +253,19 @@ impl RouteOverviewScreen {
         let name = super::route_menu::fit_name(&summary.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
         title_frame(cv, w, h, &name, "");
 
-        // The full-route elevation band — the Statistics silhouette without any of its live
-        // layers (no traveled shading, no cursor, no progress bar). A small peak label gives the
-        // vertical scale meaning.
-        if let Some(profile) = rx.profile {
+        // The content-paired media band (owner review round 3): the auto-flip swaps this WITH the
+        // stat rows below — page A the route's track-shape preview, page B the elevation profile.
+        // Both draw in the same slot ([`BAND_TOP`]..[`BAND_BOT`]), so nothing jumps on the flip.
+        let page_b = self.page & 1 == 1;
+        if !page_b {
+            // Page A: the host-decimated track shape (the NEW ROUTE page's sketch, aspect-fit,
+            // start disc + destination diamond). An empty slice (the frame or two before the host
+            // hands it in) just leaves the slot blank, like the shape preview always has.
+            draw_route_preview(cv, w, BAND_TOP, BAND_BOT, rx.nav_preview);
+        } else if let Some(profile) = rx.profile {
+            // Page B: the full-route elevation band — the Statistics silhouette without any of
+            // its live layers (no traveled shading, no cursor, no progress bar). A small peak
+            // label gives the vertical scale meaning.
             let win = profile.window(0.5, 1.0, chart_w.max(1) as u32);
             let span = (win.hi_frac - win.lo_frac).max(1e-6);
             let span_ele = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
@@ -291,7 +302,7 @@ impl RouteOverviewScreen {
                 SUBTEXT,
             );
         }
-        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline under the band
+        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline marks the band slot on both pages
 
         // Headline stats as a ledger — olive caption left, big ink value right with a small unit
         // suffix, hairline rules between rows. Organized without the riding grid's panes, which
@@ -315,15 +326,16 @@ impl RouteOverviewScreen {
             }
         }
 
-        // The three figures don't fit alongside the new Delete row + START bar with standard row
-        // spacing, so they auto-flip as a two-row pager (T3): page 0 = DISTANCE + CLIMB, page 1 =
-        // DESCENT alone. The flip itself is the affordance — no page dots.
+        // The stats pair with their media (owner review round 3): DISTANCE belongs to the track
+        // shape (page A), CLIMB + DESCENT to the elevation band (page B). The flip itself is the
+        // affordance — no page dots. (Page A stays a lone DISTANCE: EST TIME was investigated and
+        // omitted — the §8.6 profiles carry no speed model, so no defensible estimate exists.)
         let entries: [(&str, &str, &str, Option<bool>); 3] = [
             (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
             (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
             (rx.t(Msg::RouteOverviewDescent), &desc, units.elev_label(), Some(false)),
         ];
-        let page_rows: &[usize] = if self.page & 1 == 0 { &[0, 1] } else { &[2] };
+        let page_rows: &[usize] = if page_b { &[1, 2] } else { &[0] };
         for (slot, &e) in page_rows.iter().enumerate() {
             let y = ROWS_TOP + slot as i32 * ROW_PITCH;
             let (caption, value, unit, arrow) = entries[e];
@@ -399,11 +411,12 @@ fn write_computed_distance(s: &mut heapless::String<8>, total_m: u32, units: cra
 }
 
 /// The route-shape preview's box size (#685 §4): ≈212×90 px, horizontally centred, vertically
-/// centred between the ledger rows and the START bar.
+/// centred in whatever slot the caller hands it — the computed page's mid-gap, or the full
+/// page's media-band slot (owner review round 3's pager).
 const PREVIEW_W: i32 = 212;
 const PREVIEW_H: i32 = 90;
 
-/// Draw the computed route's shape preview: the host-decimated polyline (≤ 64 points) normalized
+/// Draw a route's shape preview: the host-decimated polyline (≤ 64 points) normalized
 /// and aspect-fit into the [`PREVIEW_W`]×[`PREVIEW_H`] box — lon scaled by cos(mid-lat) so the
 /// shape keeps its ground aspect — stroked 2 px INK (the doubled-1-px idiom), with a 4 px filled
 /// disc at the start and a 6 px hollow diamond at the destination. An empty/short slice (the
@@ -588,13 +601,13 @@ mod tests {
         assert!(!scr.tick_timers(PAGE_FLIP_MS - 1).changed, "still dwelling just before the deadline");
         assert_eq!(scr.page, 0);
         assert!(scr.tick_timers(PAGE_FLIP_MS).changed, "flips exactly at the deadline");
-        assert_eq!(scr.page, 1, "now on the DESCENT page");
+        assert_eq!(scr.page, 1, "now on the elevation (CLIMB + DESCENT) page");
         assert!(!scr.tick_timers(PAGE_FLIP_MS + 1).changed, "and only once — a fresh dwell re-armed");
         assert!(scr.tick_timers(2 * PAGE_FLIP_MS).changed, "flips back at the next deadline");
         assert_eq!(scr.page, 0);
     }
 
-    /// The computed page has a single distance row and no pager, so its tick never self-dirties.
+    /// The computed page has a single fixed layout and no pager, so its tick never self-dirties.
     #[test]
     fn computed_overview_never_flips() {
         let mut scr = RouteOverviewScreen::computed(0, None);

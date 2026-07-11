@@ -408,6 +408,16 @@ impl SimGui {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
+        // An open Route overview wants the route's decimated shape preview (#678 rework 3's
+        // track/elevation pager): decimate the just-opened geometry once per overview entry —
+        // `nav_preview_missing` is false again the moment the copy is in, so this is a per-frame
+        // no-op otherwise (the board's ride loop runs the identical fill).
+        if self.app.nav_preview_missing() {
+            if let Some(r) = route.as_ref() {
+                let pts = r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+                self.app.set_nav_preview(&pts);
+            }
+        }
 
         // Reconcile the ride log to the app's tracking session before ticking.
         crate::reconcile_tracks(&mut self.app, &mut self.tracks);

@@ -292,6 +292,14 @@ impl Demo {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
+        // An open Route overview wants the route's decimated shape preview (#678 rework 3's
+        // track/elevation pager) — the same once-per-entry fill the sim + board hosts run.
+        if self.app.nav_preview_missing() {
+            if let Some(r) = route.as_ref() {
+                let pts = r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+                self.app.set_nav_preview(&pts);
+            }
+        }
 
         // Reconcile the (memory-only) ride log to the app's tracking intent — this *drains* the
         // one-shot TrackAction, the host contract.
