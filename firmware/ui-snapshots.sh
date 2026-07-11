@@ -162,10 +162,15 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
 "$SIM" "$MAP" --boot --script "B l p r r r r p"   --png "$OUT/display.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r p" --png "$OUT/power.png"
-# Bluetooth screen (#455): the main state (radio on, advertising, a stored bond -> Paired: yes) and
-# the Forget-phone guarded hold mid-charge (select the Forget row, then a partial hold fills it).
+# Bluetooth screen (#455, Forget refaced in owner review round 2): the main state (radio on,
+# advertising, a stored bond -> Paired: yes, the Forget button wearing the always-visible
+# delete-row face at the bottom anchor), the row focused (a turn puts the ink outline on it), the
+# guarded hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond,
+# so the Forget row isn't drawn at all (the round-1 only-when-possible grammar).
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p"     --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r"   --png "$OUT/bluetooth-forget-selected.png"
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot              --script "B l p r r r r r r p"     --png "$OUT/bluetooth-unpaired.png"
 # The Language screen (epic #602): the endonym value picker (row 7). The default (English), then two
 # detents cycling to Français — pinning the ç glyph the Latin font (#601) adds.
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r p"     --png "$OUT/language.png"
