@@ -22,6 +22,6 @@ mod sink;
 mod stores;
 
 pub use nav::{finish_nav_plan, NavPlan, NavRouteStore};
-pub use replay::{initial_camera, replay_step};
+pub use replay::{initial_camera, replay_step, ReplaySensors};
 pub use sink::VecSink;
 pub use stores::{MemRideStore, MemRouteStore, MemTrackStore, MEM_NAV_ID};

@@ -30,9 +30,10 @@ mod routes;
 mod settings_store;
 mod sim_compass;
 mod sim_location;
+mod sim_sensors;
 mod track;
 use framebuffer::Framebuffer;
-use obc_host_core::{finish_nav_plan, initial_camera, replay_step, NavPlan, VecSink};
+use obc_host_core::{finish_nav_plan, initial_camera, replay_step, NavPlan, ReplaySensors, VecSink};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::{RouteIndex, RouteReader};
 use rides::RideStore;
@@ -951,7 +952,7 @@ fn main() {
                 reconcile_tracks(&mut app, &mut tracks);
                 let sink: Option<&mut dyn TrackSink> =
                     if args.fail_track { Some(&mut fail_sink) } else { tracks.sink() };
-                replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), sink);
+                replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), sink, ReplaySensors::default());
                 t += step;
             }
         }
