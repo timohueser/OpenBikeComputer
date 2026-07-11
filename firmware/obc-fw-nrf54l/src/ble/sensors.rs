@@ -155,7 +155,9 @@ static SLOT_STATUS: SlotStatusCell = BlockingMutex::new(Cell::new([
     SensorSlotStatus::init(SensorKind::Power),
     SensorSlotStatus::init(SensorKind::Cadence),
 ]));
-/// The saved-sensor table, seeded from [`SEED`] at boot (TODO(SE7): from `Settings.saved_sensors`).
+/// The saved-sensor table: reconciled from the app's persisted `Settings.saved_sensors` (SE7, #714)
+/// via the ride loop's per-pass diff → [`request_save_sensor`] / [`request_forget_sensor`]. Starts
+/// empty; the ride loop seeds it on its first pass, so a saved sensor auto-reconnects across a reboot.
 static SAVED: SavedCell = BlockingMutex::new(Cell::new([None, None, None]));
 
 /// Whether a scan is armed — the [`ScanEventHandler`] only records reports while true, so stray
@@ -182,8 +184,8 @@ static FORGET_REQUEST: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 ///
 /// **Keep this in sync:** every `static` added in this module must be summed here — it feeds the
 /// compile-time budget assert (`main.rs`) that guards against the #677 stack-overflow class, all the
-/// more once the LM20 profile raises `SENSOR_LINKS` to 3. `const`s (e.g. `SEED`) hold no runtime
-/// storage and are not counted.
+/// more once the LM20 profile raises `SENSOR_LINKS` to 3. `const`s hold no runtime storage and are
+/// not counted.
 pub const RESIDENT_BYTES: usize = core::mem::size_of::<ScanHitsCell>()
     + core::mem::size_of::<SlotStatusCell>()
     + core::mem::size_of::<SavedCell>()
@@ -191,30 +193,6 @@ pub const RESIDENT_BYTES: usize = core::mem::size_of::<ScanHitsCell>()
     + 2 * core::mem::size_of::<Signal<CriticalSectionRawMutex, ()>>() // WORK_EDGE + SCAN_REQUEST
     + core::mem::size_of::<Signal<CriticalSectionRawMutex, SaveReq>>() // SAVE_REQUEST
     + core::mem::size_of::<Signal<CriticalSectionRawMutex, usize>>(); // FORGET_REQUEST
-
-// ============================ The on-glass bring-up seed hook (SE6, before SE7) ============================
-
-/// **Hardcoded saved-sensor seed** for the SE6 on-glass gate, before the Sensors screen (SE7) exists
-/// to save an address. Default: **all `None`** — a normal build has no saved sensor, so the manager
-/// just parks (no bogus connect attempts).
-///
-/// To run the epic's HR bring-up gate, put your Garmin watch's advertising address here (little-
-/// endian, exactly as the boot RTT scan-hit line prints it) with its kind, e.g.:
-/// ```ignore
-/// const SEED: [Option<SavedSensor>; QUANTITIES] = [
-///     Some(SavedSensor { addr: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66], random: true }), // HR
-///     None, // Power
-///     None, // Cadence
-/// ];
-/// ```
-/// TODO(SE7): replace this seed with a load from `Settings.saved_sensors`; the ride loop then
-/// re-pushes on a settings change via [`request_save_sensor`] / [`request_forget_sensor`] (the
-/// `set_radio_enabled` pattern).
-const SEED: [Option<SavedSensor>; QUANTITIES] = [
-    None, // HR
-    None, // Power
-    None, // Cadence
-];
 
 // ============================ App-facing accessors + requests ============================
 
@@ -354,7 +332,10 @@ type SensorStack = Stack<'static, sdc::SoftdeviceController<'static>, DefaultPac
 /// so the controller never juggles a scan and a connect-initiate on the single DK link), driven by
 /// [`WORK_EDGE`] + the request latches. Never returns.
 pub async fn run(stack: &'static SensorStack) -> ! {
-    seed_saved_sensors();
+    // The saved table starts empty; the ride loop seeds it from `Settings.saved_sensors` on its first
+    // pass and re-pushes every change through [`request_save_sensor`] / [`request_forget_sensor`] (SE7,
+    // #714 — the `set_radio_enabled` shape). The SE6 hardcoded `SEED` hook is gone: the Sensors screen
+    // is the source of saved addresses now.
     info!("ble: [sensor] manager up (SENSOR_LINKS = {})", super::SENSOR_LINKS);
 
     loop {
@@ -380,15 +361,6 @@ pub async fn run(stack: &'static SensorStack) -> ! {
 
         // Nothing to do — park until a request or the radio switch pulses the work edge.
         WORK_EDGE.wait().await;
-    }
-}
-
-/// Apply the boot seed to the saved table + status.
-fn seed_saved_sensors() {
-    SAVED.lock(|c| c.set(SEED));
-    for (q, seed) in SEED.iter().enumerate() {
-        let saved = seed.is_some();
-        update_status(q, |s| s.saved = saved);
     }
 }
 

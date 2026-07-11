@@ -220,6 +220,38 @@ fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
     );
 }
 
+/// The fixed slot index (0 HR · 1 Power · 2 Cadence) a scanned sensor's kind maps to (SE7, #714) —
+/// used to tag a board scan hit for the app seam, which speaks slot indices, not `obc_ble` kinds.
+#[cfg(feature = "ble")]
+fn sensor_kind_slot(kind: obc_ble::SensorKind) -> u8 {
+    match kind {
+        obc_ble::SensorKind::HeartRate => 0,
+        obc_ble::SensorKind::Power => 1,
+        obc_ble::SensorKind::Cadence => 2,
+    }
+}
+
+/// Distil the central manager's per-quantity [`SensorSlotStatus`](crate::ble::SensorSlotStatus) into
+/// the app-vocabulary [`SensorStatus`](obc_app::SensorStatus) the Sensors screen renders (SE7, #714):
+/// `NotSet` when nothing is saved, else the connection phase, carrying battery + the freshest-value
+/// tick.
+#[cfg(feature = "ble")]
+fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
+    use crate::ble::SensorSlotState;
+    let s = crate::ble::sensor_slot_status(q);
+    let phase = if !s.saved {
+        obc_app::SensorPhase::NotSet
+    } else {
+        match s.state {
+            SensorSlotState::Connected => obc_app::SensorPhase::Connected,
+            SensorSlotState::Connecting => obc_app::SensorPhase::Connecting,
+            // Idle / Scanning both read as searching for the saved sensor.
+            _ => obc_app::SensorPhase::Searching,
+        }
+    };
+    obc_app::SensorStatus { phase, battery: s.battery, last_value_ms: s.last_value_ms }
+}
+
 /// Run **one bounded planner step** at the ride loop's shallow per-pass depth (#270/#419: the
 /// step's frame carries only the cheap boot-parsed-tables `Reader` view, the SD sink over the
 /// held-open file, and the planner's own shallow call tree — the emitter lives in the planner's
@@ -469,6 +501,18 @@ pub(crate) async fn run_app(
     // boot that can't reach a presented frame never confirms, and S3's rollback fires next boot).
     let mut trial_confirm_pending = true;
 
+    // SE7 (#714): the saved-sensor addresses last pushed to the central manager, so the per-pass
+    // reconcile below drives a save/forget only on an actual change (the `set_radio_enabled` shape,
+    // fired once per change — never re-signalled, so a steady state never interrupts a live link).
+    // Starts empty → the first pass seeds the manager from the persisted `Settings.saved_sensors`.
+    #[cfg(feature = "ble")]
+    let mut pushed_sensors: [Option<([u8; 6], bool)>; obc_app::SENSOR_SLOTS] = [None; obc_app::SENSOR_SLOTS];
+    // SE7 (#714): the next-re-arm deadline (loop-millis) for the discovery scan while the scan list is
+    // up — `0` = not scanning (rings `request_scan` on the rising edge, then re-arms just under the
+    // board's ~10 s window), so the scan stays live without pulsing the manager's work edge every pass.
+    #[cfg(feature = "ble")]
+    let mut sensor_scan_rearm_ms: u32 = 0;
+
     // Settings: seed the app from the persistent RRAM store at boot (a blank/corrupt page decodes to
     // `None` → defaults), then persist on any change the settings screens make. One brief lock,
     // released at once — the loop re-locks the shared store each pass.
@@ -626,11 +670,58 @@ pub(crate) async fn run_app(
             if app.take_ble_forget() {
                 crate::ble::request_forget_bond();
             }
-            // TODO(SE7): push the persisted saved sensors here (the `set_radio_enabled` pattern) —
-            // seed at boot + re-push on a settings change via `crate::ble::request_save_sensor` /
-            // `request_forget_sensor`, and feed the per-quantity `crate::ble::sensor_slot_status(..)`
-            // into the app for the Sensors screen. `Settings.saved_sensors` doesn't exist until SE7;
-            // until then the BLE central manager (SE6) seeds from its hardcoded `SEED` hook.
+
+            // ── The BLE sensor seam (epic #707, SE7) ──
+            // Saved-sensor reconcile: the persisted `Settings.saved_sensors` is the source of truth
+            // (the SE6 `SEED` hook is gone). Diff each slot against what was last pushed and drive the
+            // change through SE6's save/forget latches — fired once per change (seed at boot from
+            // all-`None`, a screen pair/forget, a factory reset clearing a slot). The board-side latch
+            // pulse (`WORK_EDGE`) makes the manager connect/drop at once.
+            for (q, slot) in app.settings().saved_sensors.iter().enumerate() {
+                let want = slot.present.then_some((slot.addr, slot.addr_kind != 0));
+                if want != pushed_sensors[q] {
+                    match want {
+                        Some((addr, random)) => crate::ble::request_save_sensor(q, addr, random),
+                        None => crate::ble::request_forget_sensor(q),
+                    }
+                    pushed_sensors[q] = want;
+                }
+            }
+            // Scan mode: while the Sensors screen's scan list is up, keep a discovery scan running and
+            // feed the hits back; clear the app list when it closes. `request_scan` **must not** be
+            // rung every pass — it pulses the manager's `WORK_EDGE`, which the manager's own scan
+            // window selects on, so a per-pass ring would collapse the ~10 s window (and re-clear the
+            // hit snapshot) every ~40 ms. Instead ring it once on the rising edge, then re-arm every
+            // ~9 s (just under the board's 10 s window) so a lingering scan stays live without thrash.
+            if app.sensor_scan_active() {
+                // `now >= rearm` in wrapping-monotonic terms (the signed diff handles the ~49-day u32
+                // wrap); `0` is the "not scanning yet" sentinel that fires on the rising edge.
+                let due = sensor_scan_rearm_ms == 0 || now.wrapping_sub(sensor_scan_rearm_ms) as i32 >= 0;
+                if due {
+                    crate::ble::request_scan();
+                    sensor_scan_rearm_ms = now.wrapping_add(9_000).max(1); // never 0 (the "off" sentinel)
+                }
+                let mut hits: heapless::Vec<obc_app::SensorScanHit, { obc_app::sensors::SCAN_HITS_MAX }> =
+                    heapless::Vec::new();
+                crate::ble::sensor_scan_hits(|found| {
+                    for h in found {
+                        let _ = hits.push(obc_app::SensorScanHit::new(
+                            sensor_kind_slot(h.kind),
+                            h.random as u8,
+                            h.addr,
+                            h.name.as_str(),
+                            h.rssi,
+                        ));
+                    }
+                });
+                app.set_sensor_scan_hits(&hits);
+            } else {
+                sensor_scan_rearm_ms = 0; // reset so the next entry rings on its rising edge
+                app.set_sensor_scan_hits(&[]);
+            }
+            // Push the per-slot status snapshot (the Sensors screen's row status lines).
+            let sensor_status = [sensor_status_of(0), sensor_status_of(1), sensor_status_of(2)];
+            app.set_sensor_status(&sensor_status);
         }
 
         // This frame's hold-bulge state, sampled once: the live row span (the present goes around it)

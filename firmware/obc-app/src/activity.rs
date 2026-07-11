@@ -183,6 +183,13 @@ pub struct Activity {
     /// [`App::take_card_scan_request`](crate::App::take_card_scan_request); until it answers the
     /// System screen shows `--`.
     card_scan_request: bool,
+    /// The **sensor scan mode** level (BLE sensors epic #707, SE7): raised by the Sensors screen while
+    /// a scan-list sub-screen is open (entering a HR/power/cadence row) and lowered on exit/Back.
+    /// Unlike the delete/scan *one-shots* this is a **level**, not a drained edge — the enter/leave
+    /// framing of `request_sensor_scan(bool)`: the host polls it each pass ([`App::sensor_scan_active`]),
+    /// keeps a discovery scan running while it is `true`, and clears the app scan list when it falls
+    /// (the `set_radio_enabled` shape, not the `take_*` shape).
+    sensor_scan: bool,
 
     // live map-match (from the GPS fix)
     /// Total distance of the active route (m), mirrored from its header so the riding views can
@@ -481,6 +488,19 @@ impl Activity {
     /// Take (and clear) the pending card-free scan request.
     pub(crate) fn take_card_scan_request(&mut self) -> bool {
         core::mem::take(&mut self.card_scan_request)
+    }
+
+    /// Set the **sensor scan mode** level (BLE sensors epic #707, SE7): `true` when the scan-list
+    /// screen opens on a HR/power/cadence row, `false` on exit/Back. A level, not a one-shot — the host
+    /// polls it via [`App::sensor_scan_active`](crate::App::sensor_scan_active) each pass.
+    pub(crate) fn request_sensor_scan(&mut self, on: bool) {
+        self.sensor_scan = on;
+    }
+
+    /// Whether sensor scan mode is on — the host's per-pass read (keeps a discovery scan running while
+    /// `true`, clears the app scan list when it falls).
+    pub(crate) fn sensor_scan_active(&self) -> bool {
+        self.sensor_scan
     }
 
     /// Non-consuming peek at whether a [`DfuAction`] is posted but undrained — the remote-check

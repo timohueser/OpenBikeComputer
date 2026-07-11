@@ -49,6 +49,7 @@ fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
         rides: &[],
         nav_profiles: leaked_profiles(),
         poi_scratch: leaked_scratch(),
+        sensor_scan_hits: &[],
         now_ms: 0,
     }
 }
@@ -63,6 +64,7 @@ fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'
         rides: &[],
         nav_profiles: leaked_profiles(),
         poi_scratch: leaked_scratch(),
+        sensor_scan_hits: &[],
         now_ms: 0,
     }
 }

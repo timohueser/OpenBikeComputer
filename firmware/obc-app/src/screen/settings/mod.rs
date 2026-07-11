@@ -42,6 +42,7 @@ mod fields;
 mod language;
 mod power;
 mod reset;
+mod sensors;
 mod stats;
 mod system;
 mod units;
@@ -55,14 +56,15 @@ pub use fields::StatFieldsScreen;
 pub use language::LanguageScreen;
 pub use power::PowerScreen;
 pub use reset::ResetScreen;
+pub use sensors::{SensorScanScreen, SensorsScreen};
 pub use stats::StatsScreen;
 pub use system::SystemScreen;
 pub use units::UnitsScreen;
 
 /// The number of Settings list entries. The row *labels* are looked up per-language at draw time
-/// (see [`SettingsScreen::draw`]); System (the firmware-update door, epic #615 S5) sits just above
-/// the terminal (destructive) Reset row.
-const N_ITEMS: usize = 10;
+/// (see [`SettingsScreen::draw`]); Sensors (BLE sensors, epic #707) sits just under Bluetooth, and
+/// System (the firmware-update door, epic #615 S5) just above the terminal (destructive) Reset row.
+const N_ITEMS: usize = 11;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -87,8 +89,9 @@ impl SettingsScreen {
                 4 => Transition::Push(Screen::Display(DisplayScreen::new())),
                 5 => Transition::Push(Screen::Power(PowerScreen::new())),
                 6 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
-                7 => Transition::Push(Screen::Language(LanguageScreen::new())),
-                8 => {
+                7 => Transition::Push(Screen::Sensors(SensorsScreen::new())),
+                8 => Transition::Push(Screen::Language(LanguageScreen::new())),
+                9 => {
                     // Opening System triggers the one-shot card-free scan (T8 item 6): the host runs
                     // the FAT free-cluster scan once on entry and answers via `App::set_card_free`.
                     cx.activity.request_card_scan();
@@ -112,6 +115,7 @@ impl SettingsScreen {
             rx.t(Msg::SettingsDisplay),
             rx.t(Msg::SettingsPower),
             rx.t(Msg::SettingsBluetooth),
+            rx.t(Msg::SettingsSensors),
             rx.t(Msg::SettingsLanguage),
             rx.t(Msg::SettingsSystem),
             rx.t(Msg::SettingsReset),

@@ -28,6 +28,7 @@ pub mod nav_profiles;
 pub mod ride;
 pub mod route;
 pub mod screen;
+pub mod sensors;
 pub mod settings;
 pub mod stat_fields;
 pub mod wall_clock;
@@ -52,9 +53,10 @@ pub use nav_profiles::NavProfiles;
 pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
+pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
 pub use settings::{
-    decode_synced_rides, encode_synced_rides, synced_rides_len, ClimbMode, DateTime, IdleReturn, Settings, SyncedRides,
-    Units, WaypointMode, SYNCED_RIDES_MAX_LEN,
+    decode_synced_rides, encode_synced_rides, synced_rides_len, ClimbMode, DateTime, IdleReturn, SavedSensor, Settings,
+    SyncedRides, Units, WaypointMode, SENSOR_SLOTS, SYNCED_RIDES_MAX_LEN,
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use wall_clock::{MinuteTicker, WallClock};

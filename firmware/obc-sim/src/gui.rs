@@ -334,6 +334,28 @@ impl SimGui {
         // idempotent — an unchanged status repaints nothing.
         self.app.set_ble_status(self.panel.ble);
 
+        // Feed the host→app BLE **sensor** seam (epic #707, SE7) from a fake central manager, so the
+        // Sensors screen is fully drivable without a radio. While the scan list is up, publish a
+        // canned hit set (one per kind); for each saved slot, report Connected with a stand-in
+        // battery — so pairing a hit (a Settings write) flips its row to Connected next frame, and
+        // Forget drops it back to Not set. The board's ride loop drives the real thing the same shape.
+        if self.app.sensor_scan_active() {
+            self.app.set_sensor_scan_hits(&fake_scan_hits());
+        } else {
+            self.app.set_sensor_scan_hits(&[]);
+        }
+        let mut sensor_status = [obc_app::SensorStatus::default(); obc_app::SENSOR_SLOTS];
+        for (q, slot) in self.app.settings().saved_sensors.iter().enumerate() {
+            if slot.present {
+                sensor_status[q] = obc_app::SensorStatus {
+                    phase: obc_app::SensorPhase::Connected,
+                    battery: Some(78),
+                    last_value_ms: 0,
+                };
+            }
+        }
+        self.app.set_sensor_status(&sensor_status);
+
         // Drain a hold-to-delete request from the Route menu (epic #447 P6) *before* the store is
         // borrowed for geometry: delete the route file and re-feed the id-carrying catalog — the
         // same rescan sequence the panel's "Store changed" button runs, so the app's P3 remap keeps
@@ -840,6 +862,17 @@ impl eframe::App for SimGui {
 }
 
 /// Save an egui `ColorImage` (the captured frame) to a PNG.
+/// A canned scan-hit set for the sim's fake sensor manager (SE7, epic #707): one HR strap, one power
+/// meter, one unnamed cadence sensor — so any kind's scan list shows something (the unnamed one
+/// exercises the address fallback). The scan-list screen filters to the row's quantity by `slot`.
+fn fake_scan_hits() -> [obc_app::SensorScanHit; 3] {
+    [
+        obc_app::SensorScanHit::new(0, 1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11], "HRM-Dual", -58),
+        obc_app::SensorScanHit::new(1, 0, [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F], "Stages LR", -67),
+        obc_app::SensorScanHit::new(2, 0, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06], "", -80),
+    ]
+}
+
 fn save_color_image(img: &egui::ColorImage, path: &str) -> Result<(), String> {
     let (w, h) = (img.size[0] as u32, img.size[1] as u32);
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
