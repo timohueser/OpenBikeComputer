@@ -174,12 +174,23 @@ static SAVE_REQUEST: Signal<CriticalSectionRawMutex, SaveReq> = Signal::new();
 static FORGET_REQUEST: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
 /// The manager's resident statics (see [`super::RESIDENT_BYTES`]): the scan snapshot, the slot-status
-/// table, and the saved table. The SDC/host central+scan buffers are already counted via
-/// `SDC_MEM_SIZE` / `Resources`; the Signals/atomics are a handful of bytes and folded in here for
-/// honesty. The transient `GattClient` (~0.5 KB) + its 512 B `Notification` ride [`run`]'s task
-/// future (they borrow the live connection, so they can't be `.bss` statics) — re-measured on glass.
-pub const RESIDENT_BYTES: usize =
-    core::mem::size_of::<ScanHitsCell>() + core::mem::size_of::<SlotStatusCell>() + core::mem::size_of::<SavedCell>();
+/// table, the saved table, and every request/wake `Signal` + the scan-armed `AtomicBool`. The
+/// SDC/host central+scan buffers are already counted via `SDC_MEM_SIZE` / `Resources`; this is the
+/// manager's own `.bss` on top. The transient `GattClient` (~0.5 KB) + its 512 B `Notification` ride
+/// [`run`]'s task future (they borrow the live connection, so they can't be `.bss` statics) —
+/// re-measured on glass.
+///
+/// **Keep this in sync:** every `static` added in this module must be summed here — it feeds the
+/// compile-time budget assert (`main.rs`) that guards against the #677 stack-overflow class, all the
+/// more once the LM20 profile raises `SENSOR_LINKS` to 3. `const`s (e.g. `SEED`) hold no runtime
+/// storage and are not counted.
+pub const RESIDENT_BYTES: usize = core::mem::size_of::<ScanHitsCell>()
+    + core::mem::size_of::<SlotStatusCell>()
+    + core::mem::size_of::<SavedCell>()
+    + core::mem::size_of::<AtomicBool>() // SCAN_ARMED
+    + 2 * core::mem::size_of::<Signal<CriticalSectionRawMutex, ()>>() // WORK_EDGE + SCAN_REQUEST
+    + core::mem::size_of::<Signal<CriticalSectionRawMutex, SaveReq>>() // SAVE_REQUEST
+    + core::mem::size_of::<Signal<CriticalSectionRawMutex, usize>>(); // FORGET_REQUEST
 
 // ============================ The on-glass bring-up seed hook (SE6, before SE7) ============================
 
