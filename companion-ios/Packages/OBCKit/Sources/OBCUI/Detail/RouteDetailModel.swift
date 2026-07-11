@@ -271,6 +271,30 @@ public final class RouteDetailModel {
         }
     }
 
+    // MARK: Ride sensor summary (E3 only)
+
+    /// One plain label→value row of the per-ride BLE-sensor summary (epic #707).
+    public struct SensorRow: Identifiable, Equatable, Sendable {
+        public let label: String
+        public let value: String
+        public var id: String { label }
+    }
+
+    /// The tracked ride's sensor-summary rows (E3), in the design's fixed order —
+    /// one row per value the ride actually carries, nothing at all when it
+    /// carries none (a v1 ride, or one recorded with no sensors paired). No dead
+    /// rows for an absent value (`ios-copy-tone-plain`).
+    public var sensorRows: [SensorRow] {
+        guard case .tracked(let ride) = dressing else { return [] }
+        var rows: [SensorRow] = []
+        if let v = ride.avgHeartRate { rows.append(SensorRow(label: "Avg heart rate", value: "\(v) bpm")) }
+        if let v = ride.maxHeartRate { rows.append(SensorRow(label: "Max heart rate", value: "\(v) bpm")) }
+        if let v = ride.avgPower { rows.append(SensorRow(label: "Avg power", value: "\(v) W")) }
+        if let v = ride.maxPower { rows.append(SensorRow(label: "Max power", value: "\(v) W")) }
+        if let v = ride.avgCadence { rows.append(SensorRow(label: "Avg cadence", value: "\(v) rpm")) }
+        return rows
+    }
+
     // MARK: Actions
 
     /// H12 — local rename; the caller propagates it to the list (and the

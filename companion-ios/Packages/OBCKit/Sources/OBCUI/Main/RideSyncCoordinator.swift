@@ -279,10 +279,20 @@ public final class RideSyncCoordinator {
                             downloaded.payload, id: downloaded.id)
                         // The RideList summary stays canonical for display; the
                         // payload contributes the tracklog (and a preview, if
-                        // the list entry came without one).
+                        // the list entry came without one), plus the per-ride
+                        // BLE-sensor summary (epic #707) the rideList entry
+                        // doesn't carry — it only exists in the ride object's
+                        // v2 header.
                         var ride = Ride(summary: summary, points: decoded?.points ?? [])
                         if ride.summary.trackPreview == nil {
                             ride.summary.trackPreview = decoded?.summary.trackPreview
+                        }
+                        if let decoded {
+                            ride.summary.avgHeartRate = decoded.summary.avgHeartRate
+                            ride.summary.maxHeartRate = decoded.summary.maxHeartRate
+                            ride.summary.avgCadence = decoded.summary.avgCadence
+                            ride.summary.avgPower = decoded.summary.avgPower
+                            ride.summary.maxPower = decoded.summary.maxPower
                         }
                         library.saveRide(ride)
                         onRideLanded(ride)

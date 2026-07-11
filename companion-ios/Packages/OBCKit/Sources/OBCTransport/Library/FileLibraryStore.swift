@@ -523,6 +523,14 @@ private struct RideSummaryDTO: Codable {
     var averageSpeedMps: Double
     var climbMeters: Double
     var preview: TrackPreviewDTO?
+    // Per-ride BLE-sensor summary (ride object v2, epic #707) — optional, so a
+    // pre-#707 `summary.json` (written without these keys) still decodes with
+    // every field nil.
+    var avgHeartRate: Int?
+    var maxHeartRate: Int?
+    var avgCadence: Int?
+    var avgPower: Int?
+    var maxPower: Int?
 
     init(_ summary: RideSummary) {
         id = summary.id.rawValue
@@ -533,6 +541,11 @@ private struct RideSummaryDTO: Codable {
         averageSpeedMps = summary.averageSpeedMps
         climbMeters = summary.climbMeters
         preview = summary.trackPreview.map(TrackPreviewDTO.init)
+        avgHeartRate = summary.avgHeartRate
+        maxHeartRate = summary.maxHeartRate
+        avgCadence = summary.avgCadence
+        avgPower = summary.avgPower
+        maxPower = summary.maxPower
     }
 
     var domain: RideSummary {
@@ -540,7 +553,9 @@ private struct RideSummaryDTO: Codable {
             id: RideID(id), name: name, date: date,
             distanceMeters: distanceMeters, movingTime: movingTime,
             averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
-            trackPreview: preview?.domain
+            trackPreview: preview?.domain,
+            avgHeartRate: avgHeartRate, maxHeartRate: maxHeartRate,
+            avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower
         )
     }
 }

@@ -1,0 +1,22 @@
+{
+  "note": "Expected decode of protocol-vectors/ride-v2.bin through RideObjectCodec — the SE4 (#711) contract, mirroring manifest.json's ride-v2.bin entry. Sensor sentinels (0xFF / 0xFFFF) decode to null.",
+  "version": 2,
+  "summary": {
+    "name": "Sensor Ride",
+    "startTimeUnix": 1751460000,
+    "distanceMeters": 12345,
+    "movingTimeSeconds": 3600,
+    "averageSpeedMps": 3.43,
+    "climbMeters": 120,
+    "avgHeartRate": 142,
+    "maxHeartRate": 176,
+    "avgCadence": 85,
+    "avgPower": 210,
+    "maxPower": 480
+  },
+  "points": [
+    { "tOffsetSeconds": 0, "latitude": 48.0, "longitude": 7.8, "elevationMeters": 214, "heartRate": 140, "cadence": 84, "power": 205 },
+    { "tOffsetSeconds": 60, "latitude": 48.001, "longitude": 7.8012, "elevationMeters": 219, "heartRate": null, "cadence": null, "power": null },
+    { "tOffsetSeconds": 120, "latitude": 48.002, "longitude": 7.803, "elevationMeters": null, "heartRate": 150, "cadence": null, "power": 215 }
+  ]
+}
