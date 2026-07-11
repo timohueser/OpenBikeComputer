@@ -86,6 +86,11 @@ pub mod ubx;
 // embassy-sync); the pure `ubx`/`bmp581` decode above is not.
 #[cfg(feature = "sensor-link")]
 pub mod sensor_link;
+// The BLE-sensor (HR / power / cadence) value mailboxes — the raw-value sibling of `sensor_link`,
+// fed by both the board's BLE central manager (SE6) and the `debug-uart` injection path (SE8). Same
+// `sensor-link` gate (it pulls embassy-sync); the pure profile decode lives in `obc-ble`.
+#[cfg(feature = "sensor-link")]
+pub mod sensor_values;
 
 pub use button_input::{ButtonInput, Timing};
 pub use display::{DisplayDriver, OverlayRegion, FRAME_H, FRAME_W};

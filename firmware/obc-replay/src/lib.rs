@@ -16,9 +16,11 @@
 //! [`obc-usb-host`]: https://docs.rs/obc-usb-host
 
 pub mod baro;
+pub mod effort;
 pub mod gpx;
 pub mod gpx_player;
 
 pub use baro::BaroSensor;
+pub use effort::{effort_from_speed, Effort};
 pub use gpx::{Track, TrackPoint};
 pub use gpx_player::GpxPlayer;

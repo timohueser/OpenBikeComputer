@@ -152,6 +152,10 @@ struct SimGui {
     /// Simulated compass (device magnetometer stand-in) — the panel's "Compass" slider, orienting
     /// a heading-up map while stopped when the GPS has no course.
     compass: SimCompass,
+    /// Synthetic BLE sensors (HR / power / cadence) — the panel's "Sensors" section drives them, and
+    /// their three source fields feed `Sensors::{hr,power,cadence}` each tick, honouring the ~1 Hz
+    /// fresh-mailbox contract so a disabled quantity reads `--` (epic #707 SE8).
+    sim_sensors: crate::sim_sensors::SimSensors,
     /// A short "name — N pts, M:SS" status line for the loaded track.
     gpx_label: Option<String>,
     /// The last GPX load error, shown in the panel until the next successful load.
@@ -271,6 +275,7 @@ impl SimGui {
             gpx: None,
             baro: BaroSensor::new(),
             compass: SimCompass::new(),
+            sim_sensors: crate::sim_sensors::SimSensors::new(),
             gpx_label: None,
             gpx_error: None,
             quit: false,
@@ -434,6 +439,12 @@ impl SimGui {
         if let Some(player) = self.gpx.as_mut() {
             // Advance + tick on the playback clock (shared with the headless replay).
             let dt = ctx.input(|i| i.stable_dt) as f64;
+            // Feed the synthetic sensors on the same playback clock, from the *previous* frame's
+            // speed (a ~1-frame lag is irrelevant at the 1 Hz emit cadence) — so a sample is stamped
+            // onto the point this tick logs. Effort-follows-speed reads that speed; the sliders don't.
+            let now_ms = (player.time() * 1000.0) as u32;
+            let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
+            self.sim_sensors.feed(now_ms, speed_mps);
             crate::replay_step(
                 &mut self.app,
                 player,
@@ -442,6 +453,11 @@ impl SimGui {
                 dt,
                 route.as_ref(),
                 self.tracks.sink(),
+                crate::ReplaySensors {
+                    hr: Some(&mut self.sim_sensors.hr),
+                    power: Some(&mut self.sim_sensors.power),
+                    cadence: Some(&mut self.sim_sensors.cadence),
+                },
             );
             // Reflect the replayed fix in the panel mirrors, so manual control resumes from
             // here if the track is ejected.
@@ -456,6 +472,10 @@ impl SimGui {
             // Manual panel control: no barometer, wall-clock for any moving-time.
             self.baro.clear();
             let now_ms = self.input.now_ms();
+            // The synthetic sensors run under manual control too (their sliders drive fixed values);
+            // effort-follows-speed has no GPX speed here, so it reads whatever the last fix had (~0).
+            let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
+            self.sim_sensors.feed(now_ms, speed_mps);
             let sensors = Sensors {
                 loc: &mut self.loc,
                 altimeter: None,
@@ -467,11 +487,11 @@ impl SimGui {
                 track: self.tracks.sink(),
                 // Battery is set once from `--battery`; no live sim gauge.
                 fuel: None,
-                // No BLE sensors in manual control — HR/power/cadence tiles read `--` (SE8 wires
-                // the panel; SE6 the board's BLE central).
-                hr: None,
-                power: None,
-                cadence: None,
+                // The panel's "Sensors" section drives these (SE8); each source honours the ~1 Hz
+                // fresh-mailbox contract, so a disabled quantity goes stale → `--` on its tile.
+                hr: Some(&mut self.sim_sensors.hr),
+                power: Some(&mut self.sim_sensors.power),
+                cadence: Some(&mut self.sim_sensors.cadence),
             };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
