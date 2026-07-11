@@ -2,9 +2,10 @@
 //! [Route overview](super::route_overview), opened by *press* on a Rides-list row. Top to bottom:
 //! the `RIDE` title bar with the sync state in its right slot, the ride name, a `date · time`
 //! line, the recorded track's **elevation band** (the overview's composition — tan fill under an
-//! amber top stroke, max-elevation label at the band's top-right), a four-row stat ledger
-//! (DISTANCE / RIDE TIME / AVG / CLIMBED — all from the [`RideSummary`](crate::ride::RideSummary),
-//! no new stats), and the guarded **Delete ride** row at the bottom.
+//! amber top stroke, max-elevation label at the band's top-right), a two-row auto-flip stat
+//! **pager** (page 0 = DISTANCE + RIDE TIME, page 1 = AVG + CLIMBED — all from the
+//! [`RideSummary`](crate::ride::RideSummary), no new stats), and the guarded **Delete ride** row
+//! at the bottom.
 //!
 //! The band's profile comes from the host: entering the screen sets
 //! [`Activity::viewed_ride`](crate::Activity::viewed_ride) (the Rides screen's press does), the
@@ -20,9 +21,11 @@
 //! its `RD{id}.ORD` isn't written until Finish, so deleting is neither meaningful nor legal then,
 //! and the `delete_enabled` guard keeps a hold a no-op regardless.
 //!
-//! Fit note: all six blocks don't fit 240×320 at the overview's spacing, so the **band height is
-//! shrunk** (90 → 34 px) and the ledger's row pitch compressed (42 → 33 px, hairline rules
-//! dropped) — the ledger *text* is untouched (the locked shrink order).
+//! Fit note (reworked in owner review round 2 — "very busy"): the four ledger rows don't fit
+//! beside a readable band, so they auto-flip as the Route overview's **two-row pager** (5 s fixed
+//! dwell, no page dots — the flip is the affordance) and the reclaimed vertical space goes back
+//! into the elevation band (34 → 82 px, near the overview's 90 px reference look). The ledger
+//! *text* is untouched (the locked shrink order).
 
 use core::fmt::Write;
 
@@ -34,30 +37,41 @@ use obc_render::{
 
 use crate::activity::Activity;
 use crate::input::Gesture;
+use crate::screen::ScreenTick;
 use crate::stat_fields::fmt_hms;
 use crate::Msg;
 
 use super::{ledger_row, palette, title_frame, Ctx, MenuItem, Render, Transition, LIST_TOP};
 
-/// The recorded track's elevation band: the Route overview's composition at a shrunken height
-/// (the six-block fit — see the module doc).
+/// The recorded track's elevation band: the Route overview's composition, regrown near its
+/// reference height by the pager rework (owner review round 2 — see the module doc).
 const BAND_TOP: i32 = 96;
-const BAND_BOT: i32 = 130;
+const BAND_BOT: i32 = 178;
 const SIDE_MARGIN: i32 = 12;
 
-/// The stat ledger: four caption/value rows between the band and the delete row. Pitch compressed
-/// from the overview's 42 (text size unchanged; the inter-row hairlines go with the lead).
-const ROWS_TOP: i32 = 138;
-const ROW_PITCH: i32 = 33;
+/// The stat pager: two caption/value rows per page between the band and the delete row, at the
+/// overview's row pitch (the compressed 33 px pitch retired with the four-row ledger).
+const ROWS_TOP: i32 = 186;
+const ROW_PITCH: i32 = 42;
 
 /// The guarded Delete-ride row at the bottom — the overview's button band footprint.
 const ROW_H: i32 = 34;
 
-/// The Ride detail. State is which catalog ride it shows; the delete row is the one selectable
-/// action, so there is no cursor.
+/// The stat pager's dwell — the Route overview's fixed 5 s flip (T3's constant, mirrored so the
+/// two sibling pages read on the same rhythm).
+const PAGE_FLIP_MS: u32 = 5_000;
+
+/// The Ride detail. State is which catalog ride it shows plus the stat pager's flip state; the
+/// delete row is the one selectable action, so there is no cursor.
 #[derive(Debug, Default)]
 pub struct RideDetailScreen {
     ride: usize,
+    /// Which stat page is showing (0 = DISTANCE + RIDE TIME, 1 = AVG + CLIMBED); auto-flipped by
+    /// [`tick_timers`](Self::tick_timers).
+    page: usize,
+    /// Instant of the last page flip (wrap-safe). `None` until the first tick anchors it, so the
+    /// first page gets a full dwell on entry — mirrors the Route overview's pager.
+    last_flip_ms: Option<u32>,
 }
 
 impl RideDetailScreen {
@@ -65,7 +79,22 @@ impl RideDetailScreen {
     /// [`Activity::viewed_ride`](crate::Activity::viewed_ride) alongside, keying the host's
     /// track-profile fill.
     pub fn new(ride: usize) -> Self {
-        RideDetailScreen { ride }
+        RideDetailScreen { ride, page: 0, last_flip_ms: None }
+    }
+
+    /// Stat pager tick: flip the two pages every [`PAGE_FLIP_MS`], reporting the residual dwell as
+    /// the next wake — exactly the Route overview's `tick_timers` (T3's Statistics-derived
+    /// machinery), on the recorded sibling.
+    pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+        let last = *self.last_flip_ms.get_or_insert(now_ms);
+        let changed = now_ms.wrapping_sub(last) >= PAGE_FLIP_MS;
+        if changed {
+            self.page ^= 1; // two pages
+            self.last_flip_ms = Some(now_ms);
+        }
+        let anchor = self.last_flip_ms.unwrap_or(now_ms);
+        let next = PAGE_FLIP_MS.saturating_sub(now_ms.wrapping_sub(anchor)).max(1);
+        ScreenTick { changed, next_wake_ms: Some(next), region: None }
     }
 
     /// Re-point the shown ride after a live catalog rescan. A vanished subject becomes an
@@ -174,7 +203,7 @@ impl RideDetailScreen {
         }
         cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline under the band
 
-        // The four-row stat ledger — everything from the RideSummary, no new stats. AVG is the
+        // The stat pager — everything from the RideSummary, no new stats. AVG is the
         // Statistics AVG tile's quotient (moving distance over moving time, here the stored
         // totals) and its caption (`AVG ` + the unit label); `--` before any moving time.
         let mut dist: heapless::String<8> = heapless::String::new();
@@ -197,14 +226,23 @@ impl RideDetailScreen {
         let mut climb: heapless::String<8> = heapless::String::new();
         let _ = write!(climb, "{}", (units.elev(ride.climb_m as f32) + 0.5) as u32);
 
-        let rows: [(&str, &str, &str, Option<bool>); 4] = [
+        // Two rows per page, auto-flipped every 5 s (owner review round 2: the Route overview's
+        // pager mechanics — the flip itself is the affordance, no page dots), with the overview's
+        // hairline rule between a page's two rows.
+        let entries: [(&str, &str, &str, Option<bool>); 4] = [
             (rx.t(Msg::RideControlDistance), &dist, dist_unit, None),
             (rx.t(Msg::RideControlRideTime), &time, "", None),
             (&avg_cap, &avg, "", None),
             (rx.t(Msg::TileClimbed), &climb, units.elev_label(), Some(true)),
         ];
-        for (i, (caption, value, unit, arrow)) in rows.iter().enumerate() {
-            ledger_row(cv, w, ROWS_TOP + i as i32 * ROW_PITCH, caption, value, unit, *arrow);
+        let page_rows: [usize; 2] = if self.page & 1 == 0 { [0, 1] } else { [2, 3] };
+        for (slot, &e) in page_rows.iter().enumerate() {
+            let y = ROWS_TOP + slot as i32 * ROW_PITCH;
+            let (caption, value, unit, arrow) = entries[e];
+            ledger_row(cv, w, y, caption, value, unit, arrow);
+            if slot + 1 < page_rows.len() {
+                cv.hline(16, y + ROW_PITCH - 4, w - 32, RULE);
+            }
         }
 
         // The guarded Delete-ride row at the bottom (the ride_control pattern): its shaded base
@@ -306,6 +344,23 @@ mod tests {
         let t = run(&mut scr, &mut act, &rides, Gesture::Back);
         assert!(matches!(t, Transition::Pop));
         assert_eq!(act.viewed_ride, None);
+    }
+
+    /// The two-row stat pager flips exactly at the dwell deadline and only once, re-arming a fresh
+    /// dwell — the Route overview's auto-flip contract, mirrored on the recorded sibling. The
+    /// first poll anchors the dwell (page 0 gets a full one).
+    #[test]
+    fn stat_pager_flips_once_at_the_deadline() {
+        let mut scr = RideDetailScreen::new(0);
+        assert_eq!(scr.page, 0);
+        assert!(!scr.tick_timers(0).changed, "the first poll only anchors the dwell");
+        assert!(!scr.tick_timers(PAGE_FLIP_MS - 1).changed, "still dwelling just before the deadline");
+        assert_eq!(scr.page, 0);
+        assert!(scr.tick_timers(PAGE_FLIP_MS).changed, "flips exactly at the deadline");
+        assert_eq!(scr.page, 1, "now on the AVG + CLIMBED page");
+        assert!(!scr.tick_timers(PAGE_FLIP_MS + 1).changed, "and only once — a fresh dwell re-armed");
+        assert!(scr.tick_timers(2 * PAGE_FLIP_MS).changed, "flips back at the next deadline");
+        assert_eq!(scr.page, 0);
     }
 
     /// A vanished subject (out-of-range after a rescan) offers no delete.

@@ -33,12 +33,13 @@ mkdir -p "$OUT"
 
 # A deterministic /tracks fixture for the Rides screen (#454): two stored ride objects. The pinned
 # `ride-v1.bin` protocol vector *is* a valid `RD{id}.ORD` (the stored file == the wire object), so we
-# copy it under two ids. No `SYNCED.SET` → both read as unsynced, so the rows draw the hollow
-# not-synced ring. RD1 gets its header `distance` patched (u32 LE at byte 16 = 3 + name_len 9 + 4;
-# 42500 → 17800 m) so the two same-day rides are visually distinct on the redesigned rows'
+# copy it under two ids. RD1 gets its header `distance` patched (u32 LE at byte 16 = 3 + name_len 9 +
+# 4; 42500 → 17800 m) so the two same-day rides are visually distinct on the redesigned rows'
 # `D MON · distance` line (#680's C1 re-cut) — the exact ambiguity the re-cut exists to prevent.
 # Distance isn't part of the object's length validation, so the patched copy still reads as a valid
-# ride. Staged in a temp dir cleaned on exit.
+# ride. A `SYNCED.SET` sidecar lists RD0's id (the obc-app codec: `OBCS` v1, count 1, id 0 LE, then
+# CRC-16/CCITT-FALSE over the first 10 bytes = 0x6388 LE), so the rows pin BOTH sync states — RD0
+# synced, RD1 not (owner review round 2's mark redesign). Staged in a temp dir cleaned on exit.
 TRACKS="$(mktemp -d)"
 # A scratch routes dir for the create-route sweep below — the router writes its reserved
 # `_nav.obcr` there instead of littering a `routes/` in the working directory.
@@ -47,6 +48,7 @@ trap 'rm -rf "$TRACKS" "$NAVDIR"' EXIT
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc status=none
+printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
@@ -60,14 +62,16 @@ printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc st
 # at a fixed second column) with no footer — hold-to-delete moved to the Route overview (T3, #681).
 "$SIM" "$MAP" --boot --script "p p"          --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
 "$SIM" "$MAP" --boot --battery 45 --script "B w"          --png "$OUT/menu.png"
-# Rides screen (#454, rows redesigned by #680): the name + sync-glyph rows over the olive
-# `D MON · distance` line (the tracks fixture's two unsynced same-day rides draw the hollow ring
-# and distinct distances; the drop-rightmost guard normally never fires at this shape). `p` presses
-# into the Rides screen from the Menu (one `r` detent + `w` settle).
+# Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
+# over the olive `D MON · distance` line — the fixture pins both sync states: RD0 (synced via the
+# staged SYNCED.SET) draws the small check inside the row box, RD1 (unsynced) draws nothing there.
+# `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p"     --png "$OUT/rides.png"
-# The Ride detail (#680): press the highlighted ride — RIDE bar with the "not synced" slot, name,
-# date · time, the recorded track's elevation band (the staged RD0.ORD fixture, host-filled), the
-# four-row ledger, and the guarded Delete-ride row.
+# The Ride detail (#680, repaged in owner review round 2): press the highlighted ride (the unsynced
+# RD1) — RIDE bar with the "not synced" slot, name, date · time, the recorded track's elevation band
+# (the staged fixture, host-filled; regrown to near the overview's height), the two-row stat pager
+# on its entry page (DISTANCE + RIDE TIME — the AVG + CLIMBED page flips in after the 5 s dwell, past
+# any script), and the guarded Delete-ride row.
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p p"   --png "$OUT/ride-detail.png"
 # The detail's delete charging: `H` partial-holds the encoder over the Delete-ride row, so its
 # warning-red fill draws mid-charge (the guarded-hold idiom, ride_control's pattern).
@@ -85,18 +89,26 @@ printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc st
 "$SIM" "$MAP" --boot --script "B r r w p"    --png "$OUT/poi-menu.png"
 "$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "B r r w p p" --png "$OUT/poi-list.png"
 # POI detail (#444, reworked in #685): category glyph on the name row, the promoted distance +
-# bearing row, the hours + the OPEN/CLOSED pill, and the full-width "Route here" footer bar. The
-# hours/badge need the hours-rich monaco fixture (grimsel has no shop hours). Pin the Resupply
-# "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow, and a
-# deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws once
-# to fill the lazy snapshot, then presses the POI into its detail.
+# bearing row, the hours block with the OPEN/CLOSED pill riding the "Today" caption line
+# (right-aligned — owner review round 2's overlay fix), and the full-width "Route here" footer
+# bar. The hours/badge need the hours-rich monaco fixture (grimsel has no shop hours). Pin the
+# Resupply "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow,
+# and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws
+# once to fill the lazy snapshot, then presses the POI into its detail.
 MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B r r w p r r r p d p" --png "$OUT/poi-detail.png"
 # The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
-# pill wears its warning-red CLOSED face.
+# pill wears its warning-red CLOSED face on the Today line.
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T23:00" \
     --script "B r r w p r r r p d p" --png "$OUT/poi-detail-closed.png"
+# The layout worst case (owner review round 2's overlay bug): a two-line wrapping name
+# ("Pharmacie du Jardin Exot..") + the format's two-intervals-per-day maximum (split lunch hours,
+# Mon 08:30-12:30 / 15:00-19:00) — the stack that used to push the badge under the Route-here
+# bar. With the badge on the Today line the whole block clears the footer. Pharmacy is one more
+# detent into the category list than Resupply.
+"$SIM" "$MONACO" --boot --center 7413793,43734832 --heading 0 --clock "2025-01-06T12:00" \
+    --script "B r r w p r r r r p d p" --png "$OUT/poi-detail-split-hours.png"
 # POI create-route flow (epic #116, R4). The `d` token also drains a pending create-route request
 # (running the real A* router over the map's v8 nav graph), so one script walks the whole flow.
 # The confirm (#685: the category glyph in the T1 slot + the straight-line 'NNN m away' under
@@ -150,10 +162,15 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
 "$SIM" "$MAP" --boot --script "B l p r r r r p"   --png "$OUT/display.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r p" --png "$OUT/power.png"
-# Bluetooth screen (#455): the main state (radio on, advertising, a stored bond -> Paired: yes) and
-# the Forget-phone guarded hold mid-charge (select the Forget row, then a partial hold fills it).
+# Bluetooth screen (#455, Forget refaced in owner review round 2): the main state (radio on,
+# advertising, a stored bond -> Paired: yes, the Forget button wearing the always-visible
+# delete-row face at the bottom anchor), the row focused (a turn puts the ink outline on it), the
+# guarded hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond,
+# so the Forget row isn't drawn at all (the round-1 only-when-possible grammar).
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p"     --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r"   --png "$OUT/bluetooth-forget-selected.png"
 "$SIM" "$MAP" --boot --ble-paired --script "B l p r r r r r r p r H" --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot              --script "B l p r r r r r r p"     --png "$OUT/bluetooth-unpaired.png"
 # The Language screen (epic #602): the endonym value picker (row 7). The default (English), then two
 # detents cycling to Français — pinning the ç glyph the Latin font (#601) adds.
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r p"     --png "$OUT/language.png"
@@ -186,14 +203,17 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated.png"
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
 # The overview also carries the guarded Delete-route row (T3 #681, reordered by owner review round
-# 1): the bottommost element, BELOW the raised START RIDE bar — idle here, charging below. While the
-# route is the active ride's the row is hidden entirely (no greyed face); that state is unreachable
-# by gesture (the active route's overview never opens from the menu), so it has no frame — the
-# route_overview delete_enabled tests pin the guard.
+# 1): the bottommost element, BELOW the raised START RIDE bar. Since owner review round 2 the two
+# action rows carry a cursor — entry selects START (its ink focus outline), a turn moves onto the
+# Delete row, and only then does a hold charge the delete. While the route is the active ride's the
+# row is hidden entirely (no greyed face); that state is unreachable by gesture (the active route's
+# overview never opens from the menu), so it has no frame — the route_overview guard tests pin it.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
-# The Delete row charging: `p p p H` opens the overview and partial-holds the encoder over it, so the
+# The cursor on the Delete row (idle): `r` toggles the focus outline onto it, nothing charging.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p r"   --png "$OUT/routeoverview-delete-selected.png"
+# The Delete row charging: `p p p r H` selects it, then partial-holds the encoder, so the
 # warning-red row fill draws under the "Delete route" label.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p H"   --png "$OUT/routeoverview-delete.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p r H" --png "$OUT/routeoverview-delete.png"
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
 # --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
 # (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —
@@ -341,4 +361,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 133 screens rendered into $OUT/"
+echo "ui-snapshots: 137 screens rendered into $OUT/"
