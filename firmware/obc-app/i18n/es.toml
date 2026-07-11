@@ -152,6 +152,7 @@ stats = "Estadísticas"
 display = "Pantalla"
 power = "Energía"
 bluetooth = "Bluetooth"
+sensors = "Sensores"
 language = "Idioma"
 system = "Sistema"
 reset = "Restablecer"
@@ -211,6 +212,19 @@ forget = "Olvidar tel."
 off = "Apagado"
 connected = "Conectado"
 advertising = "Visible"
+
+# --- Sensors settings screen (BLE sensors epic #707) ---
+[sensors]
+title = "SENSORES"
+heart_rate = "Frec. cardíaca"
+power = "Potencia"
+cadence = "Cadencia"
+not_set = "Sin definir"
+searching = "Buscando"
+connecting = "Conectando"
+connected = "Conectado"
+scanning = "Buscando..."
+forget = "Olvidar sensor"
 
 # --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
 [language]

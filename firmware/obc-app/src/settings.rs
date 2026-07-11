@@ -747,6 +747,38 @@ pub const STAT_CYCLE_MAX: u16 = 20;
 /// Default auto-cycle period — only matters once a rider pins more than one page of fields.
 pub const STAT_CYCLE_DEFAULT: u16 = 5;
 
+/// The fixed sensor-slot count (BLE sensors epic #707): one saved sensor per quantity — index
+/// **0 HR · 1 Power · 2 Cadence**. The slot index *is* the kind, so the kind isn't stored.
+pub const SENSOR_SLOTS: usize = 3;
+
+/// A saved BLE sensor (SE7, epic #707) for one quantity slot: the stored advertising address the
+/// board's central manager reconnects by (auto-reconnect across a reboot). The slot index carries the
+/// kind (HR / power / cadence), so only the address is stored; there is **no name or bond** — v1
+/// sensors are open GATT servers connected by address (locked: no sensor SMP). `Copy + Eq` so the
+/// whole [`Settings`] stays `Copy + Eq` and the one-`==` settings-dirty check still holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SavedSensor {
+    /// Whether this slot holds a saved sensor. `false` = empty (the address is then unused zeros),
+    /// which is a fresh device's state and what an older-blob reset decodes to.
+    pub present: bool,
+    /// The advertiser address kind: `0` = public, `1` = random. Kept so the manager reconnects by the
+    /// *same* address kind — a static-random watch (a broadcast Garmin) advertises `RANDOM`.
+    pub addr_kind: u8,
+    /// The 6-byte advertising address, little-endian as the wire carries it.
+    pub addr: [u8; 6],
+}
+
+impl SavedSensor {
+    /// The empty slot (no sensor saved) — the per-slot default.
+    pub const EMPTY: SavedSensor = SavedSensor { present: false, addr_kind: 0, addr: [0; 6] };
+
+    /// A present slot for `addr` of kind `addr_kind` (`0` public / `1` random) — the Sensors screen's
+    /// pair write.
+    pub const fn saved(addr_kind: u8, addr: [u8; 6]) -> SavedSensor {
+        SavedSensor { present: true, addr_kind, addr }
+    }
+}
+
 /// The whole persisted settings set. Plain old data — `Copy` + `Eq`, no floats — so a
 /// before/after `==` flags a save and the codec is a trivial field-by-field pack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -820,6 +852,14 @@ pub struct Settings {
     /// rider's on-device language. Default **English** (nothing consumes it yet; the catalog lands
     /// later in the epic).
     pub language: Language,
+    /// The saved BLE sensors (SE7, epic #707), one slot per quantity — index **0 HR · 1 Power ·
+    /// 2 Cadence**. An empty slot ([`SavedSensor::present`] `== false`) is "no sensor saved". Written
+    /// by the Sensors settings screen on pair/forget; the board's central manager reconnects to a
+    /// present slot's address whenever the radio is on. **Device-only**, like
+    /// [`ble_enabled`](Settings::ble_enabled): never pulled across by
+    /// [`adopt_ble_fields`](Settings::adopt_ble_fields) — a phone can't repick the rider's sensors.
+    /// Default: all three slots empty.
+    pub saved_sensors: [SavedSensor; SENSOR_SLOTS],
 }
 
 impl Default for Settings {
@@ -842,6 +882,7 @@ impl Default for Settings {
             bike_profile_idx: 0,
             waypoint_mode: WaypointMode::default(),
             language: Language::default(),
+            saved_sensors: [SavedSensor::EMPTY; SENSOR_SLOTS],
         }
     }
 }
@@ -891,8 +932,9 @@ impl Settings {
 /// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511); v6 appended
 /// the `idle_return` byte; v7 appended the `map_clock` + `map_scale_bar` bytes; v8 appended the
 /// `bike_profile_idx` byte (routing-v2 N5, #538); v9 appended the `waypoint_mode` byte (epic #523);
-/// v10 appended the `language` byte (epic #602).
-pub const VERSION: u8 = 10;
+/// v10 appended the `language` byte (epic #602); v11 appended the 24-byte `saved_sensors` block
+/// (BLE-sensors SE7, #714) — 3 slots × 8 B (`present · addr_kind · addr[6]`).
+pub const VERSION: u8 = 11;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -901,7 +943,7 @@ pub const VERSION: u8 = 10;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = LANGUAGE_OFF + 1;
+const PAYLOAD_LEN: usize = SENSORS_OFF + SENSOR_SLOTS * SAVED_SENSOR_LEN;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
@@ -924,6 +966,10 @@ const PROFILE_OFF: usize = SCALE_BAR_OFF + 1;
 const WAYPOINT_OFF: usize = PROFILE_OFF + 1;
 /// Byte offset of the `language` byte (the v10 tail, right after `waypoint_mode`).
 const LANGUAGE_OFF: usize = WAYPOINT_OFF + 1;
+/// Byte offset of the `saved_sensors` block (the v11 tail, right after `language`).
+const SENSORS_OFF: usize = LANGUAGE_OFF + 1;
+/// Bytes per saved-sensor slot: `present(1) · addr_kind(1) · addr[6]`.
+const SAVED_SENSOR_LEN: usize = 8;
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -978,6 +1024,13 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[WAYPOINT_OFF] = s.waypoint_mode as u8;
     // v10 tail: the UI language.
     b[LANGUAGE_OFF] = s.language as u8;
+    // v11 tail: the saved-sensor slots — 3 × `present · addr_kind · addr[6]` (BLE-sensors SE7).
+    for (q, slot) in s.saved_sensors.iter().enumerate() {
+        let off = SENSORS_OFF + q * SAVED_SENSOR_LEN;
+        b[off] = slot.present as u8;
+        b[off + 1] = slot.addr_kind;
+        b[off + 2..off + 2 + 6].copy_from_slice(&slot.addr);
+    }
     let crc = crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -1035,9 +1088,30 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // The v10 UI language: an unknown byte sanitises to the default (English), like the other
         // enum codec fields.
         language: Language::from_byte(b[LANGUAGE_OFF]),
+        // The v11 saved-sensor slots (BLE-sensors SE7): 3 × `present · addr_kind · addr[6]`. A stored
+        // `addr_kind` past `1` (corrupt-but-CRC-valid) reads as random (`!= 0`), the board's own
+        // interpretation, so a bit-flip never mis-picks the address kind.
+        saved_sensors: decode_saved_sensors(b),
     };
     s.sanitize();
     Some(s)
+}
+
+/// Decode the v11 saved-sensor block: 3 slots × `present(1) · addr_kind(1) · addr[6]`. An absent slot
+/// (`present == 0`) reads as [`SavedSensor::EMPTY`] regardless of the stored address; a present slot
+/// keeps its address and normalises `addr_kind` to `0`/`1` (`!= 0` = random), matching how the board
+/// maps it to `AddrKind`.
+fn decode_saved_sensors(b: &[u8]) -> [SavedSensor; SENSOR_SLOTS] {
+    let mut slots = [SavedSensor::EMPTY; SENSOR_SLOTS];
+    for (q, slot) in slots.iter_mut().enumerate() {
+        let off = SENSORS_OFF + q * SAVED_SENSOR_LEN;
+        if b[off] != 0 {
+            let mut addr = [0u8; 6];
+            addr.copy_from_slice(&b[off + 2..off + 2 + 6]);
+            *slot = SavedSensor::saved((b[off + 1] != 0) as u8, addr);
+        }
+    }
+    slots
 }
 
 // ==================== durable object-id high-water marks (#450) ====================
@@ -1347,6 +1421,11 @@ mod tests {
             bike_profile_idx: 3,
             waypoint_mode: WaypointMode::Always,
             language: Language::De,
+            saved_sensors: [
+                SavedSensor::saved(1, [1, 2, 3, 4, 5, 6]),
+                SavedSensor::EMPTY,
+                SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]),
+            ],
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -1446,7 +1525,7 @@ mod tests {
         assert!(Settings::default().map_clock, "the map clock defaults on");
         assert!(Settings::default().map_scale_bar, "the scale bar defaults on");
         // The RRAM carve is unchanged — the two new bytes fit inside the same 16-byte line rounding.
-        assert_eq!(ENCODED_LEN, 96, "the two v7 bytes don't cross a 16-byte RRAM line");
+        assert_eq!(ENCODED_LEN, 112, "the settings blob is 112 B / 7 RRAM lines (v11 saved_sensors tail)");
 
         // Every on/off combination round-trips byte-for-byte.
         for clock in [false, true] {
@@ -1470,7 +1549,7 @@ mod tests {
     fn bike_profile_idx_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().bike_profile_idx, 0, "the profile index defaults to 0");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v7.
-        assert_eq!(ENCODED_LEN, 96, "the v8 byte doesn't cross a 16-byte RRAM line");
+        assert_eq!(ENCODED_LEN, 112, "the settings blob is 112 B / 7 RRAM lines (v11 saved_sensors tail)");
 
         // Every index round-trips byte-for-byte — including a value past any real map's profile count,
         // which the codec stores verbatim (the router/UI own the fallback, not decode).
@@ -1493,7 +1572,7 @@ mod tests {
     fn waypoint_mode_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().waypoint_mode, WaypointMode::Approach, "the chip defaults to Approach");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v8.
-        assert_eq!(ENCODED_LEN, 96, "the v9 byte doesn't cross a 16-byte RRAM line");
+        assert_eq!(ENCODED_LEN, 112, "the settings blob is 112 B / 7 RRAM lines (v11 saved_sensors tail)");
 
         // Each mode round-trips through the codec byte-for-byte.
         for mode in [WaypointMode::Off, WaypointMode::Approach, WaypointMode::Always] {
@@ -1522,10 +1601,10 @@ mod tests {
     /// byte still fits the same 16-byte RRAM line, so the device carve is unchanged.
     #[test]
     fn language_round_trips_and_is_device_only() {
-        assert_eq!(VERSION, 10, "the language is the v10 layout (settings reset on flash)");
         assert_eq!(Settings::default().language, Language::En, "the UI language defaults to English");
-        // The one new byte still fits inside the same 16-byte RRAM line rounding as v9.
-        assert_eq!(ENCODED_LEN, 96, "the v10 byte doesn't cross a 16-byte RRAM line");
+        // The saved_sensors tail (v11) grew the blob to 112 B / 7 RRAM lines; the language byte kept
+        // its v10 offset.
+        assert_eq!(ENCODED_LEN, 112, "the settings blob is 112 B / 7 RRAM lines (v11 saved_sensors tail)");
 
         // Each language round-trips through the codec byte-for-byte.
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
@@ -1554,6 +1633,66 @@ mod tests {
         let mut app = Settings { language: Language::De, ..Settings::default() };
         app.adopt_ble_fields(&Settings { language: Language::Es, ..Settings::default() });
         assert_eq!(app.language, Language::De, "adopt_ble_fields leaves the language alone");
+    }
+
+    /// The v11 tail: the three saved-sensor slots round-trip (present + absent), default all-empty,
+    /// migrate an older blob to empty (the rejects-to-default house rule), normalise a corrupt
+    /// `addr_kind`, and stay device-only ([`adopt_ble_fields`] never pulls them across — a phone can't
+    /// repick the rider's sensors).
+    #[test]
+    fn saved_sensors_round_trip_and_migration() {
+        assert_eq!(VERSION, 11, "saved_sensors is the v11 layout (settings reset on flash)");
+        assert_eq!(
+            Settings::default().saved_sensors,
+            [SavedSensor::EMPTY; SENSOR_SLOTS],
+            "a fresh device has no saved sensors",
+        );
+
+        // A mix of present + absent slots round-trips byte-for-byte: HR saved (random watch), Power
+        // empty, Cadence saved (public sensor).
+        let s = Settings {
+            saved_sensors: [
+                SavedSensor::saved(1, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]), // HR, random
+                SavedSensor::EMPTY,                                          // Power, none
+                SavedSensor::saved(0, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]), // Cadence, public
+            ],
+            ..Settings::default()
+        };
+        assert_eq!(decode(&encode(&s)), Some(s), "present/absent slots round-trip");
+
+        // An absent slot decodes to EMPTY even if stray address bytes sit in its region (present == 0
+        // wins — no garbage address leaks into a "not set" slot).
+        let mut b = encode(&s);
+        let off = SENSORS_OFF + SAVED_SENSOR_LEN; // the (empty) Power slot (index 1)
+        b[off] = 0; // present = false
+        b[off + 1] = 1; // stray addr_kind
+        b[off + 2..off + 2 + 6].copy_from_slice(&[9, 9, 9, 9, 9, 9]); // stray address
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode(&b).unwrap().saved_sensors[1], SavedSensor::EMPTY, "an absent slot ignores stray bytes");
+
+        // A corrupt-but-CRC-valid `addr_kind` past 1 normalises to random (`!= 0`) — the board's own
+        // reading, so a bit-flip never mis-picks the address kind.
+        let mut b = encode(&s);
+        let off = SENSORS_OFF; // the HR slot
+        b[off + 1] = 200;
+        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode(&b).unwrap().saved_sensors[0].addr_kind, 1, "an out-of-range addr_kind reads as random");
+
+        // Migration: a v10 blob (the previous layout, before saved_sensors) is version-rejected → the
+        // host falls back to defaults, so every slot reads empty — the rejects-to-default contract
+        // (no in-place upgrade), exactly like every prior codec bump.
+        let mut old = encode(&s);
+        old[0] = 10;
+        let crc = crc16(&old[0..PAYLOAD_LEN]);
+        old[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode(&old), None, "a v10 blob is rejected → host uses defaults, sensors empty");
+
+        // Device-only: a BLE blob's saved_sensors never lands via the #456 coherence merge.
+        let mut app = s;
+        app.adopt_ble_fields(&Settings::default());
+        assert_eq!(app.saved_sensors, s.saved_sensors, "adopt_ble_fields leaves the saved sensors alone");
     }
 
     /// The picker's left/right walk order (wrapping at both ends) and the press cycle.

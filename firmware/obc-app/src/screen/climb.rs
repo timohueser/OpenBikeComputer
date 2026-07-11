@@ -344,6 +344,7 @@ mod tests {
             rides: &[],
             nav_profiles: &crate::NavProfiles::EMPTY,
             poi_scratch: &scratch,
+            sensor_scan_hits: &[],
             now_ms: 0,
         };
         assert!(matches!(ClimbScreen::new().handle(Gesture::Back, &mut cx), Transition::Replace(Screen::Map(_))));
