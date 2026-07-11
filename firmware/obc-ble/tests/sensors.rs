@@ -152,6 +152,26 @@ fn cps_short_at_every_boundary() {
 }
 
 #[test]
+fn cps_declared_fields_must_be_present_even_without_crank() {
+    // flags bit4 (wheel) only, NO crank — a frame truncated inside the declared wheel field is
+    // garbled: the mandatory head must not be trusted either. "Short buffer at any point → None."
+    let flags: u16 = 1 << 4;
+    let mut frame = vec![];
+    frame.extend_from_slice(&flags.to_le_bytes());
+    frame.extend_from_slice(&220i16.to_le_bytes());
+    frame.extend_from_slice(&12345u32.to_le_bytes()); // wheel revs
+    frame.extend_from_slice(&9000u16.to_le_bytes()); // wheel event time
+
+    // Truncated right after the mandatory head (declared wheel data entirely missing) → None,
+    // and every partial-wheel truncation too.
+    for n in 4..frame.len() {
+        assert_eq!(parse_power_measurement(&frame[..n]), None, "prefix len {n} should be None");
+    }
+    // The complete wheel-only frame parses — with no crank data to surface.
+    assert_eq!(parse_power_measurement(&frame), Some(PowerSample { watts: 220, crank: None }));
+}
+
+#[test]
 fn cps_crank_after_only_wheel() {
     // Only bits 4 (wheel) + 5 (crank): the parser skips 6 wheel bytes then reads crank.
     let flags: u16 = (1 << 4) | (1 << 5);
