@@ -92,7 +92,7 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `type` | Object | Direction | Payload |
 |--------|--------|-----------|---------|
 | `1` | `route` | app → device (upload) · device → app (detail read) | an [OBCR](../formats/) route file, verbatim |
-| `2` | `ride` | device → app | the compact ride object (a tracked ride) |
+| `2` | `ride` | device → app | the compact [ride object](../formats/#recorded-rides-the-track-log-and-the-ride-object) (a tracked ride) — **v1**, or **v2** when it carries recorded sensor data |
 | `4` | `diagnostics` | device → app | an opaque text blob (boot count, link + storage counters, stack high-water…) |
 | `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed 72-byte entries |
 | `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
@@ -454,6 +454,123 @@ Leaving identity and the protocol version readable pre-bond is deliberate: the
 app checks it's talking to a compatible device (and surfaces a mismatch as a
 banner rather than trapping) before it ever asks to pair.
 
+## Sensors — the device as BLE central
+
+The phone link is only half of the device's Bluetooth life. To a *phone* the
+device is a **peripheral** — the phone scans, connects, and drives it. To a
+**heart-rate strap, power meter, or cadence sensor** it is the opposite: the
+**central**, the side that scans, connects, and subscribes. Both roles run on
+the **one radio**. trouble-host 0.7 runs a peripheral and a central role
+concurrently on a single `Stack`, and MPSL time-slices the airtime between them —
+so a sensor link and the phone link coexist with no second radio and no mode
+switch. The whole feature is **BLE-only**; there is no ANT+.
+
+<figure class="fig">
+<svg viewBox="0 0 720 340" role="img" aria-label="The device plays two BLE roles on one radio. On the left the companion phone is the central and the device is the peripheral it connects to — the phone link. On the right the device is itself the central, connecting out to three sensors: a heart-rate strap, a power meter, and a cadence sensor. A band along the bottom notes that a single radio carries both directions, with MPSL time-slicing the airtime between the peripheral (phone) and central (sensor) roles, and that sensors are open GATT servers connected by stored address with no bond, one saved slot per quantity.">
+  <defs>
+    <marker id="se-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="se-c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#33575b" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Two roles, one radio — peripheral to the phone, central to the sensors</text>
+
+  <!-- phone (device = peripheral) -->
+  <rect class="d-panel" x="24" y="128" width="128" height="84" rx="11" />
+  <text class="d-title" x="88" y="162" text-anchor="middle">companion app</text>
+  <text class="d-sub" x="88" y="182" text-anchor="middle">BLE central</text>
+  <text class="d-sub" x="88" y="198" text-anchor="middle">(iPhone)</text>
+
+  <!-- device -->
+  <rect class="d-panel" x="278" y="112" width="184" height="116" rx="12" style="fill:#eef2df" />
+  <text class="d-title" x="370" y="150" text-anchor="middle">OBC device</text>
+  <text class="d-sub" x="370" y="172" text-anchor="middle" style="fill:#3c6b39">peripheral · to phone</text>
+  <text class="d-sub" x="370" y="190" text-anchor="middle" style="fill:#33575b">central · to sensors</text>
+  <text class="d-sub" x="370" y="210" text-anchor="middle">one radio · nRF54L</text>
+
+  <!-- phone <-> device -->
+  <line class="d-flow" x1="152" y1="170" x2="276" y2="170" marker-start="url(#se-a)" marker-end="url(#se-a)" />
+  <text class="d-sub" x="214" y="160" text-anchor="middle" style="font-size:9px;fill:#3c6b39">the phone link</text>
+
+  <!-- sensors (device = central) -->
+  <rect class="d-panel-2" x="566" y="70" width="138" height="48" rx="10" />
+  <text class="d-label" x="635" y="90" text-anchor="middle" style="font-size:10.5px">heart-rate strap</text>
+  <text class="d-sub" x="635" y="106" text-anchor="middle" style="font-size:8.5px">HRS · 0x180D</text>
+
+  <rect class="d-panel-2" x="566" y="146" width="138" height="48" rx="10" />
+  <text class="d-label" x="635" y="166" text-anchor="middle" style="font-size:10.5px">power meter</text>
+  <text class="d-sub" x="635" y="182" text-anchor="middle" style="font-size:8.5px">Cycling Power · 0x1818</text>
+
+  <rect class="d-panel-2" x="566" y="222" width="138" height="48" rx="10" />
+  <text class="d-label" x="635" y="242" text-anchor="middle" style="font-size:10.5px">cadence sensor</text>
+  <text class="d-sub" x="635" y="258" text-anchor="middle" style="font-size:8.5px">CSC · 0x1816</text>
+
+  <!-- device -> each sensor -->
+  <line class="d-flow" x1="462" y1="150" x2="564" y2="96" style="stroke:#33575b" marker-end="url(#se-c)" />
+  <line class="d-flow" x1="462" y1="170" x2="564" y2="170" style="stroke:#33575b" marker-end="url(#se-c)" />
+  <line class="d-flow" x1="462" y1="192" x2="564" y2="244" style="stroke:#33575b" marker-end="url(#se-c)" />
+  <text class="d-sub" x="520" y="143" text-anchor="middle" style="font-size:9px;fill:#33575b">scan · connect · subscribe</text>
+
+  <!-- bottom band -->
+  <rect class="d-panel-2" x="24" y="292" width="680" height="40" rx="9" />
+  <text class="d-sub" x="364" y="309" text-anchor="middle" style="font-size:9.5px">one radio — <tspan style="fill:#a9501c">MPSL time-slices</tspan> the peripheral (phone) and central (sensor) roles; no second radio</text>
+  <text class="d-sub" x="364" y="325" text-anchor="middle" style="font-size:9px">sensors are open GATT servers — connected by stored address, <tspan style="fill:#a9501c">no bond</tspan>, one saved slot per quantity</text>
+</svg>
+<figcaption>The device wears both BLE hats at once. To the phone it is the <b>peripheral</b> (the phone link, left); to each sensor it is the <b>central</b> that scans, connects, and subscribes (right). A single radio carries both — <b>MPSL time-slices</b> the airtime, so there is no second radio and no switching between roles. Sensors need no bond: they are open GATT servers the manager reaches by a <b>stored address</b>, one saved slot per quantity (heart rate · power · cadence).</figcaption>
+</figure>
+
+**The manager loop: scan → connect → subscribe → decode → dispatch.** A small
+central-role task runs beside the peripheral lifecycle. Given the radio on and a
+sensor saved, it connects to the stored address, discovers the profile's
+measurement characteristic, reads the battery level once, subscribes to the
+notifications, and then just pumps them: each notification is decoded and its raw
+value dispatched. The decode is pure `no_std` byte→value parsing that lives in the
+radio-free [`obc-ble`](src:firmware/obc-ble) crate — Heart Rate Measurement
+(`0x2A37`), Cycling Power Measurement (`0x2A63`), CSC Measurement (`0x2A5B`), and
+Battery Level (`0x2A19`), plus a crank-revolution→rpm accumulator — so it is
+host-tested with no radio in the loop. The dispatched value lands in an
+[`obc-platform`](src:firmware/obc-platform/src/sensor_values.rs) mailbox the app
+drains like any other sensor — the **same** mailbox the simulator's sliders and
+the USB-injection `H`/`P`/`R` lines feed, so the app can't tell a real strap from
+an injected one (last-writer-wins). The app never learns BLE exists; to it a
+sensor is just *a thing that produces bpm.*
+
+**No bonding — sensors are open.** A strap or power meter is an open GATT server:
+no pairing, no passkey, no encryption. The manager connects by the address the
+rider saved and that's it. The phone-bond machinery is completely untouched — the
+single bond slot is the phone's alone, and a sensor never consumes it. (Sensor
+bonding, encrypted sensors, and ANT+ are all deliberately out of scope.)
+
+**One slot per quantity.** There are three fixed slots — heart rate, power,
+cadence — one saved sensor each. Cadence is the one *arbitrated* quantity: a saved
+**dedicated** cadence sensor owns it, but with none saved the crank data a power
+meter already reports fills the cadence slot, so a power meter doubles as a
+cadence source for free.
+
+**What a link costs, and the cap.** Every central link the host tracks costs real
+controller memory — about 2.3 KB of SoftDevice-Controller buffers plus host arena —
+so the number of concurrent sensor links is a pinned constant, `SENSOR_LINKS`,
+arbitrated by the same compile-time RAM budget assert as the rest of the BLE
+statics (the [#677](https://github.com/timohueser/OpenBikeComputer/issues/677)
+rule: everything sizeable is a summed `.bss` static). On the 256 KB DK it is **1** —
+the phone plus one sensor, enough to bring up a Garmin watch broadcasting HR; the
+512 KB **LM20 raises it to 3**, so all three quantities can be live at once. One
+link is about **+7 KB** of RAM over the phone-only build; three is about +12 KB.
+Runtime behaviour matches the phone link's discipline: the manager auto-reconnects
+with a ~15 s backoff whenever the radio is on and a slot is saved, a sensor link
+**parks with the radio switch** exactly like the phone link, and a value older than
+**5 s** renders `--` and records as *absent* — a dropped strap must never freeze
+its last reading into the log.
+
+**Where the values go.** Live, they drive three [stat tiles](../ui/#the-sensors-screen) —
+heart rate, power, cadence — plus per-ride averages and maxima. Recorded, they
+widen the ride's on-disk records: the freshest sample is stamped onto each logged
+track point and, at Finish, carried into the **ride object v2** — the very object
+the phone downloads. There is deliberately **no live sensor streaming to the
+phone**; like everything else, the phone gets the numbers *after* the ride, inside
+the ride object it syncs. Those recording formats — the track log and the v1/v2
+ride object — are the [recorded-rides section](../formats/#recorded-rides-the-track-log-and-the-ride-object)
+of the data-formats page (normative bytes in the
+[BLE interface spec §7.2](src:obc-ble-interface-spec.md)).
+
 ---
 
 ## Where this lives
@@ -461,6 +578,9 @@ banner rather than trapping) before it ever asks to pair.
 - The wire contract, normative: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md)
 - The host-tested, radio-free core — descriptor codecs, CRC-32, the transfer state machine: [`obc-ble`](src:firmware/obc-ble) ([`transfer.rs`](src:firmware/obc-ble/src/transfer.rs) · [`descriptor.rs`](src:firmware/obc-ble/src/descriptor.rs))
 - On the device — the GATT server, connection lifecycle, and the CoC data plane: [`obc-fw-nrf54l/src/ble/`](src:firmware/obc-fw-nrf54l/src/ble)
+- The central-role **sensor manager** — scan / connect / subscribe / decode / dispatch, the `SENSOR_LINKS` cap and its budget: [`obc-fw-nrf54l/src/ble/sensors.rs`](src:firmware/obc-fw-nrf54l/src/ble/sensors.rs)
+- The radio-free sensor profile codecs, the advertisement classifier, and the crank→rpm accumulator: [`obc-ble`](src:firmware/obc-ble) (`sensors.rs`)
+- The app-facing sensor mailboxes both the radio manager and the injection path feed: [`obc-platform/src/sensor_values.rs`](src:firmware/obc-platform/src/sensor_values.rs)
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
 - Shared fixtures pinning the byte layouts on both sides: [`protocol-vectors/`](src:protocol-vectors)
