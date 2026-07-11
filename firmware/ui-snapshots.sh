@@ -89,18 +89,26 @@ printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
 "$SIM" "$MAP" --boot --script "B r r w p"    --png "$OUT/poi-menu.png"
 "$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "B r r w p p" --png "$OUT/poi-list.png"
 # POI detail (#444, reworked in #685): category glyph on the name row, the promoted distance +
-# bearing row, the hours + the OPEN/CLOSED pill, and the full-width "Route here" footer bar. The
-# hours/badge need the hours-rich monaco fixture (grimsel has no shop hours). Pin the Resupply
-# "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow, and a
-# deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws once
-# to fill the lazy snapshot, then presses the POI into its detail.
+# bearing row, the hours block with the OPEN/CLOSED pill riding the "Today" caption line
+# (right-aligned — owner review round 2's overlay fix), and the full-width "Route here" footer
+# bar. The hours/badge need the hours-rich monaco fixture (grimsel has no shop hours). Pin the
+# Resupply "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow,
+# and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws
+# once to fill the lazy snapshot, then presses the POI into its detail.
 MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B r r w p r r r p d p" --png "$OUT/poi-detail.png"
 # The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
-# pill wears its warning-red CLOSED face.
+# pill wears its warning-red CLOSED face on the Today line.
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T23:00" \
     --script "B r r w p r r r p d p" --png "$OUT/poi-detail-closed.png"
+# The layout worst case (owner review round 2's overlay bug): a two-line wrapping name
+# ("Pharmacie du Jardin Exot..") + the format's two-intervals-per-day maximum (split lunch hours,
+# Mon 08:30-12:30 / 15:00-19:00) — the stack that used to push the badge under the Route-here
+# bar. With the badge on the Today line the whole block clears the footer. Pharmacy is one more
+# detent into the category list than Resupply.
+"$SIM" "$MONACO" --boot --center 7413793,43734832 --heading 0 --clock "2025-01-06T12:00" \
+    --script "B r r w p r r r r p d p" --png "$OUT/poi-detail-split-hours.png"
 # POI create-route flow (epic #116, R4). The `d` token also drains a pending create-route request
 # (running the real A* router over the map's v8 nav graph), so one script walks the whole flow.
 # The confirm (#685: the category glyph in the T1 slot + the straight-line 'NNN m away' under
