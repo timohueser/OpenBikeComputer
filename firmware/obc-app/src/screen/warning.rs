@@ -167,10 +167,10 @@ impl WarningScreen {
 
         // Map-slow advisory (issue #504): loaded fine, just fragmented → slower reads. Lines kept
         // short so they don't clip the 240 px panel (measured: 18 chars at Font::Body overruns).
-        // Led by the Menu's map-station icon, shrunk to the 12 px glyph budget.
+        // No leading glyph: the mini map icon crowded the headline (owner review round 2) — the
+        // per-sensor glyphs stay because their lines are short names with room to spare.
         if self.flags.contains(WarningFlags::MAP_SLOW) {
             cv.text("Slow map reads", Point::new(w / 2, y), Font::Body, TextAlign::Center, INK);
-            super::menu::icon_map(cv, glyph_anchor(w, y, "Slow map reads", Font::Body), 0.4, WARNING);
             y += line + 2;
             cv.text("Re-copy the map.", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
             y += line + line / 2; // advance past this block (+ gap) in case the recording error follows
@@ -189,9 +189,9 @@ impl WarningScreen {
 
 // ── The tiny leading glyphs (≤ 12×12 px, one per warning line) ──
 
-/// Half-width of a leading glyph's 12 px cell, and the gap to its line's first character. The gap
-/// is small because the worst line ("Slow map reads", 14 Body cells = 196 px on the 240 px panel)
-/// leaves the glyph only just clear of the card's border.
+/// Half-width of a leading glyph's 12 px cell, and the gap to its line's first character. Only the
+/// short sensor names carry a glyph now (the map-slow headline lost its icon in owner review round
+/// 2 — 14 Body cells left it crammed against the card border), so the gap has room to spare.
 const GLYPH_HALF: i32 = 6;
 const GLYPH_GAP: i32 = 4;
 
