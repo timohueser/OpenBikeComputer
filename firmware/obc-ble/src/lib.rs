@@ -21,6 +21,7 @@
 pub mod crc32;
 pub mod descriptor;
 pub mod list;
+pub mod sensors;
 pub mod transfer;
 
 pub use crc32::Crc32;
@@ -30,6 +31,12 @@ pub use descriptor::{
     CMD_INSTALL_FW,
 };
 pub use list::{ListHeader, RideListEntry, RouteListEntry, LIST_ENTRY_LEN};
+pub use sensors::{
+    parse_battery_level, parse_csc_measurement, parse_hr_measurement, parse_power_measurement, CrankCadence, CrankRevs,
+    CscSample, HrSample, PowerSample, WheelRevs, UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT,
+    UUID_CSC_SERVICE, UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE,
+    UUID_HR_MEASUREMENT,
+};
 pub use transfer::{Receiver, StreamSender, TransferError};
 
 /// The protocol version this crate implements. The app reads it on connect and stops on a mismatch.
