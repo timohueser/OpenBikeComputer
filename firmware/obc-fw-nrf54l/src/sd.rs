@@ -52,8 +52,7 @@ use obc_platform::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlo
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, ByteSource, Profile, RideInfo, RideStats, RouteIndex,
-    RouteObjectInfo,
-    RouteSummary, NAME_CAP,
+    RouteObjectInfo, RouteSummary, NAME_CAP,
 };
 
 /// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
@@ -727,7 +726,10 @@ impl Storage {
             Err(_) => match &self.open_object {
                 Some((on, of, olen)) if *on == name => (*of, *olen, true),
                 _ => {
-                    defmt::warn!("SD: ride preview: cannot open {} — track page stays empty", defmt::Debug2Format(&name));
+                    defmt::warn!(
+                        "SD: ride preview: cannot open {} — track page stays empty",
+                        defmt::Debug2Format(&name)
+                    );
                     return heapless::Vec::new();
                 }
             },
