@@ -63,6 +63,20 @@ public struct RouteDetailView: View {
 
                 OBCStatStrip(model.stats)
 
+                if !model.sensorRows.isEmpty {
+                    OBCGroupedSection {
+                        ForEach(model.sensorRows) { row in
+                            OBCListRow(
+                                label: row.label,
+                                value: row.value,
+                                showsDivider: row.id != model.sensorRows.last?.id
+                            )
+                        }
+                    }
+                    .padding(.top, 12)
+                    .accessibilityIdentifier("detail.sensorSummary")
+                }
+
                 if !model.waypoints.isEmpty {
                     OBCDisclosureRow(
                         systemImage: "mappin.and.ellipse",
