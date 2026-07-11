@@ -315,9 +315,9 @@ on — a `storeChanged` the phone can trust never to lie about identity.
 
 A tracked ride is precious (unlike a route, the phone can't re-upload it), so the
 device keeps a **"synced" flag** per ride — has the phone downloaded this one at
-least once? It drives the sync glyph on every Rides-list row (a filled disc =
-synced, a hollow ring = not) and the *"synced" / "not synced"* slot in the Ride
-detail's title bar, so a rider deleting an un-downloaded ride is told what
+least once? It drives the small check mark on a synced Rides-list row (an
+unsynced ride shows nothing there) and the *"synced" / "not synced"* slot in the
+Ride detail's title bar, so a rider deleting an un-downloaded ride is told what
 they're about to lose.
 
 The naïve way to set that flag is to flip it when a ride download completes. But
