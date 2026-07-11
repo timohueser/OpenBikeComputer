@@ -198,17 +198,30 @@ impl PoiDetailScreen {
         // (the pre-epic weight) and the pill is sized *from* it: the measured text width plus a
         // symmetric [`BADGE_PAD_X`], the Body cap plus a symmetric [`BADGE_PAD_Y`], and the anchor
         // offset by the face's measured top bearing so the glyphs centre on both axes.
+        //
+        // Placement (owner review round 2, screenshot of a two-line name + split hours pushing the
+        // badge under the footer bar): with interval rows on the page the badge rides the "Today"
+        // caption line — right-aligned at the card's right inset, vertically centred on the
+        // caption's cap — which retires the badge's own row entirely, so the true worst case
+        // (two-line name + the format's two-intervals-per-day maximum) clears the bottom-anchored
+        // `Route here` bar with room to spare. With no interval rows ("Closed today") the badge
+        // keeps its old spot under the caption: there's no vertical pressure without ranges, and
+        // the longer closed-today captions would collide with a right-aligned pill.
         if let Some(sched) = schedule {
             let minute = rx.now.hour as u16 * 60 + rx.now.minute as u16;
             let open = sched.is_open(weekday, minute);
             let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), WARNING) };
-            let badge_y = row_y + 8;
             let font = Font::Body;
             let badge_w = text_width(text, font) as i32 + 2 * BADGE_PAD_X;
             let badge_h = BADGE_TEXT_H + 2 * BADGE_PAD_Y;
-            cv.round(rect(x, badge_y, badge_w, badge_h), 6, bg);
+            let (bx, badge_y) = if intervals.is_empty() {
+                (x, row_y + 8)
+            } else {
+                (w - x - badge_w, head_y + Font::Label.cap_height() as i32 / 2 - badge_h / 2)
+            };
+            cv.round(rect(bx, badge_y, badge_w, badge_h), 6, bg);
             let ty = badge_y + BADGE_PAD_Y - BADGE_TEXT_BEARING_Y;
-            cv.text(text, Point::new(x + badge_w / 2, ty), font, TextAlign::Center, PARCHMENT);
+            cv.text(text, Point::new(bx + badge_w / 2, ty), font, TextAlign::Center, PARCHMENT);
         }
 
         // Footer action row — `▶Route here`, exactly the Route overview's START RIDE bar (#685 §2:
