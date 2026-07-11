@@ -125,16 +125,25 @@ struct RideCodecV2Tests {
 
     @Test func roundTripsAMixedSensorRide() throws {
         let start = Date(timeIntervalSince1970: 1_760_000_000)
-        let points: [RidePoint] = (0..<4).map { i in
-            RidePoint(
-                timestamp: start.addingTimeInterval(Double(i) * 30),
-                coordinate: Coordinate(latitude: Double(430_000_000 + i * 11_000) / 1e7,
-                                       longitude: Double(-885_000_000 + i * 7_000) / 1e7),
-                elevationMeters: i == 1 ? nil : Double(300 + i),
-                heartRate: i == 2 ? nil : 130 + i,
-                cadence: i == 3 ? nil : 80 + i,
-                power: i == 0 ? nil : 200 + i
-            )
+        // Built with an explicit loop + typed intermediates on purpose: a single
+        // `.map` closure with inline arithmetic and four optional ternaries blows
+        // the Swift type-checker's budget (it timed out in CI).
+        var points: [RidePoint] = []
+        for i in 0..<4 {
+            let timestamp: Date = start.addingTimeInterval(Double(i) * 30)
+            let latitude: Double = Double(430_000_000 + i * 11_000) / 1e7
+            let longitude: Double = Double(-885_000_000 + i * 7_000) / 1e7
+            let elevation: Double? = i == 1 ? nil : Double(300 + i)
+            let heartRate: Int? = i == 2 ? nil : 130 + i
+            let cadence: Int? = i == 3 ? nil : 80 + i
+            let power: Int? = i == 0 ? nil : 200 + i
+            points.append(RidePoint(
+                timestamp: timestamp,
+                coordinate: Coordinate(latitude: latitude, longitude: longitude),
+                elevationMeters: elevation,
+                heartRate: heartRate,
+                cadence: cadence,
+                power: power))
         }
         let summary = RideSummary(
             id: RideID("m"), name: "Mixed", date: start,
