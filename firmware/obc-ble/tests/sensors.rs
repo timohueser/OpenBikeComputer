@@ -5,10 +5,10 @@
 //! that hammers every prefix of a valid frame through every parser.
 
 use obc_ble::{
-    parse_battery_level, parse_csc_measurement, parse_hr_measurement, parse_power_measurement, CrankCadence, CrankRevs,
-    CscSample, HrSample, PowerSample, WheelRevs, UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT,
-    UUID_CSC_SERVICE, UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE,
-    UUID_HR_MEASUREMENT,
+    classify_advertisement, parse_battery_level, parse_csc_measurement, parse_hr_measurement, parse_power_measurement,
+    power_crank_feeds_cadence, AdvMatch, CrankCadence, CrankRevs, CscSample, HrSample, PowerSample, SensorKind,
+    WheelRevs, UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT, UUID_CSC_SERVICE,
+    UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -385,4 +385,127 @@ fn no_prefix_of_any_frame_panics() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Scan-side classification (SE6, #713): AD-structure walk → SensorKind + local name, cadence
+// arbitration, and the mapping to service / measurement UUIDs.
+// ---------------------------------------------------------------------------------------------
+
+/// Build one AD structure `[len][type][payload…]`.
+fn ad(ty: u8, payload: &[u8]) -> Vec<u8> {
+    let mut v = vec![(payload.len() + 1) as u8, ty];
+    v.extend_from_slice(payload);
+    v
+}
+
+#[test]
+fn kind_uuid_mapping() {
+    assert_eq!(SensorKind::HeartRate.service_uuid(), UUID_HEART_RATE_SERVICE);
+    assert_eq!(SensorKind::HeartRate.measurement_uuid(), UUID_HR_MEASUREMENT);
+    assert_eq!(SensorKind::Power.service_uuid(), UUID_CYCLING_POWER_SERVICE);
+    assert_eq!(SensorKind::Power.measurement_uuid(), UUID_CYCLING_POWER_MEASUREMENT);
+    assert_eq!(SensorKind::Cadence.service_uuid(), UUID_CSC_SERVICE);
+    assert_eq!(SensorKind::Cadence.measurement_uuid(), UUID_CSC_MEASUREMENT);
+}
+
+#[test]
+fn classify_hr_strap_with_complete_name() {
+    // Flags (0x01), complete 16-bit UUID list with HR (0x03), complete local name (0x09).
+    let mut adv = ad(0x01, &[0x06]);
+    adv.extend(ad(0x03, &0x180Du16.to_le_bytes()));
+    adv.extend(ad(0x09, b"Polar H10"));
+    assert_eq!(classify_advertisement(&adv), Some(AdvMatch { kind: SensorKind::HeartRate, name: Some("Polar H10") }));
+}
+
+#[test]
+fn classify_prefers_hr_over_power_over_cadence() {
+    // A device that advertises all three services classifies as HR (highest priority).
+    let mut all = Vec::new();
+    all.extend(ad(0x03, &0x1816u16.to_le_bytes())); // CSC first on the wire
+    all.extend(ad(0x03, &0x1818u16.to_le_bytes())); // then power
+    all.extend(ad(0x03, &0x180Du16.to_le_bytes())); // then HR
+    assert_eq!(classify_advertisement(&all).unwrap().kind, SensorKind::HeartRate);
+
+    // Power meter that also exposes CSC crank data → Power, not Cadence.
+    let mut pm = Vec::new();
+    pm.extend(ad(0x02, &0x1816u16.to_le_bytes()));
+    pm.extend(ad(0x02, &0x1818u16.to_le_bytes()));
+    assert_eq!(classify_advertisement(&pm).unwrap().kind, SensorKind::Power);
+
+    // A pure CSC sensor → Cadence.
+    let csc = ad(0x03, &0x1816u16.to_le_bytes());
+    assert_eq!(classify_advertisement(&csc).unwrap().kind, SensorKind::Cadence);
+}
+
+#[test]
+fn classify_uuid_list_with_multiple_entries() {
+    // One 0x03 structure carrying two UUIDs: an unrelated one then power.
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0x180Fu16.to_le_bytes()); // battery service (ignored)
+    payload.extend_from_slice(&0x1818u16.to_le_bytes()); // power
+    let adv = ad(0x03, &payload);
+    assert_eq!(classify_advertisement(&adv).unwrap().kind, SensorKind::Power);
+}
+
+#[test]
+fn classify_prefers_complete_name_over_shortened() {
+    // Shortened name appears first, complete second — complete wins regardless of order.
+    let mut adv = ad(0x08, b"Wahoo");
+    adv.extend(ad(0x03, &0x1818u16.to_le_bytes()));
+    adv.extend(ad(0x09, b"Wahoo KICKR"));
+    assert_eq!(classify_advertisement(&adv).unwrap().name, Some("Wahoo KICKR"));
+
+    // Only a shortened name present → that is used.
+    let mut short = ad(0x03, &0x180Du16.to_le_bytes());
+    short.extend(ad(0x08, b"HRM"));
+    assert_eq!(classify_advertisement(&short).unwrap().name, Some("HRM"));
+}
+
+#[test]
+fn classify_no_sensor_service_is_none() {
+    // Flags + a name + only the battery service → not a sensor we pair with.
+    let mut adv = ad(0x01, &[0x06]);
+    adv.extend(ad(0x03, &0x180Fu16.to_le_bytes()));
+    adv.extend(ad(0x09, b"Some Phone"));
+    assert_eq!(classify_advertisement(&adv), None);
+    // Empty / zero advertisement.
+    assert_eq!(classify_advertisement(&[]), None);
+    assert_eq!(classify_advertisement(&[0x00]), None);
+}
+
+#[test]
+fn classify_tolerates_truncation() {
+    // A structure claiming more bytes than remain ends the walk without panicking — but the HR
+    // service seen before the runt is still reported.
+    let mut adv = ad(0x03, &0x180Du16.to_le_bytes());
+    adv.push(0x05); // len=5 but no bytes follow
+    adv.push(0x09);
+    let m = classify_advertisement(&adv).unwrap();
+    assert_eq!(m.kind, SensorKind::HeartRate);
+
+    // Invalid-UTF8 name yields a match with no name rather than an error.
+    let mut bad = ad(0x03, &0x180Du16.to_le_bytes());
+    bad.extend(ad(0x09, &[0xFF, 0xFE, 0x80]));
+    assert_eq!(classify_advertisement(&bad), Some(AdvMatch { kind: SensorKind::HeartRate, name: None }));
+}
+
+#[test]
+fn classify_ad_truncation_fuzz_never_panics() {
+    // Every prefix of a rich multi-structure advertisement must return cleanly.
+    let mut adv = ad(0x01, &[0x06]);
+    adv.extend(ad(0x03, &0x180Du16.to_le_bytes()));
+    adv.extend(ad(0x02, &0x1818u16.to_le_bytes()));
+    adv.extend(ad(0x09, b"Sensor XYZ"));
+    for n in 0..=adv.len() {
+        let _ = classify_advertisement(&adv[..n]);
+    }
+}
+
+#[test]
+fn cadence_arbitration_dedicated_wins() {
+    // A saved dedicated cadence sensor takes the quantity — the power meter's crank data must not.
+    assert!(!power_crank_feeds_cadence(true));
+    // No dedicated cadence sensor → the power meter's crank data fills cadence.
+    assert!(power_crank_feeds_cadence(false));
 }

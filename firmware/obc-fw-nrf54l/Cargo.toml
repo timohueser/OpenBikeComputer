@@ -195,7 +195,14 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"], opti
 # `default-features=false`), and the SMP CSPRNG is auto-seeded from the controller's `LeRand`
 # at host init (no app-side entropy plumbing). nrf-sdc exports every HCI command the security
 # host requires (LTK reply, enable-encryption, the resolving-list set, LeRand).
-trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
+# `central` + `scan` (SE6, epic #707): the BLE sensor manager runs the central role on the same
+# `Stack` as the phone-facing peripheral — `stack.central()` scans for + connects to HR/power/cadence
+# sensors while `stack.peripheral()` keeps advertising to the phone (0.7 supports concurrent roles on
+# one stack). `scan` pulls in `central`; the manager uses legacy scan (`Scanner::scan`) + legacy
+# connect (`LeCreateConn`). nrf-sdc already carries `central` (its cleanup path needs
+# `LeCreateConnCancel`); the SDC's central/scan *buffers* are only allocated once the Builder calls
+# `.support_central()/.support_scan()/.central_count()` (see `ble/mod.rs`).
+trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "central", "scan", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
 # trouble-host's `#[gatt_service]` derive impls `AsGatt` for *its* heapless (0.9) `String`/`Vec`, so
 # the A4 GATT string/blob characteristic types (DIS strings, `config`, …) must be 0.9 — the shared
 # crates' 0.8 types don't satisfy the bound. Alias 0.9 under a distinct name so both coexist; the
