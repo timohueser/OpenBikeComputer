@@ -561,6 +561,9 @@ impl Screen {
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             // The Route overview's stat-ledger pager (T3): flips DISTANCE+CLIMB ↔ DESCENT every 5 s.
             Screen::RouteOverview(s) => s.tick_timers(now_ms),
+            // The Ride detail's stat pager (owner review round 2): the same 5 s two-row flip,
+            // DISTANCE+RIDE TIME ↔ AVG+CLIMBED.
+            Screen::RideDetail(s) => s.tick_timers(now_ms),
             // The nav planning spinner (#499): free-runs at frame cadence until the host's
             // answer (or a cancel) removes the screen. The one screen that reports a dirty
             // region — the spinning needle's disc — so the multi-second plan's repaints stay
