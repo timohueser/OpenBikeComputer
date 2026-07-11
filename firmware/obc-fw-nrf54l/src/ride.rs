@@ -398,6 +398,17 @@ pub(crate) async fn run_app(
         obc_platform::debug_link::DebugAltimeter,
         obc_platform::debug_link::DebugCompass,
     );
+    // The shared BLE-sensor mailbox sources (epic #707 SE8): on a `debug-uart` build the host's
+    // `H`/`P`/`R` injection lines land in these `sensor_values` mailboxes; the *same* sources the
+    // BLE central manager (SE6) will feed on a `ble` build (last-writer-wins), so the `Sensors`
+    // wiring below is identical either way. `debug-uart` always composes with `sensor-link` (it's a
+    // default leg), so this compiles on every documented flavor.
+    #[cfg(feature = "debug-uart")]
+    let (mut inj_hr, mut inj_power, mut inj_cadence) = (
+        obc_platform::sensor_values::SensorHr,
+        obc_platform::sensor_values::SensorPower,
+        obc_platform::sensor_values::SensorCadence,
+    );
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     let (mut gps, mut baro, mut temp, mut gps_clock, mut mag_compass) = (
         sensor_link::GpsLocation,
@@ -1025,9 +1036,11 @@ pub(crate) async fn run_app(
                 compass: Some(&mut debug_compass),
                 track: track_dyn,
                 fuel: Some(&mut fuel),
-                hr: None,
-                power: None,
-                cadence: None,
+                // Host-injected `H`/`P`/`R` land in the shared `sensor_values` mailboxes; on a
+                // `ble` + `debug-uart` build a real strap feeds the same ones (last-writer-wins).
+                hr: Some(&mut inj_hr),
+                power: Some(&mut inj_power),
+                cadence: Some(&mut inj_cadence),
             },
             route.as_ref(),
         );

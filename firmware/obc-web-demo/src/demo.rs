@@ -14,7 +14,7 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::{
-    finish_nav_plan, initial_camera, replay_step, MemRideStore, MemRouteStore, MemTrackStore, NavPlan,
+    finish_nav_plan, initial_camera, replay_step, MemRideStore, MemRouteStore, MemTrackStore, NavPlan, ReplaySensors,
 };
 use obc_reader::{rgb565_to_device64, MapCache, MapTables, Reader, SliceSource};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
@@ -308,7 +308,16 @@ impl Demo {
 
         // Advance the ride and tick the app on the playback clock (no compass on the web — the
         // replay's GPS course orients the heading-up map).
-        replay_step(&mut self.app, &mut self.player, &mut self.baro, None, dt, route.as_ref(), self.tracks.sink());
+        replay_step(
+            &mut self.app,
+            &mut self.player,
+            &mut self.baro,
+            None,
+            dt,
+            route.as_ref(),
+            self.tracks.sink(),
+            ReplaySensors::default(),
+        );
 
         // Ambient: restart the climb at the summit so the page stays alive. Point-to-point, so
         // bump the tracking session to clear the breadcrumb + totals (a fresh lap instead of
