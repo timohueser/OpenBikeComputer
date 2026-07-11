@@ -158,7 +158,7 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --script "B l p r r r p r p" --png "$OUT/fields.png"
 # The 2×3 waypoint list panel placed in the WYSIWYG field editor (epic #523): from the Fields grid,
 # six detents reach the ADD ghost (the six default tiles fill page 1), press to open the picker, then
-# five detents to `Waypoint list` (last in StatField::ALL) and press. The page-sized panel lands on
+# five detents to `Waypoint list` (the last hidden non-sensor entry) and press. The page-sized panel lands on
 # its own page — the `2 / 3` counter, full-width and three rows tall (`--` with no route loaded).
 "$SIM" "$MAP" --boot --script "B l p r r r p r p r r r r r r p r r r r r p" --png "$OUT/fields-wpt-panel.png"
 # The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
@@ -228,6 +228,12 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # the bottom-centre one-slot warning chip.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
+# The live BLE-sensor stat tiles (epic #707, SE5): the Statistics grid pinned to HR / PWR / RPM (the
+# three new single-column raw-int tiles) alongside a couple of live neighbours. `--sensors-demo` seeds
+# that grid and feeds a fixed synthetic HR/power/cadence through SE2's HAL traits for one tick, so the
+# tiles read live values (152 bpm / 210 W / 88 rpm) rather than `--`. A minimal stub until SE8 wires
+# the sim control-panel sliders; this frame pins the new tiles' captions + value formatting.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --sensors-demo --png "$OUT/statistics-sensors.png"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --battery 5 --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/map-lowbatt.png"
 # Waypoint UI (epic #523). protocol-vectors holds two routes in filename order: id 0 = route-plain,
@@ -369,4 +375,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 139 screens rendered into $OUT/"
+echo "ui-snapshots: 140 screens rendered into $OUT/"
