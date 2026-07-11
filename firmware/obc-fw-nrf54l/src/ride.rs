@@ -409,6 +409,17 @@ pub(crate) async fn run_app(
         obc_platform::sensor_values::SensorPower,
         obc_platform::sensor_values::SensorCadence,
     );
+    // On a real-sensor `ble` build (no `debug-uart`/`synth`), the BLE central manager (SE6) feeds
+    // these same shared `sensor_values` mailboxes from decoded HR/power/cadence notifications — the
+    // exact sources the `debug-uart` leg wires, so the app's `Sensors` wiring is identical. `ble`
+    // re-enables `obc-platform/sensor-link`, so these compile on the `ble` (no-default-features)
+    // build. Gated to match the real-sensor `Sensors { … }` site below (the only one that reads them).
+    #[cfg(all(feature = "ble", not(feature = "debug-uart"), not(feature = "synth")))]
+    let (mut inj_hr, mut inj_power, mut inj_cadence) = (
+        obc_platform::sensor_values::SensorHr,
+        obc_platform::sensor_values::SensorPower,
+        obc_platform::sensor_values::SensorCadence,
+    );
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     let (mut gps, mut baro, mut temp, mut gps_clock, mut mag_compass) = (
         sensor_link::GpsLocation,
@@ -615,6 +626,11 @@ pub(crate) async fn run_app(
             if app.take_ble_forget() {
                 crate::ble::request_forget_bond();
             }
+            // TODO(SE7): push the persisted saved sensors here (the `set_radio_enabled` pattern) —
+            // seed at boot + re-push on a settings change via `crate::ble::request_save_sensor` /
+            // `request_forget_sensor`, and feed the per-quantity `crate::ble::sensor_slot_status(..)`
+            // into the app for the Sensors screen. `Settings.saved_sensors` doesn't exist until SE7;
+            // until then the BLE central manager (SE6) seeds from its hardcoded `SEED` hook.
         }
 
         // This frame's hold-bulge state, sampled once: the live row span (the present goes around it)
@@ -1055,8 +1071,19 @@ pub(crate) async fn run_app(
                 compass: Some(&mut mag_compass), // ICM-20948 / AK09916 heading while stopped
                 track: track_dyn,
                 fuel: Some(&mut fuel),
-                hr: None, // BLE central lands in SE6 — no sensor link yet
+                // On a `ble` build the central manager (SE6) feeds the shared `sensor_values`
+                // mailboxes; without `ble` there is no radio, so no sensor source.
+                #[cfg(feature = "ble")]
+                hr: Some(&mut inj_hr),
+                #[cfg(not(feature = "ble"))]
+                hr: None,
+                #[cfg(feature = "ble")]
+                power: Some(&mut inj_power),
+                #[cfg(not(feature = "ble"))]
                 power: None,
+                #[cfg(feature = "ble")]
+                cadence: Some(&mut inj_cadence),
+                #[cfg(not(feature = "ble"))]
                 cadence: None,
             },
             route.as_ref(),

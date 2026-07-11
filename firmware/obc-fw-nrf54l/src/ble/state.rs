@@ -143,10 +143,13 @@ pub(crate) static FORGET_BOND: Signal<CriticalSectionRawMutex, ()> = Signal::new
 
 /// Push the rider's Bluetooth switch to the radio plane (called by the ride loop once per pass —
 /// one atomic swap; the edge fires only on a change). `false` stops advertising and drops a live
-/// connection; `true` resumes the normal advertising lifecycle (policy unchanged).
+/// connection; `true` resumes the normal advertising lifecycle (policy unchanged). Also pulses the
+/// **sensor** manager's work edge (SE6, #707) so the central-role task winds sensor links up/down
+/// with the phone link — its own dedicated wake so it never contends on `RADIO_EDGE`'s single waiter.
 pub fn set_radio_enabled(enabled: bool) {
     if RADIO_ENABLED.swap(enabled, Ordering::Relaxed) != enabled {
         RADIO_EDGE.signal(());
+        super::sensors::wake_work();
     }
 }
 
