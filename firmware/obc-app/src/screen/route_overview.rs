@@ -1,15 +1,21 @@
 //! The Route overview — the look-before-you-ride page between picking a route and tracking it.
-//! Shows the route's name, its full elevation profile (the Statistics band, **non-interactive**:
-//! no cursor, no zoom, no live shading), the headline stats (distance, climb, descent), a
-//! START RIDE button, and (when deletable) the Delete-route button under it. The two action rows
-//! carry a **cursor** (owner review round 2 — a hold-anywhere delete "feels super unintuitive"):
-//! entry selects START RIDE; *turn* toggles between the two buttons (a 2 px ink focus outline —
-//! both faces are always visible, so the base can't double as the cursor); *press* starts the
-//! session only from the START row and drops into the riding Map — exactly what picking a route
-//! used to do directly; *hold* charges the delete only while the Delete row is selected; *back*
-//! cancels and returns to the Route menu. With the Delete row hidden (in use / computed) there is
-//! nothing to toggle: press starts, hold is a no-op, and no focus outline draws (a single action
-//! needs no cursor).
+//! Shows the route's name, a **content-paired pager** (owner review round 3): the media band and
+//! the stat rows flip together every 5 s — page A is the route's **track-shape preview** (the
+//! host-decimated polyline, the NEW ROUTE page's sketch) over its DISTANCE, page B the full
+//! **elevation profile** (the Statistics band, **non-interactive**: no cursor, no zoom, no live
+//! shading) over CLIMB + DESCENT. (EST TIME was investigated for page A and omitted: the §8.6
+//! nav profiles carry only dimensionless edge-weight multipliers — no speed model exists
+//! anywhere in the format, so there is no defensible estimate.) Below the pager, a START RIDE
+//! row and (when deletable) the Delete-route row under it. The two action rows are
+//! the **Pause-menu (ride_control) row family** (owner review round 3 — the round-2 focus
+//! outline read as one-off chrome): unselected rows are plain labels, the selected row wears the
+//! standard amber fill, and the guarded Delete row shows its shaded base + warning hold-fill
+//! only **while selected**. The cursor semantics are round 2's, unchanged: entry selects START
+//! RIDE; *turn* toggles between the two rows; *press* starts the session only from the START row
+//! and drops into the riding Map — exactly what picking a route used to do directly; *hold*
+//! charges the delete only while the Delete row is selected; *back* cancels and returns to the
+//! Route menu. With the Delete row hidden (in use / computed) there is nothing to toggle: press
+//! starts, hold is a no-op, and the lone START row keeps the amber selected face.
 //!
 //! Entering the overview sets [`Activity::active_route`](crate::Activity::active_route) — the
 //! hosts key geometry loading on it, so the route streams open and the profile builds while the
@@ -32,27 +38,31 @@ use crate::route::RouteSummary;
 use crate::screen::ScreenTick;
 use crate::Msg;
 
-use super::{ledger_row, palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use super::{ledger_row, palette, title_frame, Ctx, MenuItem, Render, Transition, LIST_TOP};
 
 /// Chart band: below the title bar, deep enough to read the terrain, clear of the stat tiles.
 const BAND_TOP: i32 = LIST_TOP + 8;
 const BAND_BOT: i32 = 140;
 const SIDE_MARGIN: i32 = 12;
 
-/// The stat ledger. Making room for the Delete row (T3) turned the three ledger rows into a two-row
-/// auto-flip pager (page 0 = DISTANCE + CLIMB, page 1 = DESCENT); [`ROW_PITCH`] is the row spacing
-/// within a page. Placed between the band and the START bar.
-const ROWS_TOP: i32 = 150;
+/// The stat ledger under the media band — the content-paired pager's stat half (owner review
+/// round 3): page A (track shape) carries DISTANCE, page B (elevation) CLIMB + DESCENT;
+/// [`ROW_PITCH`] is the row spacing within a page. Placed between the band and the action rows
+/// (whose Pause-family block sits 4 px higher than the old START bar — the ledger moved up with
+/// it, keeping the same breathing gap above the amber row).
+const ROWS_TOP: i32 = 146;
 const ROW_PITCH: i32 = 42;
 
-/// The guarded **Delete route** row, the bottommost element — below the START button (owner review
-/// round 1: the destructive row ranks under the primary action). The ride_control guarded-row
-/// idiom; [`DELETE_GAP`] separates it from the button above.
-const DELETE_ROW_H: i32 = 38;
-const DELETE_GAP: i32 = 8;
+/// The two action rows — the Pause-menu (ride_control) row family's exact geometry (owner review
+/// round 3): 38 px rows, an 8 px gap, START RIDE over the guarded Delete-route row (owner review
+/// round 1: the destructive row ranks under the primary action), the block anchored the standard
+/// 10 px above the card bottom. START keeps its two-row position even with Delete hidden, so
+/// nothing jumps when the row re-arms.
+const OPTION_ROW_H: i32 = 38;
+const OPTION_GAP: i32 = 8;
 
-/// The START RIDE button bar. On the computed (length-only) page it sits at the screen bottom; the
-/// full page raises it by the Delete row + gap so Delete can sit under it (see [`start_button_y`]).
+/// The START RIDE button bar of the **computed** (length-only) page — the screen-bottom anchor
+/// shared with the POI detail's `Route here` footer (see [`draw_start_button`]).
 const BUTTON_H: i32 = 34;
 
 /// The stat-ledger pager's dwell — a plain fixed constant (not user-configurable): each of the two
@@ -77,8 +87,9 @@ pub struct RouteOverviewScreen {
     /// omits the elevation band and the climb/descent rows rather than showing a flat band and
     /// "+0 m" (the locked "length only" overview).
     computed: bool,
-    /// Which stat-ledger page is showing (0 = DISTANCE + CLIMB, 1 = DESCENT); auto-flipped by
-    /// [`tick_timers`](Self::tick_timers). Unused on the computed (length-only) page.
+    /// Which content-paired page is showing (0 = track shape + DISTANCE, 1 = elevation band +
+    /// CLIMB + DESCENT); auto-flipped by [`tick_timers`](Self::tick_timers). Unused on the
+    /// computed (length-only) page.
     page: usize,
     /// Instant of the last page flip (wrap-safe). `None` until the first tick anchors it, so the
     /// first page gets a full dwell on entry — mirrors the Statistics pager.
@@ -100,13 +111,6 @@ impl RouteOverviewScreen {
         RouteOverviewScreen { route, prev_active, computed: true, page: 0, last_flip_ms: None, selected: START }
     }
 
-    /// Whether this overview previews a **computed** route — the variant that wants the
-    /// host-decimated shape preview (#685 §4). Read by
-    /// [`App::nav_preview_missing`](crate::App::nav_preview_missing).
-    pub(crate) fn is_computed(&self) -> bool {
-        self.computed
-    }
-
     /// Whether the guarded **Delete route** row exists — a real, non-computed catalog route
     /// that isn't the actively-navigated route of a running tracking session. This is the exact
     /// predicate the old Route-menu footer greyed on, moved here (T3): deleting the file under an
@@ -126,9 +130,10 @@ impl RouteOverviewScreen {
         self.selected == DELETE && self.delete_enabled(activity, routes)
     }
 
-    /// Stat-ledger pager tick: flip the two pages every [`PAGE_FLIP_MS`], reporting the residual
-    /// dwell as the next wake (the Statistics auto-flip machinery). The computed (length-only) page
-    /// has a single distance row and no pager, so it never flips.
+    /// Content-paired pager tick: flip the two pages (track shape + DISTANCE / elevation band +
+    /// CLIMB + DESCENT) every [`PAGE_FLIP_MS`], reporting the residual dwell as the next wake
+    /// (the Statistics auto-flip machinery). The computed (length-only) page has a single fixed
+    /// layout and no pager, so it never flips.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         if self.computed {
             return ScreenTick::idle();
@@ -248,10 +253,19 @@ impl RouteOverviewScreen {
         let name = super::route_menu::fit_name(&summary.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
         title_frame(cv, w, h, &name, "");
 
-        // The full-route elevation band — the Statistics silhouette without any of its live
-        // layers (no traveled shading, no cursor, no progress bar). A small peak label gives the
-        // vertical scale meaning.
-        if let Some(profile) = rx.profile {
+        // The content-paired media band (owner review round 3): the auto-flip swaps this WITH the
+        // stat rows below — page A the route's track-shape preview, page B the elevation profile.
+        // Both draw in the same slot ([`BAND_TOP`]..[`BAND_BOT`]), so nothing jumps on the flip.
+        let page_b = self.page & 1 == 1;
+        if !page_b {
+            // Page A: the host-decimated track shape (the NEW ROUTE page's sketch, aspect-fit,
+            // start disc + destination diamond). An empty slice (the frame or two before the host
+            // hands it in) just leaves the slot blank, like the shape preview always has.
+            draw_route_preview(cv, w, BAND_TOP, BAND_BOT, rx.nav_preview);
+        } else if let Some(profile) = rx.profile {
+            // Page B: the full-route elevation band — the Statistics silhouette without any of
+            // its live layers (no traveled shading, no cursor, no progress bar). A small peak
+            // label gives the vertical scale meaning.
             let win = profile.window(0.5, 1.0, chart_w.max(1) as u32);
             let span = (win.hi_frac - win.lo_frac).max(1e-6);
             let span_ele = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
@@ -288,7 +302,7 @@ impl RouteOverviewScreen {
                 SUBTEXT,
             );
         }
-        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline under the band
+        cv.hline(chart_x, BAND_BOT + 1, chart_w, RULE); // baseline marks the band slot on both pages
 
         // Headline stats as a ledger — olive caption left, big ink value right with a small unit
         // suffix, hairline rules between rows. Organized without the riding grid's panes, which
@@ -312,15 +326,16 @@ impl RouteOverviewScreen {
             }
         }
 
-        // The three figures don't fit alongside the new Delete row + START bar with standard row
-        // spacing, so they auto-flip as a two-row pager (T3): page 0 = DISTANCE + CLIMB, page 1 =
-        // DESCENT alone. The flip itself is the affordance — no page dots.
+        // The stats pair with their media (owner review round 3): DISTANCE belongs to the track
+        // shape (page A), CLIMB + DESCENT to the elevation band (page B). The flip itself is the
+        // affordance — no page dots. (Page A stays a lone DISTANCE: EST TIME was investigated and
+        // omitted — the §8.6 profiles carry no speed model, so no defensible estimate exists.)
         let entries: [(&str, &str, &str, Option<bool>); 3] = [
             (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
             (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
             (rx.t(Msg::RouteOverviewDescent), &desc, units.elev_label(), Some(false)),
         ];
-        let page_rows: &[usize] = if self.page & 1 == 0 { &[0, 1] } else { &[2] };
+        let page_rows: &[usize] = if page_b { &[1, 2] } else { &[0] };
         for (slot, &e) in page_rows.iter().enumerate() {
             let y = ROWS_TOP + slot as i32 * ROW_PITCH;
             let (caption, value, unit, arrow) = entries[e];
@@ -330,48 +345,36 @@ impl RouteOverviewScreen {
             }
         }
 
-        // The guarded Delete-route row, the bottommost element (owner review round 1: delete ranks
-        // under the primary action). While the route is the active ride's the row is simply **not
-        // drawn** — no dim trash, no "In use" cue (owner review round 1: the state can't act, so it
-        // doesn't show) — and the `selection_is_guarded` guard keeps a hold a no-op regardless. The
-        // START bar rides directly above the row's slot either way, so nothing jumps when it
-        // re-arms. With both rows up the cursor's ink focus outline marks the selected one; with
-        // only START there is no cursor to show (owner review round 2).
-        if self.delete_enabled(rx.activity, rx.routes) {
-            draw_delete_row(cv, w, h, rx.t(Msg::RouteOverviewDelete), rx.hold_progress, self.selected == DELETE);
-            draw_start_button_at(cv, w, start_button_y(h), rx.t(Msg::RouteOverviewStartRide), self.selected == START);
-        } else {
-            draw_start_button_at(cv, w, start_button_y(h), rx.t(Msg::RouteOverviewStartRide), false);
-        }
+        // The two action rows — the Pause-menu (ride_control) row family (owner review round 3:
+        // "make this styled just like the buttons in the Pause menu"): plain labels, the selected
+        // row wearing the standard amber fill, the guarded Delete row its shaded base + warning
+        // hold-fill only while selected. While the route is the active ride's the Delete row is
+        // simply **not drawn** — no dim trash, no "In use" cue (owner review round 1: the state
+        // can't act, so it doesn't show) — and the `selection_is_guarded` guard keeps a hold a
+        // no-op regardless. START keeps the two-row block's top slot either way, so nothing jumps
+        // when the Delete row re-arms.
+        let geo = super::GuardedRowsGeometry {
+            x: 14,
+            w: w - 28,
+            top: action_rows_top(h),
+            row_h: OPTION_ROW_H,
+            gap: OPTION_GAP,
+            label_dx: 12,
+            label_dy: 5,
+        };
+        let items = [
+            MenuItem { label: rx.t(Msg::RouteOverviewStartRide), guard: false },
+            MenuItem { label: rx.t(Msg::RouteOverviewDelete), guard: true },
+        ];
+        let n = if self.delete_enabled(rx.activity, rx.routes) { 2 } else { 1 };
+        super::draw_guarded_rows(cv, &items[..n], self.selected.min(n - 1), rx.hold_progress, WARNING, geo);
     }
 }
 
-/// The y of the Delete-route row — the bottommost element, the standard 10 px above the card bottom.
-fn delete_row_y(h: i32) -> i32 {
-    h - 10 - DELETE_ROW_H
-}
-
-/// The full page's START-bar top: raised above the Delete row by the standard [`DELETE_GAP`] (the
-/// computed page has no Delete row, so its bar stays at the screen-bottom anchor).
-fn start_button_y(h: i32) -> i32 {
-    delete_row_y(h) - DELETE_GAP - BUTTON_H
-}
-
-/// Draw the guarded **Delete route** row below the START button — the ride_control guarded-row
-/// idiom (a `PARCHMENT_SHADE` base filling warning-red with the live `hold` under the "Delete route"
-/// label), plus the cursor's ink focus outline when `focused` (owner review round 2 — the base is
-/// always visible, so it can't double as the cursor). Only ever called live: while the route can't
-/// be deleted the caller draws nothing at all (owner review round 1 — no greyed face).
-fn draw_delete_row(cv: &mut impl Surface, w: i32, h: i32, label: &str, hold: f32, focused: bool) {
-    use palette::*;
-    let x = 14;
-    let y = delete_row_y(h);
-    let row = rect(x, y, w - 2 * x, DELETE_ROW_H);
-    super::confirm_row(cv, row, true, true, hold, WARNING, 6);
-    if focused {
-        super::focus_outline(cv, row, 6);
-    }
-    cv.text_vcentered(label, x + 12, (y, DELETE_ROW_H), Font::Body, TextAlign::Left, INK);
+/// Top of the two-row action block: two Pause-family rows + gap over the standard 10 px bottom
+/// margin. Fixed at the two-row position regardless of whether Delete is drawn (see `draw`).
+fn action_rows_top(h: i32) -> i32 {
+    h - 10 - 2 * OPTION_ROW_H - OPTION_GAP
 }
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
@@ -407,24 +410,32 @@ fn write_computed_distance(s: &mut heapless::String<8>, total_m: u32, units: cra
     }
 }
 
-/// The route-shape preview's box size (#685 §4): ≈212×90 px, horizontally centred, vertically
-/// centred between the ledger rows and the START bar.
+/// The track-shape preview's box size (#685 §4): ≈212×90 px, horizontally centred, vertically
+/// centred in whatever slot the caller hands it — the computed page's mid-gap, or the overview /
+/// Ride detail media-band slots (owner review round 3's pagers).
 const PREVIEW_W: i32 = 212;
 const PREVIEW_H: i32 = 90;
 
-/// Draw the computed route's shape preview: the host-decimated polyline (≤ 64 points) normalized
+/// Draw a track's shape preview: the host-decimated polyline (≤ 64 points) normalized
 /// and aspect-fit into the [`PREVIEW_W`]×[`PREVIEW_H`] box — lon scaled by cos(mid-lat) so the
 /// shape keeps its ground aspect — stroked 2 px INK (the doubled-1-px idiom), with a 4 px filled
-/// disc at the start and a 6 px hollow diamond at the destination. An empty/short slice (the
+/// disc at the start and a 6 px hollow diamond at the destination/end. An empty/short slice (the
 /// frame or two before the host hands the preview in, or a stale one) draws nothing — the box
-/// just stays empty, like the full page's "loading profile" band footprint.
-fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
+/// just stays empty, like the elevation page's "loading profile" band footprint. Shared with the
+/// Ride detail's recorded-track page (#678 rework 3), so the two sketches can't drift.
+pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
     use palette::*;
     if pts.len() < 2 {
         return;
     }
-    let x0 = (w - PREVIEW_W) / 2;
-    let y0 = top + ((bot - top - PREVIEW_H) / 2).max(0);
+    // The box clamps to the caller's slot (the Ride detail's band is 82 px, under PREVIEW_H),
+    // and the fit insets by the end markers' reach, so a disc/diamond on an extreme point can
+    // never spill past the slot's baseline into the rows below (or graze the text above).
+    const MARK: i32 = 4;
+    let box_h = PREVIEW_H.min(bot - top);
+    let (fit_w, fit_h) = (PREVIEW_W - 2 * MARK, box_h - 2 * MARK);
+    let x0 = (w - PREVIEW_W) / 2 + MARK;
+    let y0 = top + ((bot - top - box_h) / 2).max(0) + MARK;
     let (mut min_lon, mut max_lon, mut min_lat, mut max_lat) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
     for &(lon, lat) in pts {
         min_lon = min_lon.min(lon);
@@ -437,9 +448,9 @@ fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[
     let clat = obc_route::cos_lat((min_lat / 2) + (max_lat / 2));
     let geo_w = ((max_lon - min_lon) as f32 * clat).max(1.0);
     let geo_h = ((max_lat - min_lat) as f32).max(1.0);
-    let scale = (PREVIEW_W as f32 / geo_w).min(PREVIEW_H as f32 / geo_h);
-    let ox = x0 as f32 + (PREVIEW_W as f32 - geo_w * scale) / 2.0;
-    let oy = y0 as f32 + (PREVIEW_H as f32 - geo_h * scale) / 2.0;
+    let scale = (fit_w as f32 / geo_w).min(fit_h as f32 / geo_h);
+    let ox = x0 as f32 + (fit_w as f32 - geo_w * scale) / 2.0;
+    let oy = y0 as f32 + (fit_h as f32 - geo_h * scale) / 2.0;
     let project = |(lon, lat): (i32, i32)| {
         Point::new((ox + (lon - min_lon) as f32 * clat * scale) as i32, (oy + (max_lat - lat) as f32 * scale) as i32)
     };
@@ -461,22 +472,13 @@ fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[
 
 /// START RIDE at the screen-bottom anchor (`h - 10 - BUTTON_H`): the computed-route variant and the
 /// POI detail's `Route here` footer (#685), which is specified as exactly this bar, so the two can't
-/// drift. Never focused — these pages have a single action, so there is no cursor to draw. The full
-/// page draws the same bar via [`draw_start_button_at`], raised above its Delete row.
+/// drift. Always armed (amber) with the play wedge — these pages have a single action, so there is
+/// no cursor. The full page's START row is a Pause-family option row instead (owner review round 3).
 pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &str) {
-    draw_start_button_at(cv, w, h - 10 - BUTTON_H, label, false);
-}
-
-/// START RIDE with its top edge at `by`: the page's primary action, so it draws armed (amber) with
-/// a play wedge — plus the cursor's ink focus outline when `focused` (owner review round 2: the
-/// amber bar is the button's identity, always on, so focus is the outline here too).
-fn draw_start_button_at(cv: &mut impl Surface, w: i32, by: i32, label: &str, focused: bool) {
     use palette::*;
+    let by = h - 10 - BUTTON_H;
     let bar = rect(SIDE_MARGIN, by, w - 2 * SIDE_MARGIN, BUTTON_H);
     cv.round(bar, 8, AMBER);
-    if focused {
-        super::focus_outline(cv, bar, 8);
-    }
     let tx = w / 2 + 8;
     cv.text_vcentered(label, tx, (by, BUTTON_H), Font::Body, TextAlign::Center, INK);
     // Play wedge just left of the centred label — from its real half-width, so a longer
@@ -606,13 +608,13 @@ mod tests {
         assert!(!scr.tick_timers(PAGE_FLIP_MS - 1).changed, "still dwelling just before the deadline");
         assert_eq!(scr.page, 0);
         assert!(scr.tick_timers(PAGE_FLIP_MS).changed, "flips exactly at the deadline");
-        assert_eq!(scr.page, 1, "now on the DESCENT page");
+        assert_eq!(scr.page, 1, "now on the elevation (CLIMB + DESCENT) page");
         assert!(!scr.tick_timers(PAGE_FLIP_MS + 1).changed, "and only once — a fresh dwell re-armed");
         assert!(scr.tick_timers(2 * PAGE_FLIP_MS).changed, "flips back at the next deadline");
         assert_eq!(scr.page, 0);
     }
 
-    /// The computed page has a single distance row and no pager, so its tick never self-dirties.
+    /// The computed page has a single fixed layout and no pager, so its tick never self-dirties.
     #[test]
     fn computed_overview_never_flips() {
         let mut scr = RouteOverviewScreen::computed(0, None);

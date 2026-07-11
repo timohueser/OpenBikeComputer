@@ -816,6 +816,7 @@ fn main() {
                 // per-frame drain.
                 if let Some(id) = app.take_ride_track_request() {
                     app.set_ride_profile(ride_store.profile_by_id(id));
+                    app.set_ride_preview(&ride_store.preview_by_id(id));
                 }
                 let mut fb = Framebuffer::new(rw, rh);
                 let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
@@ -853,6 +854,7 @@ fn main() {
             // `d`): fill the resident ride profile now so the final render draws the band.
             if let Some(id) = app.take_ride_track_request() {
                 app.set_ride_profile(ride_store.profile_by_id(id));
+                app.set_ride_preview(&ride_store.preview_by_id(id));
             }
         }
 
@@ -920,6 +922,15 @@ fn main() {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
+        // An open Route overview wants the route's decimated shape preview (#678 rework 3's
+        // track/elevation pager): decimate the just-opened geometry once — the cue is false again
+        // the moment the copy is in, mirroring the board's ride-loop fill and the GUI's per-frame one.
+        if app.nav_preview_missing() {
+            if let Some(r) = route.as_ref() {
+                let pts = r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+                app.set_nav_preview(&pts);
+            }
+        }
 
         let mut tracks = TrackStore::open(args.tracks_dir());
 

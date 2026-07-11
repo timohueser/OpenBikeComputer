@@ -83,6 +83,24 @@ impl ListGeometry {
         let visible = ((h - LIST_TOP - 6) / row_h).max(1) as usize;
         ListGeometry { w, top: LIST_TOP, row_h, row_gap, side_inset, separators, visible }
     }
+
+    /// [`below_title`](Self::below_title), but the rows **consume the whole viewport** (owner
+    /// review round 3, the POI list): the visible count still comes from `nominal_row_h`, then
+    /// the leftover is folded back into the pitch (`viewport ÷ visible`), so the last row lands
+    /// flush with the bottom margin instead of leaving a dead band under it.
+    pub fn filling_below_title(
+        w: i32,
+        h: i32,
+        nominal_row_h: i32,
+        row_gap: i32,
+        side_inset: i32,
+        separators: Separators,
+    ) -> Self {
+        let avail = h - LIST_TOP - 6;
+        let visible = (avail / nominal_row_h).max(1);
+        let row_h = avail / visible;
+        ListGeometry { w, top: LIST_TOP, row_h, row_gap, side_inset, separators, visible: visible as usize }
+    }
 }
 
 /// What [`draw_rows`] hands the row body: which item this slot shows, the row area (the same

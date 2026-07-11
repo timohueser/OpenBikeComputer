@@ -370,6 +370,64 @@ pub fn ride_elevation_profile(src: &dyn crate::ByteSource) -> Result<Profile, cr
     Ok(Profile { cols, cum_ascent, min_ele_m: min_ele, max_ele_m: max_ele, peak_col })
 }
 
+/// A stored ride's recorded-track polyline decimated to at most `N` points — uniform by point
+/// index, the first and last point always kept — the Ride detail's track-shape preview seam
+/// (#678 rework 3, the recorded twin of [`RouteReader::preview_polyline`]). Points come back as
+/// `(lon, lat)` **microdegrees** (the ride records' 10⁻⁷ ° scaled by 1/10), matching the route
+/// preview's unit so the one screen drawer serves both.
+///
+/// Mirrors [`ride_elevation_profile`]'s streaming exactly: the same header/`points_at` walk, the
+/// same 32-record blocks (~448 B per `read_at`, strictly forward — no whole-track buffer and no
+/// backward seeks), one pass over the 14-byte records. Call it once per detail entry, never per
+/// frame. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version, torn
+/// length).
+pub fn ride_preview_polyline<const N: usize>(src: &dyn crate::ByteSource) -> Result<Vec<(i32, i32), N>, crate::Error> {
+    use crate::ride::RIDE_POINT_LEN;
+
+    let info = crate::RideInfo::read(src)?;
+    // Point records start after the 23 fixed header bytes + the on-disk name (see
+    // `ride_elevation_profile` — `RideInfo` clips its display name, so re-read the raw length).
+    let mut head = [0u8; 3];
+    src.read_at(0, &mut head)?;
+    let name_len = u16::from_le_bytes([head[1], head[2]]) as u32;
+    let points_at = 3 + name_len + 20;
+
+    let mut out: Vec<(i32, i32), N> = Vec::new();
+    let total = info.point_count as usize;
+    if total == 0 || N == 0 {
+        return Ok(out);
+    }
+    let keep = N.min(total);
+    let mut kept = 0usize; // points pushed so far
+    let mut next = 0usize; // point index of the next kept point
+    const BLOCK: usize = 32;
+    let mut buf = [0u8; BLOCK * RIDE_POINT_LEN];
+    let mut done: u32 = 0;
+    while done < info.point_count {
+        let n = ((info.point_count - done) as usize).min(BLOCK);
+        let bytes = &mut buf[..n * RIDE_POINT_LEN];
+        src.read_at(points_at + done * RIDE_POINT_LEN as u32, bytes)?;
+        for (i, rec) in bytes.chunks_exact(RIDE_POINT_LEN).enumerate() {
+            if done as usize + i != next {
+                continue;
+            }
+            let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
+            let lon = i32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
+            // 10⁻⁷ ° → microdegrees, the route preview's unit (the profile sweep's conversion).
+            let _ = out.push((lon / 10, lat / 10));
+            kept += 1;
+            if kept == keep {
+                return Ok(out);
+            }
+            // The j-th kept point sits at j × (total−1) / (keep−1): endpoints exact, the rest
+            // an even stride (keep ≥ 2 here — keep == 1 returned above).
+            next = kept * (total - 1) / (keep - 1);
+        }
+        done += n as u32;
+    }
+    Ok(out)
+}
+
 /// Buckets in the received-route card's mini elevation sparkline (#682): one min–max-normalized
 /// `u8` height per bucket, sampled left-to-right along the route. Small and fixed so the
 /// route-upload seam can carry the whole band by value with the event.

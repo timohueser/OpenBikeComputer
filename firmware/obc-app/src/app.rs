@@ -398,10 +398,20 @@ pub struct App {
     /// was **answered** for (a failed fill parks `None` under the same key, so a dead file isn't
     /// re-streamed every pass), remapped by identity across rescans like every held ride index.
     ride_profile_for: Option<usize>,
-    /// The computed route's decimated shape-preview polyline (#685 §4) — ≤ [`NAV_PREVIEW_MAX`]
+    /// The viewed ride's decimated recorded-track shape polyline (#678 rework 3 — the Ride
+    /// detail's track pager page), ≤ [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points, host-filled via
+    /// [`set_ride_preview`](App::set_ride_preview) in the same drain as the ride profile.
+    ride_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
+    /// The [`viewed_ride`](Activity::viewed_ride) the [`ride_preview`](App::ride_preview) was
+    /// handed in for — the staleness key (render gates on it; the exit/rescan invalidation drops
+    /// it alongside the profile), remapped by identity across rescans like the profile key.
+    ride_preview_for: Option<usize>,
+    /// The Route overview's decimated route-shape preview polyline (#685 §4, generalized to
+    /// stored routes by #678 rework 3's content-paired pager) — ≤ [`NAV_PREVIEW_MAX`]
     /// `(lon, lat)` µdeg points, **decimated host-side** and handed in via
-    /// [`set_nav_preview`](App::set_nav_preview) after a successful plan. Drawn by the
-    /// computed-route overview; empty otherwise.
+    /// [`set_nav_preview`](App::set_nav_preview): a computed route's at plan-commit time, a
+    /// stored route's on overview entry (the per-pass [`nav_preview_missing`](App::nav_preview_missing)
+    /// cue). Drawn by the Route overview; empty otherwise.
     nav_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
     /// The [`active_route`](Activity::active_route) the [`nav_preview`](App::nav_preview) was
     /// handed in for — the staleness key ([`nav_preview_missing`](App::nav_preview_missing)
@@ -765,6 +775,8 @@ impl App {
             profile_route: None,
             ride_profile: None,
             ride_profile_for: None,
+            ride_preview: heapless::Vec::new(),
+            ride_preview_for: None,
             nav_preview: heapless::Vec::new(),
             nav_preview_route: None,
             climbs: Climbs::new(),
@@ -843,6 +855,10 @@ impl App {
             addr_of_mut!((*slot).catalog_ids).write(heapless::Vec::new());
             addr_of_mut!((*slot).ride_catalog).write(crate::ride::RideCatalog::new());
             addr_of_mut!((*slot).ride_catalog_ids).write(heapless::Vec::new());
+            // (Was missing until #678 rework 3's field audit, like #680's `update_failed` catch:
+            // the profile-name mirror and the two shape-preview fields must be initialized like
+            // every other, or the board's first render reads uninit memory through them.)
+            addr_of_mut!((*slot).nav_profiles).write(crate::NavProfiles::new());
             // The screen stack: empty in place, then push the always-present Home root.
             // `heapless::Vec::push` isn't `const`, so the root can't be part of a literal.
             addr_of_mut!((*slot).stack).write(Stack::new());
@@ -851,6 +867,10 @@ impl App {
             addr_of_mut!((*slot).profile_route).write(None);
             addr_of_mut!((*slot).ride_profile).write(None);
             addr_of_mut!((*slot).ride_profile_for).write(None);
+            addr_of_mut!((*slot).ride_preview).write(heapless::Vec::new());
+            addr_of_mut!((*slot).ride_preview_for).write(None);
+            addr_of_mut!((*slot).nav_preview).write(heapless::Vec::new());
+            addr_of_mut!((*slot).nav_preview_route).write(None);
             // The climb caches mirror the profile: an empty list + a zeroed detail buffer
             // (`Climbs::new`/`ClimbProfile::new` are const, so no large temporary is formed here).
             addr_of_mut!((*slot).climbs).write(Climbs::new());
@@ -1548,6 +1568,10 @@ impl App {
         if self.ride_profile_for.is_none() {
             self.ride_profile = None; // the profiled ride vanished (or none was profiled)
         }
+        self.ride_preview_for = self.ride_preview_for.and_then(remap);
+        if self.ride_preview_for.is_none() {
+            self.ride_preview.clear(); // the previewed ride vanished (or none was previewed)
+        }
         self.map_dirty = true;
     }
 
@@ -1603,6 +1627,21 @@ impl App {
     pub fn set_ride_profile(&mut self, profile: Option<Profile>) {
         self.ride_profile = profile;
         self.ride_profile_for = self.activity.viewed_ride;
+        self.map_dirty = true;
+    }
+
+    /// Hand in the viewed ride's decimated recorded-track shape polyline (#678 rework 3 — the
+    /// Ride detail's track pager page): ≤ [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points (more are
+    /// truncated), built by obc-route's `ride_preview_polyline` in the **same host drain** as
+    /// [`set_ride_profile`](App::set_ride_profile) (one `take_ride_track_request` answer fills
+    /// both residents, so the file streams at most twice per entry, never per pass). Keyed to the
+    /// currently-viewed ride; exit/rescan invalidation drops it alongside the profile.
+    pub fn set_ride_preview(&mut self, pts: &[(i32, i32)]) {
+        self.ride_preview.clear();
+        for &p in pts.iter().take(NAV_PREVIEW_MAX) {
+            let _ = self.ride_preview.push(p);
+        }
+        self.ride_preview_for = self.activity.viewed_ride;
         self.map_dirty = true;
     }
 
@@ -1836,21 +1875,24 @@ impl App {
         self.map_dirty = true;
     }
 
-    /// Whether the computed-route overview is up **without** its shape preview (#685 §4) — the
-    /// host's per-pass cue to decimate the freshly-planned polyline
-    /// ([`RouteReader::preview_polyline`](obc_route::RouteReader::preview_polyline)) and hand it
-    /// to [`set_nav_preview`](App::set_nav_preview). `false` the moment the preview is in (or the
-    /// overview is gone), so the walk over the route's chunks runs once per plan, not per pass.
+    /// Whether a Route overview is up **without** its route-shape preview (#685 §4; #678 rework 3
+    /// widened it from the computed overview to every overview — the stored-route page's track
+    /// pager wants the shape too) — the host's per-pass cue to decimate the active route's
+    /// polyline ([`RouteReader::preview_polyline`](obc_route::RouteReader::preview_polyline)) and
+    /// hand it to [`set_nav_preview`](App::set_nav_preview). Entering the overview points
+    /// [`active_route`](Activity::active_route) at the previewed route (the same key the
+    /// elevation-profile rebuild streams on), so the fill runs once per overview entry — `false`
+    /// the moment the preview is in (or the overview is gone), never per pass.
     pub fn nav_preview_missing(&self) -> bool {
-        self.stack.iter().any(|s| matches!(s, Screen::RouteOverview(o) if o.is_computed()))
+        self.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
             && self.nav_preview_route != self.activity.active_route
     }
 
-    /// Hand in the computed route's decimated shape-preview polyline (#685 §4) — ≤
+    /// Hand in the previewed route's decimated shape polyline (#685 §4) — ≤
     /// [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points (more are truncated), **decimated host-side**
-    /// (the sim's plan-commit tail; the board's ride loop). Keyed to the current
-    /// [`active_route`](Activity::active_route) — the route the plan just activated — so a later
-    /// route change stales it automatically.
+    /// (the sim/web hosts' per-pass fill; the board's ride loop; a plan's commit tail). Keyed to
+    /// the current [`active_route`](Activity::active_route) — the route the overview activated —
+    /// so a later route change stales it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
         self.nav_preview.clear();
         for &p in pts.iter().take(NAV_PREVIEW_MAX) {
@@ -2767,12 +2809,17 @@ impl App {
             self.profile = route.map(|r| r.elevation_profile());
             self.profile_route = self.activity.active_route;
         }
-        // Invalidate the resident **ride** profile the moment it stops matching the viewed ride
-        // (#680): the detail exited (`viewed_ride` cleared) or moved subjects. Filling is the
-        // host's (`set_ride_profile`); only the drop lives here, so a stale band is never drawn.
+        // Invalidate the resident **ride** profile + track preview the moment they stop matching
+        // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
+        // (`viewed_ride` cleared) or moved subjects. Filling is the host's (`set_ride_profile` /
+        // `set_ride_preview`); only the drop lives here, so a stale band/shape is never drawn.
         if self.ride_profile_for != self.activity.viewed_ride {
             self.ride_profile = None;
             self.ride_profile_for = None;
+        }
+        if self.ride_preview_for != self.activity.viewed_ride {
+            self.ride_preview.clear();
+            self.ride_preview_for = None;
         }
 
         // Computed before the field borrow below splits `self`.
@@ -2806,12 +2853,16 @@ impl App {
             card_free_bytes,
             nav_preview,
             nav_preview_route,
+            ride_preview,
+            ride_preview_for,
             ..
         } = self;
-        // The computed-route shape preview draws only for the route it was decimated for — a
-        // stale key (route changed, preview not re-fed yet) hands the screens an empty slice.
+        // The shape previews draw only for the subject they were decimated for — a stale key
+        // (route/ride changed, preview not re-fed yet) hands the screens an empty slice.
         let nav_preview: &[(i32, i32)] =
             if nav_preview_route.is_some() && *nav_preview_route == activity.active_route { nav_preview } else { &[] };
+        let ride_preview: &[(i32, i32)] =
+            if ride_preview_for.is_some() && *ride_preview_for == activity.viewed_ride { ride_preview } else { &[] };
         // Bundle the active climb for the screens: the resident detail buffer is only meaningful
         // when a climb is active, so hand out the `(seg, profile)` pair exactly when `active_climb`
         // resolves to a live segment — a stale buffer is never reachable through `Render`.
@@ -2835,6 +2886,7 @@ impl App {
             waypoints: &*waypoints,
             breadcrumb: &*breadcrumb,
             nav_preview,
+            ride_preview,
             poi_scratch,
             w: w as i32,
             h: h as i32,

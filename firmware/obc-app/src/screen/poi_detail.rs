@@ -201,12 +201,15 @@ impl PoiDetailScreen {
         //
         // Placement (owner review round 2, screenshot of a two-line name + split hours pushing the
         // badge under the footer bar): with interval rows on the page the badge rides the "Today"
-        // caption line — right-aligned at the card's right inset, vertically centred on the
-        // caption's cap — which retires the badge's own row entirely, so the true worst case
-        // (two-line name + the format's two-intervals-per-day maximum) clears the bottom-anchored
-        // `Route here` bar with room to spare. With no interval rows ("Closed today") the badge
-        // keeps its old spot under the caption: there's no vertical pressure without ranges, and
-        // the longer closed-today captions would collide with a right-aligned pill.
+        // caption line — right-aligned at the card's right inset — which retires the badge's own
+        // row entirely, so the true worst case (two-line name + the format's two-intervals-per-day
+        // maximum) clears the bottom-anchored `Route here` bar with room to spare. The pill is
+        // ~34 px tall against the caption's ~18, so a cap-centred pill sagged to within a pixel of
+        // the first hours row (owner review round 3: "it gets really close to the opening time") —
+        // [`BADGE_RAISE`] lifts it into the free band above the caption instead, splitting its
+        // overhang toward the roomier side. With no interval rows ("Closed today") the badge keeps
+        // its old spot under the caption: there's no vertical pressure without ranges, and the
+        // longer closed-today captions would collide with a right-aligned pill.
         if let Some(sched) = schedule {
             let minute = rx.now.hour as u16 * 60 + rx.now.minute as u16;
             let open = sched.is_open(weekday, minute);
@@ -217,7 +220,7 @@ impl PoiDetailScreen {
             let (bx, badge_y) = if intervals.is_empty() {
                 (x, row_y + 8)
             } else {
-                (w - x - badge_w, head_y + Font::Label.cap_height() as i32 / 2 - badge_h / 2)
+                (w - x - badge_w, head_y + Font::Label.cap_height() as i32 / 2 - badge_h / 2 - BADGE_RAISE)
             };
             cv.round(rect(bx, badge_y, badge_w, badge_h), 6, bg);
             let ty = badge_y + BADGE_PAD_Y - BADGE_TEXT_BEARING_Y;
@@ -230,6 +233,11 @@ impl PoiDetailScreen {
         super::route_overview::draw_start_button(cv, w, h, rx.t(Msg::PoiDetailRouteHere));
     }
 }
+
+/// How far the Today-line badge lifts above the caption's cap-centre (owner review round 3): the
+/// pill overhangs the ~18 px caption line by ~8 px on each side, and centred it crowded the first
+/// hours row below — raised, the overhang splits toward the free band above the caption instead.
+const BADGE_RAISE: i32 = 5;
 
 /// The OPEN/CLOSED badge's symmetric horizontal padding — pill edge to the measured text width.
 const BADGE_PAD_X: i32 = 8;
