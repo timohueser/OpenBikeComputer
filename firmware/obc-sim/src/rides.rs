@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use obc_app::{decode_synced_rides, encode_synced_rides, RideSummary, SyncedRides, SYNCED_RIDES_MAX_LEN};
-use obc_route::{ride_elevation_profile, Profile, RideInfo, SliceSource};
+use obc_route::{ride_elevation_profile, ride_preview_polyline, Profile, RideInfo, SliceSource};
 
 /// The synced-ride sidecar filename in the tracks folder — matches the device's `SYNCED_SET`.
 const SYNCED_SET: &str = "SYNCED.SET";
@@ -97,6 +97,20 @@ impl RideStore {
         let pos = self.ids.iter().position(|&x| x == id)?;
         let bytes = std::fs::read(&self.paths[pos]).ok()?;
         ride_elevation_profile(&SliceSource(&bytes)).ok()
+    }
+
+    /// Build the ride with durable id `id`'s decimated recorded-track shape polyline (#678
+    /// rework 3), answering the preview half of the same
+    /// [`App::take_ride_track_request`](obc_app::App::take_ride_track_request) drain — one more
+    /// read of the stored `RD{id}.ORD` through the shared `ride_preview_polyline` (the firmware
+    /// streams the same bytes off SD in blocks). Empty = unknown id / unreadable file — the Ride
+    /// detail's track page just leaves its slot blank.
+    pub fn preview_by_id(&self, id: u16) -> Vec<(i32, i32)> {
+        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Vec::new() };
+        let Ok(bytes) = std::fs::read(&self.paths[pos]) else { return Vec::new() };
+        ride_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>(&SliceSource(&bytes))
+            .map(|v| v.as_slice().to_vec())
+            .unwrap_or_default()
     }
 
     /// Read the synced-ride sidecar into a [`SyncedRides`] set (empty on a missing/torn file).

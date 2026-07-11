@@ -67,12 +67,14 @@ printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
 # staged SYNCED.SET) draws the small check inside the row box, RD1 (unsynced) draws nothing there.
 # `p` presses into the Rides screen from the Menu (one `r` detent + `w` settle).
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p"     --png "$OUT/rides.png"
-# The Ride detail (#680, repaged in owner review round 2): press the highlighted ride (the unsynced
-# RD1) — RIDE bar with the "not synced" slot, name, date · time, the recorded track's elevation band
-# (the staged fixture, host-filled; regrown to near the overview's height), the two-row stat pager
-# on its entry page (DISTANCE + RIDE TIME — the AVG + CLIMBED page flips in after the 5 s dwell, past
-# any script), and the guarded Delete-ride row.
+# The Ride detail (#680, repaged in owner review round 2, content-paired in round 3): press the
+# highlighted ride (the unsynced RD1) — RIDE bar with the "not synced" slot, name, date · time, the
+# content-paired pager on its entry page (page A: the recorded track's shape preview, host-filled —
+# start disc + end diamond — over DISTANCE + RIDE TIME), and the guarded Delete-ride row.
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p p"   --png "$OUT/ride-detail.png"
+# Page B after the 5 s dwell (seven `w` ticks): the recorded elevation band (the staged fixture,
+# host-filled) over AVG + CLIMBED — the same band slot, so nothing jumps.
+"$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p p w w w w w w w" --png "$OUT/ride-detail-elevation.png"
 # The detail's delete charging: `H` partial-holds the encoder over the Delete-ride row, so its
 # warning-red fill draws mid-charge (the guarded-hold idiom, ride_control's pattern).
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B r w p p H" --png "$OUT/ride-detail-delete.png"
@@ -367,4 +369,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 138 screens rendered into $OUT/"
+echo "ui-snapshots: 139 screens rendered into $OUT/"

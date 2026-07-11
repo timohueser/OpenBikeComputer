@@ -195,3 +195,36 @@ fn ride_elevation_profile_skips_ele_none_and_rejects_torn_saves() {
     ride[0] = 0; // a torn save's held-back version byte
     assert!(ride_elevation_profile(&SliceSource(&ride)).is_err(), "a torn save is rejected");
 }
+
+/// The Ride detail's track-shape source (#678 rework 3): `ride_preview_polyline` streams a stored
+/// ride once and yields the decimated `(lon, lat)` µdeg polyline — exact endpoints, uniform by
+/// point index between them, capped at `N` — the recorded twin of the route preview.
+#[test]
+fn ride_preview_polyline_decimates_with_exact_endpoints() {
+    use obc_route::ride_preview_polyline;
+    // 100 points marching east along the equator, 10 µ° apart (recorded µdeg → stored ×10).
+    let pts: Vec<TrackPoint> = (0..100)
+        .map(|i| TrackPoint { lon: i * 10, lat: 42, ele: 100, t_ms: i as u32 * 1_000, segment_start: i == 0 })
+        .collect();
+    let ride = to_ride(&log_of(&pts), "Shape", &STATS);
+
+    // A cap under the count: N points back, first + last exact, indices an even stride.
+    let p = ride_preview_polyline::<8>(&SliceSource(&ride)).unwrap();
+    assert_eq!(p.len(), 8);
+    assert_eq!(p[0], (0, 42), "the first point is exact (and back in microdegrees)");
+    assert_eq!(p[7], (990, 42), "the last point is exact");
+    for w in p.windows(2) {
+        let step = w[1].0 - w[0].0;
+        assert!((130..=150).contains(&step), "≈ even stride over 99 segments, got {step}");
+    }
+
+    // A cap over the count: every point back, verbatim.
+    let all = ride_preview_polyline::<128>(&SliceSource(&ride)).unwrap();
+    assert_eq!(all.len(), 100);
+    assert_eq!(all[41], (410, 42));
+
+    // A torn save (held-back version byte) is rejected exactly like the profile builder.
+    let mut torn = ride;
+    torn[0] = 0;
+    assert!(ride_preview_polyline::<8>(&SliceSource(&torn)).is_err());
+}
