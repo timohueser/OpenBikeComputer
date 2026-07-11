@@ -398,10 +398,12 @@ pub struct App {
     /// was **answered** for (a failed fill parks `None` under the same key, so a dead file isn't
     /// re-streamed every pass), remapped by identity across rescans like every held ride index.
     ride_profile_for: Option<usize>,
-    /// The computed route's decimated shape-preview polyline (#685 §4) — ≤ [`NAV_PREVIEW_MAX`]
+    /// The Route overview's decimated route-shape preview polyline (#685 §4, generalized to
+    /// stored routes by #678 rework 3's content-paired pager) — ≤ [`NAV_PREVIEW_MAX`]
     /// `(lon, lat)` µdeg points, **decimated host-side** and handed in via
-    /// [`set_nav_preview`](App::set_nav_preview) after a successful plan. Drawn by the
-    /// computed-route overview; empty otherwise.
+    /// [`set_nav_preview`](App::set_nav_preview): a computed route's at plan-commit time, a
+    /// stored route's on overview entry (the per-pass [`nav_preview_missing`](App::nav_preview_missing)
+    /// cue). Drawn by the Route overview; empty otherwise.
     nav_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
     /// The [`active_route`](Activity::active_route) the [`nav_preview`](App::nav_preview) was
     /// handed in for — the staleness key ([`nav_preview_missing`](App::nav_preview_missing)
@@ -1836,21 +1838,24 @@ impl App {
         self.map_dirty = true;
     }
 
-    /// Whether the computed-route overview is up **without** its shape preview (#685 §4) — the
-    /// host's per-pass cue to decimate the freshly-planned polyline
-    /// ([`RouteReader::preview_polyline`](obc_route::RouteReader::preview_polyline)) and hand it
-    /// to [`set_nav_preview`](App::set_nav_preview). `false` the moment the preview is in (or the
-    /// overview is gone), so the walk over the route's chunks runs once per plan, not per pass.
+    /// Whether a Route overview is up **without** its route-shape preview (#685 §4; #678 rework 3
+    /// widened it from the computed overview to every overview — the stored-route page's track
+    /// pager wants the shape too) — the host's per-pass cue to decimate the active route's
+    /// polyline ([`RouteReader::preview_polyline`](obc_route::RouteReader::preview_polyline)) and
+    /// hand it to [`set_nav_preview`](App::set_nav_preview). Entering the overview points
+    /// [`active_route`](Activity::active_route) at the previewed route (the same key the
+    /// elevation-profile rebuild streams on), so the fill runs once per overview entry — `false`
+    /// the moment the preview is in (or the overview is gone), never per pass.
     pub fn nav_preview_missing(&self) -> bool {
-        self.stack.iter().any(|s| matches!(s, Screen::RouteOverview(o) if o.is_computed()))
+        self.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
             && self.nav_preview_route != self.activity.active_route
     }
 
-    /// Hand in the computed route's decimated shape-preview polyline (#685 §4) — ≤
+    /// Hand in the previewed route's decimated shape polyline (#685 §4) — ≤
     /// [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points (more are truncated), **decimated host-side**
-    /// (the sim's plan-commit tail; the board's ride loop). Keyed to the current
-    /// [`active_route`](Activity::active_route) — the route the plan just activated — so a later
-    /// route change stales it automatically.
+    /// (the sim/web hosts' per-pass fill; the board's ride loop; a plan's commit tail). Keyed to
+    /// the current [`active_route`](Activity::active_route) — the route the overview activated —
+    /// so a later route change stales it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
         self.nav_preview.clear();
         for &p in pts.iter().take(NAV_PREVIEW_MAX) {

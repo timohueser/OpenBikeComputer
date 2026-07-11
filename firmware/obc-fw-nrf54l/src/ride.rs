@@ -987,11 +987,13 @@ pub(crate) async fn run_app(
             (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
             _ => None,
         };
-        // The computed-route overview's shape preview (#685 §4): `nav_finish` above answered the
-        // app and forced this pass's index rebuild, so the fresh plan's reader exists right here —
-        // decimate its polyline (≤ 64 points, one chunk walk through the resident cache) and hand
-        // the copy over. `nav_preview_missing` is false once fed (and on every non-overview
-        // frame), so this runs once per plan, not per pass.
+        // The Route overview's shape preview (#685 §4; widened to stored routes by #678 rework 3's
+        // track/elevation pager): a computed plan's `nav_finish` above answered the app and forced
+        // this pass's index rebuild, and a stored route's overview entry pointed `active_route` at
+        // it (same rebuild) — either way the previewed route's reader exists right here. Decimate
+        // its polyline (≤ 64 points, one chunk walk through the resident cache) and hand the copy
+        // over. `nav_preview_missing` is false once fed (and on every non-overview frame), so this
+        // runs once per overview entry / plan, not per pass.
         if app.nav_preview_missing() {
             if let Some(r) = route.as_ref() {
                 let pts = r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();

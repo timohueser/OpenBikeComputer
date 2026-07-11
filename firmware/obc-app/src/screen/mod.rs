@@ -221,9 +221,10 @@ pub struct Render<'a, 'd> {
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
-    /// The computed route's decimated shape-preview polyline (#685 §4) — ≤ 64 `(lon, lat)` µdeg
-    /// points, host-decimated and keyed to the active route (the App hands an empty slice when
-    /// it's missing or stale). Only the computed-route overview draws it.
+    /// The previewed route's decimated shape polyline (#685 §4; #678 rework 3 widened it to
+    /// stored routes) — ≤ 64 `(lon, lat)` µdeg points, host-decimated and keyed to the active
+    /// route (the App hands an empty slice when it's missing or stale). Only the Route overview
+    /// draws it — the computed page's mid-gap sketch, the full page's track-pager band.
     pub nav_preview: &'a [(i32, i32)],
     /// The single [`App`](crate::App)-owned POI-list snapshot buffer. Only the
     /// [`PoiList`](crate::screen::poi_list) screen touches it — it takes its static snapshot into
@@ -559,10 +560,11 @@ impl Screen {
             Screen::RouteReceived(s) => s.tick_timers(now_ms),
             Screen::RouteUpdated(s) => s.tick_timers(now_ms),
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
-            // The Route overview's stat-ledger pager (T3): flips DISTANCE+CLIMB ↔ DESCENT every 5 s.
+            // The Route overview's content-paired pager (T3, re-paired in #678 rework 3): flips
+            // track shape + DISTANCE ↔ elevation band + CLIMB + DESCENT every 5 s.
             Screen::RouteOverview(s) => s.tick_timers(now_ms),
-            // The Ride detail's stat pager (owner review round 2): the same 5 s two-row flip,
-            // DISTANCE+RIDE TIME ↔ AVG+CLIMBED.
+            // The Ride detail's content-paired pager (owner review rounds 2 + 3): the same 5 s
+            // flip, track shape + DISTANCE + RIDE TIME ↔ elevation band + AVG + CLIMBED.
             Screen::RideDetail(s) => s.tick_timers(now_ms),
             // The nav planning spinner (#499): free-runs at frame cadence until the host's
             // answer (or a cancel) removes the screen. The one screen that reports a dirty
