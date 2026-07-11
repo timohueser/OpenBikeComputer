@@ -226,6 +226,12 @@ pub struct Render<'a, 'd> {
     /// route (the App hands an empty slice when it's missing or stale). Only the Route overview
     /// draws it — the computed page's mid-gap sketch, the full page's track-pager band.
     pub nav_preview: &'a [(i32, i32)],
+    /// The viewed ride's decimated recorded-track shape polyline (#678 rework 3) — ≤ 64
+    /// `(lon, lat)` µdeg points, host-filled alongside the ride profile on detail entry
+    /// (`App::set_ride_preview`) and keyed to [`Activity::viewed_ride`](crate::Activity) (the App
+    /// hands an empty slice when it's missing or stale). Only the Ride detail's track pager page
+    /// draws it.
+    pub ride_preview: &'a [(i32, i32)],
     /// The single [`App`](crate::App)-owned POI-list snapshot buffer. Only the
     /// [`PoiList`](crate::screen::poi_list) screen touches it — it takes its static snapshot into
     /// this on the first draw with a `Reader` + fix (see [`PoiScratch`]); every other screen leaves

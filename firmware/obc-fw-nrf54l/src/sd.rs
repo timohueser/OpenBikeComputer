@@ -51,7 +51,8 @@ use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_platform::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_route::{
-    ride_elevation_profile, track_to_ride, ByteSource, Profile, RideInfo, RideStats, RouteIndex, RouteObjectInfo,
+    ride_elevation_profile, ride_preview_polyline, track_to_ride, ByteSource, Profile, RideInfo, RideStats, RouteIndex,
+    RouteObjectInfo,
     RouteSummary, NAME_CAP,
 };
 
@@ -709,6 +710,33 @@ impl Storage {
             let _ = self.vmgr.close_file(file);
         }
         profile
+    }
+
+    /// Build the stored ride `id`'s decimated recorded-track shape polyline (#678 rework 3) —
+    /// the preview half of the Ride detail's track-request answer, `ride_profile_by_id`'s twin:
+    /// the same id resolution, the same open-or-borrow handle discipline (#480), one forward
+    /// streaming pass through the shared `ride_preview_polyline` (~448 B blocks, no whole-track
+    /// buffer, no backward seeks — the #502 FAT lesson). Empty = unknown id / unopenable / torn
+    /// file — the detail's track page just leaves its slot blank.
+    pub fn ride_preview_by_id(&mut self, id: u16) -> heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }> {
+        let Some(pos) = self.ride_ids.iter().position(|&x| x == id) else { return heapless::Vec::new() };
+        let name = self.ride_files[pos].clone();
+        let Some(dir) = self.tracks_dir else { return heapless::Vec::new() };
+        let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, &name, Mode::ReadOnly) {
+            Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
+            Err(_) => match &self.open_object {
+                Some((on, of, olen)) if *on == name => (*of, *olen, true),
+                _ => {
+                    defmt::warn!("SD: ride preview: cannot open {} — track page stays empty", defmt::Debug2Format(&name));
+                    return heapless::Vec::new();
+                }
+            },
+        };
+        let pts = ride_preview_polyline(&SdByteSource::new(&self.vmgr, file, len)).unwrap_or_default();
+        if !borrowed {
+            let _ = self.vmgr.close_file(file);
+        }
+        pts
     }
 
     /// The **session-scoped** id for a side-loaded route file: the one already registered for this

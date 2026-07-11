@@ -354,6 +354,7 @@ impl SimGui {
         // board's per-pass drain. A failed read parks `None` so a dead file isn't re-read per frame.
         if let Some(id) = self.app.take_ride_track_request() {
             self.app.set_ride_profile(self.ride_store.profile_by_id(id));
+            self.app.set_ride_preview(&self.ride_store.preview_by_id(id));
         }
 
         // Answer the System screen's card-free scan (T8 item 6). The board runs a FAT free-cluster

@@ -410,25 +410,32 @@ fn write_computed_distance(s: &mut heapless::String<8>, total_m: u32, units: cra
     }
 }
 
-/// The route-shape preview's box size (#685 §4): ≈212×90 px, horizontally centred, vertically
-/// centred in whatever slot the caller hands it — the computed page's mid-gap, or the full
-/// page's media-band slot (owner review round 3's pager).
+/// The track-shape preview's box size (#685 §4): ≈212×90 px, horizontally centred, vertically
+/// centred in whatever slot the caller hands it — the computed page's mid-gap, or the overview /
+/// Ride detail media-band slots (owner review round 3's pagers).
 const PREVIEW_W: i32 = 212;
 const PREVIEW_H: i32 = 90;
 
-/// Draw a route's shape preview: the host-decimated polyline (≤ 64 points) normalized
+/// Draw a track's shape preview: the host-decimated polyline (≤ 64 points) normalized
 /// and aspect-fit into the [`PREVIEW_W`]×[`PREVIEW_H`] box — lon scaled by cos(mid-lat) so the
 /// shape keeps its ground aspect — stroked 2 px INK (the doubled-1-px idiom), with a 4 px filled
-/// disc at the start and a 6 px hollow diamond at the destination. An empty/short slice (the
+/// disc at the start and a 6 px hollow diamond at the destination/end. An empty/short slice (the
 /// frame or two before the host hands the preview in, or a stale one) draws nothing — the box
-/// just stays empty, like the full page's "loading profile" band footprint.
-fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
+/// just stays empty, like the elevation page's "loading profile" band footprint. Shared with the
+/// Ride detail's recorded-track page (#678 rework 3), so the two sketches can't drift.
+pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[(i32, i32)]) {
     use palette::*;
     if pts.len() < 2 {
         return;
     }
-    let x0 = (w - PREVIEW_W) / 2;
-    let y0 = top + ((bot - top - PREVIEW_H) / 2).max(0);
+    // The box clamps to the caller's slot (the Ride detail's band is 82 px, under PREVIEW_H),
+    // and the fit insets by the end markers' reach, so a disc/diamond on an extreme point can
+    // never spill past the slot's baseline into the rows below (or graze the text above).
+    const MARK: i32 = 4;
+    let box_h = PREVIEW_H.min(bot - top);
+    let (fit_w, fit_h) = (PREVIEW_W - 2 * MARK, box_h - 2 * MARK);
+    let x0 = (w - PREVIEW_W) / 2 + MARK;
+    let y0 = top + ((bot - top - box_h) / 2).max(0) + MARK;
     let (mut min_lon, mut max_lon, mut min_lat, mut max_lat) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
     for &(lon, lat) in pts {
         min_lon = min_lon.min(lon);
@@ -441,9 +448,9 @@ fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i32, pts: &[
     let clat = obc_route::cos_lat((min_lat / 2) + (max_lat / 2));
     let geo_w = ((max_lon - min_lon) as f32 * clat).max(1.0);
     let geo_h = ((max_lat - min_lat) as f32).max(1.0);
-    let scale = (PREVIEW_W as f32 / geo_w).min(PREVIEW_H as f32 / geo_h);
-    let ox = x0 as f32 + (PREVIEW_W as f32 - geo_w * scale) / 2.0;
-    let oy = y0 as f32 + (PREVIEW_H as f32 - geo_h * scale) / 2.0;
+    let scale = (fit_w as f32 / geo_w).min(fit_h as f32 / geo_h);
+    let ox = x0 as f32 + (fit_w as f32 - geo_w * scale) / 2.0;
+    let oy = y0 as f32 + (fit_h as f32 - geo_h * scale) / 2.0;
     let project = |(lon, lat): (i32, i32)| {
         Point::new((ox + (lon - min_lon) as f32 * clat * scale) as i32, (oy + (max_lat - lat) as f32 * scale) as i32)
     };

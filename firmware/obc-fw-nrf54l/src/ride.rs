@@ -160,6 +160,11 @@ fn fill_ride_profile(storage: &mut Option<sd::Storage>, app: &mut App) {
         defmt::warn!("ride profile: fill for id {=u16} failed — the detail's band stays empty", id);
     }
     app.set_ride_profile(profile);
+    // The track-shape preview (#678 rework 3) rides the same drain: a second forward stream of
+    // the `RD{id}.ORD` into the ≤ 64-point resident (a 512 B copy + the ~448 B block buffer in
+    // this same popped frame — small next to the profile builder's column scratch above).
+    let preview = storage.as_mut().map(|s| s.ride_preview_by_id(id)).unwrap_or_default();
+    app.set_ride_preview(&preview);
 }
 
 /// The on-device router's caller-owned buffers (epic #116, R4): the fixed A* table + graph-tile

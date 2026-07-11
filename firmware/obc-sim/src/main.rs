@@ -816,6 +816,7 @@ fn main() {
                 // per-frame drain.
                 if let Some(id) = app.take_ride_track_request() {
                     app.set_ride_profile(ride_store.profile_by_id(id));
+                    app.set_ride_preview(&ride_store.preview_by_id(id));
                 }
                 let mut fb = Framebuffer::new(rw, rh);
                 let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
@@ -853,6 +854,7 @@ fn main() {
             // `d`): fill the resident ride profile now so the final render draws the band.
             if let Some(id) = app.take_ride_track_request() {
                 app.set_ride_profile(ride_store.profile_by_id(id));
+                app.set_ride_preview(&ride_store.preview_by_id(id));
             }
         }
 
