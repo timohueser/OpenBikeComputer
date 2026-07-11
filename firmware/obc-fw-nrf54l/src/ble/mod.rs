@@ -39,6 +39,7 @@ mod control;
 mod data_plane;
 mod gatt;
 mod lifecycle;
+mod sensors;
 mod state;
 
 // The ride loop publishes its stack high-water mark here (#277/A9) so the diagnostics blob can post it
@@ -63,12 +64,24 @@ pub use state::{request_forget_bond, set_radio_enabled};
 // `installFw` command handler reads it as the `busy` gate's "a ride is recording" input.
 pub use state::set_recording;
 
+// The BLE sensor manager's app-facing seam (SE6, epic #707): the per-quantity status snapshot the
+// ride loop feeds the Sensors screen, and the scan/save/forget one-shot requests flowing back — the
+// central-role analogue of the phone link's `app_ble_status` + `request_forget_bond`. SE7 (the
+// Sensors screen + saved-sensor persistence, #714) consumes these; SE6 provides the plumbing + a
+// hardcoded-address seed hook so the on-glass HR bring-up runs before SE7 exists — so they are
+// re-exported but not yet referenced.
+#[allow(unused_imports)]
+pub use sensors::{
+    request_forget_sensor, request_save_sensor, request_scan, sensor_scan_hits, sensor_slot_status, SensorScanHit,
+    SensorSlotState, SensorSlotStatus,
+};
+
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::{join4, join5};
+use embassy_futures::join::{join, join4, join5};
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
@@ -98,24 +111,45 @@ bind_interrupts!(struct Irqs {
     GRTC_3 => nrf_sdc::mpsl::HighPrioInterruptHandler;
 });
 
-/// Ship config: the phone is the only peer.
-const CONNECTIONS_MAX: usize = 1;
+/// Concurrent **sensor** links the central role holds (SE6, epic #707) — the HR/power/cadence
+/// straps the manager connects to beside the phone link. **Locked at 1 on the 256 KB DK**: phone +
+/// one sensor is enough for the Garmin-watch HR bring-up, and every extra central link costs
+/// ~2.3 KB of SDC memory (see [`SDC_MEM_SIZE`]) plus host arena. The 512 KB **LM20 profile raises
+/// this to 3** (all three quantities live at once), keyed the same way the `nrf-mem` trims are keyed
+/// — one const here, arbitrated by the `main.rs` budget assert.
+const SENSOR_LINKS: usize = 1;
+/// Total ACL links the host tracks: the one phone (peripheral role) + [`SENSOR_LINKS`] sensors
+/// (central role). One `Stack` runs both roles concurrently (trouble-host 0.7).
+const CONNECTIONS_MAX: usize = 1 + SENSOR_LINKS;
 /// Advertising sets — one legacy connectable set is all the advertise policy needs.
 const ADV_SETS_MAX: usize = 1;
-/// Bonded peers stored in the host: exactly one. While it is occupied new pairings are rejected
-/// (#455) and only Forget phone clears it, so the resolving list never holds more than the single
-/// phone (matches the app's single-peer model).
+/// Bonded peers stored in the host: exactly one — the **phone**. Sensors are **not** bonded (open
+/// GATT servers connected by stored address, no SMP), so they never consume a bond slot. While the
+/// phone slot is occupied new pairings are rejected (#455) and only Forget phone clears it, so the
+/// resolving list never holds more than the single phone (matches the app's single-peer model).
 const BONDS_MAX: usize = 1;
-/// L2CAP signal + ATT + the data-plane CoC.
-const L2CAP_CHANNELS_MAX: usize = 3;
+/// L2CAP channels: the phone link's 3 (signal + ATT + the data-plane CoC) plus **2 per sensor link**
+/// (the fixed L2CAP signalling channel + the ATT bearer the GATT client rides). No CoC on a sensor
+/// link — sensors are notification-only GATT servers.
+const L2CAP_CHANNELS_MAX: usize = 3 + 2 * SENSOR_LINKS;
 /// Outgoing/incoming LL buffers per link (the TrouBLE nrf54 example's values).
 const L2CAP_TXQ: u8 = 3;
 const L2CAP_RXQ: u8 = 3;
 
-/// SDC memory block, sized to `Builder::required_memory()` for this exact config — measured on
-/// glass 2026-07-02 (logged at boot; the SDC warns if the block is bigger than needed and
-/// errors if smaller). Re-measure after any Builder/buffer_cfg change.
-const SDC_MEM_SIZE: usize = 4704;
+/// SDC memory block, sized to `Builder::required_memory()` for this exact config (logged at boot;
+/// the SDC **warns** if the block is bigger than needed and **errors out of `build()`** if smaller —
+/// so this must be ≥ the real requirement). Re-measure after any Builder/buffer_cfg change.
+///
+/// Peripheral-only was 4704 B (measured on glass 2026-07-02). Adding the central role + scan (SE6,
+/// epic #707) grows it by the SDC header math — `SDC_MEM_PER_CENTRAL_LINK(251,251,3,3)` ≈ 2310 B ×
+/// [`SENSOR_LINKS`], plus `SDC_MEM_SCAN(3)` ≈ 720 B, plus ~21 B shared → 4704 + 2310 + 720 + 21 ≈
+/// **7755 B** at 1 sensor link. Pinned at 8704 with ~950 B of margin over that estimate, because
+/// this build **cannot boot here** (no radio) to read the exact figure.
+///
+/// **CONFIRM on glass**: the boot RTT logs `ble: sdc required_memory = N bytes (SDC_MEM_SIZE =
+/// 8704)` — set this to that `N` (rounded up a little). If `build()` ever logs "Memory buffer too
+/// small. N bytes needed", raise it to `N`.
+const SDC_MEM_SIZE: usize = 8704;
 
 /// TrouBLE's host arena for this config (connection state + the DefaultPacketPool at MTU 251 + the
 /// single-peer bond storage the `security` feature adds).
@@ -138,6 +172,12 @@ type Resources = HostResources<
 /// poll function a 30.5 KB entry frame (see [`run`]'s doc). Moving them here is ~zero-sum RAM-wise:
 /// the task's future (its `POOL` static) shrinks by what these statics grow. The SDC/host *stack*
 /// usage rides `main.rs`'s `STACK_RESERVE` like everything else.
+/// The sensor manager's own resident statics (SE6, epic #707): the deduped scan-hit snapshot, the
+/// per-quantity slot-status table, and the saved-sensor table — the small [`sensors`] cells the scan
+/// event handler + the app seam read/write. `Resources`/`SDC_MEM_SIZE` above already absorbed the
+/// central-role + scan buffers via [`CONNECTIONS_MAX`]/[`L2CAP_CHANNELS_MAX`]/[`SDC_MEM_SIZE`]; this
+/// is the manager's plain `.bss` state on top. The transient `GattClient` + its 512 B `Notification`
+/// live in `run`'s task future per the #677 rule (bounded, not resident — re-measured on glass).
 pub const RESIDENT_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLayer<'static>>()
     + SDC_MEM_SIZE
     + core::mem::size_of::<Resources>()
@@ -145,7 +185,8 @@ pub const RESIDENT_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLayer
     + core::mem::size_of::<cracen::Cracen<'static, Blocking>>()
     + core::mem::size_of::<core::cell::RefCell<ObjectStore>>()
     + core::mem::size_of::<Server<'static>>()
-    + core::mem::size_of::<heapless::String<48>>();
+    + core::mem::size_of::<heapless::String<48>>()
+    + sensors::RESIDENT_BYTES;
 
 // The resident statics (see the module doc): written exactly once in [`run`], never aliased.
 static mut MPSL: MaybeUninit<MultiprotocolServiceLayer<'static>> = MaybeUninit::uninit();
@@ -211,8 +252,13 @@ async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
     mpsl.run().await
 }
 
-/// Peripheral-only SDC at the config we intend to ship: legacy adv, 1 peripheral link,
-/// DLE on with LL payload 251 (ATT MTU 247 + 4 L2CAP header), 2M PHY supported.
+/// The SDC at the config we ship: legacy adv, 1 peripheral link (the phone), plus the central role +
+/// legacy scan for the sensor manager ([`SENSOR_LINKS`] central links). DLE + PHY-update on the
+/// **peripheral** side only (LL payload 251 = ATT MTU 247 + 4 L2CAP header, 2M PHY) — deliberately
+/// **not** `support_dle_central`/`support_phy_update_central`: sensor notifications are ≤ 20 B, so a
+/// central link needs neither DLE nor a PHY update, and leaving them off keeps the LL feature surface
+/// (and its RAM) smaller for the same buffers. Kept in lockstep with the `required_memory` probe in
+/// [`run`] — change one, change both.
 fn build_sdc<'d, const N: usize>(
     p: nrf_sdc::Peripherals<'d>,
     rng: &'d mut cracen::Cracen<'static, Blocking>,
@@ -222,10 +268,13 @@ fn build_sdc<'d, const N: usize>(
     sdc::Builder::new()?
         .support_adv()
         .support_peripheral()
+        .support_central()
+        .support_scan()
         .support_dle_peripheral()
         .support_le_2m_phy()
         .support_phy_update_peripheral()
         .peripheral_count(1)?
+        .central_count(SENSOR_LINKS as u8)?
         .buffer_cfg(DefaultPacketPool::MTU as u16, DefaultPacketPool::MTU as u16, L2CAP_TXQ, L2CAP_RXQ)?
         .build(p, rng, mpsl, mem)
 }
@@ -298,10 +347,13 @@ pub async fn run(
     match sdc::Builder::new().and_then(|b| {
         b.support_adv()
             .support_peripheral()
+            .support_central()
+            .support_scan()
             .support_dle_peripheral()
             .support_le_2m_phy()
             .support_phy_update_peripheral()
             .peripheral_count(1)?
+            .central_count(SENSOR_LINKS as u8)?
             .buffer_cfg(DefaultPacketPool::MTU as u16, DefaultPacketPool::MTU as u16, L2CAP_TXQ, L2CAP_RXQ)?
             .required_memory()
     }) {
@@ -383,26 +435,46 @@ pub async fn run(
     // runs beside it for the whole lifetime (epic #447, P6) so an on-device delete executes whether
     // the phone is connected, the device is parked advertising, or the radio is off; the ride-saved
     // task likewise, so a ride finished with the radio off still reaches the catalog + Rides menu.
-    join5(
-        host_task(runner),
-        route_delete_task(stack, server, store, shared),
-        ride_delete_task(stack, server, store, shared),
-        ride_saved_task(stack, server, store, shared),
-        async {
-            loop {
-                // A Forget-phone request latched between phases: honour it before the next advertise,
-                // so the freshly-open pairing window never races a stale bond.
-                if FORGET_BOND.try_take().is_some() {
-                    forget_bond(stack, store, shared).await;
-                }
+    // The **sensor manager** (SE6, epic #707) rides beside them (`join` — `embassy_futures` tops out
+    // at `join5`): its one central-role task scans / connects / subscribes / dispatches HR/power/
+    // cadence, gated by the same #455 radio switch as the peripheral link.
+    join(
+        sensors::run(stack),
+        join5(
+            host_task(runner),
+            route_delete_task(stack, server, store, shared),
+            ride_delete_task(stack, server, store, shared),
+            ride_saved_task(stack, server, store, shared),
+            async {
+                loop {
+                    // A Forget-phone request latched between phases: honour it before the next advertise,
+                    // so the freshly-open pairing window never races a stale bond.
+                    if FORGET_BOND.try_take().is_some() {
+                        forget_bond(stack, store, shared).await;
+                    }
 
-                // The radio switch (#455): while off, publish Off and park — the advertiser is not
-                // running (dropped with the previous phase), so the device vanishes from scans. Forget
-                // is honoured while parked too (the rider clears the bond with the radio down).
-                if !state::radio_enabled() {
-                    info!("ble: radio off — parked until re-enabled");
+                    // The radio switch (#455): while off, publish Off and park — the advertiser is not
+                    // running (dropped with the previous phase), so the device vanishes from scans. Forget
+                    // is honoured while parked too (the rider clears the bond with the radio down).
+                    if !state::radio_enabled() {
+                        info!("ble: radio off — parked until re-enabled");
+                        publish(|s| {
+                            s.state = LinkState::Off;
+                            s.peer = None;
+                            s.conn_interval_ms = 0;
+                            s.att_mtu = 0;
+                            s.phy_2m = false;
+                            s.passkey = None;
+                            s.secured = false;
+                        });
+                        if let Either::Second(()) = select(state::radio_enabled_wait(), FORGET_BOND.wait()).await {
+                            forget_bond(stack, store, shared).await;
+                        }
+                        continue;
+                    }
+
                     publish(|s| {
-                        s.state = LinkState::Off;
+                        s.state = LinkState::Advertising;
                         s.peer = None;
                         s.conn_interval_ms = 0;
                         s.att_mtu = 0;
@@ -410,115 +482,101 @@ pub async fn run(
                         s.passkey = None;
                         s.secured = false;
                     });
-                    if let Either::Second(()) = select(state::radio_enabled_wait(), FORGET_BOND.wait()).await {
-                        forget_bond(stack, store, shared).await;
+                    // Re-read the advertised name each cycle — a rename (Config write) takes effect on the next
+                    // advertising start, no reboot. Refresh the config cache from RRAM first (a no-op unless
+                    // the ride loop flagged an on-device settings change, #456) so the cache stays coherent
+                    // with the persisted truth across an advertise cycle.
+                    {
+                        let mut guard = shared.lock().await;
+                        store.borrow_mut().refresh_settings_if_changed(&mut guard);
                     }
-                    continue;
-                }
+                    let adv_name = advertised_name(&store.borrow());
+                    // Advertise until a central connects — or the radio switch flips off (dropping the
+                    // advertiser future stops advertising), or a Forget request lands (handled, then this
+                    // phase restarts — a moment of re-advertising is harmless).
+                    let conn = match select3(
+                        advertise_lifecycle(adv_name.as_str(), &mut peripheral, server),
+                        state::radio_disabled(),
+                        FORGET_BOND.wait(),
+                    )
+                    .await
+                    {
+                        Either3::First(Ok(conn)) => conn,
+                        Either3::First(Err(e)) => {
+                            // An advertise error must not take the firmware down and must not wedge the loop —
+                            // log it, wait a beat, and try again.
+                            warn!("ble: advertise error: {:?} — retrying in 1 s", defmt::Debug2Format(&e));
+                            Timer::after_secs(1).await;
+                            continue;
+                        }
+                        Either3::Second(()) => continue, // radio off — park at the loop top
+                        Either3::Third(()) => {
+                            forget_bond(stack, store, shared).await;
+                            continue;
+                        }
+                    };
 
-                publish(|s| {
-                    s.state = LinkState::Advertising;
-                    s.peer = None;
-                    s.conn_interval_ms = 0;
-                    s.att_mtu = 0;
-                    s.phy_2m = false;
-                    s.passkey = None;
-                    s.secured = false;
-                });
-                // Re-read the advertised name each cycle — a rename (Config write) takes effect on the next
-                // advertising start, no reboot. Refresh the config cache from RRAM first (a no-op unless
-                // the ride loop flagged an on-device settings change, #456) so the cache stays coherent
-                // with the persisted truth across an advertise cycle.
-                {
-                    let mut guard = shared.lock().await;
-                    store.borrow_mut().refresh_settings_if_changed(&mut guard);
-                }
-                let adv_name = advertised_name(&store.borrow());
-                // Advertise until a central connects — or the radio switch flips off (dropping the
-                // advertiser future stops advertising), or a Forget request lands (handled, then this
-                // phase restarts — a moment of re-advertising is harmless).
-                let conn = match select3(
-                    advertise_lifecycle(adv_name.as_str(), &mut peripheral, server),
-                    state::radio_disabled(),
-                    FORGET_BOND.wait(),
-                )
-                .await
-                {
-                    Either3::First(Ok(conn)) => conn,
-                    Either3::First(Err(e)) => {
-                        // An advertise error must not take the firmware down and must not wedge the loop —
-                        // log it, wait a beat, and try again.
-                        warn!("ble: advertise error: {:?} — retrying in 1 s", defmt::Debug2Format(&e));
-                        Timer::after_secs(1).await;
-                        continue;
+                    let peer = conn.raw().peer_address();
+                    let mut peer_bytes = [0u8; 6];
+                    peer_bytes.copy_from_slice(peer.addr.raw());
+                    publish(|s| {
+                        s.state = LinkState::Connected;
+                        s.peer = Some(peer_bytes);
+                        s.connects += 1;
+                    });
+
+                    // Bonding policy (S0 §8, amended by #455): the link is bondable only while **no** bond
+                    // is stored. With a bond present the link stays at trouble's not-bondable default and
+                    // the control plane rejects the pairing attempt outright (see `serve_connection`) —
+                    // a stranger can never mint a replacement bond; Forget phone is the only re-pair path.
+                    // The bonded phone's silent reconnect is encryption resumption, not pairing, so it is
+                    // untouched by either knob.
+                    let open_pairing = !state::status().paired;
+                    if let Err(e) = conn.raw().set_bondable(open_pairing) {
+                        warn!("ble: set_bondable failed: {:?}", defmt::Debug2Format(&e));
                     }
-                    Either3::Second(()) => continue, // radio off — park at the loop top
-                    Either3::Third(()) => {
-                        forget_bond(stack, store, shared).await;
-                        continue;
+                    if !open_pairing {
+                        info!("ble: bond stored — new pairing attempts on this link will be rejected");
                     }
-                };
 
-                let peer = conn.raw().peer_address();
-                let mut peer_bytes = [0u8; 6];
-                peer_bytes.copy_from_slice(peer.addr.raw());
-                publish(|s| {
-                    s.state = LinkState::Connected;
-                    s.peer = Some(peer_bytes);
-                    s.connects += 1;
-                });
-
-                // Bonding policy (S0 §8, amended by #455): the link is bondable only while **no** bond
-                // is stored. With a bond present the link stays at trouble's not-bondable default and
-                // the control plane rejects the pairing attempt outright (see `serve_connection`) —
-                // a stranger can never mint a replacement bond; Forget phone is the only re-pair path.
-                // The bonded phone's silent reconnect is encryption resumption, not pairing, so it is
-                // untouched by either knob.
-                let open_pairing = !state::status().paired;
-                if let Err(e) = conn.raw().set_bondable(open_pairing) {
-                    warn!("ble: set_bondable failed: {:?}", defmt::Debug2Format(&e));
+                    // Serve the link until the peer drops it. `serve_connection` pumps GATT + connection
+                    // events (so the phone's own MTU/PHY/DLE moves are serviced and our control-plane writes
+                    // are answered) and owns the exit — it returns the disconnect reason. The background set
+                    // (parameter negotiation, the CoC accept-and-drain, the BAS battery notify, and the
+                    // #455 link control — radio-off / Forget both end in a local disconnect) runs
+                    // concurrently and never returns before the teardown, so `select` tears it all down the
+                    // moment the link drops (any disconnect drops straight back to the loop top).
+                    let reason = match select(
+                        serve_connection(stack, server, &conn, store, shared),
+                        join4(
+                            negotiate_link(stack, &conn),
+                            serve_coc(stack, server, &conn, store, shared),
+                            battery_task(stack, server, &conn),
+                            link_control(stack, &conn, store, shared),
+                        ),
+                    )
+                    .await
+                    {
+                        Either::First(reason) => reason,
+                        Either::Second(_) => unreachable!("the background futures never return"),
+                    };
+                    // The drop may have cancelled the data plane mid-transfer (at an await): discard any
+                    // in-flight upload + release the store's open handles, clear the one-transfer gate, and
+                    // drain any latched arm/abort so the next connection starts clean (uploads restart).
+                    {
+                        let mut guard = shared.lock().await;
+                        store.borrow_mut().link_reset(&mut guard);
+                    }
+                    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+                    TRANSFER_ARM.reset();
+                    TRANSFER_ABORT.reset();
+                    publish(|s| {
+                        s.disconnects += 1;
+                        s.last_disconnect_reason = reason;
+                    });
                 }
-                if !open_pairing {
-                    info!("ble: bond stored — new pairing attempts on this link will be rejected");
-                }
-
-                // Serve the link until the peer drops it. `serve_connection` pumps GATT + connection
-                // events (so the phone's own MTU/PHY/DLE moves are serviced and our control-plane writes
-                // are answered) and owns the exit — it returns the disconnect reason. The background set
-                // (parameter negotiation, the CoC accept-and-drain, the BAS battery notify, and the
-                // #455 link control — radio-off / Forget both end in a local disconnect) runs
-                // concurrently and never returns before the teardown, so `select` tears it all down the
-                // moment the link drops (any disconnect drops straight back to the loop top).
-                let reason = match select(
-                    serve_connection(stack, server, &conn, store, shared),
-                    join4(
-                        negotiate_link(stack, &conn),
-                        serve_coc(stack, server, &conn, store, shared),
-                        battery_task(stack, server, &conn),
-                        link_control(stack, &conn, store, shared),
-                    ),
-                )
-                .await
-                {
-                    Either::First(reason) => reason,
-                    Either::Second(_) => unreachable!("the background futures never return"),
-                };
-                // The drop may have cancelled the data plane mid-transfer (at an await): discard any
-                // in-flight upload + release the store's open handles, clear the one-transfer gate, and
-                // drain any latched arm/abort so the next connection starts clean (uploads restart).
-                {
-                    let mut guard = shared.lock().await;
-                    store.borrow_mut().link_reset(&mut guard);
-                }
-                TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
-                TRANSFER_ARM.reset();
-                TRANSFER_ABORT.reset();
-                publish(|s| {
-                    s.disconnects += 1;
-                    s.last_disconnect_reason = reason;
-                });
-            }
-        },
+            },
+        ),
     )
     .await;
     unreachable!()
@@ -572,10 +630,15 @@ async fn link_control(
     conn.raw().disconnect();
 }
 
-/// The host's transport pump — must run forever alongside the advertise loop.
+/// The host's transport pump — must run forever alongside the advertise loop. Runs **with the
+/// sensor manager's scan event handler** (SE6): trouble-host 0.7 delivers LE advertising reports only
+/// through an [`EventHandler`] on the rx runner (there is no report method on `ScanSession`), so the
+/// manager's [`sensors::ScanEventHandler`] parses each report into the deduped scan snapshot here.
+/// The handler is inert unless the manager has a scan armed, so this costs nothing on the steady
+/// advertise/serve path.
 async fn host_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) -> ! {
     loop {
-        if let Err(e) = runner.run().await {
+        if let Err(e) = runner.run_with_handler(&sensors::ScanEventHandler).await {
             let e = defmt::Debug2Format(&e);
             defmt::panic!("ble: host runner error: {:?}", e);
         }

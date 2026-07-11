@@ -239,3 +239,141 @@ impl CrankCadence {
         self.last = None;
     }
 }
+
+// ============================ Scan-side classification (SE6, #713) ============================
+//
+// The radio-free half of the board's central scan path (`ble/sensors.rs`): given the raw AD-structure
+// bytes of an advertisement, decide whether it is a supported cycling sensor and, if so, which
+// quantity it serves. Kept here (not in the board crate) precisely because it is pure byte→enum logic
+// — `cargo test` on the host pins it, and the board manager only supplies the bytes from a
+// trouble-host scan report and copies the borrowed name into its own `heapless` snapshot.
+
+/// The three sensor quantities the head unit reads (epic #707: HR + power + cadence). Each maps to a
+/// standard GATT service and its measurement characteristic — the pair the central discovers and
+/// subscribes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SensorKind {
+    /// Heart Rate (0x180D / 0x2A37).
+    HeartRate,
+    /// Cycling Power (0x1818 / 0x2A63) — its optional crank data can also feed cadence.
+    Power,
+    /// Cycling Speed & Cadence (0x1816 / 0x2A5B) — the dedicated cadence sensor.
+    Cadence,
+}
+
+impl SensorKind {
+    /// The primary GATT **service** UUID the manager discovers this sensor by.
+    pub const fn service_uuid(self) -> u16 {
+        match self {
+            SensorKind::HeartRate => UUID_HEART_RATE_SERVICE,
+            SensorKind::Power => UUID_CYCLING_POWER_SERVICE,
+            SensorKind::Cadence => UUID_CSC_SERVICE,
+        }
+    }
+
+    /// The measurement **characteristic** UUID the manager subscribes to for notifications.
+    pub const fn measurement_uuid(self) -> u16 {
+        match self {
+            SensorKind::HeartRate => UUID_HR_MEASUREMENT,
+            SensorKind::Power => UUID_CYCLING_POWER_MEASUREMENT,
+            SensorKind::Cadence => UUID_CSC_MEASUREMENT,
+        }
+    }
+}
+
+/// A supported sensor recognised in a scan advertisement: which quantity, plus its advertised local
+/// name (borrowed out of the AD bytes) when present.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdvMatch<'a> {
+    pub kind: SensorKind,
+    /// The complete (0x09) or shortened (0x08) local name, UTF-8-validated; `None` when the
+    /// advertisement carries neither or the bytes aren't valid UTF-8.
+    pub name: Option<&'a str>,
+}
+
+/// Priority rank for the classification tie-break: HR > Power > Cadence > (no match). A device that
+/// advertises several supported services is reported as the highest-priority one.
+const fn kind_rank(k: Option<SensorKind>) -> u8 {
+    match k {
+        Some(SensorKind::HeartRate) => 3,
+        Some(SensorKind::Power) => 2,
+        Some(SensorKind::Cadence) => 1,
+        None => 0,
+    }
+}
+
+/// Classify an advertisement's **AD structures** (`[len][type][data…]` repeated) as a supported
+/// cycling sensor.
+///
+/// Walks the AD list once, tolerant of truncation (a runt structure ends the walk rather than
+/// panicking), reading the two things a scan list needs:
+///
+/// - the **16-bit Service UUID** lists (types 0x02 incomplete / 0x03 complete): the first of
+///   HR → Power → Cadence found decides [`SensorKind`] (a power meter that also advertises CSC is a
+///   power meter, so HR/Power win over Cadence);
+/// - the **Local Name** (types 0x09 complete / 0x08 shortened): complete preferred, UTF-8-validated.
+///
+/// Returns `None` when no supported service UUID appears — i.e. the advertiser is not a sensor we
+/// pair with. The name is a borrow into `ad`; the caller copies it into its own fixed buffer.
+pub fn classify_advertisement(ad: &[u8]) -> Option<AdvMatch<'_>> {
+    let mut kind: Option<SensorKind> = None;
+    let mut name: Option<&str> = None;
+    let mut name_complete = false;
+
+    let mut i = 0usize;
+    while i < ad.len() {
+        let len = ad[i] as usize;
+        if len == 0 {
+            break; // an explicit zero-length field marks the end of the AD data
+        }
+        // `len` counts the type byte + the payload; a structure that overruns the buffer is a runt.
+        let end = i + 1 + len;
+        if end > ad.len() {
+            break;
+        }
+        let ad_type = ad[i + 1];
+        let payload = &ad[i + 2..end];
+        match ad_type {
+            // Incomplete / Complete list of 16-bit Service Class UUIDs (LE pairs).
+            0x02 | 0x03 => {
+                for pair in payload.chunks_exact(2) {
+                    let uuid = u16::from_le_bytes([pair[0], pair[1]]);
+                    let hit = if uuid == UUID_HEART_RATE_SERVICE {
+                        Some(SensorKind::HeartRate)
+                    } else if uuid == UUID_CYCLING_POWER_SERVICE {
+                        Some(SensorKind::Power)
+                    } else if uuid == UUID_CSC_SERVICE {
+                        Some(SensorKind::Cadence)
+                    } else {
+                        None
+                    };
+                    // Keep the highest-priority match seen (HR > Power > Cadence).
+                    if kind_rank(hit) > kind_rank(kind) {
+                        kind = hit;
+                    }
+                }
+            }
+            // Shortened (0x08) / Complete (0x09) Local Name — prefer the complete form.
+            0x08 | 0x09 => {
+                let complete = ad_type == 0x09;
+                if name.is_none() || (complete && !name_complete) {
+                    if let Ok(s) = core::str::from_utf8(payload) {
+                        name = Some(s);
+                        name_complete = complete;
+                    }
+                }
+            }
+            _ => {}
+        }
+        i = end;
+    }
+
+    kind.map(|kind| AdvMatch { kind, name })
+}
+
+/// Cadence arbitration (epic #707 locked decision): a **dedicated** cadence sensor owns the cadence
+/// quantity; only when none is saved does a power meter's crank data fill it. Returns whether a
+/// power-meter crank reading should be dispatched as cadence.
+pub const fn power_crank_feeds_cadence(dedicated_cadence_saved: bool) -> bool {
+    !dedicated_cadence_saved
+}
