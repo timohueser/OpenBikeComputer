@@ -361,4 +361,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 133 screens rendered into $OUT/"
+echo "ui-snapshots: 137 screens rendered into $OUT/"
