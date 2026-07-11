@@ -339,6 +339,9 @@ const GESTURE_BUF: usize = 16;
 ///         compass: Some(&mut compass),
 ///         track: Some(&mut track_log),
 ///         fuel: Some(&mut fuel_gauge),
+///         hr: None,
+///         power: None,
+///         cadence: None,
 ///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
 ///     app.handle_input(InputClock(now_ms), &mut input_source); // encoder + Back → gestures
@@ -1002,7 +1005,7 @@ impl App {
             }
         }
 
-        let Sensors { loc, altimeter, temperature, clock, compass, track, fuel } = sensors;
+        let Sensors { loc, altimeter, temperature, clock, compass, track, fuel, hr, power, cadence } = sensors;
         // Battery charge from the PMIC gauge, on the slow ~30 s cadence. A reading only repaints
         // Home — the one screen that draws the gauge — when the level **actually changes** (the
         // `shows_live_data` gate below is for the riding views, not Home, so dirty it here).
@@ -1037,6 +1040,26 @@ impl App {
         if let Some(temperature) = temperature {
             if let Some(c) = temperature.poll() {
                 self.temp_c = Some(c);
+            }
+        }
+        // BLE sensors → the live values Activity staleness-gates + the per-ride summaries. Drained
+        // here beside the altimeter/temperature so `record_motion` (below, on a fresh fix) sees this
+        // tick's samples. `Some` only on a fresh reading; a dropped strap simply stops reporting and
+        // the staleness gate expires the last value. No screen consumes these yet (SE4+); the ride
+        // record stamping is SE3.
+        if let Some(hr) = hr {
+            if let Some(bpm) = hr.poll() {
+                self.activity.record_hr(bpm, now_ms);
+            }
+        }
+        if let Some(power) = power {
+            if let Some(watts) = power.poll() {
+                self.activity.record_power(watts, now_ms);
+            }
+        }
+        if let Some(cadence) = cadence {
+            if let Some(rpm) = cadence.poll() {
+                self.activity.record_cadence(rpm, now_ms);
             }
         }
         // GPS UTC time → the wall clock, but **only** in "Set from GPS" mode (so a manual clock is
@@ -3053,6 +3076,9 @@ mod tests {
                 compass: None,
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3115,6 +3141,9 @@ mod tests {
                 compass: None,
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3134,6 +3163,9 @@ mod tests {
                 compass: None,
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3239,6 +3271,9 @@ mod tests {
                 compass: None,
                 track: Some(&mut sink),
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3260,6 +3295,9 @@ mod tests {
                 compass: None,
                 track: Some(&mut sink),
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3292,6 +3330,9 @@ mod tests {
                 compass: None,
                 track: Some(&mut sink),
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3322,6 +3363,9 @@ mod tests {
                 compass: None,
                 track: Some(&mut sink),
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3383,6 +3427,9 @@ mod tests {
                 compass: Some(&mut compass),
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -3463,6 +3510,9 @@ mod tests {
                 compass: None,
                 track: None,
                 fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
             },
             None,
         );
@@ -4162,6 +4212,9 @@ mod tests {
                     compass: None,
                     track: None,
                     fuel: None,
+                    hr: None,
+                    power: None,
+                    cadence: None,
                 },
                 route,
             );
