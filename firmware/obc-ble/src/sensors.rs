@@ -103,21 +103,28 @@ pub fn parse_hr_measurement(data: &[u8]) -> Option<HrSample> {
 /// the crank field we walk the optional fields in spec order, skipping what precedes it:
 /// pedal-power-balance (bit 0, +1 B), accumulated-torque (bit 2, +2 B), wheel-rev data (bit 4,
 /// +6 B), then crank-rev data (bit 5, `revs: u16` + `event_time: u16`). Anything after crank data
-/// is ignored. A buffer too short at any skipped field or the crank field itself → `None`.
+/// is ignored. A buffer too short at any skipped field or the crank field itself → `None` — a frame
+/// whose flags declare fields the buffer doesn't hold is garbled, so even its mandatory head isn't
+/// trusted (crank flag present or not).
 pub fn parse_power_measurement(data: &[u8]) -> Option<PowerSample> {
-    let flags = u16::from_le_bytes([*data.get(0)?, *data.get(1)?]);
+    let flags = u16::from_le_bytes([*data.first()?, *data.get(1)?]);
     let watts = i16::from_le_bytes([*data.get(2)?, *data.get(3)?]);
 
     let mut off = 4usize;
-    // Skip the optional fields that precede crank data, bounds-checking each skip.
+    // Walk the optional fields that precede crank data.
     if flags & (1 << 0) != 0 {
-        off = off.checked_add(1)?; // pedal power balance (u8)
+        off += 1; // pedal power balance (u8)
     }
     if flags & (1 << 2) != 0 {
-        off = off.checked_add(2)?; // accumulated torque (u16)
+        off += 2; // accumulated torque (u16)
     }
     if flags & (1 << 4) != 0 {
-        off = off.checked_add(6)?; // wheel-rev data (u32 revs + u16 event time)
+        off += 6; // wheel-rev data (u32 revs + u16 event time)
+    }
+    // The buffer must hold everything the flags declared up to here — a frame truncated inside a
+    // skipped field is garbled even when we don't read the crank data after it.
+    if data.len() < off {
+        return None;
     }
 
     let crank = if flags & (1 << 5) != 0 {
@@ -184,7 +191,10 @@ pub fn parse_battery_level(data: &[u8]) -> Option<u8> {
 ///
 /// [`reset`](Self::reset) drops the baseline on disconnect so a reconnect doesn't compute a delta
 /// across the gap.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// Deliberately **not `Copy`**: a stateful accumulator that copies silently invites updating a
+/// copy (a closure capture, say) while the original goes stale.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CrankCadence {
     last: Option<CrankRevs>,
 }
