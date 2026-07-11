@@ -1126,6 +1126,12 @@ impl App {
                         ele: self.activity.track_ele(),
                         t_ms: now_ms,
                         segment_start: motion.segment_start,
+                        // Stamp the freshest staleness-gated sensor values (epic #707): a strap
+                        // that's dropped/stale (>5 s) records absent, never its frozen last value.
+                        // `now_ms` (the RideClock) is the same timebase the samples arrived on.
+                        hr: self.activity.live_hr(now_ms).map(|b| b.min(u8::MAX as u16) as u8),
+                        cadence: self.activity.live_cadence(now_ms),
+                        power: self.activity.live_power(now_ms),
                     });
                     // The host couldn't durably write the point (card pulled, write error, medium
                     // full) — the ride log now has a gap. Raise the recording-error advisory so the
@@ -2394,6 +2400,13 @@ impl App {
             climb_m: self.activity.climb_m() as u16,
             unix_at_anchor: self.wall_unix_now(),
             anchor_ms: self.now_ms,
+            // The per-ride BLE-sensor summary heads the v2 ride object (epic #707, SE3). Each is
+            // `None` (→ sentinel) when the ride saw no fresh sample of that quantity.
+            avg_hr: self.activity.avg_hr(),
+            max_hr: self.activity.max_hr(),
+            avg_cadence: self.activity.avg_cadence(),
+            avg_power: self.activity.avg_power(),
+            max_power: self.activity.max_power(),
         }
     }
 
