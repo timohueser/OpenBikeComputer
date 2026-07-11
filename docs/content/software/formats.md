@@ -783,6 +783,81 @@ A route you draw doesn't need every GPS sample — a thinned polyline looks iden
 
 One thing the file *doesn't* store is the elevation **profile** the Statistics screen draws. That's rebuilt once when a route loads — a multi-resolution min/max pyramid over distance, the same coarse-to-fine idea as the map's LODs, so the profile can be zoomed and panned without ever re-reading geometry. It's a runtime structure rather than a format concern; the [UI page](../ui/) covers how it's drawn. The route's **climbs** are the same kind of runtime derivation — segmented from that profile when the route loads, never stored in the file or sent over the link (the [Climb panel](../ui/) draws them).
 
+## Recorded rides — the track log and the ride object
+
+[`obc-route`](src:firmware/obc-route) owns one more pair of formats beyond the route you *load*: the two the device *writes* when it records a ride. They share the family's DNA — little-endian, integer coordinates — but they're **logs, not decimated drawings**, so they keep every accepted fix at full fidelity. This is also where a ride's **BLE-sensor** data lives ([epic #707](https://github.com/timohueser/OpenBikeComputer/issues/707)): heart rate, cadence, and power ride along inside both records.
+
+<figure class="fig">
+<svg viewBox="0 0 720 258" role="img" aria-label="The 20-byte recorded-track record drawn as a byte ruler: bytes 0 to 3 longitude i32, 4 to 7 latitude i32, 8 to 9 elevation i16, 10 to 11 a flags word whose bit 0 marks a segment start, 12 to 15 a millisecond timestamp, then the version-2 sensor tail — byte 16 heart rate, byte 17 cadence, bytes 18 to 19 power — each with a sentinel meaning absent. Below, the Finish-time fan-out: the headerless .obct log is converted in one streaming pass into a GPX file with heart-rate, cadence and power extensions and into a ride object v2 file, the exact bytes the phone downloads.">
+  <defs>
+    <marker id="rr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">The 20-byte track record — 16 bytes of fix, then a 4-byte sensor tail (v2)</text>
+
+  <!-- field names -->
+  <text class="d-sub" x="106" y="56" text-anchor="middle" style="font-size:9.5px">lon (i32)</text>
+  <text class="d-sub" x="210" y="56" text-anchor="middle" style="font-size:9.5px">lat (i32)</text>
+  <text class="d-sub" x="288" y="56" text-anchor="middle" style="font-size:9.5px">ele</text>
+  <text class="d-sub" x="340" y="56" text-anchor="middle" style="font-size:9px">flags</text>
+  <text class="d-sub" x="418" y="56" text-anchor="middle" style="font-size:9.5px">t_ms (u32)</text>
+  <text class="d-sub" x="483" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">hr</text>
+  <text class="d-sub" x="509" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">cad</text>
+  <text class="d-sub" x="548" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">pwr</text>
+
+  <!-- ruler rects (26 px / byte, origin x=54) -->
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="54"  y="64" width="104" height="34" class="d-water" />
+    <rect x="158" y="64" width="104" height="34" class="d-water" />
+    <rect x="262" y="64" width="52"  height="34" class="d-muted" />
+    <rect x="314" y="64" width="52"  height="34" class="d-amber" />
+    <rect x="366" y="64" width="104" height="34" class="d-forest" />
+    <rect x="470" y="64" width="26"  height="34" class="d-hot-fill" />
+    <rect x="496" y="64" width="26"  height="34" class="d-hot-fill" />
+    <rect x="522" y="64" width="52"  height="34" class="d-hot-fill" />
+  </g>
+  <!-- field values -->
+  <text class="d-sub" x="340" y="85" text-anchor="middle" style="font-size:8px">bit0 = seg</text>
+  <text class="d-sub" x="418" y="85" text-anchor="middle" style="fill:#e7ead8;font-size:8px">millis</text>
+
+  <!-- byte ranges -->
+  <text class="d-sub" x="106" y="112" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="210" y="112" text-anchor="middle" style="font-size:9px">4–7</text>
+  <text class="d-sub" x="288" y="112" text-anchor="middle" style="font-size:9px">8–9</text>
+  <text class="d-sub" x="340" y="112" text-anchor="middle" style="font-size:9px">10–11</text>
+  <text class="d-sub" x="418" y="112" text-anchor="middle" style="font-size:9px">12–15</text>
+  <text class="d-sub" x="483" y="112" text-anchor="middle" style="font-size:9px">16</text>
+  <text class="d-sub" x="509" y="112" text-anchor="middle" style="font-size:9px">17</text>
+  <text class="d-sub" x="548" y="112" text-anchor="middle" style="font-size:9px">18–19</text>
+  <text class="d-sub" x="590" y="86" style="fill:#a9501c;font-size:8.5px">sensor tail</text>
+  <text class="d-sub" x="590" y="98" style="fill:#a9501c;font-size:8px">0xFF/0xFFFF = absent</text>
+
+  <!-- Finish fan-out -->
+  <rect class="d-panel-2" x="40" y="168" width="158" height="64" rx="10" />
+  <text class="d-label" x="119" y="192" text-anchor="middle" style="font-size:10.5px">recorded log</text>
+  <text class="d-sub" x="119" y="208" text-anchor="middle" style="font-size:9px">.obct · N × 20 B</text>
+  <text class="d-sub" x="119" y="222" text-anchor="middle" style="font-size:9px;fill:#a9501c">headerless</text>
+
+  <line class="d-flow" x1="198" y1="200" x2="302" y2="200" marker-end="url(#rr1)" />
+  <text class="d-sub" x="250" y="190" text-anchor="middle" style="font-size:9px">Finish —</text>
+  <text class="d-sub" x="250" y="216" text-anchor="middle" style="font-size:8.5px">one streaming pass</text>
+
+  <rect class="d-panel" x="308" y="164" width="384" height="34" rx="8" />
+  <text class="d-sub" x="320" y="185" style="font-size:9.5px"><tspan class="d-label">GPX</tspan> — gpxtpx:hr / gpxtpx:cad + a bare &lt;power&gt;</text>
+
+  <rect class="d-hot" x="308" y="206" width="384" height="34" rx="8" style="fill:#f8efe4" />
+  <text class="d-sub" x="320" y="227" style="font-size:9.5px"><tspan class="d-label" style="fill:#a9501c">ride object v2</tspan> — RD{id}.ORD, the phone's download</text>
+</svg>
+<figcaption>One record is a fixed <b>20 bytes</b>: the original 16 (position, elevation, a segment-start flag, a millisecond timestamp) plus a <b>4-byte sensor tail</b> — <code>hr u8 · cad u8 · pwr u16</code>, each written as a sentinel (<code>0xFF</code> / <code>0xFF</code> / <code>0xFFFF</code>) when the value was absent or stale. At <b>Finish</b> the headerless log is converted in one streaming pass into a <b>GPX</b> (with <code>gpxtpx</code> heart-rate/cadence extensions and a bare <code>&lt;power&gt;</code>) and a <b>ride object v2</b> — the durable per-ride file that <i>is</i> the BLE wire object, so a ride download is a verbatim copy.</figcaption>
+</figure>
+
+**The track log (`.obct`) — a headerless record array.** While you ride, the device appends one fixed 20-byte record per accepted GPS fix. There is **no header**: the file is just the array, so truncating it to any 20-byte boundary is always valid, and the worst a power-loss can cost is the one in-flight record. That headerlessness is exactly why there's no in-band version byte to tell a 20-byte (v2) log from an old 16-byte one — so the upgrade guard is *structural* instead. The log is only ever converted through an in-RAM handle set by **this boot's** Finish; that handle can't survive a reboot, and the next ride's start opens the temp file truncating — so an orphaned 16-byte log left by older firmware can never reach the converter to be misparsed as 20-byte records. Boot provably discards it, so no versioned temp filename is needed.
+
+**The ride object (`RD{id}.ORD`) — what the phone downloads.** At Finish the log is converted into the durable per-ride file that *is* the BLE wire object, so a ride download is a verbatim byte copy with no re-encode. It is **not** OBCR: coordinates are stored as **degrees × 1e7** in `lat, lon` order (the layout the companion app pins — the extra digit over OBCR's microdegrees buys a ~1 cm grid for nothing), and the header carries precomputed totals — distance, moving time, average speed, climb — plus a UTF-8 name.
+
+**v1 and v2 coexist.** Version 2 is a pure **additive** widening for sensor data: the header grows an 8-byte summary — `avg_hr` / `max_hr` / `avg_cad` (+ a reserved pad) / `avg_pwr` / `max_pwr`, each sentinel-marked — and each point record grows the same `hr u8 · cad u8 · pwr u16` tail as the track log. The byte length stays **fully determined per version** — v1 is `23 + name_len + 14 × points`, v2 is `31 + name_len + 18 × points` — so a reader takes the version byte, then rejects any payload whose length disagrees for that version. That length check is also the torn-write guard: an interrupted save leaves a short file, and the version byte is written **last** as the commit point, so a half-written object is rejected rather than mistaken for a ride. A device that has never seen a sensor keeps writing v1, and **both firmware and app accept either** — old v1 rides on the card still list, download, and delete. Because it's an additive object version, there's **no `protocolVersion` bump**.
+
+The exhaustive byte tables — every header and point field in both versions — are the normative [BLE interface spec §7.2](src:obc-ble-interface-spec.md); this is the readable tour. The ride object crosses to a phone as [an object on the companion link](../companion-link/#objects-are-files-the-device-already-speaks), where the [Sensors section](../companion-link/#sensors-the-device-as-ble-central) covers how those sensor values were captured in the first place.
+
 ## Streaming: resident vs on-demand
 
 Both formats are read through one trait. Neither reader touches a filesystem directly — they ask a [`ByteSource`](src:firmware/obc-reader/src/byte_io.rs) for bytes at an offset:
@@ -843,6 +918,7 @@ The map's caches matter because the [priority multi-pass](../rendering/#4-decode
 - Map reader, quadtree walk, chunk decode, the POI nearest-16 query, and the nav directory / node-leaf walk / edge fetch: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
 - The canonical POI category/subtype table (shared by reader + packer): [`obc-reader/src/poi_table.rs`](src:firmware/obc-reader/src/poi_table.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs)
+- The recorded-track log + its GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec + the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
 - The shared byte seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
 - The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 
