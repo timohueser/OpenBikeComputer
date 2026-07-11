@@ -116,6 +116,11 @@ struct Args {
     /// Headless `--png` only: render with a stored bond, so the Bluetooth screen's Paired row
     /// reads "yes" (and its Forget row arms). Stands in for the control panel's "Paired" toggle.
     ble_paired: bool,
+    /// Headless `--png` only: drive the **Sensors settings screen** (epic #707, SE7) with a canned
+    /// fake central manager — two saved sensors (HR Connected · 78 %, Power Searching) with Cadence
+    /// Not set on the three-row list, plus a filtered scan-hit set for the scan-list screen. Stands in
+    /// for the GUI host's fake manager. (Distinct from `--sensors-demo`, which pins the SE5 stat tiles.)
+    sensors_screen: bool,
     /// Headless `--png` only: leave a recorded create-route request **un-drained**, so the
     /// planning screen (spinner) stays on top for its snapshot instead of the plan completing
     /// before the render. Implied by `--inject-nav-fail`.
@@ -217,6 +222,7 @@ impl Default for Args {
             ble_connected: false,
             ble_passkey: None,
             ble_paired: false,
+            sensors_screen: false,
             nav_hold: false,
             inject_nav_fail: None,
             inject_upload: None,
@@ -398,6 +404,7 @@ fn parse_args() -> Result<Args, String> {
                 )
             }
             "--ble-paired" => a.ble_paired = true,
+            "--sensors-screen" => a.sensors_screen = true,
             other => {
                 if a.map.is_empty() {
                     a.map = other.to_string();
@@ -626,7 +633,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
             std::process::exit(2);
         }
     };
@@ -774,7 +781,7 @@ fn main() {
         // flag `set_settings` isn't called, and `--clock` alone still leaves `language` English, so
         // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
         // from this local set-point (see `App::set_settings`).
-        if args.clock.is_some() || args.lang.is_some() || args.sensors_demo {
+        if args.clock.is_some() || args.lang.is_some() || args.sensors_demo || args.sensors_screen {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
                 settings.gps_time = false;
@@ -803,6 +810,13 @@ fn main() {
                     sf.push(f);
                 }
                 settings.stat_fields = sf;
+            }
+            // `--sensors-screen` (SE7): two saved slots so the row screen reads Connected / Searching
+            // (the Not-set third stays empty). A settings write, so it survives into the row status
+            // gate; the live phase + battery come from the status snapshot pushed after the script.
+            if args.sensors_screen {
+                settings.saved_sensors[0] = obc_app::SavedSensor::saved(1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
+                settings.saved_sensors[1] = obc_app::SavedSensor::saved(0, [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F]);
             }
             app.set_settings(settings);
         }
@@ -944,6 +958,26 @@ fn main() {
             app.notify_update_confirmed(version);
             app.advance_animations(InputClock(500_000));
         }
+        // `--sensors-screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
+        // scan list), push the per-slot status + the canned scan-hit set — the fake central manager,
+        // so the three-row screen reads Connected · 78 % / Searching / Not set and the scan list shows
+        // filtered hits. The row screen ignores the hits; the scan-list screen ignores the status.
+        if args.sensors_screen {
+            let status = [
+                obc_app::SensorStatus { phase: obc_app::SensorPhase::Connected, battery: Some(78), last_value_ms: 0 },
+                obc_app::SensorStatus { phase: obc_app::SensorPhase::Searching, battery: None, last_value_ms: 0 },
+                obc_app::SensorStatus::default(),
+            ];
+            app.set_sensor_status(&status);
+            let hits = [
+                obc_app::SensorScanHit::new(0, 1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11], "HRM-Dual", -58),
+                obc_app::SensorScanHit::new(0, 1, [0x21, 0x43, 0x65, 0x87, 0xA9, 0xCB], "Forerunner", -74),
+                obc_app::SensorScanHit::new(1, 0, [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F], "Stages LR", -67),
+                obc_app::SensorScanHit::new(2, 0, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06], "", -80),
+            ];
+            app.set_sensor_scan_hits(&hits);
+        }
+
         // The script may have loaded a route; open its geometry for the Map.
         store.sync_active(app.activity.active_route);
         let route_src = store.active_source();

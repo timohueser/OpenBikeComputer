@@ -470,6 +470,7 @@ mod tests {
             rides: &[],
             nav_profiles: &crate::NavProfiles::EMPTY,
             poi_scratch: &scratch,
+            sensor_scan_hits: &[],
             now_ms: 0,
         };
         StatisticsScreen::new().handle(Gesture::Back, &mut cx)

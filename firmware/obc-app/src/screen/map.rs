@@ -989,6 +989,7 @@ mod tests {
             rides: &[],
             nav_profiles: &crate::NavProfiles::EMPTY,
             poi_scratch: &scratch,
+            sensor_scan_hits: &[],
             now_ms: 0,
         };
         MapScreen::new().handle(g, &mut cx)

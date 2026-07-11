@@ -365,6 +365,7 @@ mod tests {
             rides: &[],
             nav_profiles: &crate::NavProfiles::EMPTY,
             poi_scratch: scratch,
+            sensor_scan_hits: &[],
             now_ms: 0,
         };
         scr.handle(Gesture::Turn(n), &mut cx);
