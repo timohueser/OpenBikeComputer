@@ -682,27 +682,15 @@ pub(crate) async fn run_app(
             }
 
             // ── The BLE sensor seam (epic #707, SE7) ──
-            // Saved-sensor reconcile: the persisted `Settings.saved_sensors` is the source of truth
-            // (the SE6 `SEED` hook is gone). Diff each slot against what was last pushed and drive the
-            // change through SE6's save/forget latches — fired once per change (seed at boot from
-            // all-`None`, a screen pair/forget, a factory reset clearing a slot). The board-side latch
-            // pulse (`WORK_EDGE`) makes the manager connect/drop at once.
-            for (q, slot) in app.settings().saved_sensors.iter().enumerate() {
-                let want = slot.present.then_some((slot.addr, slot.addr_kind != 0));
-                if want != pushed_sensors[q] {
-                    match want {
-                        Some((addr, random)) => crate::ble::request_save_sensor(q, addr, random),
-                        None => crate::ble::request_forget_sensor(q),
-                    }
-                    pushed_sensors[q] = want;
-                }
-            }
             // Scan mode: while the Sensors screen's scan list is up, keep a discovery scan running and
             // feed the hits back; clear the app list when it closes. `request_scan` **must not** be
             // rung every pass — it pulses the manager's `WORK_EDGE`, which the manager's own scan
             // window selects on, so a per-pass ring would collapse the ~10 s window (and re-clear the
             // hit snapshot) every ~40 ms. Instead ring it once on the rising edge, then re-arm every
             // ~9 s (just under the board's 10 s window) so a lingering scan stays live without thrash.
+            // This block runs **before** the saved-sensor reconcile below: the falling edge's
+            // `cancel_scan` must clear a stale latched request *before* the reconcile's save request
+            // wakes the manager, or the manager could slip in between and run the stale scan anyway.
             if app.sensor_scan_active() {
                 // `now >= rearm` in wrapping-monotonic terms (the signed diff handles the ~49-day u32
                 // wrap); `0` is the "not scanning yet" sentinel that fires on the rising edge.
@@ -726,8 +714,31 @@ pub(crate) async fn run_app(
                 });
                 app.set_sensor_scan_hits(&hits);
             } else {
+                // Falling edge: the scan list closed (a pick or a Back). Cancel discovery — the
+                // re-arm may have left a *stale* scan request latched, which would outrank the
+                // fresh save at the manager's loop top and hold the connect hostage for a full
+                // 10 s window (epic #744, SR4); the cancel also ends a still-running window early
+                // so a picked sensor connects now, not when the window expires.
+                if sensor_scan_rearm_ms != 0 {
+                    crate::ble::cancel_scan();
+                }
                 sensor_scan_rearm_ms = 0; // reset so the next entry rings on its rising edge
                 app.set_sensor_scan_hits(&[]);
+            }
+            // Saved-sensor reconcile: the persisted `Settings.saved_sensors` is the source of truth
+            // (the SE6 `SEED` hook is gone). Diff each slot against what was last pushed and drive the
+            // change through SE6's save/forget latches — fired once per change (seed at boot from
+            // all-`None`, a screen pair/forget, a factory reset clearing a slot). The board-side latch
+            // pulse (`WORK_EDGE`) makes the manager connect/drop at once.
+            for (q, slot) in app.settings().saved_sensors.iter().enumerate() {
+                let want = slot.present.then_some((slot.addr, slot.addr_kind != 0));
+                if want != pushed_sensors[q] {
+                    match want {
+                        Some((addr, random)) => crate::ble::request_save_sensor(q, addr, random),
+                        None => crate::ble::request_forget_sensor(q),
+                    }
+                    pushed_sensors[q] = want;
+                }
             }
             // Push the per-slot status snapshot (the Sensors screen's row status lines).
             let sensor_status = [sensor_status_of(0), sensor_status_of(1), sensor_status_of(2)];
