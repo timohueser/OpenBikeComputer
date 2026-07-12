@@ -483,7 +483,13 @@ pub(crate) async fn run_app(
     // bounded step per pass. Guards the `.bss` planner slot's initialization.
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
-    let mut route_index: Option<RouteIndex> = None;
+    // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
+    // `Option<RouteIndex>` built by value: the slot is ~6.7 KB and permanently part of this frame
+    // either way, but a by-value build (`RouteIndex::read`'s return) also transits the stack at
+    // the pass's deepest point — which is what overflowed the 44 KB main stack on the post-upload
+    // rescan (STKOF HardFault, 2026-07-12). `build_route_index_into` fills it in place.
+    let mut route_index: RouteIndex = RouteIndex::empty();
+    let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
     #[cfg(feature = "debug-uart")]
@@ -1117,22 +1123,22 @@ pub(crate) async fn run_app(
         // Not gated on rendering — the matcher in `tick` needs the index on every fresh fix.
         if index_route != active {
             route_cache.clear(); // a route switch: drop stale slots (the cache keys by chunk index only)
+            route_index_valid = false;
             match active {
-                Some(_) => match storage.as_ref().and_then(|s| s.build_route_index()) {
-                    Some(idx) => {
-                        route_index = Some(idx);
+                Some(_) => {
+                    // In place into the resident slot — see its declaration; a by-value build here
+                    // is the stack-overflow footgun.
+                    if storage.as_ref().is_some_and(|s| s.build_route_index_into(&mut route_index)) {
+                        route_index_valid = true;
                         index_route = active; // cached — no more rebuilds until the route changes
-                    }
-                    None => {
+                    } else {
                         // Transient SD glitch: leave the key mismatched so every frame retries, hiding
                         // the route this frame rather than the whole ride.
-                        route_index = None;
                         index_route = None;
                         defmt::warn!("SD: route index read failed (flaky link?) — retrying next frame");
                     }
-                },
+                }
                 None => {
-                    route_index = None;
                     index_route = None;
                 }
             }
@@ -1141,7 +1147,7 @@ pub(crate) async fn run_app(
         // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
         // on a fresh fix, the renderer on a redraw frame.
         let route_src = storage.as_ref().and_then(|s| s.route_source());
-        let route = match (route_index.as_ref(), route_src.as_ref()) {
+        let route = match (route_index_valid.then_some(&route_index), route_src.as_ref()) {
             (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
             _ => None,
         };
