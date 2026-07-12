@@ -92,20 +92,36 @@ const BOOT_COUNT_MAGIC: [u8; 4] = *b"OBCD";
 /// `deviceObjectID` / ride tombstones key on these ids). Placed at the upper half's quarter mark,
 /// clear of the other residents; the carve layout is now: **settings slot @0** (low 2 KB reserved
 /// for its future two-slot upgrade) · **boot counter @2048** · **arm marker @2064** (48 B) ·
-/// **id high-water @2560** ·
+/// **id high-water @2560** · **store-epoch @2576** (protocol v2, #767) ·
 /// **BLE bond @3072** (64 B). Codec (magic/version/CRC, torn line → "no floor") lives host-tested
 /// in [`obc_app::settings`].
 const ID_MARKS_OFFSET: u32 = 2560;
 /// The id line is one RRAM write line by construction — pin it so a codec growth fails loud.
 const _: () = assert!(obc_app::settings::ID_MARKS_LEN == RRAM_WRITE_LINE);
 
+/// Byte offset of the **store-epoch line** (protocol v2, #632 item 5 / #767) within the reserved
+/// settings page — one 16-byte line holding the per-device id-era nonce (`magic "OBCE" · version ·
+/// epoch u32 · crc16`), served over the pre-pairing `protocolVersion` read so the phone can detect
+/// an id-era reset (reflash / factory reset / torn id-marks) and scope its library by
+/// (serial, epoch). Placed on the line right after the id high-water @2560 (16 B), clear of the
+/// BLE bond @3072; the carve layout is now: **settings slot @0** (low 2 KB reserved) · **boot
+/// counter @2048** · **arm marker @2064** (48 B) · **id high-water @2560** · **store-epoch @2576**
+/// · **BLE bond @3072** (64 B). Written ~once per device lifetime (unlike id-marks, which rewrites
+/// on every ride finish) — hence its own line. Codec (magic/version/CRC, torn line → "no epoch")
+/// lives host-tested in [`obc_app::settings`].
+const STORE_EPOCH_OFFSET: u32 = 2576;
+/// The store-epoch line is one RRAM write line by construction — pin it so a codec growth fails
+/// loud, and pin that it sits clear of the id high-water line below and the bond slot above.
+const _: () = assert!(obc_app::settings::STORE_EPOCH_LEN == RRAM_WRITE_LINE);
+const _: () = assert!(ID_MARKS_OFFSET + obc_app::settings::ID_MARKS_LEN as u32 <= STORE_EPOCH_OFFSET);
+
 /// Byte offset of the **DFU arm-marker slot** within the reserved settings page — the armer's
 /// breadcrumb, written right after the `Armed` boot-state write and consumed by the boot-outcome
 /// reconcile (`dfu::reconcile_boot_outcome`) on the next boot. Placed on the line right after the
 /// boot counter (@2048, one line); the carve layout is now: **settings slot @0** (low 2 KB
 /// reserved) · **boot counter @2048** · **arm marker @2064** (48 B) · **id high-water @2560** ·
-/// **BLE bond @3072**. Codec (magic/version/CRC, torn slot → "no arm happened") lives host-tested
-/// in [`obc_app::settings`].
+/// **store-epoch @2576** · **BLE bond @3072**. Codec (magic/version/CRC, torn slot → "no arm
+/// happened") lives host-tested in [`obc_app::settings`].
 const ARM_MARKER_OFFSET: u32 = 2064;
 /// The marker is whole RRAM write lines by construction — pin it so a codec growth fails loud,
 /// and pin that it stays clear of the id high-water line.
@@ -115,10 +131,15 @@ const _: () = assert!(ARM_MARKER_OFFSET + obc_app::settings::ARM_MARKER_LEN as u
 /// Byte offset of the **BLE bond slot** within the reserved settings page: the one bonded peer's
 /// identity + keys (LTK/IRK), persisted so a power cycle or a firmware reflash lands straight back in
 /// the bonded-and-encrypted link. Placed in the page's upper half — clear of the settings slot @0
-/// (which reserves the low half for a future two-slot upgrade), the boot counter @2048, and the id
-/// high-water line @2560. One slot: a fresh pairing replaces it (single-peer policy).
+/// (which reserves the low half for a future two-slot upgrade), the boot counter @2048, the id
+/// high-water line @2560, and the store-epoch line @2576. One slot: a fresh pairing replaces it
+/// (single-peer policy).
 #[cfg(feature = "ble")]
 const BOND_OFFSET: u32 = 3072;
+/// Pin the store-epoch line clear of the bond slot above it (a 16-byte line at @2576 must end at or
+/// before @3072). Guarded here where `BOND_OFFSET` is in scope (both are `cfg(ble)`-relevant).
+#[cfg(feature = "ble")]
+const _: () = assert!(STORE_EPOCH_OFFSET + obc_app::settings::STORE_EPOCH_LEN as u32 <= BOND_OFFSET);
 /// The bond slot's tag; anything else there (blank page, torn write, older layout) reads as
 /// "no bond" rather than garbage — the device falls back to open pairing.
 ///
@@ -278,6 +299,34 @@ impl RramSettingsStore {
         let bytes = obc_app::settings::encode_id_marks(m);
         if let Err(e) = self.rram.write(off, &bytes) {
             defmt::warn!("settings: id-marks RRAM write failed: {}", e);
+        }
+    }
+
+    /// Load the durable **store-epoch nonce** (protocol v2, #632 item 5), or `None` when the line
+    /// is blank / torn / a foreign layout — "no epoch", which the boot mint rule
+    /// ([`obc_app::settings::store_epoch_mint`]) treats as clause 1 (draw a fresh one). This is also
+    /// the getter the BLE plane reads to serve the value on the pre-pairing `protocolVersion` read
+    /// (V2, #766): after the boot mint it always reads back `Some`.
+    pub fn load_store_epoch(&mut self) -> Option<u32> {
+        let off = region_offset() + STORE_EPOCH_OFFSET;
+        let mut buf = [0u8; obc_app::settings::STORE_EPOCH_LEN];
+        match self.rram.read(off, &mut buf) {
+            Ok(()) => obc_app::settings::decode_store_epoch(&buf),
+            Err(e) => {
+                defmt::warn!("settings: store-epoch RRAM read failed: {} → no epoch (mint)", e);
+                None
+            }
+        }
+    }
+
+    /// Persist the store-epoch nonce — one aligned 16-byte line write, no erase. Written ~once per
+    /// device lifetime (the boot mint pass), so the write rate is negligible.
+    pub fn save_store_epoch(&mut self, epoch: u32) {
+        let off = region_offset() + STORE_EPOCH_OFFSET;
+        let bytes = obc_app::settings::encode_store_epoch(epoch);
+        match self.rram.write(off, &bytes) {
+            Ok(()) => defmt::info!("settings: wrote store-epoch {=u32:#010x} to RRAM @ {=u32:#010x}", epoch, off),
+            Err(e) => defmt::warn!("settings: store-epoch RRAM write failed: {}", e),
         }
     }
 
