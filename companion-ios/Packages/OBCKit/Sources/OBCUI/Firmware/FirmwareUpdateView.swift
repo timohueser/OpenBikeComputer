@@ -60,6 +60,9 @@ public struct FirmwareUpdateView: View {
             Text(model.importError ?? "")
         }
         .task { model.start() }
+        // Popping the screen mid-send must not leave a headless transfer (or a
+        // leaked #459/#754 ledger claim keeping the screen awake) behind it.
+        .onDisappear { model.stop() }
     }
 
     // MARK: Running version

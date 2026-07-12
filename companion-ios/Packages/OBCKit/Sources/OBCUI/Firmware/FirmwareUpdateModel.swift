@@ -45,7 +45,25 @@ public final class FirmwareUpdateModel {
 
     // MARK: Observable state
 
-    public private(set) var phase: Phase = .idle
+    public private(set) var phase: Phase = .idle {
+        // The #459/#754 in-flight ledger claim, held exactly while a send is
+        // moving bytes. Mirroring it on the phase transition (like
+        // `RideSyncCoordinator.syncState`) covers every exit uniformly: commit
+        // → `.awaitingConfirm`, cancel → `.staged`, a drop → `.interrupted`,
+        // and the failure branches all release it. A stalled `.interrupted`
+        // transfer deliberately drops the claim — the background drain must not
+        // wait on a transfer whose link is already gone (Resume restarts it),
+        // and the screen needn't stay awake for a send that isn't advancing.
+        didSet {
+            guard oldValue != phase else { return }
+            if phase == .transferring {
+                if activityToken == nil { activityToken = activity?.begin() }
+            } else if let token = activityToken {
+                activityToken = nil
+                activity?.end(token)
+            }
+        }
+    }
     public private(set) var progress = TransferProgress(bytesDone: 0, total: 0)
     /// The device's running firmware version (DIS 0x2A26), `nil` until it lands /
     /// while the link is down. Re-read on every reconnect.
@@ -68,6 +86,13 @@ public final class FirmwareUpdateModel {
     // MARK: Wiring
 
     private let transport: any DeviceTransport
+    /// The foreground-only policy's in-flight ledger (#459), shared with the
+    /// upload sheet + ride-sync coordinator. A firmware send claims a token
+    /// while `.transferring` so it, too, is drained (not dropped) across a
+    /// background transition — and so the #754 idle-timer guard keeps the
+    /// screen awake for it. `nil` in previews/tests that don't wire it.
+    @ObservationIgnored private let activity: TransferActivity?
+    @ObservationIgnored private var activityToken: TransferActivity.Token?
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var stateTask: Task<Void, Never>?
     @ObservationIgnored private var transferWatchers: [Task<Void, Never>] = []
@@ -86,11 +111,13 @@ public final class FirmwareUpdateModel {
     public init(
         transport: any DeviceTransport,
         deviceName: String,
+        activity: TransferActivity? = nil,
         prestage: Data? = nil,
         autoSend: Bool = false
     ) {
         self.transport = transport
         self.deviceName = deviceName
+        self.activity = activity
         self.prestage = prestage
         self.autoSend = autoSend
     }
@@ -303,6 +330,21 @@ public final class FirmwareUpdateModel {
     private func cancelTransferWatchers() {
         transferWatchers.forEach { $0.cancel() }
         transferWatchers.removeAll()
+    }
+
+    /// The S7 screen left the stack (`.onDisappear`). A still-unresolved send
+    /// must not keep streaming headless behind the pop — cancel it (the same
+    /// rule as `UploadSheetModel.sheetDismissed`) — and release the ledger
+    /// claim here, since a `@MainActor` `deinit` can't touch the actor-isolated
+    /// `TransferActivity`. Idempotent: the `didSet` may already have released.
+    public func stop() {
+        if let handle, handle.currentOutcome == nil { handle.cancel() }
+        cancelTransferWatchers()
+        stateTask?.cancel()
+        if let token = activityToken {
+            activityToken = nil
+            activity?.end(token)
+        }
     }
 
     deinit {
