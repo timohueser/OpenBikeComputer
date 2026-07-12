@@ -179,6 +179,39 @@ fn header_and_summary() {
     assert_eq!(s2.bbox.max_lon, 90);
 }
 
+/// `read_into` fills the caller's **resident** slot in place (the board path — the by-value
+/// `read` transits ~6.7 KB of stack, which overflowed the DK's main stack on the post-upload
+/// index rebuild). Pins the slot's lifecycle: a reused slot is fully replaced by the new route,
+/// and a failed read leaves it cleared — never a half-filled or stale index.
+#[test]
+fn read_into_reuses_and_clears_the_resident_slot() {
+    let first = two_chunk_route();
+    let mut idx = RouteIndex::empty();
+    idx.read_into(&SliceSource(&first)).unwrap();
+    assert_eq!(idx.name(), "Black Forest");
+    assert_eq!(idx.chunks().len(), 2);
+
+    // Reuse the same slot for a different route: every field must be the new route's.
+    let second = build_route(
+        "Vosges",
+        (5, 6),
+        (2_000, 100, 80),
+        (300, 340),
+        &[ChunkIn { points: vec![(5, 6, 300), (7, 9, 340)], cum_distance_m: 0, cum_ascent_m: 0 }],
+    );
+    idx.read_into(&SliceSource(&second)).unwrap();
+    assert_eq!(idx.name(), "Vosges");
+    assert_eq!(idx.chunks().len(), 1);
+    assert_eq!(idx.point_count, 2);
+    assert_eq!(idx.total_distance_m, 2_000);
+
+    // A failed read clears the slot (the caller's validity flag is already down).
+    assert!(idx.read_into(&SliceSource(&first[..10])).is_err());
+    assert_eq!(idx.chunks().len(), 0, "a failed read must not leave a half-filled index");
+    assert_eq!(idx.name(), "");
+    assert_eq!(idx.point_count, 0);
+}
+
 #[test]
 fn route_cache_serves_repeats_without_re_reading() {
     let bytes = two_chunk_route();
