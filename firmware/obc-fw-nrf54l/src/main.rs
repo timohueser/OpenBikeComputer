@@ -1040,7 +1040,11 @@ async fn main(_spawner: Spawner) {
         // Once started a WDT can never be stopped; a warm reset carries it over, in which case
         // `try_new` re-adopts it if the config matches (ours is constant, so it does). A foreign
         // config (e.g. an older image's) can't be adopted or fed — log it and run unfed: the stale
-        // period fires once and the next boot starts clean.
+        // period fires once and the next boot starts clean. Since DR1 (#729) the bootloader plays
+        // the same game from its side: it adopts + pets this dog across a DFU install (the arm's
+        // warm reset carries it in) and pre-starts an identical one before jumping into a trial
+        // boot — which is then exactly what this `try_new` adopts. The config contract (timeout,
+        // halt/sleep behavior, one handle) is documented on `obc_dfu::WDT_TIMEOUT_TICKS`.
         let wdt_handle = {
             let mut cfg = wdt::Config::default();
             cfg.timeout_ticks = ride::WDT_TIMEOUT_TICKS;

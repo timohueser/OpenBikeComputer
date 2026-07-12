@@ -10,6 +10,7 @@ use obc_dfu::BootState;
 
 use crate::led::Led;
 use crate::sd::SdBlocks;
+use crate::wdt::BootDog;
 
 /// Toggle the LED every this many progress chunks (~4 KB each) while verifying — the *slow*
 /// heartbeat (~1 s period at SD bulk speed; the exact rate scales with card throughput).
@@ -24,6 +25,9 @@ pub struct BootIo<'a> {
     sd: Option<&'a SdBlocks>,
     rram: &'a mut Rramc<'static, Unbuffered>,
     led: &'a mut Led,
+    /// The boot-chain watchdog (DR1, #729) — pet from [`progress`](InstallIo::progress), the
+    /// one callback guaranteed to fire steadily through all three passes.
+    dog: &'a mut BootDog,
     /// Address of the BOOT_STATE page (from the linker symbol — resolved once in `main`).
     state_addr: u32,
     chunks: u32,
@@ -36,12 +40,14 @@ impl<'a> BootIo<'a> {
         sd: Option<&'a SdBlocks>,
         rram: &'a mut Rramc<'static, Unbuffered>,
         led: &'a mut Led,
+        dog: &'a mut BootDog,
         state_addr: u32,
     ) -> BootIo<'a> {
         BootIo {
             sd,
             rram,
             led,
+            dog,
             state_addr,
             chunks: 0,
             #[cfg(feature = "rtt")]
@@ -78,6 +84,10 @@ impl InstallIo for BootIo<'_> {
     }
 
     fn progress(&mut self, phase: Phase, done: u32, total: u32) {
+        // DR1 (#729): pet the adopted/inherited watchdog every chunk (one register write per
+        // ≤4 KB — effectively free), so an install stretched past 24 s by a slow card, flash
+        // retries, or a near-max image can never be dog-reset mid-flash.
+        self.dog.pet();
         self.chunks += 1;
         let period = match phase {
             Phase::Verify => VERIFY_TOGGLE_CHUNKS,

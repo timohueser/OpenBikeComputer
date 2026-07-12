@@ -42,8 +42,11 @@ use crate::{sd, stackmeter, SharedStore, SharedStoreMutex};
 // gated on the input plane's heartbeat, so **either** plane wedging trips the dog — not just
 // thread mode staying alive. Deliberately generous: it must never fire on a slow frame or a deep
 // SD reconcile, only on a genuine wedge. ──
-/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the issue's 16–30 s band).
-pub(crate) const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
+/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the issue's 16–30 s band). The value lives in
+/// `obc-dfu` since DR1 (#729): it is a boot-chain handoff contract — the bootloader must build
+/// the byte-identical WDT config to adopt this dog across a DFU install and to pre-start the one
+/// a trial boot runs under (see the contract note on the constant).
+pub(crate) const WDT_TIMEOUT_TICKS: u32 = obc_dfu::WDT_TIMEOUT_TICKS;
 /// Cap (ms) on the ride loop's event-driven sleep, ~WDT/2 — an otherwise-idle device still wakes
 /// to feed the dog. One extra wake per ~12 s is negligible next to [`IDLE_REPOLL_MS`].
 const WDT_FEED_CAP_MS: u32 = 12_000;

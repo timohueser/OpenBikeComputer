@@ -56,8 +56,12 @@ impl Led {
     /// SOS (· · · — — — · · ·), forever — the fatal-readback halt. The state page still holds
     /// the `Armed` record, so a power cycle retries the whole install from scratch; staying
     /// parked here (instead of resetting) avoids a silent reset storm hammering the card.
-    pub fn sos_forever(&mut self) -> ! {
+    /// `keep_alive` runs once per ~4.8 s cycle: the caller pets an adopted watchdog there
+    /// (DR1, #729), so a dog carried in by the arm's warm reset can't quietly convert this
+    /// park into that very reset storm.
+    pub fn sos_forever(&mut self, mut keep_alive: impl FnMut()) -> ! {
         loop {
+            keep_alive();
             for &(on, off) in &[(150u32, 150u32); 3] {
                 self.pin.set_high();
                 delay_ms(on);
