@@ -973,6 +973,14 @@ impl App {
     /// Loading or swapping a route resets the matcher and ride totals here, once per load.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         let now_ms = clock.0;
+        // BLE-sensor freshness is judged on the `RideClock` (`now_ms`) — the clock samples record on
+        // and the summaries + track log read on. Remember it so the stat tiles, which render *after*
+        // this tick against the map-plane clock `self.now_ms`, judge staleness on the same timebase.
+        // On the board `self.now_ms == now_ms` (the ride loop drives `advance_animations` and `tick`
+        // off one monotonic `now`); in the simulator they differ (`RideClock` is GPX-playback time,
+        // `self.now_ms` is wall time), and a tile reading `self.now_ms` would blank to `--` seconds
+        // into a replay — see the `sensor_tiles_…` test.
+        self.activity.note_sensor_clock(now_ms);
         // The matcher follows the *navigated route*: a load or a "Swap route only" re-locks it.
         if self.activity.active_route != self.matched_route {
             self.route_match.reset();
@@ -3791,6 +3799,52 @@ mod tests {
         assert_eq!(app.activity.avg_power(), Some(250), "…and the fresh power");
         assert_eq!(app.activity.max_power(), Some(250));
         assert_eq!(app.activity.avg_cadence(), Some(90), "…and the fresh cadence");
+    }
+
+    /// The stat tiles judge sensor freshness with the `live_*_display` accessors, which compare
+    /// against the last `tick`'s `RideClock` (`Activity::note_sensor_clock`) — the clock the samples
+    /// record on — **not** the render-time `self.now_ms`. On the board those are one monotonic `now`;
+    /// in the simulator mid GPX replay they diverge (record on playback time, render on wall time),
+    /// and a tile keyed on the render clock blanked to `--` within `SENSOR_STALE_MS` — Timo's "the
+    /// values showed up once, then only dashes." This pins the fix: `_display` stays fresh across the
+    /// divergence, while the raw render-clock read is what used to (wrongly) blank.
+    #[test]
+    fn sensor_tile_display_survives_render_clock_divergence() {
+        // The old sim mid-replay: sample recorded on playback time (30 s), but the render/map-plane
+        // clock ran on wall time (90 s) — a 60 s gap > SENSOR_STALE_MS.
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.now_ms = 90_000; // wall clock, far ahead of the replay's playback clock
+        let mut loc = OneFix(None);
+        let mut hr = OneHr(Some(142));
+        app.tick(
+            RideClock(30_000), // playback time — the clock the HR sample records on
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+                hr: Some(&mut hr),
+                power: None,
+                cadence: None,
+            },
+            None,
+        );
+        // The tile path: fresh, because it compares against the recorded-on clock (30 s), not 90 s.
+        assert_eq!(app.activity.live_hr_display(), Some(142), "the tile shows the value across the divergence");
+        // The old, wrong path — reading against the render clock — is what blanked the tile.
+        assert_eq!(
+            app.activity.live_hr(app.now_ms),
+            None,
+            "the render-clock read is stale (90 s vs a 30 s sample) — the bug `_display` fixes"
+        );
+
+        // And staleness still works on the ride clock: advance the tick clock 6 s past the sample
+        // with no new reading → the tile blanks, exactly as a dropped strap should.
+        app.activity.note_sensor_clock(36_001);
+        assert_eq!(app.activity.live_hr_display(), None, "a >5 s-old sample still blanks — no frozen value");
     }
 
     // --- settings persistence signal (the host's save trigger) ---
