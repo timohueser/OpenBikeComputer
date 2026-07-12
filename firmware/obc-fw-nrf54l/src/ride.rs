@@ -1040,18 +1040,27 @@ pub(crate) async fn run_app(
                 // never mid-recording (the arm ends in a reboot — a live ride would be lost) and
                 // never over an unconverted ride save (`pending_save` is RAM state; rebooting drops
                 // it and the next fresh ride would truncate the unconverted TRACK.OBT). On success
-                // `run_install` never returns (it resets into the bootloader); on failure it has
-                // already streamed the typed error and the loop just keeps riding.
-                if app.activity.is_tracking() {
-                    crate::dfu::status("refused: a ride is recording -- finish it first");
+                // `run_install` never returns (it resets into the bootloader); on any non-reboot
+                // outcome — a refusal here or an arm failure inside `run_install` — we get the typed
+                // reason and land the error card (issue #755) so the confirm's "Preparing update..."
+                // spinner can't strand the rider. The `D`-line breadcrumbs name the guard that
+                // refused (the field-debugging motivation).
+                let outcome = if app.activity.is_tracking() {
+                    crate::dfu::status("refused (is_tracking): a ride is recording -- finish it first");
+                    Some(obc_app::DfuInstallError::Recording)
                 } else if storage.as_ref().is_some_and(sd::Storage::has_pending_save) {
-                    crate::dfu::status("refused: a ride save is pending -- try again in a moment");
+                    crate::dfu::status("refused (has_pending_save): a ride save is pending -- try again in a moment");
+                    Some(obc_app::DfuInstallError::PendingSave)
                 } else if let Some(s) = storage.as_mut() {
                     // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed either
                     // way). Absent ⇒ `run_install` re-scans (the `dfu-install` debug path).
-                    crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await;
+                    crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await
                 } else {
-                    crate::dfu::status("refused: no SD card");
+                    crate::dfu::status("refused (no_card): no SD card");
+                    Some(obc_app::DfuInstallError::NoCard)
+                };
+                if let Some(reason) = outcome {
+                    app.notify_dfu_install_failed(reason);
                 }
             }
             Some(obc_app::DfuAction::Scan) => {
