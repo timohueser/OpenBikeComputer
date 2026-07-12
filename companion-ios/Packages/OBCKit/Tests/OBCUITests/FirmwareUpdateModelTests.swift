@@ -223,9 +223,51 @@ struct FirmwareUpdateModelTests {
         #expect(activity.isActive)
 
         // The screen popped mid-send — the claim must not leak (a `@MainActor`
-        // deinit can't reach the actor-isolated ledger, so `stop()` owns it).
+        // deinit can't reach the actor-isolated ledger, so `stop()` owns it),
+        // and the phase settles back to `.staged` (still validated, ready to
+        // re-send) — not a frozen `.transferring` on a dead handle.
         model.stop()
         #expect(!activity.isActive)
+        #expect(model.phase == .staged)
+    }
+
+    // MARK: stop()/start() re-entrancy
+
+    @Test func startAfterStopResubscribesTheLinkState() async {
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
+        model.start()
+        await waitFor { model.connection == .connected }
+
+        // An onDisappear→onAppear cycle on a persisting model (a presentation
+        // pushed over the screen, a scene re-attach): the pair must be
+        // re-entrant, or the model comes back with a dead subscription and
+        // `connection`/`canSend` freeze.
+        model.stop()
+        model.start()
+
+        stub.push(.outOfRange)
+        await waitFor { model.connection == .outOfRange }
+        #expect(model.connection == .outOfRange)
+
+        stub.push(.connected)
+        await waitFor { model.connection == .connected }
+        model.stage(container(version: "0.5.0"))
+        #expect(model.canSend, "a restarted model is fully live again")
+    }
+
+    @Test func startIsIdempotentWhileRunning() async {
+        let activity = TransferActivity()
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead", activity: activity)
+        model.start()
+        model.start()  // second call while live must be a no-op
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        #expect(activity.isActive)
+        stub.completeUpload()
+        await waitFor { model.phase == .awaitingConfirm }
+        #expect(!activity.isActive, "no doubled subscription/claim from the repeat start")
     }
 
     @Test func canRetryAfterAFailedInstall() async {
@@ -252,8 +294,12 @@ struct FirmwareUpdateModelTests {
 /// stream, a settable running version, and a firmware transfer whose completion /
 /// failure and `installFw` reply the test drives. Everything else is an inert stub.
 private final class StubTransport: DeviceTransport, @unchecked Sendable {
-    private let stateStream: AsyncStream<ConnectionState>
-    private let stateCont: AsyncStream<ConnectionState>.Continuation
+    /// Last-value multicast, like the real transports (`AsyncMulticast`): every
+    /// `state` access is a fresh subscription that replays the latest value —
+    /// what lets the model's re-entrant `stop()`/`start()` re-subscribe (a
+    /// single shared `AsyncStream` dies with its first canceled consumer).
+    private var stateConts: [AsyncStream<ConnectionState>.Continuation] = []
+    private var lastState: ConnectionState = .connected
     var fwVersion = "0.4.2"
     var installResult: FirmwareInstallResult = .accepted
     var installError: DeviceError?
@@ -261,12 +307,10 @@ private final class StubTransport: DeviceTransport, @unchecked Sendable {
     private var uploadProgress: AsyncStream<TransferProgress>.Continuation?
     private var uploadOutcome = AsyncPromise<TransferOutcome>()
 
-    init() {
-        (stateStream, stateCont) = AsyncStream<ConnectionState>.makeStream()
-        stateCont.yield(.connected) // buffered until the model starts iterating
+    func push(_ state: ConnectionState) {
+        lastState = state
+        stateConts.forEach { $0.yield(state) }
     }
-
-    func push(_ state: ConnectionState) { stateCont.yield(state) }
 
     func completeUpload() {
         uploadProgress?.finish()
@@ -280,7 +324,12 @@ private final class StubTransport: DeviceTransport, @unchecked Sendable {
 
     // MARK: DeviceTransport — the bits the model uses
 
-    var state: AsyncStream<ConnectionState> { stateStream }
+    var state: AsyncStream<ConnectionState> {
+        AsyncStream { cont in
+            cont.yield(lastState)  // replay the latest, then live updates
+            stateConts.append(cont)
+        }
+    }
 
     func deviceInfo() async throws -> DeviceInfo {
         DeviceInfo(name: "Trailhead", firmwareVersion: fwVersion)

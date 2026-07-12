@@ -175,7 +175,15 @@ public final class FirmwareUpdateModel {
 
     // MARK: Lifecycle
 
-    /// Subscribe the link state and read the running version (call once, `.task`).
+    /// Subscribe the link state and read the running version. Called from the
+    /// view's `.task`, and **re-entrant across a `stop()`**: SwiftUI can cycle
+    /// `onDisappear`/`onAppear` on a screen whose model persists (a future
+    /// presentation pushed over S7, a scene re-attach), and a one-shot
+    /// lifecycle would come back with a dead connection subscription —
+    /// `connection`/`canSend` frozen. Idempotent while running (the `started`
+    /// guard); `stop()` re-arms it. The transport's `state` replays the latest
+    /// value per subscription (`AsyncMulticast`), so a re-subscribe sees the
+    /// current link state, not just future edges.
     public func start() {
         guard !started else { return }
         started = true
@@ -332,15 +340,27 @@ public final class FirmwareUpdateModel {
         transferWatchers.removeAll()
     }
 
-    /// The S7 screen left the stack (`.onDisappear`). A still-unresolved send
+    /// The S7 screen went off screen (`.onDisappear`). A still-unresolved send
     /// must not keep streaming headless behind the pop — cancel it (the same
     /// rule as `UploadSheetModel.sheetDismissed`) — and release the ledger
     /// claim here, since a `@MainActor` `deinit` can't touch the actor-isolated
-    /// `TransferActivity`. Idempotent: the `didSet` may already have released.
+    /// `TransferActivity`. The counterpart of `start()`: re-arms `started`, so
+    /// a later `onAppear`'s `start()` re-subscribes instead of silently doing
+    /// nothing on a frozen model.
     public func stop() {
-        if let handle, handle.currentOutcome == nil { handle.cancel() }
-        cancelTransferWatchers()
+        started = false
         stateTask?.cancel()
+        stateTask = nil
+        // Watchers first, then the handle: the cancel resolves the outcome to
+        // `.canceled`, and with its watcher already gone the phase settle below
+        // is authoritative — no race over who writes the post-cancel phase.
+        cancelTransferWatchers()
+        if let handle, handle.currentOutcome == nil { handle.cancel() }
+        // Same landing as a watched cancel: back to the staged file, still
+        // validated and ready to re-send — not a frozen `.transferring` on a
+        // model that may reappear. The `didSet` releases the ledger claim.
+        if phase == .transferring || phase == .interrupted { phase = .staged }
+        // Backstop (idempotent — the `didSet` normally already released).
         if let token = activityToken {
             activityToken = nil
             activity?.end(token)
