@@ -1897,6 +1897,24 @@ impl App {
         self.map_dirty = true;
     }
 
+    /// The board's answer to a drained [`DfuAction::Install`](crate::activity::DfuAction) that
+    /// **did not reboot** (issue #755) — a refusal (recording / pending ride save / no card) or an
+    /// arm-time failure (a re-scan rejection, a rollback-snapshot IO error, a boot-state write
+    /// failure). Mirrors [`notify_dfu_scan_result`](App::notify_dfu_scan_result), but finds the
+    /// live [`DfuProgress`](crate::screen::DfuProgressScreen) spinner the confirm swapped in and
+    /// **replaces** it with the error card — so a failed arm can no longer strand the rider on a
+    /// spinner that ignores all input. If the progress screen is gone (nothing else pops it, but be
+    /// symmetric with the scan seam), the fact is dropped: nothing was armed. A successful arm never
+    /// calls this — it reboots into the bootloader instead, so `DfuProgress` only outlives its pass
+    /// when the reset is genuinely imminent.
+    pub fn notify_dfu_install_failed(&mut self, reason: crate::dfu::DfuInstallError) {
+        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuProgress(_))) else {
+            return;
+        };
+        self.stack[i] = Screen::DfuError(crate::screen::DfuErrorScreen::new_install(reason));
+        self.map_dirty = true;
+    }
+
     /// Record that this boot **confirmed a freshly-installed firmware update** (S4, #619): the
     /// board calls this right after the trial confirm writes `Idle { installed }` at the health
     /// anchor (first frame presented + SD mounted). `version` is the running image's OBCU
@@ -4941,8 +4959,45 @@ mod tests {
         let _ = app.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
         app.notify_dfu_scan_result(Err(DfuScanError::TooFragmented));
         match app.top_screen() {
-            Screen::DfuError(e) => assert_eq!(e.error(), DfuScanError::TooFragmented),
+            Screen::DfuError(e) => {
+                assert_eq!(e.reason(), crate::screen::DfuErrorReason::Scan(DfuScanError::TooFragmented))
+            }
             _ => panic!("Err swaps the wait for the error card"),
+        }
+    }
+
+    /// The install-drain failure seam (issue #755): `notify_dfu_install_failed` lands in the
+    /// "Preparing update..." spinner the confirm swapped in, replacing it with the error card; with
+    /// no progress screen on the stack it's a no-op (nothing was armed) — symmetric with the scan
+    /// answer's drop-if-gone. The error→card mapping is pinned, including the re-scan bucket folding
+    /// to a scan reason so it shares the scan copy.
+    #[test]
+    fn dfu_install_failure_replaces_the_progress_spinner() {
+        use crate::dfu::DfuInstallError;
+        use crate::screen::DfuErrorReason;
+
+        // No progress spinner up → dropped.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.notify_dfu_install_failed(DfuInstallError::PendingSave);
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuError(_))), "no spinner ⇒ answer dropped");
+
+        // A refusal replaces the spinner with the error card, carrying the reason.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
+        app.notify_dfu_install_failed(DfuInstallError::Recording);
+        match app.top_screen() {
+            Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::Recording)),
+            _ => panic!("a refusal swaps the spinner for the error card"),
+        }
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
+
+        // An arm-time re-scan failure folds to a plain scan reason (shared copy).
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
+        app.notify_dfu_install_failed(DfuInstallError::Scan(crate::dfu::DfuScanError::Damaged));
+        match app.top_screen() {
+            Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Scan(crate::dfu::DfuScanError::Damaged)),
+            _ => panic!("the re-scan bucket lands the error card"),
         }
     }
 

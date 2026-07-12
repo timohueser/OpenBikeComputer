@@ -355,6 +355,20 @@ fn nav_finish(
     app.notify_nav_result(result.map(|(id, _)| id));
 }
 
+/// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb
+/// (issue #755 field forensics). Lives board-side because `obc-app` stays defmt-free
+/// (host-agnostic); `Turn`'s detent count is logged separately at the call site. Ungated — the
+/// breadcrumb logs in every build variant.
+fn gesture_name(g: obc_app::Gesture) -> &'static str {
+    match g {
+        obc_app::Gesture::Turn(_) => "Turn",
+        obc_app::Gesture::Press => "Press",
+        obc_app::Gesture::Hold => "Hold",
+        obc_app::Gesture::Back => "Back",
+        obc_app::Gesture::BackHold => "BackHold",
+    }
+}
+
 /// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
 /// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
 /// [`run_app`] and pushed to the sensor task (via [`sensor_link::set_power`]) only on a change.
@@ -621,7 +635,17 @@ pub(crate) async fn run_app(
         let mut holds_cancelled = false;
         while let Ok(g) = GESTURES.try_receive() {
             if holds_cancelled && matches!(g, obc_app::Gesture::Hold | obc_app::Gesture::BackHold) {
+                defmt::info!("input: {=str} dropped (stack changed mid-hold)", gesture_name(g));
                 continue;
+            }
+            // Field forensics (#755): every drained gesture, with the screen it lands on — the
+            // RTT record that discriminates "the press never happened" (input-plane dead window)
+            // from "the press landed on the wrong screen/row" (e.g. a press-nudged detent turned
+            // a 2-row confirm to Cancel first). Human-rate events; always on, a handful of bytes.
+            if let obc_app::Gesture::Turn(n) = g {
+                defmt::info!("input: Turn {=i32} on {=str}", n, app.top_screen().name());
+            } else {
+                defmt::info!("input: {=str} on {=str}", gesture_name(g), app.top_screen().name());
             }
             app.apply_gesture(g);
             holds_cancelled |= app.take_hold_cancel();
@@ -1040,18 +1064,27 @@ pub(crate) async fn run_app(
                 // never mid-recording (the arm ends in a reboot — a live ride would be lost) and
                 // never over an unconverted ride save (`pending_save` is RAM state; rebooting drops
                 // it and the next fresh ride would truncate the unconverted TRACK.OBT). On success
-                // `run_install` never returns (it resets into the bootloader); on failure it has
-                // already streamed the typed error and the loop just keeps riding.
-                if app.activity.is_tracking() {
-                    crate::dfu::status("refused: a ride is recording -- finish it first");
+                // `run_install` never returns (it resets into the bootloader); on any non-reboot
+                // outcome — a refusal here or an arm failure inside `run_install` — we get the typed
+                // reason and land the error card (issue #755) so the confirm's "Preparing update..."
+                // spinner can't strand the rider. The `D`-line breadcrumbs name the guard that
+                // refused (the field-debugging motivation).
+                let outcome = if app.activity.is_tracking() {
+                    crate::dfu::status("refused (is_tracking): a ride is recording -- finish it first");
+                    Some(obc_app::DfuInstallError::Recording)
                 } else if storage.as_ref().is_some_and(sd::Storage::has_pending_save) {
-                    crate::dfu::status("refused: a ride save is pending -- try again in a moment");
+                    crate::dfu::status("refused (has_pending_save): a ride save is pending -- try again in a moment");
+                    Some(obc_app::DfuInstallError::PendingSave)
                 } else if let Some(s) = storage.as_mut() {
                     // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed either
                     // way). Absent ⇒ `run_install` re-scans (the `dfu-install` debug path).
-                    crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await;
+                    crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await
                 } else {
-                    crate::dfu::status("refused: no SD card");
+                    crate::dfu::status("refused (no_card): no SD card");
+                    Some(obc_app::DfuInstallError::NoCard)
+                };
+                if let Some(reason) = outcome {
+                    app.notify_dfu_install_failed(reason);
                 }
             }
             Some(obc_app::DfuAction::Scan) => {
