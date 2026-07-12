@@ -25,3 +25,11 @@ MEMORY
 /* Base of the boot-state page — same symbol convention as the app's `__settings_base`
  * (the magic address lives only in the linker script; main.rs reads the symbol). */
 PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
+
+/* Base of the app slot — the app's link origin (0x8000), which is exactly one past the
+ * bootloader's own FLASH region. Derived so growing the bootloader (bump LENGTH(FLASH))
+ * shifts the app base automatically; main.rs reads this symbol instead of a literal, the
+ * same "magic address lives only in the linker script" rule as `__boot_state_base`. Mirrors
+ * the board crate's `__app_slot_base` symbol (there FLASH *is* the app slot, so it PROVIDEs
+ * `ORIGIN(FLASH)`; here FLASH is the bootloader, so the app base is its end). */
+PROVIDE(__app_slot_base = ORIGIN(FLASH) + LENGTH(FLASH));
