@@ -349,7 +349,12 @@ pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut Rram
         obc_dfu::Verdict::Reverted => {
             settings.clear_arm_marker();
             let staged = marker.as_ref().map(|m| m.staged.as_str());
-            defmt::warn!("dfu: staged update is not the running image — rejected or rolled back");
+            // RTT is the only forensics channel on glass — name the staged version when the marker
+            // carries one (Reverted is only returned with a marker present, but stay total).
+            match staged {
+                Some(v) => defmt::warn!("dfu: staged {=str} is not the running image — rejected or rolled back", v),
+                None => defmt::warn!("dfu: staged update is not the running image — rejected or rolled back"),
+            }
             app.notify_update_failed(obc_app::DfuFailure::Reverted, staged);
         }
         obc_dfu::Verdict::NotStarted => {

@@ -35,16 +35,25 @@ pub const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
 /// Blob magic — `b"OBCB"` (OpenBikeComputer Boot). A blank/torn page won't match it ⇒ `Idle`.
 const MAGIC: [u8; 4] = *b"OBCB";
 
-/// The only boot-state layout this crate reads/writes. Bump on any byte-layout change; a mismatched
-/// version decodes to `Idle` (a format skew must never be read as a live install request).
+/// The boot-state layout this crate **writes**. Bump on any byte-layout change; an unknown version
+/// decodes to `Idle` (a format skew must never be read as a live install request).
 ///
-/// **v2** (this crate, DR2 #730): `Idle` gained a trailing `last_outcome` record so the engine's
-/// terminal writes carry *what happened* (accepted / rolled back / rejected / abandoned + the arm's
-/// generation) instead of leaving the boot-outcome verdict to version-string inference. A **v1**
-/// page — the only prior version — fails this check and decodes to `Idle { installed: None,
-/// last_outcome: None }`: safe (the bootloader still just jumps), at the cost of the first post-update
-/// boot losing the precise verdict once. `Armed`/`Trial` byte layouts are unchanged.
+/// **v2** (DR2 #730): `Idle` gained a trailing `last_outcome` record so the engine's terminal writes
+/// carry *what happened* (accepted / rolled back / rejected / abandoned + the arm's generation)
+/// instead of leaving the boot-outcome verdict to version-string inference.
+///
+/// Readers accept **v1 too** ([`FORMAT_VERSION_V1`]): the bootloader is flashed once by probe and is
+/// NOT updated by DFU, so a fielded bootloader keeps writing v1 pages after the app updates. A hard
+/// cutover would make the new app reject the old bootloader's freshly-written v1 `Trial` page, never
+/// confirm the trial, and self-revert the very update that carries this bump. `Armed`/`Trial`
+/// payloads are byte-identical across v1/v2; a v1 `Idle` body simply ends after the installed option
+/// and decodes with `last_outcome: None` — gated on the version field explicitly, never by trusting
+/// the zero padding to happen to parse as "no outcome".
 const FORMAT_VERSION: u16 = 2;
+
+/// The pre-DR2 layout, still **read-accepted** by [`BootState::decode`] (see [`FORMAT_VERSION`] for
+/// the skew story). Writers always emit [`FORMAT_VERSION`].
+const FORMAT_VERSION_V1: u16 = 1;
 
 // Fixed header offsets (little-endian throughout).
 const OFF_MAGIC: usize = 0; //  4 : magic
@@ -425,11 +434,11 @@ impl BootState {
         EncodedPage { buf: b, len: blob_len }
     }
 
-    /// Decode a boot-state page. **Anything that isn't a clean read of this format decodes to
-    /// `Idle { installed: None, last_outcome: None }`** — a blank/torn page, bad magic/version (a v1
-    /// page included), a bad `blob_len`, a failed whole-blob CRC, or an inconsistent payload. This is
-    /// the torn-write safety net (invariant 4): the bootloader always gets a sane state and, worst
-    /// case, jumps straight to the app.
+    /// Decode a boot-state page. **Anything that isn't a clean read of a known format decodes to
+    /// `Idle { installed: None, last_outcome: None }`** — a blank/torn page, bad magic, an unknown
+    /// version (v1 and v2 are both accepted — see [`FORMAT_VERSION`]), a bad `blob_len`, a failed
+    /// whole-blob CRC, or an inconsistent payload. This is the torn-write safety net (invariant 4):
+    /// the bootloader always gets a sane state and, worst case, jumps straight to the app.
     pub fn decode(bytes: &[u8]) -> BootState {
         Self::decode_inner(bytes).unwrap_or(BootState::Idle { installed: None, last_outcome: None })
     }
@@ -441,7 +450,8 @@ impl BootState {
         if bytes[OFF_MAGIC..OFF_MAGIC + 4] != MAGIC {
             return None;
         }
-        if u16::from_le_bytes([bytes[OFF_VERSION], bytes[OFF_VERSION + 1]]) != FORMAT_VERSION {
+        let version = u16::from_le_bytes([bytes[OFF_VERSION], bytes[OFF_VERSION + 1]]);
+        if version != FORMAT_VERSION && version != FORMAT_VERSION_V1 {
             return None;
         }
         let blob_len = u32::from_le_bytes([
@@ -470,7 +480,15 @@ impl BootState {
         match bytes[OFF_TAG] {
             TAG_IDLE => {
                 let (installed, c) = get_opt_header(body, HDR_LEN)?;
-                let (last_outcome, _) = get_opt_outcome(body, c)?;
+                // A v1 Idle body ends right after the installed option — there is no outcome field
+                // to read, and the zero padding that follows must NOT be parsed as one (gate on the
+                // version explicitly; padding bytes are format-noise, not fields).
+                let last_outcome = if version == FORMAT_VERSION_V1 {
+                    None
+                } else {
+                    let (last_outcome, _) = get_opt_outcome(body, c)?;
+                    last_outcome
+                };
                 Some(BootState::Idle { installed, last_outcome })
             }
             TAG_ARMED => {
