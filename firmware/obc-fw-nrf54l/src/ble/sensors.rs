@@ -43,7 +43,7 @@ use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{info, warn};
-use embassy_futures::select::{select, select3, Either3};
+use embassy_futures::select::{select, select3, select4, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
@@ -592,15 +592,44 @@ async fn serve_link(
         Ok(())
     };
 
+    // The connection-event pump. Load-bearing, not bookkeeping: the sensor (peripheral) sends an
+    // L2CAP connection-parameter-update request soon after connecting, and trouble only *queues* it
+    // as a `ConnectionEvent` — unanswered (nobody polling `conn.next()`), Garmin-class peripherals
+    // give up and drop the link ~30 s in, which read on glass as a permanent connect/drop bounce
+    // (status stuck on Searching/Connecting, tiles blanking between bursts). Accept with the
+    // peer's own preferred parameters (`None`): a ≤ 20 B/s notification link is happy at whatever
+    // cadence the strap wants.
+    let events = async {
+        loop {
+            match conn.next().await {
+                ConnectionEvent::RequestConnectionParams(req) => {
+                    if let Err(e) = req.accept(None, stack).await {
+                        warn!("ble: [sensor] conn-param accept failed: {:?}", defmt::Debug2Format(&e));
+                    } else {
+                        info!("ble: [sensor] accepted the sensor's connection parameters");
+                    }
+                }
+                ConnectionEvent::Disconnected { reason } => break reason,
+                // PHY / param-updated notifications — informational only on this link.
+                _ => {}
+            }
+        }
+    };
+
     // The GATT rx task returns `Err(Disconnected)` when the link drops; the IO block ends on a GATT
-    // error; `WORK_EDGE` fires on radio-off / a new request. Any of the three tears the session down.
-    match select3(client.task(), io, WORK_EDGE.wait()).await {
-        Either3::First(r) => {
+    // error; the event pump surfaces the disconnect reason; `WORK_EDGE` fires on radio-off / a new
+    // request. Any of the four tears the session down.
+    match select4(client.task(), io, events, WORK_EDGE.wait()).await {
+        Either4::First(r) => {
             info!("ble: [sensor] link dropped: {:?}", r.is_err());
             false
         }
-        Either3::Second(_) => false,
-        Either3::Third(()) => {
+        Either4::Second(_) => false,
+        Either4::Third(reason) => {
+            info!("ble: [sensor] link disconnected: {:?}", defmt::Debug2Format(&reason));
+            false
+        }
+        Either4::Fourth(()) => {
             info!("ble: [sensor] link interrupted (radio/request)");
             true
         }
