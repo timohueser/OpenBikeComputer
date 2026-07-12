@@ -165,9 +165,11 @@ fn boot(p: embassy_nrf::Peripherals) {
                     break Some(blocks);
                 }
                 // DR3: the card never came up. If this is a pre-erase install and the budget is
-                // spent, abandon the arm and boot the intact old app (a `write_state` only touches
-                // RRAM — no card needed). `abandon_arm` returns `StageRejected`, so the shared
-                // outcome dispatch below runs the old app after a two-blink "arm cleared" code.
+                // spent, abandon the arm (a `write_state` only touches RRAM — no card needed),
+                // mirror the `StageRejected` two-blink "arm cleared" code by hand, and return —
+                // `main` then jumps into the app slot. Jumping unverified is safe even with no
+                // snapshot: an `Armed` page is only ever written by an app running from that slot,
+                // and pre-erase means the slot is untouched since (see `abandon_arm`'s doc).
                 if abandonable && rounds >= ARM_ABANDON_ROUNDS {
                     #[cfg(feature = "rtt")]
                     defmt::warn!("obc-boot: Armed card unreadable after {=u32} rounds — abandoning the arm", rounds);

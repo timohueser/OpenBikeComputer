@@ -462,6 +462,12 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
 /// returned [`Outcome::StageRejected`] tells the driver to do the identical thing it already does
 /// for a rejected stage: LED code, then boot the intact old app.
 ///
+/// **Why booting the slot unverified is safe — even when `rollback` is `None`** (a first-install or
+/// running-mismatch arm): an `Armed` page can only ever be written by an app *running from that
+/// slot* (the armer lives in the app), and "pre-erase" means the slot is untouched since that
+/// write — so a bootable app is guaranteed present regardless of the snapshot. This is the
+/// load-bearing justification for abandoning at all.
+///
 /// **Only the caller's retry *count* policy lives in the driver; this "abandon writes Idle+outcome,
 /// pre-erase only" sequencing lives here (host-tested).** Calling it on a non-`Armed` state is a
 /// caller bug — it writes nothing and returns [`Outcome::SdError`] (keep parking), so the engine
