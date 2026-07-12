@@ -421,6 +421,11 @@ unreadable = "Could not read the update file."
 damaged = "The update file is damaged."
 too_large = "The update file is too large for this device."
 fragmented = "The update file is too fragmented. Delete UPDATE.BIN and copy it to the card again."
+install_recording = "Finish and save your ride before installing an update."
+install_pending_save = "A ride is still being saved. Try again in a moment."
+install_no_card = "No card found. Insert the card and try again."
+install_snapshot_failed = "Could not save a rollback copy to the card. Update not installed."
+install_state_write = "Could not prepare the update. Nothing was changed."
 # --- Boot-fault cards (fault.rs; drawn pre-app, so the device renders the English
 # column in every build — catalogued so the repertoire test pins the copy) ---
 [fault]

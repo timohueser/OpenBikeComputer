@@ -163,6 +163,16 @@ displays is read from the standard [DIS](../companion-link/) Firmware Revision
 characteristic, so after a confirmed update it simply reflects the new image on the
 next connect.
 
+A press that *can't* arm is never silent either. Between the confirm press and the
+reboot the device shows a **"Preparing update..."** spinner while it snapshots the
+rollback and writes the boot record — and if that pass can't finish it lands a plain
+**error card** on the glass rather than spinning forever. It refuses cleanly when a
+ride is recording, when a just-finished ride hasn't been saved yet, or when the card
+is gone, and reports an arm-time failure (the file no longer validating, the rollback
+snapshot or the boot record failing to write) the same way. In every one of these
+cases nothing was armed, so the rider dismisses the card and the old firmware keeps
+running.
+
 The reboot's outcome is never silent either. Before rebooting into the
 bootloader, the armer leaves a small breadcrumb (the staged version + the arm's
 generation) in the settings page. The bootloader, in turn, records *what happened*

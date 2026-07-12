@@ -177,13 +177,18 @@ macro_rules! statusf {
 /// Run a drained install request end to end (issue #619 §6): status lines per phase, the sync
 /// [`arm_update`] under the caller's storage/settings access, then — on success — a brief beat
 /// so the `D`-lines flush to the host, and `SCB::sys_reset()` straight into the bootloader.
-/// Returns only on failure (the state page is then untouched; the device keeps riding).
+///
+/// Returns only on failure (the state page is then untouched; the device keeps riding): the typed
+/// [`DfuInstallError`](obc_app::DfuInstallError) the caller hands to
+/// [`App::notify_dfu_install_failed`](obc_app::App::notify_dfu_install_failed) so the "Preparing
+/// update..." spinner is replaced by the error card instead of hanging (issue #755). On success the
+/// call diverges into the reset, so the `Ok` arm has no return value.
 pub(crate) async fn run_install(
     storage: &mut sd::Storage,
     settings: &mut RramSettingsStore,
     wdt: &mut Option<wdt::WatchdogHandle>,
     cached: Option<StagedRef>,
-) {
+) -> Option<obc_app::DfuInstallError> {
     // The RTT/`D`-line record shows which path armed: the normal confirm carries the scan's ref
     // (one CRC pass, done back at the Scan), the fallback re-reads here.
     if cached.is_some() {
@@ -212,9 +217,21 @@ pub(crate) async fn run_install(
             embassy_time::Timer::after_millis(400).await;
             cortex_m::peripheral::SCB::sys_reset();
         }
-        Err(ArmFailure::Scan(e)) => report_scan_error("scan", e),
-        Err(ArmFailure::Snapshot(e)) => report_scan_error("rollback snapshot", e),
-        Err(ArmFailure::StateWrite) => status("install failed: boot-state page write failed -- nothing armed"),
+        // Each failure keeps its `D`-line breadcrumb *and* returns the app-facing bucket so the
+        // caller can swap the spinner for the error card (issue #755). The re-scan bucket reuses the
+        // scan fold; the snapshot IO error and the boot-state write failure get their own reasons.
+        Err(ArmFailure::Scan(e)) => {
+            report_scan_error("scan", e);
+            Some(obc_app::DfuInstallError::Scan(map_scan_error(e)))
+        }
+        Err(ArmFailure::Snapshot(e)) => {
+            report_scan_error("rollback snapshot", e);
+            Some(obc_app::DfuInstallError::SnapshotFailed)
+        }
+        Err(ArmFailure::StateWrite) => {
+            status("install failed: boot-state page write failed -- nothing armed");
+            Some(obc_app::DfuInstallError::StateWriteFailed)
+        }
     }
 }
 
