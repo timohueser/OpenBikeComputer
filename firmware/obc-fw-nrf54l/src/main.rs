@@ -1045,6 +1045,14 @@ async fn main(_spawner: Spawner) {
         // warm reset carries it in) and pre-starts an identical one before jumping into a trial
         // boot — which is then exactly what this `try_new` adopts. The config contract (timeout,
         // halt/sleep behavior, one handle) is documented on `obc_dfu::WDT_TIMEOUT_TICKS`.
+        //
+        // INVARIANT (#729): because EVERY trial boot now enters with the dog already counting,
+        // everything between app entry and this line must complete well inside one WDT period
+        // (24 s) on a trial boot — or the dog resets a perfectly healthy trial image and the
+        // bootloader rolls it back. Today that's seconds of headroom, and nothing blocking sits
+        // upstream (a missing/slow card does NOT block boot — the build idles without one).
+        // Keep it that way: never move a blocking or open-ended retry loop (SD mount, sensor
+        // bring-up) above this point.
         let wdt_handle = {
             let mut cfg = wdt::Config::default();
             cfg.timeout_ticks = ride::WDT_TIMEOUT_TICKS;
