@@ -1,4 +1,4 @@
-# OBC BLE Interface Specification (v1)
+# OBC BLE Interface Specification (v2)
 
 The normative wire contract between the OpenBikeComputer device (nRF54L
 firmware, BLE peripheral) and the companion app (iOS, BLE central): advertising,
@@ -7,11 +7,19 @@ object that crosses the link. It sits next to [`OBCM_Spec.md`](OBCM_Spec.md)
 (map format) and [`OBCR_Spec.md`](OBCR_Spec.md) (route format) and is the
 canonical source the firmware Track-A issues (epic #267) implement.
 
+> **Protocol v2** (epic #632) is the one coordinated wire break over v1: it
+> **removes** the `objectStore` digest and reserved `diagnostics` characteristics
+> and the descriptor's permanently-zero `offset`; folds the download announce into
+> the `status` envelope (so `transferControl` is **write-only**); widens the
+> `protocolVersion` read to carry a **store epoch**; and grows `routeList` entries
+> (+content CRC) and the shared list header (+`total`). v1 is not served in
+> parallel — a v1 peer reads `version = 2` first and surfaces its mismatch path
+> (§1). The one-line "what changed and why" for each item lives in its section.
+
 > **This document is canonical.** The iOS mirror
 > ([`companion-ios/OBCProtocol.md`](companion-ios/OBCProtocol.md)) defers to it:
 > where they disagree, this spec wins and the mirror is corrected. §9 lists the
-> deliberate divergences from the mirror's provisional values so the app-side
-> repin is a checklist, not a diff hunt.
+> v1 → v2 wire changes so the app-side repin is a checklist, not a diff hunt.
 
 All multi-byte integers are **little-endian** (matching OBCM/OBCR). Shared
 binary test vectors pinning these layouts live in
@@ -37,33 +45,69 @@ binary test vectors pinning these layouts live in
 4. **Interrupted transfers restart, not resume — in both directions.** Objects
    are small — a route or a ride is tens of kB, a couple of seconds on the wire —
    so a dropped or aborted transfer is simply re-sent (or re-requested) whole
-   rather than continued from a durable offset. The descriptor keeps an `offset`
-   field (§4.2) for shape stability, but it is **always `0`**: the device
-   discards a partial upload on any interruption and rejects any non-zero
-   offset, upload or download, with `error`. Multi-object flows resume at
-   **whole-object granularity**: a dropped ride sync keeps the rides that fully
-   landed and re-requests the rest from byte 0 (§7.2). (Offset resume was in the
-   S0 draft; it was dropped as unjustified complexity for these object sizes —
-   and a suffix can't be verified against the whole-object CRC anyway. If a
-   large object type ever lands, resume returns with it.)
+   rather than continued from a durable offset. The device discards a partial
+   upload on any interruption and the app re-sends it from byte 0. Multi-object
+   flows resume at **whole-object granularity**: a dropped ride sync keeps the
+   rides that fully landed and re-requests the rest from byte 0 (§7.2). (Offset
+   resume was in the S0 draft; the descriptor carried a permanently-`0` `offset`
+   field through v1 for shape stability — **v2 removes it** (§4.2), since a suffix
+   can't be verified against the whole-object CRC anyway. If a large object type
+   ever lands, resume returns with it.)
 5. **Versioned once.** A single `protocol_version` covers this whole contract.
    Object layouts carry their own version bytes where they live (OBCR header,
    ride object) so they can evolve without a protocol bump.
 
 ---
 
-## 1. Protocol version
+## 1. Protocol version & store epoch
 
-`protocol_version` is an unsigned 16-bit integer, **currently `1`**, exposed as
-a read-only GATT characteristic (§3.3). It covers everything in this document:
-UUIDs, descriptor layouts, object types, and status codes.
+`protocol_version` is an unsigned 16-bit integer, **currently `2`**, exposed
+first in the `protocolVersion` read (§3.3). It covers everything in this
+document: UUIDs, descriptor layouts, object types, and status codes.
 
-- The app reads it on every connect, before any other OBC Control traffic.
-- On mismatch the app **surfaces and stops** (banner / disabled sync) — it must
-  never trap or attempt a best-effort decode. The device ignores traffic it
-  can't parse and answers unknown commands with `unknown` (§4.4).
+**v2 widens the read** from a bare `u16` to `version u16 · store_epoch u32` — six
+little-endian bytes:
+
+```
+protocolVersion read (6 bytes, little-endian):
+  version      u16   the protocol version (2)
+  store_epoch  u32   the device's current store-epoch nonce
+```
+
+- The app reads it on every connect, before any other OBC Control traffic. It is
+  an **open** (pre-pairing) read (§8), so the app knows both the version and the
+  epoch *before* `ackRides` or any reconcile write fires.
+- On version mismatch the app **surfaces and stops** (banner / disabled sync) —
+  it must never trap or attempt a best-effort decode. A **v1 peer** reads the
+  first `u16 = 2` and takes exactly that mismatch path; **there is no dual-version
+  serving** — the device speaks v2 only. The device ignores traffic it can't
+  parse and answers unknown commands with `unknown` (§4.4).
 - Additive, compatible changes (a new object type id, a new command, a new
   waypoint type) do **not** bump the version; changing an existing layout does.
+
+**Store epoch.** `store_epoch` is a `u32` TRNG nonce the device mints once per
+id-era and persists in its own RRAM line; it changes only on an **id-era reset**.
+Its purpose and the app-side keying are epic #632 item 5; the mint rule lives with
+the device implementation (V3). The essentials the wire depends on:
+
+- **Every durable app↔device link keys on bare `u16` object ids** (the ride
+  synced-set + delete tombstones, the route `deviceObjectID` links). Ids mint at
+  `max(card-scan max + 1, RRAM floor)`: **SD filenames guard stored ids, the RRAM
+  floor guards deleted ids.** The **era events** — the only two ways an id can be
+  re-issued to a *different* object — are **floor loss** (a full-chip reflash /
+  factory reset / a torn id-marks write) and a **namespace reset** (a fresh or
+  reformatted card). Either mints a fresh epoch.
+- The **never-reuse guarantee** is therefore *within an epoch*: while the epoch
+  holds, an id is never re-assigned to a different object. Across an epoch change
+  the id space legitimately reopens, and the new nonce makes that visible so the
+  app can scope its state to `(device serial, store epoch)` and never silently
+  alias months-old ids.
+- **Ack fail-closed contract.** The version+epoch read **gates** `ackRides` and
+  every reconcile write: a connection whose identity read failed sends no ack and
+  reconciles nothing (library browsing is unaffected). V5 implements it; it exists
+  so a failed read can never stamp synced-flags or badges under an unknown era.
+
+A random nonce leaks nothing beyond what the open DIS (§3.1) already exposes.
 
 ## 2. Advertising
 
@@ -125,13 +169,21 @@ Base UUID (random; **not** derived from the SIG base): the 16-bit block
 |---|---|---|---|
 | `0000` | **OBC Control service** | — | primary service |
 | `0001` | `command` | write | small imperative commands (§4.4) |
-| `0002` | `status` | notify | typed device → app messages (§4.3) |
-| `0003` | `objectStore` | read + notify | store digest: revision + object counts (§4.5) |
+| `0002` | `status` | notify | typed device → app messages (§4.3) — the **sole** device → app channel |
 | `0004` | `config` | read + write | the Config object (§7.3), whole-blob |
-| `0005` | `transferControl` | write + notify | open / abort a CoC transfer (§4.2) |
-| `0006` | `diagnostics` | read | reserved — diagnostics cross the CoC (§7.5); reads return 0 bytes |
+| `0005` | `transferControl` | write | open / abort a CoC transfer (§4.2) — **write-only, no CCCD** |
 | `0007` | `psm` | read | `u16` — the dynamic L2CAP PSM the app opens the CoC on |
-| `0008` | `protocolVersion` | read | `u16` — §1. Readable **without** encryption |
+| `0008` | `protocolVersion` | read | `version u16 · store_epoch u32` — §1. Readable **without** encryption |
+
+**Five characteristics** (v2 dropped two from v1's seven). The `0003` and `0006`
+blocks — v1's `objectStore` digest and reserved `diagnostics` — are **retired and
+never reassigned**: the digest double-signalled a change `storeChanged` (§4.3)
+already carries and its per-boot `revision` was a latent client trap, and
+`diagnostics` returned 0 bytes (real diagnostics cross the CoC as object type 4,
+§7.5). `transferControl` loses its CCCD: it is written to *open* a transfer, and a
+download's announce now rides `status` (§4.3 `msg = 4`), so **all** device → app
+control traffic flows through one notify characteristic — one subscription, one
+ordering domain.
 
 Concrete UUIDs, for the record:
 
@@ -139,13 +191,13 @@ Concrete UUIDs, for the record:
 service          3C920000-9916-4EBA-ABC2-342FE08F6B10
 command          3C920001-9916-4EBA-ABC2-342FE08F6B10
 status           3C920002-9916-4EBA-ABC2-342FE08F6B10
-objectStore      3C920003-9916-4EBA-ABC2-342FE08F6B10
 config           3C920004-9916-4EBA-ABC2-342FE08F6B10
 transferControl  3C920005-9916-4EBA-ABC2-342FE08F6B10
-diagnostics      3C920006-9916-4EBA-ABC2-342FE08F6B10
 psm              3C920007-9916-4EBA-ABC2-342FE08F6B10
 protocolVersion  3C920008-9916-4EBA-ABC2-342FE08F6B10
 ```
+
+(`3C920003` and `3C920006` are retired — see above — and MUST NOT be reused.)
 
 The `config` characteristic carries the Config object (§7.3) directly — it is
 the one object small enough (≤ 128 bytes, §7.3) to live on GATT, and reading /
@@ -184,10 +236,15 @@ stored object — including across device reboots** — and enumerated by the li
 objects. Durability is what lets the phone persist the id an upload committed
 under and later reconcile ("is my copy still on the device?") or replace that
 object in place — and, for rides, what the app's synced-set and delete
-tombstones key on; the reference firmware encodes the id in the stored
-filename (routes `RT{id}.OBR`, rides `RD{id}.ORD`) and never reuses a higher
-id than it has ever assigned.
-Conventions:
+tombstones key on. Ids mint at `max(card-scan max + 1, RRAM floor)`: the
+reference firmware encodes the id in the stored filename (routes `RT{id}.OBR`,
+rides `RD{id}.ORD`) — **SD filenames guard stored ids** — and an RRAM floor
+guards **deleted** ids. **Within a store epoch an id is never re-issued to a
+different object.** The two era events that legitimately reopen the id space —
+floor loss (reflash / factory reset / torn id-marks write) and namespace reset
+(fresh / reformatted card) — each mint a fresh `store_epoch` (§1), so the app
+scopes id-keyed state per epoch and an era change never silently aliases a stale
+id. Conventions:
 
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
@@ -207,11 +264,13 @@ second open while one is active is answered with `busy`.
 
 ### 4.2 `transferControl` — the transfer descriptor
 
-One fixed **16-byte** descriptor shape serves both directions and abort.
-Written by the app; notified by the device to announce a download's size + CRC.
+One fixed **12-byte** descriptor shape serves both directions and abort. In v2 it
+is **write-only** (no CCCD): the app writes it to *open* a transfer; the device
+never notifies it. A download's announce rides the `status` envelope instead
+(§4.3 `msg = 4`).
 
 ```
-TransferControl (16 bytes, little-endian):
+TransferControl (12 bytes, little-endian):
   op         u8    1 = upload (app → device)
                    2 = download (device → app)
                    3 = abort
@@ -219,37 +278,38 @@ TransferControl (16 bytes, little-endian):
   object_id  u16
   total_len  u32   upload: full object size · download request / abort: 0
   crc32      u32   upload: whole-object CRC-32 (§6) · download request / abort: 0
-  offset     u32   always 0 — transfers restart, not resume (§1 principle 4);
-                   the field exists for descriptor-shape stability only
 ```
 
+**v2 drops the `offset` field** (v1's trailing `u32`, always `0`): transfers
+restart, never resume (§1 principle 4), so the byte and its `error`-on-nonzero
+reject were dead weight.
+
 **Upload (app → device).** The app writes `op=1` with the object's real
-`total_len` + `crc32` and `offset = 0`, then streams the whole object over the
-CoC as raw bytes. The device sinks them to storage, CRC-ing as it writes. When
-`total_len` bytes have arrived it verifies the CRC and notifies a
-`transferResult` (§4.3): `committed` on match — a mismatch **rejects** the
-object (`crcMismatch`), never commits it. Uploads are **not resumable** (§1
-principle 4): an interrupted upload (a dropped link or an `op=3` abort) is
-discarded, and the app re-sends the object from the start; a non-zero upload
-`offset` is answered `error`.
+`total_len` + `crc32`, then streams the whole object over the CoC as raw bytes.
+The device sinks them to storage, CRC-ing as it writes. When `total_len` bytes
+have arrived it verifies the CRC and notifies a `transferResult` (§4.3):
+`committed` on match — a mismatch **rejects** the object (`crcMismatch`), never
+commits it. Uploads are **not resumable** (§1 principle 4): an interrupted upload
+(a dropped link or an `op=3` abort) is discarded, and the app re-sends the object
+from the start.
 
 **Download (app → device request, device → app announce).** The app writes
-`op=2` with `total_len = crc32 = offset = 0`. The device answers with a
-`transferControl` **notification** — the same 16 bytes, `op=2`, with `total_len`
-and `crc32` filled in — then streams the whole object over the CoC. The app
-CRCs as it reads and rejects on mismatch. End of object = `total_len` bytes
-received; the device additionally notifies a `transferResult` (`committed`) as
-the explicit close. An interrupted download is re-requested whole (a fresh
-`op=2`, §1 principle 4); a non-zero `offset` is answered `error`.
+`op=2` with `total_len = crc32 = 0`. The device answers with a **`downloadAnnounce`
+status notification** (§4.3 `msg = 4`) — the same 12 descriptor bytes, `op=2`,
+with `total_len` and `crc32` filled in — then streams the whole object over the
+CoC. The app CRCs as it reads and rejects on mismatch. End of object = `total_len`
+bytes received; the device additionally notifies a `transferResult` (`committed`)
+as the explicit close, on the same `status` characteristic. An interrupted
+download is re-requested whole (a fresh `op=2`, §1 principle 4).
 
 **Abort (`op=3`).** Either side stops cleanly: the app writes `op=3`
 (type/object_id echo the active transfer), the device drains and **discards** the
 partial, and notifies `transferResult` with `aborted` (`committed_offset = 0` —
 nothing is retained).
 
-A descriptor that names an unknown type/id, carries a non-zero offset, or
-arrives mid-transfer is answered with a `transferResult` carrying `error` /
-`notFound` / `busy` (§4.3) and does not disturb an active transfer.
+A descriptor that names an unknown type/id or arrives mid-transfer is answered
+with a `transferResult` carrying `error` / `notFound` / `busy` (§4.3) and does not
+disturb an active transfer.
 
 **Storage-full reject (descriptor-open).** A **new**-route upload — `op=1`,
 route type, `object_id = 0xFFFF` (or a route id the device doesn't hold) —
@@ -298,16 +358,26 @@ msg = 1  transferResult (8 bytes total):
 msg = 2  storeChanged (6 bytes total):
   msg       u8   = 2
   type      u8   which store changed: route (1) or ride (2)
-  revision  u32  the new store revision (§4.5)
+  revision  u32  a monotonic-per-boot counter bumped on any change to that store —
+                 the cheap "refetch the list" signal (it is the sole change signal
+                 in v2; the v1 objectStore digest is gone)
 
 msg = 3  commandResult (4 bytes total):
   msg     u8   = 3
   cmd     u8   echoes the command byte (§4.4)
   status  u8   0 = ok · 1 = unknown command · 2 = not found · 3 = busy · 4 = error
   detail  u8   command-specific, 0 unless documented
+
+msg = 4  downloadAnnounce (13 bytes total):
+  msg         u8   = 4
+  descriptor  12   the 12-byte TransferControl (§4.2), op = 2 (download), with
+                   total_len + crc32 filled in for the object about to stream
 ```
 
-Unknown `msg` values must be ignored by the app (forward compatibility).
+The **`downloadAnnounce`** (v2) is the device's answer to a download request
+(§4.2): the announce moves off `transferControl` and onto this envelope so all
+device → app control traffic shares one notify characteristic and one ordering
+domain. Unknown `msg` values must be ignored by the app (forward compatibility).
 
 ### 4.4 `command` — small imperatives
 
@@ -321,6 +391,10 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 | `3` | `installFw` | none (`cmd` byte only) | ask the device to install the staged `UPDATE.BIN` — runs the on-device scan + **on-glass confirm** flow (see below). The command only *requests*; it never waits for the human and never installs on its own |
 | `4` | `forgetBond` | none (`cmd` byte only) | ask the device to dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged. The device answers `commandResult(ok)` **first**, then clears the bond + drops the link and returns to open-pairing advertising. **Honoured only on the bonded, authenticated link** (see below) |
 | `5`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
+
+**Next free command: `5`.** (Heads-up for auto-expiry #638: its draft `setClock`/
+`setRouteRetention` table predates `installFw`/`forgetBond` taking `3`/`4`, so it
+renumbers to `5`/`6` when it lands.)
 
 **`ackRides` — possession reconciliation.** The device keeps a per-ride
 "synced" flag (it drives the delete-guard cue on the device's Rides screen).
@@ -402,24 +476,16 @@ bonded phone or physical possession via **Forget phone**), and the command mints
 **before** it clears the bond and disconnects, so the phone always gets its ack; the forget +
 link-drop follow the ack, never race ahead of it.
 
-### 4.5 `objectStore` — the store digest
+### 4.5 Change signalling
 
-A 10-byte read + notify value — the cheap "did anything change" signal that
-replaces polling the (CoC-sized) lists:
-
-```
-ObjectStore (10 bytes, little-endian):
-  revision     u32  bumped on ANY store change (upload committed, delete,
-                    ride tracked). Monotonic per boot; not persisted.
-  route_count  u16
-  ride_count   u16
-  reserved     u16  = 0
-```
-
-The device notifies it on every change (alongside the `storeChanged` status
-message, which additionally says *which* store moved). The app's sync flow:
-read the digest, and if the revision moved since the last fetch, download the
-relevant list object(s).
+The `storeChanged` status message (§4.3 `msg = 2`) is the **sole** change signal:
+notified on every store change, it names which store (route / ride) moved and
+carries a monotonic-per-boot `revision`. The app's sync flow: on `storeChanged`
+(or on connect), download the relevant list object (§7.4). *(v1 additionally
+carried a 10-byte `objectStore` read/notify digest on characteristic `0003`; v2
+removes it — it double-signalled the same change and its per-boot `revision`
+tripped clients that persisted a last-seen value. The characteristic block is
+retired, §3.3.)*
 
 ---
 
@@ -551,18 +617,27 @@ after a confirmed DFU. Duplicating it here would only risk the two disagreeing.
 
 ### 7.4 `routeList` / `rideList` — list objects
 
-Downloaded over the CoC (they outgrow the 512-byte ATT cap fast). Shared
-shape: a 4-byte header + fixed 72-byte entries, so entry `k` is at
-`4 + 72k` — O(1) indexing, no string scanning.
+Downloaded over the CoC (they outgrow the 512-byte ATT cap fast). Shared shape: a
+**6-byte header** + fixed entries, so entry `k` is at `6 + entry_len·k` — O(1)
+indexing, no string scanning. In v2 the two list types **differ in entry length**
+(`routeList` 76 bytes, `rideList` 72), so the entry size is carried per-list in the
+header's `entry_len` byte; readers step by it, never a constant.
 
 ```
-List header (4 bytes):
-  version     u8   = 1
-  entry_len   u8   = 72 (readers use this, not a constant, to skip entries)
-  count       u16
+List header (6 bytes):
+  version     u8   = 2
+  entry_len   u8   the entry size (76 routeList · 72 rideList) — readers skip by it
+  count       u16  entries actually in this object (after the MAX_RIDES / MAX_ROUTES cap)
+  total       u16  full catalog size BEFORE the cap
 ```
 
-`routeList` entry (72 bytes) — from the stored OBCR header:
+**`total`** (v2, epic #632 item 7) makes the >`MAX_RIDES` (or >`MAX_ROUTES`)
+truncation visible on the wire: the object is **truncated iff `total > count`**
+(the device dropped `total - count` entries in FAT order), and the app surfaces a
+one-line warning instead of silently answering "up to date". When nothing was
+dropped `total == count`.
+
+`routeList` entry (**76 bytes**) — from the stored OBCR header:
 
 ```
   object_id       u16
@@ -575,7 +650,15 @@ List header (4 bytes):
   name_len        u8   ≤ 48
   name            char[48]  UTF-8, zero-padded
   reserved        u8   = 0
+  crc32           u32  whole-object CRC-32 (§6) of the stored OBCR bytes · 0 = unknown
 ```
+
+**`crc32`** (v2, epic #632 item 6) is the whole-object CRC-32 the device computes
+at upload commit, persisted in a `/routes` sidecar; a side-loaded file not yet
+fingerprinted reads `0` (unknown), filled lazily at first list build. It lets the
+app verify *what* a linked id points at (identity-verified badges) and adopt an
+identical unlinked copy by content. `rideList` entries are **unchanged** (72
+bytes) — which is why entry length is now per-list.
 
 `rideList` entry (72 bytes) — from the stored ride-object header:
 
@@ -700,40 +783,38 @@ Config object (§7.3).
 
 ---
 
-## 9. Divergences from the iOS mirror (the repin list)
+## 9. Changes from v1 (the repin list)
 
-The app was built against `companion-ios/OBCProtocol.md`'s provisional values.
-This spec ratifies most of them; the deliberate changes, each a single-spot
-repin by design:
+Protocol v2 (epic #632) is the one coordinated wire break. The iOS mirror
+([`companion-ios/OBCProtocol.md`](companion-ios/OBCProtocol.md)) is updated to
+match in the same change; each item below is a single-spot repin on both sides,
+pinned by the shared `protocol-vectors/` fixtures:
 
-1. **Custom UUIDs** (`GATT.swift`): the `0BC0000x-0000-1000-8000-00805F9B34FB`
-   placeholders were derived from the Bluetooth SIG base UUID, which custom
-   services must not use. Replaced by the random `3C92xxxx-…` base (§3.3); the
-   final 16-bit block keeps the mirror's `000N` indexing, plus `0000` for the
-   service itself.
-2. **`TransferStart` 15 → 16 bytes** (`TransferDescriptor.swift`): a leading
-   `op` byte (§4.2) folds download-announce and abort — both named but
-   byte-less in the mirror — into the one descriptor. Field order after `op`
-   is unchanged.
-3. **`TransferResult` gains status codes** and rides inside the `status`
-   message envelope (§4.3): the mirror's raw 7-byte notify becomes `msg=1` + the
-   same 7 bytes, and `notFound` / `busy` join the status enum.
-4. **`RideList` characteristic → `objectStore` digest** (§4.5): full lists
-   don't fit a 512-byte GATT attribute, so both lists are CoC objects (§7.4)
-   and the characteristic slot (`…0003`) becomes the change-signal digest.
-5. **Diagnostics move to the CoC** (§7.5), for the same 512-byte reason; the
-   `diagnostics` characteristic slot is kept but reserved. The app's
-   `readDiagnostics()` becomes a download of object type `4`.
-6. **Ratified as-is**: the ride object (`ProvisionalRideCodec`, §7.2), the
-   Config blob (`ProvisionalConfigCodec` + append-only rule, §7.3),
-   CRC-32/IEEE (§6), the 244-byte chunk preference (§3.4), `protocol_version
-   = 1` (§1), device name in Config / Delta 1 (§7.3), and phone-side GPX+TCX
-   conversion / Delta 2 (§7.1).
-7. **New for M4 DFU** (no mirror entry yet — S7 adds it): the `fwImage` object
-   type (id `5`, §7.6, app → device upload of an `UPDATE.BIN`) and the
-   `installFw` command (cmd `3`, §4.4). Both are additive (a new object-type id
-   and a new command id do not bump `protocol_version`, §1); the app reads the
-   device's running version from DIS (§3.1), not a new object.
+1. **`protocolVersion` read widened** `u16` → `version u16 · store_epoch u32`
+   (§1, §3.3): the app reads the store epoch alongside the version on every
+   connect and scopes id-keyed state to `(serial, epoch)`. The version+epoch read
+   gates `ackRides` and reconcile (ack fail-closed, §1).
+2. **`TransferControl` 16 → 12 bytes** (§4.2): the permanently-`0` `offset` field
+   and its `error`-on-nonzero reject are gone (transfers restart, not resume).
+3. **Download announce folds into `status`** (§4.3 `msg = 4`, §4.2): the announce
+   moves off `transferControl`, which becomes **write-only, no CCCD**. All
+   device → app control traffic is now one notify characteristic — one
+   subscription, one ordering domain (the split-CCCD failure mode is gone).
+4. **`objectStore` digest removed** (`…0003` retired, §3.3 / §4.5): `storeChanged`
+   (§4.3 `msg = 2`) is the sole change signal.
+5. **`diagnostics` characteristic removed** (`…0006` retired, §3.3): it returned 0
+   bytes; real diagnostics cross the CoC as object type `4` (§7.5) — unchanged.
+6. **`routeList` entry 72 → 76 bytes** (§7.4): a trailing whole-object `crc32`
+   (`0` = unknown) lets the app verify linked-route identity and adopt by content.
+   `rideList` entries are unchanged (72), so entry length is now **per-list**.
+7. **List header 4 → 6 bytes** (§7.4): `version 2 · entry_len · count u16 ·
+   total u16` — `total` surfaces the >`MAX_RIDES`/`MAX_ROUTES` truncation on the
+   wire (truncated iff `total > count`).
+8. **Unchanged in v2** (already ratified in v1): the custom `3C92xxxx-…` UUID base
+   (§3.3), the ride object (§7.2), the Config blob + append-only rule (§7.3),
+   CRC-32/IEEE (§6), the 244-byte chunk preference (§3.4), the `fwImage` object
+   type (id `5`, §7.6) and `installFw` / `forgetBond` commands (§4.4), and the
+   `transferResult` / `commandResult` status envelopes (§4.3).
 
 ## Reference implementation
 

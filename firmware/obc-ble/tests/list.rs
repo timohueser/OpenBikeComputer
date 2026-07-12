@@ -2,7 +2,7 @@
 //! round-trips, name truncation, and the forward-compatibility rules (unknown version rejected,
 //! longer `entry_len` stepped over).
 
-use obc_ble::{ListHeader, RideListEntry, RouteListEntry, LIST_ENTRY_LEN};
+use obc_ble::{ListHeader, RideListEntry, RouteListEntry};
 
 fn route_entry() -> RouteListEntry<'static> {
     RouteListEntry {
@@ -13,40 +13,48 @@ fn route_entry() -> RouteListEntry<'static> {
         point_count: 9,
         waypoint_count: 2,
         name: "Vector Loop".as_bytes(),
+        crc32: 0x1F66_C051,
     }
 }
 
 #[test]
 fn header_layout_and_roundtrip() {
-    let b = ListHeader { count: 3 }.encode();
-    assert_eq!(b, [1, 72, 3, 0]); // version 1 · entry_len 72 · count LE
+    // version 2 · entry_len (routeList 76) · count LE · total LE — count < total, so truncated.
+    let b = ListHeader { count: 3, total: 5 }.encode(RouteListEntry::ENTRY_LEN as u8);
+    assert_eq!(b, [2, 76, 3, 0, 5, 0]);
 
     let (h, entry_len) = ListHeader::decode(&b).unwrap();
     assert_eq!(h.count, 3);
-    assert_eq!(entry_len, LIST_ENTRY_LEN);
+    assert_eq!(h.total, 5);
+    assert!(h.is_truncated());
+    assert_eq!(entry_len, RouteListEntry::ENTRY_LEN);
 
-    assert_eq!(ListHeader::entry_offset(0), 4);
-    assert_eq!(ListHeader::entry_offset(2), 4 + 144);
-    assert_eq!(ListHeader::object_len(3), 4 + 216);
+    assert_eq!(ListHeader::entry_offset(0, entry_len), 6);
+    assert_eq!(ListHeader::entry_offset(2, entry_len), 6 + 152);
+    assert_eq!(ListHeader::object_len(3, entry_len), 6 + 228);
+
+    // An untruncated header (count == total).
+    let full = ListHeader { count: 2, total: 2 }.encode(RideListEntry::ENTRY_LEN as u8);
+    assert!(!ListHeader::decode(&full).unwrap().0.is_truncated());
 }
 
 #[test]
 fn header_rejects_unknown_version_and_short_entries() {
-    assert!(ListHeader::decode(&[2, 72, 0, 0]).is_err()); // version 2 unknown
-    assert!(ListHeader::decode(&[1, 44, 0, 0]).is_err()); // entries shrank — not append-only
-    assert!(ListHeader::decode(&[1, 72, 0]).is_err()); // truncated
+    assert!(ListHeader::decode(&[1, 76, 0, 0, 0, 0]).is_err()); // version 1 (dead) rejected
+    assert!(ListHeader::decode(&[2, 44, 0, 0, 0, 0]).is_err()); // entry_len below the smallest list entry
+    assert!(ListHeader::decode(&[2, 76, 0, 0, 0]).is_err()); // truncated (5 bytes)
 
     // A *longer* future entry is legal: readers step by the header's entry_len.
-    let (_, entry_len) = ListHeader::decode(&[1, 80, 1, 0]).unwrap();
-    assert_eq!(entry_len, 80);
+    let (_, entry_len) = ListHeader::decode(&[2, 90, 1, 0, 1, 0]).unwrap();
+    assert_eq!(entry_len, 90);
 }
 
 #[test]
 fn route_entry_layout() {
     // Offsets by hand: id, reserved, byte_len, distance, ascent, points, waypoints, name_len,
-    // name[48] zero-padded, trailing reserved byte.
+    // name[48] zero-padded, trailing reserved byte, then the content crc32.
     let b = route_entry().encode();
-    assert_eq!(b.len(), LIST_ENTRY_LEN);
+    assert_eq!(b.len(), RouteListEntry::ENTRY_LEN);
     assert_eq!(&b[0..2], &7u16.to_le_bytes());
     assert_eq!(&b[2..4], &[0, 0]);
     assert_eq!(&b[4..8], &300u32.to_le_bytes());
@@ -56,7 +64,8 @@ fn route_entry_layout() {
     assert_eq!(&b[20..22], &2u16.to_le_bytes());
     assert_eq!(b[22], 11);
     assert_eq!(&b[23..34], b"Vector Loop");
-    assert!(b[34..].iter().all(|&x| x == 0)); // padding + the reserved tail byte
+    assert!(b[34..72].iter().all(|&x| x == 0)); // name padding + the reserved tail byte
+    assert_eq!(&b[72..76], &0x1F66_C051u32.to_le_bytes()); // content crc32
 }
 
 #[test]
@@ -71,6 +80,10 @@ fn route_entry_roundtrip_and_truncation() {
     let b = e.encode();
     assert_eq!(b[22], 48);
     assert_eq!(RouteListEntry::decode(&b).unwrap().name.len(), 48);
+
+    // The unknown-CRC sentinel round-trips.
+    let unknown = RouteListEntry { crc32: RouteListEntry::CRC_UNKNOWN, ..route_entry() };
+    assert_eq!(RouteListEntry::decode(&unknown.encode()).unwrap().crc32, 0);
 }
 
 #[test]
@@ -104,14 +117,16 @@ fn whole_object_walk() {
     // walk it as the app will: header first, entries stepped by the announced entry_len.
     let entries = [route_entry(), RouteListEntry { object_id: 8, name: b"B", ..route_entry() }];
     let mut obj = Vec::new();
-    obj.extend_from_slice(&ListHeader { count: entries.len() as u16 }.encode());
+    let count = entries.len() as u16;
+    obj.extend_from_slice(&ListHeader { count, total: count }.encode(RouteListEntry::ENTRY_LEN as u8));
     for e in &entries {
         obj.extend_from_slice(&e.encode());
     }
-    assert_eq!(obj.len(), ListHeader::object_len(entries.len()));
+    assert_eq!(obj.len(), ListHeader::object_len(entries.len(), RouteListEntry::ENTRY_LEN));
 
     let (h, entry_len) = ListHeader::decode(&obj).unwrap();
     assert_eq!(h.count as usize, entries.len());
+    assert_eq!(entry_len, RouteListEntry::ENTRY_LEN);
     for (k, expected) in entries.iter().enumerate() {
         let slot = ListHeader::entry_slice(&obj, k, entry_len).expect("entry k is in bounds");
         let d = RouteListEntry::decode(slot).unwrap();
