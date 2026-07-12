@@ -41,4 +41,5 @@ pub use image::{
 };
 pub use state::{
     decide, BootDecision, BootState, EncodedPage, Extent, StagedRef, MAX_ENCODED_LEN, MAX_EXTENTS, PAGE_LEN,
+    WDT_TIMEOUT_TICKS,
 };
