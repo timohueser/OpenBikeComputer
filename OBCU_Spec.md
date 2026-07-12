@@ -77,7 +77,11 @@ truncated to 32 bytes on a UTF-8 char boundary at wrap time (never mid-codepoint
 
 `Image Len` must not exceed **`MAX_IMAGE_LEN` = 1,480,000** bytes — the L15 DK app
 slot (`0x8000 … 0x17B000`) minus a small margin. `obc-mkimage wrap` refuses a larger
-image. (The LM20's larger slot is a future mechanical bump.)
+image. (The LM20's larger slot is a future mechanical bump.) The **whole container**
+is `64 + Image Len` bytes; the BLE `fwImage` transfer (protocol §7.6) announces that
+container size, so its announce-time reject gates at the **container** ceiling
+`MAX_IMAGE_LEN + 64` = 1,480,064 — a raw image at the cap must not be refused for its
+64-byte header. Bytes past `64 + Image Len` in the delivered file are ignored (§2.3).
 
 ---
 
