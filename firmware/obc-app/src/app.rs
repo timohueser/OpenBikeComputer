@@ -1007,6 +1007,7 @@ impl App {
                 temp_c: _,
                 last_fix_ms: _,
                 prev_no_fix: _,
+                prev_live_sensors: _,
                 poi_scratch: _,
                 ble_passkey: _,
                 sensor_status: _,
