@@ -68,7 +68,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// the link (which itself unblocks the ack waiter via the disconnect cleanup),
     /// and the forget is best-effort: a device that never answers must not stall
     /// the app's "Forget device" tap.
-    private static let forgetBondAckTimeout: Duration = .seconds(3)
+    private static let forgetBondAckTimeout: DispatchTimeInterval = .seconds(3)
 
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
@@ -426,37 +426,42 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // stranger can never issue it. Holds the transfer slot for `deleteRoute`'s
         // reason (#302): command and transfer results share one `pendingStatuses`
         // buffer. The device answers `commandResult(ok)` first, then drops the link
-        // — so we wait only briefly for the ack (`forgetBondAckTimeout`); a timeout
-        // or write failure throws, and the caller (Settings forget) treats this as
-        // best-effort and clears its local record regardless.
+        // — so we wait only briefly for the ack; a timeout or write failure throws,
+        // and the caller (Settings forget) treats this as best-effort and clears
+        // its local record regardless.
         await acquireTransferSlot()
         defer { releaseTransferSlot() }
         clearPendingStatuses()
         try await write(Data([4]), to: GATT.command)
-        _ = try await withTimeout(Self.forgetBondAckTimeout) { [self] in
-            try await nextCommandResult()
+        // The ack timeout is a queue-confined one-shot (the watchdog idiom above),
+        // deliberately NOT a task-group race: `nextCommandResult()`'s parked
+        // continuation is not cancellation-responsive — it resolves only on a
+        // matching status or the disconnect cleanup — so a throwing group would
+        // sit un-drainable on the losing child exactly when the device never
+        // answers (the same wedge `LaunchFlowModel` documents for racing
+        // `connect()`). Instead the one-shot unwinds the waiter through the same
+        // resume-throwing path the disconnect cleanup uses. Failing ALL parked
+        // status waiters is safe here: every status-waiting op parks only while
+        // holding the transfer slot, and we hold it — the only parked waiter is
+        // ours. The defer cancels the one-shot before the slot is released (LIFO),
+        // and a lost race is harmless either way: on the serial `queue`, a fire
+        // after our waiter resolved finds `statusWaiters` empty and no-ops.
+        let ackTimeout = DispatchWorkItem { [weak self] in
+            self?.failStatusWaiters(DeviceError.writeFailed)
         }
+        queue.asyncAfter(deadline: .now() + Self.forgetBondAckTimeout, execute: ackTimeout)
+        defer { ackTimeout.cancel() }
+        _ = try await nextCommandResult()
     }
 
-    /// Race `op` against a timeout, throwing `writeFailed` if the timeout wins.
-    /// Best-effort helper for `forgetBond`, where the device drops the link the
-    /// instant it acks (the disconnect cleanup then resolves `op`'s inner waiter),
-    /// so a lingering waiter after a genuine timeout is unwound by the forget's
-    /// own follow-on disconnect.
-    private func withTimeout<T: Sendable>(
-        _ timeout: Duration,
-        _ op: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await op() }
-            group.addTask {
-                try await Task.sleep(for: timeout)
-                throw DeviceError.writeFailed
-            }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else { throw DeviceError.writeFailed }
-            return first
-        }
+    /// Unwind every parked `status` waiter with `error` — `forgetBond`'s ack
+    /// timeout. Queue-confined: called only from a work item already running on
+    /// `queue` (`asyncAfter` executes on its target).
+    private func failStatusWaiters(_ error: DeviceError) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let waiters = statusWaiters
+        statusWaiters.removeAll()
+        for waiter in waiters { waiter.cont.resume(throwing: error) }
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
