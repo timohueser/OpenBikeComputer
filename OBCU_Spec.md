@@ -108,10 +108,15 @@ including the CRC; the CRC covers bytes `0 .. blob_len − 4` (the padding inclu
 | 8 | Blob Len | 4 | `uint32` | Total encoded length, incl. CRC; a multiple of 16 |
 | 12 | Generation | 4 | `uint32` | Bumped on every arm; `0` for Idle |
 
-`Generation` lets the installer reject a stale-page replay (invariant 4): it is
-carried for `Armed`/`Trial` and read back by `BootState::generation()`. It is also
-recorded inside the `Idle` payload's **Last Outcome** record (§2.2), where the app's
-boot-outcome reconcile matches it against the arm marker to tie an outcome to its arm.
+`Generation` is a diagnostic breadcrumb, **not** a replay guard. It is bumped on every
+arm, carried for `Armed`/`Trial` (read back by `BootState::generation()`), and recorded
+inside the `Idle` payload's **Last Outcome** record (§2.2). Its one live consumer is the
+app's boot-outcome reconcile, which matches the recorded generation against the arm
+marker it left behind to tie an outcome to *its* arm (§2.2). Nothing compares generations
+to *reject* a page: the single-page overwrite-in-place channel has no live stale-replay
+vector, and `Idle` pins the header field to `0`, so the counter is not monotonic across a
+cycle (`Idle 0 → Armed 1 → Idle 0`). A torn, blank, or stale page is caught by the CRC
+frame and decodes to `Idle` (invariant 4 in §Design principles) regardless of generation.
 
 **Format Version history.** `0x0001` was the original layout. `0x0002` (DR2 #730)
 appended the **Last Outcome** record to the Idle payload so the bootloader's terminal
