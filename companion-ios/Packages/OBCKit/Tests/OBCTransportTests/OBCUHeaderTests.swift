@@ -89,6 +89,24 @@ struct OBCUHeaderTests {
         #expect(throws: FirmwareImageError.tooSmall) { try StagedFirmware.validate(Data(count: 32)) }
     }
 
+    /// Trailing bytes past `64 + image_len` are FAT-cluster slack, not an error
+    /// (`OBCU_Spec.md` §1.1; the firmware armer accepts `file_len >= 64 + Len`).
+    /// The container is trimmed to exactly `64 + image_len`, so only those bytes
+    /// stream — the slack never reaches the CRC or the wire (DR5, #733).
+    @Test func acceptsTrailingSlackAndTrimsToExactLength() throws {
+        let container = try fixture("update-container-v1.bin")
+        var padded = container
+        padded.append(Data(repeating: 0xAB, count: 512)) // FAT-cluster slack
+        #expect(padded.count == 192 + 512)
+
+        let staged = try StagedFirmware.validate(padded)
+        // Validates despite the slack, and the staged container is trimmed back to
+        // exactly header + image (192) — the transfer never streams the 512 slack bytes.
+        #expect(staged.imageByteCount == 128)
+        #expect(staged.byteCount == 192)
+        #expect(staged.container == container)
+    }
+
     /// The `installFw` reply-code mapping (spec §4.3 → §4.4): each `commandResult`
     /// status maps to exactly one request outcome.
     @Test(arguments: [
