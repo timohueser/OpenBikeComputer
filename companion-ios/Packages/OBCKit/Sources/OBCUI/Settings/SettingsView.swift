@@ -107,7 +107,7 @@ public struct SettingsView: View {
             .obcDestructiveConfirm(
                 "Forget \(model.deviceName)?",
                 isPresented: $forgetShown,
-                message: "You'll pair again to use it. Your routes and rides stay on this phone.",
+                message: model.forgetMessage,
                 actionTitle: "Forget device",
                 onConfirm: { model.forget() }
             )

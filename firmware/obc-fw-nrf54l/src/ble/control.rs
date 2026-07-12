@@ -41,6 +41,11 @@ use super::state::{publish, transfer_result, Armed, StatusBytes, TRANSFER_ABORT,
 struct CommandOutcome {
     result: StatusBytes,
     store_changed: Option<ObjectType>,
+    /// `forgetBond` (§4.4 cmd 4): the app asked the device to dissolve its own bond. Deferred, not
+    /// done inline — the caller rings [`state::request_forget_bond`] **after** the `commandResult`
+    /// ack has gone out, so the ack reaches the phone before the forget machinery
+    /// ([`super::link_control`]) clears the bond and drops the link.
+    forget_bond: bool,
 }
 
 /// Execute a `command` write. `deleteObject` (cmd 1: `type u8 · object_id u16`) deletes a stored route
@@ -52,6 +57,7 @@ struct CommandOutcome {
 /// newly-flagged count. Any other command byte is `unknownCommand`.
 fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
+    let mut forget_bond = false;
     let (status, detail, store_changed) = match (cmd, data) {
         (obc_ble::CMD_DELETE_OBJECT, [_, ty, lo, hi, ..]) => {
             let id = u16::from_le_bytes([*lo, *hi]);
@@ -100,11 +106,28 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedSto
             }
             (status, 0, None)
         }
+        (obc_ble::CMD_FORGET_BOND, _) => {
+            // forgetBond (#756): the app's "Forget device" asks the device to dissolve its side of
+            // the bond too, so a one-sided app forget doesn't leave the pair wedged (the device would
+            // otherwise keep rejecting new pairings under the #455 reject-when-bonded posture until the
+            // rider ran Forget phone on the device). This is only reachable over the authenticated,
+            // encrypted link — the gated `command` characteristic requires it (§8) — so the bonded
+            // phone clearing its own bond is fully consistent with reject-when-bonded; a stranger can
+            // never issue it. We DON'T forget here: answer `commandResult(ok)` and defer the forget to
+            // *after* the ack has been sent (see the caller), so the phone gets its ack before the link
+            // drops. The forget itself reuses the on-device Forget-phone machinery (`link_control` →
+            // `forget_bond`): clears the RRAM bond slot + host table, lowers `paired`, drops the link,
+            // and re-opens pairing on the next connection.
+            forget_bond = true;
+            info!("ble: [cmd] forgetBond — ack first, then clear bond + drop link");
+            (CommandStatus::Ok, 0, None)
+        }
         _ => (CommandStatus::UnknownCommand, 0, None),
     };
     CommandOutcome {
         result: StatusMessage::CommandResult(CommandResult::with_detail(cmd, status, detail)).encode(),
         store_changed,
+        forget_bond,
     }
 }
 
@@ -221,6 +244,7 @@ pub(crate) async fn serve_connection(
                 let mut status_msg: Option<StatusBytes> = None;
                 let mut store_changed: Option<ObjectType> = None;
                 let mut config_written = false;
+                let mut forget_after_ack = false;
                 let reply = match event {
                     GattEvent::Write(e) => {
                         let handle = e.handle();
@@ -228,6 +252,7 @@ pub(crate) async fn serve_connection(
                             let outcome = e.with_data(|_off, data| run_command(data, store, &mut guard));
                             status_msg = Some(outcome.result);
                             store_changed = outcome.store_changed;
+                            forget_after_ack = outcome.forget_bond;
                             info!("ble: [gatt] command write");
                             e.accept()
                         } else if handle == server.obc.transfer_control.handle {
@@ -292,6 +317,16 @@ pub(crate) async fn serve_connection(
                 }
                 if let Some((buf, len)) = status_msg {
                     notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;
+                }
+                if forget_after_ack {
+                    // forgetBond (#756): the `commandResult(ok)` ack has now been handed to the
+                    // controller, so it's safe to trigger the forget. Ring the same request the
+                    // on-device Forget-phone hold uses — `link_control` (the sibling in this link's
+                    // `join4`) drains it, clears the bond via `forget_bond` (RRAM slot + host table +
+                    // `paired = false`), and drops the link. Deferring to after the notify keeps the
+                    // ordering the spec pins: ack first, then forget + disconnect (§4.4, race-free —
+                    // we never disconnect before the ack is out).
+                    state::request_forget_bond();
                 }
                 if let Some(ty) = store_changed {
                     publish_store_change(stack, server, store, ty).await;
