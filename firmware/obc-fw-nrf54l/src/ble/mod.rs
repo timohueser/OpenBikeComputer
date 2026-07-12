@@ -252,13 +252,22 @@ async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
     mpsl.run().await
 }
 
-/// The SDC at the config we ship: legacy adv, 1 peripheral link (the phone), plus the central role +
-/// legacy scan for the sensor manager ([`SENSOR_LINKS`] central links). DLE + PHY-update on the
-/// **peripheral** side only (LL payload 251 = ATT MTU 247 + 4 L2CAP header, 2M PHY) — deliberately
-/// **not** `support_dle_central`/`support_phy_update_central`: sensor notifications are ≤ 20 B, so a
-/// central link needs neither DLE nor a PHY update, and leaving them off keeps the LL feature surface
-/// (and its RAM) smaller for the same buffers. Kept in lockstep with the `required_memory` probe in
-/// [`run`] — change one, change both.
+/// The SDC at the config we ship: 1 peripheral link (the phone) + the central role and scanner for
+/// the sensor manager ([`SENSOR_LINKS`] central links), DLE + PHY-update on **both** roles
+/// (LL payload 251 = ATT MTU 247 + 4 L2CAP header, 2M PHY; the headers *require* both halves when
+/// both roles are supported), and the **extended** adv/scan/central command set on top.
+///
+/// The `_ext_` trio is load-bearing, not an upgrade: the nRF54L15 blob (nrfxlib 3.3.0) **faults
+/// internally** (`SoftdeviceController: 50:701`) when a *legacy* `LeCreateConn` initiator receives
+/// its target's advertisement — pinned on glass with the minimal harness
+/// (`src/bin/ble_central_repro.rs`, 2026-07-12; reported upstream, #736) — while the same connect
+/// as `LeExtCreateConn` works. And since legacy and extended adv/scan/initiate commands are one
+/// mutually-exclusive HCI group (first use latches the mode), the *whole host* speaks extended:
+/// advertising ([`lifecycle`] — same legacy PDUs on air), scanning, and connecting ([`sensors`]).
+/// `support_adv()`/`support_scan()` stay compiled in as a safety net for any residual legacy
+/// command path in trouble-host (a follow-up can cull them once soaked).
+///
+/// Kept in lockstep with the `required_memory` probe in [`run`] — change one, change both.
 fn build_sdc<'d, const N: usize>(
     p: nrf_sdc::Peripherals<'d>,
     rng: &'d mut cracen::Cracen<'static, Blocking>,
@@ -270,8 +279,13 @@ fn build_sdc<'d, const N: usize>(
         .support_peripheral()
         .support_central()
         .support_scan()
+        .support_ext_adv()
+        .support_ext_scan()
+        .support_ext_central()
+        .support_dle_central()
         .support_dle_peripheral()
         .support_le_2m_phy()
+        .support_phy_update_central()
         .support_phy_update_peripheral()
         .peripheral_count(1)?
         .central_count(SENSOR_LINKS as u8)?
@@ -349,8 +363,13 @@ pub async fn run(
             .support_peripheral()
             .support_central()
             .support_scan()
+            .support_ext_adv()
+            .support_ext_scan()
+            .support_ext_central()
+            .support_dle_central()
             .support_dle_peripheral()
             .support_le_2m_phy()
+            .support_phy_update_central()
             .support_phy_update_peripheral()
             .peripheral_count(1)?
             .central_count(SENSOR_LINKS as u8)?
