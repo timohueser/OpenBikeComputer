@@ -130,6 +130,24 @@ fn command_ack_rides_vector() {
     assert_eq!(&buf[..len], &result_bytes[..]);
 }
 
+/// `forgetBond` (§4.4 cmd 4, #756): the command is a bare id (no args), and its answer is a plain
+/// `commandResult{cmd 4, ok}`. Pins the command byte and the round-trip through the production
+/// `commandResult` codec — the Swift side writes `Data([4])` and reads the same envelope back.
+#[test]
+fn command_forget_bond_round_trip() {
+    use obc_ble::{CommandResult, CommandStatus, CMD_FORGET_BOND};
+
+    assert_eq!(CMD_FORGET_BOND, 4, "the wire command id is pinned by the spec (§4.4)");
+
+    // The answer the firmware sends before it clears the bond + drops the link: commandResult(ok),
+    // no detail. Round-trips byte-for-byte through the shared codec.
+    let (buf, len) = Msg::CommandResult(CommandResult::new(CMD_FORGET_BOND, CommandStatus::Ok)).encode();
+    let StatusMessage::CommandResult(r) = StatusMessage::decode(&buf[..len]).unwrap().unwrap() else {
+        panic!("expected commandResult")
+    };
+    assert_eq!((r.command, r.status, r.detail), (CMD_FORGET_BOND, CommandStatus::Ok, 0));
+}
+
 /// `ackRides` decode edges: a `count` promising more ids than the write carries is truncated; a
 /// wrong command byte is refused; an empty ack and ignored trailing bytes are both fine.
 #[test]
