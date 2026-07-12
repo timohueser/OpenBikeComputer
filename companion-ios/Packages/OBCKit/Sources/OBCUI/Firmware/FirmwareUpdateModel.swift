@@ -149,6 +149,14 @@ public final class FirmwareUpdateModel {
         (phase == .staged || phase == .failed) && staged != nil && connection == .connected
     }
 
+    /// The link isn't dropped. The tick watcher reads this to tell a genuine
+    /// resume tick from a stale pre-drop one: ticks and link states arrive on
+    /// two independent streams, so a backlogged tick can be delivered *after*
+    /// the drop it preceded.
+    private var linkUp: Bool {
+        connection != .outOfRange && connection != .disconnected
+    }
+
     public var fraction: Double { progress.fraction }
 
     /// "62%" — mono, beside the bar.
@@ -206,7 +214,7 @@ public final class FirmwareUpdateModel {
 
     private func handleState(_ state: ConnectionState) {
         connection = state
-        let dropped = state == .outOfRange || state == .disconnected
+        let dropped = !linkUp
         switch phase {
         case .transferring where dropped:
             // The link left the transfer stalled-but-restartable (Resume re-sends).
@@ -279,11 +287,15 @@ public final class FirmwareUpdateModel {
         let handle = transport.uploadFirmware(staged.container)
         self.handle = handle
 
+        // Progress ticks. A tick is also the proof a resume is moving again —
+        // but only while the link is up: a stale pre-drop tick delivered after
+        // the drop event must not flip the sheet back to `.transferring`
+        // (hiding Resume) for a transfer whose link is already gone.
         transferWatchers.append(Task { [weak self] in
             for await tick in handle.progress {
                 guard let self else { return }
                 progress = tick
-                if phase == .interrupted { phase = .transferring }  // moving again
+                if phase == .interrupted, linkUp { phase = .transferring }  // moving again
             }
         })
 
