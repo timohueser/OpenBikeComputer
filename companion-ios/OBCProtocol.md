@@ -212,7 +212,9 @@ announce guard rejects at the **container** ceiling `MAX_IMAGE_LEN + 64` =
 stages. **Tail:** any bytes in the picked file past `64 + Image Len` are FAT
 cluster slack and **ignored** (the armer accepts `file_len >= 64 + Len`); the app
 trims to exactly `64 + Image Len` and streams only those bytes — a genuinely
-*short* file (that can't hold header + image) is still rejected. On commit the app sends `installFw`
+*short* file (that can't hold header + image) is still rejected.
+
+On commit the app sends `installFw`
 (cmd 3, no args); its `commandResult.status` maps to plain UI copy: `ok`(0) →
 "confirm on the device", `notFound`(2) → "the device doesn't see the update",
 `busy`(3) → "finish the current ride first", `error`(4) → "the device rejected
