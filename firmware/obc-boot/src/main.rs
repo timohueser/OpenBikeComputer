@@ -5,7 +5,7 @@
 //! decode it (anything torn/blank/garbage ⇒ `Idle`) and run the install engine
 //! (verify → flash → readback → trial/rollback — ALL sequencing lives in
 //! `obc_dfu::engine`, unit-tested with mock IO), then act on the returned outcome: jump to the
-//! app at [`APP_BASE`] (after an install, that IS the freshly-written image's one trial boot —
+//! app at [`app_slot_base`] (after an install, that IS the freshly-written image's one trial boot —
 //! never a reset, which would re-enter here and roll the trial back), or park with an LED code. This
 //! crate contributes only resource bring-up (SPI card, RRAMC, LED) via `sd`/`install`/`led`;
 //! the bootloader itself must never be able to panic on any page content.
@@ -19,6 +19,7 @@
 mod install;
 mod led;
 mod sd;
+mod wdt;
 
 use cortex_m_rt::entry;
 #[cfg(feature = "rtt")]
@@ -29,16 +30,6 @@ use embassy_nrf::rramc::Rramc;
 use led::Led;
 use obc_dfu::engine::{self, Outcome, Slot};
 use obc_dfu::{decide, BootDecision, BootState, PAGE_LEN};
-
-/// Base of the app slot — the app's vector table (see the repo layout in `memory.x`; the board
-/// crate's `build.rs` links the app's `FLASH` at this exact origin, and its raw first words are
-/// the initial MSP + reset vector this bootloader jumps through).
-const APP_BASE: u32 = 0x0000_8000;
-
-/// One past the end of the app slot — the BOOT_STATE page origin (`memory.x` mirrors the board
-/// crate's layout). The install engine takes the slot size so IT owns the "padded image must
-/// fit" gate, host-tested.
-const APP_SLOT_END: u32 = 0x0017_B000;
 
 /// The engine's SD↔RRAM staging buffer: 8 whole SD blocks between card reads and line writes.
 const INSTALL_BUF_LEN: usize = 4096;
@@ -62,6 +53,22 @@ fn boot_state_base() -> u32 {
 
 fn boot_state_page() -> &'static [u8; PAGE_LEN] {
     unsafe { &*(boot_state_base() as *const [u8; PAGE_LEN]) }
+}
+
+/// Base of the app slot — the app's vector table (`0x8000`). Comes from the `__app_slot_base`
+/// linker symbol (`memory.x` PROVIDEs it as `ORIGIN(FLASH) + LENGTH(FLASH)`, i.e. one past the
+/// bootloader's own region), the same convention as [`boot_state_base`] and mirroring the board
+/// crate's `__app_slot_base`: the slot geometry lives only in the linker scripts, never as a
+/// literal here. The board crate's `build.rs` links the app's `FLASH` at this exact origin, and
+/// its raw first words are the initial MSP + reset vector this bootloader jumps through. The
+/// slot *end* is [`boot_state_base`] (the app slot runs right up to the BOOT_STATE page), so the
+/// slot length is `boot_state_base() - app_slot_base()` — the install engine takes that size and
+/// owns the "padded image must fit" gate, host-tested.
+fn app_slot_base() -> u32 {
+    extern "C" {
+        static __app_slot_base: u8;
+    }
+    core::ptr::addr_of!(__app_slot_base) as u32
 }
 
 #[entry]
@@ -110,6 +117,12 @@ fn boot(p: embassy_nrf::Peripherals) {
         cp.DWT.enable_cycle_counter();
     }
 
+    // The watchdog across the boot chain (DR1, #729 — the policy lives on `wdt::BootDog`): the
+    // arm path enters here through a warm reset that carries the app's live 24 s dog, so adopt
+    // and pet it through everything below; a cold power-on stays dog-less until the trial jump.
+    // Constructed only past the fast path — a plain `Idle` boot never touches the WDT.
+    let mut dog = wdt::BootDog::take(p.WDT0);
+
     let mut rram = Rramc::new(p.RRAMC);
 
     // The card is needed only when the engine will stream extents. Bring-up retries FOREVER
@@ -121,6 +134,10 @@ fn boot(p: embassy_nrf::Peripherals) {
             let mut blocks = sd::SdBlocks::new(p.SERIAL22, p.P1_11, p.P1_07, p.P1_06, p.P0_00);
             let mut backoff = BACKOFF_MIN_MS;
             while !blocks.try_init() {
+                // An adopted dog must not convert this park into a reset storm — pet per lap
+                // (a lap is ≤ ~9 s: three blinks + the ≤8 s backoff, far inside 24 s), so the
+                // loop keeps waiting for the card exactly as designed.
+                dog.pet();
                 #[cfg(feature = "rtt")]
                 defmt::warn!("obc-boot: SD init failed — retrying in {=u32} ms", backoff);
                 led.blink_code(3);
@@ -134,13 +151,17 @@ fn boot(p: embassy_nrf::Peripherals) {
 
     // Run the engine; a transient SD error mid-stream gets the same forever-retry treatment as
     // a missing card (state untouched by construction — host-tested), everything else is final.
-    let slot = Slot { base: APP_BASE, len: APP_SLOT_END - APP_BASE };
+    let app_base = app_slot_base();
+    let slot = Slot { base: app_base, len: boot_state_base() - app_base };
     let mut buf = [0u8; INSTALL_BUF_LEN];
     let mut backoff = BACKOFF_MIN_MS;
     let outcome = loop {
-        let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, boot_state_base());
+        let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, &mut dog, boot_state_base());
         match engine::run(&state, &slot, &mut io, &mut buf) {
             Outcome::SdError => {
+                // Same pet-per-lap as the init loop above; inside the engine the progress
+                // hook pets every chunk (`install.rs`).
+                dog.pet();
                 #[cfg(feature = "rtt")]
                 defmt::warn!("obc-boot: SD read failed mid-install — retrying in {=u32} ms", backoff);
                 led.blink_code(3);
@@ -173,30 +194,45 @@ fn boot(p: embassy_nrf::Peripherals) {
         // new image ever ran. The jump IS the one trial boot; a later bootloader entry that
         // still sees `Trial` then genuinely means the trial went unconfirmed.
         Outcome::Installed => {
+            // On the Install decision this jump IS the one trial boot of a freshly-flashed
+            // image — make sure it runs under the dog (Gap B of #729): started here on a cold
+            // boot, already live and inherited on the warm-reset path; either way the app
+            // adopts it at its own WDT setup, and a trial that wedges before getting there is
+            // dog-reset back into this bootloader → unconfirmed `Trial` → rollback. A
+            // *rollback's* jump (also `Installed`) re-enters the previously confirmed image —
+            // the same trust level as a plain `Idle` boot, so it deliberately stays dog-less
+            // on a cold boot, like the fast path.
+            if matches!(decision, BootDecision::Install(_)) {
+                dog.start_for_trial();
+            }
             #[cfg(feature = "rtt")]
             defmt::info!("obc-boot: install complete — jumping into the new image (trial boot)");
         }
         // Readback never matched (or the RRAM write path failed) after all retries. The state
         // page still holds the Armed record, so a power cycle retries the whole install; park
-        // on SOS rather than reset-looping into a boot storm.
+        // on SOS rather than reset-looping into a boot storm. Petting an adopted dog keeps the
+        // park a park (#729): letting it fire would turn this into a 24 s reset-and-rehammer
+        // cycle against a card that just failed readback — the opposite of the documented
+        // "halt until a human power-cycles" design.
         Outcome::FlashError => {
             #[cfg(feature = "rtt")]
             defmt::error!("obc-boot: flash/readback failed after retries — halting (power cycle retries)");
-            led.sos_forever();
+            led.sos_forever(|| dog.pet());
         }
         // The retry loop above never breaks with SdError; keep the match total without a
         // panic path.
-        Outcome::SdError => led.sos_forever(),
+        Outcome::SdError => led.sos_forever(|| dog.pet()),
     }
 }
 
-/// Hand the machine to the app at [`APP_BASE`], matching the reset state as closely as
+/// Hand the machine to the app at [`app_slot_base`], matching the reset state as closely as
 /// possible — the app was previously entered directly from reset and must not notice the
 /// difference. Known deviations from a cold reset, both harmless: VTOR points at the app's
 /// table instead of 0 (deliberate — that's the mechanism), and the FPU is already enabled
 /// (this crate's own cortex-m-rt reset enabled CPACR; the app's reset handler re-enables it
 /// idempotently).
 fn jump_to_app() -> ! {
+    let app_base = app_slot_base();
     unsafe {
         // 1. Quiesce the NVIC: disable + clear-pend every external interrupt line, so nothing
         //    a bootloader HAL touched (the S3 SPIM bring-up registers SERIAL22) can vector
@@ -213,14 +249,14 @@ fn jump_to_app() -> ! {
         //    `asm::bootload` does NOT write VTOR (verified against its source — it only loads
         //    MSP and branches), so this write is load-bearing. DSB+ISB order the write against
         //    both the NVIC writes above and the jump below.
-        (*cortex_m::peripheral::SCB::PTR).vtor.write(APP_BASE);
+        (*cortex_m::peripheral::SCB::PTR).vtor.write(app_base);
         cortex_m::asm::dsb();
         cortex_m::asm::isb();
-        // 3.+4. `asm::bootload(APP_BASE)`: clears CONTROL.SPSEL (main stack — already the
-        //    case here, matching reset), loads MSP from *(0x8000), and branches to
-        //    *(0x8004)|1 (the app's reset vector, thumb bit set). Diverges — the bootloader
-        //    is gone after this line.
-        cortex_m::asm::bootload(APP_BASE as *const u32)
+        // 3.+4. `asm::bootload(app_base)`: clears CONTROL.SPSEL (main stack — already the
+        //    case here, matching reset), loads MSP from *(app base), and branches to
+        //    *(app base + 4)|1 (the app's reset vector, thumb bit set). Diverges — the
+        //    bootloader is gone after this line.
+        cortex_m::asm::bootload(app_base as *const u32)
     }
 }
 
@@ -229,6 +265,15 @@ fn jump_to_app() -> ! {
 /// If a panic happens anyway (a future logic bug), park the core rather than reset-looping
 /// into a brick-flavoured boot storm; the LED staying dark after power-on is the field
 /// symptom. (`rtt` builds swap this for panic-probe's printing handler.)
+///
+/// One caveat since DR1 (#729): on the warm-reset install path an **adopted watchdog is live**
+/// and nothing pets it here (deliberate — this handler has no access to the handle, and a
+/// panicking bootloader shouldn't keep itself alive), so the park is bounded at one WDT period
+/// (≤ 24 s) before the dog resets the machine. That reset re-enters this bootloader with the
+/// state page unchanged — and, per the app's WDT notes (`obc-fw-nrf54l/src/main.rs`), a
+/// dog-fired reset does *not* carry the dog over, so a deterministic panic parks for good on
+/// the second entry: one bounded retry, then the designed dark-LED park — still no reset loop.
+/// Cold-boot panics (no dog) park forever exactly as before.
 #[cfg(not(feature = "rtt"))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {

@@ -42,8 +42,11 @@ use crate::{sd, stackmeter, SharedStore, SharedStoreMutex};
 // gated on the input plane's heartbeat, so **either** plane wedging trips the dog — not just
 // thread mode staying alive. Deliberately generous: it must never fire on a slow frame or a deep
 // SD reconcile, only on a genuine wedge. ──
-/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the issue's 16–30 s band).
-pub(crate) const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
+/// Watchdog period: 24 s of 32768 Hz LFCLK ticks (the issue's 16–30 s band). The value lives in
+/// `obc-dfu` since DR1 (#729): it is a boot-chain handoff contract — the bootloader must build
+/// the byte-identical WDT config to adopt this dog across a DFU install and to pre-start the one
+/// a trial boot runs under (see the contract note on the constant).
+pub(crate) const WDT_TIMEOUT_TICKS: u32 = obc_dfu::WDT_TIMEOUT_TICKS;
 /// Cap (ms) on the ride loop's event-driven sleep, ~WDT/2 — an otherwise-idle device still wakes
 /// to feed the dog. One extra wake per ~12 s is negligible next to [`IDLE_REPOLL_MS`].
 const WDT_FEED_CAP_MS: u32 = 12_000;
@@ -480,7 +483,13 @@ pub(crate) async fn run_app(
     // bounded step per pass. Guards the `.bss` planner slot's initialization.
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
-    let mut route_index: Option<RouteIndex> = None;
+    // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
+    // `Option<RouteIndex>` built by value: the slot is ~6.7 KB and permanently part of this frame
+    // either way, but a by-value build (`RouteIndex::read`'s return) also transits the stack at
+    // the pass's deepest point — which is what overflowed the 44 KB main stack on the post-upload
+    // rescan (STKOF HardFault, 2026-07-12). `build_route_index_into` fills it in place.
+    let mut route_index: RouteIndex = RouteIndex::empty();
+    let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
     #[cfg(feature = "debug-uart")]
@@ -500,6 +509,13 @@ pub(crate) async fn run_app(
     // faults out *before* this loop can run, so storage being live is already implied here; a
     // boot that can't reach a presented frame never confirms, and S3's rollback fires next boot).
     let mut trial_confirm_pending = true;
+    // DR6 (#734): the scan's validated `StagedRef`, parked between the `DfuAction::Scan` that
+    // produced it and the confirm's `DfuAction::Install`, so the arm reuses that full read + CRC
+    // pass instead of redoing it. `Copy`, ~850 B; it lives in this loop task's future storage, off
+    // `arm_update`'s sync stack (see the stack note in `dfu.rs`). A failed re-scan clears it; a stale
+    // ref is safe — the bootloader re-verifies post-reboot regardless. `None` ⇒ `run_install` falls
+    // back to a fresh scan (an Install with no preceding Scan, e.g. the `dfu-install` debug path).
+    let mut cached_staged: Option<obc_dfu::StagedRef> = None;
 
     // SE7 (#714): the saved-sensor addresses last pushed to the central manager, so the per-pass
     // reconcile below drives a save/forget only on an actual change (the `set_radio_enabled` shape,
@@ -672,27 +688,15 @@ pub(crate) async fn run_app(
             }
 
             // ── The BLE sensor seam (epic #707, SE7) ──
-            // Saved-sensor reconcile: the persisted `Settings.saved_sensors` is the source of truth
-            // (the SE6 `SEED` hook is gone). Diff each slot against what was last pushed and drive the
-            // change through SE6's save/forget latches — fired once per change (seed at boot from
-            // all-`None`, a screen pair/forget, a factory reset clearing a slot). The board-side latch
-            // pulse (`WORK_EDGE`) makes the manager connect/drop at once.
-            for (q, slot) in app.settings().saved_sensors.iter().enumerate() {
-                let want = slot.present.then_some((slot.addr, slot.addr_kind != 0));
-                if want != pushed_sensors[q] {
-                    match want {
-                        Some((addr, random)) => crate::ble::request_save_sensor(q, addr, random),
-                        None => crate::ble::request_forget_sensor(q),
-                    }
-                    pushed_sensors[q] = want;
-                }
-            }
             // Scan mode: while the Sensors screen's scan list is up, keep a discovery scan running and
             // feed the hits back; clear the app list when it closes. `request_scan` **must not** be
             // rung every pass — it pulses the manager's `WORK_EDGE`, which the manager's own scan
             // window selects on, so a per-pass ring would collapse the ~10 s window (and re-clear the
             // hit snapshot) every ~40 ms. Instead ring it once on the rising edge, then re-arm every
             // ~9 s (just under the board's 10 s window) so a lingering scan stays live without thrash.
+            // This block runs **before** the saved-sensor reconcile below: the falling edge's
+            // `cancel_scan` must clear a stale latched request *before* the reconcile's save request
+            // wakes the manager, or the manager could slip in between and run the stale scan anyway.
             if app.sensor_scan_active() {
                 // `now >= rearm` in wrapping-monotonic terms (the signed diff handles the ~49-day u32
                 // wrap); `0` is the "not scanning yet" sentinel that fires on the rising edge.
@@ -716,8 +720,31 @@ pub(crate) async fn run_app(
                 });
                 app.set_sensor_scan_hits(&hits);
             } else {
+                // Falling edge: the scan list closed (a pick or a Back). Cancel discovery — the
+                // re-arm may have left a *stale* scan request latched, which would outrank the
+                // fresh save at the manager's loop top and hold the connect hostage for a full
+                // 10 s window (epic #744, SR4); the cancel also ends a still-running window early
+                // so a picked sensor connects now, not when the window expires.
+                if sensor_scan_rearm_ms != 0 {
+                    crate::ble::cancel_scan();
+                }
                 sensor_scan_rearm_ms = 0; // reset so the next entry rings on its rising edge
                 app.set_sensor_scan_hits(&[]);
+            }
+            // Saved-sensor reconcile: the persisted `Settings.saved_sensors` is the source of truth
+            // (the SE6 `SEED` hook is gone). Diff each slot against what was last pushed and drive the
+            // change through SE6's save/forget latches — fired once per change (seed at boot from
+            // all-`None`, a screen pair/forget, a factory reset clearing a slot). The board-side latch
+            // pulse (`WORK_EDGE`) makes the manager connect/drop at once.
+            for (q, slot) in app.settings().saved_sensors.iter().enumerate() {
+                let want = slot.present.then_some((slot.addr, slot.addr_kind != 0));
+                if want != pushed_sensors[q] {
+                    match want {
+                        Some((addr, random)) => crate::ble::request_save_sensor(q, addr, random),
+                        None => crate::ble::request_forget_sensor(q),
+                    }
+                    pushed_sensors[q] = want;
+                }
             }
             // Push the per-slot status snapshot (the Sensors screen's row status lines).
             let sensor_status = [sensor_status_of(0), sensor_status_of(1), sensor_status_of(2)];
@@ -1020,7 +1047,9 @@ pub(crate) async fn run_app(
                 } else if storage.as_ref().is_some_and(sd::Storage::has_pending_save) {
                     crate::dfu::status("refused: a ride save is pending -- try again in a moment");
                 } else if let Some(s) = storage.as_mut() {
-                    crate::dfu::run_install(s, settings_store, &mut wdt).await;
+                    // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed either
+                    // way). Absent ⇒ `run_install` re-scans (the `dfu-install` debug path).
+                    crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await;
                 } else {
                     crate::dfu::status("refused: no SD card");
                 }
@@ -1034,7 +1063,19 @@ pub(crate) async fn run_app(
                     Some(s) => crate::dfu::run_scan(s, settings_store, &mut wdt),
                     None => Err(obc_app::DfuScanError::NotFound),
                 };
-                app.notify_dfu_scan_result(result);
+                // DR6 (#734): park the validated ref for the confirm's Install; answer the app with
+                // just the report. A failed scan clears any prior ref (the card may have changed).
+                let report = match result {
+                    Ok((report, staged)) => {
+                        cached_staged = Some(staged);
+                        Ok(report)
+                    }
+                    Err(e) => {
+                        cached_staged = None;
+                        Err(e)
+                    }
+                };
+                app.notify_dfu_scan_result(report);
             }
             None => {}
         }
@@ -1082,22 +1123,22 @@ pub(crate) async fn run_app(
         // Not gated on rendering — the matcher in `tick` needs the index on every fresh fix.
         if index_route != active {
             route_cache.clear(); // a route switch: drop stale slots (the cache keys by chunk index only)
+            route_index_valid = false;
             match active {
-                Some(_) => match storage.as_ref().and_then(|s| s.build_route_index()) {
-                    Some(idx) => {
-                        route_index = Some(idx);
+                Some(_) => {
+                    // In place into the resident slot — see its declaration; a by-value build here
+                    // is the stack-overflow footgun.
+                    if storage.as_ref().is_some_and(|s| s.build_route_index_into(&mut route_index)) {
+                        route_index_valid = true;
                         index_route = active; // cached — no more rebuilds until the route changes
-                    }
-                    None => {
+                    } else {
                         // Transient SD glitch: leave the key mismatched so every frame retries, hiding
                         // the route this frame rather than the whole ride.
-                        route_index = None;
                         index_route = None;
                         defmt::warn!("SD: route index read failed (flaky link?) — retrying next frame");
                     }
-                },
+                }
                 None => {
-                    route_index = None;
                     index_route = None;
                 }
             }
@@ -1106,7 +1147,7 @@ pub(crate) async fn run_app(
         // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
         // on a fresh fix, the renderer on a redraw frame.
         let route_src = storage.as_ref().and_then(|s| s.route_source());
-        let route = match (route_index.as_ref(), route_src.as_ref()) {
+        let route = match (route_index_valid.then_some(&route_index), route_src.as_ref()) {
             (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
             _ => None,
         };

@@ -301,19 +301,21 @@ impl StatField {
             StatField::HeartRate => {
                 // Live bpm from the paired HR sensor, staleness-gated by `Activity` (SE2): `--` with
                 // no sensor, no reading, or a sample older than the 5 s gate. bpm is the implied
-                // unit (like `CLIMBED`'s metres) — no unit glued to the value.
-                let v = cx.activity.live_hr(cx.now_ms).map(|bpm| bpm as u32);
+                // unit (like `CLIMBED`'s metres) — no unit glued to the value. `_display` judges
+                // freshness on the ride clock the sample recorded on, not this render's clock (they
+                // differ in the sim during a GPX replay), so the tile doesn't spuriously blank.
+                let v = cx.activity.live_hr_display().map(|bpm| bpm as u32);
                 StatCell::new(cap(t(Msg::TileHr, lang), ""), fmt_int_opt(v), false)
             }
             StatField::Power => {
                 // Live watts from the paired power meter, same 5 s staleness gate → `--`.
-                let v = cx.activity.live_power(cx.now_ms).map(|w| w as u32);
+                let v = cx.activity.live_power_display().map(|w| w as u32);
                 StatCell::new(cap(t(Msg::TilePwr, lang), ""), fmt_int_opt(v), false)
             }
             StatField::Cadence => {
                 // Live rpm, same gate. A fresh `0` (coasting) is a real reading and shows `0`; only
                 // an absent/stale value reads `--`.
-                let v = cx.activity.live_cadence(cx.now_ms).map(|rpm| rpm as u32);
+                let v = cx.activity.live_cadence_display().map(|rpm| rpm as u32);
                 StatCell::new(cap(t(Msg::TileRpm, lang), ""), fmt_int_opt(v), false)
             }
         }
@@ -1272,38 +1274,46 @@ mod tests {
         assert_eq!(StatField::Cadence.cell(&cx).caption.as_str(), "RPM");
     }
 
-    /// The sensor tiles read raw ints through `Activity`'s staleness-gated `live_*` accessors: a
-    /// fresh sample shows the number, an absent or 5 s-stale one reads `--`, and a fresh coasting
-    /// `0` cadence shows `0` (distinct from the `--` no-sensor state).
+    /// The sensor tiles read raw ints through `Activity`'s `live_*_display` accessors, which gate
+    /// staleness on the last `tick`'s ride clock (`note_sensor_clock`) — not the `Readout`'s render
+    /// clock — so the tile stays correct when a host's render clock differs from its ride clock (the
+    /// sim, mid GPX replay). A fresh sample shows the number, an absent or 5 s-stale one reads `--`,
+    /// and a fresh coasting `0` cadence shows `0` (distinct from the `--` no-sensor state).
     #[test]
     fn sensor_tiles_format_raw_ints_and_dash_when_stale() {
         let mut activity = Activity::new(Mode::Riding);
         let empty = Waypoints::new();
-        let val = |a: &Activity, now_ms: u32, f: StatField| {
-            f.cell(&Readout { now_ms, ..readout(a, Units::Metric, &empty) }).value
+        // The render clock passed to `Readout` is deliberately fixed and unrelated to the sensor
+        // clock below — the tiles must ignore it and gate on `note_sensor_clock` instead.
+        let val = |a: &Activity, f: StatField| {
+            f.cell(&Readout { now_ms: 999_999, ..readout(a, Units::Metric, &empty) }).value
         };
 
         // No sensor yet → all three read `--`.
-        assert_eq!(val(&activity, 0, StatField::HeartRate).as_str(), "--", "no HR sensor → --");
-        assert_eq!(val(&activity, 0, StatField::Power).as_str(), "--", "no power meter → --");
-        assert_eq!(val(&activity, 0, StatField::Cadence).as_str(), "--", "no cadence sensor → --");
+        activity.note_sensor_clock(0);
+        assert_eq!(val(&activity, StatField::HeartRate).as_str(), "--", "no HR sensor → --");
+        assert_eq!(val(&activity, StatField::Power).as_str(), "--", "no power meter → --");
+        assert_eq!(val(&activity, StatField::Cadence).as_str(), "--", "no cadence sensor → --");
 
         // Fresh samples → the raw numbers, no glued unit.
         activity.record_hr(152, 1_000);
         activity.record_power(210, 1_000);
         activity.record_cadence(88, 1_000);
-        assert_eq!(val(&activity, 1_000, StatField::HeartRate).as_str(), "152");
-        assert_eq!(val(&activity, 1_000, StatField::Power).as_str(), "210");
-        assert_eq!(val(&activity, 1_000, StatField::Cadence).as_str(), "88");
+        activity.note_sensor_clock(1_000);
+        assert_eq!(val(&activity, StatField::HeartRate).as_str(), "152");
+        assert_eq!(val(&activity, StatField::Power).as_str(), "210");
+        assert_eq!(val(&activity, StatField::Cadence).as_str(), "88");
 
-        // Just past the 5 s gate → stale → `--` (a dropped sensor never freezes its last value).
-        assert_eq!(val(&activity, 6_001, StatField::HeartRate).as_str(), "--", "HR older than 5 s reads --");
-        assert_eq!(val(&activity, 6_001, StatField::Power).as_str(), "--", "power older than 5 s reads --");
-        assert_eq!(val(&activity, 6_001, StatField::Cadence).as_str(), "--", "cadence older than 5 s reads --");
+        // Ride clock just past the 5 s gate → stale → `--` (a dropped sensor never freezes its value).
+        activity.note_sensor_clock(6_001);
+        assert_eq!(val(&activity, StatField::HeartRate).as_str(), "--", "HR older than 5 s reads --");
+        assert_eq!(val(&activity, StatField::Power).as_str(), "--", "power older than 5 s reads --");
+        assert_eq!(val(&activity, StatField::Cadence).as_str(), "--", "cadence older than 5 s reads --");
 
         // A fresh coasting `0` cadence is a real reading — shows `0`, not `--`.
         activity.record_cadence(0, 7_000);
-        assert_eq!(val(&activity, 7_000, StatField::Cadence).as_str(), "0", "a fresh coasting 0 shows 0, not --");
+        activity.note_sensor_clock(7_000);
+        assert_eq!(val(&activity, StatField::Cadence).as_str(), "0", "a fresh coasting 0 shows 0, not --");
     }
 
     /// The sensor tiles' on-disk discriminants are 12 / 13 / 14 (append-only), decode through

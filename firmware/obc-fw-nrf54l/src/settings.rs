@@ -121,8 +121,14 @@ const _: () = assert!(ARM_MARKER_OFFSET + obc_app::settings::ARM_MARKER_LEN as u
 const BOND_OFFSET: u32 = 3072;
 /// The bond slot's tag; anything else there (blank page, torn write, older layout) reads as
 /// "no bond" rather than garbage — the device falls back to open pairing.
+///
+/// `OBCP` (OpenBikeComputer Pairing) — distinct from the boot-state page's `OBCB`
+/// (`obc-dfu::state::MAGIC`) and the boot counter's `OBCD`, so the magic actually discriminates
+/// these separate CRC-framed RRAM records instead of colliding on one tag (DR4, #732). The tag
+/// was `OBCB` before this change: any bond written by an older firmware fails the magic check
+/// once and reads as "no bond", so the first connection after this update is a one-time re-pair.
 #[cfg(feature = "ble")]
-const BOND_MAGIC: [u8; 4] = *b"OBCB";
+const BOND_MAGIC: [u8; 4] = *b"OBCP";
 /// Bond blob layout version (bump on any field change — an old version reads as no bond).
 #[cfg(feature = "ble")]
 const BOND_VERSION: u8 = 1;

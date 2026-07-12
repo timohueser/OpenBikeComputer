@@ -268,8 +268,10 @@ bind_interrupts!(struct SensorIrqs {
 //   - `RouteIndex` the active route's resident chunk index — the ride loop holds it across frames in
 //                  the map plane's task future to stream geometry without re-walking it (128 chunks on
 //                  nrf-mem, ~6 KB). Counted here because on the 256 KB part it materially shares the
-//                  budget, and because `RouteIndex::read` builds it on the *stack*, so keeping it ~6 KB
-//                  keeps that transient build spike inside the stack reserve below.
+//                  budget. Built **in place** in that resident slot (`RouteIndex::read_into`) — the
+//                  earlier by-value `RouteIndex::read` build put the ~6.7 KB on the stack at the ride
+//                  pass's deepest point, and the post-upload rescan's rebuild overflowed the main
+//                  stack the moment `.bss` crept 216 B (STKOF HardFault, 2026-07-12).
 // plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas. The stack must
 // also absorb a per-redraw `Reader::new` (the OBCM style table → a ~2.4 KB `Reader` value built as a
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
@@ -1040,7 +1042,19 @@ async fn main(_spawner: Spawner) {
         // Once started a WDT can never be stopped; a warm reset carries it over, in which case
         // `try_new` re-adopts it if the config matches (ours is constant, so it does). A foreign
         // config (e.g. an older image's) can't be adopted or fed — log it and run unfed: the stale
-        // period fires once and the next boot starts clean.
+        // period fires once and the next boot starts clean. Since DR1 (#729) the bootloader plays
+        // the same game from its side: it adopts + pets this dog across a DFU install (the arm's
+        // warm reset carries it in) and pre-starts an identical one before jumping into a trial
+        // boot — which is then exactly what this `try_new` adopts. The config contract (timeout,
+        // halt/sleep behavior, one handle) is documented on `obc_dfu::WDT_TIMEOUT_TICKS`.
+        //
+        // INVARIANT (#729): because EVERY trial boot now enters with the dog already counting,
+        // everything between app entry and this line must complete well inside one WDT period
+        // (24 s) on a trial boot — or the dog resets a perfectly healthy trial image and the
+        // bootloader rolls it back. Today that's seconds of headroom, and nothing blocking sits
+        // upstream (a missing/slow card does NOT block boot — the build idles without one).
+        // Keep it that way: never move a blocking or open-ended retry loop (SD mount, sensor
+        // bring-up) above this point.
         let wdt_handle = {
             let mut cfg = wdt::Config::default();
             cfg.timeout_ticks = ride::WDT_TIMEOUT_TICKS;
