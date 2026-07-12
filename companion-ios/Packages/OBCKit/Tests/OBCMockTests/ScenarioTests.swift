@@ -24,7 +24,7 @@ final class ScenarioTests: XCTestCase {
         let (transport, control) = transport(.happyPath)
         XCTAssertEqual(control.connection, .connected)
         let routes = try await transport.listRoutes()
-        let rides = try await transport.listRides()
+        let rides = try await transport.listRides().rides
         XCTAssertFalse(routes.isEmpty)   // C1
         XCTAssertFalse(rides.isEmpty)    // C2
     }
