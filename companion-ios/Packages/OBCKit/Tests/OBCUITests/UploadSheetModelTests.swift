@@ -155,8 +155,8 @@ final class UploadSheetModelTests: XCTestCase {
     /// sheet wedges in `.uploading` with no Resume.
     func testDisconnectedMidUploadInterrupts() async {
         let (model, control) = makeModel(.happyPath, payloadBytes: 100_000)
-        // Pace the upload glacially so no progress tick fires during the window
-        // (a tick would flip `.interrupted` back to `.uploading`).
+        // Pace the upload glacially so the transfer can't complete (or tick)
+        // before the drop lands — the test is about the drop, nothing else.
         control.throughputBytesPerSec = 1_000
         model.start()
 

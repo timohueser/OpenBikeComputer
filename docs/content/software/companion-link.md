@@ -352,10 +352,15 @@ pairing to complete). Re-pairing (a new or reset phone) goes through the
 hold-guarded **Forget phone** action in the device's Settings ▸ Bluetooth, which
 clears the bond and re-opens pairing — so physical possession still gates the
 swap, at the *clear* step. This *reverses* an earlier "a fresh pairing replaces
-the stored bond" rule: a lost or wiped phone can no longer silently re-pair, and
-Forget phone is now the **only** re-pair path. The same screen carries the
-Bluetooth **off** switch: off stops advertising and drops the link, while the
-bond survives for when the radio comes back.
+the stored bond" rule: a lost or wiped phone can no longer silently re-pair.
+There is one more way to clear the bond, and it needs no on-device step: the
+**bonded** phone can send a `forgetBond` command over its own encrypted link, so
+the app's "Forget device" dissolves the device's side of the bond too rather than
+leaving the pair wedged (a one-sided app forget would otherwise keep hitting the
+reject). It's safe precisely because it rides the bonded link — only the paired
+phone can issue it, a stranger never can. The same screen carries the Bluetooth
+**off** switch: off stops advertising and drops the link, while the bond survives
+for when the radio comes back.
 
 <figure class="fig">
 <svg viewBox="0 0 720 400" role="img" aria-label="Pairing, reconnect, and rejection in three rows. Top row, first pairing, done once: the device shows a six-digit passkey on its screen; the rider reads it and types it into the phone; the two run an LESC elliptic-curve key exchange; both sides store the resulting bond keys. Middle row, every time after, silent: the device advertises with a stable address; the phone recognises that identity from the bond; the two re-encrypt with the stored long-term key and the phone's rotating address is resolved via the stored identity key; the result is a connected, encrypted link with no dialog. Bottom row, reject-when-bonded: a different phone tries to pair while a bond already exists; the device suppresses its passkey and drops the link; the other phone sees only a generic pairing failure; the only way through is the rider running Forget phone on the device to clear the bond.">

@@ -311,6 +311,15 @@ pub const CMD_ACK_RIDES: u8 = 2;
 /// `command` byte: `installFw` (§4.4, cmd 3) — no args (the `cmd` byte only). Asks the device to
 /// install the staged `/UPDATE.BIN`; see [`install_fw_reply`].
 pub const CMD_INSTALL_FW: u8 = 3;
+/// `command` byte: `forgetBond` (§4.4, cmd 4) — no args (the `cmd` byte only). Asks the device to
+/// dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged
+/// (the device would otherwise keep rejecting new pairings until the rider ran Forget phone on the
+/// device — §8). Honoured **only over the authenticated, bonded link**: the gated `command`
+/// characteristic already requires the LESC-encrypted link (§8), so a stranger can never issue it —
+/// the bonded phone asking to clear its own bond is fully consistent with the reject-when-bonded
+/// posture. The device answers `commandResult(ok)` first, then clears the bond + drops the link and
+/// returns to open-pairing advertising.
+pub const CMD_FORGET_BOND: u8 = 4;
 
 /// Map the cheaply-knowable device state at the BLE edge to the `installFw` `commandResult.status`
 /// (§4.4 cmd 3). The four documented outcomes reuse the existing status vocabulary — **no new status

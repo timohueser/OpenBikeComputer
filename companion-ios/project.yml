@@ -68,6 +68,15 @@ targets:
         CFBundleDisplayName: OBC
         # H7 copy — do not reword without updating the design source.
         NSBluetoothAlwaysUsageDescription: "OBC uses Bluetooth to connect to your bike computer. It never leaves your phone."
+        # Keep BLE alive with the screen off / app backgrounded (#754). Without
+        # this iOS suspends the app seconds after backgrounding, CoreBluetooth
+        # callbacks stop, and a multi-minute L2CAP transfer (a ~900 KB firmware
+        # image, a route upload, a ride sync) dies when the phone locks. L2CAP
+        # CoC streaming continues under bluetooth-central, so those transfers
+        # genuinely keep running. This is background *continuation* only — no
+        # state restoration (relaunch-after-termination is a separate concern).
+        UIBackgroundModes:
+          - bluetooth-central
         # Route-file registration (B6): puts OBC in the share sheet's app row
         # for .gpx/.tcx files (Komoot/Strava/Garmin exports) and lets Files
         # "open in" the app — delivery lands in RootView's onOpenURL. This IS
