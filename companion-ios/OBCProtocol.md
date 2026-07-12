@@ -57,7 +57,7 @@ UUID, which custom services must not use — `S0` replaced them:
 
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
-| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below) — spec §4.4 |
+| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below), `forgetBond` (cmd 4: no args — dissolve the device-side bond, below) — spec §4.4 |
 | `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult) — spec §4.3 |
 | `0003` | `objectStore` | read + notify | 10-byte store digest (revision + route/ride counts); **full lists are CoC objects** — they outgrow the 512-byte ATT attribute cap |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
@@ -95,11 +95,16 @@ for the launch greeting; CoreBluetooth owns the real crypto bond.
 
 **Forget (H2).** `BondStore.clear()` drops the app's record, but iOS keeps the CB
 bond until the user also removes it in **Settings ▸ Bluetooth** — the H2 copy
-says so. A true phone-side forget is **not enough to re-pair** (#455): the
-device still holds its bond and rejects the fresh pairing attempt until the
-rider also runs **Forget phone** on the device. The full re-pair recipe is
-therefore: forget on the phone (app + iOS Settings) **and** Forget phone on the
-device, then pair with a fresh passkey.
+says so. A phone-side forget alone would leave the device still holding its bond
+and rejecting the fresh pairing attempt (#455) — so a **connected** forget also
+sends `forgetBond` (cmd 4, spec §4.4) over the bonded link: the device dissolves
+*its* side of the bond too and re-opens pairing, no on-device step needed. The
+transport sends it best-effort — `commandResult(ok)` first, then the device drops
+the link — and the app clears its local record whether the command succeeds or
+times out. **Offline** the device is unreachable, so the old wedge stands: the
+rider must run **Forget phone** on the device before re-pairing (the not-connected
+H2 copy keeps that guidance). Either way, iOS's own CB bond is still the user's to
+remove in Settings ▸ Bluetooth.
 
 ### Data plane = L2CAP CoC
 

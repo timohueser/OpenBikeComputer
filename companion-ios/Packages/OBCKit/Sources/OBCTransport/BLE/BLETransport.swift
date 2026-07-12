@@ -63,6 +63,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// instantly with no sheet). Once the read resolves, the watchdog re-arms
     /// at `phaseTimeout` for the machine-only openL2CAPChannel → didOpen tail.
     private static let pairingTimeout: DispatchTimeInterval = .seconds(90)
+    /// How long `forgetBond` waits for the device's `commandResult(ok)` before
+    /// giving up (#756). Short by design — the device acks then immediately drops
+    /// the link (which itself unblocks the ack waiter via the disconnect cleanup),
+    /// and the forget is best-effort: a device that never answers must not stall
+    /// the app's "Forget device" tap.
+    private static let forgetBondAckTimeout: Duration = .seconds(3)
 
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
@@ -408,6 +414,49 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         clearPendingStatuses()
         try await write(Data([3]), to: GATT.command)
         return FirmwareInstallResult(commandStatus: try await nextCommandResult().status)
+    }
+
+    public func forgetBond() async throws {
+        // `forgetBond` (cmd 4): the `cmd` byte only — spec §4.4. The app's "Forget
+        // device" asks the device to dissolve ITS side of the bond too, so a one-
+        // sided app forget doesn't leave the pair wedged: the device's reject-when-
+        // bonded posture (spec §8) would otherwise refuse every new pairing until
+        // the rider ran Forget phone on the device. Reachable only over the bonded,
+        // encrypted link (the gated `command` characteristic requires it), so a
+        // stranger can never issue it. Holds the transfer slot for `deleteRoute`'s
+        // reason (#302): command and transfer results share one `pendingStatuses`
+        // buffer. The device answers `commandResult(ok)` first, then drops the link
+        // — so we wait only briefly for the ack (`forgetBondAckTimeout`); a timeout
+        // or write failure throws, and the caller (Settings forget) treats this as
+        // best-effort and clears its local record regardless.
+        await acquireTransferSlot()
+        defer { releaseTransferSlot() }
+        clearPendingStatuses()
+        try await write(Data([4]), to: GATT.command)
+        _ = try await withTimeout(Self.forgetBondAckTimeout) { [self] in
+            try await nextCommandResult()
+        }
+    }
+
+    /// Race `op` against a timeout, throwing `writeFailed` if the timeout wins.
+    /// Best-effort helper for `forgetBond`, where the device drops the link the
+    /// instant it acks (the disconnect cleanup then resolves `op`'s inner waiter),
+    /// so a lingering waiter after a genuine timeout is unwound by the forget's
+    /// own follow-on disconnect.
+    private func withTimeout<T: Sendable>(
+        _ timeout: Duration,
+        _ op: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw DeviceError.writeFailed
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw DeviceError.writeFailed }
+            return first
+        }
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {

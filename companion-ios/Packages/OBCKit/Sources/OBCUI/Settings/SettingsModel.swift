@@ -165,14 +165,46 @@ public final class SettingsModel {
 
     // MARK: Forget (H2)
 
-    /// Clear the bond and drop the link. iOS keeps the underlying BLE bond
+    /// The confirm dialog's message. When connected, the app dissolves the
+    /// device's side of the bond too (#756), so pairing again just works — no
+    /// mention of a device step. When offline it can't reach the device, so the
+    /// device keeps its bond and the rider must Forget phone on it before
+    /// re-pairing — the guidance the not-connected case keeps.
+    public var forgetMessage: String {
+        isConnected
+            ? "You'll pair again to use it. Your routes and rides stay on this phone."
+            : "You'll pair again to use it. The device keeps its pairing until you use Forget phone on it. Your routes and rides stay on this phone."
+    }
+
+    /// Clear the bond and drop the link. iOS keeps the underlying system BLE bond
     /// until the user removes it in Settings; the app just stops assuming it
     /// (see `BondStore`). The library store is deliberately untouched.
+    ///
+    /// **#756**: when connected, first ask the device to dissolve *its* side of
+    /// the bond (`forgetBond`) so a one-sided app forget doesn't leave the pair
+    /// wedged (the device's reject-when-bonded posture would otherwise refuse
+    /// re-pairing until the rider ran Forget phone on it). Best-effort: we await
+    /// the ack-or-timeout, then clear the local record + drop the link **whether
+    /// or not** it succeeded (`try?`). When offline we can't reach the device, so
+    /// this is exactly the prior behaviour — clear and drop, immediately.
     public func forget() {
-        bondStore.clear()
-        Task { [transport] in
+        guard isConnected else {
+            completeForget()
+            Task { [transport] in await transport.disconnect() }
+            return
+        }
+        Task { [weak self, transport] in
+            try? await transport.forgetBond()
+            guard let self else { return }
+            completeForget()
             await transport.disconnect()
         }
+    }
+
+    /// Clear the phone's bond record and signal the composition root — the parts
+    /// of a forget that are always the same, connected or not.
+    private func completeForget() {
+        bondStore.clear()
         onForget()
     }
 }
