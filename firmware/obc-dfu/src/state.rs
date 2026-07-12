@@ -4,8 +4,12 @@
 //! the app (the *armer*, §S4) and the bootloader (the *installer*, §S3). It is torn-write-safe by the
 //! settings-codec recipe: **anything that doesn't cleanly decode is [`BootState::Idle`]** — so a
 //! half-written page, a blank page, or a bit-flip the CRC catches all mean "no pending update, jump to
-//! the app", never a garbage install. A `generation` counter (bumped on every arm) lets the installer
-//! reject a stale replay (epic #615 safety invariant 4).
+//! the app", never a garbage install. A `generation` counter is bumped on every arm and carried through
+//! the `Armed`/`Trial` records and into the app's arm marker; it is the key that ties a recorded
+//! [`LastOutcome`] back to the arm that produced it (see [`verdict`]). It is a diagnostic breadcrumb, not
+//! a replay guard: the single-page overwrite-in-place design has no live stale-replay vector, so nothing
+//! compares generations to *reject* a page — a torn or stale page is caught by the CRC frame and decodes
+//! to `Idle` regardless of its generation.
 //!
 //! RRAMC writes 16-byte lines, so the encoded blob length is always a multiple of 16 (guaranteed by
 //! construction and pinned by a compile-time assert, mirroring `obc-app`'s settings codec) — the armer
@@ -389,7 +393,10 @@ fn get_opt_staged(body: &[u8], off: usize) -> Option<(Option<StagedRef>, usize)>
 
 impl BootState {
     /// The `generation` counter for the variants that carry one (`Armed`/`Trial`), else `0` (`Idle`).
-    /// The installer compares it against the last one it acted on to reject a stale-page replay.
+    /// A diagnostic breadcrumb: it labels the in-flight arm so a recorded [`LastOutcome`] can be tied
+    /// back to it (see [`verdict`]). Nothing compares it to *reject* a page — `Idle` pins it to `0`
+    /// ([`encode`](BootState::encode)), so it is not monotonic across a cycle and carries no replay
+    /// guarantee; corruption is caught by the CRC frame, not this field.
     pub fn generation(&self) -> u32 {
         match self {
             BootState::Idle { .. } => 0,
