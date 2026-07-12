@@ -1086,6 +1086,43 @@ async fn main(_spawner: Spawner) {
         // construction temporary must not cost `main`'s frame or the trampoline's pool; see
         // `spawn_ble_stack`.)
 
+        // --- Store-epoch nonce (protocol v2, #632 item 5 / #767): mint & persist the per-device
+        // id-era nonce. Runs **unconditionally, in every build flavor** — the era invariant ("any
+        // boot that could allocate ids under a lost floor declares a new era") must hold across
+        // mixed-flavor bench flashing: if only ble builds minted, a non-ble build could boot on a
+        // torn/absent id-marks line, rewrite it valid over a ride, and a later ble flash would see
+        // two valid lines and never mint — permanent undetected aliasing. Placed right after the
+        // shared store is built (the earliest point the RRAM lines are readable) and before
+        // anything can allocate an object id: the ride loop (`run_app`, below) and the ble build's
+        // ObjectStore (inside `ble::run`, spawned below) both start after this block in every
+        // flavor. On a clause-2 mint we seed "no floor", which the later card scan resolves via
+        // the existing `max(scan_max + 1, floor)` allocation — see `store_epoch_mint`. The TRNG
+        // word comes from a throwaway CRACEN reborrow: `Cracen` construction is side-effect-free,
+        // each op self-enables/-disables the RNG, and `Drop` is a no-op — so on ble builds the
+        // peripheral is pristine when it then moves into the LL (whose crypto RNG it becomes).
+        // `cracen_p` partial-moves `p.CRACEN` out so the reborrow has a `&mut`; non-ble builds
+        // simply drop it afterwards.
+        let mut cracen_p = p.CRACEN;
+        {
+            let mut guard = shared_store.lock().await;
+            let epoch = guard.settings.load_store_epoch();
+            let marks = guard.settings.load_id_marks();
+            // One TRNG word — cheap, and only the mint path consumes it (the pure decision fn
+            // ignores it when it keeps the stored epoch).
+            let fresh = {
+                let mut cracen = embassy_nrf::cracen::Cracen::new_blocking(cracen_p.reborrow());
+                cracen.blocking_next_u32()
+            };
+            match obc_app::settings::store_epoch_mint(epoch, marks, fresh) {
+                Some((new_epoch, new_marks)) => {
+                    guard.settings.save_store_epoch(new_epoch);
+                    guard.settings.save_id_marks(&new_marks);
+                    defmt::info!("store-epoch: minted id-era nonce {=u32:#010x} (+ id-marks re-seeded)", new_epoch);
+                }
+                None => defmt::info!("store-epoch: kept stored id-era nonce"),
+            }
+        }
+
         // --- The BLE stack, `ble` builds: group the peripheral claims (MPSL: GRTC CH7–11 + TIMER10/20
         // + TEMP + its PPI/PPIB lanes; SDC: the PPI10 fan-out + PPIB bridges; CRACEN for the LL's crypto
         // RNG) and spawn [`spawn_ble_stack`] — the trampoline that spawns [`ble::run`] from a shallow
@@ -1131,37 +1168,8 @@ async fn main(_spawner: Spawner) {
                 p.PPIB10_CH2,
                 p.PPIB10_CH3,
             );
-            // Store-epoch nonce (protocol v2, #632 item 5 / #767): mint & persist the per-device
-            // id-era nonce *before* the BLE stack — which serves it on the pre-pairing
-            // `protocolVersion` read (V2) — comes up. This is the earliest point with the RRAM
-            // settings store built *and* CRACEN still in hand, and the id-marks line the mint rule
-            // needs is readable here (the ObjectStore scan the floors re-derive from runs later, in
-            // `ble::run`; on a clause-2 mint we seed "no floor", which that scan resolves via the
-            // existing `max(scan_max + 1, floor)` allocation — see `store_epoch_mint`). The TRNG word
-            // comes from a throwaway CRACEN reborrow: `Cracen` construction is side-effect-free, each
-            // op self-enables/-disables the RNG, and `Drop` is a no-op, so the peripheral is pristine
-            // when it moves into the LL below. `cracen_p` partial-moves `p.CRACEN` out so the reborrow
-            // has a `&mut`.
-            let mut cracen_p = p.CRACEN;
-            {
-                let mut guard = shared_store.lock().await;
-                let epoch = guard.settings.load_store_epoch();
-                let marks = guard.settings.load_id_marks();
-                // One TRNG word — cheap, and only the mint path consumes it (the pure decision fn
-                // ignores it when it keeps the stored epoch).
-                let fresh = {
-                    let mut cracen = embassy_nrf::cracen::Cracen::new_blocking(cracen_p.reborrow());
-                    cracen.blocking_next_u32()
-                };
-                match obc_app::settings::store_epoch_mint(epoch, marks, fresh) {
-                    Some((new_epoch, new_marks)) => {
-                        guard.settings.save_store_epoch(new_epoch);
-                        guard.settings.save_id_marks(&new_marks);
-                        defmt::info!("store-epoch: minted id-era nonce {=u32:#010x} (+ id-marks re-seeded)", new_epoch);
-                    }
-                    None => defmt::info!("store-epoch: kept stored id-era nonce"),
-                }
-            }
+            // CRACEN goes to the LL's crypto RNG — already partial-moved out of `p` by the
+            // store-epoch mint pass above (which only reborrowed it; see its comment).
             _spawner.spawn(defmt::unwrap!(spawn_ble_stack(_spawner, mpsl_p, sdc_p, cracen_p, shared_store)));
         }
 
