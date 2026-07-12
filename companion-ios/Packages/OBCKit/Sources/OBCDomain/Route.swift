@@ -28,19 +28,28 @@ public struct RouteCatalogEntry: Identifiable, Equatable, Sendable {
     public var elevationGainMeters: Double
     /// Number of geometry points in the stored route object.
     public var pointCount: Int
+    /// The stored object's whole-object CRC-32 (v2 `routeList` entry, spec §7.4) —
+    /// the content fingerprint that lets the app verify *what* a linked id points
+    /// at (identity-verified badges) and recognize an identical unlinked copy
+    /// (adopt-by-content). `0` = unknown (the device hasn't filled the side-loaded
+    /// sidecar yet, or a genuine CRC of `0`, read the same by spec — no
+    /// special-casing). The badge/adoption logic that consumes it is V6 (#770).
+    public var crc32: UInt32
 
     public init(
         id: DeviceObjectID,
         name: String,
         distanceMeters: Double,
         elevationGainMeters: Double,
-        pointCount: Int = 0
+        pointCount: Int = 0,
+        crc32: UInt32 = 0
     ) {
         self.id = id
         self.name = name
         self.distanceMeters = distanceMeters
         self.elevationGainMeters = elevationGainMeters
         self.pointCount = pointCount
+        self.crc32 = crc32
     }
 }
 

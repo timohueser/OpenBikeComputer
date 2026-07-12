@@ -40,7 +40,7 @@ final class MockTransportTests: XCTestCase {
         XCTAssertEqual(Set(routes.map(\.id)), [DeviceObjectID(7), DeviceObjectID(12)])
         XCTAssertTrue(routes.contains { $0.name == "Kettle Moraine Loop" })
 
-        let rides = try await transport.listRides()
+        let rides = try await transport.listRides().rides
         XCTAssertTrue(rides.contains { $0.name == "Sunday Coffee Spin" })
         XCTAssertEqual(rides.count, 4)
     }
