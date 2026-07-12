@@ -200,15 +200,95 @@ final class SettingsModelTests: XCTestCase {
 
     // MARK: Forget (H2)
 
-    func testForgetClearsTheBondAndSignalsTheHost() async {
+    func testForgetWhileConnectedDissolvesTheDeviceBondThenClears() async {
+        // #756: a connected forget first tells the device to dissolve its side of
+        // the bond (so re-pairing isn't wedged by reject-when-bonded), THEN clears
+        // the phone's record and drops the link.
         var forgetFired = false
         let (model, control) = makeModel(.happyPath, onForget: { forgetFired = true })
         model.start()
-        await waitFor("identity") { model.deviceName == "Trailhead" }
+        await waitFor("connected") { model.connection == .connected }
 
         model.forget()
 
+        await waitFor("device bond dissolved") { control.forgetBondCount == 1 }
+        await waitFor("bond record cleared") { !control.bonded }
+        await waitFor("host signaled") { forgetFired }
+    }
+
+    func testConnectedForgetMessageDropsTheDeviceStep() async {
+        let (model, _) = makeModel(.happyPath)
+        model.start()
+        await waitFor("connected") { model.connection == .connected }
+        XCTAssertFalse(
+            model.forgetMessage.contains("Forget phone"),
+            "connected: the app dissolves the device bond, so no device step in the copy"
+        )
+    }
+
+    func testOfflineForgetClearsWithoutBlockingOrCommandingTheDevice() async {
+        // Offline: the device is unreachable, so no `forgetBond` is sent (it would
+        // only throw), and the forget still clears the record immediately — exactly
+        // the prior behaviour. The copy keeps the Forget-phone-on-device guidance.
+        var forgetFired = false
+        let (model, control) = makeModel(.happyPath, onForget: { forgetFired = true })
+        model.start()
+        await waitFor("connected") { model.connection == .connected }
+        control.connection = .disconnected
+        await waitFor("link down") { model.connection == .disconnected }
+
+        model.forget()
+
+        // Cleared synchronously on the offline path (no await on a device command).
         XCTAssertFalse(control.bonded, "the bond record is gone — next launch pairs")
         XCTAssertTrue(forgetFired, "the host drops the launch flow back to D1")
+        XCTAssertEqual(control.forgetBondCount, 0, "offline: never commands the unreachable device")
+        XCTAssertTrue(
+            model.forgetMessage.contains("Forget phone"),
+            "offline: keep the Forget-phone-on-device guidance"
+        )
+    }
+
+    func testConnectedForgetStillClearsWhenTheCommandFails() async {
+        // Best-effort: the device may not answer `forgetBond` (a genuine timeout,
+        // or the link dropping the instant it acks). An armed one-shot fault stands
+        // in for that — the forget must still clear the record and signal the host.
+        var forgetFired = false
+        let (model, control) = makeModel(.happyPath, onForget: { forgetFired = true })
+        model.start()
+        await waitFor("connected") { model.connection == .connected }
+        control.failNextOp(.writeFailed)
+
+        model.forget()
+
+        await waitFor("bond record cleared despite the failed command") { !control.bonded }
+        await waitFor("host signaled") { forgetFired }
+    }
+
+    func testConnectedForgetClearsEvenIfTheModelDiesDuringTheAckWait() async {
+        // The forgetBond command is SENT the moment forget() runs — so if the
+        // model deallocates during the ack window (screen popped, app torn down),
+        // the local clear must still happen: the device has already dissolved its
+        // bond, and a surviving BondRecord would make the next launch reconnect
+        // bonded against a device in open pairing — the inverse of the #756 wedge.
+        // The forget task captures bondStore + onForget, never self.
+        var forgetFired = false
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        var model: SettingsModel? = SettingsModel(
+            transport: MockTransport(control: control),
+            bondStore: MockBondStore(control: control),
+            onForget: { forgetFired = true }
+        )
+        model?.start()
+        await waitFor("connected") { model?.connection == .connected }
+        control.latency = .milliseconds(200) // hold the ack window open
+
+        model?.forget()
+        model = nil // the Settings screen pops mid-wait
+
+        await waitFor("device bond dissolved") { control.forgetBondCount == 1 }
+        await waitFor("bond record cleared despite the dead model") { !control.bonded }
+        await waitFor("host signaled") { forgetFired }
     }
 }

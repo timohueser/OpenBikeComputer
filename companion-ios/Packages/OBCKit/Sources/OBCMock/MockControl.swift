@@ -65,6 +65,9 @@ public final class MockControl: @unchecked Sendable {
     /// Every `ackRides` batch the transport sent, in order — the coordinator
     /// tests assert the connect-time possession ack lands here.
     private var _ackedRideBatches: [[RideID]] = []
+    /// How many `forgetBond` commands (#756) the transport sent — the forget
+    /// tests assert a connected forget reaches the device before clearing.
+    private var _forgetBondCount = 0
     /// The version string of the firmware the phone staged this session (from the
     /// last completed `fwImage` upload) — what a modelled reboot reconnects on.
     /// `nil` until an upload completes.
@@ -336,6 +339,19 @@ public final class MockControl: @unchecked Sendable {
     /// The `ackRides` batches sent so far, in send order (test hook).
     public var ackedRideBatches: [[RideID]] {
         lock.withLocked { _ackedRideBatches }
+    }
+
+    /// Record a `forgetBond` request (#756, the mock's stand-in for the device
+    /// dissolving its side of the bond). The mock models no device-side bond
+    /// slot, so the count is the observable effect the forget tests assert.
+    func recordForgetBond() {
+        lock.withLocked { _forgetBondCount += 1 }
+    }
+
+    /// How many `forgetBond` commands the app has sent (test hook). Non-zero means
+    /// the connected forget reached the device before clearing the local record.
+    public var forgetBondCount: Int {
+        lock.withLocked { _forgetBondCount }
     }
 
     /// Delete a stored route by its device object id (the `deleteObject`

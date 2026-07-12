@@ -50,9 +50,16 @@ struct SettingsScreen: View {
 struct FirmwareUpdateScreen: View {
     @State private var model: FirmwareUpdateModel
 
-    init(transport: any DeviceTransport, deviceName: String, prestage: Data? = nil, autoSend: Bool = false) {
+    init(
+        transport: any DeviceTransport,
+        deviceName: String,
+        activity: TransferActivity? = nil,
+        prestage: Data? = nil,
+        autoSend: Bool = false
+    ) {
         _model = State(initialValue: FirmwareUpdateModel(
-            transport: transport, deviceName: deviceName, prestage: prestage, autoSend: autoSend
+            transport: transport, deviceName: deviceName,
+            activity: activity, prestage: prestage, autoSend: autoSend
         ))
     }
 

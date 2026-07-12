@@ -28,7 +28,7 @@ pub use crc32::Crc32;
 pub use descriptor::{
     install_fw_reply, AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectStoreDigest, ObjectType,
     Op, StatusMessage, StoreChanged, TransferControl, TransferResult, TransferStatus, CMD_ACK_RIDES, CMD_DELETE_OBJECT,
-    CMD_INSTALL_FW,
+    CMD_FORGET_BOND, CMD_INSTALL_FW,
 };
 pub use list::{ListHeader, RideListEntry, RouteListEntry, LIST_ENTRY_LEN};
 pub use sensors::{
