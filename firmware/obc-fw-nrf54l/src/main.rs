@@ -1131,7 +1131,38 @@ async fn main(_spawner: Spawner) {
                 p.PPIB10_CH2,
                 p.PPIB10_CH3,
             );
-            _spawner.spawn(defmt::unwrap!(spawn_ble_stack(_spawner, mpsl_p, sdc_p, p.CRACEN, shared_store)));
+            // Store-epoch nonce (protocol v2, #632 item 5 / #767): mint & persist the per-device
+            // id-era nonce *before* the BLE stack — which serves it on the pre-pairing
+            // `protocolVersion` read (V2) — comes up. This is the earliest point with the RRAM
+            // settings store built *and* CRACEN still in hand, and the id-marks line the mint rule
+            // needs is readable here (the ObjectStore scan the floors re-derive from runs later, in
+            // `ble::run`; on a clause-2 mint we seed "no floor", which that scan resolves via the
+            // existing `max(scan_max + 1, floor)` allocation — see `store_epoch_mint`). The TRNG word
+            // comes from a throwaway CRACEN reborrow: `Cracen` construction is side-effect-free, each
+            // op self-enables/-disables the RNG, and `Drop` is a no-op, so the peripheral is pristine
+            // when it moves into the LL below. `cracen_p` partial-moves `p.CRACEN` out so the reborrow
+            // has a `&mut`.
+            let mut cracen_p = p.CRACEN;
+            {
+                let mut guard = shared_store.lock().await;
+                let epoch = guard.settings.load_store_epoch();
+                let marks = guard.settings.load_id_marks();
+                // One TRNG word — cheap, and only the mint path consumes it (the pure decision fn
+                // ignores it when it keeps the stored epoch).
+                let fresh = {
+                    let mut cracen = embassy_nrf::cracen::Cracen::new_blocking(cracen_p.reborrow());
+                    cracen.blocking_next_u32()
+                };
+                match obc_app::settings::store_epoch_mint(epoch, marks, fresh) {
+                    Some((new_epoch, new_marks)) => {
+                        guard.settings.save_store_epoch(new_epoch);
+                        guard.settings.save_id_marks(&new_marks);
+                        defmt::info!("store-epoch: minted id-era nonce {=u32:#010x} (+ id-marks re-seeded)", new_epoch);
+                    }
+                    None => defmt::info!("store-epoch: kept stored id-era nonce"),
+                }
+            }
+            _spawner.spawn(defmt::unwrap!(spawn_ble_stack(_spawner, mpsl_p, sdc_p, cracen_p, shared_store)));
         }
 
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
