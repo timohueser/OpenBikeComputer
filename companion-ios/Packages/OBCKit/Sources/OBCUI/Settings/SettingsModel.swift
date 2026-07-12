@@ -183,28 +183,33 @@ public final class SettingsModel {
     /// **#756**: when connected, first ask the device to dissolve *its* side of
     /// the bond (`forgetBond`) so a one-sided app forget doesn't leave the pair
     /// wedged (the device's reject-when-bonded posture would otherwise refuse
-    /// re-pairing until the rider ran Forget phone on it). Best-effort: we await
-    /// the ack-or-timeout, then clear the local record + drop the link **whether
-    /// or not** it succeeded (`try?`). When offline we can't reach the device, so
-    /// this is exactly the prior behaviour — clear and drop, immediately.
+    /// re-pairing until the rider ran Forget phone on it). Best-effort by design
+    /// (the locked #756 decision, not a silent-`try?` violation): the happy path
+    /// is the device acking then *dropping the link itself*, so "failure" here is
+    /// indistinguishable from success-then-disconnect — we await the
+    /// ack-or-timeout, then clear the local record + drop the link **whether or
+    /// not** it succeeded. When offline we can't reach the device, so this is
+    /// exactly the prior behaviour — clear and drop, immediately.
+    ///
+    /// The connected task captures `bondStore` + `onForget` directly — never
+    /// `self`, weak or strong: once `forgetBond` is sent, the local clear must
+    /// not depend on this model surviving the ack window (the Settings screen can
+    /// pop and tear the model down mid-wait; RootView makes a fresh model per
+    /// push). A dropped clear would leave the device bond-less while the phone
+    /// still holds its record — a bonded next launch against a device in open
+    /// pairing, the inverse of the wedge this exists to fix.
     public func forget() {
         guard isConnected else {
-            completeForget()
+            bondStore.clear()
+            onForget()
             Task { [transport] in await transport.disconnect() }
             return
         }
-        Task { [weak self, transport] in
+        Task { [transport, bondStore, onForget] in
             try? await transport.forgetBond()
-            guard let self else { return }
-            completeForget()
+            bondStore.clear()
+            onForget()
             await transport.disconnect()
         }
-    }
-
-    /// Clear the phone's bond record and signal the composition root — the parts
-    /// of a forget that are always the same, connected or not.
-    private func completeForget() {
-        bondStore.clear()
-        onForget()
     }
 }

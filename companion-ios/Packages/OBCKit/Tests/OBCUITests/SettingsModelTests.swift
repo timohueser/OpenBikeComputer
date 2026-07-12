@@ -264,4 +264,31 @@ final class SettingsModelTests: XCTestCase {
         await waitFor("bond record cleared despite the failed command") { !control.bonded }
         await waitFor("host signaled") { forgetFired }
     }
+
+    func testConnectedForgetClearsEvenIfTheModelDiesDuringTheAckWait() async {
+        // The forgetBond command is SENT the moment forget() runs — so if the
+        // model deallocates during the ack window (screen popped, app torn down),
+        // the local clear must still happen: the device has already dissolved its
+        // bond, and a surviving BondRecord would make the next launch reconnect
+        // bonded against a device in open pairing — the inverse of the #756 wedge.
+        // The forget task captures bondStore + onForget, never self.
+        var forgetFired = false
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        var model: SettingsModel? = SettingsModel(
+            transport: MockTransport(control: control),
+            bondStore: MockBondStore(control: control),
+            onForget: { forgetFired = true }
+        )
+        model?.start()
+        await waitFor("connected") { model?.connection == .connected }
+        control.latency = .milliseconds(200) // hold the ack window open
+
+        model?.forget()
+        model = nil // the Settings screen pops mid-wait
+
+        await waitFor("device bond dissolved") { control.forgetBondCount == 1 }
+        await waitFor("bond record cleared despite the dead model") { !control.bonded }
+        await waitFor("host signaled") { forgetFired }
+    }
 }
