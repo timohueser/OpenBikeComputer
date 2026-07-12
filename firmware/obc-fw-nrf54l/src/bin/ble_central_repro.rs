@@ -49,11 +49,17 @@ use {defmt_rtt as _, panic_probe as _};
 /// state. The legacy central connect is broken at the stack level on this DK.
 const ADVERTISE_TOO: bool = false;
 
-/// Use `LeExtCreateConn` (`Central::connect_ext`) instead of the legacy `LeCreateConn`. Nordic's
-/// own SDC central coverage runs through Zephyr, which issues the **extended** command on the SDC
-/// (it detects ext-command support) — so the legacy initiator path this firmware used is the
-/// undertested one. An extended initiator on 1M connects to legacy advertisers (the strap) fine.
-/// If this works where `false` faults, the ship fix is `connect_ext` + `support_ext_central()`.
+/// Use the **extended** HCI command set end-to-end — `scan_ext` + `connect_ext` — instead of the
+/// legacy `LeSetScanEnable`/`LeCreateConn`. Nordic's own SDC central coverage runs through Zephyr,
+/// which issues the extended commands on the SDC (it detects ext-command support) — so the legacy
+/// initiator path this firmware used is the undertested one. An extended initiator on 1M connects
+/// to legacy advertisers (the strap) fine. If this works where `false` faults, the ship fix is the
+/// ext command set + `support_ext_scan()`/`support_ext_central()`.
+///
+/// Must be extended **end-to-end**: legacy and extended adv/scan/initiate commands are one
+/// mutually-exclusive HCI group (Core v6 Vol 4 E 3.1.1) — the first legacy command latches the
+/// controller into legacy mode, and every extended command after it is rejected `Command
+/// Disallowed` (the on-glass result of round 2, where only the connect was extended).
 const EXT_CONNECT: bool = true;
 
 bind_interrupts!(struct Irqs {
@@ -99,8 +105,9 @@ fn build_sdc<'d, const N: usize>(
         .support_le_2m_phy()
         .support_phy_update_central()
         .support_phy_update_peripheral()
-        // The extended initiator ([`EXT_CONNECT`]) — present in both modes so the SDC image is
-        // identical and only the HCI command under test differs.
+        // The extended scanner + initiator ([`EXT_CONNECT`]) — present in both modes so the SDC
+        // image is identical and only the HCI command set under test differs.
+        .support_ext_scan()
         .support_ext_central()
         .peripheral_count(1)?
         .central_count(1)?
@@ -112,16 +119,29 @@ fn build_sdc<'d, const N: usize>(
 /// uses) and signal the first HR-service advertiser.
 struct HrScanHandler;
 
+impl HrScanHandler {
+    fn observe(&self, addr: bt_hci::param::BdAddr, addr_kind: bt_hci::param::AddrKind, data: &[u8]) {
+        let Some(m) = obc_ble::classify_advertisement(data) else { return };
+        if matches!(m.kind, obc_ble::SensorKind::HeartRate) {
+            let mut a = [0u8; 6];
+            a.copy_from_slice(addr.raw());
+            FOUND.signal((a, addr_kind.as_raw() & 1 == 1));
+        }
+    }
+}
+
 impl EventHandler for HrScanHandler {
     fn on_adv_reports(&self, reports: bt_hci::param::LeAdvReportsIter) {
-        for report in reports {
-            let Ok(report) = report else { continue };
-            let Some(m) = obc_ble::classify_advertisement(report.data) else { continue };
-            if matches!(m.kind, obc_ble::SensorKind::HeartRate) {
-                let mut addr = [0u8; 6];
-                addr.copy_from_slice(report.addr.raw());
-                FOUND.signal((addr, report.addr_kind.as_raw() & 1 == 1));
-            }
+        for report in reports.flatten() {
+            self.observe(report.addr, report.addr_kind, report.data);
+        }
+    }
+
+    // The ext scanner's reports arrive on the extended event ([`EXT_CONNECT`]); a legacy ADV_IND
+    // caught by an ext scanner is reported here too, wrapped in `LeExtAdvReport`.
+    fn on_ext_adv_reports(&self, reports: bt_hci::param::LeExtAdvReportsIter) {
+        for report in reports.flatten() {
+            self.observe(report.addr, report.addr_kind, report.data);
         }
     }
 }
@@ -251,8 +271,10 @@ async fn central_task(stack: &Stack<'_, nrf_sdc::SoftdeviceController<'_>, Defau
     // Give the host runner its first polls before the first command (the ship manager's 1 s hold).
     Timer::after_secs(1).await;
 
-    // Active scan (the Sensors-screen shape) until an HR-service advertiser shows.
-    info!("[central] scanning for an HR sensor — turn the strap on now");
+    // Active scan (the Sensors-screen shape) until an HR-service advertiser shows. The command
+    // set must match [`EXT_CONNECT`] throughout — one legacy command latches the controller into
+    // legacy mode and `LeExtCreateConn` below would bounce `Command Disallowed`.
+    info!("[central] scanning for an HR sensor — turn the strap on now (ext = {})", EXT_CONNECT);
     let (addr, random) = {
         let mut scanner = Scanner::new(stack.central());
         let config = ScanConfig {
@@ -261,9 +283,14 @@ async fn central_task(stack: &Stack<'_, nrf_sdc::SoftdeviceController<'_>, Defau
             window: Duration::from_millis(30),
             ..Default::default()
         };
-        let _session = unwrap!(scanner.scan(&config).await);
-        FOUND.wait().await
-        // `_session` drops → scan off.
+        if EXT_CONNECT {
+            let _session = unwrap!(scanner.scan_ext(&config).await);
+            FOUND.wait().await
+            // `_session` drops → scan off.
+        } else {
+            let _session = unwrap!(scanner.scan(&config).await);
+            FOUND.wait().await
+        }
     };
     info!("[central] found HR sensor {:02x} (random={}) — connecting with ship params", addr, random);
     Timer::after_millis(200).await;
