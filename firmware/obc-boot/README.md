@@ -106,6 +106,9 @@ Symptoms of a missing piece: no LED blink and no boot at all → no bootloader a
   starts the identical dog so a wedged trial resets into the rollback. A plain
   `Idle` boot never touches the WDT, and a cold-boot install stays dog-less until
   that trial jump. The config contract lives on `obc_dfu::WDT_TIMEOUT_TICKS`.
+  Flip side: every trial boot now runs its bring-up under a counting dog, so the
+  app must reach its own WDT adoption well inside one 24 s period (invariant
+  comment at the app's WDT setup in `obc-fw-nrf54l/src/main.rs`).
 - **No executor, no timers, no FAT, no FLPR**: blocking embassy-nrf HAL only
   (GPIO + blocking `Spim` + `Rramc`; the card delay source is a cycle-counted
   busy-wait). `embedded_sdmmc::SdCard` is used **without** `VolumeManager` —
