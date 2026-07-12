@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// The app's in-flight transfer ledger (#459) — what the foreground-only link
 /// policy consults before an intentional background disconnect: **an in-flight
@@ -14,7 +15,13 @@ import Foundation
 ///
 /// Tokens make `end` idempotent per claim: models end on several exit paths
 /// (terminal outcome, drop-watch, sheet teardown) and must not double-release.
-@MainActor
+///
+/// `@Observable` so the composition root can drive UIKit off `isActive` without
+/// a poll — the #754 idle-timer guard disables `isIdleTimerDisabled` exactly
+/// while the ledger holds a claim. Observation stays out of OBCKit's own logic;
+/// only `open` (what `isActive` reads) is tracked, the continuation bookkeeping
+/// is `@ObservationIgnored`.
+@MainActor @Observable
 public final class TransferActivity {
     /// One in-flight job's claim — identity only.
     public final class Token {
@@ -22,7 +29,7 @@ public final class TransferActivity {
     }
 
     private var open: Set<ObjectIdentifier> = []
-    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    @ObservationIgnored private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     public init() {}
 
