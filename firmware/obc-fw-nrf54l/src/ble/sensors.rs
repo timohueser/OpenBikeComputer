@@ -338,7 +338,20 @@ pub async fn run(stack: &'static SensorStack) -> ! {
     // is the source of saved addresses now.
     info!("ble: [sensor] manager up (SENSOR_LINKS = {})", super::SENSOR_LINKS);
 
+    // Hold the first pass until the host runner has finished its init sequence: this future is
+    // polled *before* `host_task` in [`super::run`]'s join, so an immediate boot-seeded connect
+    // would issue `LeCreateConn` mid host-init — and the init's resolving-list restore (the phone
+    // bond) is spec-prohibited while an initiator is active. One second covers the observed
+    // ~150 ms init with room, and is invisible next to a strap's advertising cadence.
+    Timer::after_secs(1).await;
+
     loop {
+        // Drain any stale wake pulse *before* reading the request latches: every request setter
+        // pulses [`WORK_EDGE`], and a pulse left latched (the boot seed lands before this task's
+        // first poll) would instantly abort the very connect/scan it requested via the teardown
+        // selects below. The request latches survive the reset, and all producers run on this
+        // same thread-mode executor, so nothing can slip between the reset and `apply_requests`.
+        WORK_EDGE.reset();
         apply_requests();
 
         // A user scan request wins — discovery is brief and interactive.
@@ -351,10 +364,15 @@ pub async fn run(stack: &'static SensorStack) -> ! {
         // `connection_worker(1)` / `(2)` beside this for the other saved slots.)
         if super::state::radio_enabled() {
             if let Some(quantity) = first_saved_quantity() {
-                run_link(stack, quantity).await;
+                let interrupted = run_link(stack, quantity).await;
                 update_status(quantity, |s| s.state = SensorSlotState::Idle);
-                // Backoff before the next attempt, woken early by any radio/request change.
-                let _ = select(Timer::after_secs(BACKOFF_SECS), WORK_EDGE.wait()).await;
+                // Backoff before the next attempt — but only after a drop / failure / timeout.
+                // An interrupt means a request or radio change is already waiting at the loop top
+                // (its wake pulse was consumed by the teardown select), so backing off here would
+                // stall it: a Sensors-screen scan rung while connected must start now, not in 15 s.
+                if !interrupted {
+                    let _ = select(Timer::after_secs(BACKOFF_SECS), WORK_EDGE.wait()).await;
+                }
                 continue;
             }
         }
@@ -430,9 +448,11 @@ async fn run_scan(stack: &'static SensorStack) {
 
 /// Connect the saved sensor for `quantity` and serve it until it drops (or the radio/-a request
 /// interrupts). A bounded connect (dropped on timeout → `LeCreateConnCancel`) keeps an absent sensor
-/// from wedging the link.
-async fn run_link(stack: &'static SensorStack, quantity: usize) {
-    let Some(saved) = saved_sensor(quantity) else { return };
+/// from wedging the link. Returns `true` when the attempt/session ended on a [`WORK_EDGE`] interrupt
+/// (a request or radio change is waiting at the loop top — skip the backoff), `false` on a
+/// drop / failure / timeout (back off before retrying).
+async fn run_link(stack: &'static SensorStack, quantity: usize) -> bool {
+    let Some(saved) = saved_sensor(quantity) else { return false };
     let kind = kind_of(quantity);
     update_status(quantity, |s| s.state = SensorSlotState::Connecting);
     info!("ble: [sensor] connecting quantity {} (random={})", quantity, saved.random);
@@ -448,13 +468,20 @@ async fn run_link(stack: &'static SensorStack, quantity: usize) {
             window: SCAN_WINDOW,
             ..Default::default()
         },
-        // ~250–500 ms interval keeps the sensor link cheap beside the phone; 5 s supervision.
+        // ~250–500 ms interval keeps the sensor link cheap beside the phone; 5 s supervision. The
+        // connection-event length (`max_event_length` → the LL `max_ce_len`) MUST stay ≤ the
+        // connection interval: it's the radio timeslot the SDC reserves per event, and the create-
+        // connection path (central-only, so unlike the phone's peripheral link it's exercised for the
+        // first time here) rejects `max_ce_len > conn_interval_min` — a 500 ms CE against the 250 ms
+        // min interval faulted the controller (`SoftdeviceController: 50:701`) the instant the link
+        // formed. A sensor exchange (discovery, then ≤20 B notifications) needs only a few ms, so 30 ms
+        // is ample and matches the proven phone-link event length.
         connect_params: RequestedConnParams {
             min_connection_interval: Duration::from_millis(250),
             max_connection_interval: Duration::from_millis(500),
             max_latency: 0,
             min_event_length: Duration::from_micros(0),
-            max_event_length: Duration::from_millis(500),
+            max_event_length: Duration::from_millis(30),
             supervision_timeout: Duration::from_millis(5000),
         },
     };
@@ -464,32 +491,37 @@ async fn run_link(stack: &'static SensorStack, quantity: usize) {
         Either3::First(Ok(conn)) => conn,
         Either3::First(Err(e)) => {
             warn!("ble: [sensor] connect failed: {:?}", defmt::Debug2Format(&e));
-            return;
+            return false;
         }
         // Timeout / interrupt: dropping the connect future cancels the create-connection.
-        Either3::Second(()) | Either3::Third(()) => {
-            info!("ble: [sensor] connect attempt timed out / interrupted");
-            return;
+        Either3::Second(()) => {
+            info!("ble: [sensor] connect attempt timed out");
+            return false;
+        }
+        Either3::Third(()) => {
+            info!("ble: [sensor] connect attempt interrupted (radio/request)");
+            return true;
         }
     };
 
-    serve_link(stack, &conn, quantity, kind).await;
+    serve_link(stack, &conn, quantity, kind).await
     // `conn` drops on return → the sensor link is disconnected.
 }
 
 /// Discover the service + measurement characteristic, read the battery once, subscribe, and pump
 /// notifications — with the GATT client's rx task polled concurrently (required for notifications).
+/// Returns `true` when the session ended on a [`WORK_EDGE`] interrupt (see [`run_link`]).
 async fn serve_link(
     stack: &'static SensorStack,
     conn: &Connection<'static, DefaultPacketPool>,
     quantity: usize,
     kind: SensorKind,
-) {
+) -> bool {
     let client = match GattClient::<_, _, 4>::new(stack, conn).await {
         Ok(client) => client,
         Err(e) => {
             warn!("ble: [sensor] GATT client init failed: {:?}", defmt::Debug2Format(&e));
-            return;
+            return false;
         }
     };
 
@@ -533,9 +565,15 @@ async fn serve_link(
     // The GATT rx task returns `Err(Disconnected)` when the link drops; the IO block ends on a GATT
     // error; `WORK_EDGE` fires on radio-off / a new request. Any of the three tears the session down.
     match select3(client.task(), io, WORK_EDGE.wait()).await {
-        Either3::First(r) => info!("ble: [sensor] link dropped: {:?}", r.is_err()),
-        Either3::Second(_) => {}
-        Either3::Third(()) => info!("ble: [sensor] link interrupted (radio/request)"),
+        Either3::First(r) => {
+            info!("ble: [sensor] link dropped: {:?}", r.is_err());
+            false
+        }
+        Either3::Second(_) => false,
+        Either3::Third(()) => {
+            info!("ble: [sensor] link interrupted (radio/request)");
+            true
+        }
     }
 }
 
