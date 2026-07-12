@@ -62,6 +62,9 @@ public struct FirmwareUpdateView: View {
         .task { model.start() }
         // Popping the screen mid-send must not leave a headless transfer (or a
         // leaked #459/#754 ledger claim keeping the screen awake) behind it.
+        // The pair is re-entrant: if SwiftUI ever cycles disappear/appear on a
+        // persisting model (a presentation pushed over S7, a scene re-attach),
+        // `.task` runs `start()` again and it re-subscribes the link state.
         .onDisappear { model.stop() }
     }
 

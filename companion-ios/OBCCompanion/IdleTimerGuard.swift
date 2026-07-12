@@ -25,8 +25,12 @@ struct IdleTimerGuard: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: activity.isActive) { _, _ in apply() }
-            .onChange(of: scenePhase) { _, _ in apply() }
+            // `initial: true` (iOS 17): run once at attach too — `onChange`
+            // alone never fires for a state that's already true when the
+            // modifier appears, and a scene re-attach must overwrite whatever
+            // stale value the UIKit flag was left holding.
+            .onChange(of: activity.isActive, initial: true) { _, _ in apply() }
+            .onChange(of: scenePhase, initial: true) { _, _ in apply() }
     }
 
     private func apply() {
