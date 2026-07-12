@@ -23,17 +23,15 @@ final class TransferDescriptorTests: XCTestCase {
     func testTransferControlRoundTrips() throws {
         for op in TransferControl.Op.allCases {
             let control = TransferControl(
-                op: op, type: .route, objectID: 0xBEEF, totalLen: 123_456, crc32: 0xDEAD_C0DE, offset: 4_096
+                op: op, type: .route, objectID: 0xBEEF, totalLen: 123_456, crc32: 0xDEAD_C0DE
             )
             let encoded = control.encode()
-            XCTAssertEqual(encoded.count, TransferControl.encodedLength)
+            XCTAssertEqual(encoded.count, TransferControl.encodedLength)  // 12 in v2
             XCTAssertEqual(try TransferControl(decoding: encoded), control)
         }
     }
 
     func testTransferControlDefaultsToFreshTransfer() {
-        let control = TransferControl(op: .upload, type: .ride, objectID: 1, totalLen: 10, crc32: 0)
-        XCTAssertEqual(control.offset, 0)
         // A download request carries no length/CRC — the device's announce fills them.
         let request = TransferControl(op: .download, type: .rideList, objectID: 0)
         XCTAssertEqual(request.totalLen, 0)
@@ -57,12 +55,28 @@ final class TransferDescriptorTests: XCTestCase {
             XCTAssertEqual(msg.encode().count, 4)
             XCTAssertEqual(try StatusMessage(decoding: msg.encode()), msg)
         }
+
+        // v2: the download announce (msg 4) wraps the 12-byte descriptor → 13 bytes.
+        let announce = StatusMessage.downloadAnnounce(
+            TransferControl(op: .download, type: .ride, objectID: 9, totalLen: 4_096, crc32: 0xABCD_1234))
+        let encodedAnnounce = announce.encode()
+        XCTAssertEqual(encodedAnnounce.count, 1 + TransferControl.encodedLength)
+        XCTAssertEqual(try StatusMessage(decoding: encodedAnnounce), announce)
     }
 
     func testUnknownStatusMessageIsIgnorableNotFatal() throws {
         // Forward compatibility (spec §4.3): an unknown discriminator decodes to
         // `.unknown`, never throws — the app skips it.
         XCTAssertEqual(try StatusMessage(decoding: Data([0x7F, 1, 2, 3])), .unknown(0x7F))
+    }
+
+    func testShortDownloadAnnounceIsADecodeError() {
+        // A *known* discriminator (msg 4) with a truncated descriptor body is a
+        // decode error — unlike an unknown discriminator, which is ignored. The
+        // wrapped `TransferControl(decoding:)` needs the full 12 bytes.
+        XCTAssertThrowsError(try StatusMessage(decoding: Data([4, 2, 1, 7, 0]))) {
+            XCTAssertEqual($0 as? DescriptorError, .truncated)
+        }
     }
 
     func testUnknownTransferStatusDecodesAsGenericErrorNotThrow() throws {
@@ -76,13 +90,6 @@ final class TransferDescriptorTests: XCTestCase {
             TransferResult(objectID: DeviceObjectID(7), status: .error, committedOffset: 0)))
     }
 
-    func testObjectStoreDigestRoundTrips() throws {
-        let digest = ObjectStoreDigest(revision: 42, routeCount: 3, rideCount: 5)
-        let encoded = digest.encode()
-        XCTAssertEqual(encoded.count, ObjectStoreDigest.encodedLength)
-        XCTAssertEqual(try ObjectStoreDigest(decoding: encoded), digest)
-    }
-
     func testRejectsTruncated() {
         XCTAssertThrowsError(try TransferControl(decoding: Data([1, 2, 3]))) {
             XCTAssertEqual($0 as? DescriptorError, .truncated)
@@ -91,9 +98,6 @@ final class TransferDescriptorTests: XCTestCase {
             XCTAssertEqual($0 as? DescriptorError, .truncated)
         }
         XCTAssertThrowsError(try StatusMessage(decoding: Data([1, 2]))) {
-            XCTAssertEqual($0 as? DescriptorError, .truncated)
-        }
-        XCTAssertThrowsError(try ObjectStoreDigest(decoding: Data([1, 2]))) {
             XCTAssertEqual($0 as? DescriptorError, .truncated)
         }
     }

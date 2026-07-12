@@ -382,7 +382,7 @@ private struct HardFailingDownloadTransport: DeviceTransport {
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
-    func listRides() async throws -> [RideSummary] { try await base.listRides() }
+    func listRides() async throws -> RideCatalog { try await base.listRides() }
     func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
     func readDiagnostics() async throws -> Data { try await base.readDiagnostics() }
 

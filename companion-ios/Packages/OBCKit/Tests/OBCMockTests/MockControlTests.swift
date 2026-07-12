@@ -80,10 +80,10 @@ final class MockControlTests: XCTestCase {
     func testEmitRideAddedAppearsInNextListRides() async throws {
         let control = fastControl()
         let transport = MockTransport(control: control)
-        let before = try await transport.listRides().count
+        let before = try await transport.listRides().rides.count
         let newRide = RideSummary(id: RideID("just-now"), name: "Lunch Loop", date: Date(), distanceMeters: 9_000)
         control.emit(.rideAdded(newRide))
-        let after = try await transport.listRides()
+        let after = try await transport.listRides().rides
         XCTAssertEqual(after.count, before + 1)
         XCTAssertTrue(after.contains { $0.id == RideID("just-now") })
     }

@@ -32,21 +32,22 @@ public enum GATT {
     nonisolated(unsafe) public static let obcControlService = CBUUID(string: "3C920000-9916-4EBA-ABC2-342FE08F6B10")
     /// Small imperative commands (delete object, …) — spec §4.4.
     nonisolated(unsafe) public static let command = CBUUID(string: "3C920001-9916-4EBA-ABC2-342FE08F6B10")
-    /// Typed device → app notifications (`StatusMessage`) — spec §4.3.
+    /// Typed device → app notifications (`StatusMessage`, incl. the download
+    /// announce as `msg = 4`) — the **sole** device → app channel, spec §4.3.
     nonisolated(unsafe) public static let status = CBUUID(string: "3C920002-9916-4EBA-ABC2-342FE08F6B10")
-    /// The store digest (`ObjectStoreDigest`, read + notify) — spec §4.5. Full
-    /// route/ride lists are CoC objects (they outgrow the 512-byte ATT cap).
-    nonisolated(unsafe) public static let objectStore = CBUUID(string: "3C920003-9916-4EBA-ABC2-342FE08F6B10")
+    // `0003` (`objectStore`) is **retired in v2** — the change signal is
+    // `storeChanged` alone — and must not be reused.
     /// The Config object, whole-blob read + write (incl. rename, Delta 1) — spec §7.3.
     nonisolated(unsafe) public static let config = CBUUID(string: "3C920004-9916-4EBA-ABC2-342FE08F6B10")
-    /// Open / resume / abort a CoC transfer (`TransferControl`) — spec §4.2.
+    /// Open / abort a CoC transfer (`TransferControl`) — spec §4.2. **Write-only in
+    /// v2** (no CCCD): the download announce it once notified now rides `status`.
     nonisolated(unsafe) public static let transferControl = CBUUID(string: "3C920005-9916-4EBA-ABC2-342FE08F6B10")
-    /// Reserved — diagnostics cross the CoC as object type 4 (spec §7.5).
-    nonisolated(unsafe) public static let diagnostics = CBUUID(string: "3C920006-9916-4EBA-ABC2-342FE08F6B10")
+    // `0006` (`diagnostics`) is **retired in v2** (it returned 0 bytes; real
+    // diagnostics cross the CoC as object type 4, spec §7.5) — must not be reused.
     /// The dynamically-assigned L2CAP CoC PSM the app opens the channel on.
     nonisolated(unsafe) public static let psm = CBUUID(string: "3C920007-9916-4EBA-ABC2-342FE08F6B10")
-    /// `protocol_version` (u16 LE) — read on connect for the version check
-    /// (spec §1); readable without encryption.
+    /// `version u16 · store_epoch u32` LE — read on connect for the version check
+    /// (spec §1) and the store-epoch identity; readable without encryption.
     nonisolated(unsafe) public static let protocolVersion = CBUUID(string: "3C920008-9916-4EBA-ABC2-342FE08F6B10")
 }
 #endif

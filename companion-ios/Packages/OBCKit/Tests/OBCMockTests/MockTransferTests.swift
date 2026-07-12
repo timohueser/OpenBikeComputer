@@ -56,7 +56,7 @@ final class MockTransferTests: XCTestCase {
     func testDownloadRidesSizesFromFixtures() async throws {
         let control = fastControl()
         let transport = MockTransport(control: control)
-        let rides = try await transport.listRides()
+        let rides = try await transport.listRides().rides
         let id = try XCTUnwrap(rides.first).id
         let download = transport.downloadRides([id])
         let progress = try await drain(download.handle)
@@ -67,7 +67,7 @@ final class MockTransferTests: XCTestCase {
     func testDownloadDeliversEachRidePayload() async throws {
         let control = fastControl()
         let transport = MockTransport(control: control)
-        let ids = try await transport.listRides().map(\.id)
+        let ids = try await transport.listRides().rides.map(\.id)
         XCTAssertGreaterThan(ids.count, 1)   // needs ≥2 fixture rides to prove ordering
 
         let download = transport.downloadRides(ids)
@@ -106,7 +106,7 @@ final class MockTransferTests: XCTestCase {
         let control = fastControl()
         control.dropTransfer(atFraction: 0.5)        // H10 sync interrupted
         let transport = MockTransport(control: control)
-        let ids = try await transport.listRides().map(\.id)
+        let ids = try await transport.listRides().rides.map(\.id)
         let download = transport.downloadRides(ids)
 
         let sawDrop = await awaitState(transport.state, equals: .outOfRange)

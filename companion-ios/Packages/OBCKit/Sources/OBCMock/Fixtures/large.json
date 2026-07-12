@@ -4,7 +4,7 @@
     "firmwareVersion": "0.4.2",
     "hardwareVersion": "nRF54LM20 rev B",
     "serial": "OBC-24-000317",
-    "protocolVersion": 1
+    "protocolVersion": 2
   },
   "config": {
     "name": "Trailhead",
