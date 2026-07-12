@@ -389,18 +389,23 @@ impl SimGui {
         // With the synth on, the per-quantity toggles/sliders are ignored, so grey them out.
         ui.add_enabled_ui(!cfg.effort_follows_speed, |ui| {
             ui.add_space(4.0);
-            // One row per quantity: an enable toggle + a fixed-value slider (bpm / W / rpm).
-            ui.horizontal(|ui| {
+            // One row per quantity: an enable toggle + a fixed-value slider (bpm / W / rpm). These
+            // rows are indented inside the "Sensors" collapsing header and each slider carries a
+            // value box, so the panel-wide `slider_width` set at the top overflows them off the
+            // right edge (clipping the value). Size the rail to the space actually left — a label
+            // column + the value box — and lay the rows out in a `Grid` so the checkbox column is a
+            // uniform width and the three sliders line up.
+            ui.spacing_mut().slider_width = (ui.available_width() - 150.0).max(80.0);
+            egui::Grid::new("sim_sensor_sliders").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                 ui.checkbox(&mut cfg.hr_enabled, "HR");
                 ui.add(egui::Slider::new(&mut cfg.hr_bpm, 40..=220).suffix(" bpm"));
-            });
-            ui.horizontal(|ui| {
+                ui.end_row();
                 ui.checkbox(&mut cfg.power_enabled, "Power");
                 ui.add(egui::Slider::new(&mut cfg.power_w, 0..=1000).suffix(" W"));
-            });
-            ui.horizontal(|ui| {
+                ui.end_row();
                 ui.checkbox(&mut cfg.cadence_enabled, "Cadence");
                 ui.add(egui::Slider::new(&mut cfg.cadence_rpm, 0..=130).suffix(" rpm"));
+                ui.end_row();
             });
         });
     }
