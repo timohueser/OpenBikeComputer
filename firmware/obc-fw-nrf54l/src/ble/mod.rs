@@ -72,8 +72,8 @@ pub use state::set_recording;
 // re-exported but not yet referenced.
 #[allow(unused_imports)]
 pub use sensors::{
-    request_forget_sensor, request_save_sensor, request_scan, sensor_scan_hits, sensor_slot_status, SensorScanHit,
-    SensorSlotState, SensorSlotStatus,
+    cancel_scan, request_forget_sensor, request_save_sensor, request_scan, sensor_scan_hits, sensor_slot_status,
+    SensorScanHit, SensorSlotState, SensorSlotStatus,
 };
 
 use core::mem::MaybeUninit;
