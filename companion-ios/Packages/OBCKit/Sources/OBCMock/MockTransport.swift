@@ -167,6 +167,16 @@ public struct MockTransport: DeviceTransport {
         return control.installFirmware()
     }
 
+    public func forgetBond() async throws {
+        // `forgetBond` (spec §4.4 cmd 4, #756). Same prelude as every control-plane
+        // op, so an unreachable link or an armed one-shot fault throws exactly as
+        // the real command's short-timeout / write failure would — which the
+        // Settings forget treats as best-effort and clears past anyway. The record
+        // is the observable effect (the mock models no device-side bond slot).
+        try await preludeThrowing()
+        control.recordForgetBond()
+    }
+
     // MARK: Shared op prelude
 
     /// Every control-plane / list op: apply latency, require a reachable link, then

@@ -319,7 +319,8 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 | `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`); bumps the store revision. Ride (`2`) deletion over the link is **reserved** — the reference firmware answers `notFound`: rides are deleted only on the device itself (its Rides screen), and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
 | `2` | `ackRides` | `count u8 · count × object_id u16` | the app's **ride-possession ack**: the device marks every listed ride id it still stores as synced ("downloaded at least once"). `commandResult.detail` = the newly-flagged count (saturating at 255); a flag change bumps the **ride** store revision. See below |
 | `3` | `installFw` | none (`cmd` byte only) | ask the device to install the staged `UPDATE.BIN` — runs the on-device scan + **on-glass confirm** flow (see below). The command only *requests*; it never waits for the human and never installs on its own |
-| `4`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
+| `4` | `forgetBond` | none (`cmd` byte only) | ask the device to dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged. The device answers `commandResult(ok)` **first**, then clears the bond + drops the link and returns to open-pairing advertising. **Honoured only on the bonded, authenticated link** (see below) |
+| `5`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
 
 **`ackRides` — possession reconciliation.** The device keeps a per-ride
 "synced" flag (it drives the delete-guard cue on the device's Rides screen).
@@ -380,6 +381,26 @@ link is out of scope for v1 (CRC-32 integrity only, no signature — matching th
 SD-sideload contract): physical possession of the card is already root on an open
 device, so the install-time gate is the human, not a cryptographic signature
 (`OBCU_Spec.md` reserves header bytes for a future signature scheme).
+
+**`forgetBond` — dissolve the device-side bond (#756).** The app's "Forget device" clears only the
+phone's own bond record; the device keeps its bond, and the reject-when-bonded posture (§8) then
+refuses *every* new pairing until the rider also runs **Forget phone** on the device — so a one-sided
+app forget leaves the pair wedged (a pairing attempt while bonded is rejected outright). `forgetBond`
+closes that gap: the bonded phone asks the device to clear its side too, and the device runs the same
+machinery **Forget phone** does — zero the RRAM bond slot, drop the peer from the host bond table +
+resolving list, lower the `paired` flag — then returns to open-pairing advertising, so the next pair
+is a clean passkey flow with no on-device step.
+
+**Security posture — the bonded link is the whole gate.** `forgetBond` is honoured **only over the
+authenticated, encrypted link**: the `command` characteristic is one of the gated OBC Control
+characteristics (§3.3), which carry the `authenticated` (LESC-MITM) access permission — an unbonded
+peer gets Insufficient Authentication on the write and never reaches the handler (§8). So only the
+bonded phone can issue it, and a bonded phone dissolving *its own* bond is fully consistent with
+reject-when-bonded: a stranger can never clear the rider's bond (that still requires either the
+bonded phone or physical possession via **Forget phone**), and the command mints no replacement bond
+— it only clears. **Ordering is fixed:** the device notifies `commandResult(ok)` on `status`
+**before** it clears the bond and disconnects, so the phone always gets its ack; the forget +
+link-drop follow the ack, never race ahead of it.
 
 ### 4.5 `objectStore` — the store digest
 
@@ -663,8 +684,11 @@ Config object (§7.3).
   to the app anyway — CoreBluetooth reports only a generic pairing/connection
   failure. The app must infer "already bonded elsewhere" from context, not
   from a code (see the iOS epic's already-bonded UX issue).
-  If the phone forgets the device (app H2 + iOS Settings) its re-pair attempt
-  is rejected like any other until the rider runs Forget phone on the device.
+  If the phone forgets the device **while offline** (app H2 + iOS Settings) its
+  re-pair attempt is rejected like any other until the rider runs Forget phone on
+  the device. A forget **while connected** avoids that wedge: the app sends
+  `forgetBond` (§4.4 cmd 4) over the bonded link, so the device clears its own
+  bond and the next pair is open again with no on-device step.
 
 - **Reconnect policy**: the device keeps a **stable static random address** and
   does **not** enable device-side privacy/RPA — the phone stores that identity

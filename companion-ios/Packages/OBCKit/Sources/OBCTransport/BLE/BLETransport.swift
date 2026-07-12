@@ -63,6 +63,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// instantly with no sheet). Once the read resolves, the watchdog re-arms
     /// at `phaseTimeout` for the machine-only openL2CAPChannel → didOpen tail.
     private static let pairingTimeout: DispatchTimeInterval = .seconds(90)
+    /// How long `forgetBond` waits for the device's `commandResult(ok)` before
+    /// giving up (#756). Short by design — the device acks then immediately drops
+    /// the link (which itself unblocks the ack waiter via the disconnect cleanup),
+    /// and the forget is best-effort: a device that never answers must not stall
+    /// the app's "Forget device" tap.
+    private static let forgetBondAckTimeout: DispatchTimeInterval = .seconds(3)
 
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
@@ -451,6 +457,54 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         clearPendingStatuses()
         try await write(Data([3]), to: GATT.command)
         return FirmwareInstallResult(commandStatus: try await nextCommandResult().status)
+    }
+
+    public func forgetBond() async throws {
+        // `forgetBond` (cmd 4): the `cmd` byte only — spec §4.4. The app's "Forget
+        // device" asks the device to dissolve ITS side of the bond too, so a one-
+        // sided app forget doesn't leave the pair wedged: the device's reject-when-
+        // bonded posture (spec §8) would otherwise refuse every new pairing until
+        // the rider ran Forget phone on the device. Reachable only over the bonded,
+        // encrypted link (the gated `command` characteristic requires it), so a
+        // stranger can never issue it. Holds the transfer slot for `deleteRoute`'s
+        // reason (#302): command and transfer results share one `pendingStatuses`
+        // buffer. The device answers `commandResult(ok)` first, then drops the link
+        // — so we wait only briefly for the ack; a timeout or write failure throws,
+        // and the caller (Settings forget) treats this as best-effort and clears
+        // its local record regardless.
+        await acquireTransferSlot()
+        defer { releaseTransferSlot() }
+        clearPendingStatuses()
+        try await write(Data([4]), to: GATT.command)
+        // The ack timeout is a queue-confined one-shot (the watchdog idiom above),
+        // deliberately NOT a task-group race: `nextCommandResult()`'s parked
+        // continuation is not cancellation-responsive — it resolves only on a
+        // matching status or the disconnect cleanup — so a throwing group would
+        // sit un-drainable on the losing child exactly when the device never
+        // answers (the same wedge `LaunchFlowModel` documents for racing
+        // `connect()`). Instead the one-shot unwinds the waiter through the same
+        // resume-throwing path the disconnect cleanup uses. Failing ALL parked
+        // status waiters is safe here: every status-waiting op parks only while
+        // holding the transfer slot, and we hold it — the only parked waiter is
+        // ours. The defer cancels the one-shot before the slot is released (LIFO),
+        // and a lost race is harmless either way: on the serial `queue`, a fire
+        // after our waiter resolved finds `statusWaiters` empty and no-ops.
+        let ackTimeout = DispatchWorkItem { [weak self] in
+            self?.failStatusWaiters(DeviceError.writeFailed)
+        }
+        queue.asyncAfter(deadline: .now() + Self.forgetBondAckTimeout, execute: ackTimeout)
+        defer { ackTimeout.cancel() }
+        _ = try await nextCommandResult()
+    }
+
+    /// Unwind every parked `status` waiter with `error` — `forgetBond`'s ack
+    /// timeout. Queue-confined: called only from a work item already running on
+    /// `queue` (`asyncAfter` executes on its target).
+    private func failStatusWaiters(_ error: DeviceError) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let waiters = statusWaiters
+        statusWaiters.removeAll()
+        for waiter in waiters { waiter.cont.resume(throwing: error) }
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
