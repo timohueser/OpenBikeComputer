@@ -75,27 +75,30 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
 }
 
-/// The upload descriptor announces the waypoint route's actual size and CRC, so the
-/// fixtures form one coherent transfer transcript.
+/// The 12-byte upload descriptor announces the waypoint route's actual size and CRC, and the
+/// download-announce (status msg 4) carries the same 12-byte descriptor — the fixtures form one
+/// coherent transfer transcript.
 #[test]
 fn upload_transcript_is_self_consistent() {
     let route = fixture("route-waypoints.obcr");
     let start = fixture("transfer-upload-start.bin");
-    let resume = fixture("transfer-upload-resume.bin");
+    let announce = fixture("status-download-announce.bin");
     let result = fixture("status-transfer-result.bin");
 
-    assert_eq!(start.len(), 16);
+    assert_eq!(start.len(), 12, "v2 descriptor is 12 bytes (offset dropped)");
     assert_eq!(start[0], 1, "op = upload");
     assert_eq!(start[1], 1, "type = route");
     assert_eq!(u16::from_le_bytes([start[2], start[3]]), 0xFFFF, "id = new");
     assert_eq!(u32::from_le_bytes([start[4], start[5], start[6], start[7]]) as usize, route.len());
     assert_eq!(u32::from_le_bytes([start[8], start[9], start[10], start[11]]), crc32(&route));
-    assert_eq!(&start[12..16], &[0u8; 4], "fresh upload starts at 0");
 
-    // The resume differs from the fresh start only in its offset.
-    assert_eq!(&resume[..12], &start[..12]);
-    let offset = u32::from_le_bytes([resume[12], resume[13], resume[14], resume[15]]);
-    assert!(offset > 0 && (offset as usize) < route.len());
+    // The download announce: msg 4 + the 12-byte descriptor (op = download), same size + CRC.
+    assert_eq!(announce.len(), 13, "msg byte + 12-byte descriptor");
+    assert_eq!(announce[0], 4, "status msg = downloadAnnounce");
+    assert_eq!(announce[1], 2, "op = download");
+    assert_eq!(announce[2], 1, "type = route");
+    assert_eq!(u32::from_le_bytes([announce[5], announce[6], announce[7], announce[8]]) as usize, route.len());
+    assert_eq!(u32::from_le_bytes([announce[9], announce[10], announce[11], announce[12]]), crc32(&route));
 
     // The closing result: committed (0), every byte durable.
     assert_eq!(result.len(), 8);

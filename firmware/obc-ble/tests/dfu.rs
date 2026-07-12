@@ -18,7 +18,7 @@ fn payload(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i.wrapping_mul(37).wrapping_add(11)) as u8).collect()
 }
 
-/// A `fwImage` upload descriptor for `object` — singleton stage (object id 0), offset 0, CRC from the
+/// A `fwImage` upload descriptor for `object` — singleton stage (object id 0), CRC from the
 /// production hasher.
 fn fwimage_desc(object: &[u8]) -> TransferControl {
     TransferControl {
@@ -27,7 +27,6 @@ fn fwimage_desc(object: &[u8]) -> TransferControl {
         object_id: 0,
         total_len: object.len() as u32,
         crc32: Crc32::checksum(object),
-        offset: 0,
     }
 }
 

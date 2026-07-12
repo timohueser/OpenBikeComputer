@@ -4,13 +4,13 @@
 //! at commit.
 //!
 //! Two directions, neither buffering the whole object. Interrupted transfers **restart rather than
-//! resume in both directions** — the descriptor's `offset` field is shape-stability only and must
-//! be 0:
+//! resume in both directions** — there is no offset field on the wire (v2 dropped it), so a receiver
+//! or sender only ever starts fresh:
 //!
 //! - [`Receiver`] — the **upload** direction (app → device): sink bytes with a running CRC, verify
 //!   once at `total_len`, report [`TransferStatus::Committed`] or [`TransferStatus::CrcMismatch`].
 //! - [`StreamSender`] — the **download** direction (device → app): emit the
-//!   [`StreamSender::announce`] descriptor, then hand out `object[offset…]` in CoC-sized chunks. The
+//!   [`StreamSender::announce`] descriptor, then hand out `object[position…]` in CoC-sized chunks. The
 //!   bytes never sit in this core: the board supplies `total_len` + the precomputed whole-object
 //!   CRC, reads each chunk from storage itself, and ticks the position through
 //!   [`StreamSender::advance`].
@@ -24,15 +24,12 @@ use crate::descriptor::{ObjectType, Op, TransferControl, TransferResult, Transfe
 pub enum TransferError {
     /// The descriptor's `op` doesn't match the constructor (an upload fed to [`StreamSender`], or vice versa).
     WrongOp,
-    /// A non-zero `offset` — transfers restart whole in **both** directions; the field exists only
-    /// for descriptor-shape stability and must be 0.
-    NonZeroOffset,
 }
 
 /// The receive half of an upload: sink CoC bytes with a running CRC and report a typed outcome at
 /// `total_len`. The board calls [`push`] with whatever the CoC handed it (any segmentation) and
 /// reads the outcome when [`is_complete`] flips. Uploads are **not resumable** — an interrupted one
-/// is discarded and re-sent from the start, so a receiver only ever starts fresh (`offset = 0`).
+/// is discarded and re-sent from the start, so a receiver only ever starts fresh.
 ///
 /// [`push`]: Receiver::push
 /// [`is_complete`]: Receiver::is_complete
@@ -47,14 +44,11 @@ pub struct Receiver {
 }
 
 impl Receiver {
-    /// A fresh receiver from an upload descriptor. Rejects a non-upload op, or a non-zero `offset`
-    /// (uploads restart, not resume).
+    /// A fresh receiver from an upload descriptor. Rejects a non-upload op (uploads restart, not
+    /// resume — there is no offset to reject in v2).
     pub fn new(desc: &TransferControl) -> Result<Self, TransferError> {
         if desc.op != Op::Upload {
             return Err(TransferError::WrongOp);
-        }
-        if desc.offset != 0 {
-            return Err(TransferError::NonZeroOffset);
         }
         Ok(Self {
             object_id: desc.object_id,
@@ -132,19 +126,16 @@ pub struct StreamSender {
 
 impl StreamSender {
     /// A sender for a download request of a stored object of `total_len` bytes whose whole-object
-    /// CRC-32 is `crc32` — always streamed from the start. Rejects a non-download op or a non-zero
-    /// `offset`.
+    /// CRC-32 is `crc32` — always streamed from the start. Rejects a non-download op.
     pub fn new(desc: &TransferControl, total_len: u32, crc32: u32) -> Result<Self, TransferError> {
         if desc.op != Op::Download {
             return Err(TransferError::WrongOp);
         }
-        if desc.offset != 0 {
-            return Err(TransferError::NonZeroOffset);
-        }
         Ok(Self { object_id: desc.object_id, ty: desc.ty, total_len, position: 0, crc: crc32 })
     }
 
-    /// The descriptor to notify before the bytes flow: same 16 bytes as the request, `op =
+    /// The descriptor the board wraps in a [`StatusMessage::DownloadAnnounce`](crate::StatusMessage::DownloadAnnounce)
+    /// and notifies on `status` before the bytes flow: the same 12 bytes as the request, `op =
     /// Download`, with `total_len` and `crc32` filled in.
     pub fn announce(&self) -> TransferControl {
         TransferControl {
@@ -153,7 +144,6 @@ impl StreamSender {
             object_id: self.object_id,
             total_len: self.total_len,
             crc32: self.crc,
-            offset: self.position,
         }
     }
 

@@ -4,7 +4,7 @@
 //! those bytes exactly. A drift fails here, there, and on the Swift side.
 
 use obc_ble::descriptor::{ObjectType, Op, StatusMessage, TransferStatus};
-use obc_ble::{Config, ObjectStoreDigest, StoreChanged, TransferControl, TransferResult};
+use obc_ble::{Config, StoreChanged, TransferControl, TransferResult, VersionRead};
 use obc_ble::{Crc32, StatusMessage as Msg};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -28,28 +28,55 @@ fn production_crc_matches_reference_and_descriptor() {
 
 #[test]
 fn transfer_control_vectors_round_trip() {
-    for (name, op, ty, id, offset_is_mid) in [
-        ("transfer-upload-start.bin", Op::Upload, ObjectType::Route, 0xFFFF, false),
-        ("transfer-upload-resume.bin", Op::Upload, ObjectType::Route, 0xFFFF, true),
-        ("transfer-download-request.bin", Op::Download, ObjectType::RideList, 0, false),
-        ("transfer-abort.bin", Op::Abort, ObjectType::Route, 0xFFFF, false),
+    for (name, op, ty, id) in [
+        ("transfer-upload-start.bin", Op::Upload, ObjectType::Route, 0xFFFF),
+        ("transfer-download-request.bin", Op::Download, ObjectType::RideList, 0),
+        ("transfer-abort.bin", Op::Abort, ObjectType::Route, 0xFFFF),
     ] {
         let bytes = fixture(name);
+        assert_eq!(bytes.len(), TransferControl::ENCODED_LEN, "{name} is a 12-byte v2 descriptor");
         let desc = TransferControl::decode(&bytes).unwrap();
         assert_eq!(desc.op, op, "{name} op");
         assert_eq!(desc.ty, ty, "{name} type");
         assert_eq!(desc.object_id, id, "{name} id");
         // Re-encoding the decoded descriptor reproduces the fixture byte-for-byte.
         assert_eq!(&desc.encode()[..], &bytes[..], "{name} re-encode");
-
-        let route_len = fixture("route-waypoints.obcr").len() as u32;
-        if offset_is_mid {
-            // Shape stability: a non-zero offset still DECODES byte-exactly — the
-            // semantic reject (transfers restart, not resume) happens in the
-            // transfer layer, not the codec.
-            assert!(desc.offset > 0 && desc.offset < route_len, "{name} carries a mid-object offset");
-        }
     }
+}
+
+/// The widened `protocolVersion` read (spec §1): `version u16 · store_epoch u32`. The production
+/// codec decodes the fixture, sees protocol version 2, and re-encodes it byte-for-byte.
+#[test]
+fn version_read_vector() {
+    let bytes = fixture("version-read.bin");
+    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN);
+    let vr = VersionRead::decode(&bytes).unwrap();
+    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION, "the fixture pins protocol version 2");
+    assert_eq!(vr.store_epoch, 0xA1B2_C3D4);
+    assert_eq!(&vr.encode()[..], &bytes[..], "re-encode");
+}
+
+/// The download announce (status `msg = 4`): the `msg` byte + the 12-byte descriptor. The
+/// production codec decodes it back through the shared `StatusMessage` envelope and the descriptor
+/// carries the download's size + CRC (matching the waypoint route).
+#[test]
+fn download_announce_vector() {
+    let route = fixture("route-waypoints.obcr");
+    let bytes = fixture("status-download-announce.bin");
+    assert_eq!(bytes.len(), StatusMessage::MAX_ENCODED_LEN, "13 bytes: msg + 12-byte descriptor");
+
+    let StatusMessage::DownloadAnnounce(desc) = StatusMessage::decode(&bytes).unwrap().expect("known msg") else {
+        panic!("expected downloadAnnounce")
+    };
+    assert_eq!(desc.op, Op::Download);
+    assert_eq!(desc.ty, ObjectType::Route);
+    assert_eq!(desc.object_id, 7);
+    assert_eq!(desc.total_len as usize, route.len());
+    assert_eq!(desc.crc32, Crc32::checksum(&route));
+
+    // Re-encode reproduces the fixture byte-for-byte.
+    let (buf, len) = Msg::DownloadAnnounce(desc).encode();
+    assert_eq!(&buf[..len], &bytes[..]);
 }
 
 #[test]
@@ -163,14 +190,6 @@ fn ack_rides_decode_edges() {
 }
 
 #[test]
-fn object_store_vector() {
-    let bytes = fixture("object-store.bin");
-    let digest = ObjectStoreDigest::decode(&bytes).unwrap();
-    assert_eq!(digest, ObjectStoreDigest { revision: 42, route_count: 3, ride_count: 5 });
-    assert_eq!(&digest.encode()[..], &bytes[..]);
-}
-
-#[test]
 fn config_vector() {
     let bytes = fixture("config-v1.bin");
     let config = Config::decode(&bytes).expect("valid config");
@@ -260,20 +279,28 @@ fn unknown_status_discriminator_is_ignored() {
 fn route_list_vector() {
     use obc_ble::{ListHeader, RouteListEntry};
 
+    let route_wp = fixture("route-waypoints.obcr");
+    let route_plain = fixture("route-plain.obcr");
     let bytes = fixture("route-list.bin");
     let (h, entry_len) = ListHeader::decode(&bytes).unwrap();
     assert_eq!(h.count, 2);
-    assert_eq!(bytes.len(), ListHeader::object_len(h.count as usize));
+    assert_eq!(h.total, 2, "nothing truncated");
+    assert!(!h.is_truncated());
+    assert_eq!(entry_len, RouteListEntry::ENTRY_LEN, "v2 routeList entry is 76 bytes");
+    assert_eq!(bytes.len(), ListHeader::object_len(h.count as usize, entry_len));
 
-    let mut rebuilt = ListHeader { count: h.count }.encode().to_vec();
-    for (k, (byte_len, waypoints)) in
-        [(fixture("route-waypoints.obcr").len(), 2u16), (fixture("route-plain.obcr").len(), 0)].iter().enumerate()
+    let mut rebuilt = ListHeader { count: h.count, total: h.total }.encode(entry_len as u8).to_vec();
+    for (k, (byte_len, waypoints, crc)) in
+        [(route_wp.len(), 2u16, Crc32::checksum(&route_wp)), (route_plain.len(), 0, Crc32::checksum(&route_plain))]
+            .iter()
+            .enumerate()
     {
         let off = ListHeader::ENCODED_LEN + k * entry_len;
         let e = RouteListEntry::decode(&bytes[off..off + entry_len]).unwrap();
         assert_eq!(e.byte_len as usize, *byte_len, "entry {k} sizes its stored file");
         assert_eq!(e.waypoint_count, *waypoints);
         assert_eq!(e.name, b"Vector Loop");
+        assert_eq!(e.crc32, *crc, "entry {k} carries its content CRC-32");
         assert_eq!((e.distance_m, e.ascent_m, e.point_count), (2207, 76, 9), "OBCR header stats");
         rebuilt.extend_from_slice(&e.encode());
     }
