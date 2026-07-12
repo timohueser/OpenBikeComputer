@@ -861,7 +861,9 @@ impl App {
     /// formed. The renderer (the only large field) is zeroed in place via
     /// [`MapRenderer::init_zeroed`] rather than built-and-moved.
     ///
-    /// The end state is identical to `new_idle`'s — keep the two in sync.
+    /// The end state is identical to `new_idle`'s — keep the two in sync. A destructuring
+    /// exhaustiveness guard at the tail (naming every field with no `..`) makes a field added to
+    /// `App` but missed here a **compile error** in this function, not a silent uninitialized read.
     ///
     /// # Safety
     /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into which a full
@@ -949,6 +951,78 @@ impl App {
             addr_of_mut!((*slot).map_name).write(heapless::String::new());
             addr_of_mut!((*slot).map_obcm_version).write(0);
             addr_of_mut!((*slot).card_free_bytes).write(None);
+
+            // Exhaustiveness guard. The `addr_of_mut!` writes above are raw-pointer stores the
+            // compiler cannot check for completeness, so a field added to `App` can silently skip
+            // initialization here and leave the board's first render reading uninitialized memory —
+            // it has happened three times (`update_failed`, then `nav_profiles`/`nav_preview`/
+            // `nav_preview_route`). This destructures the now-fully-written slot naming **every**
+            // field with no `..`, so adding a field to `App` fails to compile *right here* until it
+            // is listed — the reminder to also add its `addr_of_mut!(...).write(...)` above. Binds
+            // to `_` only (no moves, no drops); optimizes to nothing. Keep it last, after every
+            // write, so the shared borrow of `*slot` is sound.
+            let App {
+                state: _,
+                activity: _,
+                catalog: _,
+                catalog_ids: _,
+                ride_catalog: _,
+                ride_catalog_ids: _,
+                nav_profiles: _,
+                stack: _,
+                profile: _,
+                profile_route: _,
+                ride_profile: _,
+                ride_profile_for: _,
+                ride_preview: _,
+                ride_preview_for: _,
+                nav_preview: _,
+                nav_preview_route: _,
+                climbs: _,
+                climbs_route: _,
+                waypoints: _,
+                waypoints_route: _,
+                climb_profile: _,
+                #[cfg(test)]
+                    climb_fill_count: _,
+                route_match: _,
+                matched_route: _,
+                ride_session: _,
+                breadcrumb: _,
+                renderer: _,
+                input: _,
+                now_ms: _,
+                map_dirty: _,
+                region_dirty: _,
+                frame_size: _,
+                render_clip: _,
+                next_wake_ms: _,
+                last_input_ms: _,
+                settings: _,
+                wall_clock: _,
+                settings_dirty: _,
+                hold_progress_override: _,
+                hold_cancel_pending: _,
+                last_battery_poll_ms: _,
+                temp_c: _,
+                last_fix_ms: _,
+                prev_no_fix: _,
+                prev_live_sensors: _,
+                poi_scratch: _,
+                ble_passkey: _,
+                sensor_status: _,
+                sensor_scan_hits: _,
+                store_changed_pending: _,
+                pending_upload: _,
+                pending_warnings: _,
+                warned: _,
+                update_confirmed: _,
+                update_failed: _,
+                fw_version: _,
+                map_name: _,
+                map_obcm_version: _,
+                card_free_bytes: _,
+            } = &*slot;
         }
     }
 
