@@ -254,6 +254,11 @@ pub struct Activity {
     /// Latest cadence (rpm) + the ms it arrived, or `None` before the first sample.
     cadence_last: Option<u8>,
     cadence_at_ms: u32,
+    /// The [`RideClock`] ms of the most recent `tick` — the timebase samples record on. The
+    /// `live_*_display` accessors judge staleness against this, so a stat tile rendered *after* the
+    /// tick (against the map-plane clock, which the simulator runs off wall time during a GPX replay)
+    /// still compares like-for-like with the record clock and doesn't spuriously blank to `--`.
+    sensor_now_ms: u32,
 
     // per-ride sensor summary accumulators — time-weighted over **moving time** (the `avg_speed`
     // discipline), accruing only while a *fresh* value is present, in the same accepted-fix path as
@@ -326,6 +331,30 @@ impl Activity {
     /// coasting rider (distinct from `None`), so the tile shows `0`, not `--`.
     pub fn live_cadence(&self, now_ms: u32) -> Option<u8> {
         self.cadence_last.filter(|_| now_ms.saturating_sub(self.cadence_at_ms) <= SENSOR_STALE_MS)
+    }
+
+    /// Record the [`RideClock`] ms of the current `tick` (see [`sensor_now_ms`](Self::sensor_now_ms)),
+    /// so the `live_*_display` accessors judge freshness on the same clock samples record on.
+    pub fn note_sensor_clock(&mut self, now_ms: u32) {
+        self.sensor_now_ms = now_ms;
+    }
+
+    /// Live heart rate for a **stat tile**, judged against the last `tick`'s [`RideClock`] rather
+    /// than a render-time clock — so a host whose render clock differs from its ride clock (the
+    /// simulator, mid GPX replay) still reads the value fresh instead of blanking. On the board the
+    /// two clocks are one `now`, so this equals `live_hr(self.now_ms)`.
+    pub fn live_hr_display(&self) -> Option<u16> {
+        self.live_hr(self.sensor_now_ms)
+    }
+
+    /// Live power for a stat tile — the display-clock twin of [`live_hr_display`](Self::live_hr_display).
+    pub fn live_power_display(&self) -> Option<u16> {
+        self.live_power(self.sensor_now_ms)
+    }
+
+    /// Live cadence for a stat tile — the display-clock twin of [`live_hr_display`](Self::live_hr_display).
+    pub fn live_cadence_display(&self) -> Option<u8> {
+        self.live_cadence(self.sensor_now_ms)
     }
 
     /// Average heart rate (bpm) over HR-present moving time, or `None` before any sample. Saturates
