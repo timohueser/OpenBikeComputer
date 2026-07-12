@@ -246,7 +246,7 @@ pub(crate) fn run_scan(
     // rollback, so an unconfirmed trial is accepted rather than rolled back. (The running-mismatch
     // no-rollback case needs the slot CRC, too heavy pre-confirm, so it isn't surfaced — see the PR.)
     let installed = match settings.read_boot_state() {
-        BootState::Idle { installed } => installed,
+        BootState::Idle { installed, .. } => installed,
         _ => None,
     };
     let mut staged_version: heapless::String<32> = heapless::String::new();
@@ -319,43 +319,55 @@ pub(crate) fn confirm_trial(settings: &mut RramSettingsStore) -> Option<ImageHea
 /// boot-state page + the armer's breadcrumb ([`ArmMarker`](obc_app::settings::ArmMarker)) into the
 /// one-time post-update verdict the UI shows.
 ///
-/// - **`Trial`** — the install landed and this IS the trial boot: the health-anchor confirm owns
-///   the verdict (and the marker); nothing to do here.
-/// - **`Armed`** — the bootloader never consumed the arm (it can only be stale or missing: a
-///   healthy bootloader never jumps to the app with `Armed` intact). Loud failure card, and the
-///   leftover arm is downgraded to `Idle` so it can't fire by surprise on some later reboot (the
-///   rollback snapshot's header is carried into `installed`, mirroring the engine's reject path).
-/// - **`Idle` + a marker** — the bootloader consumed the arm but this boot isn't a trial. If the
-///   installed header IS the staged version, the image was accepted after an unconfirmed
-///   first-install trial (the AcceptAndClear path) — surface the success toast. Anything else
-///   was rejected before the erase or rolled back — the failure card.
-/// - **`Idle`, no marker** — a plain boot; nothing happened, nothing shows.
+/// The decision itself is the pure, host-tested [`obc_dfu::verdict`] — it reads the boot state's
+/// recorded [`LastOutcome`](obc_dfu::LastOutcome), **never** version strings (killing the
+/// same-version misreport, DR2 #730). This function is the IO + card mapping around it:
+///
+/// - [`TrialInProgress`](obc_dfu::Verdict::TrialInProgress) — this IS the trial boot; the
+///   health-anchor confirm owns the verdict (and the marker). Nothing to do.
+/// - [`Verdict::None`](obc_dfu::Verdict::None) — a plain boot; nothing happened, nothing shows.
+/// - [`Confirmed`](obc_dfu::Verdict::Confirmed) — the staged image is now running (accepted after an
+///   unconfirmed first-install trial). Clear the marker, show the success toast.
+/// - [`Reverted`](obc_dfu::Verdict::Reverted) — the staged image is not running (rejected before the
+///   erase, or its trial rolled back). Clear the marker, show the failure card.
+/// - [`NotStarted`](obc_dfu::Verdict::NotStarted) — an `Armed` record survived into the app: the
+///   bootloader never consumed it (stale or missing). Downgrade the stray arm to `Idle` so it can't
+///   fire by surprise later (the rollback snapshot's header is carried into `installed`, mirroring
+///   the engine's reject path), clear the marker, and show the not-started card.
 pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut RramSettingsStore) {
     let marker = settings.read_arm_marker();
-    match settings.read_boot_state() {
-        BootState::Trial { .. } => {}
-        BootState::Armed { update, rollback, .. } => {
-            defmt::warn!("dfu: Armed record survived into the app (gen stale?) — bootloader never ran the install");
-            settings.write_boot_state(&BootState::Idle { installed: rollback.map(|r| r.header) });
+    let state = settings.read_boot_state();
+    match obc_dfu::verdict(&state, marker.as_ref().map(|m| m.generation)) {
+        obc_dfu::Verdict::TrialInProgress | obc_dfu::Verdict::None => {}
+        obc_dfu::Verdict::Confirmed => {
             settings.clear_arm_marker();
-            app.notify_update_failed(obc_app::DfuFailure::NotStarted, Some(update.header.fw_version_str()));
+            // Confirmed is only returned with a marker present (see `verdict`), so `staged` is set.
+            let staged = marker.as_ref().map(|m| m.staged.as_str()).unwrap_or("");
+            defmt::info!("dfu: staged {=str} accepted after an unconfirmed trial", staged);
+            app.notify_update_confirmed(staged);
         }
-        BootState::Idle { installed } => {
-            let Some(marker) = marker else { return };
+        obc_dfu::Verdict::Reverted => {
             settings.clear_arm_marker();
-            match installed {
-                Some(h) if h.fw_version_str() == marker.staged.as_str() => {
-                    defmt::info!("dfu: staged {=str} accepted after an unconfirmed trial", marker.staged.as_str());
-                    app.notify_update_confirmed(marker.staged.as_str());
-                }
-                _ => {
-                    defmt::warn!(
-                        "dfu: staged {=str} is not the running image — rejected or rolled back",
-                        marker.staged.as_str()
-                    );
-                    app.notify_update_failed(obc_app::DfuFailure::Reverted, Some(marker.staged.as_str()));
-                }
+            let staged = marker.as_ref().map(|m| m.staged.as_str());
+            // RTT is the only forensics channel on glass — name the staged version when the marker
+            // carries one (Reverted is only returned with a marker present, but stay total).
+            match staged {
+                Some(v) => defmt::warn!("dfu: staged {=str} is not the running image — rejected or rolled back", v),
+                None => defmt::warn!("dfu: staged update is not the running image — rejected or rolled back"),
             }
+            app.notify_update_failed(obc_app::DfuFailure::Reverted, staged);
+        }
+        obc_dfu::Verdict::NotStarted => {
+            defmt::warn!("dfu: Armed record survived into the app — bootloader never ran the install");
+            // Downgrade the stray arm + name the staged version from the Armed record (the marker
+            // may be absent here — `verdict` returns NotStarted for `Armed` regardless of a marker).
+            let (installed, staged) = match &state {
+                BootState::Armed { update, rollback, .. } => (rollback.map(|r| r.header), Some(update.header)),
+                _ => (None, None),
+            };
+            settings.write_boot_state(&BootState::Idle { installed, last_outcome: None });
+            settings.clear_arm_marker();
+            app.notify_update_failed(obc_app::DfuFailure::NotStarted, staged.as_ref().map(|h| h.fw_version_str()));
         }
     }
 }
