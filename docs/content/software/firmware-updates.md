@@ -128,6 +128,18 @@ the state is still `Armed` throughout, so a power loss there just reruns the pas
 from the staged file. Nothing the rider can do turns the device into a
 paperweight; the worst case is "reinsert the card and power-cycle".
 
+That worst case used to have a sharp edge: an `Armed` device whose card had gone
+missing — died in the drawer between arming and the reboot, or got swapped for a
+fresh maps card — would sit and retry *forever*, stranded on perfectly good
+firmware until the exact card came back. The retry-forever is still right once the
+flash pass may have started (a half-written slot must never be abandoned), but
+before the erase there is nothing to protect: the old app is fully intact. So a
+**pre-erase `Armed` install** now bounds the wait — after about a minute of
+triple-blink it **abandons the arm**, clears the state back to `Idle`, and boots
+the intact old firmware, then shows a "card unreadable — re-arm to retry" card
+once the app is up (DR3). A `Trial` or an already-started flash keeps the original
+forever-park, unchanged.
+
 > **CRC-32, no signatures — on purpose (v1).** Integrity is a CRC-32/IEEE over the
 > whole image, end to end. There is no cryptographic signature: physical access to
 > the card is already root on an open device, so the meaningful gate is the human

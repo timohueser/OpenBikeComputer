@@ -163,8 +163,8 @@ inferring one from version strings: `Installed` = the staged image is now runnin
 (a first-install trial accepted, or a rollback that kept the freshly-flashed image
 because its snapshot was unreadable); `RolledBack` = an unconfirmed trial was restored
 to its snapshot; `StageRejected` = the staged image failed verification before the app
-slot was erased; `ArmAbandoned` = reserved for DR3 (#731, the bootloader gives up on an
-unreadable `Armed` card and boots the intact app). `Outcome Generation` lets the app's
+slot was erased; `ArmAbandoned` = the bootloader gave up on an unreadable `Armed` card
+before erasing anything and booted the intact old app (DR3 #731 — see §2.4). `Outcome Generation` lets the app's
 boot-outcome reconcile bind the outcome to the arm marker it left before the install
 reboot. `Has Outcome = 0` is a plain steady-state `Idle`, a fresh device, or an `Idle`
 written by a `0x0001` writer (whose body ends after the installed option — see the
@@ -267,6 +267,24 @@ guarantee holds even on a cold power-on where no watchdog was running yet. On th
 warm-reset arm path the app's already-running dog is instead adopted and fed
 through the install, so a slow install is never cut down mid-flash; a plain `Idle`
 boot never touches the watchdog (DR1, #729).
+
+**Unreadable card while `Armed` — bounded retries, then abandon (DR3, #731).** Epic
+#615 invariant 5 ("card absent during install → LED code, retry every boot") stands
+for every case where the app slot may already have been erased — a `Trial`/rollback,
+or any point after the flash pass has begun: those park (triple-blink) and retry
+forever, because the slot is not a bootable old app and must never be abandoned. But
+the **pre-erase `Armed`** case is different: nothing has been touched, so the old app
+is fully intact at `0x8000`. There the bootloader bounds the wait — after a fixed
+number of failed SD bring-up / verify rounds (`obc-boot`'s `ARM_ABANDON_ROUNDS`, on
+the order of a minute of triple-blink) it **abandons the arm**: it writes `Idle {
+installed: <the rollback snapshot's header, as the verify-reject path carries it>,
+last_outcome: Some(ArmAbandoned · generation) }` (§2.2) and boots the intact old app,
+so a card that died between arm and boot can't strand good firmware. "Pre-erase" is a
+strict gate: only a failure *before* the engine's `verify()` returns `Ok` qualifies
+(the install path's verify Io; the engine flags it distinctly from every
+erase-reachable SD error), and the abandon write only clears the page — the slot is
+never touched. The next boot's `verdict` (§below) reads the `ArmAbandoned` outcome and
+shows the "card unreadable — re-arm to retry" card.
 
 ---
 
