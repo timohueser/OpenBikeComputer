@@ -711,6 +711,18 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 peripheral.setNotifyValue(true, for: characteristic)
             }
         }
+        // #753: the gated retry can begin with the CoC already up — a CCCD write
+        // failed and resolved attempt 1 as retryable while attempt 1's PSM read
+        // stayed in flight on the serialized ATT bearer, and that read then
+        // succeeded and opened the channel *during* the retry beat (its
+        // `finishConnect` had no continuation to resolve). The phase's goal
+        // state is reached — notifies re-armed above, channel open — so resolve
+        // the parked authenticate now instead of waiting on a `didOpen` that
+        // already fired.
+        if bleChannel != nil, byteChannel?.isOpen == true {
+            finishConnect()
+            return
+        }
         if bleChannel == nil, !openingChannel {
             openingChannel = true
             // The gated PSM read is what raises the passkey sheet on a fresh
@@ -719,6 +731,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             // continuation) re-encrypts silently — tight budget.
             armChannelWatchdog(after: authenticateContinuation != nil ? Self.pairingTimeout : Self.phaseTimeout)
             peripheral.readValue(for: psm)  // → PSM update → openL2CAPChannel → didOpen
+        } else if openingChannel, channelWatchdog == nil {
+            // #753: a CCCD-triggered retryable resolve disarms the watchdog while
+            // attempt 1's PSM read keeps `openingChannel` latched (its response is
+            // still owed on the serialized ATT bearer), so this retry entry can't
+            // re-issue the read — re-watch the in-flight open instead, or a read
+            // that never resolves would park the retry forever (#302's wedge,
+            // unwatched).
+            armChannelWatchdog(after: authenticateContinuation != nil ? Self.pairingTimeout : Self.phaseTimeout)
         }
     }
 
@@ -841,6 +861,23 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             }
         }
         return false
+    }
+
+    /// #753 — the one shared retry proxy for a failed *gated op* (a `status` /
+    /// `transferControl` CCCD write or the PSM read), used by both delegate
+    /// branches so they can't drift: retryable only when the failure is
+    /// auth-class (`isAuthError`) **and** the peripheral is still connected
+    /// **and** a fresh-pair `authenticate()` is parked. Auth-class while still
+    /// connected is the conservative "SMP pairing visibly completed, firmware
+    /// momentarily refused" evidence (see `GatedPairingWindowError`); everything
+    /// else — a decline that drops the link, a non-auth failure, a background
+    /// re-arm with no authenticate pending — stays terminal, exactly as before.
+    /// `nil` (the op succeeded) is never retryable. Internal, not private, so
+    /// the mapping is unit-testable without a radio.
+    static func isRetryableGatedFailure(
+        _ error: Error?, peripheralConnected: Bool, authenticatePending: Bool
+    ) -> Bool {
+        authenticatePending && peripheralConnected && isAuthError(error)
     }
 
     private func finishConnect() {
@@ -1272,13 +1309,16 @@ extension BLETransport: CBPeripheralDelegate {
                 // #753: an auth-class failure on the gated PSM read while the
                 // peripheral is *still connected* is the conservative "pairing
                 // visibly completed, firmware momentarily refused" proxy (see
-                // `GatedPairingWindowError`). Resolve a parked fresh-pair
+                // `GatedPairingWindowError` — `isRetryableGatedFailure` is shared
+                // with the gated CCCD-write branch). Resolve a parked fresh-pair
                 // `authenticate()` as retryable — it retries the gated phase once
                 // on this bonded link instead of dropping to D5. Any transfer's
                 // channel waiters (none during a fresh pair) fail as before; the
                 // retry re-opens the CoC.
-                if authenticateContinuation != nil, Self.isAuthError(error),
-                   peripheral.state == .connected {
+                if Self.isRetryableGatedFailure(
+                    error, peripheralConnected: peripheral.state == .connected,
+                    authenticatePending: authenticateContinuation != nil
+                ) {
                     for cont in waiters { cont.resume(throwing: DeviceError.channelOpenFailed) }
                     resolveAuthenticateRetryable()
                 } else {
@@ -1305,6 +1345,33 @@ extension BLETransport: CBPeripheralDelegate {
 
         // Resolve a pending read.
         resumeReads(uuid, error == nil ? .success(characteristic.value ?? Data()) : .failure(DeviceError.readFailed))
+    }
+
+    public func peripheral(
+        _ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?
+    ) {
+        // #753: on a fresh pair the FIRST gated op is a CCCD write, not the PSM
+        // read — `beginAuthenticate` arms the `status` / `transferControl`
+        // notifies before reading the PSM — so it's the CCCD write that raises
+        // the passkey sheet, and iOS's post-passkey replay of the gated ops hits
+        // the CCCD writes *first*. The firmware's post-PairingComplete refusal
+        // window therefore most likely clips a CCCD write; without this handler
+        // that failure was silently swallowed — and if the window then drained
+        // before the PSM read, `authenticate()` resolved with DEAD status/
+        // transferControl notifies (no transferResult or announce would ever
+        // arrive). Map it exactly like the PSM branch: the shared retryable
+        // proxy → resolve the parked authenticate as retryable, and the retry's
+        // `beginAuthenticate` re-arms all three gated ops. Everything else keeps
+        // the pre-existing ignore: a background re-arm has no authenticate
+        // pending, and a real decline tears the link down
+        // (`didDisconnectPeripheral` owns that path). No notify-state
+        // bookkeeping beyond this.
+        guard characteristic.uuid == GATT.status || characteristic.uuid == GATT.transferControl else { return }
+        guard Self.isRetryableGatedFailure(
+            error, peripheralConnected: peripheral.state == .connected,
+            authenticatePending: authenticateContinuation != nil
+        ) else { return }
+        resolveAuthenticateRetryable()
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {

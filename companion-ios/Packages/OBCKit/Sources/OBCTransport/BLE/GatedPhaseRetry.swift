@@ -1,18 +1,21 @@
 import Foundation
 
 /// The fresh-pair gated-phase failure that `BLETransport.authenticate()`'s
-/// retry-once policy (#753) treats as *retryable*: the gated PSM read failed
-/// **auth-class** (ATT insufficient-authentication / -encryption) while the
-/// peripheral was **still connected**.
+/// retry-once policy (#753) treats as *retryable*: a gated op — a `status` /
+/// `transferControl` CCCD write or the PSM read — failed **auth-class** (ATT
+/// insufficient-authentication / -encryption) while the peripheral was **still
+/// connected** (`BLETransport.isRetryableGatedFailure` is the one shared
+/// mapping).
 ///
 /// That is the conservative "pairing visibly completed but the firmware
 /// momentarily refused" proxy: on a fresh pair iOS raises the passkey sheet on
-/// the first gated op, and once the rider enters the code SMP pairing completes
-/// and both sides bond — but iOS's *retry* of the gated op can land in the
-/// window right after the firmware's `PairingComplete` where it still refuses
-/// auth-gated ATT ops (the bond save runs under the GATT-serve lock, the same
-/// unanswered-ATT class as the #744/#750 sensor-link drops). The link is up and
-/// bonded, so an immediate retry succeeds with **no** sheet.
+/// the first gated op (the first CCCD write — `beginAuthenticate` arms the
+/// notifies before the PSM read), and once the rider enters the code SMP
+/// pairing completes and both sides bond — but iOS's *replay* of the gated ops
+/// can land in the window right after the firmware's `PairingComplete` where it
+/// still refuses auth-gated ATT ops (the bond save runs under the GATT-serve
+/// lock, the same unanswered-ATT class as the #744/#750 sensor-link drops). The
+/// link is up and bonded, so an immediate retry succeeds with **no** sheet.
 ///
 /// Every *terminal* gated failure — a real decline / reject-when-bonded (which
 /// tears the link down), a CoC open failure, or a stall — throws a plain
