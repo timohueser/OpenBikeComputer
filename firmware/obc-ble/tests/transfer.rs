@@ -1,6 +1,7 @@
 //! The transfer state machine, exercised end-to-end over an in-memory byte stream. Covers the happy
-//! path, non-zero-offset rejection in both directions (transfers restart, not resume),
-//! CRC-corruption rejection, arbitrary CoC segmentation, over-run, and the echo loopback.
+//! path, wrong-op rejection in both directions (transfers restart, not resume — the v2 descriptor
+//! has no offset to reject), CRC-corruption rejection, arbitrary CoC segmentation, over-run, and the
+//! echo loopback.
 
 use obc_ble::descriptor::{ObjectType, Op, TransferControl, TransferStatus};
 use obc_ble::transfer::TransferError;
@@ -11,7 +12,7 @@ fn payload(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i.wrapping_mul(31).wrapping_add(7)) as u8).collect()
 }
 
-/// A fresh upload descriptor for `object` (echo id 0, offset 0), CRC from the production hasher.
+/// A fresh upload descriptor for `object` (echo id 0), CRC from the production hasher.
 fn upload_desc(object: &[u8]) -> TransferControl {
     TransferControl {
         op: Op::Upload,
@@ -19,7 +20,6 @@ fn upload_desc(object: &[u8]) -> TransferControl {
         object_id: 0,
         total_len: object.len() as u32,
         crc32: Crc32::checksum(object),
-        offset: 0,
     }
 }
 
@@ -51,15 +51,6 @@ fn upload_accepts_any_segmentation() {
         }
         assert_eq!(rx.outcome().unwrap().status, TransferStatus::Committed);
     }
-}
-
-#[test]
-fn upload_rejects_a_nonzero_offset() {
-    // Uploads are not resumable: a receiver only ever starts fresh, so any non-zero offset is
-    // rejected and the app restarts from 0.
-    let object = payload(200);
-    let resume = TransferControl { offset: 100, ..upload_desc(&object) };
-    assert_eq!(Receiver::new(&resume).unwrap_err(), TransferError::NonZeroOffset);
 }
 
 #[test]
@@ -111,13 +102,10 @@ fn incomplete_has_no_outcome() {
 }
 
 #[test]
-fn receiver_rejects_wrong_op_and_bad_offset() {
+fn receiver_rejects_wrong_op() {
     let object = payload(100);
     let download = TransferControl { op: Op::Download, ..upload_desc(&object) };
     assert_eq!(Receiver::new(&download).unwrap_err(), TransferError::WrongOp);
-
-    let bad_offset = TransferControl { offset: 101, ..upload_desc(&object) };
-    assert_eq!(Receiver::new(&bad_offset).unwrap_err(), TransferError::NonZeroOffset);
 }
 
 #[test]
@@ -137,8 +125,8 @@ fn echo_loopback_round_trips() {
 
 // ---- StreamSender (download direction) ----
 
-fn download_request(ty: ObjectType, offset: u32) -> TransferControl {
-    TransferControl { op: Op::Download, ty, object_id: 0, total_len: 0, crc32: 0, offset }
+fn download_request(ty: ObjectType) -> TransferControl {
+    TransferControl { op: Op::Download, ty, object_id: 0, total_len: 0, crc32: 0 }
 }
 
 #[test]
@@ -149,13 +137,12 @@ fn download_announces_and_streams() {
     let object = payload(500);
     let crc = Crc32::checksum(&object);
     let read = |at: usize, n: usize| &object[at..at + n];
-    let mut tx = StreamSender::new(&download_request(ObjectType::RideList, 0), object.len() as u32, crc).unwrap();
+    let mut tx = StreamSender::new(&download_request(ObjectType::RideList), object.len() as u32, crc).unwrap();
 
     let announce = tx.announce();
     assert_eq!(announce.op, Op::Download);
     assert_eq!(announce.total_len, 500);
     assert_eq!(announce.crc32, crc);
-    assert_eq!(announce.offset, 0);
 
     let mut sent = Vec::new();
     loop {
@@ -174,11 +161,9 @@ fn download_announces_and_streams() {
 }
 
 #[test]
-fn download_rejects_wrong_op_and_nonzero_offset() {
-    // Downloads restart whole, exactly like uploads: a wrong op or a non-zero offset is rejected
-    // typed, and an interrupted download is simply re-requested from 0.
-    let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Route, 0) };
+fn download_rejects_wrong_op() {
+    // Downloads restart whole, exactly like uploads: a wrong op is rejected typed, and an
+    // interrupted download is simply re-requested from the start (no offset on the v2 wire).
+    let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Route) };
     assert_eq!(StreamSender::new(&upload, 100, 0).unwrap_err(), TransferError::WrongOp);
-    let resume = download_request(ObjectType::Route, 300);
-    assert_eq!(StreamSender::new(&resume, 500, 0).unwrap_err(), TransferError::NonZeroOffset);
 }

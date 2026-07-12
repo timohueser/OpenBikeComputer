@@ -6,8 +6,9 @@ import OBCDomain
 /// contract checks, not behavior — the real transport/codec coverage is `B1`.
 final class ProtocolContractTests: XCTestCase {
     func testProtocolVersionIsPinned() {
-        // Bump deliberately, in lockstep with firmware S0 — not by accident.
-        XCTAssertEqual(OBCProtocol.version, 1)
+        // Bump deliberately, in lockstep with the firmware wire — not by accident.
+        // v2 is the one coordinated wire break (epic #632).
+        XCTAssertEqual(OBCProtocol.version, 2)
     }
 
     func testDeviceInfoDefaultsToTheExpectedProtocolVersion() {

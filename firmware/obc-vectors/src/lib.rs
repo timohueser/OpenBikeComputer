@@ -218,24 +218,40 @@ pub fn update_container_v1() -> Vec<u8> {
     v
 }
 
-/// A `transferControl` descriptor (spec §4.2): 16 bytes.
-pub fn transfer_control(op: u8, ty: u8, object_id: u16, total_len: u32, crc: u32, offset: u32) -> Vec<u8> {
+/// A `transferControl` descriptor (spec §4.2): 12 bytes (protocol v2 — the `offset` field is gone).
+pub fn transfer_control(op: u8, ty: u8, object_id: u16, total_len: u32, crc: u32) -> Vec<u8> {
     let mut v = Vec::new();
     v.push(op);
     v.push(ty);
     v.extend_from_slice(&le16(object_id));
     v.extend_from_slice(&le32(total_len));
     v.extend_from_slice(&le32(crc));
-    v.extend_from_slice(&le32(offset));
     v
 }
 
-/// `status` message `transferResult` (spec §4.3): 8 bytes.
+/// `status` message `transferResult` (spec §4.3, `msg = 1`): 8 bytes.
 pub fn status_transfer_result(object_id: u16, status: u8, committed_offset: u32) -> Vec<u8> {
     let mut v = vec![1u8];
     v.extend_from_slice(&le16(object_id));
     v.push(status);
     v.extend_from_slice(&le32(committed_offset));
+    v
+}
+
+/// `status` message `downloadAnnounce` (spec §4.3, `msg = 4`): the `msg` byte + the 12-byte
+/// `transferControl` descriptor with `total_len`/`crc32` filled in (protocol v2 folds the announce
+/// onto the `status` envelope). 13 bytes.
+pub fn status_download_announce(ty: u8, object_id: u16, total_len: u32, crc: u32) -> Vec<u8> {
+    let mut v = vec![4u8];
+    v.extend_from_slice(&transfer_control(2, ty, object_id, total_len, crc)); // op = 2 (download)
+    v
+}
+
+/// The widened `protocolVersion` read (spec §1): `version u16 · store_epoch u32`. 6 bytes.
+pub fn version_read(version: u16, store_epoch: u32) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.extend_from_slice(&le16(version));
+    v.extend_from_slice(&le32(store_epoch));
     v
 }
 
@@ -260,7 +276,8 @@ pub fn command_ack_rides(ids: &[u16]) -> Vec<u8> {
     v
 }
 
-/// One `routeList` entry (spec §7.4): 72 bytes, name zero-padded to 48.
+/// One `routeList` entry (spec §7.4): **76 bytes** (protocol v2), name zero-padded to 48, trailing
+/// whole-object content `crc32` (`0` = unknown).
 #[allow(clippy::too_many_arguments)] // mirrors the spec's field list one-to-one
 pub fn route_list_entry(
     object_id: u16,
@@ -270,6 +287,7 @@ pub fn route_list_entry(
     point_count: u32,
     waypoint_count: u16,
     name: &str,
+    crc: u32,
 ) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&le16(object_id));
@@ -284,27 +302,21 @@ pub fn route_list_entry(
     padded[..name.len()].copy_from_slice(name.as_bytes());
     v.extend_from_slice(&padded);
     v.push(0); // reserved
-    assert_eq!(v.len(), 72);
+    v.extend_from_slice(&le32(crc)); // whole-object content CRC-32
+    assert_eq!(v.len(), 76);
     v
 }
 
-/// A whole `routeList` object (spec §7.4): the 4-byte list header + packed 72-byte entries.
-pub fn route_list(entries: &[Vec<u8>]) -> Vec<u8> {
-    let mut v = vec![1u8, 72];
+/// A whole `routeList` object (spec §7.4): the **6-byte** v2 list header
+/// (`version 2 · entry_len 76 · count · total`) + packed 76-byte entries. `total` = the full catalog
+/// size before the `MAX_ROUTES` cap (equal to `count` when nothing was dropped).
+pub fn route_list(entries: &[Vec<u8>], total: u16) -> Vec<u8> {
+    let mut v = vec![2u8, 76];
     v.extend_from_slice(&le16(entries.len() as u16));
+    v.extend_from_slice(&le16(total));
     for e in entries {
         v.extend_from_slice(e);
     }
-    v
-}
-
-/// `objectStore` digest (spec §4.5): 10 bytes.
-pub fn object_store(revision: u32, routes: u16, rides: u16) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.extend_from_slice(&le32(revision));
-    v.extend_from_slice(&le16(routes));
-    v.extend_from_slice(&le16(rides));
-    v.extend_from_slice(&le16(0));
     v
 }
 
@@ -315,46 +327,50 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let route_wp = build_route(ROUTE_GPX);
     let route_plain = build_route(&route_gpx_plain());
     let (len, crc) = (route_wp.len() as u32, crc32(&route_wp));
-    let plain_len = route_plain.len() as u32;
-    let resume_offset = len / 2;
+    let (plain_len, plain_crc) = (route_plain.len() as u32, crc32(&route_plain));
     vec![
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
         ("ride-v1.bin", ride_v1()),
         ("ride-v2.bin", ride_v2()),
         ("config-v1.bin", config_v1()),
-        // op=1 upload, type=1 route, id 0xFFFF (new).
-        ("transfer-upload-start.bin", transfer_control(1, 1, 0xFFFF, len, crc, 0)),
-        // Non-zero offset: pins the `offset` field's byte layout. Uploads are NOT
-        // resumable (spec §1 principle 4) — an encoding fixture, not a resume flow.
-        ("transfer-upload-resume.bin", transfer_control(1, 1, 0xFFFF, len, crc, resume_offset)),
+        // The widened protocolVersion read (spec §1): version 2 + a store epoch nonce.
+        ("version-read.bin", version_read(2, 0xA1B2_C3D4)),
+        // op=1 upload, type=1 route, id 0xFFFF (new) — 12 bytes (no offset in v2).
+        ("transfer-upload-start.bin", transfer_control(1, 1, 0xFFFF, len, crc)),
         // op=2 download request: type=7 rideList, id 0, len/crc unknown.
-        ("transfer-download-request.bin", transfer_control(2, 7, 0, 0, 0, 0)),
+        ("transfer-download-request.bin", transfer_control(2, 7, 0, 0, 0)),
         // op=3 abort of the active route upload.
-        ("transfer-abort.bin", transfer_control(3, 1, 0xFFFF, 0, 0, 0)),
+        ("transfer-abort.bin", transfer_control(3, 1, 0xFFFF, 0, 0)),
+        // The download announce (status msg 4): a route download (id 7 — the waypoint route in
+        // route-list.bin), its size + CRC filled.
+        ("status-download-announce.bin", status_download_announce(1, 7, len, crc)),
         // Closing result: committed, assigned id 7, all bytes durable.
         ("status-transfer-result.bin", status_transfer_result(7, 0, len)),
         // Reject: a new-route upload (id 0xFFFF) refused at descriptor-open time
         // because the catalog is full. status=6 storageFull, nothing committed.
         ("status-transfer-storage-full.bin", status_transfer_result(0xFFFF, 6, 0)),
         ("status-store-changed.bin", status_store_changed(1, 42)),
-        // The phone's ride-possession ack (cmd 2): three of the digest's five stored rides.
+        // The phone's ride-possession ack (cmd 2): three stored rides.
         ("command-ack-rides.bin", command_ack_rides(&[3, 5, 9])),
         // Its answer: ok, detail = 3 newly-flagged rides.
         ("status-command-result-ack.bin", status_command_result(2, 0, 3)),
-        ("object-store.bin", object_store(42, 3, 5)),
         // The OBCU firmware-update container (spec §1) — a `fwImage` payload (spec
         // §7.6, id 0): 64-byte header + a 128-byte raw image. Pinned on the device
         // side by `obc-dfu` and on the app side by the iOS `OBCUHeader` decoder.
         ("update-container-v1.bin", update_container_v1()),
         // Catalog for both stored route fixtures: fields from their OBCR headers
-        // (distance 2207 m, ascent 76 m, 9 points), ids continuing from 7.
+        // (distance 2207 m, ascent 76 m, 9 points), ids continuing from 7, each with
+        // its whole-object content CRC-32. total = count (nothing truncated).
         (
             "route-list.bin",
-            route_list(&[
-                route_list_entry(7, len, 2207, 76, 9, 2, ROUTE_NAME),
-                route_list_entry(8, plain_len, 2207, 76, 9, 0, ROUTE_NAME),
-            ]),
+            route_list(
+                &[
+                    route_list_entry(7, len, 2207, 76, 9, 2, ROUTE_NAME, crc),
+                    route_list_entry(8, plain_len, 2207, 76, 9, 0, ROUTE_NAME, plain_crc),
+                ],
+                2,
+            ),
         ),
     ]
 }

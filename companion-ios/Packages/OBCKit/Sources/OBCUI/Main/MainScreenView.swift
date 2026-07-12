@@ -96,6 +96,20 @@ public struct MainScreenView: View {
                 .accessibilityIdentifier("disconnectedBanner")
                 .padding(.horizontal, 20)
                 .padding(.bottom, 6)
+            } else if sync.hiddenRideCount > 0 {
+                // v2 rideList truncation (spec §7.4): past the device's cap some
+                // rides are dropped from the list in FAT-arbitrary order, so
+                // "up to date" would be a lie — say so plainly (iOS tone rule).
+                OBCInlineBanner(
+                    systemImage: "externaldrive.badge.exclamationmark",
+                    title: sync.hiddenRideCount == 1
+                        ? "1 ride on \(model.deviceName) can't be listed."
+                        : "\(sync.hiddenRideCount) rides on \(model.deviceName) can't be listed.",
+                    message: "Free up space on the device to sync them."
+                )
+                .accessibilityIdentifier("ridesTruncatedBanner")
+                .padding(.horizontal, 20)
+                .padding(.bottom, 6)
             }
 
             OBCLargeTitleBar("Routes") {

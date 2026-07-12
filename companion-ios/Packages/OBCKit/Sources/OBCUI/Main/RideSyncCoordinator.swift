@@ -90,6 +90,18 @@ public final class RideSyncCoordinator {
     /// H10: non-nil while a dropped sync waits for Resume — replaces the S4
     /// banner (one banner at a time; this one carries the link story too).
     public private(set) var syncInterruption: SyncInterruption?
+    /// How many rides the device holds beyond what its `rideList` could carry
+    /// (v2 header `total − count`, spec §7.4) — set from each sync's list read.
+    /// `> 0` surfaces the "some rides can't be listed" warning: past the device's
+    /// `MAX_RIDES` cap the catalog scan drops the excess in FAT-arbitrary order,
+    /// so this is the only honest "you're not actually up to date" signal. Holds
+    /// within a connected session (device truth, re-read every sync) but **resets
+    /// on every edge into `.connected`**: a count carried across a link edge could
+    /// be stale (the rider freed space while away) or another device's entirely
+    /// (the banner interpolates the connected device's name — device A's count
+    /// under device B's name would assert a false fact). Unknown-until-read is
+    /// the honest state, matching the epic's proof-only philosophy.
+    public private(set) var hiddenRideCount: Int = 0
 
     // MARK: Wiring
 
@@ -156,6 +168,11 @@ public final class RideSyncCoordinator {
                 // app reinstall — cases a download-completion event can never
                 // reach, because an already-held ride is never re-downloaded.
                 if state == .connected, !wasConnected {
+                    // A fresh link is a fresh device truth: drop the previous
+                    // session's truncation count (see `hiddenRideCount` — it may
+                    // be stale, or a *different* device's). The next sync's list
+                    // read re-establishes it.
+                    hiddenRideCount = 0
                     ackPossessedRides()
                 }
                 wasConnected = state == .connected
@@ -227,12 +244,17 @@ public final class RideSyncCoordinator {
         syncedRideIDs = library.syncedRideIDs()
 
         do {
-            let onDevice = try await transport.listRides()
+            let catalog = try await transport.listRides()
             // Canceled = a newer sync superseded this one and owns the shared
             // state now — touch nothing (same rule at every check below).
             guard !Task.isCancelled else { return }
             onRideListRead()
+            // The v2 header's truncation signal: some rides are unsyncable until
+            // the rider frees space on the device (spec §7.4). Surface it from the
+            // list read whether or not there's anything fresh to fetch.
+            hiddenRideCount = catalog.hiddenRideCount
 
+            let onDevice = catalog.rides
             let fresh = onDevice.filter { !syncedRideIDs.contains($0.id) }
             guard !fresh.isEmpty else {
                 // H9 — a quiet toast, straight back to idle (no empty "done").

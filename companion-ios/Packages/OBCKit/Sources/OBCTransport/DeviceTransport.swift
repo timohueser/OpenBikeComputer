@@ -30,8 +30,8 @@ public protocol DeviceTransport: Sendable {
     /// passkey sheet yet. The gated ops wait for `authenticate()`.
     func discover() async throws
     /// **First-time-pairing phase 2** (#297): the gated operations that establish
-    /// the encrypted, LESC-authenticated link — subscribe the `status` /
-    /// `transferControl` notifies, read the PSM, open the CoC. This is what raises
+    /// the encrypted, LESC-authenticated link — subscribe the `status` notify
+    /// (the sole device → app CCCD in v2), read the PSM, open the CoC. This is what raises
     /// the system passkey sheet (A8); the launch flow calls it on the D2 row tap so
     /// the sheet lands in the D3 "pairing…" beat. Requires a prior `discover()`.
     func authenticate() async throws
@@ -88,8 +88,9 @@ public protocol DeviceTransport: Sendable {
     func uploadRoute(_ route: RouteBlob) -> TransferHandle
     /// Delete a route from the device.
     func deleteRoute(_ id: DeviceObjectID) async throws
-    /// Enumerate tracked rides on the device.
-    func listRides() async throws -> [RideSummary]
+    /// Enumerate tracked rides on the device — the summaries plus the v2 header's
+    /// truncation signal (`RideCatalog.hiddenRideCount`, spec §7.4).
+    func listRides() async throws -> RideCatalog
     /// Full detail for one tracked ride (E3): the elevation profile.
     func rideDetail(_ id: RideID) async throws -> RideDetail
     /// Download tracked rides (device → app, B7). `rides` yields each ride's

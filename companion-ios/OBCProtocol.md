@@ -11,32 +11,52 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 > services, transport, and security. If this document and that spec disagree,
 > **the spec wins and this file is corrected** — never the reverse.
 >
-> **Status: reconciled with `S0`.** The custom UUIDs, descriptor layouts, and
-> CRC-32 parameters below are the frozen values (spec §9 was the repin checklist);
-> the shared fixtures in [`protocol-vectors/`](../protocol-vectors/) pin them
-> byte-exactly on both sides (`ProtocolVectorTests` here, `obc-vectors` in the
-> firmware workspace). The firmware Track-A issues that implement this contract —
-> `A4` (GATT), `A5` (L2CAP CoC + transfer engine), `A6`/`A7` (the route/ride object
-> planes), and `A8` (LESC pairing + bonding) — have **landed**; this app epic only
-> *references* the contract (epic
-> [#234](https://github.com/timohueser/OpenBikeComputer/issues/234)).
+> **Status: protocol v2** (epic #632 — the one coordinated wire break over v1).
+> This mirror describes the **v2** surface; the shared fixtures in
+> [`protocol-vectors/`](../protocol-vectors/) pin it byte-exactly on both sides
+> (`ProtocolVectorTests` here, `obc-vectors` in the firmware workspace), and
+> **spec §9 is the v1 → v2 repin checklist**. The v2 changes: the widened
+> `protocolVersion` read (version + store epoch), a 12-byte `TransferControl`
+> (no `offset`), the download announce folded into `status` (so `transferControl`
+> is write-only), `objectStore` + `diagnostics` characteristics dropped,
+> `routeList` entries at 76 bytes (+content CRC), and a 6-byte list header
+> (+`total`). The iOS transport re-pin that makes the Swift codecs match is
+> tracked as V4 (#768); until it lands, the app shows the version-mismatch banner
+> against a v2 device — itself a verification of the compat path.
 
 ---
 
-## Versioning
+## Versioning & store epoch
 
-A single `protocol_version` (`u16`, currently **1**) is exposed by the device on
-the OBC Control `protocolVersion` characteristic (readable without encryption)
-and pinned app-side as `OBCProtocol.version`
-([OBCProtocol.swift](Packages/OBCKit/Sources/OBCDomain/OBCProtocol.swift), currently `1`).
+The `protocolVersion` characteristic read is widened in v2 to
+`version u16 · store_epoch u32` (6 bytes LE, readable without encryption). The
+`protocol_version` is **currently `2`**; `store_epoch` is a `u32` TRNG nonce the
+device changes only on an id-era reset — exactly the RRAM losses: a full-chip
+reflash, a factory reset, or a torn id-marks line. (The card is not consulted by
+the mint rule; it only determines how much of the id space actually reopens when
+the RRAM floor is lost. A card written by a *different* device can present foreign
+ids under the current epoch — the residual hole is #776, device-side only.)
+Because it is the pre-pairing read the app performs first on every connect, the
+app knows the epoch **before** it acks or reconciles anything.
 
-**Mismatch behavior — surface, don't crash.** On connect, `B1` reads the device's
-reported version into `DeviceInfo.protocolVersion` and compares it to
-`OBCProtocol.version`. A mismatch is reported as
+**Store epoch — why the app needs it.** Every durable link keys on bare `u16`
+object ids (ride synced-set + tombstones, route `deviceObjectID` links). A device
+reset can reopen the id space and silently **alias** months-old phone state, so
+the app scopes all id-keyed state to `(device serial, store epoch)`; an era change
+then makes old entries archival by construction. **Ack fail-closed:** the
+version+epoch read gates `ackRides` and all reconcile writes — a connection whose
+identity read *failed* sends no ack and reconciles nothing (library browsing is
+unaffected). The composite-key scoping is V5 (#769); this section is the wire fact
+it stands on.
+
+**Mismatch behavior — surface, don't crash.** On connect the app reads the
+device's version (the first `u16` of the read) into `DeviceInfo.protocolVersion`
+and compares it to the pinned app version. A mismatch is reported as
 `DeviceError.protocolMismatch(expected:found:)` and surfaced in the UI (a banner /
 disabled sync) — it must **never** trap, force-unwrap, or silently proceed with an
-incompatible decode. Bump `OBCProtocol.version` only in lockstep with a firmware
-`S0` change (guarded by `ProtocolContractTests.testProtocolVersionIsPinned`).
+incompatible decode. A v1 app against a v2 device reads `version = 2` and takes
+exactly this path (there is no dual-version serving). Bump the pinned app version
+only in lockstep with a firmware wire change.
 
 ---
 
@@ -52,19 +72,23 @@ incompatible decode. Bump `OBCProtocol.version` only in lockstep with a firmware
 
 **OBC Control characteristics** — base `3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`,
 the 16-bit `XXXX` block selects the characteristic (spec §3.3; constants in
-`BLE/GATT.swift`). The earlier `0BC0…` placeholders sat on the Bluetooth SIG base
-UUID, which custom services must not use — `S0` replaced them:
+`BLE/GATT.swift`). **Six characteristics in v2** (two of v1's eight dropped) — the
+`0003` (`objectStore`) and `0006` (`diagnostics`) blocks are **retired and must
+not be reused**:
 
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
 | `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below), `forgetBond` (cmd 4: no args — dissolve the device-side bond, below) — spec §4.4 |
-| `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult) — spec §4.3 |
-| `0003` | `objectStore` | read + notify | 10-byte store digest (revision + route/ride counts); **full lists are CoC objects** — they outgrow the 512-byte ATT attribute cap |
+| `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult / **downloadAnnounce**) — the **sole** device → app channel, spec §4.3 |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
-| `0005` | `transferControl` | write + notify | open / abort a CoC object transfer (§ below) |
-| `0006` | `diagnostics` | read | **reserved** — diagnostics cross the CoC as object type 4 |
+| `0005` | `transferControl` | **write** | open / abort a CoC object transfer (§ below) — **write-only, no CCCD** in v2 |
 | `0007` | `psm` | read | the dynamically-assigned L2CAP CoC PSM the app opens the channel on |
-| `0008` | `protocolVersion` | read | `u16` LE, readable without encryption — the connect-time version check |
+| `0008` | `protocolVersion` | read | `version u16 · store_epoch u32` LE, readable without encryption — the connect-time identity check |
+
+*(v2 dropped `0003` `objectStore` — the change signal is `storeChanged` alone — and
+`0006` `diagnostics`, which returned 0 bytes; real diagnostics cross the CoC as
+object type 4. Full lists never fit a 512-byte ATT attribute anyway, so they were
+always CoC objects.)*
 
 The app-facing characteristics require an **encrypted, LESC-authenticated** link
 (firmware `A8`); the phone is the only bonded peer. DIS/BAS/`protocolVersion` stay
@@ -119,23 +143,27 @@ channel (the BLE Link Layer already CRCs and retransmits every packet), so bulk
 transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored in
 `Transfer/TransferDescriptor.swift`):
 
-1. A fixed **`TransferControl`** descriptor opens the transfer over the GATT
-   `transferControl` characteristic — *before* any payload byte. One 16-byte shape
-   serves both directions and abort:
+1. A fixed **`TransferControl`** descriptor opens the transfer — the app **writes**
+   it to the GATT `transferControl` characteristic *before* any payload byte
+   (v2: the characteristic is write-only). One 12-byte shape serves both directions
+   and abort:
 
    ```
-   TransferControl (16 bytes, little-endian):
+   TransferControl (12 bytes, little-endian):
      op         u8    1 = upload (app → device) · 2 = download · 3 = abort
      type       u8    { route 1, ride 2, config(reserved) 3, diagnostics 4,
                         fwImage 5, routeList 6, rideList 7, echo 8 }
      object_id  u16   0xFFFF on upload = "new" (device assigns the id)
      total_len  u32   upload: full object size · download request / abort: 0
      crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
-     offset     u32   always 0 — transfers restart, not resume (shape stability only)
    ```
 
-   For a **download** the device answers with the same 16 bytes as a
-   *notification* — `total_len` and `crc32` filled in — before the payload flows.
+   (v2 dropped v1's trailing `offset u32` — it was always 0; transfers restart, not
+   resume.) For a **download** the device answers with a **`downloadAnnounce`**
+   status message (`msg = 4`: the `msg` byte + these same 12 descriptor bytes, `op =
+   download`, `total_len`/`crc32` filled) before the payload flows — the announce
+   rides `status`, not `transferControl`, so all device → app control traffic shares
+   one CCCD and one ordering domain.
 
 2. The **CoC carries the raw payload bytes** of the whole object — nothing
    else. The receiver sinks them straight to storage, updating a running CRC (no
@@ -145,9 +173,9 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
    `msg u8 = 1 · object_id u16 · status u8 {committed 0, crcMismatch 1, aborted 2,
    error 3, notFound 4, busy 5, storageFull 6} · committed_offset u32`; for a
    fresh upload the result carries the **assigned** id). `status` also carries
-   `storeChanged` (msg 2) and `commandResult` (msg 3) messages — unknown
-   discriminators are ignored, and an unknown *status* code decodes as a generic
-   device error (forward compat).
+   `storeChanged` (msg 2), `commandResult` (msg 3), and the **`downloadAnnounce`**
+   (msg 4) messages — unknown discriminators are ignored, and an unknown *status*
+   code decodes as a generic device error (forward compat).
 
 - **CRC once, end-to-end.** One whole-object CRC verified at commit — a mismatch
   **rejects** the object (`DeviceError.crcMismatch`), never commits it. This is the
@@ -175,17 +203,19 @@ flight at a time**.
 
 > **Ratified.** `S0` adopted this descriptor + raw-stream design (it supersedes the
 > earlier per-frame `{type, object_id, total_len, offset, chunk_len, crc32}` idea),
-> widening the descriptor by one leading `op` byte so the download announce and
-> abort — named but byte-less here before the freeze — share the one shape.
+> with one leading `op` byte so upload, download, and abort share the one shape;
+> **v2** trims it to 12 bytes by dropping the never-used `offset`.
 
-**B1 lands this** in `OBCTransport`: `Transfer/TransferDescriptor.swift`
-(`TransferControl`, the `StatusMessage` envelope, `ObjectStoreDigest`),
-`Transfer/CRC32.swift` (whole-object + streaming `Hasher`; CRC-32/IEEE, check
-value `0xCBF43926`), driven by `BLEChannel` (raw streaming,
-progress/cancel/resume) over a `ByteChannel` — the L2CAP CoC (`L2CAPByteChannel`)
-on the real path, an in-memory pipe in tests. Field widths, the CRC variant, and
-the GATT UUIDs (`BLE/GATT.swift`) are **frozen** and pinned byte-exactly against
-the shared `protocol-vectors/` fixtures by `ProtocolVectorTests`.
+**The transport codecs live** in `OBCTransport`: `Transfer/TransferDescriptor.swift`
+(`TransferControl`, the `StatusMessage` envelope), `Transfer/CRC32.swift`
+(whole-object + streaming `Hasher`; CRC-32/IEEE, check value `0xCBF43926`), driven
+by `BLEChannel` (raw streaming, progress/cancel/resume) over a `ByteChannel` — the
+L2CAP CoC (`L2CAPByteChannel`) on the real path, an in-memory pipe in tests. Field
+widths, the CRC variant, and the GATT UUIDs (`BLE/GATT.swift`) are pinned
+byte-exactly against the shared `protocol-vectors/` fixtures by
+`ProtocolVectorTests`. **V4 (#768) re-pins these Swift codecs to the v2 shapes** —
+the single notify surface, the 12-byte descriptor, the widened version read, and
+the `routeList` `crc32`.
 
 **Synced-ride reconciliation — `ackRides` (cmd 2, spec §4.4).** Rides are deleted
 **only on the device** (its Rides screen), where a per-ride *"synced"* flag drives
@@ -245,8 +275,17 @@ Routes and rides both cross the wire as **compact binary**, never XML:
   byte-for-byte from this app's B7 codec): any GPX/FIT conversion happens on the
   phone (device bytes → canonical `Ride` → an `OBCFormats` `RideFileEncoder`),
   never straight from the wire bytes.
-- **Lists** — `routeList`/`rideList` are CoC objects with fixed 72-byte entries
-  (spec §7.4); **diagnostics** is a CoC text blob (spec §7.5).
+- **Lists** — `routeList`/`rideList` are CoC objects behind a **6-byte v2 header**
+  (`version 2 · entry_len · count u16 · total u16`, spec §7.4). `total` is the full
+  catalog size before the device's `MAX_RIDES`/`MAX_ROUTES` cap, so the list is
+  **truncated iff `total > count`** — the app surfaces a one-line warning instead
+  of silently answering "up to date". Entry length is now **per-list**: `routeList`
+  entries are **76 bytes** (a trailing whole-object `crc32`, `0` = unknown — the
+  content fingerprint for identity-verified route badges + adopt-by-content, V6
+  #770), `rideList` entries stay 72. A stored route whose genuine CRC-32 happens
+  to be `0` (probability 2⁻³²) is indistinguishable from "unknown" and is read as
+  unknown — merely "no badge until re-upload", the conservative direction; don't
+  special-case it. **diagnostics** is a CoC text blob (spec §7.5).
 
 The byte layout of each object is owned by the spec. The device object codecs
 live in `OBCTransport/Codecs/` (`BLEChannel` only moves bytes; the interchange
