@@ -203,7 +203,13 @@ present at the next bootloader entry is by definition *unconfirmed* — which is
 exactly why it means "roll back". Load-bearing corollary: after writing `Trial` the
 install path must **jump into the new image, never reset** — a reset would re-enter
 the bootloader with the fresh `Trial` and roll the image back before it ever ran. A
-hardware watchdog guarantees a wedged trial boot becomes the next boot.
+hardware watchdog guarantees a wedged trial boot becomes the next boot: the
+bootloader starts the dog itself — with the app's exact config; the shared 24 s
+period is `obc_dfu::WDT_TIMEOUT_TICKS` — immediately before the trial jump, so the
+guarantee holds even on a cold power-on where no watchdog was running yet. On the
+warm-reset arm path the app's already-running dog is instead adopted and fed
+through the install, so a slow install is never cut down mid-flash; a plain `Idle`
+boot never touches the watchdog (DR1, #729).
 
 ---
 
