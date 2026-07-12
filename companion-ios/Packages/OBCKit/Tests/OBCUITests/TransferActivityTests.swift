@@ -129,6 +129,51 @@ struct TransferActivityTests {
         #expect(!activity.isActive)
     }
 
+    /// The tick and link-state watchers drain two independent streams, so under
+    /// scheduler load a pre-drop progress tick can be *delivered* after the drop
+    /// event (this suite's full-parallel flake: backlogged watchers, and the
+    /// state subscription replays `.outOfRange`). A stale tick must not read as
+    /// "moving again" — it would flip the sheet back to `.uploading` and
+    /// re-claim the ledger for a transfer whose link is already gone,
+    /// permanently, since the parked transfer emits nothing further.
+    @Test func staleTickDeliveredAfterTheDropDoesNotReclaim() async {
+        let activity = TransferActivity()
+        let transport = HandDrivenUploadTransport()
+        let model = UploadSheetModel(
+            transport: transport,
+            blob: RouteBlob(
+                summary: RouteSummary(
+                    id: RouteID("stale-tick"), name: "Kettle Moraine Loop",
+                    distanceMeters: 62_400, elevationGainMeters: 840
+                ),
+                waypoints: [],
+                payload: Data(count: 100_000)
+            ),
+            deviceName: "Trailhead",
+            timing: UploadSheetModel.Timing(doneAutoDismiss: .milliseconds(40)),
+            activity: activity
+        )
+        model.start()
+        #expect(activity.isActive)
+
+        // A live tick moves the bar (and proves the tick watcher is consuming).
+        transport.progress.yield(TransferProgress(bytesDone: 10_000, total: 100_000))
+        await eventually("first tick") { model.progress.bytesDone == 10_000 }
+
+        // The link drops — the sheet parks and releases its claim.
+        transport.states.send(.outOfRange)
+        await eventually("interrupted") { model.phase == .interrupted }
+        #expect(!activity.isActive)
+
+        // A tick that was in flight before the drop lands late. Sequencing it
+        // after `.interrupted` reproduces deterministically what full-suite
+        // parallel load produces by starving the MainActor.
+        transport.progress.yield(TransferProgress(bytesDone: 20_000, total: 100_000))
+        await eventually("stale tick delivered") { model.progress.bytesDone == 20_000 }
+        #expect(model.phase == .interrupted, "a stale pre-drop tick must not resurrect .uploading")
+        #expect(!activity.isActive, "…or re-claim the ledger")
+    }
+
     @Test func dismissedSheetReleasesItsClaim() async {
         let activity = TransferActivity()
         let model = makeUpload(.happyPath, activity: activity, payloadBytes: 10_000_000)
@@ -172,4 +217,49 @@ struct TransferActivityTests {
 @MainActor
 private final class Flag {
     var value = false
+}
+
+/// A transport whose progress ticks and link states the test delivers by hand,
+/// so the tick↔drop ordering is sequenced deterministically — the timing-driven
+/// `MockTransport` only produces the stale-tick-after-drop order under
+/// scheduler load. Only `state` + `uploadRoute` are exercised; the rest is inert.
+private final class HandDrivenUploadTransport: DeviceTransport, @unchecked Sendable {
+    let states = AsyncMulticast<ConnectionState>(.connected)
+    let progress: AsyncStream<TransferProgress>.Continuation
+    private let progressStream: AsyncStream<TransferProgress>
+    private let outcomePromise = AsyncPromise<TransferOutcome>()
+    private let batteryMulticast = AsyncMulticast<Int>(100)
+
+    init() {
+        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+        progressStream = stream
+        progress = continuation
+    }
+
+    var state: AsyncStream<ConnectionState> { states.stream() }
+    var battery: AsyncStream<Int> { batteryMulticast.stream() }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
+
+    func uploadRoute(_ route: RouteBlob) -> TransferHandle {
+        TransferHandle(
+            progress: progressStream,
+            outcome: outcomePromise,
+            onCancel: { [outcomePromise] in outcomePromise.fulfill(.canceled) },
+            onResume: {}
+        )
+    }
+
+    // Unreachable in these tests.
+    func connect() async throws {}
+    func disconnect() async {}
+    func deviceInfo() async throws -> DeviceInfo { fatalError("unused") }
+    func readConfig() async throws -> DeviceConfig { fatalError("unused") }
+    func writeConfig(_ config: DeviceConfig) async throws {}
+    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { fatalError("unused") }
+    func deleteRoute(_ id: DeviceObjectID) async throws {}
+    func listRides() async throws -> [RideSummary] { [] }
+    func rideDetail(_ id: RideID) async throws -> RideDetail { fatalError("unused") }
+    func downloadRides(_ ids: [RideID]) -> RideDownload { fatalError("unused") }
+    func readDiagnostics() async throws -> Data { Data() }
 }
