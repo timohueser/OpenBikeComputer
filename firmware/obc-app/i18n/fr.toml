@@ -403,6 +403,11 @@ unreadable = "Impossible de lire le fichier de mise à jour."
 damaged = "Le fichier de mise à jour est endommagé."
 too_large = "Le fichier de mise à jour est trop volumineux pour cet appareil."
 fragmented = "Le fichier de mise à jour est trop fragmenté. Supprimez UPDATE.BIN et recopiez-le sur la carte."
+install_recording = "Terminez et enregistrez votre sortie avant d'installer une mise à jour."
+install_pending_save = "Une sortie est encore en cours d'enregistrement. Réessayez dans un instant."
+install_no_card = "Aucune carte trouvée. Insérez la carte et réessayez."
+install_snapshot_failed = "Impossible d'écrire une copie de secours sur la carte. Mise à jour non installée."
+install_state_write = "Impossible de préparer la mise à jour. Rien n'a été modifié."
 # --- Boot-fault cards (pre-app; the device renders the English column) ---
 [fault]
 nocard_what = "Pas de carte SD"

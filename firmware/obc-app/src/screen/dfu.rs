@@ -15,8 +15,10 @@
 //! - [`DfuProgressScreen`] — "Preparing update..." (spinner) while the drain runs the CRC pass +
 //!   rollback snapshot + arm, then the board reboots into the bootloader (its LED takes over — the
 //!   display is off during the flash). Ignores input; the arm is irreversible.
-//! - [`DfuErrorScreen`] — a [`DfuScanError`](crate::dfu::DfuScanError) as a plain sentence; **Back**
-//!   dismisses (like [`NavFailScreen`](super::NavFailScreen)).
+//! - [`DfuErrorScreen`] — a [`DfuScanError`](crate::dfu::DfuScanError) *or*
+//!   [`DfuInstallError`](crate::dfu::DfuInstallError) as a plain sentence (a scan rejection or an
+//!   install-drain refusal / arm failure, #755); **Back** dismisses (like
+//!   [`NavFailScreen`](super::NavFailScreen)).
 //! - [`DfuUpdatedScreen`] — the one-time "Updated to vX" toast the first healthy boot after an
 //!   update shows (host-pushed via [`App::notify_update_confirmed`](crate::App::notify_update_confirmed));
 //!   any press/Back dismisses.
@@ -34,7 +36,7 @@ use obc_render::{
     Surface,
 };
 
-use crate::dfu::{DfuFailure, DfuScanError, DfuScanReport, Version};
+use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, Version};
 use crate::input::Gesture;
 use crate::Msg;
 
@@ -309,23 +311,49 @@ impl DfuProgressScreen {
     }
 }
 
-// ── DfuError: a typed scan error as a plain sentence ──
+// ── DfuError: a typed scan- or install-drain failure as a plain sentence ──
 
-/// The scan-error card (issue #620 §2): a [`DfuScanError`] mapped to plain copy. Info-only — any
-/// **Back** dismisses (like the nav failure card), returning to the System menu.
+/// Which half of the flow the error card is reporting (issue #620 §2, #755). A scan rejection
+/// ([`DfuScanError`], from the "Checking card..." step) or an install-drain refusal / arm failure
+/// ([`DfuInstallError`], from the "Preparing update..." step). One card, one reason type — the draw
+/// picks the copy. Keeping both under a single screen keeps the i18n catalog to one add-per-reason
+/// (the install re-scan bucket reuses the scan copy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DfuErrorReason {
+    /// The staging scan rejected `UPDATE.BIN`.
+    Scan(DfuScanError),
+    /// The install drain refused to arm, or the arm itself failed.
+    Install(DfuInstallError),
+}
+
+/// The error card (issue #620 §2, #755): a [`DfuErrorReason`] mapped to plain copy. Info-only — any
+/// **Back** dismisses (like the nav failure card), returning to the System menu. Reached either from
+/// the scan's answer (`notify_dfu_scan_result`) or the install drain's
+/// (`notify_dfu_install_failed`).
 #[derive(Debug)]
 pub struct DfuErrorScreen {
-    error: DfuScanError,
+    reason: DfuErrorReason,
 }
 
 impl DfuErrorScreen {
+    /// A scan rejection card (the "Checking card..." step's `Err`).
     pub fn new(error: DfuScanError) -> Self {
-        DfuErrorScreen { error }
+        DfuErrorScreen { reason: DfuErrorReason::Scan(error) }
     }
 
-    /// The scan error this card shows — lets the seam tests pin the error→card mapping.
-    pub fn error(&self) -> DfuScanError {
-        self.error
+    /// An install-drain failure card (the "Preparing update..." step's non-reboot outcome). A
+    /// re-scan bucket is normalised to a plain scan reason so both paths share the scan copy.
+    pub fn new_install(error: DfuInstallError) -> Self {
+        let reason = match error {
+            DfuInstallError::Scan(e) => DfuErrorReason::Scan(e),
+            other => DfuErrorReason::Install(other),
+        };
+        DfuErrorScreen { reason }
+    }
+
+    /// The reason this card shows — lets the seam tests pin the error→card mapping.
+    pub fn reason(&self) -> DfuErrorReason {
+        self.reason
     }
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
@@ -340,14 +368,23 @@ impl DfuErrorScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::DfuTitle), "");
         card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 46), 22);
-        let msg = match self.error {
-            DfuScanError::NotFound => rx.t(Msg::DfuNotFound),
-            DfuScanError::Unreadable => rx.t(Msg::DfuUnreadable),
-            DfuScanError::Damaged => rx.t(Msg::DfuDamaged),
-            DfuScanError::TooLarge => rx.t(Msg::DfuTooLarge),
-            DfuScanError::TooFragmented => rx.t(Msg::DfuFragmented),
+        let scan_msg = |e: DfuScanError| match e {
+            DfuScanError::NotFound => Msg::DfuNotFound,
+            DfuScanError::Unreadable => Msg::DfuUnreadable,
+            DfuScanError::Damaged => Msg::DfuDamaged,
+            DfuScanError::TooLarge => Msg::DfuTooLarge,
+            DfuScanError::TooFragmented => Msg::DfuFragmented,
         };
-        wrapped(cv, msg, w / 2, TITLE_BAR_H + 84, w - 32, INK);
+        let key = match self.reason {
+            DfuErrorReason::Scan(e) => scan_msg(e),
+            DfuErrorReason::Install(DfuInstallError::Scan(e)) => scan_msg(e),
+            DfuErrorReason::Install(DfuInstallError::Recording) => Msg::DfuInstallRecording,
+            DfuErrorReason::Install(DfuInstallError::PendingSave) => Msg::DfuInstallPendingSave,
+            DfuErrorReason::Install(DfuInstallError::NoCard) => Msg::DfuInstallNoCard,
+            DfuErrorReason::Install(DfuInstallError::SnapshotFailed) => Msg::DfuInstallSnapshotFailed,
+            DfuErrorReason::Install(DfuInstallError::StateWriteFailed) => Msg::DfuInstallStateWrite,
+        };
+        wrapped(cv, rx.t(key), w / 2, TITLE_BAR_H + 84, w - 32, INK);
     }
 }
 
@@ -506,13 +543,22 @@ mod tests {
         assert_eq!(posted, None);
     }
 
-    /// The error card carries its variant and dismisses on Back/press.
+    /// The error card carries its variant and dismisses on Back/press — for both a scan rejection
+    /// and an install-drain failure, and the install re-scan bucket normalises to a scan reason so
+    /// it shares the scan copy.
     #[test]
     fn error_card_dismisses() {
         let mut scr = DfuErrorScreen::new(DfuScanError::TooFragmented);
-        assert_eq!(scr.error(), DfuScanError::TooFragmented);
+        assert_eq!(scr.reason(), DfuErrorReason::Scan(DfuScanError::TooFragmented));
         let (t, _) = run(&mut |cx| scr.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
+
+        let scr = DfuErrorScreen::new_install(DfuInstallError::PendingSave);
+        assert_eq!(scr.reason(), DfuErrorReason::Install(DfuInstallError::PendingSave));
+
+        // The re-scan bucket folds to a plain scan reason (shared copy, no duplicate catalog key).
+        let scr = DfuErrorScreen::new_install(DfuInstallError::Scan(DfuScanError::Damaged));
+        assert_eq!(scr.reason(), DfuErrorReason::Scan(DfuScanError::Damaged));
     }
 
     /// The post-update toast dismisses on any press/Back.

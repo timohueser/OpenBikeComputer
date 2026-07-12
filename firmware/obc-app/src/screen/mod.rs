@@ -51,7 +51,10 @@ mod statistics;
 mod warning;
 
 pub use climb::ClimbScreen;
-pub use dfu::{DfuCheckScreen, DfuConfirmScreen, DfuErrorScreen, DfuFailedScreen, DfuProgressScreen, DfuUpdatedScreen};
+pub use dfu::{
+    DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuProgressScreen,
+    DfuUpdatedScreen,
+};
 pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::{MapScreen, ROUTE_WEIGHT};
