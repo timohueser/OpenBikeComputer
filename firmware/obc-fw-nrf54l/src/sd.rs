@@ -45,7 +45,8 @@ use embedded_sdmmc::{
 };
 use heapless::{String, Vec};
 use obc_app::{
-    decode_synced_rides, encode_synced_rides, SyncedRides, MAX_RIDES, MAX_ROUTES, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
+    decode_route_crcs, decode_synced_rides, encode_route_crcs, encode_synced_rides, RouteCrcs, SyncedRides, MAX_RIDES,
+    MAX_ROUTES, ROUTE_CRCS_MAX_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_platform::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
@@ -77,6 +78,14 @@ const TRACK_TMP: &str = "TRACK.OBT";
 /// alongside the rides it flags. Rewritten on a download completion; parsed leniently (a torn/missing
 /// file = "nothing synced"). Codec + torn-line semantics live in `obc-app::settings` (host-tested).
 const SYNCED_SET: &str = "SYNCED.SET";
+
+/// The route-CRC sidecar in `/routes` (epic #632 item 6, V2): route object id → whole-object CRC-32
+/// of the stored OBCR bytes, so the `routeList` entry can carry a content fingerprint the app verifies
+/// linked-id badges against and adopts identical copies by. In `/routes` (not RRAM) so it survives a
+/// reflash and travels with the card/routes; a BLE upload writes its entry at commit, a side-loaded /
+/// pre-v2 route fills lazily at first list build. A missing/torn file = the empty map (every route
+/// serves `0 = unknown`). Codec + torn-line semantics live in `obc-app::settings` (host-tested).
+const ROUTE_CRCS: &str = "ROUTES.CRC";
 
 /// The in-flight BLE route upload, inside `/routes`. Its extension never matches the catalog scan,
 /// so a partial upload — a drop, a power cut — is invisible until [`Storage::upload_commit`]
@@ -639,6 +648,59 @@ impl Storage {
         let mut set = self.load_synced_set();
         if set.remove(id) {
             self.write_synced_set(&set);
+        }
+    }
+
+    /// Read the route-CRC sidecar (`/routes/ROUTES.CRC`) into a [`RouteCrcs`] map (epic #632 item 6).
+    /// A missing, torn, or malformed sidecar decodes to the **empty** map (every route serves
+    /// `0 = unknown`) — never a panic (the codec + torn-line semantics are host-tested in
+    /// `obc-app::settings`). One file read.
+    pub fn load_route_crcs(&self) -> RouteCrcs {
+        let Some(dir) = self.routes_dir else { return RouteCrcs::new() };
+        let Ok(file) = self.vmgr.open_file_in_dir(dir, ROUTE_CRCS, Mode::ReadOnly) else {
+            return RouteCrcs::new(); // absent = no CRC known
+        };
+        let mut buf = [0u8; ROUTE_CRCS_MAX_LEN];
+        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
+        let _ = self.vmgr.close_file(file);
+        decode_route_crcs(&buf[..n])
+    }
+
+    /// Upsert route `id`'s whole-object CRC into the sidecar, persisting only when it actually
+    /// changed (a re-upload with the same content rewrites nothing). Called at an upload commit —
+    /// the CRC is already verified there. Read-modify-write within the call (open, write truncating,
+    /// close), so it never counts against the open-file budget across an `await`.
+    pub fn set_route_crc(&mut self, id: u16, crc: u32) {
+        let mut map = self.load_route_crcs();
+        if map.insert(id, crc) {
+            self.write_route_crcs(&map);
+        }
+    }
+
+    /// Retire route `id`'s CRC entry from the sidecar (a deleted route — ids never reuse, so this is
+    /// belt-and-braces tidiness). Rewrites only when the entry was present.
+    pub fn forget_route_crc(&mut self, id: u16) {
+        let mut map = self.load_route_crcs();
+        if map.remove(id) {
+            self.write_route_crcs(&map);
+        }
+    }
+
+    /// Overwrite the route-CRC sidecar (truncating). A write failure is warned, not fatal — the
+    /// worst case is a route serves `0 = unknown` and re-fills lazily next list build, never a crash.
+    pub fn write_route_crcs(&mut self, map: &RouteCrcs) {
+        let Some(dir) = self.routes_dir else { return };
+        let mut buf = [0u8; ROUTE_CRCS_MAX_LEN];
+        let n = encode_route_crcs(map, &mut buf);
+        match self.vmgr.open_file_in_dir(dir, ROUTE_CRCS, Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                if self.vmgr.write(file, &buf[..n]).is_err() {
+                    defmt::warn!("SD: route-crc sidecar write failed — a route may serve crc 0 next list build");
+                }
+                let _ = self.vmgr.flush_file(file);
+                let _ = self.vmgr.close_file(file);
+            }
+            Err(e) => defmt::warn!("SD: cannot open route-crc sidecar: {}", defmt::Debug2Format(&e)),
         }
     }
 

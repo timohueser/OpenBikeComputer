@@ -3,8 +3,9 @@
 //! The GATT table is the **real** control plane the iOS app discovers on connect (see
 //! `obc-ble-interface-spec.md`): **DIS** (real firmware revision / board id / FICR serial), **BAS**
 //! (battery, notify — fed from the `FuelGauge` seam via [`super::state::publish_battery`]), and the
-//! custom **OBC Control** service ([`ObcControlService`]) with all eight characteristics. This module
-//! owns the `#[gatt_server]`/`#[gatt_service]` tables, the FICR-derived identity (serial, advertising
+//! custom **OBC Control** service ([`ObcControlService`]) with its six characteristics (protocol v2
+//! retired the `objectStore` digest and reserved `diagnostics` characteristics). This module owns
+//! the `#[gatt_server]`/`#[gatt_service]` tables, the FICR-derived identity (serial, advertising
 //! name, static-random address), the Config-blob codec, and the on-glass status screen. The writes
 //! themselves are answered by [`super::control`].
 
@@ -68,31 +69,34 @@ pub(crate) struct ObcControlService {
     /// possession lists across writes (the command is idempotent and order-free).
     #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated))]
     pub command: heapless09::Vec<u8, 64>,
-    /// Typed device → app messages. Notify-only.
+    /// Typed device → app messages. Notify-only — protocol v2's **sole** device → app control channel,
+    /// so it also carries a download's announce (`downloadAnnounce`, `msg = 4`). Sized to
+    /// [`StatusMessage::MAX_ENCODED_LEN`](obc_ble::StatusMessage::MAX_ENCODED_LEN) (13 bytes, the
+    /// announce) so any message fits one notify.
     #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify, permissions(authenticated))]
-    pub status: heapless09::Vec<u8, 8>,
-    /// The store digest: revision + object counts. Seeded from the [`ObjectStore`] at boot; re-set +
-    /// notified on every commit/delete (`publish_store_change`).
-    #[characteristic(uuid = "3C920003-9916-4EBA-ABC2-342FE08F6B10", read, notify, permissions(authenticated), value = [0u8; 10])]
-    pub object_store: [u8; 10],
+    pub status: heapless09::Vec<u8, { obc_ble::StatusMessage::MAX_ENCODED_LEN }>,
+    // `…0003` (the `objectStore` digest) is **retired** in protocol v2 — `storeChanged` (status
+    // msg 2) is the sole change signal. The UUID block is not reassigned.
     /// The Config object, whole-blob read + write — round-trips through the persisted settings: seeded
     /// at boot, re-seeded canonical after every accepted write.
     #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write, permissions(authenticated))]
     pub config: heapless09::Vec<u8, 128>,
-    /// Open / abort a CoC transfer. Write + notify (the notify carries a download's filled announce
-    /// descriptor).
-    #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, notify, permissions(authenticated), value = [0u8; 16])]
-    pub transfer_control: [u8; 16],
-    /// Reserved (diagnostics cross the CoC): reads return 0 bytes.
-    #[characteristic(uuid = "3C920006-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated))]
-    pub diagnostics: heapless09::Vec<u8, 1>,
+    /// Open / abort a CoC transfer — **write-only** in protocol v2 (no CCCD): a download's announce
+    /// now rides the `status` envelope (`downloadAnnounce`), so all device → app control traffic is
+    /// one notify characteristic. The written descriptor is 12 bytes (v2 dropped the offset field).
+    #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated), value = [0u8; 12])]
+    pub transfer_control: [u8; 12],
+    // `…0006` (the reserved `diagnostics` characteristic) is **retired** in protocol v2 — diagnostics
+    // cross the CoC as object type 4. The UUID block is not reassigned.
     /// The L2CAP CoC PSM the app opens the channel on.
     #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated), value = OBC_PSM)]
     pub psm: u16,
     /// `protocol_version` — read **without** encryption (the connect-time version check happens before
-    /// pairing). `1` for this contract.
-    #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read, value = 1)]
-    pub protocol_version: u16,
+    /// pairing). Protocol v2 widens it to the 6-byte [`VersionRead`](obc_ble::VersionRead): `version
+    /// u16 · store_epoch u32`. Seeded once at BLE init from the RRAM store epoch (the `value = ` here
+    /// is a placeholder the boot seed overwrites).
+    #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read, value = [0u8; 6])]
+    pub protocol_version: [u8; 6],
 }
 
 // ============================ Identity ============================
