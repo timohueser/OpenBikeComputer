@@ -35,7 +35,7 @@
 
 use crate::crc32::Crc32;
 use crate::image::{ImageHeader, HEADER_LEN, MAX_IMAGE_LEN};
-use crate::state::{decide, BootDecision, BootState, Extent, StagedRef};
+use crate::state::{decide, BootDecision, BootState, Extent, LastOutcome, OutcomeKind, StagedRef};
 
 /// SD block size — extents are runs of these (`OBCU_Spec.md` §2.3).
 pub const SD_BLOCK_LEN: usize = 512;
@@ -360,11 +360,13 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
         // Unconfirmed trial with no snapshot (first install): accept the running image and
         // clear to Idle. A failed clear changes nothing observable — next boot re-accepts.
         BootDecision::AcceptAndClear => {
-            let installed = match state {
-                BootState::Trial { installed, .. } => Some(*installed),
-                _ => None, // unreachable via decide(); stay total rather than panic
+            let (installed, generation) = match state {
+                BootState::Trial { installed, generation, .. } => (Some(*installed), *generation),
+                _ => (None, 0), // unreachable via decide(); stay total rather than panic
             };
-            let _ = io.write_state(&BootState::Idle { installed });
+            // The running (trial) image is accepted as permanent — record it as Installed.
+            let last_outcome = Some(LastOutcome { kind: OutcomeKind::Installed, generation });
+            let _ = io.write_state(&BootState::Idle { installed, last_outcome });
             Outcome::Jump
         }
 
@@ -379,7 +381,8 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
                 // and boot the old app. If even the clear fails, still jump — the old app is
                 // intact and the next boot repeats this same safe path.
                 Err(VerifyError::Mismatch) => {
-                    let _ = io.write_state(&BootState::Idle { installed: rollback.map(|r| r.header) });
+                    let last_outcome = Some(LastOutcome { kind: OutcomeKind::StageRejected, generation });
+                    let _ = io.write_state(&BootState::Idle { installed: rollback.map(|r| r.header), last_outcome });
                     Outcome::StageRejected
                 }
                 Err(VerifyError::Io) => Outcome::SdError,
@@ -400,17 +403,18 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
 
         // Unconfirmed trial with a snapshot: same engine, source = the rollback extents.
         BootDecision::Rollback(snapshot) => {
-            let installed = match state {
-                BootState::Trial { installed, .. } => Some(*installed),
-                _ => None, // unreachable via decide(); stay total rather than panic
+            let (installed, generation) = match state {
+                BootState::Trial { installed, generation, .. } => (Some(*installed), *generation),
+                _ => (None, 0), // unreachable via decide(); stay total rather than panic
             };
             match verify(io, &snapshot, slot, buf) {
                 // The snapshot on card is bad and the trial image is what's in the slot — the
                 // only bootable thing we have. Accept it (clear to Idle) rather than brick:
                 // a rollback to garbage would cost the running firmware, which invariant 1
-                // forbids in both directions.
+                // forbids in both directions. The trial image stuck, so record it as Installed.
                 Err(VerifyError::Mismatch) => {
-                    let _ = io.write_state(&BootState::Idle { installed });
+                    let last_outcome = Some(LastOutcome { kind: OutcomeKind::Installed, generation });
+                    let _ = io.write_state(&BootState::Idle { installed, last_outcome });
                     Outcome::StageRejected
                 }
                 Err(VerifyError::Io) => Outcome::SdError,
@@ -418,10 +422,13 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
                     Err(PassError::Sd) => Outcome::SdError,
                     Err(PassError::Flash) => Outcome::FlashError,
                     // Rollback complete: straight to Idle (no trial for the known-good image).
-                    Ok(()) => match io.write_state(&BootState::Idle { installed: Some(snapshot.header) }) {
-                        Ok(()) => Outcome::Installed,
-                        Err(_) => Outcome::FlashError,
-                    },
+                    Ok(()) => {
+                        let last_outcome = Some(LastOutcome { kind: OutcomeKind::RolledBack, generation });
+                        match io.write_state(&BootState::Idle { installed: Some(snapshot.header), last_outcome }) {
+                            Ok(()) => Outcome::Installed,
+                            Err(_) => Outcome::FlashError,
+                        }
+                    }
                 },
             }
         }

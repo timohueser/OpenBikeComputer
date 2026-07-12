@@ -40,6 +40,6 @@ pub use image::{
     RAM_START,
 };
 pub use state::{
-    decide, BootDecision, BootState, EncodedPage, Extent, StagedRef, MAX_ENCODED_LEN, MAX_EXTENTS, PAGE_LEN,
-    WDT_TIMEOUT_TICKS,
+    decide, verdict, BootDecision, BootState, EncodedPage, Extent, LastOutcome, OutcomeKind, StagedRef, Verdict,
+    MAX_ENCODED_LEN, MAX_EXTENTS, PAGE_LEN, WDT_TIMEOUT_TICKS,
 };
