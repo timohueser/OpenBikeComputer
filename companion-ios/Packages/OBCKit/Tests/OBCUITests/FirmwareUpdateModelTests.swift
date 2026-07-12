@@ -158,6 +158,76 @@ struct FirmwareUpdateModelTests {
         #expect(model.failureMessage?.contains(needle) == true)
     }
 
+    // MARK: The #459/#754 ledger claim
+
+    @Test func firmwareSendClaimsWhileTransferringAndReleasesOnCommit() async {
+        let activity = TransferActivity()
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead", activity: activity)
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        #expect(!activity.isActive, "staged but not sending — no claim yet")
+
+        model.send()
+        #expect(activity.isActive, "the claim opens with the transfer")
+
+        // Commit → installFw accepted → `.awaitingConfirm`: the byte-moving
+        // phase is over, so the claim releases (the on-glass confirm + reboot
+        // isn't a transfer the drain/idle-timer should wait on).
+        stub.completeUpload()
+        await waitFor { model.phase == .awaitingConfirm }
+        #expect(!activity.isActive)
+    }
+
+    @Test func firmwareInterruptReleasesTheClaim() async {
+        let activity = TransferActivity()
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead", activity: activity)
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        #expect(activity.isActive)
+
+        // A drop leaves it stalled-resumable — NOT in flight; the background
+        // drain must not wait on a transfer whose link is already gone.
+        stub.push(.outOfRange)
+        await waitFor { model.phase == .interrupted }
+        #expect(!activity.isActive)
+
+        // Resume re-claims for the fresh attempt.
+        model.resume()
+        #expect(activity.isActive)
+    }
+
+    @Test func firmwareFailureReleasesTheClaim() async {
+        let activity = TransferActivity()
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead", activity: activity)
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        #expect(activity.isActive)
+
+        stub.failUpload(.transferRejected)
+        await waitFor { model.phase == .failed }
+        #expect(!activity.isActive)
+    }
+
+    @Test func firmwareStopReleasesTheClaim() async {
+        let activity = TransferActivity()
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead", activity: activity)
+        model.start()
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        #expect(activity.isActive)
+
+        // The screen popped mid-send — the claim must not leak (a `@MainActor`
+        // deinit can't reach the actor-isolated ledger, so `stop()` owns it).
+        model.stop()
+        #expect(!activity.isActive)
+    }
+
     @Test func canRetryAfterAFailedInstall() async {
         let stub = StubTransport()
         stub.installResult = .busy
