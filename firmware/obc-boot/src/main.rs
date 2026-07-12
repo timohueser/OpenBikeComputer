@@ -5,7 +5,7 @@
 //! decode it (anything torn/blank/garbage ⇒ `Idle`) and run the install engine
 //! (verify → flash → readback → trial/rollback — ALL sequencing lives in
 //! `obc_dfu::engine`, unit-tested with mock IO), then act on the returned outcome: jump to the
-//! app at [`APP_BASE`] (after an install, that IS the freshly-written image's one trial boot —
+//! app at [`app_slot_base`] (after an install, that IS the freshly-written image's one trial boot —
 //! never a reset, which would re-enter here and roll the trial back), or park with an LED code. This
 //! crate contributes only resource bring-up (SPI card, RRAMC, LED) via `sd`/`install`/`led`;
 //! the bootloader itself must never be able to panic on any page content.
@@ -31,16 +31,6 @@ use led::Led;
 use obc_dfu::engine::{self, Outcome, Slot};
 use obc_dfu::{decide, BootDecision, BootState, PAGE_LEN};
 
-/// Base of the app slot — the app's vector table (see the repo layout in `memory.x`; the board
-/// crate's `build.rs` links the app's `FLASH` at this exact origin, and its raw first words are
-/// the initial MSP + reset vector this bootloader jumps through).
-const APP_BASE: u32 = 0x0000_8000;
-
-/// One past the end of the app slot — the BOOT_STATE page origin (`memory.x` mirrors the board
-/// crate's layout). The install engine takes the slot size so IT owns the "padded image must
-/// fit" gate, host-tested.
-const APP_SLOT_END: u32 = 0x0017_B000;
-
 /// The engine's SD↔RRAM staging buffer: 8 whole SD blocks between card reads and line writes.
 const INSTALL_BUF_LEN: usize = 4096;
 
@@ -63,6 +53,22 @@ fn boot_state_base() -> u32 {
 
 fn boot_state_page() -> &'static [u8; PAGE_LEN] {
     unsafe { &*(boot_state_base() as *const [u8; PAGE_LEN]) }
+}
+
+/// Base of the app slot — the app's vector table (`0x8000`). Comes from the `__app_slot_base`
+/// linker symbol (`memory.x` PROVIDEs it as `ORIGIN(FLASH) + LENGTH(FLASH)`, i.e. one past the
+/// bootloader's own region), the same convention as [`boot_state_base`] and mirroring the board
+/// crate's `__app_slot_base`: the slot geometry lives only in the linker scripts, never as a
+/// literal here. The board crate's `build.rs` links the app's `FLASH` at this exact origin, and
+/// its raw first words are the initial MSP + reset vector this bootloader jumps through. The
+/// slot *end* is [`boot_state_base`] (the app slot runs right up to the BOOT_STATE page), so the
+/// slot length is `boot_state_base() - app_slot_base()` — the install engine takes that size and
+/// owns the "padded image must fit" gate, host-tested.
+fn app_slot_base() -> u32 {
+    extern "C" {
+        static __app_slot_base: u8;
+    }
+    core::ptr::addr_of!(__app_slot_base) as u32
 }
 
 #[entry]
@@ -145,7 +151,8 @@ fn boot(p: embassy_nrf::Peripherals) {
 
     // Run the engine; a transient SD error mid-stream gets the same forever-retry treatment as
     // a missing card (state untouched by construction — host-tested), everything else is final.
-    let slot = Slot { base: APP_BASE, len: APP_SLOT_END - APP_BASE };
+    let app_base = app_slot_base();
+    let slot = Slot { base: app_base, len: boot_state_base() - app_base };
     let mut buf = [0u8; INSTALL_BUF_LEN];
     let mut backoff = BACKOFF_MIN_MS;
     let outcome = loop {
@@ -218,13 +225,14 @@ fn boot(p: embassy_nrf::Peripherals) {
     }
 }
 
-/// Hand the machine to the app at [`APP_BASE`], matching the reset state as closely as
+/// Hand the machine to the app at [`app_slot_base`], matching the reset state as closely as
 /// possible — the app was previously entered directly from reset and must not notice the
 /// difference. Known deviations from a cold reset, both harmless: VTOR points at the app's
 /// table instead of 0 (deliberate — that's the mechanism), and the FPU is already enabled
 /// (this crate's own cortex-m-rt reset enabled CPACR; the app's reset handler re-enables it
 /// idempotently).
 fn jump_to_app() -> ! {
+    let app_base = app_slot_base();
     unsafe {
         // 1. Quiesce the NVIC: disable + clear-pend every external interrupt line, so nothing
         //    a bootloader HAL touched (the S3 SPIM bring-up registers SERIAL22) can vector
@@ -241,14 +249,14 @@ fn jump_to_app() -> ! {
         //    `asm::bootload` does NOT write VTOR (verified against its source — it only loads
         //    MSP and branches), so this write is load-bearing. DSB+ISB order the write against
         //    both the NVIC writes above and the jump below.
-        (*cortex_m::peripheral::SCB::PTR).vtor.write(APP_BASE);
+        (*cortex_m::peripheral::SCB::PTR).vtor.write(app_base);
         cortex_m::asm::dsb();
         cortex_m::asm::isb();
-        // 3.+4. `asm::bootload(APP_BASE)`: clears CONTROL.SPSEL (main stack — already the
-        //    case here, matching reset), loads MSP from *(0x8000), and branches to
-        //    *(0x8004)|1 (the app's reset vector, thumb bit set). Diverges — the bootloader
-        //    is gone after this line.
-        cortex_m::asm::bootload(APP_BASE as *const u32)
+        // 3.+4. `asm::bootload(app_base)`: clears CONTROL.SPSEL (main stack — already the
+        //    case here, matching reset), loads MSP from *(app base), and branches to
+        //    *(app base + 4)|1 (the app's reset vector, thumb bit set). Diverges — the
+        //    bootloader is gone after this line.
+        cortex_m::asm::bootload(app_base as *const u32)
     }
 }
 
