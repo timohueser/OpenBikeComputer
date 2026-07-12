@@ -43,7 +43,18 @@ use {defmt_rtt as _, panic_probe as _};
 
 /// Run the legacy advertiser beside the initiator (the shipping topology). `false` = pure
 /// central-only — the cleanest possible repro if the fault still fires.
+///
+/// **On-glass result 2026-07-12 (`false`)**: still faults — `SoftdeviceController: 50:701` ~200 ms
+/// after `LeCreateConn`, with nothing but the initiator on the radio and no bond/resolving-list
+/// state. The legacy central connect is broken at the stack level on this DK.
 const ADVERTISE_TOO: bool = false;
+
+/// Use `LeExtCreateConn` (`Central::connect_ext`) instead of the legacy `LeCreateConn`. Nordic's
+/// own SDC central coverage runs through Zephyr, which issues the **extended** command on the SDC
+/// (it detects ext-command support) — so the legacy initiator path this firmware used is the
+/// undertested one. An extended initiator on 1M connects to legacy advertisers (the strap) fine.
+/// If this works where `false` faults, the ship fix is `connect_ext` + `support_ext_central()`.
+const EXT_CONNECT: bool = true;
 
 bind_interrupts!(struct Irqs {
     SWI00 => nrf_sdc::mpsl::LowPrioInterruptHandler;
@@ -88,6 +99,9 @@ fn build_sdc<'d, const N: usize>(
         .support_le_2m_phy()
         .support_phy_update_central()
         .support_phy_update_peripheral()
+        // The extended initiator ([`EXT_CONNECT`]) — present in both modes so the SDC image is
+        // identical and only the HCI command under test differs.
+        .support_ext_central()
         .peripheral_count(1)?
         .central_count(1)?
         .buffer_cfg(DefaultPacketPool::MTU as u16, DefaultPacketPool::MTU as u16, L2CAP_TXQ, L2CAP_RXQ)?
@@ -274,8 +288,14 @@ async fn central_task(stack: &Stack<'_, nrf_sdc::SoftdeviceController<'_>, Defau
             supervision_timeout: Duration::from_millis(5000),
         },
     };
-    // ← the full firmware faults ('SoftdeviceController: 50:701') inside this await.
-    let conn = unwrap!(central.connect(&config).await);
+    // ← the legacy path (`EXT_CONNECT = false`) faults ('SoftdeviceController: 50:701') in here.
+    let conn = if EXT_CONNECT {
+        info!("[central] using LeExtCreateConn (extended initiator)");
+        unwrap!(central.connect_ext(&config).await)
+    } else {
+        info!("[central] using LeCreateConn (legacy initiator)");
+        unwrap!(central.connect(&config).await)
+    };
     info!("[central] CONNECTED — no fault. Discovering HR service…");
 
     let client = unwrap!(GattClient::<_, _, 4>::new(stack, &conn).await);
