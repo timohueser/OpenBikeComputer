@@ -122,34 +122,7 @@ struct RootView: View {
         // before pairing (H4) — the E1 cover and the H5 alert must present
         // over D1 just as they do over the main screen.
         .fullScreenCover(item: $importModel.pendingImport) { pending in
-            ImportLandingHost(
-                transport: transport,
-                activity: transferActivity,
-                route: pending.route,
-                fileName: pending.fileName,
-                deviceName: mainModel.deviceName,
-                noDevicePaired: pending.noDevicePaired,
-                replacing: pending.replacing,
-                onSave: { detail in
-                    mainModel.addImportedRoute(pending.record(for: detail))
-                    importModel.closeImport()
-                },
-                // "Uploading saves it too" (B5): the route lands in Planned
-                // the moment the upload completes (recorded as on-device, up to
-                // date, under the id the device assigned); the cover closes
-                // after F₂.
-                onUploaded: { detail, objectID, crc in
-                    mainModel.addImportedRoute(pending.record(for: detail, deviceObjectID: objectID, uploadedCRC32: crc))
-                },
-                // H4 "Pair a device": save first (a pairing detour must not
-                // cost the import), then drop into the D2 scan.
-                onPair: { detail in
-                    mainModel.addImportedRoute(pending.record(for: detail))
-                    importModel.closeImport()
-                    launchModel.startPairing()
-                },
-                onCancel: { importModel.closeImport() }
-            )
+            importLanding(for: pending)
         }
         // H5 — the share sheet can hand over anything; say what we accept.
         .alert("Couldn't read that file", isPresented: $importModel.importFailed) {
@@ -160,11 +133,8 @@ struct RootView: View {
         // A re-import whose name matches a saved route (e.g. an edited Komoot
         // tour): update that route in place, or keep both.
         .confirmationDialog(
-            "\u{201C}\(importModel.collision?.pending.route.name ?? importModel.collision?.pending.fileName ?? "")\u{201D} is already in your library",
-            isPresented: Binding(
-                get: { importModel.collision != nil },
-                set: { if !$0 { importModel.cancelCollision() } }
-            ),
+            collisionTitle,
+            isPresented: collisionShown,
             titleVisibility: .visible,
             presenting: importModel.collision
         ) { _ in
@@ -174,10 +144,7 @@ struct RootView: View {
         }
         .alert(
             "Name the new route",
-            isPresented: Binding(
-                get: { importModel.addAsNewPrompt != nil },
-                set: { if !$0 { importModel.cancelAddAsNew() } }
-            ),
+            isPresented: addAsNewShown,
             presenting: importModel.addAsNewPrompt
         ) { _ in
             TextField("Name", text: $importModel.newRouteName)
@@ -220,6 +187,71 @@ struct RootView: View {
         // idle-timer touch reads the same ledger the upload sheets, ride sync,
         // and firmware send claim from. UIKit stays at the composition root.
         .keepAwakeDuringTransfers(transferActivity)
+    }
+
+    // MARK: Import-flow presentation pieces
+    //
+    // Extracted from `body` — not for reuse but for the type-checker: the launch
+    // gate + ten chained presentation modifiers with inline closures and
+    // `Binding(get:set:)` constructions form one expression, and each addition
+    // pushed inference time up until Xcode gave up ("unable to type-check this
+    // expression in reasonable time", #754's `.keepAwakeDuringTransfers` was the
+    // straw). Keep new presentation logic in helpers like these, not inline.
+
+    /// The E1 import cover's content (H4): save / upload / pair-detour actions
+    /// around one pending import.
+    private func importLanding(for pending: PendingImport) -> some View {
+        ImportLandingHost(
+            transport: transport,
+            activity: transferActivity,
+            route: pending.route,
+            fileName: pending.fileName,
+            deviceName: mainModel.deviceName,
+            noDevicePaired: pending.noDevicePaired,
+            replacing: pending.replacing,
+            onSave: { detail in
+                mainModel.addImportedRoute(pending.record(for: detail))
+                importModel.closeImport()
+            },
+            // "Uploading saves it too" (B5): the route lands in Planned
+            // the moment the upload completes (recorded as on-device, up to
+            // date, under the id the device assigned); the cover closes
+            // after F₂.
+            onUploaded: { detail, objectID, crc in
+                mainModel.addImportedRoute(pending.record(for: detail, deviceObjectID: objectID, uploadedCRC32: crc))
+            },
+            // H4 "Pair a device": save first (a pairing detour must not
+            // cost the import), then drop into the D2 scan.
+            onPair: { detail in
+                mainModel.addImportedRoute(pending.record(for: detail))
+                importModel.closeImport()
+                launchModel.startPairing()
+            },
+            onCancel: { importModel.closeImport() }
+        )
+    }
+
+    /// The collision dialog's title — the imported route's name (file name when
+    /// the route carries none), quoted.
+    private var collisionTitle: String {
+        let name = importModel.collision?.pending.route.name ?? importModel.collision?.pending.fileName ?? ""
+        return "\u{201C}\(name)\u{201D} is already in your library"
+    }
+
+    /// Presentation binding for the collision dialog; dismissal cancels.
+    private var collisionShown: Binding<Bool> {
+        Binding(
+            get: { importModel.collision != nil },
+            set: { if !$0 { importModel.cancelCollision() } }
+        )
+    }
+
+    /// Presentation binding for the "Name the new route" prompt; dismissal cancels.
+    private var addAsNewShown: Binding<Bool> {
+        Binding(
+            get: { importModel.addAsNewPrompt != nil },
+            set: { if !$0 { importModel.cancelAddAsNew() } }
+        )
     }
 
     // MARK: Detail destinations (B4)
