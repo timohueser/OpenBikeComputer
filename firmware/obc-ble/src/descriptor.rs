@@ -527,12 +527,14 @@ impl StatusMessage {
 }
 
 /// The `protocolVersion` characteristic read (widened for v2, epic #632 item 5): the wire version
-/// **and** the device's current **store epoch** — a `u32` TRNG nonce that changes on an id-era reset
-/// (full-chip reflash, factory reset, a torn id-marks line, a fresh card). The app reads it first on
-/// every connect, before any reconcile, so it knows the era before it acks or links anything; the
-/// epoch scopes all id-keyed app state to `(device serial, store epoch)` so a reset can't silently
-/// alias months-old ids. The mint rule lives on the device (V3); a random nonce leaks nothing beyond
-/// open DIS. Readable **without** encryption.
+/// **and** the device's current **store epoch** — a `u32` TRNG nonce that changes on an id-era reset,
+/// which is exactly an RRAM loss (full-chip reflash, factory reset, a torn id-marks line). The card
+/// is not consulted by the mint rule — it only determines how much of the id space actually reopens
+/// when the RRAM floor is lost (a card written by a *different* device is the residual hole, #776).
+/// The app reads it first on every connect, before any reconcile, so it knows the era before it acks
+/// or links anything; the epoch scopes all id-keyed app state to `(device serial, store epoch)` so a
+/// reset can't silently alias months-old ids. The mint rule lives on the device (V3); a random nonce
+/// leaks nothing beyond open DIS. Readable **without** encryption.
 ///
 /// ```text
 ///   version      u16   the protocol version (currently 2)

@@ -31,10 +31,13 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 The `protocolVersion` characteristic read is widened in v2 to
 `version u16 · store_epoch u32` (6 bytes LE, readable without encryption). The
 `protocol_version` is **currently `2`**; `store_epoch` is a `u32` TRNG nonce the
-device changes only on an id-era reset (full-chip reflash, factory reset, a torn
-id-marks line, a fresh/reformatted card). Because it is the pre-pairing read the
-app performs first on every connect, the app knows the epoch **before** it acks or
-reconciles anything.
+device changes only on an id-era reset — exactly the RRAM losses: a full-chip
+reflash, a factory reset, or a torn id-marks line. (The card is not consulted by
+the mint rule; it only determines how much of the id space actually reopens when
+the RRAM floor is lost. A card written by a *different* device can present foreign
+ids under the current epoch — the residual hole is #776, device-side only.)
+Because it is the pre-pairing read the app performs first on every connect, the
+app knows the epoch **before** it acks or reconciles anything.
 
 **Store epoch — why the app needs it.** Every durable link keys on bare `u16`
 object ids (ride synced-set + tombstones, route `deviceObjectID` links). A device
@@ -69,8 +72,9 @@ only in lockstep with a firmware wire change.
 
 **OBC Control characteristics** — base `3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`,
 the 16-bit `XXXX` block selects the characteristic (spec §3.3; constants in
-`BLE/GATT.swift`). **Five characteristics in v2** — the `0003` (`objectStore`) and
-`0006` (`diagnostics`) blocks are **retired and must not be reused**:
+`BLE/GATT.swift`). **Six characteristics in v2** (two of v1's eight dropped) — the
+`0003` (`objectStore`) and `0006` (`diagnostics`) blocks are **retired and must
+not be reused**:
 
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
@@ -278,7 +282,10 @@ Routes and rides both cross the wire as **compact binary**, never XML:
   of silently answering "up to date". Entry length is now **per-list**: `routeList`
   entries are **76 bytes** (a trailing whole-object `crc32`, `0` = unknown — the
   content fingerprint for identity-verified route badges + adopt-by-content, V6
-  #770), `rideList` entries stay 72. **diagnostics** is a CoC text blob (spec §7.5).
+  #770), `rideList` entries stay 72. A stored route whose genuine CRC-32 happens
+  to be `0` (probability 2⁻³²) is indistinguishable from "unknown" and is read as
+  unknown — merely "no badge until re-upload", the conservative direction; don't
+  special-case it. **diagnostics** is a CoC text blob (spec §7.5).
 
 The byte layout of each object is owned by the spec. The device object codecs
 live in `OBCTransport/Codecs/` (`BLEChannel` only moves bytes; the interchange

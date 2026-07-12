@@ -93,15 +93,24 @@ the device implementation (V3). The essentials the wire depends on:
 - **Every durable app↔device link keys on bare `u16` object ids** (the ride
   synced-set + delete tombstones, the route `deviceObjectID` links). Ids mint at
   `max(card-scan max + 1, RRAM floor)`: **SD filenames guard stored ids, the RRAM
-  floor guards deleted ids.** The **era events** — the only two ways an id can be
-  re-issued to a *different* object — are **floor loss** (a full-chip reflash /
-  factory reset / a torn id-marks write) and a **namespace reset** (a fresh or
-  reformatted card). Either mints a fresh epoch.
-- The **never-reuse guarantee** is therefore *within an epoch*: while the epoch
-  holds, an id is never re-assigned to a different object. Across an epoch change
-  the id space legitimately reopens, and the new nonce makes that visible so the
-  app can scope its state to `(device serial, store epoch)` and never silently
-  alias months-old ids.
+  floor guards deleted ids.** The **era events** — the only ways the device can
+  re-issue an id it minted to a *different* object — are exactly the **RRAM
+  losses**: a full-chip reflash, a factory reset, or a torn id-marks write. Each
+  mints a fresh epoch. **The card is not consulted by the mint rule** — a card
+  swap with intact RRAM mints nothing, and correctly so: the floor is the
+  high-water of every id the device ever issued, so even against a fresh card
+  nothing can reuse. What the card *does* determine is **how much of the id space
+  actually reopens when the floor is lost**: with the old card still in, only the
+  deleted-id band (filenames still guard stored ids); with a fresh or reformatted
+  card, all of it.
+- The **never-reuse guarantee** is therefore *within an epoch, for objects the
+  device itself minted*: while the epoch holds, the device never re-assigns such
+  an id to a different object. Across an epoch change the id space legitimately
+  reopens, and the new nonce makes that visible so the app can scope its state to
+  `(device serial, store epoch)` and never silently alias months-old ids. One
+  residual hole is out of the epoch's reach: a card written by a **different
+  device** can present foreign ids under the current epoch — tracked as #776
+  (device-side only, no wire change).
 - **Ack fail-closed contract.** The version+epoch read **gates** `ackRides` and
   every reconcile write: a connection whose identity read failed sends no ack and
   reconciles nothing (library browsing is unaffected). V5 implements it; it exists
@@ -175,7 +184,7 @@ Base UUID (random; **not** derived from the SIG base): the 16-bit block
 | `0007` | `psm` | read | `u16` — the dynamic L2CAP PSM the app opens the CoC on |
 | `0008` | `protocolVersion` | read | `version u16 · store_epoch u32` — §1. Readable **without** encryption |
 
-**Five characteristics** (v2 dropped two from v1's seven). The `0003` and `0006`
+**Six characteristics** (v2 drops two of v1's eight). The `0003` and `0006`
 blocks — v1's `objectStore` digest and reserved `diagnostics` — are **retired and
 never reassigned**: the digest double-signalled a change `storeChanged` (§4.3)
 already carries and its per-boot `revision` was a latent client trap, and
@@ -239,12 +248,14 @@ object in place — and, for rides, what the app's synced-set and delete
 tombstones key on. Ids mint at `max(card-scan max + 1, RRAM floor)`: the
 reference firmware encodes the id in the stored filename (routes `RT{id}.OBR`,
 rides `RD{id}.ORD`) — **SD filenames guard stored ids** — and an RRAM floor
-guards **deleted** ids. **Within a store epoch an id is never re-issued to a
-different object.** The two era events that legitimately reopen the id space —
-floor loss (reflash / factory reset / torn id-marks write) and namespace reset
-(fresh / reformatted card) — each mint a fresh `store_epoch` (§1), so the app
+guards **deleted** ids. **Within a store epoch, an id the device minted is never
+re-issued to a different object.** The era events that legitimately reopen the id
+space are the RRAM losses (reflash / factory reset / torn id-marks write); each
+mints a fresh `store_epoch` (§1) — the card is not consulted by the mint rule, it
+only determines how much of the space reopens when the floor is lost — so the app
 scopes id-keyed state per epoch and an era change never silently aliases a stale
-id. Conventions:
+id. (A card written by a *different* device can present foreign ids under the
+current epoch — the §1 residual hole, #776.) Conventions:
 
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
@@ -657,8 +668,11 @@ dropped `total == count`.
 at upload commit, persisted in a `/routes` sidecar; a side-loaded file not yet
 fingerprinted reads `0` (unknown), filled lazily at first list build. It lets the
 app verify *what* a linked id points at (identity-verified badges) and adopt an
-identical unlinked copy by content. `rideList` entries are **unchanged** (72
-bytes) — which is why entry length is now per-list.
+identical unlinked copy by content. A stored route whose genuine CRC-32 happens to
+be `0` (probability 2⁻³²) is indistinguishable from "unknown" and is served — and
+read — as unknown; the consequence is merely "no badge until re-upload", the
+conservative direction, so implementations do **not** special-case it. `rideList`
+entries are **unchanged** (72 bytes) — which is why entry length is now per-list.
 
 `rideList` entry (72 bytes) — from the stored ride-object header:
 
