@@ -962,12 +962,17 @@ impl Storage {
     /// Parse the active route's [`RouteIndex`] — the header plus the **full chunk-meta walk**, the one
     /// up-front per-route cost. The render loop builds this once when the active route changes and
     /// reuses it across frames: a redraw then streams only the visible geometry chunks, instead of
-    /// re-walking the whole index off the card at panel rate. `None` when no route is open or the index
-    /// read fails (a flaky link) — the loop retries the build on a later redraw, so a transient glitch
-    /// doesn't hide the route.
-    pub fn build_route_index(&self) -> Option<RouteIndex> {
-        let src = self.route_source()?;
-        RouteIndex::read(&src).ok()
+    /// re-walking the whole index off the card at panel rate. Returns whether `idx` now holds a valid
+    /// index; `false` (slot cleared) when no route is open or the read fails (a flaky link) — the loop
+    /// retries the build on a later redraw, so a transient glitch doesn't hide the route.
+    ///
+    /// **In place** into the caller's resident slot (`RouteIndex::read_into`), never by value: the
+    /// ~6.7 KB index returned through `Option<RouteIndex>` rode the stack at the ride pass's deepest
+    /// point, and the post-upload rescan's rebuild overflowed the 44 KB main stack the moment `.bss`
+    /// crept 216 B (STKOF HardFault inside `RouteIndex::read`, 2026-07-12).
+    pub fn build_route_index_into(&self, idx: &mut RouteIndex) -> bool {
+        let Some(src) = self.route_source() else { return false };
+        idx.read_into(&src).is_ok()
     }
 
     /// The mini elevation sparkline for the route with object id `id` (#682): open its `.obcr` on a

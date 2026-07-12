@@ -268,8 +268,10 @@ bind_interrupts!(struct SensorIrqs {
 //   - `RouteIndex` the active route's resident chunk index — the ride loop holds it across frames in
 //                  the map plane's task future to stream geometry without re-walking it (128 chunks on
 //                  nrf-mem, ~6 KB). Counted here because on the 256 KB part it materially shares the
-//                  budget, and because `RouteIndex::read` builds it on the *stack*, so keeping it ~6 KB
-//                  keeps that transient build spike inside the stack reserve below.
+//                  budget. Built **in place** in that resident slot (`RouteIndex::read_into`) — the
+//                  earlier by-value `RouteIndex::read` build put the ~6.7 KB on the stack at the ride
+//                  pass's deepest point, and the post-upload rescan's rebuild overflowed the main
+//                  stack the moment `.bss` crept 216 B (STKOF HardFault, 2026-07-12).
 // plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas. The stack must
 // also absorb a per-redraw `Reader::new` (the OBCM style table → a ~2.4 KB `Reader` value built as a
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
