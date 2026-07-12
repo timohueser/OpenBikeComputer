@@ -7,7 +7,9 @@ use obc_dfu::armer::{
     arm, confirm_trial, scan, ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo,
 };
 use obc_dfu::engine::IoError;
-use obc_dfu::{crc32, BootState, Extent, ImageHeader, StagedRef, HEADER_LEN, MAX_EXTENTS, MAX_IMAGE_LEN};
+use obc_dfu::{
+    crc32, BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, HEADER_LEN, MAX_EXTENTS, MAX_IMAGE_LEN,
+};
 
 // ==================== The staged-file fake ====================
 
@@ -218,7 +220,7 @@ fn arm_snapshots_before_the_page_write_and_bumps_the_generation() {
     let rollback = staged(2);
     let old = installed_header();
     let mut io = FakeArmIo::new(Ok(Some(rollback)));
-    let current = BootState::Idle { installed: Some(old) };
+    let current = BootState::Idle { installed: Some(old), last_outcome: None };
 
     let ticket = arm(&mut io, &current, update).expect("arm succeeds");
     assert_eq!(ticket, ArmTicket { generation: 1, rollback: Rollback::Snapshot }, "Idle carries generation 0 → 1");
@@ -256,7 +258,7 @@ fn arm_generation_is_old_plus_one_even_from_a_stale_armed_page() {
 fn arm_first_install_skips_the_snapshot_and_records_no_rollback() {
     let update = staged(1);
     let mut io = FakeArmIo::new(Err(ScanError::Io)); // must never be consulted
-    let ticket = arm(&mut io, &BootState::Idle { installed: None }, update).expect("arm succeeds");
+    let ticket = arm(&mut io, &BootState::Idle { installed: None, last_outcome: None }, update).expect("arm succeeds");
     assert_eq!(ticket, ArmTicket { generation: 1, rollback: Rollback::FirstInstall });
     assert_eq!(io.calls.len(), 1, "snapshot skipped on a fresh device");
     match &io.calls[0] {
@@ -273,7 +275,8 @@ fn arm_running_mismatch_arms_without_a_rollback_and_says_so() {
     // the arm proceeds, rollback None, flagged for the caller's warning.
     let update = staged(1);
     let mut io = FakeArmIo::new(Ok(None));
-    let ticket = arm(&mut io, &BootState::Idle { installed: Some(installed_header()) }, update).expect("arm succeeds");
+    let ticket = arm(&mut io, &BootState::Idle { installed: Some(installed_header()), last_outcome: None }, update)
+        .expect("arm succeeds");
     assert_eq!(ticket.rollback, Rollback::RunningMismatch);
     match &io.calls[1] {
         Call::WriteState(s) => assert!(matches!(**s, BootState::Armed { rollback: None, .. })),
@@ -285,7 +288,8 @@ fn arm_running_mismatch_arms_without_a_rollback_and_says_so() {
 fn arm_aborts_on_a_failed_snapshot_without_touching_the_page() {
     let update = staged(1);
     let mut io = FakeArmIo::new(Err(ScanError::Io));
-    let err = arm(&mut io, &BootState::Idle { installed: Some(installed_header()) }, update).unwrap_err();
+    let err =
+        arm(&mut io, &BootState::Idle { installed: Some(installed_header()), last_outcome: None }, update).unwrap_err();
     assert_eq!(err, ArmError::Snapshot(ScanError::Io));
     assert_eq!(io.calls.len(), 1, "the boot-state page is untouched after a failed snapshot");
     assert!(matches!(io.calls[0], Call::Snapshot(_)));
@@ -311,7 +315,7 @@ fn arm_records_the_carried_scan_ref_verbatim() {
     assert_eq!(carried.header, header);
 
     let mut io = FakeArmIo::new(Ok(Some(staged(2))));
-    let current = BootState::Idle { installed: Some(installed_header()) };
+    let current = BootState::Idle { installed: Some(installed_header()), last_outcome: None };
     let ticket = arm(&mut io, &current, carried).expect("arm consumes the carried ref");
     assert_eq!(ticket.rollback, Rollback::Snapshot);
 
@@ -333,7 +337,8 @@ fn arm_reports_a_failed_page_write() {
     let update = staged(1);
     let mut io = FakeArmIo::new(Ok(Some(staged(2))));
     io.write_fails = true;
-    let err = arm(&mut io, &BootState::Idle { installed: Some(installed_header()) }, update).unwrap_err();
+    let err =
+        arm(&mut io, &BootState::Idle { installed: Some(installed_header()), last_outcome: None }, update).unwrap_err();
     assert_eq!(err, ArmError::StateWrite);
 }
 
@@ -344,7 +349,14 @@ fn confirm_trial_writes_idle_with_the_installed_header() {
     let installed = installed_header();
     let trial = BootState::Trial { generation: 4, installed, rollback: Some(staged(2)) };
     let (next, hdr) = confirm_trial(&trial).expect("a trial confirms");
-    assert_eq!(next, BootState::Idle { installed: Some(installed) });
+    assert_eq!(
+        next,
+        BootState::Idle {
+            installed: Some(installed),
+            // The confirm records the accept against the trial's generation (4).
+            last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation: 4 })
+        }
+    );
     assert_eq!(hdr, installed);
 
     // Idempotent through the codec: what the confirm writes decodes back to the same Idle.
@@ -354,7 +366,7 @@ fn confirm_trial_writes_idle_with_the_installed_header() {
 
 #[test]
 fn confirm_trial_is_a_noop_for_idle_and_armed() {
-    assert_eq!(confirm_trial(&BootState::Idle { installed: None }), None);
-    assert_eq!(confirm_trial(&BootState::Idle { installed: Some(installed_header()) }), None);
+    assert_eq!(confirm_trial(&BootState::Idle { installed: None, last_outcome: None }), None);
+    assert_eq!(confirm_trial(&BootState::Idle { installed: Some(installed_header()), last_outcome: None }), None);
     assert_eq!(confirm_trial(&BootState::Armed { generation: 1, update: staged(1), rollback: None }), None);
 }
