@@ -106,6 +106,22 @@ public protocol DeviceTransport: Sendable {
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data
 
+    /// Ask the device to dissolve **its** side of the bond (`forgetBond`, spec
+    /// §4.4 cmd 4). The app's "Forget device" otherwise clears only the phone's
+    /// `BondRecord`; the device keeps its bond, and the reject-when-bonded posture
+    /// (spec §8) then refuses every new pairing until the rider also runs Forget
+    /// phone on the device — a one-sided forget leaves the pair wedged. This
+    /// command, honoured **only over the already-encrypted bonded link** (the
+    /// bonded phone asking to clear its own bond is fully consistent with
+    /// reject-when-bonded — a stranger can never issue it), makes the device clear
+    /// its bond and return to open-pairing advertising. **Best-effort**: the
+    /// device answers `commandResult(ok)` then drops the link, so the transport
+    /// waits only briefly for the ack; the caller (Settings forget) clears its
+    /// local record whether this succeeds, times out, or throws. Invoke it only
+    /// while connected — an offline forget can't reach the device (it keeps its
+    /// bond until the rider forgets the phone on it).
+    func forgetBond() async throws
+
     // MARK: Firmware update (S7 — DFU delivery)
 
     /// Upload a firmware update (app → device, S7). The payload is the whole OBCU
@@ -160,4 +176,12 @@ extension DeviceTransport {
     /// don't model the `installFw` command (a device predating BLE DFU reads the
     /// same way, spec §4.4 compat).
     public func installFirmware() async throws -> FirmwareInstallResult { .unsupported }
+
+    /// Default: no device-side bond to dissolve — for preview/test stand-ins
+    /// (a device predating `forgetBond` reads the same way, spec §4.4 compat).
+    /// Safe as a no-op because it's pure best-effort: skipping it only leaves the
+    /// device's bond where it was, which the caller's local-record clear already
+    /// tolerates. `BLETransport` sends the real command; `MockTransport` records
+    /// the request.
+    public func forgetBond() async throws {}
 }
