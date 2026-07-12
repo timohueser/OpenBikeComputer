@@ -156,3 +156,29 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         self.maxPower = maxPower
     }
 }
+
+/// The device's tracked-ride catalog (`listRides()` — the `rideList` object,
+/// spec §7.4): the enumerable summaries plus the **truncation** signal the v2
+/// list header carries.
+///
+/// Past the device's `MAX_RIDES` cap the catalog scan drops the excess in
+/// FAT-arbitrary order, so the header states the full `total` and the list is
+/// **truncated** when `total > count` — some rides are silently unsyncable until
+/// the rider frees space, and this is the only honest signal on the wire (the
+/// device-side cull order is arbitrary). The app surfaces a one-line warning
+/// instead of answering "up to date".
+public struct RideCatalog: Equatable, Sendable {
+    /// The rides the list carried (the header `count`).
+    public var rides: [RideSummary]
+    /// How many rides the device holds **beyond** what the list carried
+    /// (`total − count`); `0` when the whole catalog fit.
+    public var hiddenRideCount: Int
+
+    /// Whether the device dropped rides past its cap — the warning trigger.
+    public var isTruncated: Bool { hiddenRideCount > 0 }
+
+    public init(rides: [RideSummary], hiddenRideCount: Int = 0) {
+        self.rides = rides
+        self.hiddenRideCount = max(0, hiddenRideCount)
+    }
+}

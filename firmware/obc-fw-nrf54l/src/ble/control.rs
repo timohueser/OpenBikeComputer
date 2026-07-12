@@ -8,7 +8,7 @@
 //! - A `command` write ([`run_command`]) — `deleteObject` for routes (rides are never deleted over
 //!   the link; the app tombstones them locally) and `ackRides` (the phone's possession list
 //!   reconciles the synced sidecar) — answers `commandResult` and, on a store movement, notifies
-//!   `storeChanged` + the refreshed digest.
+//!   `storeChanged` (status msg 2 — protocol v2's sole change signal).
 //! - A `transfer_control` write is decoded + [`classify_transfer`]-ed. A validated transfer is
 //!   **armed** — signalled to the CoC task ([`super::state::TRANSFER_ARM`]) and answered later by the
 //!   data plane; everything invalid (or an abort with nothing in flight) gets an immediate typed
@@ -37,7 +37,7 @@ use super::state;
 use super::state::{publish, transfer_result, Armed, StatusBytes, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
 
 /// What a `command` write did: the `commandResult` to notify, plus which store (if any) it moved
-/// (→ the caller also notifies `storeChanged` + the digest characteristic, typed accordingly).
+/// (→ the caller also notifies `storeChanged`, typed accordingly).
 struct CommandOutcome {
     result: StatusBytes,
     store_changed: Option<ObjectType>,
@@ -308,7 +308,7 @@ pub(crate) async fn serve_connection(
                     GattEvent::Other(e) => e.accept(),
                 };
                 // Store work for this event is done; release the shared lock before the async sends
-                // (the RefCell borrows above already ended with `reply`). `config_blob`/digest below
+                // (the RefCell borrows above already ended with `reply`). `config_blob`/storeChanged below
                 // read only the catalog + the settings cache, no card.
                 drop(guard);
                 match reply {

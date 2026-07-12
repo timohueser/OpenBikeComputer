@@ -1,11 +1,13 @@
 //! The control-plane descriptor codecs — small, typed, fixed-shape messages that ride GATT while
 //! the CoC stays raw payload bytes:
 //!
-//! - [`TransferControl`]: the fixed **16-byte** descriptor to open / abort a transfer, or announce
-//!   a download's size + CRC.
+//! - [`TransferControl`]: the fixed **12-byte** descriptor the app writes to open / abort a transfer
+//!   (protocol v2: `transferControl` is **write-only** — a download's announce rides the `status`
+//!   envelope as [`StatusMessage::DownloadAnnounce`], not a notify on this characteristic).
 //! - [`StatusMessage`]: the device → app `status` notification envelope — a `u8` discriminator +
-//!   fixed body.
-//! - [`ObjectStoreDigest`]: the 10-byte "did anything change" read/notify value.
+//!   fixed body. In v2 it is the **sole** device → app control channel, so the download announce
+//!   (`msg = 4`) shares its one subscription / one ordering domain.
+//! - [`VersionRead`]: the widened `protocolVersion` read — `version u16 · store_epoch u32` (§1).
 //! - [`Config`]: the whole-blob Config object that crosses GATT (not the CoC).
 //!
 //! Every layout mirrors the app's Swift codecs field-for-field. All integers little-endian.
@@ -91,18 +93,23 @@ impl Op {
     }
 }
 
-/// The fixed **16-byte** transfer descriptor — one shape serves upload, download request/announce,
+/// The fixed **12-byte** transfer descriptor — one shape serves upload, download request/announce,
 /// and abort, so the CoC needs no per-chunk header.
 ///
 /// ```text
 ///   op         u8    1 = upload · 2 = download · 3 = abort
 ///   type       u8    ObjectType
 ///   object_id  u16   0xFFFF on upload = "new" (device assigns; see TransferResult)
-///   total_len  u32   upload: full object size · download request / abort: 0
-///   crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
-///   offset     u32   always 0 — transfers restart, not resume; the field exists for
-///                    descriptor-shape stability only (§1 principle 4)
+///   total_len  u32   upload / download announce: full object size · download request / abort: 0
+///   crc32      u32   upload / download announce: whole-object CRC-32/IEEE · download request / abort: 0
 /// ```
+///
+/// **v2 drops the `offset` field** — transfers restart, never resume (§1 principle 4), so the byte
+/// was permanently `0`. Its `NonZeroOffset` reject went with it. The descriptor is written by the
+/// app to *open* a transfer; the device never notifies it (`transferControl` is write-only). A
+/// download's announce — the same 12 bytes with `total_len`/`crc32` filled — travels as a
+/// [`StatusMessage::DownloadAnnounce`] (`msg = 4`) instead, folding all device → app control traffic
+/// onto the one `status` characteristic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransferControl {
     pub op: Op,
@@ -110,11 +117,10 @@ pub struct TransferControl {
     pub object_id: u16,
     pub total_len: u32,
     pub crc32: u32,
-    pub offset: u32,
 }
 
 impl TransferControl {
-    pub const ENCODED_LEN: usize = 16;
+    pub const ENCODED_LEN: usize = 12;
 
     /// The `object_id` an upload sends to mean "new — the device assigns the id".
     pub const NEW_OBJECT_ID: u16 = 0xFFFF;
@@ -126,13 +132,12 @@ impl TransferControl {
         b[2..4].copy_from_slice(&self.object_id.to_le_bytes());
         b[4..8].copy_from_slice(&self.total_len.to_le_bytes());
         b[8..12].copy_from_slice(&self.crc32.to_le_bytes());
-        b[12..16].copy_from_slice(&self.offset.to_le_bytes());
         b
     }
 
-    /// Decode a descriptor from a GATT write. Purely structural — semantic checks (e.g. an offset
-    /// past `total_len`) belong to the transfer state machine, which answers them with a typed
-    /// [`TransferResult`] rather than a bare ATT failure.
+    /// Decode a descriptor from a GATT write. Purely structural — semantic checks belong to the
+    /// transfer state machine, which answers them with a typed [`TransferResult`] rather than a bare
+    /// ATT failure.
     pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
         if data.len() < Self::ENCODED_LEN {
             return Err(DescriptorError::Truncated);
@@ -143,7 +148,6 @@ impl TransferControl {
             object_id: u16::from_le_bytes([data[2], data[3]]),
             total_len: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
             crc32: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
-            offset: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
         })
     }
 }
@@ -419,7 +423,9 @@ impl<'a> AckRides<'a> {
 }
 
 /// One `status` characteristic notification: a `u8` discriminator + fixed body. The app **ignores
-/// unknown discriminators** (forward compatibility), never failing the link over one.
+/// unknown discriminators** (forward compatibility), never failing the link over one. In protocol
+/// v2 this is the **sole** device → app control channel, so every message — including a download's
+/// announce (`msg = 4`) — shares its one subscription and one ordering domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusMessage {
     /// `msg = 1`, 8 bytes.
@@ -428,11 +434,17 @@ pub enum StatusMessage {
     StoreChanged(StoreChanged),
     /// `msg = 3`, 4 bytes.
     CommandResult(CommandResult),
+    /// `msg = 4`, 13 bytes: the download announce — the `msg` byte followed by the 12-byte
+    /// [`TransferControl`] descriptor (`op = Download`, `total_len`/`crc32` filled). v2 folds the
+    /// announce off `transferControl` and onto this envelope so all device → app control traffic is
+    /// one notify characteristic.
+    DownloadAnnounce(TransferControl),
 }
 
 impl StatusMessage {
-    /// The longest encoded message (`transferResult`) — a notify buffer of this size fits any.
-    pub const MAX_ENCODED_LEN: usize = TransferResult::ENCODED_LEN;
+    /// The longest encoded message (`downloadAnnounce`: `msg` byte + the 12-byte descriptor) — a
+    /// notify buffer of this size fits any.
+    pub const MAX_ENCODED_LEN: usize = 1 + TransferControl::ENCODED_LEN;
 
     /// Encode into a fixed buffer; the returned length is the slice to notify (`&buf[..len]`).
     pub fn encode(&self) -> ([u8; Self::MAX_ENCODED_LEN], usize) {
@@ -457,6 +469,11 @@ impl StatusMessage {
                 b[2] = c.status.as_u8();
                 b[3] = c.detail;
                 4
+            }
+            Self::DownloadAnnounce(d) => {
+                b[0] = 4;
+                b[1..1 + TransferControl::ENCODED_LEN].copy_from_slice(&d.encode());
+                1 + TransferControl::ENCODED_LEN
             }
         };
         (b, len)
@@ -498,29 +515,44 @@ impl StatusMessage {
                     detail: data[3],
                 })
             }
+            4 => {
+                if data.len() < 1 + TransferControl::ENCODED_LEN {
+                    return Err(DescriptorError::Truncated);
+                }
+                Self::DownloadAnnounce(TransferControl::decode(&data[1..])?)
+            }
             _ => return Ok(None),
         }))
     }
 }
 
-/// The `objectStore` digest: the cheap "did anything change" signal that replaces polling the
-/// CoC-sized lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct ObjectStoreDigest {
-    pub revision: u32,
-    pub route_count: u16,
-    pub ride_count: u16,
+/// The `protocolVersion` characteristic read (widened for v2, epic #632 item 5): the wire version
+/// **and** the device's current **store epoch** — a `u32` TRNG nonce that changes on an id-era reset,
+/// which is exactly an RRAM loss (full-chip reflash, factory reset, a torn id-marks line). The card
+/// is not consulted by the mint rule — it only determines how much of the id space actually reopens
+/// when the RRAM floor is lost (a card written by a *different* device is the residual hole, #776).
+/// The app reads it first on every connect, before any reconcile, so it knows the era before it acks
+/// or links anything; the epoch scopes all id-keyed app state to `(device serial, store epoch)` so a
+/// reset can't silently alias months-old ids. The mint rule lives on the device (V3); a random nonce
+/// leaks nothing beyond open DIS. Readable **without** encryption.
+///
+/// ```text
+///   version      u16   the protocol version (currently 2)
+///   store_epoch  u32   the device's current store-epoch nonce
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VersionRead {
+    pub version: u16,
+    pub store_epoch: u32,
 }
 
-impl ObjectStoreDigest {
-    pub const ENCODED_LEN: usize = 10;
+impl VersionRead {
+    pub const ENCODED_LEN: usize = 6;
 
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
         let mut b = [0u8; Self::ENCODED_LEN];
-        b[0..4].copy_from_slice(&self.revision.to_le_bytes());
-        b[4..6].copy_from_slice(&self.route_count.to_le_bytes());
-        b[6..8].copy_from_slice(&self.ride_count.to_le_bytes());
-        // b[8..10] = reserved, already 0.
+        b[0..2].copy_from_slice(&self.version.to_le_bytes());
+        b[2..6].copy_from_slice(&self.store_epoch.to_le_bytes());
         b
     }
 
@@ -529,9 +561,8 @@ impl ObjectStoreDigest {
             return Err(DescriptorError::Truncated);
         }
         Ok(Self {
-            revision: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            route_count: u16::from_le_bytes([data[4], data[5]]),
-            ride_count: u16::from_le_bytes([data[6], data[7]]),
+            version: u16::from_le_bytes([data[0], data[1]]),
+            store_epoch: u32::from_le_bytes([data[2], data[3], data[4], data[5]]),
         })
     }
 }

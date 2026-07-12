@@ -4,9 +4,9 @@
 //!
 //! The wire has two planes and this crate models both halves:
 //!
-//! - **Control plane** (GATT, small + typed): the fixed 16-byte [`TransferControl`] descriptor
-//!   announces a transfer; the device answers with the [`StatusMessage`] envelope. There is **no
-//!   per-chunk header on the CoC**.
+//! - **Control plane** (GATT, small + typed): the fixed 12-byte [`TransferControl`] descriptor (the
+//!   app writes it to open a transfer) and the [`StatusMessage`] envelope (the sole device → app
+//!   channel — it even carries a download's announce). There is **no per-chunk header on the CoC**.
 //! - **Data plane** (L2CAP CoC, raw bytes): the channel carries exactly the object's payload bytes.
 //!   [`Receiver`] sinks them with a running [`Crc32`] and verifies **one** whole-object CRC at
 //!   commit; [`StreamSender`] streams an object out the same way. Both restart rather than resume,
@@ -26,11 +26,11 @@ pub mod transfer;
 
 pub use crc32::Crc32;
 pub use descriptor::{
-    install_fw_reply, AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectStoreDigest, ObjectType,
-    Op, StatusMessage, StoreChanged, TransferControl, TransferResult, TransferStatus, CMD_ACK_RIDES, CMD_DELETE_OBJECT,
+    install_fw_reply, AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectType, Op, StatusMessage,
+    StoreChanged, TransferControl, TransferResult, TransferStatus, VersionRead, CMD_ACK_RIDES, CMD_DELETE_OBJECT,
     CMD_FORGET_BOND, CMD_INSTALL_FW,
 };
-pub use list::{ListHeader, RideListEntry, RouteListEntry, LIST_ENTRY_LEN};
+pub use list::{ListHeader, RideListEntry, RouteListEntry, MIN_LIST_ENTRY_LEN};
 pub use sensors::{
     classify_advertisement, parse_battery_level, parse_csc_measurement, parse_hr_measurement, parse_power_measurement,
     power_crank_feeds_cadence, AdvMatch, CrankCadence, CrankRevs, CscSample, HrSample, PowerSample, SensorKind,
@@ -39,5 +39,7 @@ pub use sensors::{
 };
 pub use transfer::{Receiver, StreamSender, TransferError};
 
-/// The protocol version this crate implements. The app reads it on connect and stops on a mismatch.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// The protocol version this crate implements. The app reads it (with the store epoch, as a
+/// [`VersionRead`]) on connect and stops on a mismatch — a v1 peer sees this `u16 = 2` first and
+/// surfaces its mismatch path. There is no dual-version serving.
+pub const PROTOCOL_VERSION: u16 = 2;

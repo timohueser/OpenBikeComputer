@@ -1,15 +1,16 @@
 {
   "spec": "obc-ble-interface-spec.md",
-  "protocol_version": 1,
-  "crc32_check": { "input": "123456789", "value": "0xCBF43926" },
+  "protocol_version": 2,
+  "crc32_check": {
+    "input": "123456789",
+    "value": "0xCBF43926"
+  },
   "uuids": {
     "obc_control_service": "3C920000-9916-4EBA-ABC2-342FE08F6B10",
     "command": "3C920001-9916-4EBA-ABC2-342FE08F6B10",
     "status": "3C920002-9916-4EBA-ABC2-342FE08F6B10",
-    "object_store": "3C920003-9916-4EBA-ABC2-342FE08F6B10",
     "config": "3C920004-9916-4EBA-ABC2-342FE08F6B10",
     "transfer_control": "3C920005-9916-4EBA-ABC2-342FE08F6B10",
-    "diagnostics": "3C920006-9916-4EBA-ABC2-342FE08F6B10",
     "psm": "3C920007-9916-4EBA-ABC2-342FE08F6B10",
     "protocol_version": "3C920008-9916-4EBA-ABC2-342FE08F6B10"
   },
@@ -25,8 +26,22 @@
       "total_distance_m": 2207,
       "total_ascent_m": 76,
       "waypoints": [
-        { "dist_along_m": 0, "lon_udeg": 7820100, "lat_udeg": 48000100, "ele_m": 238, "type": 0, "name": "Brunnen" },
-        { "dist_along_m": 1700, "lon_udeg": 7842500, "lat_udeg": 47998700, "ele_m": null, "type": 0, "name": "Pass Summit" }
+        {
+          "dist_along_m": 0,
+          "lon_udeg": 7820100,
+          "lat_udeg": 48000100,
+          "ele_m": 238,
+          "type": 0,
+          "name": "Brunnen"
+        },
+        {
+          "dist_along_m": 1700,
+          "lon_udeg": 7842500,
+          "lat_udeg": 47998700,
+          "ele_m": null,
+          "type": 0,
+          "name": "Pass Summit"
+        }
       ]
     },
     "route-plain.obcr": {
@@ -46,9 +61,24 @@
       "avg_speed_cms": 472,
       "climb_m": 810,
       "points": [
-        { "t_offset_s": 0, "lat_1e7": 480000000, "lon_1e7": 78000000, "ele_m": 214 },
-        { "t_offset_s": 60, "lat_1e7": 480010000, "lon_1e7": 78012000, "ele_m": 219 },
-        { "t_offset_s": 120, "lat_1e7": 480020000, "lon_1e7": 78030000, "ele_m": null }
+        {
+          "t_offset_s": 0,
+          "lat_1e7": 480000000,
+          "lon_1e7": 78000000,
+          "ele_m": 214
+        },
+        {
+          "t_offset_s": 60,
+          "lat_1e7": 480010000,
+          "lon_1e7": 78012000,
+          "ele_m": 219
+        },
+        {
+          "t_offset_s": 120,
+          "lat_1e7": 480020000,
+          "lon_1e7": 78030000,
+          "ele_m": null
+        }
       ]
     },
     "ride-v2.bin": {
@@ -61,12 +91,46 @@
       "moving_time_s": 3600,
       "avg_speed_cms": 343,
       "climb_m": 120,
-      "sensor_summary": { "avg_hr": 142, "max_hr": 176, "avg_cad": 85, "avg_pwr": 210, "max_pwr": 480 },
-      "sensor_sentinels": { "hr": 255, "cad": 255, "pwr": 65535 },
+      "sensor_summary": {
+        "avg_hr": 142,
+        "max_hr": 176,
+        "avg_cad": 85,
+        "avg_pwr": 210,
+        "max_pwr": 480
+      },
+      "sensor_sentinels": {
+        "hr": 255,
+        "cad": 255,
+        "pwr": 65535
+      },
       "points": [
-        { "t_offset_s": 0, "lat_1e7": 480000000, "lon_1e7": 78000000, "ele_m": 214, "hr": 140, "cad": 84, "pwr": 205 },
-        { "t_offset_s": 60, "lat_1e7": 480010000, "lon_1e7": 78012000, "ele_m": 219, "hr": null, "cad": null, "pwr": null },
-        { "t_offset_s": 120, "lat_1e7": 480020000, "lon_1e7": 78030000, "ele_m": null, "hr": 150, "cad": null, "pwr": 215 }
+        {
+          "t_offset_s": 0,
+          "lat_1e7": 480000000,
+          "lon_1e7": 78000000,
+          "ele_m": 214,
+          "hr": 140,
+          "cad": 84,
+          "pwr": 205
+        },
+        {
+          "t_offset_s": 60,
+          "lat_1e7": 480010000,
+          "lon_1e7": 78012000,
+          "ele_m": 219,
+          "hr": null,
+          "cad": null,
+          "pwr": null
+        },
+        {
+          "t_offset_s": 120,
+          "lat_1e7": 480020000,
+          "lon_1e7": 78030000,
+          "ele_m": null,
+          "hr": 150,
+          "cad": null,
+          "pwr": 215
+        }
       ]
     },
     "config-v1.bin": {
@@ -76,40 +140,28 @@
       "units": "metric (0)"
     },
     "transfer-upload-start.bin": {
-      "format": "transferControl (spec 4.2)",
+      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
       "op": 1,
       "type": 1,
       "object_id": 65535,
       "total_len": 300,
-      "crc32": "0x1F66C051",
-      "offset": 0
-    },
-    "transfer-upload-resume.bin": {
-      "format": "transferControl (spec 4.2)",
-      "op": 1,
-      "type": 1,
-      "object_id": 65535,
-      "total_len": 300,
-      "crc32": "0x1F66C051",
-      "offset": 150
+      "crc32": "0x1F66C051"
     },
     "transfer-download-request.bin": {
-      "format": "transferControl (spec 4.2)",
+      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
       "op": 2,
       "type": 7,
       "object_id": 0,
       "total_len": 0,
-      "crc32": "0x0",
-      "offset": 0
+      "crc32": "0x0"
     },
     "transfer-abort.bin": {
-      "format": "transferControl (spec 4.2)",
+      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
       "op": 3,
       "type": 1,
       "object_id": 65535,
       "total_len": 0,
-      "crc32": "0x0",
-      "offset": 0
+      "crc32": "0x0"
     },
     "status-transfer-result.bin": {
       "format": "status msg 1 (spec 4.3)",
@@ -136,7 +188,11 @@
       "byte_len": 8,
       "cmd": 2,
       "count": 3,
-      "ride_ids": [3, 5, 9]
+      "ride_ids": [
+        3,
+        5,
+        9
+      ]
     },
     "status-command-result-ack.bin": {
       "format": "status msg 3 (spec 4.3)",
@@ -144,12 +200,6 @@
       "cmd": 2,
       "status": "ok (0)",
       "detail": 3
-    },
-    "object-store.bin": {
-      "format": "objectStore (spec 4.5)",
-      "revision": 42,
-      "route_count": 3,
-      "ride_count": 5
     },
     "update-container-v1.bin": {
       "format": "OBCU update container (spec 1) — fwImage payload (spec 7.6)",
@@ -162,10 +212,10 @@
       "object_id": 0
     },
     "route-list.bin": {
-      "format": "routeList object (spec 7.4)",
-      "byte_len": 148,
-      "version": 1,
-      "entry_len": 72,
+      "format": "routeList object (spec 7.4) — 6-byte v2 header + 76-byte entries",
+      "byte_len": 158,
+      "version": 2,
+      "entry_len": 76,
       "count": 2,
       "entries": [
         {
@@ -175,7 +225,8 @@
           "ascent_m": 76,
           "point_count": 9,
           "waypoint_count": 2,
-          "name": "Vector Loop"
+          "name": "Vector Loop",
+          "crc32": "0x1F66C051"
         },
         {
           "object_id": 8,
@@ -184,9 +235,27 @@
           "ascent_m": 76,
           "point_count": 9,
           "waypoint_count": 0,
-          "name": "Vector Loop"
+          "name": "Vector Loop",
+          "crc32": "0xEBD7D5B6"
         }
-      ]
+      ],
+      "total": 2
+    },
+    "version-read.bin": {
+      "format": "protocolVersion read (spec 1) — version u16 · store_epoch u32",
+      "byte_len": 6,
+      "version": 2,
+      "store_epoch": "0xA1B2C3D4"
+    },
+    "status-download-announce.bin": {
+      "format": "status msg 4 downloadAnnounce (spec 4.3) — msg byte + 12-byte descriptor",
+      "byte_len": 13,
+      "msg": 4,
+      "op": 2,
+      "type": 1,
+      "object_id": 7,
+      "total_len": 300,
+      "crc32": "0x1F66C051"
     }
   }
 }
