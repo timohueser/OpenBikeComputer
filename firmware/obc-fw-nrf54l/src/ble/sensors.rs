@@ -465,6 +465,12 @@ async fn run_scan(stack: &'static SensorStack) {
     }
 
     SCAN_ARMED.store(false, Ordering::Relaxed);
+    // Let the scan-disable actually land before the loop moves on: the session's `Drop` above only
+    // *queues* the cancel for the host runner, and the SDC rejects a create-connection while the
+    // scanner is still enabled (parallel scan+initiate is opt-in vendor behaviour, off by default)
+    // — without this settle, the save-from-scan-list flow's immediate `connect_ext` bounced
+    // `Command Disallowed` on glass and the user waited out a full 15 s backoff.
+    Timer::after_millis(200).await;
     let count = SCAN_HITS.lock(|c| c.borrow().len());
     info!("ble: [sensor] scan done — {} sensor(s) found", count);
 }
