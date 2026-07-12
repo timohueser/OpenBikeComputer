@@ -323,7 +323,7 @@ pub async fn run(
     cracen_p: Peri<'static, peripherals::CRACEN>,
     shared: &'static SharedStoreMutex,
 ) -> ! {
-    // The object store: the catalog/upload/digest semantics behind a RefCell — both BLE planes (GATT
+    // The object store: the catalog/upload/revision semantics behind a RefCell — both BLE planes (GATT
     // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
     // settings it operates on live in `shared` (the async mutex the ride loop shares), which each
     // plane locks per call and passes into the store method (#270). Built in `.bss` by
@@ -435,13 +435,22 @@ pub async fn run(
     info!("ble: host up as '{}', address {:?}", advertised_name(&store.borrow()).as_str(), address);
 
     // Seed the runtime attribute values the macro `value =` can't hold (DIS strings, the Config
-    // blob from the persisted settings, the store digest). `server.set` writes the shared
-    // attribute table once — no connection needed.
+    // blob from the persisted settings, the widened `protocolVersion` read). `server.set` writes the
+    // shared attribute table once — no connection needed.
     let _ = server.set(&server.dis.firmware_revision, &firmware_revision());
     let _ = server.set(&server.dis.hardware_revision, &gatt_str::<16>(format_args!("{HARDWARE_REVISION}")));
     let _ = server.set(&server.dis.serial_number, &serial_string());
     let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
-    let _ = server.set(&server.obc.object_store, &store.borrow().digest().encode());
+    // `protocolVersion` (V2 / #632): the pre-pairing read serves `version u16 · store_epoch u32`.
+    // The epoch is read **once** here from the RRAM store — V3's boot mint runs before this task is
+    // spawned, so the line is always `Some` at this point (`unwrap!` it: a fallback to 0 would
+    // fabricate an era, and 0 is a legal epoch value). The value never changes for the device's life.
+    let store_epoch = {
+        let mut guard = shared.lock().await;
+        unwrap!(guard.settings.load_store_epoch())
+    };
+    let version_read = obc_ble::VersionRead { version: obc_ble::PROTOCOL_VERSION, store_epoch };
+    let _ = server.set(&server.obc.protocol_version, &version_read.encode());
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",
         firmware_revision().as_str(),
@@ -673,10 +682,10 @@ async fn host_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) -
 ///
 /// The `RefCell<ObjectStore>` borrow never spans an `await` (it ends before `publish_store_change`),
 /// matching the store's single-executor discipline. `publish_store_change` notifies a *connected*
-/// phone's `storeChanged` + digest; when disconnected its notifies fail harmlessly (no subscriber),
-/// and the re-seeded digest attribute + the revision bump make the next read/reconnect reflect the
-/// deletion. The `ObjectStore`'s own `bump_revision` rings the `STORE_CHANGED` edge the ride loop
-/// drains for the live catalog rescan + P3 remap.
+/// phone's `storeChanged`; when disconnected the notify fails harmlessly (no subscriber), and the
+/// revision bump makes the next `storeChanged`/reconnect reflect the deletion. The `ObjectStore`'s
+/// own `bump_revision` rings the `STORE_CHANGED` edge the ride loop drains for the live catalog
+/// rescan + P3 remap.
 async fn route_delete_task(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -691,7 +700,7 @@ async fn route_delete_task(
         };
         if deleted {
             info!("ble: [delete] on-device delete of route object {}", id);
-            // Notify a connected phone (harmless no-op when disconnected) and re-seed the digest.
+            // Notify a connected phone's `storeChanged` (harmless no-op when disconnected).
             data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
         } else {
             warn!("ble: [delete] on-device delete of route object {} found nothing", id);
@@ -730,7 +739,7 @@ async fn ride_delete_task(
 /// ride committed its `RD{id}.ORD` (`Storage::run_pending_save`), so re-scan `/tracks` into the
 /// [`ObjectStore`] catalog and bump the revision ([`ObjectStore::adopt_saved_rides`]). That one edge
 /// then feeds everyone the way an upload commit does: a connected phone gets `storeChanged(ride)` +
-/// the fresh digest (its next `listRides` includes the ride), and the `STORE_CHANGED` edge re-feeds
+/// (its next `listRides` includes the ride), and the `STORE_CHANGED` edge re-feeds
 /// the on-device Rides menu next pass. Before this task existed, both catalogs were boot-scans only
 /// and a freshly-finished ride was invisible everywhere until a reboot.
 async fn ride_saved_task(
