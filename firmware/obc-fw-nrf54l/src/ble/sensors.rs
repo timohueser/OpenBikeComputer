@@ -634,7 +634,7 @@ async fn serve_link(
             notifications += 1;
             // Soak breadcrumbs (#745): the first proves data flows at all; every 32nd (~30 s at an
             // HR strap's 1 Hz) is dense enough to bracket a drop without flooding RTT.
-            if notifications == 1 || notifications % 32 == 0 {
+            if notifications == 1 || notifications.is_multiple_of(32) {
                 info!("ble: [sensor] notification #{} ({} B)", notifications, n.as_ref().len());
             }
             decode_and_dispatch(kind, quantity, n.as_ref(), &mut cadence);
