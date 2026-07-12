@@ -20,8 +20,6 @@ struct FakeStage {
     extents: Result<Vec<Extent>, ExtentsError>,
     /// Fail every `read_stage` at or past this offset (`u32::MAX` = never).
     fail_reads_from: u32,
-    /// How many `read_stage` calls have landed — the "was the stage re-read?" witness (DR6).
-    reads: u32,
 }
 
 impl FakeStage {
@@ -36,7 +34,6 @@ impl FakeStage {
                 file: Some(file),
                 extents: Ok(vec![Extent { start_block: 100, blocks }]),
                 fail_reads_from: u32::MAX,
-                reads: 0,
             },
             header,
         )
@@ -48,7 +45,6 @@ impl StageIo for FakeStage {
         self.file.as_ref().map(|f| f.len() as u32)
     }
     fn read_stage(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), IoError> {
-        self.reads += 1;
         if offset >= self.fail_reads_from {
             return Err(IoError);
         }
@@ -132,7 +128,6 @@ fn scan_rejects_oversize_before_any_bulk_read() {
         file: Some(header.encode().to_vec()),
         extents: Ok(vec![]),
         fail_reads_from: HEADER_LEN as u32, // any body read would fail loudly
-        reads: 0,
     };
     assert_eq!(scan_with(&mut stage), Err(ScanError::Oversize));
 }
@@ -297,31 +292,36 @@ fn arm_aborts_on_a_failed_snapshot_without_touching_the_page() {
 }
 
 #[test]
-fn scan_then_arm_carries_the_ref_without_re_reading_the_stage() {
-    // DR6 (#734): the confirm's single scan produces the StagedRef the arm consumes — the arm
-    // path never touches the staged file again (it's all ArmIo). This is the host-side shape of
-    // the board carrying `run_scan`'s ref into `arm_update` instead of re-scanning UPDATE.BIN.
+fn arm_records_the_carried_scan_ref_verbatim() {
+    // DR6 (#734): the confirm's single scan produces the StagedRef the arm consumes. Note what
+    // this test does NOT claim: "arm never re-reads the stage" is structural, not asserted here —
+    // `arm` takes only an `ArmIo` (snapshot + page write), which by construction has no route back
+    // to the staged file, so a read-counter on the stage would be vacuously flat. The board-side
+    // "one CRC pass before `armed gen=…`" rides on that seam shape plus `arm_update` skipping its
+    // fallback scan, and is only observable on glass / via the sim.
+    //
+    // What this test pins is the carry contract itself: the ref the scan returned feeds `arm` by
+    // value (StagedRef is Copy) and lands in the Armed page verbatim — the bootloader's
+    // verify-before-erase then checks exactly the image the one scan validated.
     let image: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
     let (mut stage, header) = FakeStage::happy(&image, "v2.0.0-1-gcarry01");
 
-    // One scan: the full read + CRC pass.
+    // The one scan: the full read + CRC pass, yielding the ref the confirm carries.
     let carried = scan_with(&mut stage).expect("the one scan validates the stage");
-    let reads_after_scan = stage.reads;
-    assert!(reads_after_scan > 0, "the scan read + CRC'd the whole image");
     assert_eq!(carried.header, header);
 
-    // Arm from the carried ref — no second scan. StagedRef is Copy, so it feeds arm by value and
-    // stays inspectable here.
     let mut io = FakeArmIo::new(Ok(Some(staged(2))));
     let current = BootState::Idle { installed: Some(installed_header()) };
     let ticket = arm(&mut io, &current, carried).expect("arm consumes the carried ref");
     assert_eq!(ticket.rollback, Rollback::Snapshot);
-    assert_eq!(stage.reads, reads_after_scan, "arming re-read nothing from the staged file");
 
-    // The armed record carries exactly the scanned image — same bytes the one CRC pass validated.
+    // The armed record carries exactly the scanned image — same header/len/CRC/extents the one
+    // CRC pass validated.
     match &io.calls[1] {
         Call::WriteState(s) => match **s {
-            BootState::Armed { update, .. } => assert_eq!(update, carried, "the arm records the carried ref verbatim"),
+            BootState::Armed { update, .. } => {
+                assert_eq!(update, carried, "the Armed page records the carried ref verbatim")
+            }
             ref other => panic!("expected an Armed page, got {other:?}"),
         },
         other => panic!("expected the page write second, got {other:?}"),
