@@ -330,6 +330,9 @@ pub(crate) fn confirm_trial(settings: &mut RramSettingsStore) -> Option<ImageHea
 ///   unconfirmed first-install trial). Clear the marker, show the success toast.
 /// - [`Reverted`](obc_dfu::Verdict::Reverted) — the staged image is not running (rejected before the
 ///   erase, or its trial rolled back). Clear the marker, show the failure card.
+/// - [`Abandoned`](obc_dfu::Verdict::Abandoned) — the bootloader gave up on an unreadable `Armed`
+///   card pre-erase and booted the intact old app (DR3 #731). Clear the marker, show the "card
+///   unreadable — re-arm to retry" card.
 /// - [`NotStarted`](obc_dfu::Verdict::NotStarted) — an `Armed` record survived into the app: the
 ///   bootloader never consumed it (stale or missing). Downgrade the stray arm to `Idle` so it can't
 ///   fire by surprise later (the rollback snapshot's header is carried into `installed`, mirroring
@@ -356,6 +359,15 @@ pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut Rram
                 None => defmt::warn!("dfu: staged update is not the running image — rejected or rolled back"),
             }
             app.notify_update_failed(obc_app::DfuFailure::Reverted, staged);
+        }
+        obc_dfu::Verdict::Abandoned => {
+            settings.clear_arm_marker();
+            let staged = marker.as_ref().map(|m| m.staged.as_str());
+            match staged {
+                Some(v) => defmt::warn!("dfu: staged {=str} abandoned — Armed card was unreadable pre-erase", v),
+                None => defmt::warn!("dfu: staged update abandoned — Armed card was unreadable pre-erase"),
+            }
+            app.notify_update_failed(obc_app::DfuFailure::Abandoned, staged);
         }
         obc_dfu::Verdict::NotStarted => {
             defmt::warn!("dfu: Armed record survived into the app — bootloader never ran the install");

@@ -6,7 +6,7 @@
 //! the last readback), the retry counts, the header-skip/padding byte math, and every failure
 //! edge — power loss included.
 
-use obc_dfu::engine::{run, InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE};
+use obc_dfu::engine::{abandon_arm, run, InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE};
 use obc_dfu::{BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, PAGE_LEN};
 use std::collections::BTreeMap;
 
@@ -402,17 +402,83 @@ fn slot_bounds_gate() {
     assert_eq!(io.count_write_lines(), 0);
 }
 
-/// A transient SD read error must NOT clear the arm (unlike a mismatch): outcome `SdError`,
-/// state untouched, nothing written — the caller retries and the stage stays installable.
+/// A transient SD read error must NOT clear the arm (unlike a mismatch), and the engine flags
+/// *where* it happened so the driver knows whether it may abandon (DR3 #731): a **verify**-pass
+/// read (pre-erase, old app intact in the slot) reports [`Outcome::SdErrorPreErase`]; a **flash**-
+/// pass read (post-erase-started, the slot may be partly written) reports plain [`Outcome::SdError`]
+/// — forever-retry. Both leave the state page `Armed` and untouched.
 #[test]
-fn sd_error_leaves_arm_intact() {
-    for fail_at in [1, 3, 7] {
-        let (mut io, state, _img, _update) = armed(9001, true);
-        io.fail_read_at = Some(fail_at);
-        assert_eq!(run_engine(&mut io, &state), Outcome::SdError, "read #{fail_at}");
-        assert!(!io.ops.iter().any(|o| matches!(o, Op::WriteState(_))), "state must stay Armed");
-        assert_eq!(io.state(), state, "arm untouched after a transient SD error");
+fn sd_error_pre_and_post_erase_are_distinguished() {
+    // Count the read_blocks calls of a clean install; the first is unambiguously in the verify
+    // pass (pre-erase) and the last is unambiguously in the flash pass, after slot writes landed.
+    let (mut probe, state, _img, _update) = armed(9001, true);
+    assert_eq!(run_engine(&mut probe, &state), Outcome::Installed);
+    let total_reads = probe.ops.iter().filter(|o| matches!(o, Op::ReadBlocks { .. })).count();
+    assert!(total_reads >= 4, "need several reads across verify + flash");
+
+    // Pre-erase: the very first read is a verify read → SdErrorPreErase, nothing written, intact.
+    let (mut io, state, _img, _update) = armed(9001, true);
+    io.fail_read_at = Some(1);
+    assert_eq!(run_engine(&mut io, &state), Outcome::SdErrorPreErase, "first verify read");
+    assert!(!io.ops.iter().any(|o| matches!(o, Op::WriteLines { .. })), "nothing erased before verify passed");
+    assert!(!io.ops.iter().any(|o| matches!(o, Op::WriteState(_))), "state must stay Armed");
+    assert_eq!(io.state(), state, "arm untouched after a pre-erase SD error");
+
+    // Post-erase-started: the last read is a flash-pass read after writes landed → plain SdError,
+    // never PreErase — a mid-flash wobble must keep the forever-park, not abandon a dirty slot.
+    let (mut io, state, _img, _update) = armed(9001, true);
+    io.fail_read_at = Some(total_reads);
+    assert_eq!(run_engine(&mut io, &state), Outcome::SdError, "last flash read");
+    assert!(
+        io.ops.iter().any(|o| matches!(o, Op::WriteLines { .. })),
+        "the flash pass had started (slot partly written)"
+    );
+    assert!(!io.ops.iter().any(|o| matches!(o, Op::WriteState(_))), "state must stay Armed");
+    assert_eq!(io.state(), state, "arm untouched after a mid-flash SD error");
+}
+
+/// `abandon_arm` is the pre-erase give-up the driver runs after its bounded SD-retry budget (DR3
+/// #731): it clears the `Armed` page to `Idle`, carries the rollback snapshot's header into
+/// `installed` (exactly like the verify-reject path), and records an `ArmAbandoned` outcome against
+/// the arm's generation so the next boot's `verdict` shows the abandon card. It returns
+/// `StageRejected` (boot the intact old app) and never touches the app slot.
+#[test]
+fn abandon_arm_clears_to_idle_with_arm_abandoned_outcome() {
+    for with_rollback in [false, true] {
+        let (mut io, state, _img, _update) = armed(9001, with_rollback);
+        let expected_installed = match &state {
+            BootState::Armed { rollback, .. } => rollback.map(|r| r.header),
+            _ => unreachable!(),
+        };
+
+        // The driver's precondition: run() reported a pre-erase verify failure, arm still intact.
+        io.fail_read_at = Some(1);
+        assert_eq!(run_engine(&mut io, &state), Outcome::SdErrorPreErase);
+        assert_eq!(io.state(), state, "arm intact before the abandon");
+        io.fail_read_at = None; // the abandon's write_state only touches RRAM, not the card
+
+        assert_eq!(abandon_arm(&state, &mut io), Outcome::StageRejected, "with_rollback={with_rollback}");
+        match io.state() {
+            BootState::Idle { installed, last_outcome } => {
+                assert_eq!(last_outcome, Some(LastOutcome { kind: OutcomeKind::ArmAbandoned, generation: 7 }));
+                assert_eq!(installed, expected_installed, "outgoing header carried forward from the snapshot");
+            }
+            s => panic!("expected Idle after abandon, got {s:?}"),
+        }
+        assert!(io.flash.iter().all(|&b| b == FLASH_BLANK), "the app slot must be untouched by an abandon");
     }
+}
+
+/// Only an `Armed` pre-erase state may be abandoned. On anything else `abandon_arm` writes nothing
+/// and returns `SdError` (keep parking) — a misuse can never clear a `Trial`/`Idle` page or strand
+/// a mid-flash slot.
+#[test]
+fn abandon_arm_on_non_armed_is_a_noop() {
+    let idle = BootState::Idle { installed: None, last_outcome: None };
+    let mut io = MockIo::new(&idle);
+    assert_eq!(abandon_arm(&idle, &mut io), Outcome::SdError);
+    assert!(!io.ops.iter().any(|o| matches!(o, Op::WriteState(_))), "must not write on a non-Armed state");
+    assert_eq!(io.state(), idle, "page untouched");
 }
 
 /// Power-loss sweep: kill the mock at every possible write (torn), power-cycle, re-run from

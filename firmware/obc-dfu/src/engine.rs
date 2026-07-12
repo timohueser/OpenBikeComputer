@@ -23,8 +23,12 @@
 //!   cleared to `Idle` and the outcome is [`Outcome::StageRejected`] — a bad stage must never
 //!   cost the running firmware (epic invariant 1).
 //! - **SD read error** (any pass): could be a transient card wobble, so the arm is **not**
-//!   cleared — [`Outcome::SdError`], state untouched, the caller backs off and retries (the card
-//!   is life-support; recovery is reinsert + power cycle).
+//!   cleared — state untouched, the caller backs off and retries (the card is life-support;
+//!   recovery is reinsert + power cycle). Split by whether the slot may already be erased: a
+//!   *pre-erase install verify* read fails as [`Outcome::SdErrorPreErase`] (the old app is intact,
+//!   so after a bounded budget the driver may [`abandon_arm`], DR3 #731); every erase-reachable
+//!   pass — any flash pass, or a *rollback* verify — fails as [`Outcome::SdError`], which the
+//!   caller retries forever (never abandon a slot that isn't a bootable old app).
 //! - **Readback mismatch / RRAM write error**: the flash pass is retried up to [`FLASH_RETRIES`]
 //!   more times, then [`Outcome::FlashError`] — the caller halts (LED SOS) with the state still
 //!   `Armed`, so the next power cycle retries from scratch (epic invariant 2).
@@ -122,8 +126,17 @@ pub enum Outcome {
     Installed,
     /// An SD read failed mid-pass. The state page was **not** touched (a transient card error
     /// must never clear a valid arm) — caller: LED code, back off, bring the card up again, and
-    /// re-run; state-wise this boot never happened.
+    /// re-run; state-wise this boot never happened. Returned for **any pass the app slot may have
+    /// already been erased in** (the flash pass of either an install or a rollback, and the verify
+    /// of a *rollback* — that path's slot holds the unconfirmed trial, not a bootable old app): the
+    /// caller must retry forever, never abandon (epic #615 invariant 5).
     SdError,
+    /// An SD read failed during the **verify** pass of an [`Armed`](BootState::Armed) install —
+    /// i.e. *before anything was erased*, so the old app is still fully intact in the slot. Same
+    /// state-untouched retry semantics as [`SdError`], but flagged separately so the driver may,
+    /// after a bounded retry budget, [`abandon_arm`] rather than park forever (DR3 #731). Only the
+    /// pre-erase install verify yields this; every erase-reachable pass yields plain [`SdError`].
+    SdErrorPreErase,
     /// The readback never matched (or an RRAM write failed) after `1 +` [`FLASH_RETRIES`] flash
     /// passes — or the post-flash state write itself failed. The state page still holds the
     /// `Armed`/`Trial` record, so the next power cycle retries from scratch. Caller: LED SOS,
@@ -385,7 +398,9 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
                     let _ = io.write_state(&BootState::Idle { installed: rollback.map(|r| r.header), last_outcome });
                     Outcome::StageRejected
                 }
-                Err(VerifyError::Io) => Outcome::SdError,
+                // Pre-erase: the slot still holds the intact old app. Flag it so the driver can
+                // abandon after a bounded budget (DR3 #731) instead of parking forever.
+                Err(VerifyError::Io) => Outcome::SdErrorPreErase,
                 Ok(()) => match flash_verified(io, &update, slot, buf) {
                     Err(PassError::Sd) => Outcome::SdError,
                     Err(PassError::Flash) => Outcome::FlashError,
@@ -401,7 +416,10 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
             }
         }
 
-        // Unconfirmed trial with a snapshot: same engine, source = the rollback extents.
+        // Unconfirmed trial with a snapshot: same engine, source = the rollback extents. A verify
+        // Io here stays a plain `SdError` (forever-retry): the slot holds the *unconfirmed trial*,
+        // not a bootable old app, so abandoning would strand the device — DR3 abandons the install
+        // path only.
         BootDecision::Rollback(snapshot) => {
             let (installed, generation) = match state {
                 BootState::Trial { installed, generation, .. } => (Some(*installed), *generation),
@@ -432,5 +450,31 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
                 },
             }
         }
+    }
+}
+
+/// Abandon a pending [`Armed`](BootState::Armed) arm the driver could not install because the SD
+/// card never came up (or its verify reads kept failing) **before anything was erased** — DR3
+/// (#731). Clears the arm to `Idle`, carrying forward the outgoing image's header from the rollback
+/// snapshot exactly as the engine's verify-reject path does (`run`'s `VerifyError::Mismatch` arm),
+/// and records an [`OutcomeKind::ArmAbandoned`] outcome against the arm's `generation` so the next
+/// boot's [`verdict`](crate::state::verdict) shows the "card unreadable — re-arm to retry" card. The
+/// returned [`Outcome::StageRejected`] tells the driver to do the identical thing it already does
+/// for a rejected stage: LED code, then boot the intact old app.
+///
+/// **Only the caller's retry *count* policy lives in the driver; this "abandon writes Idle+outcome,
+/// pre-erase only" sequencing lives here (host-tested).** Calling it on a non-`Armed` state is a
+/// caller bug — it writes nothing and returns [`Outcome::SdError`] (keep parking), so the engine
+/// stays total and a misuse can never clear a `Trial`/`Idle` page or strand a mid-flash slot.
+pub fn abandon_arm(state: &BootState, io: &mut impl InstallIo) -> Outcome {
+    match state {
+        BootState::Armed { generation, rollback, .. } => {
+            let last_outcome = Some(LastOutcome { kind: OutcomeKind::ArmAbandoned, generation: *generation });
+            // Best-effort like the reject path: if even this write fails, the page stays `Armed`
+            // and the next power cycle simply retries the install — no worse than today.
+            let _ = io.write_state(&BootState::Idle { installed: rollback.map(|r| r.header), last_outcome });
+            Outcome::StageRejected
+        }
+        _ => Outcome::SdError,
     }
 }

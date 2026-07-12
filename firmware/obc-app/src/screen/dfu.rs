@@ -429,6 +429,7 @@ impl DfuFailedScreen {
         let msg = match self.why {
             DfuFailure::NotStarted => rx.t(Msg::DfuFailedNotStarted),
             DfuFailure::Reverted => rx.t(Msg::DfuFailedReverted),
+            DfuFailure::Abandoned => rx.t(Msg::DfuFailedAbandoned),
         };
         let bottom = wrapped(cv, msg, w / 2, TITLE_BAR_H + 84, w - 32, INK);
         // The staged version that failed, verbatim (never translated) — when the marker survived.
@@ -513,6 +514,21 @@ mod tests {
         assert_eq!(scr.error(), DfuScanError::TooFragmented);
         let (t, _) = run(&mut |cx| scr.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
+    }
+
+    /// The failure card carries its typed verdict, and each `DfuFailure` maps to its own non-empty
+    /// copy — in particular DR3's abandon card (#731) is distinct from the generic revert message.
+    #[test]
+    fn failed_card_variant_and_copy() {
+        use crate::i18n::{t, Msg};
+        use crate::settings::Language;
+        assert_eq!(DfuFailedScreen::new(DfuFailure::Abandoned, Some("v2.0.0")).why(), DfuFailure::Abandoned);
+        let not_started = t(Msg::DfuFailedNotStarted, Language::En);
+        let reverted = t(Msg::DfuFailedReverted, Language::En);
+        let abandoned = t(Msg::DfuFailedAbandoned, Language::En);
+        assert!([not_started, reverted, abandoned].iter().all(|s| !s.is_empty()), "every card has copy");
+        assert_ne!(abandoned, reverted, "the abandon card must not reuse the generic revert copy");
+        assert_ne!(abandoned, not_started);
     }
 
     /// The post-update toast dismisses on any press/Back.

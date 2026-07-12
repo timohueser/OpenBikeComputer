@@ -74,6 +74,10 @@ pub enum DfuFailure {
     /// rejected before the erase (old app intact) or its trial boot went unconfirmed and was
     /// rolled back.
     Reverted,
+    /// The bootloader could not read the `Armed` card before erasing anything and, after a bounded
+    /// retry budget, abandoned the arm and booted the intact old app (DR3 #731). The fix is on the
+    /// card, not the firmware: reinsert a readable card and re-arm.
+    Abandoned,
 }
 
 /// Why the staging scan rejected `UPDATE.BIN`, phrased for the app's error card (issue #620 §2).

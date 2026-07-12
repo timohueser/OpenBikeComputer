@@ -38,6 +38,27 @@ const INSTALL_BUF_LEN: usize = 4096;
 const BACKOFF_MIN_MS: u32 = 250;
 const BACKOFF_MAX_MS: u32 = 8_000;
 
+/// How many failed SD-retry rounds a **pre-erase `Armed`** install waits through before it gives up
+/// and abandons the arm (DR3 #731) — the count policy the engine leaves to the driver. Each round is
+/// a three-blink code (3 × (120 ms on + 180 ms off) = 900 ms) plus the growing backoff, which
+/// doubles 250 → 500 → 1000 → 2000 → 4000 → 8000 ms and then holds at 8000. So the wall time before
+/// the abandon, summed over the first ten rounds, is:
+///
+/// ```text
+///   round:   1     2     3     4      5      6      7      8      9      10
+///   backoff: 250   500   1000  2000   4000   8000   8000   8000   8000   8000  ms
+///   lap:     1150  1400  1900  2900   4900   8900   8900   8900   8900   8900  ms  (+900 ms blink)
+///   Σ lap ≈ 56.75 s  ≈ "on the order of a minute"
+/// ```
+///
+/// Ten rounds lands just under a minute of triple-blink — long enough that a card genuinely seating
+/// late (or a quick reinsertion) still installs, short enough that a dead/absent card doesn't strand
+/// intact firmware for long. Applies **only** to the pre-erase install path: a `Rollback` (mid-trial)
+/// and any mid-flash SD error keep the original forever-park (never abandon a half-written or
+/// trial-holding slot). Both bounded loops (init bring-up and the engine's pre-erase verify retry)
+/// use this same budget independently.
+const ARM_ABANDON_ROUNDS: u32 = 10;
+
 /// The BOOT_STATE RRAM page, read in place. The address comes from the `__boot_state_base`
 /// linker symbol (`ORIGIN(BOOT_STATE)` in `memory.x` — the app-side `build.rs` PROVIDEs the
 /// same symbol for the armer), the same convention as the app's `__settings_base`: the magic
@@ -125,15 +146,38 @@ fn boot(p: embassy_nrf::Peripherals) {
 
     let mut rram = Rramc::new(p.RRAMC);
 
-    // The card is needed only when the engine will stream extents. Bring-up retries FOREVER
-    // with a triple-blink + growing backoff: the card is life-support (the device is a
-    // paperweight without its maps), so "park until the card is back, then a power cycle
-    // recovers" is the designed worst case — never proceed toward an erase without a card.
+    // The card is needed only when the engine will stream extents. Bring-up retries with a
+    // triple-blink + growing backoff: the card is life-support, so "park until the card is back,
+    // then a power cycle recovers" is the designed worst case — never proceed toward an erase
+    // without a card. DR3 (#731) carves out the one case where parking is *not* the safest thing:
+    // a pre-erase `Armed` install (the old app is fully intact in the slot) gives up after
+    // [`ARM_ABANDON_ROUNDS`] and abandons the arm rather than stranding good firmware; a
+    // `Rollback` (the slot holds the unconfirmed trial, not a bootable old app) still parks
+    // forever.
     let mut card = match decision {
         BootDecision::Install(_) | BootDecision::Rollback(_) => {
             let mut blocks = sd::SdBlocks::new(p.SERIAL22, p.P1_11, p.P1_07, p.P1_06, p.P0_00);
             let mut backoff = BACKOFF_MIN_MS;
-            while !blocks.try_init() {
+            let abandonable = matches!(decision, BootDecision::Install(_));
+            let mut rounds = 0u32;
+            loop {
+                if blocks.try_init() {
+                    break Some(blocks);
+                }
+                // DR3: the card never came up. If this is a pre-erase install and the budget is
+                // spent, abandon the arm and boot the intact old app (a `write_state` only touches
+                // RRAM — no card needed). `abandon_arm` returns `StageRejected`, so the shared
+                // outcome dispatch below runs the old app after a two-blink "arm cleared" code.
+                if abandonable && rounds >= ARM_ABANDON_ROUNDS {
+                    #[cfg(feature = "rtt")]
+                    defmt::warn!("obc-boot: Armed card unreadable after {=u32} rounds — abandoning the arm", rounds);
+                    let mut io = install::BootIo::new(None, &mut rram, &mut led, &mut dog, boot_state_base());
+                    let _ = engine::abandon_arm(&state, &mut io);
+                    led.blink_code(2);
+                    led.off();
+                    return;
+                }
+                rounds += 1;
                 // An adopted dog must not convert this park into a reset storm — pet per lap
                 // (a lap is ≤ ~9 s: three blinks + the ≤8 s backoff, far inside 24 s), so the
                 // loop keeps waiting for the card exactly as designed.
@@ -144,7 +188,6 @@ fn boot(p: embassy_nrf::Peripherals) {
                 led::delay_ms(backoff);
                 backoff = (backoff * 2).min(BACKOFF_MAX_MS);
             }
-            Some(blocks)
         }
         _ => None,
     };
@@ -155,10 +198,29 @@ fn boot(p: embassy_nrf::Peripherals) {
     let slot = Slot { base: app_base, len: boot_state_base() - app_base };
     let mut buf = [0u8; INSTALL_BUF_LEN];
     let mut backoff = BACKOFF_MIN_MS;
+    // DR3 (#731): count only the *pre-erase* verify-read failures toward the abandon budget; a
+    // mid-flash `SdError` (slot possibly erased) never abandons.
+    let mut preerase_rounds = 0u32;
     let outcome = loop {
         let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, &mut dog, boot_state_base());
-        match engine::run(&state, &slot, &mut io, &mut buf) {
-            Outcome::SdError => {
+        let outcome = engine::run(&state, &slot, &mut io, &mut buf);
+        match outcome {
+            // A pre-erase verify read failed on an `Armed` install: the old app is intact, so after
+            // the bounded budget abandon the arm and boot it (DR3). Until then, back off and retry
+            // exactly like a mid-flash SdError.
+            Outcome::SdErrorPreErase if preerase_rounds >= ARM_ABANDON_ROUNDS => {
+                #[cfg(feature = "rtt")]
+                defmt::warn!(
+                    "obc-boot: Armed verify unreadable after {=u32} rounds — abandoning the arm",
+                    preerase_rounds
+                );
+                let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, &mut dog, boot_state_base());
+                break engine::abandon_arm(&state, &mut io);
+            }
+            Outcome::SdError | Outcome::SdErrorPreErase => {
+                if matches!(outcome, Outcome::SdErrorPreErase) {
+                    preerase_rounds += 1;
+                }
                 // Same pet-per-lap as the init loop above; inside the engine the progress
                 // hook pets every chunk (`install.rs`).
                 dog.pet();
@@ -219,9 +281,10 @@ fn boot(p: embassy_nrf::Peripherals) {
             defmt::error!("obc-boot: flash/readback failed after retries — halting (power cycle retries)");
             led.sos_forever(|| dog.pet());
         }
-        // The retry loop above never breaks with SdError; keep the match total without a
-        // panic path.
-        Outcome::SdError => led.sos_forever(|| dog.pet()),
+        // The retry loop above never breaks with either SD outcome (SdError retries forever;
+        // SdErrorPreErase either retries or breaks as StageRejected via `abandon_arm`); keep the
+        // match total without a panic path.
+        Outcome::SdError | Outcome::SdErrorPreErase => led.sos_forever(|| dog.pet()),
     }
 }
 

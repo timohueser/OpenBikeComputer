@@ -239,14 +239,15 @@ fn verdict_idle_without_marker_is_none() {
 }
 
 /// The core matrix: with a marker whose generation matches the recorded outcome, the *outcome* — not
-/// any version string — decides. `Installed` ⇒ Confirmed; every other outcome ⇒ Reverted.
+/// any version string — decides. `Installed` ⇒ Confirmed; `ArmAbandoned` ⇒ Abandoned (its own card,
+/// DR3 #731); every other failure outcome ⇒ Reverted.
 #[test]
 fn verdict_outcome_governs_with_matching_marker() {
     let gen = 7;
     assert_eq!(verdict(&idle_outcome("v2", OutcomeKind::Installed, gen), Some(gen)), Verdict::Confirmed);
     assert_eq!(verdict(&idle_outcome("v2", OutcomeKind::RolledBack, gen), Some(gen)), Verdict::Reverted);
     assert_eq!(verdict(&idle_outcome("v2", OutcomeKind::StageRejected, gen), Some(gen)), Verdict::Reverted);
-    assert_eq!(verdict(&idle_outcome("v2", OutcomeKind::ArmAbandoned, gen), Some(gen)), Verdict::Reverted);
+    assert_eq!(verdict(&idle_outcome("v2", OutcomeKind::ArmAbandoned, gen), Some(gen)), Verdict::Abandoned);
 }
 
 /// The headline bug (DR2 acceptance): re-staging the *currently-running* version and having it

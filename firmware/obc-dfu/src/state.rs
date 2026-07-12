@@ -213,9 +213,10 @@ pub enum OutcomeKind {
     /// The staged image failed verification before the app slot was erased — the old app is intact
     /// and the staged image never ran.
     StageRejected,
-    /// The bootloader gave up on an `Armed` card it couldn't read and booted the intact app instead.
-    /// **Reserved for DR3 (#731)**, which becomes its writer; nothing in this crate writes it yet, but
-    /// [`verdict`] handles it so DR3 is a pure addition.
+    /// The bootloader gave up on an `Armed` card it couldn't read **before erasing anything** and
+    /// booted the intact old app instead (DR3 #731). Written by [`engine::abandon_arm`](crate::engine::abandon_arm)
+    /// after the driver's bounded SD-retry budget is exhausted pre-erase; [`verdict`] maps it to
+    /// [`Verdict::Abandoned`] so the "card unreadable — re-arm to retry" card shows.
     ArmAbandoned,
 }
 
@@ -574,9 +575,14 @@ pub enum Verdict {
     /// The staged image is now the running image. The board clears the marker and shows the success
     /// toast.
     Confirmed,
-    /// The staged image is **not** running — rejected before the erase, rolled back, or (DR3) an
-    /// abandoned arm. The board clears the marker and shows the failure card.
+    /// The staged image is **not** running — rejected before the erase, or its trial rolled back.
+    /// The board clears the marker and shows the failure card.
     Reverted,
+    /// The bootloader gave up on an `Armed` card it couldn't read **before erasing anything** and
+    /// booted the intact old app (DR3 #731). Distinct from [`Reverted`](Verdict::Reverted) so the
+    /// board can show the specific "card unreadable — re-arm to retry" card instead of the generic
+    /// failure copy; the staged image never ran and the old firmware is untouched.
+    Abandoned,
     /// An `Armed` record survived into the running app — the bootloader never consumed it (stale or
     /// missing bootloader). The board downgrades the stray arm to `Idle`, clears the marker, and
     /// shows the not-started card.
@@ -591,8 +597,9 @@ pub enum Verdict {
 ///   matching the pre-DR2 board behaviour).
 /// - **`Idle`** with **no marker** ⇒ [`None`](Verdict::None); the recorded outcome is just history.
 /// - **`Idle`** with a marker whose `generation` matches the recorded [`LastOutcome`] ⇒ the outcome
-///   decides: [`Installed`](OutcomeKind::Installed) ⇒ [`Confirmed`](Verdict::Confirmed), every other
-///   outcome ⇒ [`Reverted`](Verdict::Reverted).
+///   decides: [`Installed`](OutcomeKind::Installed) ⇒ [`Confirmed`](Verdict::Confirmed),
+///   [`ArmAbandoned`](OutcomeKind::ArmAbandoned) ⇒ [`Abandoned`](Verdict::Abandoned) (DR3 #731),
+///   every other outcome ⇒ [`Reverted`](Verdict::Reverted).
 /// - **`Idle`** with a marker but **no / a stale-generation** outcome (a v1→v2 migrated page, a torn
 ///   engine write, or an outcome left by an earlier arm) ⇒ [`Reverted`](Verdict::Reverted): the
 ///   conservative call, since we cannot prove the staged image is running. This is the one-time
@@ -606,9 +613,8 @@ pub fn verdict(state: &BootState, marker_generation: Option<u32>) -> Verdict {
             Some(gen) => match last_outcome {
                 Some(o) if o.generation == gen => match o.kind {
                     OutcomeKind::Installed => Verdict::Confirmed,
-                    OutcomeKind::RolledBack | OutcomeKind::StageRejected | OutcomeKind::ArmAbandoned => {
-                        Verdict::Reverted
-                    }
+                    OutcomeKind::ArmAbandoned => Verdict::Abandoned,
+                    OutcomeKind::RolledBack | OutcomeKind::StageRejected => Verdict::Reverted,
                 },
                 _ => Verdict::Reverted,
             },
