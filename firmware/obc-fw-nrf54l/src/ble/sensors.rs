@@ -20,9 +20,18 @@
 //!   delivered synchronously through `Runner::run_with_handler`'s handler. So [`ScanEventHandler`]
 //!   parses each report here (armed by [`SCAN_ARMED`]) and [`super::host_task`] runs the host with
 //!   it. `run()`'s "call repeatedly" doc comment refers to the guard, not a report method.
-//! - **Legacy scan + legacy connect.** [`Scanner::scan`] (`LeSetScanEnable`) and
-//!   [`Central::connect`] (`LeCreateConn`) — the SDC is built with `support_scan()` /
-//!   `support_central()` but **not** the `_ext_` variants; sensors advertise legacy.
+//! - **Extended scan + extended connect** ([`Scanner::scan_ext`] / [`Central::connect_ext`]) —
+//!   **not** the legacy commands, and not by choice of wire format (sensors advertise legacy
+//!   ADV_IND, which an extended scanner/initiator receives fine): the nRF54L15 SDC blob
+//!   (nrfxlib 3.3.0) **faults internally** (`SoftdeviceController: 50:701`) the instant a *legacy*
+//!   `LeCreateConn` initiator receives its target's advertisement — 100 % reproducible in a
+//!   minimal harness (`src/bin/ble_central_repro.rs`, 2026-07-12) — while the same connect issued
+//!   as `LeExtCreateConn` works. Nordic's own central-role coverage runs through Zephyr, which
+//!   uses the extended commands; the legacy initiator path is the untested one (reported
+//!   upstream, #736). And because legacy and extended adv/scan/initiate commands are one
+//!   mutually-exclusive HCI group (Core v6 Vol 4 E 3.1.1 — first use latches the mode, the other
+//!   class then bounces `Command Disallowed`), the advertiser rides the extended commands too
+//!   ([`super::lifecycle`]) — same legacy PDUs on air, phones see no difference.
 //! - **The `GattClient` event task must be polled concurrently with the notification loop.**
 //!   [`GattClient::task`] pumps the ATT rx; without it `subscribe`/`next` never complete. We
 //!   `select` the two (plus a radio/-request interrupt), so a disconnect (task returns
@@ -281,16 +290,29 @@ const fn kind_of(quantity: usize) -> SensorKind {
 pub(crate) struct ScanEventHandler;
 
 impl EventHandler for ScanEventHandler {
-    // `on_adv_reports` exists on the trait only under trouble-host's `scan` feature — which the
-    // board's `ble` feature always enables, and this module only compiles under `ble`, so the
-    // override is unconditional here (a board-crate `#[cfg(feature = "scan")]` would wrongly read the
-    // *board* crate's feature set and drop every scan report).
+    // The trait methods exist only under trouble-host's `scan` feature — which the board's `ble`
+    // feature always enables, and this module only compiles under `ble`, so the overrides are
+    // unconditional here (a board-crate `#[cfg(feature = "scan")]` would wrongly read the *board*
+    // crate's feature set and drop every scan report).
     fn on_adv_reports(&self, reports: bt_hci::param::LeAdvReportsIter) {
         if !SCAN_ARMED.load(Ordering::Relaxed) {
             return;
         }
-        for report in reports {
-            let Ok(report) = report else { continue };
+        for report in reports.flatten() {
+            let mut addr = [0u8; 6];
+            addr.copy_from_slice(report.addr.raw());
+            observe_report(addr, report.addr_kind.as_raw() & 1 == 1, report.data, report.rssi);
+        }
+    }
+
+    // The live path: [`run_scan`] runs an **extended** scan (see the module doc — the whole stack
+    // is on the extended command set), whose reports arrive on the extended event. A legacy
+    // ADV_IND from a sensor is delivered here too, wrapped in `LeExtAdvReport`.
+    fn on_ext_adv_reports(&self, reports: bt_hci::param::LeExtAdvReportsIter) {
+        if !SCAN_ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        for report in reports.flatten() {
             let mut addr = [0u8; 6];
             addr.copy_from_slice(report.addr.raw());
             observe_report(addr, report.addr_kind.as_raw() & 1 == 1, report.data, report.rssi);
@@ -431,7 +453,8 @@ async fn run_scan(stack: &'static SensorStack) {
         timeout: Duration::from_secs(SCAN_SECS),
         ..Default::default()
     };
-    match scanner.scan(&config).await {
+    // Extended scan — the stack never issues a legacy scan/adv/initiate command (module doc).
+    match scanner.scan_ext(&config).await {
         Ok(_session) => {
             // The session keeps the scan enabled; reports flow through the handler. End the window
             // early if the radio switches off or a new request lands.
@@ -485,23 +508,25 @@ async fn run_link(stack: &'static SensorStack, quantity: usize) -> bool {
         },
     };
 
-    let conn = match select3(central.connect(&config), Timer::after_secs(CONNECT_TIMEOUT_SECS), WORK_EDGE.wait()).await
-    {
-        Either3::First(Ok(conn)) => conn,
-        Either3::First(Err(e)) => {
-            warn!("ble: [sensor] connect failed: {:?}", defmt::Debug2Format(&e));
-            return false;
-        }
-        // Timeout / interrupt: dropping the connect future cancels the create-connection.
-        Either3::Second(()) => {
-            info!("ble: [sensor] connect attempt timed out");
-            return false;
-        }
-        Either3::Third(()) => {
-            info!("ble: [sensor] connect attempt interrupted (radio/request)");
-            return true;
-        }
-    };
+    // `connect_ext`, NOT `connect`: the legacy `LeCreateConn` initiator faults the SDC blob the
+    // moment the target's advert arrives (`SoftdeviceController: 50:701` — see the module doc).
+    let conn =
+        match select3(central.connect_ext(&config), Timer::after_secs(CONNECT_TIMEOUT_SECS), WORK_EDGE.wait()).await {
+            Either3::First(Ok(conn)) => conn,
+            Either3::First(Err(e)) => {
+                warn!("ble: [sensor] connect failed: {:?}", defmt::Debug2Format(&e));
+                return false;
+            }
+            // Timeout / interrupt: dropping the connect future cancels the create-connection.
+            Either3::Second(()) => {
+                info!("ble: [sensor] connect attempt timed out");
+                return false;
+            }
+            Either3::Third(()) => {
+                info!("ble: [sensor] connect attempt interrupted (radio/request)");
+                return true;
+            }
+        };
 
     serve_link(stack, &conn, quantity, kind).await
     // `conn` drops on return → the sensor link is disconnected.
