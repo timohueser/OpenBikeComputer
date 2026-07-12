@@ -12,8 +12,9 @@
 //!   get a *session-scoped* one from the reserved [`SIDELOAD_ID_BASE`] band, handed out by the
 //!   registry in `sd.rs` that the ride loop's catalog scan shares (identical ids in both tables) —
 //!   the app never persists those.
-//! - **Store revision + digest**: bumped on every commit/delete; the BLE plane notifies `storeChanged`
-//!   + the digest characteristic from it.
+//! - **Store revision**: bumped on every commit/delete; the BLE plane stamps it into the
+//!   `storeChanged` status message — protocol v2's sole change signal (the `objectStore` digest
+//!   characteristic is retired).
 //! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit. Uploads are
 //!   not resumable: an interrupted upload (a drop or an `op=3` abort) is discarded and the app re-sends
 //!   the object from the start.
@@ -41,8 +42,8 @@ use heapless::Vec;
 use obc_app::settings::DeviceName;
 use obc_app::{Settings, SettingsStore, MAX_ROUTES};
 use obc_ble::{
-    Crc32, ListHeader, ObjectStoreDigest, ObjectType, Receiver, RideListEntry, RouteListEntry, StreamSender,
-    TransferControl, TransferStatus,
+    Crc32, ListHeader, ObjectType, Receiver, RideListEntry, RouteListEntry, StreamSender, TransferControl,
+    TransferStatus,
 };
 
 use crate::sd::Storage;
@@ -259,9 +260,19 @@ struct ObjectSlot {
 /// (warned at scan) until the card is tidied.
 pub const MAX_RIDES: usize = 128;
 
-/// The list-object buffer: header + one entry per slot of the **larger** catalog (both lists stream
-/// from the same scratch — one transfer at a time).
-const LIST_BUF_LEN: usize = ListHeader::object_len(if MAX_RIDES > MAX_ROUTES { MAX_RIDES } else { MAX_ROUTES });
+/// The list-object buffer: header + one entry per slot of whichever catalog encodes **larger** (both
+/// lists stream from the same scratch — one transfer at a time). Protocol v2 gives the two lists
+/// different entry sizes (`routeList` 76 B with its content CRC, `rideList` 72 B), so the larger
+/// object isn't simply the larger count — compare both encoded sizes.
+const LIST_BUF_LEN: usize = {
+    let route = ListHeader::object_len(MAX_ROUTES, RouteListEntry::ENTRY_LEN);
+    let ride = ListHeader::object_len(MAX_RIDES, RideListEntry::ENTRY_LEN);
+    if route > ride {
+        route
+    } else {
+        ride
+    }
+};
 
 // The side-load id band base lives in `sd.rs` beside the session registry both scanners share
 // (the ride loop's catalog scan assigns the *same* session ids — see `Storage::sideload_id`).
@@ -277,13 +288,19 @@ pub struct ObjectStore {
     routes: Vec<ObjectSlot, MAX_ROUTES>,
     /// The stored rides: scanned at boot and re-scanned on the saved-ride edge ([`RIDE_SAVED`]) —
     /// since the de-split the `ble` build *is* the map build, so the ride loop records new rides
-    /// mid-session and this catalog must follow (it feeds the `rideList` object and the digest's
-    /// `ride_count` the phone syncs against).
+    /// mid-session and this catalog must follow (it feeds the `rideList` object the phone syncs
+    /// against).
     rides: Vec<ObjectSlot, MAX_RIDES>,
     /// The next fresh-upload object id (ids are never reused within a boot).
     next_id: u16,
     /// The store revision: monotonic per boot, bumped on every commit/delete.
     revision: u32,
+    /// Full route-catalog size **before** the [`MAX_ROUTES`] cap — the `routeList` header's `total`
+    /// (epic #632 item 7). Equal to `routes.len()` when the card fits the cap; greater when the scan
+    /// dropped the excess, which the app surfaces as a truncation warning.
+    route_total: u16,
+    /// Full ride-catalog size before the [`MAX_RIDES`] cap — the `rideList` header's `total`.
+    ride_total: u16,
     /// The built list / diagnostics object a download streams from.
     list_buf: [u8; LIST_BUF_LEN],
 }
@@ -300,6 +317,8 @@ impl ObjectStore {
             rides: Vec::new(),
             next_id: 0,
             revision: 1,
+            route_total: 0,
+            ride_total: 0,
             list_buf: [0; LIST_BUF_LEN],
         };
         store.rescan(shared);
@@ -319,11 +338,16 @@ impl ObjectStore {
     /// fresh upload can't alias a stored object across reboots.
     fn rescan(&mut self, shared: &mut SharedStore) {
         self.routes.clear();
+        self.route_total = 0;
         let Some(storage) = &mut shared.storage else { return };
         let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
+        // Count how many route files the cap dropped (epic #632 item 7): `route_total` = listed +
+        // dropped, so the `routeList` header's `total` exceeds `count` exactly when the scan
+        // truncated — the app then warns instead of silently answering "up to date".
+        let mut over_cap: u16 = 0;
         storage.for_each_route_file(|n| {
-            if !names.is_full() {
-                let _ = names.push(n.clone());
+            if names.push(n.clone()).is_err() {
+                over_cap = over_cap.saturating_add(1);
             }
         });
         for name in &names {
@@ -354,6 +378,8 @@ impl ObjectStore {
                 }
             }
         }
+        // `total` = listed entries + those the cap dropped (see `over_cap` above).
+        self.route_total = (self.routes.len() as u16).saturating_add(over_cap);
         defmt::info!("store: {=usize} route object(s), next id {=u16}", self.routes.len(), self.next_id);
     }
 
@@ -363,16 +389,19 @@ impl ObjectStore {
     /// deleted. Ordered as the directory lists them; the app sorts by `start_time`.
     fn rescan_rides(&mut self, shared: &mut SharedStore) {
         self.rides.clear();
+        self.ride_total = 0;
         let Some(storage) = &mut shared.storage else { return };
         let mut entries: Vec<(u16, ShortFileName), MAX_RIDES> = Vec::new();
-        let mut overflow = false;
+        // Count the excess the cap drops (epic #632 item 7) rather than boolean-flagging it, so
+        // the `rideList` header's `total` makes the truncation visible on the wire.
+        let mut over_cap: u16 = 0;
         storage.for_each_ride_file(|id, n| {
             if entries.push((id, n.clone())).is_err() {
-                overflow = true;
+                over_cap = over_cap.saturating_add(1);
             }
         });
-        if overflow {
-            defmt::warn!("store: more than {=usize} ride objects — the excess is not listed", MAX_RIDES);
+        if over_cap > 0 {
+            defmt::warn!("store: more than {=usize} ride objects — {=u16} not listed", MAX_RIDES, over_cap);
         }
         for (id, name) in &entries {
             match storage.ride_object_info(name) {
@@ -387,16 +416,15 @@ impl ObjectStore {
                 }
             }
         }
+        self.ride_total = (self.rides.len() as u16).saturating_add(over_cap);
         defmt::info!("store: {=usize} ride object(s)", self.rides.len());
     }
 
-    /// The store digest.
-    pub fn digest(&self) -> ObjectStoreDigest {
-        ObjectStoreDigest {
-            revision: self.revision,
-            route_count: self.routes.len() as u16,
-            ride_count: self.rides.len() as u16,
-        }
+    /// The current store revision — monotonic per boot, bumped on every commit/delete. The BLE plane
+    /// stamps it into the `storeChanged` status message (protocol v2's sole change signal — the
+    /// `objectStore` digest characteristic is retired).
+    pub fn revision(&self) -> u32 {
+        self.revision
     }
 
     fn bump_revision(&mut self) -> u32 {
@@ -487,7 +515,11 @@ impl ObjectStore {
         if !storage.delete_route_file(&self.routes[idx].file) {
             return false;
         }
+        // Retire the route's content-CRC sidecar entry (epic #632 item 6) — ids never reuse, so this
+        // is belt-and-braces tidiness that keeps the sidecar from carrying a stale fingerprint.
+        storage.forget_route_crc(id);
         self.routes.remove(idx);
+        self.route_total = self.route_total.saturating_sub(1);
         self.bump_revision();
         true
     }
@@ -505,6 +537,7 @@ impl ObjectStore {
         // Retire the synced flag (belt-and-braces — ids never reuse) so the sidecar stays tidy.
         storage.forget_ride_synced(id);
         self.rides.remove(idx);
+        self.ride_total = self.ride_total.saturating_sub(1);
         self.bump_revision();
         true
     }
@@ -607,7 +640,12 @@ impl ObjectStore {
     /// replaced file swapped), the revision bumps, and the result carries the assigned id; on a mismatch
     /// nothing is committed and the temp is dropped. Returns `(object_id, status)` for the
     /// `transferResult`.
-    pub fn upload_finish(&mut self, shared: &mut SharedStore, rx: &Receiver) -> (u16, TransferStatus) {
+    ///
+    /// `whole_crc` is the verified whole-object CRC-32 from the upload descriptor (the [`Receiver`]
+    /// only reaches [`TransferStatus::Committed`] when the streamed bytes matched it), persisted into
+    /// the `/routes` content-CRC sidecar under the committed id in the **same movement** (epic #632
+    /// item 6) so the next `routeList` carries the route's fingerprint without a lazy re-read.
+    pub fn upload_finish(&mut self, shared: &mut SharedStore, rx: &Receiver, whole_crc: u32) -> (u16, TransferStatus) {
         let outcome = match rx.outcome() {
             Some(o) => o,
             None => return (rx.object_id(), TransferStatus::Error), // caller bug: not complete
@@ -645,9 +683,17 @@ impl ObjectStore {
                         m.next_route_id = m.next_route_id.max(self.next_id);
                         shared.settings.save_id_marks(&m);
                         let _ = self.routes.push(ObjectSlot { id, file, byte_len });
+                        // A fresh route grows the catalog (a replace reuses its slot) — keep `total`
+                        // in step so the next `routeList` header's count == total (untruncated).
+                        self.route_total = self.route_total.saturating_add(1);
                         id
                     }
                 };
+                // Persist the verified whole-object CRC into the `/routes` content-CRC sidecar in the
+                // same movement (epic #632 item 6) — a replace upserts the id's fingerprint, a fresh
+                // upload records it — so the route's `routeList` entry serves its CRC immediately,
+                // never lazily. (A side-loaded route, which never passes through here, fills lazily.)
+                storage.set_route_crc(id, whole_crc);
                 // The app-UI upload event (#451): the committed id + fresh-vs-replace, published
                 // before the revision bump so the STORE_WAKE'd pass sees both edges together.
                 UPLOAD_EVENT.store(
@@ -666,6 +712,7 @@ impl ObjectStore {
                         shared.storage.as_ref().is_none_or(|s| s.route_object_info(&self.routes[i].file).is_none());
                     if gone {
                         self.routes.remove(i);
+                        self.route_total = self.route_total.saturating_sub(1);
                         self.bump_revision();
                     }
                 }
@@ -876,73 +923,111 @@ impl ObjectStore {
     ///
     /// A cataloged slot was readable at the mount scan, so a read failure here is a transient
     /// glitch. Fail the **whole** list rather than silently omit the entry: the app takes a
-    /// committed list as authoritative (it reconciles its on-device link set off it), and a list
-    /// shorter than the `objectStore` digest's count would make it drop a still-present route.
-    /// `None` → the caller answers a typed `error` and the app retries, keeping its links.
-    fn build_list(&mut self, shared: &SharedStore, ty: ObjectType) -> Option<usize> {
-        // Each arm only supplies its per-entry field mapping (slot → encoded entry, `None` on a
-        // failed read); `encode_list` owns the shared header-offset arithmetic both share.
-        let (len, count) = match (&shared.storage, ty) {
-            (Some(storage), ObjectType::RouteList) => Self::encode_list(
-                &mut self.list_buf,
-                self.routes.iter().map(|slot| {
-                    let (byte_len, info) = storage.route_object_info(&slot.file)?;
-                    Some(
-                        RouteListEntry {
-                            object_id: slot.id,
-                            byte_len,
-                            distance_m: info.distance_m,
-                            ascent_m: info.ascent_m,
-                            point_count: info.point_count,
-                            waypoint_count: info.waypoint_count,
-                            name: info.name.as_bytes(),
-                        }
-                        .encode(),
-                    )
-                }),
-            )?,
-            (Some(storage), ObjectType::RideList) => Self::encode_list(
-                &mut self.list_buf,
-                self.rides.iter().map(|slot| {
-                    let (byte_len, info) = storage.ride_object_info(&slot.file)?;
-                    Some(
-                        RideListEntry {
-                            object_id: slot.id,
-                            byte_len,
-                            start_time: info.start_time,
-                            distance_m: info.distance_m,
-                            moving_time_s: info.moving_time_s,
-                            avg_speed_cms: info.avg_speed_cms,
-                            climb_m: info.climb_m,
-                            name: info.name.as_bytes(),
-                        }
-                        .encode(),
-                    )
-                }),
-            )?,
-            // No card, or a non-list type: an empty list — just the header.
-            _ => (ListHeader::ENCODED_LEN, 0),
+    /// committed list as authoritative (it reconciles its on-device link set off it), and a short
+    /// list would make it drop a still-present object. `None` → the caller answers a typed `error`
+    /// and the app retries, keeping its links.
+    ///
+    /// The v2 header carries `total` (the pre-cap catalog size, from [`Self::route_total`] /
+    /// [`Self::ride_total`]) beside `count`, so a `MAX_ROUTES`/`MAX_RIDES` truncation is visible on
+    /// the wire. `routeList` entries also carry the content CRC (see [`Self::build_route_list`]).
+    fn build_list(&mut self, shared: &mut SharedStore, ty: ObjectType) -> Option<usize> {
+        let (body_len, count, total, entry_len) = match ty {
+            ObjectType::RouteList => self.build_route_list(shared)?,
+            ObjectType::RideList => self.build_ride_list(shared)?,
+            // A non-list type never reaches here (`download_open` only calls this for the two list
+            // types); an empty header keeps the arm total.
+            _ => (ListHeader::ENCODED_LEN, 0, 0, RideListEntry::ENTRY_LEN as u8),
         };
-        self.list_buf[..ListHeader::ENCODED_LEN].copy_from_slice(&ListHeader { count }.encode());
-        Some(len)
+        self.list_buf[..ListHeader::ENCODED_LEN].copy_from_slice(&ListHeader { count, total }.encode(entry_len));
+        Some(body_len)
     }
 
-    /// Encode `entries` into `buf` after the [`ListHeader`], returning the total byte length + entry
-    /// count. Each item is the encoded entry, or `None` for a slot that couldn't be read *now* —
-    /// which fails the whole list (see [`Self::build_list`]) by propagating out through `?`.
-    fn encode_list(
-        buf: &mut [u8],
-        entries: impl Iterator<Item = Option<[u8; obc_ble::LIST_ENTRY_LEN]>>,
-    ) -> Option<(usize, u16)> {
+    /// Build the `routeList` into [`Self::list_buf`] — the v2 path that also serves each entry's
+    /// content CRC-32 (epic #632 item 6). The CRC comes from the `/routes` sidecar; a route with no
+    /// entry (side-loaded, or a pre-v2 stock card) is **lazily filled** here — one streaming
+    /// whole-object CRC pass, then the whole sidecar is persisted once. A transient CRC-read failure
+    /// serves `0 = unknown` (the sidecar stays unfilled, so the next build retries); a genuine CRC of
+    /// `0` is a legal value served as `0`, never special-cased. Returns `(body_len, count, total,
+    /// entry_len)`. `None` on a transient header-read failure (fails the whole list — see
+    /// [`Self::build_list`]).
+    fn build_route_list(&mut self, shared: &mut SharedStore) -> Option<(usize, u16, u16, u8)> {
+        let Some(storage) = shared.storage.as_mut() else {
+            return Some((ListHeader::ENCODED_LEN, 0, 0, RouteListEntry::ENTRY_LEN as u8));
+        };
+        let mut crcs = storage.load_route_crcs();
+        let mut crcs_dirty = false;
         let mut off = ListHeader::ENCODED_LEN;
         let mut count: u16 = 0;
-        for entry in entries {
-            let entry = entry?;
-            buf[off..off + obc_ble::LIST_ENTRY_LEN].copy_from_slice(&entry);
-            off += obc_ble::LIST_ENTRY_LEN;
+        for i in 0..self.routes.len() {
+            let id = self.routes[i].id;
+            let file = self.routes[i].file.clone();
+            let (byte_len, info) = storage.route_object_info(&file)?; // transient → fail whole list
+            let crc = match crcs.get(id) {
+                Some(c) => c,
+                // Lazy fill: stream the whole file once through the detail-download handle slot
+                // (idle during a list build) to compute the CRC, then remember it as dirty.
+                None => match storage.open_object(&file).and_then(|len| {
+                    let computed = object_crc(storage, len);
+                    storage.close_object();
+                    computed
+                }) {
+                    Some(c) => {
+                        if crcs.insert(id, c) {
+                            crcs_dirty = true;
+                        }
+                        c
+                    }
+                    None => RouteListEntry::CRC_UNKNOWN, // transient read failure → 0 = unknown
+                },
+            };
+            let entry = RouteListEntry {
+                object_id: id,
+                byte_len,
+                distance_m: info.distance_m,
+                ascent_m: info.ascent_m,
+                point_count: info.point_count,
+                waypoint_count: info.waypoint_count,
+                name: info.name.as_bytes(),
+                crc32: crc,
+            }
+            .encode();
+            self.list_buf[off..off + RouteListEntry::ENTRY_LEN].copy_from_slice(&entry);
+            off += RouteListEntry::ENTRY_LEN;
             count += 1;
         }
-        Some((off, count))
+        // Persist any lazy fills in one write (skipped when every route already had a sidecar entry).
+        if crcs_dirty {
+            storage.write_route_crcs(&crcs);
+        }
+        Some((off, count, self.route_total, RouteListEntry::ENTRY_LEN as u8))
+    }
+
+    /// Build the `rideList` into [`Self::list_buf`] — unchanged 72-byte entries (no content CRC).
+    /// Returns `(body_len, count, total, entry_len)`; `None` on a transient header-read failure.
+    fn build_ride_list(&mut self, shared: &SharedStore) -> Option<(usize, u16, u16, u8)> {
+        let Some(storage) = shared.storage.as_ref() else {
+            return Some((ListHeader::ENCODED_LEN, 0, 0, RideListEntry::ENTRY_LEN as u8));
+        };
+        let mut off = ListHeader::ENCODED_LEN;
+        let mut count: u16 = 0;
+        for slot in &self.rides {
+            let (byte_len, info) = storage.ride_object_info(&slot.file)?; // transient → fail whole list
+            let entry = RideListEntry {
+                object_id: slot.id,
+                byte_len,
+                start_time: info.start_time,
+                distance_m: info.distance_m,
+                moving_time_s: info.moving_time_s,
+                avg_speed_cms: info.avg_speed_cms,
+                climb_m: info.climb_m,
+                name: info.name.as_bytes(),
+            }
+            .encode();
+            self.list_buf[off..off + RideListEntry::ENTRY_LEN].copy_from_slice(&entry);
+            off += RideListEntry::ENTRY_LEN;
+            count += 1;
+        }
+        Some((off, count, self.ride_total, RideListEntry::ENTRY_LEN as u8))
     }
 }
 
