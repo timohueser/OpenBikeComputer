@@ -1197,6 +1197,92 @@ pub fn decode_id_marks(bytes: &[u8]) -> Option<IdMarks> {
     Some(IdMarks { next_route_id: u16::from_le_bytes([b[6], b[7]]), next_ride_id: u16::from_le_bytes([b[8], b[9]]) })
 }
 
+// ==================== store-epoch nonce (protocol v2, #632/#767) ====================
+//
+// A per-device-lifetime `u32` nonce that lets the phone detect an **id-era reset**: any event that
+// loses the durable id floor (the id-marks line above) while the app keeps its library — a
+// full-chip reflash, a factory reset / RMA / recovery, or a torn id-marks write — reopens
+// already-issued object ids, so freshly-minted ids silently *alias* months-old phone-side state
+// (the 2026-07-12 ride-sync incident). The nonce is minted from the TRNG once per device lifetime,
+// persisted in its **own** RRAM settings line — deliberately *not* inside the id-marks line, which
+// rewrites on every ride finish and must stay one atomic write (its spare pad is reserved for
+// `next_trip_id`, #526); the epoch line is written ~once per device lifetime. It is served over the
+// pre-pairing `protocolVersion` read (V2, #766); the app scopes all id-keyed state by
+// (device serial, store epoch), so an era change makes the old era's keys stop matching by
+// construction — no migration code.
+//
+// The mint decision ([`store_epoch_mint`]) is a pure function so the subtle rule is host-tested
+// without the board crate; the board glue only reads the two RRAM lines, draws one TRNG word, and
+// writes back. Torn/blank/foreign line → `None`, exactly the id-marks conventions.
+
+/// The store-epoch line's fixed length: one RRAM write line (16 bytes), like the id-marks and
+/// boot-counter lines. Layout: `magic(4) · version(1) · pad(1) · epoch u32 LE · pad(2) · crc16 LE ·
+/// pad(2)` — CRC-16 over bytes `[0..10]`.
+pub const STORE_EPOCH_LEN: usize = 16;
+/// The store-epoch line's tag; anything else there (blank page, torn write, older layout) decodes
+/// to `None` — "no epoch", which the mint rule treats as clause 1 (mint a fresh nonce).
+const STORE_EPOCH_MAGIC: [u8; 4] = *b"OBCE";
+/// Store-epoch layout version — bump on any field change (an old version reads as no epoch).
+const STORE_EPOCH_VERSION: u8 = 1;
+/// CRC-covered prefix of the store-epoch line: `magic(4) · version(1) · pad(1) · epoch u32 LE`.
+const STORE_EPOCH_PAYLOAD: usize = 10;
+
+/// Pack the store-epoch nonce into its fixed 16-byte RRAM line. Inverse of [`decode_store_epoch`].
+pub fn encode_store_epoch(epoch: u32) -> [u8; STORE_EPOCH_LEN] {
+    let mut b = [0u8; STORE_EPOCH_LEN];
+    b[0..4].copy_from_slice(&STORE_EPOCH_MAGIC);
+    b[4] = STORE_EPOCH_VERSION;
+    b[6..10].copy_from_slice(&epoch.to_le_bytes());
+    let crc = crc16(&b[0..STORE_EPOCH_PAYLOAD]);
+    b[STORE_EPOCH_PAYLOAD..STORE_EPOCH_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+    b
+}
+
+/// Decode a store-epoch line, or `None` for anything but a clean read of this format — a blank
+/// page, a torn write, a short slice, or an older layout. `None` means **no epoch**: the mint rule
+/// draws a fresh one (clause 1).
+pub fn decode_store_epoch(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() < STORE_EPOCH_LEN {
+        return None;
+    }
+    let b = &bytes[..STORE_EPOCH_LEN];
+    if b[0..4] != STORE_EPOCH_MAGIC || b[4] != STORE_EPOCH_VERSION {
+        return None;
+    }
+    let crc = u16::from_le_bytes([b[STORE_EPOCH_PAYLOAD], b[STORE_EPOCH_PAYLOAD + 1]]);
+    if crc != crc16(&b[0..STORE_EPOCH_PAYLOAD]) {
+        return None;
+    }
+    Some(u32::from_le_bytes([b[6], b[7], b[8], b[9]]))
+}
+
+/// The boot-time store-epoch mint decision (protocol v2, #632 item 5) — a pure function so the
+/// subtle rule is host-testable. Given the decoded epoch line and id-marks line (each `None` when
+/// blank/torn/foreign) plus one freshly-drawn TRNG word `fresh`, returns:
+///
+/// - `None` — **keep** the stored epoch: this boot writes nothing (the common steady-state path).
+/// - `Some((new_epoch, marks))` — **mint**: persist `new_epoch` to the epoch line **and** (re)write
+///   the id-marks line to `marks` in the same boot pass.
+///
+/// Mint fires when the epoch line is absent (**clause 1**: blank/torn/foreign) **or** the id-marks
+/// line decodes to "no floor" (**clause 2**: a torn id-marks write — floors lost under an intact
+/// epoch would be *undetectable* aliasing, so a lost floor **is** a new era).
+///
+/// The marks (re)write is what makes clause 2 unambiguous: an already-valid id-marks line is kept
+/// verbatim (its durable floors survive a clause-1-only mint), while an absent one is (re)seeded to
+/// [`IdMarks::default`] — "no floor", which the store's `max(scan_max + 1, floor)` allocation
+/// re-derives from the card scan at the first allocation (today's fallback; the board mints before
+/// the scan runs). This establishes the invariant *a valid epoch implies a valid id-marks line at
+/// mint*: without it a fresh device (no ride/upload → no id-marks line **by design**) would re-mint
+/// on every boot via clause 2; with it, "valid epoch + no floor" is unambiguous torn-line evidence
+/// — exactly what clause 2 exists to catch.
+pub fn store_epoch_mint(epoch: Option<u32>, marks: Option<IdMarks>, fresh: u32) -> Option<(u32, IdMarks)> {
+    if epoch.is_some() && marks.is_some() {
+        return None; // steady state: valid epoch + valid floors → nothing to write this boot
+    }
+    Some((fresh, marks.unwrap_or_default()))
+}
+
 // ==================== DFU arm marker (boot-outcome popup) ====================
 //
 // The armer's breadcrumb: written to its settings-page line right after the `Armed` boot-state
@@ -1825,6 +1911,89 @@ mod tests {
         let crc = crc16(&old[0..ID_MARKS_PAYLOAD]);
         old[ID_MARKS_PAYLOAD..ID_MARKS_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode_id_marks(&old), None, "a foreign layout version is no floor");
+    }
+
+    // ---- store-epoch nonce (protocol v2, #632/#767) ----
+
+    /// The 16-byte store-epoch line round-trips, and every torn/blank/foreign shape decodes to
+    /// `None` — "no epoch", which the mint rule reads as clause 1.
+    #[test]
+    fn store_epoch_codec_round_trips_and_rejects_torn_lines() {
+        assert_eq!(decode_store_epoch(&encode_store_epoch(0xDEAD_BEEF)), Some(0xDEAD_BEEF));
+        assert_eq!(decode_store_epoch(&encode_store_epoch(0)), Some(0), "a zero nonce is a legal value");
+
+        assert_eq!(decode_store_epoch(&[0u8; STORE_EPOCH_LEN]), None, "a blank (all-zero) line is no epoch");
+        assert_eq!(decode_store_epoch(&[0xFF; STORE_EPOCH_LEN]), None, "an erased (all-ones) line is no epoch");
+        assert_eq!(
+            decode_store_epoch(&encode_store_epoch(0xDEAD_BEEF)[..STORE_EPOCH_LEN - 1]),
+            None,
+            "a short slice is rejected"
+        );
+        let mut torn = encode_store_epoch(0xDEAD_BEEF);
+        torn[7] ^= 0xFF; // flip an epoch byte without fixing the CRC — the torn-write shape
+        assert_eq!(decode_store_epoch(&torn), None, "a CRC mismatch (torn write) is no epoch");
+        let mut old = encode_store_epoch(0xDEAD_BEEF);
+        old[4] = STORE_EPOCH_VERSION + 1;
+        let crc = crc16(&old[0..STORE_EPOCH_PAYLOAD]);
+        old[STORE_EPOCH_PAYLOAD..STORE_EPOCH_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode_store_epoch(&old), None, "a foreign layout version is no epoch");
+    }
+
+    /// The mint rule's four cases, plus the two invariants the 2026-07-12 review added. `FRESH` is
+    /// the TRNG word the board draws; the pure function never draws it, so the test is deterministic.
+    #[test]
+    fn store_epoch_mint_rule() {
+        const FRESH: u32 = 0x1234_5678;
+        let floor = IdMarks { next_route_id: 9, next_ride_id: 4 };
+
+        // Steady state: a valid epoch + valid floors → keep the stored epoch, write nothing.
+        assert_eq!(store_epoch_mint(Some(0xABCD), Some(floor), FRESH), None);
+
+        // Clause 1 only (epoch blank/torn, id-marks *intact*): mint a fresh epoch but keep the
+        // existing floors verbatim — a torn epoch line must never cost the durable id floor.
+        assert_eq!(store_epoch_mint(None, Some(floor), FRESH), Some((FRESH, floor)));
+
+        // Clause 2 (id-marks blank/torn, epoch intact): a lost floor is a new era → mint a fresh
+        // epoch even though the old one was valid, and (re)seed the floor to "no floor" (default),
+        // which the store re-derives from the card scan via `max(scan_max + 1, floor)`.
+        assert_eq!(store_epoch_mint(Some(0xABCD), None, FRESH), Some((FRESH, IdMarks::default())));
+
+        // Fresh device (both lines blank): mint + seed default floors.
+        assert_eq!(store_epoch_mint(None, None, FRESH), Some((FRESH, IdMarks::default())));
+    }
+
+    /// The invariant *valid epoch ⇒ valid id-marks at mint*: after a mint the caller persists both
+    /// lines, and a re-decode of what it wrote leaves **both** valid — so the next boot can't
+    /// mistake the fresh state for a torn one.
+    #[test]
+    fn store_epoch_mint_writes_a_valid_marks_line() {
+        const FRESH: u32 = 0x0BAD_F00D;
+        // Clause-2 mint (blank id-marks + intact epoch), the review's headline case.
+        let (new_epoch, new_marks) = store_epoch_mint(Some(0x55), None, FRESH).expect("clause 2 mints");
+        // Persist-then-reload both lines exactly as the board does.
+        assert_eq!(decode_store_epoch(&encode_store_epoch(new_epoch)), Some(FRESH), "epoch line valid post-mint");
+        assert_eq!(decode_id_marks(&encode_id_marks(&new_marks)), Some(new_marks), "id-marks line valid post-mint");
+    }
+
+    /// Fresh-device stability: a device that never saves a ride or uploads a route mints **once**,
+    /// and every subsequent boot (its two lines now valid) keeps that same epoch — no clause-2 churn.
+    #[test]
+    fn store_epoch_fresh_device_stability() {
+        const FRESH: u32 = 0xFEED_BEEF;
+        // Boot 1: both lines blank → mint.
+        let (epoch, marks) = store_epoch_mint(None, None, FRESH).expect("first boot mints");
+        // The board writes both lines; model RRAM as the two encoded lines it persisted.
+        let epoch_line = encode_store_epoch(epoch);
+        let marks_line = encode_id_marks(&marks);
+
+        // Boots 2..N with no rides/uploads: the lines read back valid, so the decision is "keep" —
+        // a *different* TRNG word each boot is irrelevant because the function never reaches it.
+        for boot_fresh in [0x1111_1111u32, 0x2222_2222, 0x3333_3333] {
+            let e = decode_store_epoch(&epoch_line);
+            let m = decode_id_marks(&marks_line);
+            assert_eq!(store_epoch_mint(e, m, boot_fresh), None, "a settled fresh device never re-mints");
+        }
+        assert_eq!(decode_store_epoch(&epoch_line), Some(epoch), "and the epoch is stable across boots");
     }
 
     // ---- DFU arm marker (boot-outcome popup) ----
