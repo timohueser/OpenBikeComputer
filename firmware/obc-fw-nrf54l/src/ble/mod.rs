@@ -458,7 +458,7 @@ pub async fn run(
     // at `join5`): its one central-role task scans / connects / subscribes / dispatches HR/power/
     // cadence, gated by the same #455 radio switch as the peripheral link.
     join(
-        sensors::run(stack),
+        sensors::run(stack, server),
         join5(
             host_task(runner),
             route_delete_task(stack, server, store, shared),

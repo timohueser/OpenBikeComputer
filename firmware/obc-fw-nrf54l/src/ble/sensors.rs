@@ -54,6 +54,8 @@ use obc_ble::SensorKind;
 use obc_platform::sensor_values::{dispatch_cadence, dispatch_hr, dispatch_power};
 use trouble_host::prelude::*;
 
+use super::gatt::Server;
+
 /// The three fixed sensor quantities (HR / power / cadence), one saved slot each (epic #707).
 const QUANTITIES: usize = 3;
 /// Deduped scan snapshot cap — enough discovered sensors to fill a scan list without unbounded RAM.
@@ -385,7 +387,10 @@ type SensorStack = Stack<'static, sdc::SoftdeviceController<'static>, DefaultPac
 /// The one central-role task, joined into [`super::run`]. Scan **xor** connect (never both at once,
 /// so the controller never juggles a scan and a connect-initiate on the single DK link), driven by
 /// [`WORK_EDGE`] + the request latches. Never returns.
-pub async fn run(stack: &'static SensorStack) -> ! {
+///
+/// `server` is the shared GATT [`Server`] (the phone-facing table): every sensor connection attaches
+/// it so the *peer's* GATT client gets answered — see [`run_link`] for why that is load-bearing.
+pub async fn run(stack: &'static SensorStack, server: &'static Server<'static>) -> ! {
     // The saved table starts empty; the ride loop seeds it from `Settings.saved_sensors` on its first
     // pass and re-pushes every change through [`request_save_sensor`] / [`request_forget_sensor`] (SE7,
     // #714 — the `set_radio_enabled` shape). The SE6 hardcoded `SEED` hook is gone: the Sensors screen
@@ -418,7 +423,7 @@ pub async fn run(stack: &'static SensorStack) -> ! {
         // `connection_worker(1)` / `(2)` beside this for the other saved slots.)
         if super::state::radio_enabled() {
             if let Some(quantity) = first_saved_quantity() {
-                let interrupted = run_link(stack, quantity).await;
+                let interrupted = run_link(stack, server, quantity).await;
                 update_status(quantity, |s| s.state = SensorSlotState::Idle);
                 // Backoff before the next attempt — but only after a drop / failure / timeout.
                 // An interrupt means a request or radio change is already waiting at the loop top
@@ -512,7 +517,7 @@ async fn run_scan(stack: &'static SensorStack) {
 /// from wedging the link. Returns `true` when the attempt/session ended on a [`WORK_EDGE`] interrupt
 /// (a request or radio change is waiting at the loop top — skip the backoff), `false` on a
 /// drop / failure / timeout (back off before retrying).
-async fn run_link(stack: &'static SensorStack, quantity: usize) -> bool {
+async fn run_link(stack: &'static SensorStack, server: &'static Server<'static>, quantity: usize) -> bool {
     let Some(saved) = saved_sensor(quantity) else { return false };
     let kind = kind_of(quantity);
     update_status(quantity, |s| s.state = SensorSlotState::Connecting);
@@ -566,10 +571,25 @@ async fn run_link(stack: &'static SensorStack, quantity: usize) -> bool {
             }
         };
 
+    // Attach the shared GATT server, so the *peer's own* GATT client gets answered (epic #744,
+    // SR1 root cause): a Garmin watch probes whoever collects from it (GAP/DIS reads) right after
+    // subscribe. trouble queues inbound ATT requests per-connection, drained only by an attached
+    // attribute server — with none, the request sat unanswered, the watch's ATT stalled for the
+    // spec's 30 s transaction timeout, and it then hung up: the metronomic ~30 s
+    // "Remote User Terminated" drops of the 2026-07-12 soak captures (29.4–29.6 s × 5, with
+    // notifications healthy to the end). The [`Server`]'s `connections_max` is sized for this.
+    let conn = match conn.with_attribute_server(server) {
+        Ok(conn) => conn,
+        Err(e) => {
+            warn!("ble: [sensor] attribute-server attach failed: {:?}", defmt::Debug2Format(&e));
+            return false;
+        }
+    };
+
     // What the SDC actually granted (#745 soak instrumentation): the interval here should read
     // ~30–60 ms (the fast connect phase), then flip to the cruise/peer values in the
     // params-updated event below.
-    info!("ble: [sensor] link up ({:?}), discovering", conn.params());
+    info!("ble: [sensor] link up ({:?}), discovering", conn.raw().params());
 
     serve_link(stack, &conn, quantity, kind).await
     // `conn` drops on return → the sensor link is disconnected.
@@ -580,11 +600,11 @@ async fn run_link(stack: &'static SensorStack, quantity: usize) -> bool {
 /// Returns `true` when the session ended on a [`WORK_EDGE`] interrupt (see [`run_link`]).
 async fn serve_link(
     stack: &'static SensorStack,
-    conn: &Connection<'static, DefaultPacketPool>,
+    conn: &GattConnection<'static, 'static, DefaultPacketPool>,
     quantity: usize,
     kind: SensorKind,
 ) -> bool {
-    let client = match GattClient::<_, _, 4>::new(stack, conn).await {
+    let client = match GattClient::<_, _, 4>::new(stack, conn.raw()).await {
         Ok(client) => client,
         Err(e) => {
             warn!("ble: [sensor] GATT client init failed: {:?}", defmt::Debug2Format(&e));
@@ -623,7 +643,7 @@ async fn serve_link(
         // fast connect interval to the cruise cadence (see [`CRUISE_PARAMS`] / `run_link`).
         // Best-effort: on failure the link just stays fast (costlier, not broken), and a peer that
         // pushes its own preference through the event pump below overrides either way.
-        if let Err(e) = conn.update_connection_params(stack, &CRUISE_PARAMS).await {
+        if let Err(e) = conn.raw().update_connection_params(stack, &CRUISE_PARAMS).await {
             warn!("ble: [sensor] param relax failed: {:?}", defmt::Debug2Format(&e));
         }
 
@@ -654,7 +674,31 @@ async fn serve_link(
     let events = async {
         loop {
             match conn.next().await {
-                ConnectionEvent::RequestConnectionParams(req) => {
+                // The peer's own GATT client (the watch probing its collector — the SR1 root
+                // cause). Serve reads from the shared table (GAP name, DIS); refuse writes — the
+                // phone control plane is not commandable from a sensor link. `NotAllowed`/`Other`
+                // accept = the attribute server sends the proper ATT error itself. Answering
+                // *something* is the whole point: an unanswered request stalls the peer's ATT for
+                // the spec's 30 s transaction timeout, and the peer then terminates the link.
+                GattConnectionEvent::Gatt { event } => {
+                    let reply = match event {
+                        GattEvent::Read(e) => {
+                            info!("ble: [sensor] peer read, handle {}", e.handle());
+                            e.accept()
+                        }
+                        GattEvent::Write(e) => {
+                            warn!("ble: [sensor] peer write refused, handle {}", e.handle());
+                            e.reject(AttErrorCode::WRITE_NOT_PERMITTED)
+                        }
+                        GattEvent::NotAllowed(e) => e.accept(),
+                        GattEvent::Other(e) => e.accept(),
+                    };
+                    match reply {
+                        Ok(reply) => reply.send().await,
+                        Err(e) => warn!("ble: [sensor] gatt reply failed: {:?}", defmt::Debug2Format(&e)),
+                    }
+                }
+                GattConnectionEvent::RequestConnectionParams(req) => {
                     // Log what the peer wants (#745 soak instrumentation): if the link later drops
                     // with "remote user terminated", whether we honoured the peer's preference is
                     // the first question.
@@ -677,7 +721,11 @@ async fn serve_link(
                 // The on-air confirmation of any update — ours (the cruise relax), an accept of the
                 // peer's request, or a controller-initiated one. Logged so a soak capture shows the
                 // exact parameters the link died under (#745).
-                ConnectionEvent::ConnectionParamsUpdated { conn_interval, peripheral_latency, supervision_timeout } => {
+                GattConnectionEvent::ConnectionParamsUpdated {
+                    conn_interval,
+                    peripheral_latency,
+                    supervision_timeout,
+                } => {
                     info!(
                         "ble: [sensor] conn params now: interval {} ms, latency {}, timeout {} ms",
                         conn_interval.as_millis(),
@@ -685,14 +733,14 @@ async fn serve_link(
                         supervision_timeout.as_millis()
                     );
                 }
-                ConnectionEvent::Disconnected { reason } => break reason,
+                GattConnectionEvent::Disconnected { reason } => break reason,
                 // Sensors are open GATT servers — we never pair (module doc), so any SMP activity
                 // on this link is a peer expecting security we don't do: a prime suspect for a
                 // deliberate remote disconnect, and exactly what a soak capture must not swallow.
-                ConnectionEvent::PairingFailed(e) => {
+                GattConnectionEvent::PairingFailed(e) => {
                     warn!("ble: [sensor] pairing FAILED on the sensor link: {:?}", defmt::Debug2Format(&e));
                 }
-                ConnectionEvent::PairingComplete { security_level, .. } => {
+                GattConnectionEvent::PairingComplete { security_level, .. } => {
                     warn!(
                         "ble: [sensor] unexpected pairing on the sensor link: {:?}",
                         defmt::Debug2Format(&security_level)
