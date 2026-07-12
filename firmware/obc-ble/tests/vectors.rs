@@ -79,6 +79,24 @@ fn download_announce_vector() {
     assert_eq!(&buf[..len], &bytes[..]);
 }
 
+/// A *known* discriminator with a short body is a decode **error** (`Truncated`), while an unknown
+/// discriminator stays `Ok(None)` (ignored) — the forward-compat rule cuts exactly between the two.
+/// Pinned for `msg = 4`: every truncation of the announce frame is rejected, never misread.
+#[test]
+fn truncated_download_announce_is_rejected() {
+    use obc_ble::DescriptorError;
+
+    let full = fixture("status-download-announce.bin");
+    assert_eq!(full.len(), 13);
+    for cut in 1..full.len() {
+        assert_eq!(
+            StatusMessage::decode(&full[..cut]),
+            Err(DescriptorError::Truncated),
+            "a {cut}-byte prefix of the announce must be Truncated, not ignored or misdecoded"
+        );
+    }
+}
+
 #[test]
 fn status_transfer_result_vector() {
     let bytes = fixture("status-transfer-result.bin");
