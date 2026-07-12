@@ -9,7 +9,10 @@
 //! ## The arm sequence (order normative — issue #619 §3)
 //!
 //! 1. **Scan + validate** `UPDATE.BIN` (header decode, full CRC-32 pass, size gate, whole-file
-//!    extent chain — `OBCU_Spec.md` §2.3). Read-only; any failure costs nothing.
+//!    extent chain — `OBCU_Spec.md` §2.3). Read-only; any failure costs nothing. In the normal
+//!    Scan→confirm→Install flow this pass already ran at the confirm's [`run_scan`], and its
+//!    [`StagedRef`] is carried into the arm (DR6, #734) — this step re-scans only when an Install
+//!    arrives with no carried ref (the `dfu-install` debug path).
 //! 2. **Snapshot the rollback**: the running image, read memory-mapped out of the app slot
 //!    (`__app_slot_base`, RRAM is XIP-readable), re-wrapped as `/ROLLBACK.BIN` and
 //!    extent-resolved the same way. Skipped on a first install (`installed: None`) or when the
@@ -30,6 +33,12 @@
 //! `sd.rs`'s transient ~2 KB `ExtentTable` all live in frames that pop on return — nothing new
 //! is resident, and nothing large is held across an `.await` (the loop only awaits the beat,
 //! holding a few words). CRC/copy staging stays on `sd.rs`'s existing 512-byte-chunk idiom.
+//!
+//! The carried scan ref (DR6, #734) parks in an `Option<StagedRef>` **ride-loop local**, not on
+//! this sync call stack: it lives in the loop task's future storage (a static task arena), so it
+//! never deepens `arm_update`'s frame. The arm still holds exactly one `StagedRef` at a time — the
+//! parameter, copied in place of the old locally-scanned one — so the hot-stack footprint is
+//! unchanged from the re-scan version; only the task future grows by the parked ~850 B.
 
 use core::fmt::Write;
 
@@ -110,20 +119,37 @@ impl armer::ArmIo for BoardArmIo<'_> {
     }
 }
 
-/// The whole arm as **one sync, popped frame** (see the module's stack note): scan → read the
-/// old page → snapshot → compose → write. Returns the report for the status lines; the caller
-/// owns the beat + reset.
+/// The whole arm as **one sync, popped frame** (see the module's stack note): (carry-or-scan) →
+/// read the old page → snapshot → compose → write. Returns the report for the status lines; the
+/// caller owns the beat + reset.
+///
+/// `cached` is the [`StagedRef`] the confirm's preceding scan already validated (DR6, #734) —
+/// present in the normal Scan→confirm→Install flow, so the arm drops straight to the snapshot with
+/// no second full read + CRC of `UPDATE.BIN`. It's absent only for an Install that arrives without
+/// a preceding Scan (the `dfu-install` debug path, or a hypothetical UI that skips the confirm);
+/// the re-scan fallback keeps the action total. A stale carried ref is safe: the bootloader's
+/// verify-before-erase re-reads and re-CRCs the raw extents post-reboot regardless, so a mismatch
+/// costs at worst a `StageRejected` next boot — this is not a TOCTOU re-validation point.
 #[inline(never)]
 fn arm_update(
     storage: &mut sd::Storage,
     settings: &mut RramSettingsStore,
     wdt: &mut Option<wdt::WatchdogHandle>,
+    cached: Option<StagedRef>,
 ) -> Result<ArmReport, ArmFailure> {
-    let staged = storage.dfu_scan_update().map_err(ArmFailure::Scan)?;
-    // The CRC pass over a ~900 KB stage takes seconds — pet between it and the snapshot.
-    if let Some(h) = wdt.as_mut() {
-        h.pet();
-    }
+    let staged = match cached {
+        // The confirm's scan already read + CRC'd the whole image — carry that verdict.
+        Some(staged) => staged,
+        // Fallback: an Install with no preceding Scan. Read + CRC the stage now.
+        None => {
+            let staged = storage.dfu_scan_update().map_err(ArmFailure::Scan)?;
+            // The CRC pass over a ~900 KB stage takes seconds — pet between it and the snapshot.
+            if let Some(h) = wdt.as_mut() {
+                h.pet();
+            }
+            staged
+        }
+    };
     let mut staged_version: heapless::String<32> = heapless::String::new();
     let _ = staged_version.push_str(staged.header.fw_version_str());
     let (staged_len, extent_count) = (staged.len, staged.extent_count());
@@ -156,9 +182,16 @@ pub(crate) async fn run_install(
     storage: &mut sd::Storage,
     settings: &mut RramSettingsStore,
     wdt: &mut Option<wdt::WatchdogHandle>,
+    cached: Option<StagedRef>,
 ) {
-    statusf!("scanning UPDATE.BIN (running {})", env!("OBC_FW_GIT"));
-    match arm_update(storage, settings, wdt) {
+    // The RTT/`D`-line record shows which path armed: the normal confirm carries the scan's ref
+    // (one CRC pass, done back at the Scan), the fallback re-reads here.
+    if cached.is_some() {
+        statusf!("arming from the scan's validated image (running {})", env!("OBC_FW_GIT"));
+    } else {
+        statusf!("scanning UPDATE.BIN (running {})", env!("OBC_FW_GIT"));
+    }
+    match arm_update(storage, settings, wdt, cached) {
         Ok(report) => {
             statusf!("scan ok: {} ({} B, {} extent(s))", report.staged_version, report.staged_len, report.extent_count);
             match report.rollback {
@@ -193,11 +226,16 @@ pub(crate) async fn run_install(
 /// [`DfuScanError`](obc_app::DfuScanError) for the error card. The board answers the app through
 /// [`App::notify_dfu_scan_result`](obc_app::App::notify_dfu_scan_result); a failed scan, like the
 /// arm's, costs nothing.
+///
+/// Returns the [`StagedRef`] alongside the report so the caller can park it next to its pending-DFU
+/// state and hand it straight to the confirm's [`run_install`] — the confirm then arms without a
+/// second full read + CRC pass over the ~900 KB `UPDATE.BIN` (DR6, #734). The ref is the *only*
+/// thing the arm needs from the scan; the report is what the app renders.
 pub(crate) fn run_scan(
     storage: &mut sd::Storage,
     settings: &mut RramSettingsStore,
     wdt: &mut Option<wdt::WatchdogHandle>,
-) -> Result<obc_app::DfuScanReport, obc_app::DfuScanError> {
+) -> Result<(obc_app::DfuScanReport, StagedRef), obc_app::DfuScanError> {
     let staged = storage.dfu_scan_update().map_err(map_scan_error)?;
     // The full CRC pass over a ~900 KB stage takes seconds — feed the dog before returning.
     if let Some(h) = wdt.as_mut() {
@@ -224,11 +262,14 @@ pub(crate) fn run_scan(
         Some(v) if !v.is_empty() => v,
         _ => env!("OBC_FW_GIT"),
     });
-    Ok(obc_app::DfuScanReport {
-        installed: installed_version,
-        staged: staged_version,
-        first_install: installed.is_none(),
-    })
+    Ok((
+        obc_app::DfuScanReport {
+            installed: installed_version,
+            staged: staged_version,
+            first_install: installed.is_none(),
+        },
+        staged,
+    ))
 }
 
 /// Fold `obc_dfu`'s finer [`ScanError`] variants into the five user-facing

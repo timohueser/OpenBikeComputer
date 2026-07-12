@@ -292,6 +292,43 @@ fn arm_aborts_on_a_failed_snapshot_without_touching_the_page() {
 }
 
 #[test]
+fn arm_records_the_carried_scan_ref_verbatim() {
+    // DR6 (#734): the confirm's single scan produces the StagedRef the arm consumes. Note what
+    // this test does NOT claim: "arm never re-reads the stage" is structural, not asserted here —
+    // `arm` takes only an `ArmIo` (snapshot + page write), which by construction has no route back
+    // to the staged file, so a read-counter on the stage would be vacuously flat. The board-side
+    // "one CRC pass before `armed gen=…`" rides on that seam shape plus `arm_update` skipping its
+    // fallback scan, and is only observable on glass / via the sim.
+    //
+    // What this test pins is the carry contract itself: the ref the scan returned feeds `arm` by
+    // value (StagedRef is Copy) and lands in the Armed page verbatim — the bootloader's
+    // verify-before-erase then checks exactly the image the one scan validated.
+    let image: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+    let (mut stage, header) = FakeStage::happy(&image, "v2.0.0-1-gcarry01");
+
+    // The one scan: the full read + CRC pass, yielding the ref the confirm carries.
+    let carried = scan_with(&mut stage).expect("the one scan validates the stage");
+    assert_eq!(carried.header, header);
+
+    let mut io = FakeArmIo::new(Ok(Some(staged(2))));
+    let current = BootState::Idle { installed: Some(installed_header()) };
+    let ticket = arm(&mut io, &current, carried).expect("arm consumes the carried ref");
+    assert_eq!(ticket.rollback, Rollback::Snapshot);
+
+    // The armed record carries exactly the scanned image — same header/len/CRC/extents the one
+    // CRC pass validated.
+    match &io.calls[1] {
+        Call::WriteState(s) => match **s {
+            BootState::Armed { update, .. } => {
+                assert_eq!(update, carried, "the Armed page records the carried ref verbatim")
+            }
+            ref other => panic!("expected an Armed page, got {other:?}"),
+        },
+        other => panic!("expected the page write second, got {other:?}"),
+    }
+}
+
+#[test]
 fn arm_reports_a_failed_page_write() {
     let update = staged(1);
     let mut io = FakeArmIo::new(Ok(Some(staged(2))));

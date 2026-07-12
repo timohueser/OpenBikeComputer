@@ -500,6 +500,13 @@ pub(crate) async fn run_app(
     // faults out *before* this loop can run, so storage being live is already implied here; a
     // boot that can't reach a presented frame never confirms, and S3's rollback fires next boot).
     let mut trial_confirm_pending = true;
+    // DR6 (#734): the scan's validated `StagedRef`, parked between the `DfuAction::Scan` that
+    // produced it and the confirm's `DfuAction::Install`, so the arm reuses that full read + CRC
+    // pass instead of redoing it. `Copy`, ~850 B; it lives in this loop task's future storage, off
+    // `arm_update`'s sync stack (see the stack note in `dfu.rs`). A failed re-scan clears it; a stale
+    // ref is safe — the bootloader re-verifies post-reboot regardless. `None` ⇒ `run_install` falls
+    // back to a fresh scan (an Install with no preceding Scan, e.g. the `dfu-install` debug path).
+    let mut cached_staged: Option<obc_dfu::StagedRef> = None;
 
     // SE7 (#714): the saved-sensor addresses last pushed to the central manager, so the per-pass
     // reconcile below drives a save/forget only on an actual change (the `set_radio_enabled` shape,
@@ -1020,7 +1027,9 @@ pub(crate) async fn run_app(
                 } else if storage.as_ref().is_some_and(sd::Storage::has_pending_save) {
                     crate::dfu::status("refused: a ride save is pending -- try again in a moment");
                 } else if let Some(s) = storage.as_mut() {
-                    crate::dfu::run_install(s, settings_store, &mut wdt).await;
+                    // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed either
+                    // way). Absent ⇒ `run_install` re-scans (the `dfu-install` debug path).
+                    crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await;
                 } else {
                     crate::dfu::status("refused: no SD card");
                 }
@@ -1034,7 +1043,19 @@ pub(crate) async fn run_app(
                     Some(s) => crate::dfu::run_scan(s, settings_store, &mut wdt),
                     None => Err(obc_app::DfuScanError::NotFound),
                 };
-                app.notify_dfu_scan_result(result);
+                // DR6 (#734): park the validated ref for the confirm's Install; answer the app with
+                // just the report. A failed scan clears any prior ref (the card may have changed).
+                let report = match result {
+                    Ok((report, staged)) => {
+                        cached_staged = Some(staged);
+                        Ok(report)
+                    }
+                    Err(e) => {
+                        cached_staged = None;
+                        Err(e)
+                    }
+                };
+                app.notify_dfu_scan_result(report);
             }
             None => {}
         }
