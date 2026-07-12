@@ -14,11 +14,11 @@
 //!   a CoC drop, a link drop, or an `op=3` abort discards the partial and the app re-sends from the
 //!   start.
 //! - **Downloads** ([`run_download`]): `routeList` / `rideList` / diagnostics from a store-built
-//!   buffer, a route or ride detail streamed straight off the card — announce descriptor first, then
-//!   raw chunks, one whole-object CRC. Rides reuse the machinery wholesale because the Finish-time save
-//!   already stored each as **exactly** the wire bytes (`sd.rs`), and the diagnostics object is
-//!   rendered from the link plane's own facts.
-//! - Every store movement notifies `storeChanged` + the refreshed `objectStore` digest
+//!   buffer, a route or ride detail streamed straight off the card — the announce rides the `status`
+//!   envelope (`downloadAnnounce`, protocol v2) first, then raw chunks, one whole-object CRC. Rides
+//!   reuse the machinery wholesale because the Finish-time save already stored each as **exactly** the
+//!   wire bytes (`sd.rs`), and the diagnostics object is rendered from the link plane's own facts.
+//! - Every store movement notifies `storeChanged` (status msg 2) — protocol v2's sole change signal
 //!   ([`publish_store_change`]).
 //!
 //! On the first transfer the link is asked for the fast [`conn_params`] set (throughput); the store is
@@ -115,18 +115,16 @@ enum TransferOutcome {
 }
 
 /// Notify the store movement after a commit/delete: the `storeChanged` status message (which store,
-/// new revision) + the refreshed `objectStore` digest characteristic.
+/// new revision). Protocol v2 retired the `objectStore` digest characteristic — `storeChanged`
+/// (status msg 2) is the sole change signal.
 pub(crate) async fn publish_store_change(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     store: &RefCell<ObjectStore>,
     ty: ObjectType,
 ) {
-    let digest = store.borrow().digest();
-    let bytes = digest.encode();
-    let _ = server.set(&server.obc.object_store, &bytes);
-    notify_bounded(stack, server, server.obc.object_store.handle, &bytes, "digest").await;
-    let msg = StatusMessage::StoreChanged(StoreChanged { ty, revision: digest.revision });
+    let revision = store.borrow().revision();
+    let msg = StatusMessage::StoreChanged(StoreChanged { ty, revision });
     notify_status(server, stack, msg.encode()).await;
 }
 
@@ -212,7 +210,9 @@ async fn run_upload(
         if is_fwimage {
             (rx.object_id(), st.fwimage_finish(&mut guard, &rx))
         } else {
-            st.upload_finish(&mut guard, &rx)
+            // `desc.crc32` is the whole-object CRC the Receiver just verified — persist it into the
+            // route content-CRC sidecar in the same commit (epic #632 item 6).
+            st.upload_finish(&mut guard, &rx, desc.crc32)
         }
     };
     let committed = status == TransferStatus::Committed;
@@ -269,26 +269,28 @@ async fn run_download(
             return TransferOutcome::Answered;
         }
     };
-    // Announce on `transferControl` (same 16 bytes, total_len + crc32 filled in), then stream.
+    // Announce as a `downloadAnnounce` status message (protocol v2): the 12-byte descriptor with
+    // `total_len` + `crc32` filled in, wrapped in the `status` envelope (`msg = 4`), then stream.
+    // v2 folds the announce off `transferControl` and onto `status`, so the whole device → app
+    // control channel is one CCCD — the split-CCCD failure mode (announce on one CCCD, result on
+    // another) is gone, and with it the recovery notify that used to answer it.
     let announce = tx.announce();
-    info!("ble: [coc] download start: {} bytes from offset {}", announce.total_len, announce.offset);
+    info!("ble: [coc] download start: {} bytes", announce.total_len);
+    let (announce_buf, announce_len) = StatusMessage::DownloadAnnounce(announce).encode();
     // The announce carries the size + CRC the app streams against — `HOST_OP_TIMEOUT`-bounded like every
     // host op, and a timeout is treated exactly like a failure (the app never sees a stream start).
     let announced = matches!(
-        with_timeout(HOST_OP_TIMEOUT, server.notify(stack, server.obc.transfer_control.handle, &announce.encode()))
+        with_timeout(HOST_OP_TIMEOUT, server.notify(stack, server.obc.status.handle, &announce_buf[..announce_len]))
             .await,
         Ok(Ok(()))
     );
     if !announced {
-        warn!("ble: [coc] announce notify failed/timed out — abandoning download");
-        {
-            let mut guard = shared.lock().await;
-            store.borrow_mut().download_close(&mut guard);
-        }
-        // Still answer the transfer the app opened — a `status` notify can land even when the
-        // `transferControl` notify didn't (different CCCD), so the app isn't left waiting for a
-        // stream that will never start.
-        notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
+        // The announce rides the same `status` CCCD every other result does, so if it can't land,
+        // a follow-up notify on that characteristic can't either — close and abandon; the app's own
+        // download request times out (no cross-CCCD recovery notify to send).
+        warn!("ble: [coc] download announce notify failed/timed out — abandoning download");
+        let mut guard = shared.lock().await;
+        store.borrow_mut().download_close(&mut guard);
         return TransferOutcome::Answered;
     }
     while !tx.is_complete() {
@@ -382,8 +384,8 @@ async fn run_echo(
     let mut rx = match Receiver::new(desc) {
         Ok(rx) => rx,
         Err(_) => {
-            // A nonsensical echo descriptor (a non-zero offset — echo restarts, never resumes) —
-            // answer error, leave the channel untouched (no bytes were promised).
+            // A nonsensical echo descriptor (the wrong op — echo restarts, never resumes; v2 has no
+            // offset to reject) — answer error, leave the channel untouched (no bytes were promised).
             notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
