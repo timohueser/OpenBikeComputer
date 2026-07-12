@@ -8,6 +8,7 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use obc_dfu::engine::{InstallIo, IoError, Phase};
 use obc_dfu::BootState;
 
+use crate::com::Com;
 use crate::led::Led;
 use crate::sd::SdBlocks;
 use crate::wdt::BootDog;
@@ -28,6 +29,10 @@ pub struct BootIo<'a> {
     /// The boot-chain watchdog (DR1, #729) — pet from [`progress`](InstallIo::progress), the
     /// one callback guaranteed to fire steadily through all three passes.
     dog: &'a mut BootDog,
+    /// The panel's COM wave (`com.rs`) — polled from the same steady progress hook, so the
+    /// glass under the app's pre-painted frame keeps alternating through the whole install
+    /// (chunks land every few ms, well inside the ~8.3 ms half period).
+    com: &'a mut Com,
     /// Address of the BOOT_STATE page (from the linker symbol — resolved once in `main`).
     state_addr: u32,
     chunks: u32,
@@ -41,6 +46,7 @@ impl<'a> BootIo<'a> {
         rram: &'a mut Rramc<'static, Unbuffered>,
         led: &'a mut Led,
         dog: &'a mut BootDog,
+        com: &'a mut Com,
         state_addr: u32,
     ) -> BootIo<'a> {
         BootIo {
@@ -48,6 +54,7 @@ impl<'a> BootIo<'a> {
             rram,
             led,
             dog,
+            com,
             state_addr,
             chunks: 0,
             #[cfg(feature = "rtt")]
@@ -88,6 +95,9 @@ impl InstallIo for BootIo<'_> {
         // ≤4 KB — effectively free), so an install stretched past 24 s by a slow card, flash
         // retries, or a near-max image can never be dog-reset mid-flash.
         self.dog.pet();
+        // Keep the panel's COM wave alternating with the same cadence (one compare + at most
+        // three pin writes) — the held "Installing update" frame's anti-DC-bias contract.
+        self.com.poll();
         self.chunks += 1;
         let period = match phase {
             Phase::Verify => VERIFY_TOGGLE_CHUNKS,

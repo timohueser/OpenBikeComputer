@@ -1076,6 +1076,31 @@ pub(crate) async fn run_app(
                     crate::dfu::status("refused (has_pending_save): a ride save is pending -- try again in a moment");
                     Some(obc_app::DfuInstallError::PendingSave)
                 } else if let Some(s) = storage.as_mut() {
+                    // The guards passed — the arm is happening. Swap the confirm's "Preparing
+                    // update..." spinner for the static "Installing update" card and put that
+                    // frame on glass NOW, fully awaited: the arm ends in a warm reset into the
+                    // bootloader, which never paints — it only parks the panel pins and keeps
+                    // the COM wave alternating (`obc-boot/src/com.rs`) — so the MIP panel holds
+                    // THIS frame for the whole snapshot + flash. Presented full-frame (no clip,
+                    // no bulge exclusion: a live hold mid-confirm is gone after the reset
+                    // anyway). A failed present (stalled FLPR) deliberately doesn't guard the
+                    // arm — the install matters more than the frame, and the arm failure path
+                    // repaints normally via `notify_dfu_install_failed`.
+                    app.show_dfu_installing();
+                    app.set_render_clip(None);
+                    let render = |d: &mut dyn DisplayDriver| {
+                        let mut fbdev = FbDevice64::new(d.fb_mut(), FRAME_W as u32, FRAME_H as u32);
+                        app.render_map_timed(
+                            &mut fbdev,
+                            None,
+                            None,
+                            FRAME_W as f32,
+                            FRAME_H as f32,
+                            color_fn,
+                            &InstantClock,
+                        )
+                    };
+                    let _ = display.render_present(None, render).await;
                     // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed either
                     // way). Absent ⇒ `run_install` re-scans (the `dfu-install` debug path).
                     crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await

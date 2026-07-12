@@ -176,6 +176,10 @@ struct Args {
     /// Headless `--png` only: with `--dfu-scan`, press Install on the confirm so the "Preparing
     /// update..." progress spinner renders (the sim never drains the arm, so it stays up).
     dfu_progress: bool,
+    /// Headless `--png` only: with `--dfu-scan --dfu-progress`, run the board drain's terminal
+    /// swap (`App::show_dfu_installing`) so the static "Installing update" card renders — the
+    /// pre-reset frame the MIP panel holds through the whole install.
+    dfu_installing: bool,
     /// Headless `--png` only: answer the DFU scan with a typed error so the error card renders
     /// (`notfound` | `unreadable` | `damaged` | `toolarge` | `fragmented`). Needs the "Checking
     /// card..." wait on top (System menu → Install), like `--dfu-scan`.
@@ -233,6 +237,7 @@ impl Default for Args {
             fail_track: false,
             dfu_scan: None,
             dfu_progress: false,
+            dfu_installing: false,
             dfu_error: None,
             dfu_confirmed: None,
         }
@@ -345,6 +350,7 @@ fn parse_args() -> Result<Args, String> {
                 a.dfu_scan = Some(dfu::DfuScanKind::parse(&it.next().ok_or("--dfu-scan needs normal|same|first")?)?);
             }
             "--dfu-progress" => a.dfu_progress = true,
+            "--dfu-installing" => a.dfu_installing = true,
             "--dfu-error" => {
                 a.dfu_error = Some(match it.next().ok_or("--dfu-error needs a variant")?.as_str() {
                     "notfound" => obc_app::DfuScanError::NotFound,
@@ -947,6 +953,11 @@ fn main() {
                 let now = 500_000u32;
                 feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Encoder))]);
                 feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Encoder))]);
+                // The board drain's terminal swap: spinner → the static "Installing update" card
+                // (the pre-reset frame), through the same seam the device uses.
+                if args.dfu_installing {
+                    app.show_dfu_installing();
+                }
             }
         }
         if let Some(e) = args.dfu_error {
