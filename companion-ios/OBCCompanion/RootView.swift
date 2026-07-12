@@ -216,6 +216,10 @@ struct RootView: View {
         // One shared online/offline signal for every basemap preview (#294) —
         // the E1 cover + pushed details inherit it through the presentation.
         .environment(\.obcIsOnline, reachability.isOnline)
+        // Hold the screen awake while any transfer is in flight (#754) — the
+        // idle-timer touch reads the same ledger the upload sheets, ride sync,
+        // and firmware send claim from. UIKit stays at the composition root.
+        .keepAwakeDuringTransfers(transferActivity)
     }
 
     // MARK: Detail destinations (B4)
@@ -294,6 +298,7 @@ struct RootView: View {
             FirmwareUpdateScreen(
                 transport: transport,
                 deviceName: mainModel.deviceName,
+                activity: transferActivity,
                 prestage: firmwareDemoAtLaunch?.data,
                 autoSend: firmwareDemoAtLaunch?.autoSend ?? false
             )
