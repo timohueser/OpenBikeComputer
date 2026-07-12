@@ -86,6 +86,21 @@ fn oversize_fwimage_rejected_at_announce() {
 }
 
 #[test]
+fn fwimage_announce_ceiling_is_container_sized_not_raw() {
+    // The board announces the whole OBCU container as `total_len` (64-byte header + raw image), so it
+    // must gate at the *container* ceiling `MAX_IMAGE_LEN + HEADER_LEN`, not the bare raw-image cap.
+    // Gating at the raw cap would spuriously reject a raw image in the top 64 bytes of the allowed
+    // range that the armer/engine (which gate `image_len` only) would flash fine (DR5, #733).
+    const MAX_IMAGE_LEN: u32 = 1_480_000; // obc_dfu::MAX_IMAGE_LEN (kept out of the wire crate)
+    const HEADER_LEN: u32 = 64; // obc_dfu::HEADER_LEN
+    const MAX_CONTAINER: u32 = MAX_IMAGE_LEN + HEADER_LEN;
+    // A raw image exactly at MAX_IMAGE_LEN → container is MAX_IMAGE_LEN + 64: accepted.
+    assert_eq!(TransferStatus::fwimage_announce_reject(MAX_IMAGE_LEN + 64, MAX_CONTAINER), None);
+    // One raw byte over → container is MAX_IMAGE_LEN + 65: rejected.
+    assert_eq!(TransferStatus::fwimage_announce_reject(MAX_IMAGE_LEN + 65, MAX_CONTAINER), Some(TransferStatus::Error));
+}
+
+#[test]
 fn install_fw_reply_matrix() {
     // ok: staged, not busy, cheaply valid.
     assert_eq!(obc_ble::install_fw_reply(true, false, false), CommandStatus::Ok);
