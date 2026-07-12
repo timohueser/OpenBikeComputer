@@ -355,14 +355,10 @@ fn nav_finish(
     app.notify_nav_result(result.map(|(id, _)| id));
 }
 
-/// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
-/// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
-/// [`run_app`] and pushed to the sensor task (via [`sensor_link::set_power`]) only on a change.
-/// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
-#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 /// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb
 /// (issue #755 field forensics). Lives board-side because `obc-app` stays defmt-free
-/// (host-agnostic); `Turn`'s detent count is logged separately at the call site.
+/// (host-agnostic); `Turn`'s detent count is logged separately at the call site. Ungated — the
+/// breadcrumb logs in every build variant.
 fn gesture_name(g: obc_app::Gesture) -> &'static str {
     match g {
         obc_app::Gesture::Turn(_) => "Turn",
@@ -373,6 +369,11 @@ fn gesture_name(g: obc_app::Gesture) -> &'static str {
     }
 }
 
+/// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
+/// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
+/// [`run_app`] and pushed to the sensor task (via [`sensor_link::set_power`]) only on a change.
+/// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 fn desired_gps_power(app: &App) -> sensor_link::GpsPower {
     if app.activity.is_tracking() {
         if app.settings().power_saver {
