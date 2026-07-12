@@ -360,6 +360,19 @@ fn nav_finish(
 /// [`run_app`] and pushed to the sensor task (via [`sensor_link::set_power`]) only on a change.
 /// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+/// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb
+/// (issue #755 field forensics). Lives board-side because `obc-app` stays defmt-free
+/// (host-agnostic); `Turn`'s detent count is logged separately at the call site.
+fn gesture_name(g: obc_app::Gesture) -> &'static str {
+    match g {
+        obc_app::Gesture::Turn(_) => "Turn",
+        obc_app::Gesture::Press => "Press",
+        obc_app::Gesture::Hold => "Hold",
+        obc_app::Gesture::Back => "Back",
+        obc_app::Gesture::BackHold => "BackHold",
+    }
+}
+
 fn desired_gps_power(app: &App) -> sensor_link::GpsPower {
     if app.activity.is_tracking() {
         if app.settings().power_saver {
@@ -621,7 +634,17 @@ pub(crate) async fn run_app(
         let mut holds_cancelled = false;
         while let Ok(g) = GESTURES.try_receive() {
             if holds_cancelled && matches!(g, obc_app::Gesture::Hold | obc_app::Gesture::BackHold) {
+                defmt::info!("input: {=str} dropped (stack changed mid-hold)", gesture_name(g));
                 continue;
+            }
+            // Field forensics (#755): every drained gesture, with the screen it lands on — the
+            // RTT record that discriminates "the press never happened" (input-plane dead window)
+            // from "the press landed on the wrong screen/row" (e.g. a press-nudged detent turned
+            // a 2-row confirm to Cancel first). Human-rate events; always on, a handful of bytes.
+            if let obc_app::Gesture::Turn(n) = g {
+                defmt::info!("input: Turn {=i32} on {=str}", n, app.top_screen().name());
+            } else {
+                defmt::info!("input: {=str} on {=str}", gesture_name(g), app.top_screen().name());
             }
             app.apply_gesture(g);
             holds_cancelled |= app.take_hold_cancel();
