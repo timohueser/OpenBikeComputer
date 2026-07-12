@@ -469,13 +469,12 @@ async fn run_link(stack: &'static SensorStack, quantity: usize) -> bool {
             ..Default::default()
         },
         // ~250–500 ms interval keeps the sensor link cheap beside the phone; 5 s supervision. The
-        // connection-event length (`max_event_length` → the LL `max_ce_len`) MUST stay ≤ the
-        // connection interval: it's the radio timeslot the SDC reserves per event, and the create-
-        // connection path (central-only, so unlike the phone's peripheral link it's exercised for the
-        // first time here) rejects `max_ce_len > conn_interval_min` — a 500 ms CE against the 250 ms
-        // min interval faulted the controller (`SoftdeviceController: 50:701`) the instant the link
-        // formed. A sensor exchange (discovery, then ≤20 B notifications) needs only a few ms, so 30 ms
-        // is ample and matches the proven phone-link event length.
+        // connection-event length (`max_event_length` → `LeCreateConn`'s `max_ce_len`) is the radio
+        // timeslot the SDC schedules per event — keep it ≤ the connection interval and small: a
+        // sensor exchange (discovery, then ≤ 20 B notifications) needs only a few ms, so 30 ms is
+        // ample and matches the proven phone-link event length. (An earlier 500 ms value was once
+        // suspected as the `SoftdeviceController: 50:701` fault; the real cause was the missing
+        // `support_dle_central`/`support_phy_update_central` — see `build_sdc` — but the cap stays.)
         connect_params: RequestedConnParams {
             min_connection_interval: Duration::from_millis(250),
             max_connection_interval: Duration::from_millis(500),

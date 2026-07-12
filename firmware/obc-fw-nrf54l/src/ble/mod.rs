@@ -253,11 +253,14 @@ async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
 }
 
 /// The SDC at the config we ship: legacy adv, 1 peripheral link (the phone), plus the central role +
-/// legacy scan for the sensor manager ([`SENSOR_LINKS`] central links). DLE + PHY-update on the
-/// **peripheral** side only (LL payload 251 = ATT MTU 247 + 4 L2CAP header, 2M PHY) — deliberately
-/// **not** `support_dle_central`/`support_phy_update_central`: sensor notifications are ≤ 20 B, so a
-/// central link needs neither DLE nor a PHY update, and leaving them off keeps the LL feature surface
-/// (and its RAM) smaller for the same buffers. Kept in lockstep with the `required_memory` probe in
+/// legacy scan for the sensor manager ([`SENSOR_LINKS`] central links). DLE + PHY-update on **both**
+/// roles (LL payload 251 = ATT MTU 247 + 4 L2CAP header, 2M PHY): SE6 first enabled only the
+/// peripheral halves (sensor notifications are ≤ 20 B, so a central link *uses* neither) — but the
+/// SDC headers say the application "is required to call both" `sdc_support_dle_*` /
+/// `sdc_support_phy_update_*` "if both central and peripheral roles are supported", and the blob
+/// enforces it with an internal fault (`SoftdeviceController: 50:701`) the moment a central link
+/// established and the LL ran its setup procedures against the missing central half — every real
+/// sensor connect crashed the firmware. Kept in lockstep with the `required_memory` probe in
 /// [`run`] — change one, change both.
 fn build_sdc<'d, const N: usize>(
     p: nrf_sdc::Peripherals<'d>,
@@ -270,8 +273,10 @@ fn build_sdc<'d, const N: usize>(
         .support_peripheral()
         .support_central()
         .support_scan()
+        .support_dle_central()
         .support_dle_peripheral()
         .support_le_2m_phy()
+        .support_phy_update_central()
         .support_phy_update_peripheral()
         .peripheral_count(1)?
         .central_count(SENSOR_LINKS as u8)?
@@ -349,8 +354,10 @@ pub async fn run(
             .support_peripheral()
             .support_central()
             .support_scan()
+            .support_dle_central()
             .support_dle_peripheral()
             .support_le_2m_phy()
+            .support_phy_update_central()
             .support_phy_update_peripheral()
             .peripheral_count(1)?
             .central_count(SENSOR_LINKS as u8)?
