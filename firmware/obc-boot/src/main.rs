@@ -253,9 +253,9 @@ fn jump_to_app() -> ! {
         cortex_m::asm::dsb();
         cortex_m::asm::isb();
         // 3.+4. `asm::bootload(app_base)`: clears CONTROL.SPSEL (main stack — already the
-        //    case here, matching reset), loads MSP from *(0x8000), and branches to
-        //    *(0x8004)|1 (the app's reset vector, thumb bit set). Diverges — the bootloader
-        //    is gone after this line.
+        //    case here, matching reset), loads MSP from *(app base), and branches to
+        //    *(app base + 4)|1 (the app's reset vector, thumb bit set). Diverges — the
+        //    bootloader is gone after this line.
         cortex_m::asm::bootload(app_base as *const u32)
     }
 }
