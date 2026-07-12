@@ -99,6 +99,16 @@ Symptoms of a missing piece: no LED blink and no boot at all → no bootloader a
 - **Verify before erase**: the engine never writes the app slot until the staged
   image's CRC has passed over the full extent chain — a bad `UPDATE.BIN` costs
   nothing (host-tested, epic invariant 1).
+- **Watchdog-aware, never watchdog-started for an install** (DR1, #729): the arm
+  path enters through a warm reset that carries the app's live 24 s WDT, so the
+  bootloader adopts and pets it (engine progress, the SD retry loops, and the SOS
+  park — the parks must stay parks); before jumping into a **trial** boot it
+  starts the identical dog so a wedged trial resets into the rollback. A plain
+  `Idle` boot never touches the WDT, and a cold-boot install stays dog-less until
+  that trial jump. The config contract lives on `obc_dfu::WDT_TIMEOUT_TICKS`.
+  Flip side: every trial boot now runs its bring-up under a counting dog, so the
+  app must reach its own WDT adoption well inside one 24 s period (invariant
+  comment at the app's WDT setup in `obc-fw-nrf54l/src/main.rs`).
 - **No executor, no timers, no FAT, no FLPR**: blocking embassy-nrf HAL only
   (GPIO + blocking `Spim` + `Rramc`; the card delay source is a cycle-counted
   busy-wait). `embedded_sdmmc::SdCard` is used **without** `VolumeManager` —

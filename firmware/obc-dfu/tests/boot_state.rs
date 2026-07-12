@@ -192,3 +192,13 @@ fn decide_matrix() {
         BootDecision::AcceptAndClear
     );
 }
+
+/// DR1 (#729): the WDT period is a cross-image contract, not a tunable — the running app's dog
+/// must be adoptable by any bootloader (and the bootloader's trial-boot dog by any app), and
+/// embassy-nrf adoption requires an exact hardware-config match. A drift here isn't unsafe on
+/// its own (adoption fails closed into one unfed period), but it silently re-opens the two #729
+/// gaps this constant exists to close — so pin the raw value.
+#[test]
+fn wdt_timeout_is_pinned() {
+    assert_eq!(obc_dfu::WDT_TIMEOUT_TICKS, 786_432); // 24 s × 32768 Hz LFCLK
+}

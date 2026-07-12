@@ -19,6 +19,7 @@
 mod install;
 mod led;
 mod sd;
+mod wdt;
 
 use cortex_m_rt::entry;
 #[cfg(feature = "rtt")]
@@ -110,6 +111,12 @@ fn boot(p: embassy_nrf::Peripherals) {
         cp.DWT.enable_cycle_counter();
     }
 
+    // The watchdog across the boot chain (DR1, #729 — the policy lives on `wdt::BootDog`): the
+    // arm path enters here through a warm reset that carries the app's live 24 s dog, so adopt
+    // and pet it through everything below; a cold power-on stays dog-less until the trial jump.
+    // Constructed only past the fast path — a plain `Idle` boot never touches the WDT.
+    let mut dog = wdt::BootDog::take(p.WDT0);
+
     let mut rram = Rramc::new(p.RRAMC);
 
     // The card is needed only when the engine will stream extents. Bring-up retries FOREVER
@@ -121,6 +128,10 @@ fn boot(p: embassy_nrf::Peripherals) {
             let mut blocks = sd::SdBlocks::new(p.SERIAL22, p.P1_11, p.P1_07, p.P1_06, p.P0_00);
             let mut backoff = BACKOFF_MIN_MS;
             while !blocks.try_init() {
+                // An adopted dog must not convert this park into a reset storm — pet per lap
+                // (a lap is ≤ ~9 s: three blinks + the ≤8 s backoff, far inside 24 s), so the
+                // loop keeps waiting for the card exactly as designed.
+                dog.pet();
                 #[cfg(feature = "rtt")]
                 defmt::warn!("obc-boot: SD init failed — retrying in {=u32} ms", backoff);
                 led.blink_code(3);
@@ -138,9 +149,12 @@ fn boot(p: embassy_nrf::Peripherals) {
     let mut buf = [0u8; INSTALL_BUF_LEN];
     let mut backoff = BACKOFF_MIN_MS;
     let outcome = loop {
-        let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, boot_state_base());
+        let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, &mut dog, boot_state_base());
         match engine::run(&state, &slot, &mut io, &mut buf) {
             Outcome::SdError => {
+                // Same pet-per-lap as the init loop above; inside the engine the progress
+                // hook pets every chunk (`install.rs`).
+                dog.pet();
                 #[cfg(feature = "rtt")]
                 defmt::warn!("obc-boot: SD read failed mid-install — retrying in {=u32} ms", backoff);
                 led.blink_code(3);
@@ -173,20 +187,34 @@ fn boot(p: embassy_nrf::Peripherals) {
         // new image ever ran. The jump IS the one trial boot; a later bootloader entry that
         // still sees `Trial` then genuinely means the trial went unconfirmed.
         Outcome::Installed => {
+            // On the Install decision this jump IS the one trial boot of a freshly-flashed
+            // image — make sure it runs under the dog (Gap B of #729): started here on a cold
+            // boot, already live and inherited on the warm-reset path; either way the app
+            // adopts it at its own WDT setup, and a trial that wedges before getting there is
+            // dog-reset back into this bootloader → unconfirmed `Trial` → rollback. A
+            // *rollback's* jump (also `Installed`) re-enters the previously confirmed image —
+            // the same trust level as a plain `Idle` boot, so it deliberately stays dog-less
+            // on a cold boot, like the fast path.
+            if matches!(decision, BootDecision::Install(_)) {
+                dog.start_for_trial();
+            }
             #[cfg(feature = "rtt")]
             defmt::info!("obc-boot: install complete — jumping into the new image (trial boot)");
         }
         // Readback never matched (or the RRAM write path failed) after all retries. The state
         // page still holds the Armed record, so a power cycle retries the whole install; park
-        // on SOS rather than reset-looping into a boot storm.
+        // on SOS rather than reset-looping into a boot storm. Petting an adopted dog keeps the
+        // park a park (#729): letting it fire would turn this into a 24 s reset-and-rehammer
+        // cycle against a card that just failed readback — the opposite of the documented
+        // "halt until a human power-cycles" design.
         Outcome::FlashError => {
             #[cfg(feature = "rtt")]
             defmt::error!("obc-boot: flash/readback failed after retries — halting (power cycle retries)");
-            led.sos_forever();
+            led.sos_forever(|| dog.pet());
         }
         // The retry loop above never breaks with SdError; keep the match total without a
         // panic path.
-        Outcome::SdError => led.sos_forever(),
+        Outcome::SdError => led.sos_forever(|| dog.pet()),
     }
 }
 
@@ -229,6 +257,15 @@ fn jump_to_app() -> ! {
 /// If a panic happens anyway (a future logic bug), park the core rather than reset-looping
 /// into a brick-flavoured boot storm; the LED staying dark after power-on is the field
 /// symptom. (`rtt` builds swap this for panic-probe's printing handler.)
+///
+/// One caveat since DR1 (#729): on the warm-reset install path an **adopted watchdog is live**
+/// and nothing pets it here (deliberate — this handler has no access to the handle, and a
+/// panicking bootloader shouldn't keep itself alive), so the park is bounded at one WDT period
+/// (≤ 24 s) before the dog resets the machine. That reset re-enters this bootloader with the
+/// state page unchanged — and, per the app's WDT notes (`obc-fw-nrf54l/src/main.rs`), a
+/// dog-fired reset does *not* carry the dog over, so a deterministic panic parks for good on
+/// the second entry: one bounded retry, then the designed dark-LED park — still no reset loop.
+/// Cold-boot panics (no dog) park forever exactly as before.
 #[cfg(not(feature = "rtt"))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {

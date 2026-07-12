@@ -18,6 +18,20 @@ use crate::image::{ImageHeader, HEADER_LEN};
 /// spare; the reader may pass the whole 4 KB read to [`BootState::decode`].
 pub const PAGE_LEN: usize = 4096;
 
+/// The hardware watchdog period shared across the DFU boot chain: 24 s of 32768 Hz LFCLK ticks.
+///
+/// Not a byte format, but a handoff contract all the same (DR1, #729). The app arms an update and
+/// warm-resets into the bootloader with its WDT **live** (a started dog can never be stopped), so
+/// the bootloader must adopt and pet that exact dog through the install; and before jumping into a
+/// trial boot the bootloader starts the same dog itself, so a trial image that wedges before the
+/// app's own WDT setup still resets back into a rollback. embassy-nrf's `Watchdog::try_new` only
+/// re-adopts a running watchdog when the *whole* hardware config matches, so both sides must
+/// construct it identically: this timeout, pause-under-debug-halt, run-through-sleep, and **one**
+/// pet handle (RREN = bit 0). The embassy `Config` type itself can't live here (`obc-dfu` is
+/// core-only, no HAL edge); the two construction sites are `obc-fw-nrf54l/src/main.rs` (the app,
+/// #349) and `obc-boot/src/wdt.rs` — keep them field-for-field in sync with this value.
+pub const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
+
 /// Blob magic — `b"OBCB"` (OpenBikeComputer Boot). A blank/torn page won't match it ⇒ `Idle`.
 const MAGIC: [u8; 4] = *b"OBCB";
 
