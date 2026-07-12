@@ -201,7 +201,18 @@ re-sync can't resurrect them.
 imports an `UPDATE.BIN` (a Files pick — the whole OBCU container, `OBCU_Spec.md`
 §1), validates its 64-byte header **and both CRC-32s** before offering it, then
 streams it as a `fwImage` (type 5, `object_id 0`) exactly like a route upload
-(progress, cancel, whole-object restart). On commit the app sends `installFw`
+(progress, cancel, whole-object restart).
+
+The **size/tail contract** matches the SD sideload path (`OBCU_Spec.md`
+§1.1 / §2.3) on both bounds. **Ceiling:** the header's `Image Len` is the raw
+image, capped at `MAX_IMAGE_LEN` = 1,480,000; the streamed `fwImage` is the
+*whole container*, so its `total_len` is `64 + Image Len`, and the device's
+announce guard rejects at the **container** ceiling `MAX_IMAGE_LEN + 64` =
+1,480,064 — not the raw cap, so an image in the top 64 bytes of the range still
+stages. **Tail:** any bytes in the picked file past `64 + Image Len` are FAT
+cluster slack and **ignored** (the armer accepts `file_len >= 64 + Len`); the app
+trims to exactly `64 + Image Len` and streams only those bytes — a genuinely
+*short* file (that can't hold header + image) is still rejected. On commit the app sends `installFw`
 (cmd 3, no args); its `commandResult.status` maps to plain UI copy: `ok`(0) →
 "confirm on the device", `notFound`(2) → "the device doesn't see the update",
 `busy`(3) → "finish the current ride first", `error`(4) → "the device rejected
