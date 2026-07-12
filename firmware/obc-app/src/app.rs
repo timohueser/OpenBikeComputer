@@ -570,6 +570,13 @@ pub struct App {
     /// timer edge that flips the "No GPS Fix" banner dirties the live-data views exactly once.
     /// Starts `true` — no fix at boot.
     prev_no_fix: bool,
+    /// The sensor-tile display values `(hr, power, cadence)` at the previous `tick`'s end, so a
+    /// fresh BLE sample — or the 5 s staleness gate expiring one into `--` — repaints the riding
+    /// views exactly once (the sensor twin of [`prev_no_fix`](App::prev_no_fix)). The samples land
+    /// in [`Activity`], which the `state != state_before` redraw gate never compares, so without
+    /// this edge a live tile only repainted when something *else* (a moving fix, a screen change)
+    /// happened to dirty the frame — frozen solid on an indoor bench with no fix (epic #744, SR3).
+    prev_live_sensors: (Option<u16>, Option<u16>, Option<u8>),
     /// The single POI-list snapshot buffer (issue #425), threaded into the draw context as
     /// [`Render::poi_scratch`]. Held once here rather than per-screen so the ~800 B doesn't multiply
     /// across the screen-stack union (see [`PoiScratch`](crate::screen::PoiScratch)). Filled lazily
@@ -825,6 +832,7 @@ impl App {
             temp_c: None,
             last_fix_ms: None,
             prev_no_fix: true,
+            prev_live_sensors: (None, None, None),
             poi_scratch: screen::PoiScratch::new(),
             ble_passkey: None,
             sensor_status: [crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS],
@@ -923,6 +931,7 @@ impl App {
             addr_of_mut!((*slot).temp_c).write(None);
             addr_of_mut!((*slot).last_fix_ms).write(None);
             addr_of_mut!((*slot).prev_no_fix).write(true);
+            addr_of_mut!((*slot).prev_live_sensors).write((None, None, None));
             addr_of_mut!((*slot).poi_scratch).write(screen::PoiScratch::new());
             addr_of_mut!((*slot).ble_passkey).write(None);
             addr_of_mut!((*slot).sensor_status)
@@ -1089,8 +1098,9 @@ impl App {
         // BLE sensors → the live values Activity staleness-gates + the per-ride summaries. Drained
         // here beside the altimeter/temperature so `record_motion` (below, on a fresh fix) sees this
         // tick's samples. `Some` only on a fresh reading; a dropped strap simply stops reporting and
-        // the staleness gate expires the last value. No screen consumes these yet (SE4+); the ride
-        // record stamping is SE3.
+        // the staleness gate expires the last value. The stat tiles (SE5) read these through the
+        // `live_*_display` accessors; their repaint edge is the `prev_live_sensors` comparison at
+        // the end of this tick.
         if let Some(hr) = hr {
             if let Some(bpm) = hr.poll() {
                 self.activity.record_hr(bpm, now_ms);
@@ -1199,6 +1209,31 @@ impl App {
             self.prev_no_fix = no_fix;
             if self.shows_live_data() {
                 self.map_dirty = true;
+            }
+        }
+        // A live sensor tile's displayed value changed — a fresh BLE sample, or the 5 s staleness
+        // gate expiring one into `--`. Like the no-fix banner, this is an edge off data the
+        // `AppState` comparison never sees (the samples live in `Activity`), surfaced at the end of
+        // `tick` so it compares the exact values the render will draw (epic #744, SR3). Gated per
+        // quantity on the field actually being pinned to the grid, so an unconfigured sensor never
+        // forces a full map render at its notification rate (the same economy as the battery /
+        // `temp_c` gates above).
+        {
+            use crate::stat_fields::StatField;
+            let live = (
+                self.activity.live_hr_display(),
+                self.activity.live_power_display(),
+                self.activity.live_cadence_display(),
+            );
+            if live != self.prev_live_sensors {
+                let fields = &self.settings.stat_fields;
+                let shown = (live.0 != self.prev_live_sensors.0 && fields.contains(StatField::HeartRate))
+                    || (live.1 != self.prev_live_sensors.1 && fields.contains(StatField::Power))
+                    || (live.2 != self.prev_live_sensors.2 && fields.contains(StatField::Cadence));
+                if shown && self.shows_live_data() {
+                    self.map_dirty = true;
+                }
+                self.prev_live_sensors = live;
             }
         }
     }
@@ -3845,6 +3880,81 @@ mod tests {
         // with no new reading → the tile blanks, exactly as a dropped strap should.
         app.activity.note_sensor_clock(36_001);
         assert_eq!(app.activity.live_hr_display(), None, "a >5 s-old sample still blanks — no frozen value");
+    }
+
+    /// One tick with only an HR sample (no fix, nothing else moving): `loc` yields `None` so the
+    /// `AppState` comparison is a no-op — any repaint demand is the sensor-tile edge alone.
+    fn tick_hr_only(app: &mut App, bpm: Option<u16>, at_ms: u32) {
+        app.now_ms = at_ms;
+        let mut loc = OneFix(None);
+        let mut hr = OneHr(bpm);
+        app.tick(
+            RideClock(at_ms),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+                hr: Some(&mut hr),
+                power: None,
+                cadence: None,
+            },
+            None,
+        );
+    }
+
+    /// Epic #744 SR3: a fresh BLE sample lands in `Activity`, which the `state != state_before`
+    /// redraw gate never compares — so with an HR tile pinned, the tile froze until something
+    /// *else* (a moving fix, reopening the screen) happened to repaint. Pins the
+    /// `prev_live_sensors` edge: a changed displayed value dirties the riding view exactly once,
+    /// an unchanged one doesn't, and the 5 s staleness expiry (the blank to `--`) is an edge too.
+    #[test]
+    fn fresh_sensor_sample_repaints_the_riding_view() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // stack [Home, Map] — a riding view
+        assert!(app.settings.stat_fields.push(crate::stat_fields::StatField::HeartRate));
+        let _ = app.take_dirty(); // drain the boot repaint
+
+        tick_hr_only(&mut app, Some(155), 1_000);
+        assert!(app.take_dirty().map, "a fresh HR sample must repaint the riding view");
+
+        // A new sample with the same displayed value is not an edge.
+        tick_hr_only(&mut app, Some(155), 2_000);
+        assert!(!app.take_dirty().map, "an unchanged displayed value must not re-dirty");
+
+        tick_hr_only(&mut app, Some(156), 3_000);
+        assert!(app.take_dirty().map, "a changed bpm repaints again");
+
+        // The strap drops: >5 s later the staleness gate blanks the tile — that flip must paint
+        // (once), or the rider stares at a frozen last value.
+        tick_hr_only(&mut app, None, 9_001);
+        assert!(app.take_dirty().map, "the staleness expiry (value → `--`) must repaint");
+        tick_hr_only(&mut app, None, 20_000);
+        assert!(!app.take_dirty().map, "still blank → no re-dirty");
+    }
+
+    /// The economy half of the SR3 edge: with **no sensor tile pinned** (the default six fields), a
+    /// notification stream must never force map renders — the same render-on-demand economy the
+    /// battery / `temp_c` gates keep.
+    #[test]
+    fn sensor_sample_without_a_pinned_tile_never_repaints() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let _ = app.take_dirty();
+        tick_hr_only(&mut app, Some(155), 1_000);
+        assert!(!app.take_dirty().map, "no HR tile pinned → an HR sample must not force a render");
+    }
+
+    /// And off the riding views entirely (Home is the base), a pinned tile still doesn't repaint —
+    /// nothing on Home draws it; entering Statistics repaints on the screen change anyway.
+    #[test]
+    fn sensor_sample_on_home_never_repaints() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home
+        assert!(app.settings.stat_fields.push(crate::stat_fields::StatField::HeartRate));
+        let _ = app.take_dirty();
+        tick_hr_only(&mut app, Some(155), 1_000);
+        assert!(!app.take_dirty().map, "Home draws no tiles → no repaint for a sample");
     }
 
     // --- settings persistence signal (the host's save trigger) ---
