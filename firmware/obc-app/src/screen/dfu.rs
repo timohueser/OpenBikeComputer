@@ -13,8 +13,12 @@
 //!   / **Cancel** returns to the System menu. The standard two-row confirm chrome, like
 //!   [`NavConfirmScreen`](super::NavConfirmScreen).
 //! - [`DfuProgressScreen`] — "Preparing update..." (spinner) while the drain runs the CRC pass +
-//!   rollback snapshot + arm, then the board reboots into the bootloader (its LED takes over — the
-//!   display is off during the flash). Ignores input; the arm is irreversible.
+//!   rollback snapshot + arm. Ignores input; the arm is irreversible.
+//! - [`DfuInstallingScreen`] — the static, terminal "Installing update" card the board swaps in
+//!   ([`App::show_dfu_installing`](crate::App::show_dfu_installing)) and paints as its **last
+//!   frame** before the arm's warm reset: the bootloader never draws (LED codes only), but it
+//!   parks the panel pins and keeps the COM wave alive, so the Memory-in-Pixel glass *holds this
+//!   frame* through the whole flash.
 //! - [`DfuErrorScreen`] — a [`DfuScanError`](crate::dfu::DfuScanError) *or*
 //!   [`DfuInstallError`](crate::dfu::DfuInstallError) as a plain sentence (a scan rejection or an
 //!   install-drain refusal / arm failure, #755); **Back** dismisses (like
@@ -281,12 +285,12 @@ fn version_lines(
     y
 }
 
-// ── DfuProgress: "Preparing update..." until the board reboots ──
+// ── DfuProgress: "Preparing update..." until the board commits to the arm ──
 
-/// The arming-in-progress screen: the spinner over "Preparing update..." while the drain runs the
-/// CRC pass + rollback snapshot + arm. The board reboots into the bootloader when the arm lands (no
-/// further app frame — the LED takes over during the flash), so this screen ignores all input: an
-/// arm can't be cancelled.
+/// The arming-in-progress screen: the spinner over "Preparing update..." while the install
+/// one-shot waits for the board's drain. Once the drain's guards pass, the board swaps this for
+/// the terminal [`DfuInstallingScreen`] (its last painted frame before the reboot into the
+/// bootloader). This screen ignores all input: an arm can't be cancelled.
 #[derive(Debug, Default)]
 pub struct DfuProgressScreen {
     spin: Spinner,
@@ -308,6 +312,41 @@ impl DfuProgressScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         self.spin.draw(cv, rx, rx.t(Msg::DfuTitle), rx.t(Msg::DfuPreparing));
+    }
+}
+
+// ── DfuInstalling: the terminal pre-reset frame the panel holds through the install ──
+
+/// The static **"Installing update"** card — the last frame the app paints before the arm's warm
+/// reset into the bootloader. The bootloader never draws (its LED codes are the liveness signal);
+/// it parks the panel pins and keeps the COM wave alternating (`obc-boot/src/com.rs`), so the
+/// Memory-in-Pixel panel *holds this exact frame* for the whole multi-ten-second flash.
+/// Board-pushed ([`App::show_dfu_installing`](crate::App::show_dfu_installing)) right before the
+/// rollback snapshot + arm — deliberately **everything on it is static**: a spinner would freeze
+/// mid-sweep the moment the reset lands and read as a wedge, so the copy names the LED as the
+/// "still working" signal instead. Input is ignored; the arm is already irreversible.
+#[derive(Debug, Default)]
+pub struct DfuInstallingScreen;
+
+impl DfuInstallingScreen {
+    pub fn new() -> Self {
+        DfuInstallingScreen
+    }
+
+    pub fn handle(&mut self, _g: Gesture, _cx: &mut Ctx) -> Transition {
+        Transition::None // terminal: the reset is already on its way
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+        title_frame(cv, w, h, rx.t(Msg::DfuTitle), "");
+        // The headline wraps at Body size (the French copy is two lines at 240 px), the
+        // explanation below at Label, and the one imperative — keep power on — in warning red.
+        let after_head =
+            super::wrapped(cv, rx.t(Msg::DfuInstalling), w / 2, TITLE_BAR_H + 40, w - 2 * INSET, Font::Body, INK);
+        let after_body = wrapped(cv, rx.t(Msg::DfuInstallingBody), w / 2, after_head + 16, w - 2 * INSET, INK);
+        wrapped(cv, rx.t(Msg::DfuInstallingPower), w / 2, after_body + 12, w - 2 * INSET, WARNING);
     }
 }
 

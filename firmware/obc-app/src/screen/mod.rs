@@ -52,8 +52,8 @@ mod warning;
 
 pub use climb::ClimbScreen;
 pub use dfu::{
-    DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuProgressScreen,
-    DfuUpdatedScreen,
+    DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
+    DfuProgressScreen, DfuUpdatedScreen,
 };
 pub use home::HomeScreen;
 pub use list::window_start;
@@ -494,9 +494,12 @@ screens! {
     /// The install confirm (epic #615 S5): installed → update versions, the no-undo / same-version
     /// warnings, and the standard two-row Install / Cancel chrome.
     DfuConfirm(DfuConfirmScreen) => Nav,
-    /// The "Preparing update..." progress spinner (epic #615 S5): up while the drain snapshots the
-    /// rollback + arms; the board reboots into the bootloader when the arm lands.
+    /// The "Preparing update..." progress spinner (epic #615 S5): up while the install one-shot
+    /// waits for the board's drain; the drain swaps it for the terminal DfuInstalling card.
     DfuProgress(DfuProgressScreen) => Nav,
+    /// The static, terminal "Installing update" card: board-pushed right before the arm's warm
+    /// reset — the last painted frame, which the MIP panel holds through the whole install.
+    DfuInstalling(DfuInstallingScreen) => Nav,
     /// The scan-error card (epic #615 S5): a typed [`DfuScanError`](crate::dfu::DfuScanError) as a
     /// plain sentence; Back dismisses.
     DfuError(DfuErrorScreen) => Nav,

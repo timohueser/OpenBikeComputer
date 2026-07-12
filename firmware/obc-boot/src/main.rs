@@ -10,12 +10,16 @@
 //! crate contributes only resource bring-up (SPI card, RRAMC, LED) via `sd`/`install`/`led`;
 //! the bootloader itself must never be able to panic on any page content.
 //!
-//! LED0 is the entire UI (blink codes — table in the README). No executor, no timers, no FAT,
-//! no FLPR — blocking embassy-nrf HAL only; the app starts the FLPR core itself.
+//! LED0 is the entire UI (blink codes — table in the README): the bootloader never draws.
+//! On the slow paths it does keep the *panel* alive — the app pre-paints an "Installing
+//! update" frame the Memory-in-Pixel glass holds, and `com.rs` parks the scan pins + keeps
+//! the anti-DC-bias COM wave alternating under it. No executor, no timers, no FAT, no FLPR —
+//! blocking embassy-nrf HAL only; the app starts the FLPR core itself.
 
 #![no_std]
 #![no_main]
 
+mod com;
 mod install;
 mod led;
 mod sd;
@@ -109,13 +113,44 @@ fn boot(p: embassy_nrf::Peripherals) {
         return;
     }
 
-    // The rtt throughput meter reads the DWT cycle counter — start it (rtt builds only; the
-    // shipping build carries none of this).
-    #[cfg(feature = "rtt")]
+    // The DWT cycle counter paces the panel's COM wave (`com.rs`) — and feeds the rtt
+    // throughput meter. If the take somehow fails the COM poll just never fires (CYCCNT
+    // stays 0 — a no-op, never a hang).
     if let Some(mut cp) = cortex_m::Peripherals::take() {
         cp.DCB.enable_trace();
         cp.DWT.enable_cycle_counter();
     }
+
+    // Panel keep-alive for everything past the fast path (see `com.rs`): park the LS021's
+    // gate + source lines driven-low so nothing floats into the glass while the app slot is
+    // rewritten, and free-run the COM wave on the three COM pins so the app's pre-painted
+    // "Installing update" frame survives the install without a DC bias. Pins are copied from
+    // the app's bring-up (`obc-fw-nrf54l/src/main.rs`, the FLPR pin block) — deliberate
+    // duplication, the same policy as the SD pins in `sd.rs`. All of it drops back to the
+    // reset state when `boot` returns, exactly like the SPI/LED pins.
+    let _panel_pins = [
+        Output::new(p.P1_00, Level::Low, OutputDrive::Standard), // GSP
+        Output::new(p.P1_01, Level::Low, OutputDrive::Standard), // GCK
+        Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
+        Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // INTB
+        Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
+        Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // BCK
+        Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
+        Output::new(p.P2_01, Level::Low, OutputDrive::Standard), // R1 (even)
+        Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0
+        Output::new(p.P2_03, Level::Low, OutputDrive::Standard), // G1
+        Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B0
+        Output::new(p.P2_05, Level::Low, OutputDrive::Standard), // B1
+    ];
+    // The COM electrodes are a 56–77 nF load → high-drive, like the app's COM pins. These are
+    // the DK's COM pins (the app's M33 `com` driver); the production board reroutes COM onto
+    // GPIOTE-capable pins for the app's `com-hw` feature (P1_04/05/15 today) — when that board
+    // lands, mirror its routing here too.
+    let mut com = com::Com::start(
+        Output::new(p.P2_07, Level::Low, OutputDrive::HighDrive), // VCOM
+        Output::new(p.P2_08, Level::Low, OutputDrive::HighDrive), // VB
+        Output::new(p.P2_10, Level::Low, OutputDrive::HighDrive), // VA
+    );
 
     // The watchdog across the boot chain (DR1, #729 — the policy lives on `wdt::BootDog`): the
     // arm path enters here through a warm reset that carries the app's live 24 s dog, so adopt
@@ -140,8 +175,8 @@ fn boot(p: embassy_nrf::Peripherals) {
                 dog.pet();
                 #[cfg(feature = "rtt")]
                 defmt::warn!("obc-boot: SD init failed — retrying in {=u32} ms", backoff);
-                led.blink_code(3);
-                led::delay_ms(backoff);
+                led.blink_code(3, &mut com);
+                com.delay_ms(backoff);
                 backoff = (backoff * 2).min(BACKOFF_MAX_MS);
             }
             Some(blocks)
@@ -156,7 +191,7 @@ fn boot(p: embassy_nrf::Peripherals) {
     let mut buf = [0u8; INSTALL_BUF_LEN];
     let mut backoff = BACKOFF_MIN_MS;
     let outcome = loop {
-        let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, &mut dog, boot_state_base());
+        let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, &mut dog, &mut com, boot_state_base());
         match engine::run(&state, &slot, &mut io, &mut buf) {
             Outcome::SdError => {
                 // Same pet-per-lap as the init loop above; inside the engine the progress
@@ -164,8 +199,8 @@ fn boot(p: embassy_nrf::Peripherals) {
                 dog.pet();
                 #[cfg(feature = "rtt")]
                 defmt::warn!("obc-boot: SD read failed mid-install — retrying in {=u32} ms", backoff);
-                led.blink_code(3);
-                led::delay_ms(backoff);
+                led.blink_code(3, &mut com);
+                com.delay_ms(backoff);
                 backoff = (backoff * 2).min(BACKOFF_MAX_MS);
                 if let Some(card) = card.as_mut() {
                     let _ = card.try_init();
@@ -185,7 +220,7 @@ fn boot(p: embassy_nrf::Peripherals) {
         Outcome::StageRejected => {
             #[cfg(feature = "rtt")]
             defmt::warn!("obc-boot: staged image invalid — arm cleared, booting the old app");
-            led.blink_code(2);
+            led.blink_code(2, &mut com);
         }
         // The slot holds the readback-verified image and the follow-up state (`Trial` after an
         // install, `Idle` after a rollback) is written: jump straight into it. Never reset
@@ -217,11 +252,11 @@ fn boot(p: embassy_nrf::Peripherals) {
         Outcome::FlashError => {
             #[cfg(feature = "rtt")]
             defmt::error!("obc-boot: flash/readback failed after retries — halting (power cycle retries)");
-            led.sos_forever(|| dog.pet());
+            led.sos_forever(&mut com, || dog.pet());
         }
         // The retry loop above never breaks with SdError; keep the match total without a
         // panic path.
-        Outcome::SdError => led.sos_forever(|| dog.pet()),
+        Outcome::SdError => led.sos_forever(&mut com, || dog.pet()),
     }
 }
 

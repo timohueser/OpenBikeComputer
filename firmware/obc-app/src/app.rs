@@ -1897,18 +1897,39 @@ impl App {
         self.map_dirty = true;
     }
 
+    /// Swap the "Preparing update..." spinner for the static, terminal
+    /// [`DfuInstalling`](crate::screen::DfuInstallingScreen) card — called by the board's install
+    /// drain the moment its guards pass, right before it paints its **last frame** and runs the
+    /// rollback snapshot + arm + warm reset. The Memory-in-Pixel panel then holds that frame
+    /// through the whole bootloader install (the bootloader never draws — it only keeps the panel's
+    /// COM wave alive), so this card *is* the install UI. With no spinner up (the `dfu-install`
+    /// debug command arms without the confirm flow) the card is pushed instead — the pre-reset
+    /// frame is right regardless of the door in.
+    pub fn show_dfu_installing(&mut self) {
+        let card = Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new());
+        if let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuProgress(_))) {
+            self.stack[i] = card;
+        } else {
+            let _ = self.stack.push(card);
+        }
+        self.map_dirty = true;
+    }
+
     /// The board's answer to a drained [`DfuAction::Install`](crate::activity::DfuAction) that
     /// **did not reboot** (issue #755) — a refusal (recording / pending ride save / no card) or an
     /// arm-time failure (a re-scan rejection, a rollback-snapshot IO error, a boot-state write
     /// failure). Mirrors [`notify_dfu_scan_result`](App::notify_dfu_scan_result), but finds the
-    /// live [`DfuProgress`](crate::screen::DfuProgressScreen) spinner the confirm swapped in and
-    /// **replaces** it with the error card — so a failed arm can no longer strand the rider on a
-    /// spinner that ignores all input. If the progress screen is gone (nothing else pops it, but be
-    /// symmetric with the scan seam), the fact is dropped: nothing was armed. A successful arm never
-    /// calls this — it reboots into the bootloader instead, so `DfuProgress` only outlives its pass
-    /// when the reset is genuinely imminent.
+    /// live wait the flow is showing — the [`DfuProgress`](crate::screen::DfuProgressScreen)
+    /// spinner for a pre-paint refusal, or the [`DfuInstalling`](crate::screen::DfuInstallingScreen)
+    /// card ([`show_dfu_installing`](App::show_dfu_installing)) for a failure inside the arm — and
+    /// **replaces** it with the error card, so a failed arm can no longer strand the rider on a
+    /// screen that ignores all input. If neither is up (nothing else pops them, but be symmetric
+    /// with the scan seam), the fact is dropped: nothing was armed. A successful arm never calls
+    /// this — it reboots into the bootloader instead, so these screens only outlive their pass when
+    /// the reset is genuinely imminent.
     pub fn notify_dfu_install_failed(&mut self, reason: crate::dfu::DfuInstallError) {
-        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuProgress(_))) else {
+        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuProgress(_) | Screen::DfuInstalling(_)))
+        else {
             return;
         };
         self.stack[i] = Screen::DfuError(crate::screen::DfuErrorScreen::new_install(reason));
@@ -2920,6 +2941,7 @@ impl App {
                     | Screen::DfuCheck(_)
                     | Screen::DfuConfirm(_)
                     | Screen::DfuProgress(_)
+                    | Screen::DfuInstalling(_)
                     | Screen::DfuError(_)
                     | Screen::DfuUpdated(_)
                     | Screen::DfuFailed(_)
@@ -4999,6 +5021,35 @@ mod tests {
             Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Scan(crate::dfu::DfuScanError::Damaged)),
             _ => panic!("the re-scan bucket lands the error card"),
         }
+
+        // A failure past the terminal-frame swap (`show_dfu_installing` already replaced the
+        // spinner) lands the error card on the installing card the same way.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.stack.push(Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new()));
+        app.notify_dfu_install_failed(DfuInstallError::SnapshotFailed);
+        match app.top_screen() {
+            Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::SnapshotFailed)),
+            _ => panic!("a post-swap failure swaps the installing card for the error card"),
+        }
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuInstalling(_))), "the installing card is gone");
+    }
+
+    /// The terminal-frame seam: `show_dfu_installing` swaps the "Preparing update..." spinner for
+    /// the static installing card (the pre-reset frame the panel holds through the install), and
+    /// with no spinner up — the `dfu-install` debug command's direct arm — pushes it instead.
+    #[test]
+    fn show_dfu_installing_swaps_the_spinner_or_pushes() {
+        // The confirm flow: the spinner is up → swapped in place, never stacked.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
+        app.show_dfu_installing();
+        assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the spinner became the installing card");
+        assert!(!app.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
+
+        // The debug direct-arm door: no spinner → the card is pushed on top.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.show_dfu_installing();
+        assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "pushed with no spinner up");
     }
 
     /// The S6 remote-check seam (epic #615 S6, #621): a BLE `installFw` opens the **same** scan →

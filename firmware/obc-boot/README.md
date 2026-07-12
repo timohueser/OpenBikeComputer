@@ -36,7 +36,13 @@ The RRAM layout (single source of truth for the app side:
 | **SOS**, forever | readback never matched after retries — halted; state still `Armed`, so a power cycle retries the install |
 
 Heartbeat rates scale with card throughput (a toggle per N 4 KB chunks); the
-counted codes and SOS are fixed-timing. No display, ever.
+counted codes and SOS are fixed-timing. The bootloader never *draws* — but the
+panel isn't dark during an install: the app paints a static "Installing update"
+card as its last frame before the arm's reset, and this crate keeps it alive
+(`src/com.rs`) by parking the LS021's scan pins driven-low and free-running the
+anti-DC-bias COM wave in software, paced off the DWT cycle counter from the same
+chokepoints that pet the watchdog. The memory-in-pixel glass holds the frame; the
+LED stays the only *output* the bootloader produces.
 
 ## Build
 
@@ -113,9 +119,12 @@ Symptoms of a missing piece: no LED blink and no boot at all → no bootloader a
   (GPIO + blocking `Spim` + `Rramc`; the card delay source is a cycle-counted
   busy-wait). `embedded_sdmmc::SdCard` is used **without** `VolumeManager` —
   extents are pre-resolved absolute blocks, and `llvm-nm` on the release ELF
-  must show no FAT/volume symbols. The app starts the FLPR itself.
-- **Deliberate duplication**: SD pins/frequencies and the RRAM write idiom are
-  copied from the board crate (`obc-fw-nrf54l/src/sd.rs`, `src/main.rs`,
-  `src/settings.rs`) with cross-referencing comments — no shared pins module.
+  must show no FAT/volume symbols. The app starts the FLPR itself. The panel
+  keep-alive (`src/com.rs`) holds the line: no display driver, no framebuffer —
+  just parked pins and a CYCCNT-paced GPIO toggle woven into the existing waits.
+- **Deliberate duplication**: SD pins/frequencies, the panel/COM pins, and the
+  RRAM write idiom are copied from the board crate (`obc-fw-nrf54l/src/sd.rs`,
+  `src/main.rs`, `src/settings.rs`) with cross-referencing comments — no shared
+  pins module.
 - `main.rs` stays a thin driver (bring-up + outcome dispatch); review is the
   verification for the wiring, the host tests are it for the sequencing.
