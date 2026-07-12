@@ -170,7 +170,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func authenticate() async throws {
-        // Phase 2 (#297): the gated ops (subscribe status/transferControl, read the
+        // Phase 2 (#297): the gated ops (subscribe the `status` notify, read the
         // PSM, open the CoC) that establish the encrypted, LESC-authenticated link
         // and raise the system passkey sheet. Resolves when the CoC opens.
         //
@@ -257,12 +257,25 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         async let fw = readString(GATT.firmwareRevision)
         async let hw = readString(GATT.hardwareRevision)
         async let serial = readString(GATT.serialNumber)
+        // v2 read: `version u16 · store_epoch u32` LE (spec §1). The version field
+        // keeps the **lenient prefix** decode (count >= 2 reads the first u16) —
+        // that's the v1-peer compat path: a v1 device returns 2 bytes, reads as
+        // `version = 1`, and takes the #303 mismatch banner. The epoch decode
+        // instead requires the **full 6 bytes**; a short read leaves it `nil`
+        // (unknown), never a fabricated `0` (`0` is a legal epoch). V5 (#769) gates
+        // `ackRides`/reconcile on a present epoch — a `nil` here is that failed
+        // identity read surfaced, not hidden behind a fake value.
         let versionData = try await read(GATT.protocolVersion)
-        let version = versionData.count >= 2 ? UInt16(versionData[0]) | (UInt16(versionData[1]) << 8) : OBCProtocol.version
+        let b = versionData.startIndex
+        let version = versionData.count >= 2 ? UInt16(versionData[b]) | (UInt16(versionData[b + 1]) << 8) : OBCProtocol.version
+        let storeEpoch: UInt32? = versionData.count >= 6
+            ? UInt32(versionData[b + 2]) | (UInt32(versionData[b + 3]) << 8)
+                | (UInt32(versionData[b + 4]) << 16) | (UInt32(versionData[b + 5]) << 24)
+            : nil
         let name = await currentPeripheralName() ?? "OBC"
         return DeviceInfo(
             name: name, firmwareVersion: try await fw, hardwareVersion: try await hw,
-            serial: try await serial, protocolVersion: version
+            serial: try await serial, protocolVersion: version, storeEpoch: storeEpoch
         )
     }
 
@@ -326,16 +339,18 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 name: entry.name,
                 distanceMeters: Double(entry.distanceMeters),
                 elevationGainMeters: Double(entry.ascentMeters),
-                pointCount: Int(entry.pointCount)
+                pointCount: Int(entry.pointCount),
+                crc32: entry.crc32
             )
         }
     }
 
-    public func listRides() async throws -> [RideSummary] {
+    public func listRides() async throws -> RideCatalog {
         // The `rideList` object (type 7, spec §7.4) — the ride catalog (empty
-        // until the firmware stores rides, A7).
-        let entries = try RideList.decode(try await downloadObject(type: .rideList, objectID: 0))
-        return entries.map { entry in
+        // until the firmware stores rides, A7). The v2 header's `total` surfaces
+        // truncation past the device's `MAX_RIDES` cap (`hiddenRideCount`).
+        let decoded = try RideList.decode(try await downloadObject(type: .rideList, objectID: 0))
+        let rides = decoded.entries.map { entry in
             RideSummary(
                 id: RideID(deviceObjectID: DeviceObjectID(entry.objectID)),
                 name: entry.name,
@@ -346,6 +361,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 climbMeters: Double(entry.climbMeters)
             )
         }
+        return RideCatalog(rides: rides, hiddenRideCount: decoded.hiddenCount)
     }
 
     public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
@@ -642,6 +658,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             waiter.resume(throwing: rejectError(result.status))
             return
         }
+        // v2: the download announce rides `status` (`msg = 4`) — route it to the
+        // announce waiter/buffer, the single ordering domain folding it into
+        // `status` buys us (the split-CCCD failure mode is gone with the
+        // `transferControl` CCCD).
+        if case .downloadAnnounce(let descriptor) = message {
+            deliverAnnounce(descriptor)
+            return
+        }
         if let index = statusWaiters.firstIndex(where: { $0.pred(message) }) {
             statusWaiters.remove(at: index).cont.resume(returning: message)
             return
@@ -655,8 +679,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             // re-reconcile its "on device" badges when the device's store
             // moves under an open app (on-device delete, epic #447 P6).
             storeChangedMulticast.send(change)
-        case .unknown:
-            break  // unsolicited signals are not buffered
+        case .downloadAnnounce, .unknown:
+            break  // announce is handled above (unreachable here); unknowns aren't buffered
         }
     }
 
@@ -760,10 +784,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             failAuthenticate(.notConnected)
             return
         }
-        for uuid in [GATT.status, GATT.transferControl] {
-            if let characteristic = characteristics[uuid] {
-                peripheral.setNotifyValue(true, for: characteristic)
-            }
+        // v2: one notify surface — `status` alone. `transferControl` is write-only
+        // (the download announce it once notified now rides `status` as `msg = 4`),
+        // so its CCCD subscribe path — and the split-CCCD ordering it created — is gone.
+        if let statusCharacteristic = characteristics[GATT.status] {
+            peripheral.setNotifyValue(true, for: statusCharacteristic)
         }
         // #753: the gated retry can begin with the CoC already up — a CCCD write
         // failed and resolved attempt 1 as retryable while attempt 1's PSM read
@@ -1383,17 +1408,12 @@ extension BLETransport: CBPeripheralDelegate {
             }
             return
         }
-        // Typed device → app `status` messages (transferResult / storeChanged / …).
+        // Typed device → app `status` messages — the sole device → app channel in
+        // v2 (transferResult / storeChanged / commandResult / **downloadAnnounce**).
+        // The download announce arrives here as `msg = 4`; `deliverStatus` routes
+        // it to the announce waiter (`transferControl` is write-only now).
         if uuid == GATT.status {
             if let data = characteristic.value, let message = try? StatusMessage(decoding: data) { deliverStatus(message) }
-            return
-        }
-        // A notification on `transferControl` is a download-announce (our own writes
-        // ack via didWriteValueFor, not here).
-        if uuid == GATT.transferControl {
-            if let data = characteristic.value, let descriptor = try? TransferControl(decoding: data) {
-                deliverAnnounce(descriptor)
-            }
             return
         }
 
@@ -1405,22 +1425,22 @@ extension BLETransport: CBPeripheralDelegate {
         _ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?
     ) {
         // #753: on a fresh pair the FIRST gated op is a CCCD write, not the PSM
-        // read — `beginAuthenticate` arms the `status` / `transferControl`
-        // notifies before reading the PSM — so it's the CCCD write that raises
-        // the passkey sheet, and iOS's post-passkey replay of the gated ops hits
-        // the CCCD writes *first*. The firmware's post-PairingComplete refusal
-        // window therefore most likely clips a CCCD write; without this handler
-        // that failure was silently swallowed — and if the window then drained
-        // before the PSM read, `authenticate()` resolved with DEAD status/
-        // transferControl notifies (no transferResult or announce would ever
-        // arrive). Map it exactly like the PSM branch: the shared retryable
-        // proxy → resolve the parked authenticate as retryable, and the retry's
-        // `beginAuthenticate` re-arms all three gated ops. Everything else keeps
-        // the pre-existing ignore: a background re-arm has no authenticate
-        // pending, and a real decline tears the link down
-        // (`didDisconnectPeripheral` owns that path). No notify-state
-        // bookkeeping beyond this.
-        guard characteristic.uuid == GATT.status || characteristic.uuid == GATT.transferControl else { return }
+        // read — `beginAuthenticate` arms the `status` notify before reading the
+        // PSM — so it's the CCCD write that raises the passkey sheet, and iOS's
+        // post-passkey replay of the gated ops hits the CCCD write *first*. The
+        // firmware's post-PairingComplete refusal window therefore most likely
+        // clips the CCCD write; without this handler that failure was silently
+        // swallowed — and if the window then drained before the PSM read,
+        // `authenticate()` resolved with a DEAD `status` notify (no transferResult
+        // or announce would ever arrive). Map it exactly like the PSM branch: the
+        // shared retryable proxy → resolve the parked authenticate as retryable,
+        // and the retry's `beginAuthenticate` re-arms the gated ops. Everything
+        // else keeps the pre-existing ignore: a background re-arm has no
+        // authenticate pending, and a real decline tears the link down
+        // (`didDisconnectPeripheral` owns that path). No notify-state bookkeeping
+        // beyond this. (v2: `transferControl` is write-only — only `status` is
+        // notified now, so it's the sole CCCD this window can clip.)
+        guard characteristic.uuid == GATT.status else { return }
         guard Self.isRetryableGatedFailure(
             error, peripheralConnected: peripheral.state == .connected,
             authenticatePending: authenticateContinuation != nil

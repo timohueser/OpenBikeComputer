@@ -114,9 +114,9 @@ public struct MockTransport: DeviceTransport {
         control.removeRoute(id)
     }
 
-    public func listRides() async throws -> [RideSummary] {
+    public func listRides() async throws -> RideCatalog {
         try await preludeThrowing()
-        return control.fixtures.rides.map(\.summary)
+        return RideCatalog(rides: control.fixtures.rides.map(\.summary))
     }
 
     public func ackRides(_ ids: [RideID]) async throws {

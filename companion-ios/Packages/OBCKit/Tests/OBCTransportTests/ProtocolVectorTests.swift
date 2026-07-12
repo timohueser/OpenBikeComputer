@@ -47,12 +47,14 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(GATT.obcControlService.uuidString, uuids["obc_control_service"])
         XCTAssertEqual(GATT.command.uuidString, uuids["command"])
         XCTAssertEqual(GATT.status.uuidString, uuids["status"])
-        XCTAssertEqual(GATT.objectStore.uuidString, uuids["object_store"])
         XCTAssertEqual(GATT.config.uuidString, uuids["config"])
         XCTAssertEqual(GATT.transferControl.uuidString, uuids["transfer_control"])
-        XCTAssertEqual(GATT.diagnostics.uuidString, uuids["diagnostics"])
         XCTAssertEqual(GATT.psm.uuidString, uuids["psm"])
         XCTAssertEqual(GATT.protocolVersion.uuidString, uuids["protocol_version"])
+        // v2 dropped `objectStore` (0003) and `diagnostics` (0006) — the manifest
+        // no longer lists them, and the six-characteristic surface is what remains.
+        XCTAssertNil(uuids["object_store"])
+        XCTAssertNil(uuids["diagnostics"])
     }
     #endif
 
@@ -67,25 +69,14 @@ final class ProtocolVectorTests: XCTestCase {
     }
 
     func testUploadTranscriptDescriptors() throws {
+        // The 12-byte v2 descriptor (no trailing `offset`).
         let startBytes = try fixture("transfer-upload-start.bin")
+        XCTAssertEqual(startBytes.count, TransferControl.encodedLength)
         let start = try TransferControl(decoding: startBytes)
         XCTAssertEqual(start.op, .upload)
         XCTAssertEqual(start.type, .route)
         XCTAssertEqual(start.objectID, TransferControl.newObjectID)
-        XCTAssertEqual(start.offset, 0)
         XCTAssertEqual(start.encode(), startBytes)
-
-        // The historic resume descriptor differs from the fresh start only in its
-        // offset — kept as a shape-stability pin (it must DECODE byte-exactly; the
-        // device answers it `error`, transfers restart rather than resume).
-        let resumeBytes = try fixture("transfer-upload-resume.bin")
-        let resume = try TransferControl(decoding: resumeBytes)
-        var expected = start
-        expected.offset = resume.offset
-        XCTAssertGreaterThan(resume.offset, 0)
-        XCTAssertLessThan(Int(resume.offset), Int(start.totalLen))
-        XCTAssertEqual(resume, expected)
-        XCTAssertEqual(resume.encode(), resumeBytes)
 
         // Download request: rideList, no length/CRC (the device's announce fills them).
         let requestBytes = try fixture("transfer-download-request.bin")
@@ -100,7 +91,7 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(abort.encode(), abortBytes)
     }
 
-    func testStatusMessagesAndStoreDigest() throws {
+    func testStatusMessages() throws {
         let route = try fixture("route-waypoints.obcr")
 
         // The closing result: committed, the device-assigned id, all bytes durable.
@@ -126,10 +117,29 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(changed, .storeChanged(StoreChanged(type: .route, revision: 42)))
         XCTAssertEqual(changed.encode(), changedBytes)
 
-        let digestBytes = try fixture("object-store.bin")
-        let digest = try ObjectStoreDigest(decoding: digestBytes)
-        XCTAssertEqual(digest, ObjectStoreDigest(revision: 42, routeCount: 3, rideCount: 5))
-        XCTAssertEqual(digest.encode(), digestBytes)
+        // v2: the download announce rides `status` as `msg = 4` (the msg byte + the
+        // 12-byte descriptor) — one notify surface, not the retired `transferControl`
+        // CCCD. It decodes to the same descriptor the device would have notified.
+        let announceBytes = try fixture("status-download-announce.bin")
+        XCTAssertEqual(announceBytes.count, 1 + TransferControl.encodedLength)
+        let announce = try StatusMessage(decoding: announceBytes)
+        XCTAssertEqual(announce, .downloadAnnounce(TransferControl(
+            op: .download, type: .route, objectID: 7,
+            totalLen: UInt32(route.count), crc32: CRC32.checksum(route)
+        )))
+        XCTAssertEqual(announce.encode(), announceBytes)
+    }
+
+    func testVersionReadDecodesVersionAndEpoch() throws {
+        // The widened v2 identity read: `version u16 · store_epoch u32` LE.
+        let bytes = try fixture("version-read.bin")
+        XCTAssertEqual(bytes.count, 6)
+        let b = bytes.startIndex
+        let version = UInt16(bytes[b]) | (UInt16(bytes[b + 1]) << 8)
+        let epoch = UInt32(bytes[b + 2]) | (UInt32(bytes[b + 3]) << 8)
+            | (UInt32(bytes[b + 4]) << 16) | (UInt32(bytes[b + 5]) << 24)
+        XCTAssertEqual(version, OBCProtocol.version)
+        XCTAssertEqual(epoch, 0xA1B2_C3D4)
     }
 
     func testRideVectorDecodesAndReEncodesByteExactly() throws {
@@ -167,17 +177,22 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(entries.count, 2)
 
         // Entry fields come from the stored routes' OBCR headers (ids continue the transcript's
-        // assigned id 7); byte_len sizes each stored file.
+        // assigned id 7); byte_len sizes each stored file. v2 appends the whole-object `crc32`
+        // (the content fingerprint) to each 76-byte entry.
         let waypointsRoute = try fixture("route-waypoints.obcr")
         let plainRoute = try fixture("route-plain.obcr")
         XCTAssertEqual(entries[0], RouteListEntry(
             objectID: 7, byteLen: UInt32(waypointsRoute.count), distanceMeters: 2207,
-            ascentMeters: 76, pointCount: 9, waypointCount: 2, name: "Vector Loop"
+            ascentMeters: 76, pointCount: 9, waypointCount: 2, name: "Vector Loop",
+            crc32: CRC32.checksum(waypointsRoute)
         ))
         XCTAssertEqual(entries[1], RouteListEntry(
             objectID: 8, byteLen: UInt32(plainRoute.count), distanceMeters: 2207,
-            ascentMeters: 76, pointCount: 9, waypointCount: 0, name: "Vector Loop"
+            ascentMeters: 76, pointCount: 9, waypointCount: 0, name: "Vector Loop",
+            crc32: CRC32.checksum(plainRoute)
         ))
+        // The CRC is the OBCR object's own — the app can re-derive it to verify identity (V6).
+        XCTAssertEqual(entries[0].crc32, 0x1F66_C051)
 
         XCTAssertEqual(RouteList.encode(entries), bytes)  // byte-exact re-encode
     }
