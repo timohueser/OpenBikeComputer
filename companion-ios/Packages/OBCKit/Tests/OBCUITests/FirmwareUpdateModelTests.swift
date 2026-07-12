@@ -127,6 +127,38 @@ struct FirmwareUpdateModelTests {
         #expect(model.phase == .transferring)
     }
 
+    /// The tick and link-state watchers drain two independent streams, so under
+    /// scheduler load a pre-drop progress tick can be *delivered* after the drop
+    /// event. A stale tick must not read as "moving again" — it would resurrect
+    /// `.transferring` for a transfer whose link is already gone, hiding the
+    /// Resume affordance and wedging the sheet at a frozen percentage (the
+    /// parked transfer emits nothing further). Same race as the route-upload
+    /// sheet's `staleTickDeliveredAfterTheDropDoesNotReclaim`.
+    @Test func staleTickDeliveredAfterTheDropDoesNotResurrectTransferring() async {
+        let stub = StubTransport()
+        let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
+        model.start()
+        await waitFor { model.connection == .connected }
+        model.stage(container(version: "0.5.0"))
+        model.send()
+        #expect(model.phase == .transferring)
+
+        // A live tick moves the bar (and proves the tick watcher is consuming).
+        stub.tick(TransferProgress(bytesDone: 10, total: 160))
+        await waitFor { model.progress.bytesDone == 10 }
+
+        // The link drops — the transfer parks behind Resume.
+        stub.push(.outOfRange)
+        await waitFor { model.phase == .interrupted }
+
+        // A tick that was in flight before the drop lands late. Sequencing it
+        // after `.interrupted` reproduces deterministically what scheduler load
+        // produces by starving the MainActor.
+        stub.tick(TransferProgress(bytesDone: 20, total: 160))
+        await waitFor { model.progress.bytesDone == 20 }
+        #expect(model.phase == .interrupted, "a stale pre-drop tick must not resurrect .transferring")
+    }
+
     @Test func aFailedTransferShowsAFailureSentence() async {
         let stub = StubTransport()
         let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
@@ -311,6 +343,8 @@ private final class StubTransport: DeviceTransport, @unchecked Sendable {
         lastState = state
         stateConts.forEach { $0.yield(state) }
     }
+
+    func tick(_ progress: TransferProgress) { uploadProgress?.yield(progress) }
 
     func completeUpload() {
         uploadProgress?.finish()
