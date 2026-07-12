@@ -7,7 +7,7 @@
 //! edge — power loss included.
 
 use obc_dfu::engine::{run, InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE};
-use obc_dfu::{BootState, Extent, ImageHeader, StagedRef, PAGE_LEN};
+use obc_dfu::{BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, PAGE_LEN};
 use std::collections::BTreeMap;
 
 const BLOCK: usize = 512;
@@ -330,9 +330,13 @@ fn verify_crc_fail_writes_nothing() {
     assert_eq!(run_engine(&mut io, &state), Outcome::StageRejected);
     assert_eq!(io.count_write_lines(), 0, "verify failure must not touch the app slot");
     assert!(io.flash.iter().all(|&b| b == FLASH_BLANK));
-    // Arm cleared; the outgoing image's header (from the rollback snapshot) is carried forward.
+    // Arm cleared; the outgoing image's header (from the rollback snapshot) is carried forward,
+    // and the terminal write records StageRejected against the arm's generation (7).
     match io.state() {
-        BootState::Idle { installed } => assert!(installed.is_some(), "outgoing header carried into Idle"),
+        BootState::Idle { installed, last_outcome } => {
+            assert!(installed.is_some(), "outgoing header carried into Idle");
+            assert_eq!(last_outcome, Some(LastOutcome { kind: OutcomeKind::StageRejected, generation: 7 }));
+        }
         s => panic!("expected Idle, got {s:?}"),
     }
 }
@@ -349,7 +353,14 @@ fn verify_foreign_header_rejected() {
 
     assert_eq!(run_engine(&mut io, &state), Outcome::StageRejected);
     assert_eq!(io.count_write_lines(), 0);
-    assert_eq!(io.state(), BootState::Idle { installed: None }, "no rollback ⇒ Idle carries no header");
+    assert_eq!(
+        io.state(),
+        BootState::Idle {
+            installed: None,
+            last_outcome: Some(LastOutcome { kind: OutcomeKind::StageRejected, generation: 7 })
+        },
+        "no rollback ⇒ Idle carries no header, but records the reject"
+    );
 }
 
 /// A chain that runs out before header+image is a deterministic bad stage, not an SD error.
@@ -367,7 +378,13 @@ fn verify_truncated_chain_rejected() {
 
     assert_eq!(run_engine(&mut io, &state), Outcome::StageRejected);
     assert_eq!(io.count_write_lines(), 0);
-    assert_eq!(io.state(), BootState::Idle { installed: None });
+    assert_eq!(
+        io.state(),
+        BootState::Idle {
+            installed: None,
+            last_outcome: Some(LastOutcome { kind: OutcomeKind::StageRejected, generation: 1 })
+        }
+    );
 }
 
 /// An image whose line-padded length exceeds the slot is rejected up front — the pad can never
@@ -468,7 +485,11 @@ fn rollback_path() {
     assert_flash_is(&io, &rb_img);
     assert_eq!(io.ops.last(), Some(&Op::WriteState("idle")));
     match io.state() {
-        BootState::Idle { installed } => assert_eq!(installed, Some(snapshot.header)),
+        BootState::Idle { installed, last_outcome } => {
+            assert_eq!(installed, Some(snapshot.header));
+            // The rollback restored the snapshot — recorded as RolledBack against the arm's gen (4).
+            assert_eq!(last_outcome, Some(LastOutcome { kind: OutcomeKind::RolledBack, generation: 4 }));
+        }
         s => panic!("expected Idle, got {s:?}"),
     }
 }
@@ -491,7 +512,11 @@ fn rollback_bad_snapshot_keeps_trial_image() {
     assert_eq!(run_engine(&mut io, &state), Outcome::StageRejected);
     assert_eq!(io.count_write_lines(), 0, "a bad snapshot must not overwrite the running image");
     match io.state() {
-        BootState::Idle { installed } => assert_eq!(installed, Some(trial_hdr), "the trial image is accepted"),
+        BootState::Idle { installed, last_outcome } => {
+            assert_eq!(installed, Some(trial_hdr), "the trial image is accepted");
+            // The trial image stuck (snapshot unusable) — recorded as Installed against the gen (4).
+            assert_eq!(last_outcome, Some(LastOutcome { kind: OutcomeKind::Installed, generation: 4 }));
+        }
         s => panic!("expected Idle, got {s:?}"),
     }
 }
@@ -506,13 +531,20 @@ fn accept_and_clear() {
 
     assert_eq!(run_engine(&mut io, &state), Outcome::Jump);
     assert_eq!(io.ops, vec![Op::WriteState("idle")], "exactly one op: the Idle write");
-    assert_eq!(io.state(), BootState::Idle { installed: Some(installed) });
+    assert_eq!(
+        io.state(),
+        BootState::Idle {
+            installed: Some(installed),
+            // First-install trial accepted — recorded as Installed against the arm's gen (1).
+            last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation: 1 })
+        }
+    );
 }
 
 /// Idle: nothing pending, nothing done.
 #[test]
 fn idle_jumps_untouched() {
-    let state = BootState::Idle { installed: None };
+    let state = BootState::Idle { installed: None, last_outcome: None };
     let mut io = MockIo::new(&state);
     assert_eq!(run_engine(&mut io, &state), Outcome::Jump);
     assert!(io.ops.is_empty());

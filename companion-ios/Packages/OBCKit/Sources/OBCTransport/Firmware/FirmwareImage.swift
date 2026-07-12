@@ -84,6 +84,12 @@ public struct StagedFirmware: Equatable, Sendable {
     /// file long enough to hold header + image, and a raw-image CRC matching the
     /// header's. Any failure throws a typed [`FirmwareImageError`] the picker
     /// surfaces — the point is that a bad download dies here, not on the device.
+    ///
+    /// Any bytes past `64 + image_len` are **FAT-cluster slack** and ignored, per
+    /// `OBCU_Spec.md` §1.1 (the firmware armer conforms): the container is trimmed
+    /// to exactly `64 + image_len`, so only those bytes stream and the slack never
+    /// reaches the CRC or the wire. `.truncated` is kept for the genuinely-short
+    /// case — a file that can't even hold header + image (DR5, #733).
     public static func validate(_ data: Data) throws -> StagedFirmware {
         guard data.count >= OBCUHeader.length else { throw FirmwareImageError.tooSmall }
         guard let header = OBCUHeader.decode(data.prefix(OBCUHeader.length)) else {
@@ -93,10 +99,13 @@ public struct StagedFirmware: Equatable, Sendable {
             throw FirmwareImageError.oversize
         }
         let expected = OBCUHeader.length + Int(header.imageLength)
-        guard data.count == expected else { throw FirmwareImageError.truncated }
-        let body = data.suffix(from: data.startIndex + OBCUHeader.length)
+        guard data.count >= expected else { throw FirmwareImageError.truncated }
+        // Trim any trailing slack: the container we stage/stream is exactly the
+        // header + raw image, nothing past it.
+        let container = data.prefix(expected)
+        let body = container.suffix(from: container.startIndex + OBCUHeader.length)
         guard CRC32.checksum(body) == header.imageCRC32 else { throw FirmwareImageError.imageCRCMismatch }
-        return StagedFirmware(container: data, header: header)
+        return StagedFirmware(container: Data(container), header: header)
     }
 }
 
@@ -111,7 +120,9 @@ public enum FirmwareImageError: Error, Equatable, Sendable {
     /// The raw image is empty or larger than the device's update slot — the
     /// device would reject it at announce, so the app refuses it up front.
     case oversize
-    /// The file is shorter (or longer) than its header says — a torn download.
+    /// The file is shorter than its header says — it can't hold header + image
+    /// (a torn download). Trailing bytes past `64 + image_len` are *not* an error
+    /// — they're FAT-cluster slack and ignored (spec §1.1).
     case truncated
     /// The raw image failed its CRC-32 — a corrupt download.
     case imageCRCMismatch

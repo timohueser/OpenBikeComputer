@@ -9,12 +9,15 @@ fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_obc-mkimage"))
 }
 
-/// A unique scratch path under the target dir (no external tempdir dep).
+/// A unique scratch path under the target dir (no external tempdir dep). A process-local counter
+/// (not a timestamp) disambiguates calls: back-to-back `now()` reads can tie, and the temp dir is
+/// case-insensitive on macOS, so names differing only by case would alias to one file.
 fn scratch(name: &str) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut p = std::env::temp_dir();
     let pid = std::process::id();
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    p.push(format!("obc-mkimage-{pid}-{nanos}-{name}"));
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    p.push(format!("obc-mkimage-{pid}-{seq}-{name}"));
     p
 }
 

@@ -4,8 +4,12 @@
 //! the app (the *armer*, §S4) and the bootloader (the *installer*, §S3). It is torn-write-safe by the
 //! settings-codec recipe: **anything that doesn't cleanly decode is [`BootState::Idle`]** — so a
 //! half-written page, a blank page, or a bit-flip the CRC catches all mean "no pending update, jump to
-//! the app", never a garbage install. A `generation` counter (bumped on every arm) lets the installer
-//! reject a stale replay (epic #615 safety invariant 4).
+//! the app", never a garbage install. A `generation` counter is bumped on every arm and carried through
+//! the `Armed`/`Trial` records and into the app's arm marker; it is the key that ties a recorded
+//! [`LastOutcome`] back to the arm that produced it (see [`verdict`]). It is a diagnostic breadcrumb, not
+//! a replay guard: the single-page overwrite-in-place design has no live stale-replay vector, so nothing
+//! compares generations to *reject* a page — a torn or stale page is caught by the CRC frame and decodes
+//! to `Idle` regardless of its generation.
 //!
 //! RRAMC writes 16-byte lines, so the encoded blob length is always a multiple of 16 (guaranteed by
 //! construction and pinned by a compile-time assert, mirroring `obc-app`'s settings codec) — the armer
@@ -18,12 +22,42 @@ use crate::image::{ImageHeader, HEADER_LEN};
 /// spare; the reader may pass the whole 4 KB read to [`BootState::decode`].
 pub const PAGE_LEN: usize = 4096;
 
+/// The hardware watchdog period shared across the DFU boot chain: 24 s of 32768 Hz LFCLK ticks.
+///
+/// Not a byte format, but a handoff contract all the same (DR1, #729). The app arms an update and
+/// warm-resets into the bootloader with its WDT **live** (a started dog can never be stopped), so
+/// the bootloader must adopt and pet that exact dog through the install; and before jumping into a
+/// trial boot the bootloader starts the same dog itself, so a trial image that wedges before the
+/// app's own WDT setup still resets back into a rollback. embassy-nrf's `Watchdog::try_new` only
+/// re-adopts a running watchdog when the *whole* hardware config matches, so both sides must
+/// construct it identically: this timeout, pause-under-debug-halt, run-through-sleep, and **one**
+/// pet handle (RREN = bit 0). The embassy `Config` type itself can't live here (`obc-dfu` is
+/// core-only, no HAL edge); the two construction sites are `obc-fw-nrf54l/src/main.rs` (the app,
+/// #349) and `obc-boot/src/wdt.rs` — keep them field-for-field in sync with this value.
+pub const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
+
 /// Blob magic — `b"OBCB"` (OpenBikeComputer Boot). A blank/torn page won't match it ⇒ `Idle`.
 const MAGIC: [u8; 4] = *b"OBCB";
 
-/// The only boot-state layout this crate reads/writes. Bump on any byte-layout change; a mismatched
-/// version decodes to `Idle` (a format skew must never be read as a live install request).
-const FORMAT_VERSION: u16 = 1;
+/// The boot-state layout this crate **writes**. Bump on any byte-layout change; an unknown version
+/// decodes to `Idle` (a format skew must never be read as a live install request).
+///
+/// **v2** (DR2 #730): `Idle` gained a trailing `last_outcome` record so the engine's terminal writes
+/// carry *what happened* (accepted / rolled back / rejected / abandoned + the arm's generation)
+/// instead of leaving the boot-outcome verdict to version-string inference.
+///
+/// Readers accept **v1 too** ([`FORMAT_VERSION_V1`]): the bootloader is flashed once by probe and is
+/// NOT updated by DFU, so a fielded bootloader keeps writing v1 pages after the app updates. A hard
+/// cutover would make the new app reject the old bootloader's freshly-written v1 `Trial` page, never
+/// confirm the trial, and self-revert the very update that carries this bump. `Armed`/`Trial`
+/// payloads are byte-identical across v1/v2; a v1 `Idle` body simply ends after the installed option
+/// and decodes with `last_outcome: None` — gated on the version field explicitly, never by trusting
+/// the zero padding to happen to parse as "no outcome".
+const FORMAT_VERSION: u16 = 2;
+
+/// The pre-DR2 layout, still **read-accepted** by [`BootState::decode`] (see [`FORMAT_VERSION`] for
+/// the skew story). Writers always emit [`FORMAT_VERSION`].
+const FORMAT_VERSION_V1: u16 = 1;
 
 // Fixed header offsets (little-endian throughout).
 const OFF_MAGIC: usize = 0; //  4 : magic
@@ -38,6 +72,12 @@ const CRC_LEN: usize = 4; // trailing whole-blob CRC-32
 const TAG_IDLE: u8 = 0;
 const TAG_ARMED: u8 = 1;
 const TAG_TRIAL: u8 = 2;
+
+// `LastOutcome::kind` wire tags (see [`OutcomeKind`]).
+const OUTCOME_INSTALLED: u8 = 0;
+const OUTCOME_ROLLED_BACK: u8 = 1;
+const OUTCOME_STAGE_REJECTED: u8 = 2;
+const OUTCOME_ARM_ABANDONED: u8 = 3;
 
 /// Maximum extents in a single [`StagedRef`]. A ~900 KB image over 16 KB FAT clusters resolves to
 /// ≈56 extents; 96 leaves headroom for a moderately fragmented card. The armer errors out past this
@@ -157,6 +197,60 @@ impl StagedRef {
     }
 }
 
+/// What terminally happened to the last arm, recorded by the engine (and, for the confirm, the
+/// armer) in the `Idle` it writes so the next boot's [`verdict`] reads a **fact** instead of
+/// inferring one from version strings (DR2 #730). The two failure endings — a rollback and a
+/// pre-erase reject — otherwise both land in an `Idle` whose `installed` header can equal the
+/// staged version (a same-version re-stage), which is exactly the misreport this record kills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutcomeKind {
+    /// The staged image is now the running image: a first-install trial accepted without a rollback
+    /// ([`BootDecision::AcceptAndClear`]), or a rollback that couldn't restore its (bad) snapshot and
+    /// therefore kept the freshly-flashed image.
+    Installed,
+    /// An unconfirmed trial was rolled back to its snapshot — the staged image is **not** running.
+    RolledBack,
+    /// The staged image failed verification before the app slot was erased — the old app is intact
+    /// and the staged image never ran.
+    StageRejected,
+    /// The bootloader gave up on an `Armed` card it couldn't read and booted the intact app instead.
+    /// **Reserved for DR3 (#731)**, which becomes its writer; nothing in this crate writes it yet, but
+    /// [`verdict`] handles it so DR3 is a pure addition.
+    ArmAbandoned,
+}
+
+impl OutcomeKind {
+    fn tag(self) -> u8 {
+        match self {
+            OutcomeKind::Installed => OUTCOME_INSTALLED,
+            OutcomeKind::RolledBack => OUTCOME_ROLLED_BACK,
+            OutcomeKind::StageRejected => OUTCOME_STAGE_REJECTED,
+            OutcomeKind::ArmAbandoned => OUTCOME_ARM_ABANDONED,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Option<OutcomeKind> {
+        match tag {
+            OUTCOME_INSTALLED => Some(OutcomeKind::Installed),
+            OUTCOME_ROLLED_BACK => Some(OutcomeKind::RolledBack),
+            OUTCOME_STAGE_REJECTED => Some(OutcomeKind::StageRejected),
+            OUTCOME_ARM_ABANDONED => Some(OutcomeKind::ArmAbandoned),
+            _ => None,
+        }
+    }
+}
+
+/// The recorded outcome of the last arm: [`what happened`](OutcomeKind) plus the `generation` of the
+/// arm it belongs to (so [`verdict`] can tie it to the boot's arm marker — generation's first real
+/// reader). Carried in [`BootState::Idle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastOutcome {
+    /// What terminally happened to the arm.
+    pub kind: OutcomeKind,
+    /// The `generation` of the arm this outcome belongs to (the `Armed`/`Trial` record's generation).
+    pub generation: u32,
+}
+
 /// The handoff state the bootloader reads and the app writes. See the module doc for the torn-write
 /// contract; every variant round-trips through [`encode`](BootState::encode)/[`decode`](BootState::decode).
 ///
@@ -168,8 +262,11 @@ impl StagedRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootState {
     /// Normal boot: no pending update. Carries the header of the image currently installed (for the
-    /// UI's "current version" and to seed a rollback snapshot), or `None` on a fresh device.
-    Idle { installed: Option<ImageHeader> },
+    /// UI's "current version" and to seed a rollback snapshot), or `None` on a fresh device, plus the
+    /// [`last_outcome`](LastOutcome) of the arm that produced this `Idle` (the terminal write records
+    /// what happened for the next boot's [`verdict`]; `None` for a plain steady-state `Idle`, a
+    /// fresh device, or a v1 page migrated up).
+    Idle { installed: Option<ImageHeader>, last_outcome: Option<LastOutcome> },
     /// An update is staged and armed: `install` it. `generation` bumps on every arm; `rollback` is the
     /// snapshot of the outgoing image (absent on the very first install).
     Armed { generation: u32, update: StagedRef, rollback: Option<StagedRef> },
@@ -245,6 +342,33 @@ fn put_opt_staged(out: &mut [u8], off: usize, s: &Option<StagedRef>) -> usize {
     }
 }
 
+fn put_opt_outcome(out: &mut [u8], off: usize, o: &Option<LastOutcome>) -> usize {
+    match o {
+        Some(o) => {
+            out[off] = 1;
+            out[off + 1] = o.kind.tag();
+            out[off + 2..off + 6].copy_from_slice(&o.generation.to_le_bytes());
+            off + 6
+        }
+        None => {
+            out[off] = 0;
+            off + 1
+        }
+    }
+}
+
+fn get_opt_outcome(body: &[u8], off: usize) -> Option<(Option<LastOutcome>, usize)> {
+    match body.get(off)? {
+        0 => Some((None, off + 1)),
+        1 => {
+            let kind = OutcomeKind::from_tag(*body.get(off + 1)?)?;
+            let generation = u32::from_le_bytes(body.get(off + 2..off + 6)?.try_into().ok()?);
+            Some((Some(LastOutcome { kind, generation }), off + 6))
+        }
+        _ => None,
+    }
+}
+
 fn get_opt_header(body: &[u8], off: usize) -> Option<(Option<ImageHeader>, usize)> {
     match body.get(off)? {
         0 => Some((None, off + 1)),
@@ -269,7 +393,10 @@ fn get_opt_staged(body: &[u8], off: usize) -> Option<(Option<StagedRef>, usize)>
 
 impl BootState {
     /// The `generation` counter for the variants that carry one (`Armed`/`Trial`), else `0` (`Idle`).
-    /// The installer compares it against the last one it acted on to reject a stale-page replay.
+    /// A diagnostic breadcrumb: it labels the in-flight arm so a recorded [`LastOutcome`] can be tied
+    /// back to it (see [`verdict`]). Nothing compares it to *reject* a page — `Idle` pins it to `0`
+    /// ([`encode`](BootState::encode)), so it is not monotonic across a cycle and carries no replay
+    /// guarantee; corruption is caught by the CRC frame, not this field.
     pub fn generation(&self) -> u32 {
         match self {
             BootState::Idle { .. } => 0,
@@ -292,7 +419,10 @@ impl BootState {
         // OFF_TAG + 1 reserved (0)
         b[OFF_GENERATION..OFF_GENERATION + 4].copy_from_slice(&generation.to_le_bytes());
         let end = match self {
-            BootState::Idle { installed } => put_opt_header(&mut b, HDR_LEN, installed),
+            BootState::Idle { installed, last_outcome } => {
+                let c = put_opt_header(&mut b, HDR_LEN, installed);
+                put_opt_outcome(&mut b, c, last_outcome)
+            }
             BootState::Armed { update, rollback, .. } => {
                 let c = update.write(&mut b, HDR_LEN);
                 put_opt_staged(&mut b, c, rollback)
@@ -311,12 +441,13 @@ impl BootState {
         EncodedPage { buf: b, len: blob_len }
     }
 
-    /// Decode a boot-state page. **Anything that isn't a clean read of this format decodes to
-    /// `Idle { installed: None }`** — a blank/torn page, bad magic/version, a bad `blob_len`, a failed
+    /// Decode a boot-state page. **Anything that isn't a clean read of a known format decodes to
+    /// `Idle { installed: None, last_outcome: None }`** — a blank/torn page, bad magic, an unknown
+    /// version (v1 and v2 are both accepted — see [`FORMAT_VERSION`]), a bad `blob_len`, a failed
     /// whole-blob CRC, or an inconsistent payload. This is the torn-write safety net (invariant 4):
     /// the bootloader always gets a sane state and, worst case, jumps straight to the app.
     pub fn decode(bytes: &[u8]) -> BootState {
-        Self::decode_inner(bytes).unwrap_or(BootState::Idle { installed: None })
+        Self::decode_inner(bytes).unwrap_or(BootState::Idle { installed: None, last_outcome: None })
     }
 
     fn decode_inner(bytes: &[u8]) -> Option<BootState> {
@@ -326,7 +457,8 @@ impl BootState {
         if bytes[OFF_MAGIC..OFF_MAGIC + 4] != MAGIC {
             return None;
         }
-        if u16::from_le_bytes([bytes[OFF_VERSION], bytes[OFF_VERSION + 1]]) != FORMAT_VERSION {
+        let version = u16::from_le_bytes([bytes[OFF_VERSION], bytes[OFF_VERSION + 1]]);
+        if version != FORMAT_VERSION && version != FORMAT_VERSION_V1 {
             return None;
         }
         let blob_len = u32::from_le_bytes([
@@ -354,8 +486,17 @@ impl BootState {
         let body = &bytes[..crc_off];
         match bytes[OFF_TAG] {
             TAG_IDLE => {
-                let (installed, _) = get_opt_header(body, HDR_LEN)?;
-                Some(BootState::Idle { installed })
+                let (installed, c) = get_opt_header(body, HDR_LEN)?;
+                // A v1 Idle body ends right after the installed option — there is no outcome field
+                // to read, and the zero padding that follows must NOT be parsed as one (gate on the
+                // version explicitly; padding bytes are format-noise, not fields).
+                let last_outcome = if version == FORMAT_VERSION_V1 {
+                    None
+                } else {
+                    let (last_outcome, _) = get_opt_outcome(body, c)?;
+                    last_outcome
+                };
+                Some(BootState::Idle { installed, last_outcome })
             }
             TAG_ARMED => {
                 let (update, c) = StagedRef::read(body, HDR_LEN)?;
@@ -412,6 +553,65 @@ pub fn decide(state: &BootState) -> BootDecision {
         BootState::Trial { rollback, .. } => match rollback {
             Some(r) => BootDecision::Rollback(*r),
             None => BootDecision::AcceptAndClear,
+        },
+    }
+}
+
+/// The one-time post-update verdict, derived from the boot-state page (which carries the recorded
+/// [`LastOutcome`]) and the app's arm marker — the pure sibling of [`decide`]/[`confirm_trial`],
+/// host-tested here so the board's `reconcile_boot_outcome` shrinks to IO + a card mapping (DR2 #730).
+///
+/// It **never reads version strings**: the outcome is a recorded fact, so a same-version re-stage
+/// that was rejected or rolled back reads as [`Reverted`](Verdict::Reverted), not the false
+/// [`Confirmed`](Verdict::Confirmed) the old version-equality check produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// This boot **is** the trial boot (the page is still `Trial`); the app's health-anchor confirm
+    /// owns the outcome. The board does nothing here.
+    TrialInProgress,
+    /// No arm was pending — a plain boot (no marker). Nothing to show.
+    None,
+    /// The staged image is now the running image. The board clears the marker and shows the success
+    /// toast.
+    Confirmed,
+    /// The staged image is **not** running — rejected before the erase, rolled back, or (DR3) an
+    /// abandoned arm. The board clears the marker and shows the failure card.
+    Reverted,
+    /// An `Armed` record survived into the running app — the bootloader never consumed it (stale or
+    /// missing bootloader). The board downgrades the stray arm to `Idle`, clears the marker, and
+    /// shows the not-started card.
+    NotStarted,
+}
+
+/// Turn the decoded boot-state page + the arm marker's `generation` (`None` = no marker, i.e. no arm
+/// was pending) into the one-time [`Verdict`]. Pure; the whole matrix is host-tested.
+///
+/// - **`Trial`** ⇒ [`TrialInProgress`](Verdict::TrialInProgress) — the confirm owns it.
+/// - **`Armed`** ⇒ [`NotStarted`](Verdict::NotStarted) — the bootloader never ran (marker-independent,
+///   matching the pre-DR2 board behaviour).
+/// - **`Idle`** with **no marker** ⇒ [`None`](Verdict::None); the recorded outcome is just history.
+/// - **`Idle`** with a marker whose `generation` matches the recorded [`LastOutcome`] ⇒ the outcome
+///   decides: [`Installed`](OutcomeKind::Installed) ⇒ [`Confirmed`](Verdict::Confirmed), every other
+///   outcome ⇒ [`Reverted`](Verdict::Reverted).
+/// - **`Idle`** with a marker but **no / a stale-generation** outcome (a v1→v2 migrated page, a torn
+///   engine write, or an outcome left by an earlier arm) ⇒ [`Reverted`](Verdict::Reverted): the
+///   conservative call, since we cannot prove the staged image is running. This is the one-time
+///   imprecision a v1 page costs (see `OBCU_Spec.md` §2 + the DR2 PR).
+pub fn verdict(state: &BootState, marker_generation: Option<u32>) -> Verdict {
+    match state {
+        BootState::Trial { .. } => Verdict::TrialInProgress,
+        BootState::Armed { .. } => Verdict::NotStarted,
+        BootState::Idle { last_outcome, .. } => match marker_generation {
+            None => Verdict::None,
+            Some(gen) => match last_outcome {
+                Some(o) if o.generation == gen => match o.kind {
+                    OutcomeKind::Installed => Verdict::Confirmed,
+                    OutcomeKind::RolledBack | OutcomeKind::StageRejected | OutcomeKind::ArmAbandoned => {
+                        Verdict::Reverted
+                    }
+                },
+                _ => Verdict::Reverted,
+            },
         },
     }
 }

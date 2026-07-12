@@ -79,6 +79,14 @@ com-hw = []
 # everything). Composes with `debug-uart`/`synth` for a headless ride beside a live link.
 ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "dep:heapless09", "dep:obc-ble", "obc-platform/sensor-link", "obc-platform/input-wait"]
 
+# The `SoftdeviceController: 50:701` isolation harness (epic #707): MPSL + SDC + trouble-host
+# only — no FLPR / SD / app — scanning for and connecting an HR strap with the exact ship
+# parameters. The `ble_spike` precedent, resurrected for the central role. Build with
+#   cargo run --release --no-default-features --features ble --bin ble_central_repro
+[[bin]]
+name = "ble_central_repro"
+required-features = ["ble"]
+
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs

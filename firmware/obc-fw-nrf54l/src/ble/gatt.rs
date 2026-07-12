@@ -21,7 +21,14 @@ pub(crate) const OBC_PSM: u16 = 0x0080;
 // The GATT control plane: the two SIG services + the custom OBC Control service. The attribute table
 // is auto-sized by the derive; runtime values (DIS strings, the Config default) are seeded via
 // `server.set` after `new_with_config` in `run`.
-#[gatt_server]
+//
+// `connections_max` (default 1): the server's per-connection (CCCD) table serves the phone **and**
+// every sensor link (epic #744 SR1). A sensor we connect to runs its own GATT client against us —
+// a Garmin watch probes its collector right after subscribe — and an unanswered inbound request
+// stalls the peer's ATT for the spec's 30 s transaction timeout, after which the peer terminates
+// the link. So the sensor manager attaches this same server to its central connections, and the
+// table must hold phone + sensors.
+#[gatt_server(connections_max = crate::ble::CONNECTIONS_MAX)]
 pub(crate) struct Server {
     pub dis: DeviceInformationService,
     pub bas: BatteryService,

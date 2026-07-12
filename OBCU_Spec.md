@@ -77,7 +77,11 @@ truncated to 32 bytes on a UTF-8 char boundary at wrap time (never mid-codepoint
 
 `Image Len` must not exceed **`MAX_IMAGE_LEN` = 1,480,000** bytes — the L15 DK app
 slot (`0x8000 … 0x17B000`) minus a small margin. `obc-mkimage wrap` refuses a larger
-image. (The LM20's larger slot is a future mechanical bump.)
+image. (The LM20's larger slot is a future mechanical bump.) The **whole container**
+is `64 + Image Len` bytes; the BLE `fwImage` transfer (protocol §7.6) announces that
+container size, so its announce-time reject gates at the **container** ceiling
+`MAX_IMAGE_LEN + 64` = 1,480,064 — a raw image at the cap must not be refused for its
+64-byte header. Bytes past `64 + Image Len` in the delivered file are ignored (§2.3).
 
 ---
 
@@ -98,24 +102,74 @@ including the CRC; the CRC covers bytes `0 .. blob_len − 4` (the padding inclu
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCB"` |
-| 4 | Format Version | 2 | `uint16` | `0x0001` |
+| 4 | Format Version | 2 | `uint16` | Writers emit `0x0002`; readers accept `0x0001` and `0x0002` |
 | 6 | State Tag | 1 | `uint8` | `0` Idle · `1` Armed · `2` Trial |
 | 7 | Reserved | 1 | — | `0` |
 | 8 | Blob Len | 4 | `uint32` | Total encoded length, incl. CRC; a multiple of 16 |
 | 12 | Generation | 4 | `uint32` | Bumped on every arm; `0` for Idle |
 
-`Generation` lets the installer reject a stale-page replay (invariant 4): it is
-carried for `Armed`/`Trial` and read back by `BootState::generation()`.
+`Generation` is a diagnostic breadcrumb, **not** a replay guard. It is bumped on every
+arm, carried for `Armed`/`Trial` (read back by `BootState::generation()`), and recorded
+inside the `Idle` payload's **Last Outcome** record (§2.2). Its one live consumer is the
+app's boot-outcome reconcile, which matches the recorded generation against the arm
+marker it left behind to tie an outcome to *its* arm (§2.2). Nothing compares generations
+to *reject* a page: the single-page overwrite-in-place channel has no live stale-replay
+vector, and `Idle` pins the header field to `0`, so the counter is not monotonic across a
+cycle (`Idle 0 → Armed 1 → Idle 0`). A torn, blank, or stale page is caught by the CRC
+frame and decodes to `Idle` (invariant 4 in §Design principles) regardless of generation.
+
+**Format Version history.** `0x0001` was the original layout. `0x0002` (DR2 #730)
+appended the **Last Outcome** record to the Idle payload so the bootloader's terminal
+writes carry *what happened* — a rollback vs. a pre-erase reject are otherwise
+indistinguishable when the running and staged images share a version string
+(a same-version re-stage), which made every such failure misreport as a success.
+
+**Version compatibility (normative).** Readers **MUST accept both** `0x0001` and
+`0x0002`; writers **MUST emit** `0x0002`. The `Armed` and `Trial` payload layouts are
+byte-identical across the two versions; a `0x0001` `Idle` body simply ends after the
+installed option (§2.2) and decodes with no Last Outcome — the decoder gates this on
+the version field and MUST NOT parse the zero padding after a v1 payload as an
+outcome record. Read-compatibility is load-bearing, not a courtesy: the bootloader is
+flashed once by probe and is **not** updated by DFU, so an already-fielded bootloader
+keeps writing `0x0001` pages after the app updates. The skew matrix:
+
+| Bootloader | App | Behavior |
+| :-- | :-- | :-- |
+| v1 | v1 | The original protocol, unchanged |
+| v1 | v2 | **Works, including the trial confirm**: the app reads the bootloader's freshly-written v1 `Trial` (byte-identical) and confirms it, so the update that crosses this bump installs and sticks. The v1 `Idle` the bootloader writes on a failure carries no outcome record, so the verdict card for that boot falls back to the conservative failure verdict |
+| v2 | v1 | Symmetric by the same rule (both sides read v1 and v2); only occurs transiently on a dev bench (a reflashed bootloader under an old app) |
+| v1 bootloader reading a v2 page | — | The one degraded case: the new app arms a **subsequent** update, the old bootloader cannot decode the v2 `Armed`, falls back to `Idle`, and jumps — the install never starts and the app's verdict honestly reports the not-started failure card. Recoverable (reflash the bootloader), never a revert loop |
+
+The practical consequence: the app update that carries this bump installs and sticks
+on an old bootloader; only *further* DFU updates require the bootloader reflash.
 
 ### 2.2 Payload by State Tag
 
-**Tag `0` — Idle** (`installed: Option<ImageHeader>`): the header of the running
-image, for the UI and to seed a rollback snapshot.
+**Tag `0` — Idle** (`installed: Option<ImageHeader>, last_outcome: Option<LastOutcome>`):
+the header of the running image (for the UI and to seed a rollback snapshot), plus the
+recorded outcome of the arm that produced this `Idle`.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 16 | Has Installed | 1 | `uint8` | `0` none · `1` a header follows |
 | 17 | Installed Header | 64 | `ImageHeader` | Present only when Has Installed = 1 (§1.1) |
+| … | Has Outcome | 1 | `uint8` | `0` none · `1` a Last Outcome record follows |
+| … | Outcome Kind | 1 | `uint8` | Present only when Has Outcome = 1: `0` Installed · `1` RolledBack · `2` StageRejected · `3` ArmAbandoned |
+| … | Outcome Generation | 4 | `uint32` | Present only when Has Outcome = 1: the `Generation` of the arm this outcome belongs to |
+
+The **Last Outcome** record is what the bootloader's engine (and the app's trial
+confirm) writes into the `Idle` it lands on so the *next* boot reads a fact rather than
+inferring one from version strings: `Installed` = the staged image is now running
+(a first-install trial accepted, or a rollback that kept the freshly-flashed image
+because its snapshot was unreadable); `RolledBack` = an unconfirmed trial was restored
+to its snapshot; `StageRejected` = the staged image failed verification before the app
+slot was erased; `ArmAbandoned` = reserved for DR3 (#731, the bootloader gives up on an
+unreadable `Armed` card and boots the intact app). `Outcome Generation` lets the app's
+boot-outcome reconcile bind the outcome to the arm marker it left before the install
+reboot. `Has Outcome = 0` is a plain steady-state `Idle`, a fresh device, or an `Idle`
+written by a `0x0001` writer (whose body ends after the installed option — see the
+version-compatibility rule in §2.1). The record is absent from the `Armed`/`Trial`
+payloads.
 
 **Tag `1` — Armed** (`update: StagedRef, rollback: Option<StagedRef>`): an update is
 staged; the installer flashes it.
@@ -180,13 +234,16 @@ and the bootloader; the skip arithmetic lives once, in `obc-dfu`'s install engin
 
 ### 2.4 Decode rule and boot decision
 
-**`BootState::decode(&[u8]) -> BootState`** returns `Idle { installed: None }` for
-**anything** but a clean read of this format: too short, bad magic, a Format Version
-other than `1`, a `Blob Len` that is out of range or not a multiple of 16, a failed
-whole-blob CRC, an unknown State Tag, an Extent Count over `MAX_EXTENTS`, a
-`StagedRef` whose redundant `Len`/`Image CRC-32` disagree with its embedded header
-(§2.3), or a nested `ImageHeader` whose own CRC fails. This is the torn-write safety
-net — the bootloader always receives a sane state.
+**`BootState::decode(&[u8]) -> BootState`** returns `Idle { installed: None,
+last_outcome: None }` for **anything** but a clean read of a known format: too short,
+bad magic, a Format Version other than `1` or `2` (readers accept both; writers emit
+`2` — the normative compatibility rule in §2.1), a `Blob Len` that is out of range or
+not a multiple of 16, a failed whole-blob CRC, an unknown State Tag, an unknown
+Outcome Kind, an Extent Count over `MAX_EXTENTS`, a `StagedRef` whose redundant
+`Len`/`Image CRC-32` disagree with its embedded header (§2.3), or a nested
+`ImageHeader` whose own CRC fails. A version-`1` page decodes with `0x0001` semantics:
+`Armed`/`Trial` identically, `Idle` with `last_outcome: None`. This is the torn-write
+safety net — the bootloader always receives a sane state.
 
 The bootloader turns the decoded state into an action with the pure function
 **`decide(&BootState) -> BootDecision`**:
@@ -203,7 +260,13 @@ present at the next bootloader entry is by definition *unconfirmed* — which is
 exactly why it means "roll back". Load-bearing corollary: after writing `Trial` the
 install path must **jump into the new image, never reset** — a reset would re-enter
 the bootloader with the fresh `Trial` and roll the image back before it ever ran. A
-hardware watchdog guarantees a wedged trial boot becomes the next boot.
+hardware watchdog guarantees a wedged trial boot becomes the next boot: the
+bootloader starts the dog itself — with the app's exact config; the shared 24 s
+period is `obc_dfu::WDT_TIMEOUT_TICKS` — immediately before the trial jump, so the
+guarantee holds even on a cold power-on where no watchdog was running yet. On the
+warm-reset arm path the app's already-running dog is instead adopted and fed
+through the install, so a slow install is never cut down mid-flash; a plain `Idle`
+boot never touches the watchdog (DR1, #729).
 
 ---
 

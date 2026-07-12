@@ -20,9 +20,18 @@
 //!   delivered synchronously through `Runner::run_with_handler`'s handler. So [`ScanEventHandler`]
 //!   parses each report here (armed by [`SCAN_ARMED`]) and [`super::host_task`] runs the host with
 //!   it. `run()`'s "call repeatedly" doc comment refers to the guard, not a report method.
-//! - **Legacy scan + legacy connect.** [`Scanner::scan`] (`LeSetScanEnable`) and
-//!   [`Central::connect`] (`LeCreateConn`) — the SDC is built with `support_scan()` /
-//!   `support_central()` but **not** the `_ext_` variants; sensors advertise legacy.
+//! - **Extended scan + extended connect** ([`Scanner::scan_ext`] / [`Central::connect_ext`]) —
+//!   **not** the legacy commands, and not by choice of wire format (sensors advertise legacy
+//!   ADV_IND, which an extended scanner/initiator receives fine): the nRF54L15 SDC blob
+//!   (nrfxlib 3.3.0) **faults internally** (`SoftdeviceController: 50:701`) the instant a *legacy*
+//!   `LeCreateConn` initiator receives its target's advertisement — 100 % reproducible in a
+//!   minimal harness (`src/bin/ble_central_repro.rs`, 2026-07-12) — while the same connect issued
+//!   as `LeExtCreateConn` works. Nordic's own central-role coverage runs through Zephyr, which
+//!   uses the extended commands; the legacy initiator path is the untested one (reported
+//!   upstream, #736). And because legacy and extended adv/scan/initiate commands are one
+//!   mutually-exclusive HCI group (Core v6 Vol 4 E 3.1.1 — first use latches the mode, the other
+//!   class then bounces `Command Disallowed`), the advertiser rides the extended commands too
+//!   ([`super::lifecycle`]) — same legacy PDUs on air, phones see no difference.
 //! - **The `GattClient` event task must be polled concurrently with the notification loop.**
 //!   [`GattClient::task`] pumps the ATT rx; without it `subscribe`/`next` never complete. We
 //!   `select` the two (plus a radio/-request interrupt), so a disconnect (task returns
@@ -34,7 +43,7 @@ use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{info, warn};
-use embassy_futures::select::{select, select3, Either3};
+use embassy_futures::select::{select, select3, select4, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
@@ -44,6 +53,8 @@ use nrf_sdc::{self as sdc};
 use obc_ble::SensorKind;
 use obc_platform::sensor_values::{dispatch_cadence, dispatch_hr, dispatch_power};
 use trouble_host::prelude::*;
+
+use super::gatt::Server;
 
 /// The three fixed sensor quantities (HR / power / cadence), one saved slot each (epic #707).
 const QUANTITIES: usize = 3;
@@ -61,6 +72,24 @@ const CONNECT_TIMEOUT_SECS: u64 = 20;
 /// Backoff after a drop/failed attempt before retrying (epic #707 runtime policy: ~15 s), woken
 /// early by any radio/request change.
 const BACKOFF_SECS: u64 = 15;
+
+/// Steady-state link parameters, applied by [`serve_link`] **once subscribed** (the connect itself
+/// uses the fast params in [`run_link`] — see there): ~250–500 ms interval keeps the sensor link
+/// cheap beside the phone; 5 s supervision. The connection-event length (→ `max_ce_len`) is the
+/// radio timeslot the SDC schedules per event — a sensor exchange (≤ 20 B notifications) needs only
+/// a few ms, so 30 ms is ample and matches the proven phone-link event length. (An earlier 500 ms
+/// value was once suspected as the `SoftdeviceController: 50:701` fault; the real cause was the
+/// missing `support_dle_central`/`support_phy_update_central` — see `build_sdc` — but the cap
+/// stays.) A peer that later requests its own preference still gets it (the accept in
+/// [`serve_link`]'s event pump).
+const CRUISE_PARAMS: RequestedConnParams = RequestedConnParams {
+    min_connection_interval: Duration::from_millis(250),
+    max_connection_interval: Duration::from_millis(500),
+    max_latency: 0,
+    min_event_length: Duration::from_micros(0),
+    max_event_length: Duration::from_millis(30),
+    supervision_timeout: Duration::from_millis(5000),
+};
 
 // ============================ App-facing seam types (SE7 consumes) ============================
 //
@@ -216,6 +245,20 @@ pub fn request_scan() {
     wake_work();
 }
 
+/// Drop any pending (not yet started) scan request. Rung by the ride loop on the **falling edge**
+/// of the Sensors screen's scan mode (the list closed — the user picked a sensor or backed out).
+/// Without this, the ~9 s re-arm's latched request survived the pick and won over the fresh save
+/// at the loop top (a user scan outranks connecting), so the save-from-scan-list flow sat through
+/// a full useless 10 s scan before connecting (epic #744, SR4).
+///
+/// Deliberately **no [`wake_work`] pulse**: a pulse tears down whatever session the manager is in
+/// (that's what the teardown selects listen on), so cancelling after a *Back with a healthy link
+/// up* would bounce the link for nothing. The two live cases need no pulse — a pick's save request
+/// brings its own wake, and a Back just lets a still-running window finish quietly.
+pub fn cancel_scan() {
+    SCAN_REQUEST.reset();
+}
+
 /// Save a sensor address to a quantity slot and (re)connect it. `quantity` is 0=HR, 1=power,
 /// 2=cadence.
 #[allow(dead_code)] // SE7 (#714): saving a picked sensor + boot seed from settings.
@@ -281,16 +324,29 @@ const fn kind_of(quantity: usize) -> SensorKind {
 pub(crate) struct ScanEventHandler;
 
 impl EventHandler for ScanEventHandler {
-    // `on_adv_reports` exists on the trait only under trouble-host's `scan` feature — which the
-    // board's `ble` feature always enables, and this module only compiles under `ble`, so the
-    // override is unconditional here (a board-crate `#[cfg(feature = "scan")]` would wrongly read the
-    // *board* crate's feature set and drop every scan report).
+    // The trait methods exist only under trouble-host's `scan` feature — which the board's `ble`
+    // feature always enables, and this module only compiles under `ble`, so the overrides are
+    // unconditional here (a board-crate `#[cfg(feature = "scan")]` would wrongly read the *board*
+    // crate's feature set and drop every scan report).
     fn on_adv_reports(&self, reports: bt_hci::param::LeAdvReportsIter) {
         if !SCAN_ARMED.load(Ordering::Relaxed) {
             return;
         }
-        for report in reports {
-            let Ok(report) = report else { continue };
+        for report in reports.flatten() {
+            let mut addr = [0u8; 6];
+            addr.copy_from_slice(report.addr.raw());
+            observe_report(addr, report.addr_kind.as_raw() & 1 == 1, report.data, report.rssi);
+        }
+    }
+
+    // The live path: [`run_scan`] runs an **extended** scan (see the module doc — the whole stack
+    // is on the extended command set), whose reports arrive on the extended event. A legacy
+    // ADV_IND from a sensor is delivered here too, wrapped in `LeExtAdvReport`.
+    fn on_ext_adv_reports(&self, reports: bt_hci::param::LeExtAdvReportsIter) {
+        if !SCAN_ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        for report in reports.flatten() {
             let mut addr = [0u8; 6];
             addr.copy_from_slice(report.addr.raw());
             observe_report(addr, report.addr_kind.as_raw() & 1 == 1, report.data, report.rssi);
@@ -331,14 +387,30 @@ type SensorStack = Stack<'static, sdc::SoftdeviceController<'static>, DefaultPac
 /// The one central-role task, joined into [`super::run`]. Scan **xor** connect (never both at once,
 /// so the controller never juggles a scan and a connect-initiate on the single DK link), driven by
 /// [`WORK_EDGE`] + the request latches. Never returns.
-pub async fn run(stack: &'static SensorStack) -> ! {
+///
+/// `server` is the shared GATT [`Server`] (the phone-facing table): every sensor connection attaches
+/// it so the *peer's* GATT client gets answered — see [`run_link`] for why that is load-bearing.
+pub async fn run(stack: &'static SensorStack, server: &'static Server<'static>) -> ! {
     // The saved table starts empty; the ride loop seeds it from `Settings.saved_sensors` on its first
     // pass and re-pushes every change through [`request_save_sensor`] / [`request_forget_sensor`] (SE7,
     // #714 — the `set_radio_enabled` shape). The SE6 hardcoded `SEED` hook is gone: the Sensors screen
     // is the source of saved addresses now.
     info!("ble: [sensor] manager up (SENSOR_LINKS = {})", super::SENSOR_LINKS);
 
+    // Hold the first pass until the host runner has finished its init sequence: this future is
+    // polled *before* `host_task` in [`super::run`]'s join, so an immediate boot-seeded connect
+    // would issue `LeCreateConn` mid host-init — and the init's resolving-list restore (the phone
+    // bond) is spec-prohibited while an initiator is active. One second covers the observed
+    // ~150 ms init with room, and is invisible next to a strap's advertising cadence.
+    Timer::after_secs(1).await;
+
     loop {
+        // Drain any stale wake pulse *before* reading the request latches: every request setter
+        // pulses [`WORK_EDGE`], and a pulse left latched (the boot seed lands before this task's
+        // first poll) would instantly abort the very connect/scan it requested via the teardown
+        // selects below. The request latches survive the reset, and all producers run on this
+        // same thread-mode executor, so nothing can slip between the reset and `apply_requests`.
+        WORK_EDGE.reset();
         apply_requests();
 
         // A user scan request wins — discovery is brief and interactive.
@@ -351,10 +423,15 @@ pub async fn run(stack: &'static SensorStack) -> ! {
         // `connection_worker(1)` / `(2)` beside this for the other saved slots.)
         if super::state::radio_enabled() {
             if let Some(quantity) = first_saved_quantity() {
-                run_link(stack, quantity).await;
+                let interrupted = run_link(stack, server, quantity).await;
                 update_status(quantity, |s| s.state = SensorSlotState::Idle);
-                // Backoff before the next attempt, woken early by any radio/request change.
-                let _ = select(Timer::after_secs(BACKOFF_SECS), WORK_EDGE.wait()).await;
+                // Backoff before the next attempt — but only after a drop / failure / timeout.
+                // An interrupt means a request or radio change is already waiting at the loop top
+                // (its wake pulse was consumed by the teardown select), so backing off here would
+                // stall it: a Sensors-screen scan rung while connected must start now, not in 15 s.
+                if !interrupted {
+                    let _ = select(Timer::after_secs(BACKOFF_SECS), WORK_EDGE.wait()).await;
+                }
                 continue;
             }
         }
@@ -413,7 +490,8 @@ async fn run_scan(stack: &'static SensorStack) {
         timeout: Duration::from_secs(SCAN_SECS),
         ..Default::default()
     };
-    match scanner.scan(&config).await {
+    // Extended scan — the stack never issues a legacy scan/adv/initiate command (module doc).
+    match scanner.scan_ext(&config).await {
         Ok(_session) => {
             // The session keeps the scan enabled; reports flow through the handler. End the window
             // early if the radio switches off or a new request lands.
@@ -424,15 +502,23 @@ async fn run_scan(stack: &'static SensorStack) {
     }
 
     SCAN_ARMED.store(false, Ordering::Relaxed);
+    // Let the scan-disable actually land before the loop moves on: the session's `Drop` above only
+    // *queues* the cancel for the host runner, and the SDC rejects a create-connection while the
+    // scanner is still enabled (parallel scan+initiate is opt-in vendor behaviour, off by default)
+    // — without this settle, the save-from-scan-list flow's immediate `connect_ext` bounced
+    // `Command Disallowed` on glass and the user waited out a full 15 s backoff.
+    Timer::after_millis(200).await;
     let count = SCAN_HITS.lock(|c| c.borrow().len());
     info!("ble: [sensor] scan done — {} sensor(s) found", count);
 }
 
 /// Connect the saved sensor for `quantity` and serve it until it drops (or the radio/-a request
 /// interrupts). A bounded connect (dropped on timeout → `LeCreateConnCancel`) keeps an absent sensor
-/// from wedging the link.
-async fn run_link(stack: &'static SensorStack, quantity: usize) {
-    let Some(saved) = saved_sensor(quantity) else { return };
+/// from wedging the link. Returns `true` when the attempt/session ended on a [`WORK_EDGE`] interrupt
+/// (a request or radio change is waiting at the loop top — skip the backoff), `false` on a
+/// drop / failure / timeout (back off before retrying).
+async fn run_link(stack: &'static SensorStack, server: &'static Server<'static>, quantity: usize) -> bool {
+    let Some(saved) = saved_sensor(quantity) else { return false };
     let kind = kind_of(quantity);
     update_status(quantity, |s| s.state = SensorSlotState::Connecting);
     info!("ble: [sensor] connecting quantity {} (random={})", quantity, saved.random);
@@ -448,48 +534,81 @@ async fn run_link(stack: &'static SensorStack, quantity: usize) {
             window: SCAN_WINDOW,
             ..Default::default()
         },
-        // ~250–500 ms interval keeps the sensor link cheap beside the phone; 5 s supervision.
+        // Connect **fast**, cruise slow (epic #744, SR4): GATT runs ~one ATT round trip per
+        // connection event, so discovery + battery + CCCD at a relaxed interval is glacial — on
+        // glass the old 250–500 ms initial interval put connect→subscribed at exactly 9.0 s
+        // (~18 round trips on a 500 ms grid, plain in the RTT timestamps). ~30–60 ms makes the
+        // chatty phase sub-second; [`serve_link`] relaxes to [`CRUISE_PARAMS`] once subscribed, so
+        // the steady-state link costs what it always did. The event length stays small (the SDC's
+        // per-event radio timeslot) so the fast phase can't starve the phone link or the advertiser.
         connect_params: RequestedConnParams {
-            min_connection_interval: Duration::from_millis(250),
-            max_connection_interval: Duration::from_millis(500),
+            min_connection_interval: Duration::from_millis(30),
+            max_connection_interval: Duration::from_millis(60),
             max_latency: 0,
             min_event_length: Duration::from_micros(0),
-            max_event_length: Duration::from_millis(500),
+            max_event_length: Duration::from_millis(10),
             supervision_timeout: Duration::from_millis(5000),
         },
     };
 
-    let conn = match select3(central.connect(&config), Timer::after_secs(CONNECT_TIMEOUT_SECS), WORK_EDGE.wait()).await
-    {
-        Either3::First(Ok(conn)) => conn,
-        Either3::First(Err(e)) => {
-            warn!("ble: [sensor] connect failed: {:?}", defmt::Debug2Format(&e));
-            return;
-        }
-        // Timeout / interrupt: dropping the connect future cancels the create-connection.
-        Either3::Second(()) | Either3::Third(()) => {
-            info!("ble: [sensor] connect attempt timed out / interrupted");
-            return;
+    // `connect_ext`, NOT `connect`: the legacy `LeCreateConn` initiator faults the SDC blob the
+    // moment the target's advert arrives (`SoftdeviceController: 50:701` — see the module doc).
+    let conn =
+        match select3(central.connect_ext(&config), Timer::after_secs(CONNECT_TIMEOUT_SECS), WORK_EDGE.wait()).await {
+            Either3::First(Ok(conn)) => conn,
+            Either3::First(Err(e)) => {
+                warn!("ble: [sensor] connect failed: {:?}", defmt::Debug2Format(&e));
+                return false;
+            }
+            // Timeout / interrupt: dropping the connect future cancels the create-connection.
+            Either3::Second(()) => {
+                info!("ble: [sensor] connect attempt timed out");
+                return false;
+            }
+            Either3::Third(()) => {
+                info!("ble: [sensor] connect attempt interrupted (radio/request)");
+                return true;
+            }
+        };
+
+    // Attach the shared GATT server, so the *peer's own* GATT client gets answered (epic #744,
+    // SR1 root cause): a Garmin watch probes whoever collects from it (GAP/DIS reads) right after
+    // subscribe. trouble queues inbound ATT requests per-connection, drained only by an attached
+    // attribute server — with none, the request sat unanswered, the watch's ATT stalled for the
+    // spec's 30 s transaction timeout, and it then hung up: the metronomic ~30 s
+    // "Remote User Terminated" drops of the 2026-07-12 soak captures (29.4–29.6 s × 5, with
+    // notifications healthy to the end). The [`Server`]'s `connections_max` is sized for this.
+    let conn = match conn.with_attribute_server(server) {
+        Ok(conn) => conn,
+        Err(e) => {
+            warn!("ble: [sensor] attribute-server attach failed: {:?}", defmt::Debug2Format(&e));
+            return false;
         }
     };
 
-    serve_link(stack, &conn, quantity, kind).await;
+    // What the SDC actually granted (#745 soak instrumentation): the interval here should read
+    // ~30–60 ms (the fast connect phase), then flip to the cruise/peer values in the
+    // params-updated event below.
+    info!("ble: [sensor] link up ({:?}), discovering", conn.raw().params());
+
+    serve_link(stack, &conn, quantity, kind).await
     // `conn` drops on return → the sensor link is disconnected.
 }
 
 /// Discover the service + measurement characteristic, read the battery once, subscribe, and pump
 /// notifications — with the GATT client's rx task polled concurrently (required for notifications).
+/// Returns `true` when the session ended on a [`WORK_EDGE`] interrupt (see [`run_link`]).
 async fn serve_link(
     stack: &'static SensorStack,
-    conn: &Connection<'static, DefaultPacketPool>,
+    conn: &GattConnection<'static, 'static, DefaultPacketPool>,
     quantity: usize,
     kind: SensorKind,
-) {
-    let client = match GattClient::<_, _, 4>::new(stack, conn).await {
+) -> bool {
+    let client = match GattClient::<_, _, 4>::new(stack, conn.raw()).await {
         Ok(client) => client,
         Err(e) => {
             warn!("ble: [sensor] GATT client init failed: {:?}", defmt::Debug2Format(&e));
-            return;
+            return false;
         }
     };
 
@@ -520,9 +639,24 @@ async fn serve_link(
         update_status(quantity, |s| s.state = SensorSlotState::Connected);
         info!("ble: [sensor] quantity {} connected + subscribed", quantity);
 
+        // The chatty phase (discovery, battery read, CCCD write) is over — relax the link from the
+        // fast connect interval to the cruise cadence (see [`CRUISE_PARAMS`] / `run_link`).
+        // Best-effort: on failure the link just stays fast (costlier, not broken), and a peer that
+        // pushes its own preference through the event pump below overrides either way.
+        if let Err(e) = conn.raw().update_connection_params(stack, &CRUISE_PARAMS).await {
+            warn!("ble: [sensor] param relax failed: {:?}", defmt::Debug2Format(&e));
+        }
+
         let mut cadence = obc_ble::CrankCadence::new();
+        let mut notifications: u32 = 0;
         loop {
             let n = listener.next().await;
+            notifications += 1;
+            // Soak breadcrumbs (#745): the first proves data flows at all; every 32nd (~30 s at an
+            // HR strap's 1 Hz) is dense enough to bracket a drop without flooding RTT.
+            if notifications == 1 || notifications.is_multiple_of(32) {
+                info!("ble: [sensor] notification #{} ({} B)", notifications, n.as_ref().len());
+            }
             decode_and_dispatch(kind, quantity, n.as_ref(), &mut cadence);
         }
         // Unreachable, but pins the block's `Result<(), ()>` type for `?` above.
@@ -530,12 +664,114 @@ async fn serve_link(
         Ok(())
     };
 
+    // The connection-event pump. Load-bearing, not bookkeeping: the sensor (peripheral) sends an
+    // L2CAP connection-parameter-update request soon after connecting, and trouble only *queues* it
+    // as a `ConnectionEvent` — unanswered (nobody polling `conn.next()`), Garmin-class peripherals
+    // give up and drop the link ~30 s in, which read on glass as a permanent connect/drop bounce
+    // (status stuck on Searching/Connecting, tiles blanking between bursts). Accept with the
+    // peer's own preferred parameters (`None`): a ≤ 20 B/s notification link is happy at whatever
+    // cadence the strap wants.
+    let events = async {
+        loop {
+            match conn.next().await {
+                // The peer's own GATT client (the watch probing its collector — the SR1 root
+                // cause). Serve reads from the shared table (GAP name, DIS); refuse writes — the
+                // phone control plane is not commandable from a sensor link. `NotAllowed`/`Other`
+                // accept = the attribute server sends the proper ATT error itself. Answering
+                // *something* is the whole point: an unanswered request stalls the peer's ATT for
+                // the spec's 30 s transaction timeout, and the peer then terminates the link.
+                GattConnectionEvent::Gatt { event } => {
+                    let reply = match event {
+                        GattEvent::Read(e) => {
+                            info!("ble: [sensor] peer read, handle {}", e.handle());
+                            e.accept()
+                        }
+                        GattEvent::Write(e) => {
+                            warn!("ble: [sensor] peer write refused, handle {}", e.handle());
+                            e.reject(AttErrorCode::WRITE_NOT_PERMITTED)
+                        }
+                        GattEvent::NotAllowed(e) => e.accept(),
+                        GattEvent::Other(e) => e.accept(),
+                    };
+                    match reply {
+                        Ok(reply) => reply.send().await,
+                        Err(e) => warn!("ble: [sensor] gatt reply failed: {:?}", defmt::Debug2Format(&e)),
+                    }
+                }
+                GattConnectionEvent::RequestConnectionParams(req) => {
+                    // Log what the peer wants (#745 soak instrumentation): if the link later drops
+                    // with "remote user terminated", whether we honoured the peer's preference is
+                    // the first question.
+                    {
+                        let p = req.params();
+                        info!(
+                            "ble: [sensor] peer requests conn params: interval {}..{} ms, latency {}, timeout {} ms",
+                            p.min_connection_interval.as_millis(),
+                            p.max_connection_interval.as_millis(),
+                            p.max_latency,
+                            p.supervision_timeout.as_millis()
+                        );
+                    }
+                    if let Err(e) = req.accept(None, stack).await {
+                        warn!("ble: [sensor] conn-param accept failed: {:?}", defmt::Debug2Format(&e));
+                    } else {
+                        info!("ble: [sensor] accepted the sensor's connection parameters");
+                    }
+                }
+                // The on-air confirmation of any update — ours (the cruise relax), an accept of the
+                // peer's request, or a controller-initiated one. Logged so a soak capture shows the
+                // exact parameters the link died under (#745).
+                GattConnectionEvent::ConnectionParamsUpdated {
+                    conn_interval,
+                    peripheral_latency,
+                    supervision_timeout,
+                } => {
+                    info!(
+                        "ble: [sensor] conn params now: interval {} ms, latency {}, timeout {} ms",
+                        conn_interval.as_millis(),
+                        peripheral_latency,
+                        supervision_timeout.as_millis()
+                    );
+                }
+                GattConnectionEvent::Disconnected { reason } => break reason,
+                // Sensors are open GATT servers — we never pair (module doc), so any SMP activity
+                // on this link is a peer expecting security we don't do: a prime suspect for a
+                // deliberate remote disconnect, and exactly what a soak capture must not swallow.
+                GattConnectionEvent::PairingFailed(e) => {
+                    warn!("ble: [sensor] pairing FAILED on the sensor link: {:?}", defmt::Debug2Format(&e));
+                }
+                GattConnectionEvent::PairingComplete { security_level, .. } => {
+                    warn!(
+                        "ble: [sensor] unexpected pairing on the sensor link: {:?}",
+                        defmt::Debug2Format(&security_level)
+                    );
+                }
+                // PHY / data-length / passkey chatter — informational only on this link.
+                _ => {}
+            }
+        }
+    };
+
     // The GATT rx task returns `Err(Disconnected)` when the link drops; the IO block ends on a GATT
-    // error; `WORK_EDGE` fires on radio-off / a new request. Any of the three tears the session down.
-    match select3(client.task(), io, WORK_EDGE.wait()).await {
-        Either3::First(r) => info!("ble: [sensor] link dropped: {:?}", r.is_err()),
-        Either3::Second(_) => {}
-        Either3::Third(()) => info!("ble: [sensor] link interrupted (radio/request)"),
+    // error; the event pump surfaces the disconnect reason; `WORK_EDGE` fires on radio-off / a new
+    // request. Any of the four tears the session down.
+    match select4(client.task(), io, events, WORK_EDGE.wait()).await {
+        Either4::First(r) => {
+            // The rx task usually wins the teardown race over the event pump, so log the *actual*
+            // result — an `is_err()` bool here once cost a soak capture its disconnect detail
+            // (#745; the HCI reason itself still lands via trouble's own host log line).
+            info!("ble: [sensor] gatt rx task ended: {:?}", defmt::Debug2Format(&r));
+            false
+        }
+        Either4::Second(_) => false,
+        Either4::Third(reason) => {
+            info!("ble: [sensor] link disconnected: {:?}", defmt::Debug2Format(&reason));
+            false
+        }
+        Either4::Fourth(()) => {
+            info!("ble: [sensor] link interrupted (radio/request)");
+            true
+        }
     }
 }
 

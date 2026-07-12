@@ -171,17 +171,20 @@ pub(crate) async fn negotiate_link(
 /// Advertise per the interval policy and return the accepted connection: **fast** (40 ms) for
 /// [`FAST_ADV_WINDOW`], then **slow** (1000 ms) indefinitely. Each phase is a fresh advertiser; when
 /// the fast window elapses with no central its advertiser is dropped (which stops adv) and the slow one
-/// starts. Legacy connectable adv: the primary PDU carries AD Flags + the 128-bit OBC Control service
+/// starts. Legacy connectable **PDUs** (ADV_IND) via the **extended** HCI commands (see the comment
+/// at `adv_set` below): the primary PDU carries AD Flags + the 128-bit OBC Control service
 /// UUID (so the app's `scanForPeripherals(withServices:)` filter matches), and the local name
 /// (`OBC-XXXX`) rides the scan response (the name would crowd the 31-byte primary PDU alongside the
 /// 18-byte UUID structure).
-pub(crate) async fn advertise_lifecycle<'values, 'server, C: Controller>(
+pub(crate) async fn advertise_lifecycle<'values, 'server>(
     // Copied into the local scan-response buffer below — deliberately *not* `'values`, so the caller
     // can pass a per-cycle name (the rename) without pinning it for the server's life.
     name: &str,
-    peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
+    // Concrete controller (the [`super::sensors`] `SensorStack` convention): `advertise_ext`'s
+    // command bounds are a zoo, and the SDC is the only controller this crate ever runs.
+    peripheral: &mut Peripheral<'values, nrf_sdc::SoftdeviceController<'static>, DefaultPacketPool>,
     server: &'server Server<'values>,
-) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
+) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<nrf_sdc::Error>> {
     let mut adv_data = [0u8; 31];
     let adv_len = AdStructure::encode_slice(
         &[
@@ -196,11 +199,27 @@ pub(crate) async fn advertise_lifecycle<'values, 'server, C: Controller>(
     let scan_len = AdStructure::encode_slice(&[AdStructure::CompleteLocalName(name.as_bytes())], &mut scan_data[..])?;
     let scan_data = &scan_data[..scan_len];
 
-    let adv = || Advertisement::ConnectableScannableUndirected { adv_data, scan_data };
+    // One legacy-PDU advertising set per phase, driven through `advertise_ext` — the **extended**
+    // HCI commands, NOT the legacy `LeSetAdvParams`/`LeSetAdvEnable`. The wire format is unchanged
+    // (a legacy-PDU set emits the same ADV_IND + SCAN_RSP; every phone sees it exactly as before) —
+    // this is about the *command class*: legacy and extended adv/scan/initiate commands are one
+    // mutually-exclusive HCI group (Core v6 Vol 4 E 3.1.1), the first use latches the mode, and the
+    // sensor manager's scan/connect MUST be extended (the legacy initiator faults the SDC blob —
+    // `SoftdeviceController: 50:701`, see [`super::sensors`]' module doc). One legacy command here
+    // would bounce every sensor connect with `Command Disallowed`.
+    let adv_set = |params| {
+        [AdvertisementSet {
+            params,
+            data: Advertisement::ConnectableScannableUndirected { adv_data, scan_data },
+            address: None,
+        }]
+    };
 
     // Fast phase: 40 ms, abandoned after FAST_ADV_WINDOW. `select` drops the losing future, so on
     // timeout the advertiser (owned by `accept`) is dropped and its `Drop` stops advertising.
-    let advertiser = peripheral.advertise(&fast_adv_params(), adv()).await?;
+    let sets = adv_set(fast_adv_params());
+    let mut handles = AdvertisementSet::handles(&sets);
+    let advertiser = peripheral.advertise_ext(&sets, &mut handles).await?;
     info!("ble: advertising as '{}' (fast, 40 ms for {} s)", name, FAST_ADV_WINDOW.as_secs());
     if let Either::First(conn) = select(advertiser.accept(), Timer::after(FAST_ADV_WINDOW)).await {
         let conn = conn?.with_attribute_server(server)?;
@@ -210,7 +229,9 @@ pub(crate) async fn advertise_lifecycle<'values, 'server, C: Controller>(
     info!("ble: fast-advertise window elapsed — dropping to slow advertising");
 
     // Slow phase: 1000 ms, no timeout — the indefinite steady state.
-    let advertiser = peripheral.advertise(&slow_adv_params(), adv()).await?;
+    let sets = adv_set(slow_adv_params());
+    let mut handles = AdvertisementSet::handles(&sets);
+    let advertiser = peripheral.advertise_ext(&sets, &mut handles).await?;
     info!("ble: advertising as '{}' (slow, 1000 ms)", name);
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
     info!("ble: connection established (slow phase)");

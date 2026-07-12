@@ -16,7 +16,7 @@
 use crate::crc32::Crc32;
 use crate::engine::IoError;
 use crate::image::{ImageHeader, HEADER_LEN, MAX_IMAGE_LEN};
-use crate::state::{BootState, Extent, StagedRef, MAX_EXTENTS};
+use crate::state::{BootState, Extent, LastOutcome, OutcomeKind, StagedRef, MAX_EXTENTS};
 
 /// Why the staging scan rejected `UPDATE.BIN`. Surfaced **verbatim** by S5's UI (and, until then,
 /// by the `dfu-install` debug-link command as text via [`describe`](ScanError::describe)) — so the
@@ -202,7 +202,7 @@ pub trait ArmIo {
 /// mid-run — arms with `rollback: None` (the first-install story, spec §2.4).
 pub fn arm(io: &mut impl ArmIo, current: &BootState, update: StagedRef) -> Result<ArmTicket, ArmError> {
     let installed = match current {
-        BootState::Idle { installed } => *installed,
+        BootState::Idle { installed, .. } => *installed,
         // Armed/Trial can't be live mid-run (the bootloader consumes Armed; bring-up confirms
         // Trial) — stay total: treat like a fresh device rather than guess at a rollback.
         _ => None,
@@ -220,12 +220,20 @@ pub fn arm(io: &mut impl ArmIo, current: &BootState, update: StagedRef) -> Resul
 }
 
 /// The trial confirm (issue #619 §4): a healthy app — first frame presented, SD mounted — turns
-/// `Trial { installed, .. }` into `Idle { installed: Some(installed) }`. Anything else (the
-/// steady-state `Idle`, or a stale `Armed` that should be impossible mid-run) confirms nothing.
-/// Returns the state to write plus the just-confirmed image's header (for the S5 toast).
+/// `Trial { installed, generation, .. }` into `Idle { installed: Some(installed), last_outcome:
+/// Installed(generation) }`. Anything else (the steady-state `Idle`, or a stale `Armed` that should
+/// be impossible mid-run) confirms nothing. Returns the state to write plus the just-confirmed
+/// image's header (for the S5 toast).
+///
+/// The confirm path surfaces its own success toast and clears the arm marker in the same beat, so
+/// this `Idle`'s recorded outcome is normally only read as history — but recording `Installed` keeps
+/// the page honest if a later boot re-reads it with the marker still present (a torn marker clear).
 pub fn confirm_trial(current: &BootState) -> Option<(BootState, ImageHeader)> {
     match current {
-        BootState::Trial { installed, .. } => Some((BootState::Idle { installed: Some(*installed) }, *installed)),
+        BootState::Trial { installed, generation, .. } => {
+            let last_outcome = Some(LastOutcome { kind: OutcomeKind::Installed, generation: *generation });
+            Some((BootState::Idle { installed: Some(*installed), last_outcome }, *installed))
+        }
         _ => None,
     }
 }

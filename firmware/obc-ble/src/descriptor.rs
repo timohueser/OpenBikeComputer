@@ -213,11 +213,13 @@ impl TransferStatus {
     }
 
     /// The announce-time reject for a `fwImage` upload (spec §4.2 / §7.6): an announced object
-    /// larger than the device's update-slot ceiling `max_len` (the board passes
-    /// `obc_dfu::MAX_IMAGE_LEN`, kept out of this crate so the wire codec never links the DFU crate)
-    /// is refused at the `transferControl` write with [`Error`](Self::Error), **before any bytes
-    /// stream** — a ~900 KB update would otherwise transfer only to fail at commit. `None` = accept
-    /// (the caller arms the [`Receiver`](crate::Receiver)).
+    /// larger than the device's update-slot ceiling `max_len` is refused at the `transferControl`
+    /// write with [`Error`](Self::Error), **before any bytes stream** — a ~900 KB update would
+    /// otherwise transfer only to fail at commit. `None` = accept (the caller arms the
+    /// [`Receiver`](crate::Receiver)). `total_len` is the whole OBCU container (64-byte header +
+    /// raw image), so the board passes the **container-sized** ceiling
+    /// `obc_dfu::MAX_IMAGE_LEN + HEADER_LEN` — the raw-image cap plus the header (DR5, #733); the
+    /// constants stay out of this crate so the wire codec never links the DFU crate.
     pub const fn fwimage_announce_reject(total_len: u32, max_len: u32) -> Option<Self> {
         if total_len > max_len {
             Some(Self::Error)

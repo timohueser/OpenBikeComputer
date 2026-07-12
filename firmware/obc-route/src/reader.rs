@@ -190,16 +190,65 @@ pub struct RouteReader<'a> {
 }
 
 impl RouteIndex {
+    /// An empty, chunk-less index — the resident slot [`read_into`](Self::read_into) fills.
+    /// Queryable but matches nothing; callers that need "is there a route?" keep their own
+    /// validity flag (a failed `read_into` leaves the slot in exactly this state).
+    pub fn empty() -> RouteIndex {
+        RouteIndex {
+            bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 },
+            start_lon: 0,
+            start_lat: 0,
+            point_count: 0,
+            total_distance_m: 0,
+            total_ascent_m: 0,
+            total_descent_m: 0,
+            min_ele_m: 0,
+            max_ele_m: 0,
+            name: String::new(),
+            index: Vec::new(),
+            cum_seg: Vec::new(),
+        }
+    }
+
     /// Parse the header and chunk index from `src`. Validates magic/version and that
     /// every chunk lies within the source and within the resident buffers.
+    ///
+    /// Returns the ~6.7 KB index **by value** — fine on a std host (the sim, tests, `obc-pack`),
+    /// but on the MCU that value transits the stack right where the ride pass is deepest. A
+    /// board caller must use [`read_into`](Self::read_into) on its resident slot instead: the
+    /// by-value return is exactly what overflowed the 44 KB main stack on the 256 KB DK when the
+    /// post-upload rescan rebuilt the index (STKOF HardFault in this frame, 2026-07-12).
     pub fn read(src: &dyn ByteSource) -> Result<RouteIndex, Error> {
+        let mut idx = RouteIndex::empty();
+        idx.read_into(src)?;
+        Ok(idx)
+    }
+
+    /// The in-place twin of [`read`](Self::read): fill `self` — the caller's **resident** slot —
+    /// field by field, so the index never exists as a stack temporary. On any error `self` is
+    /// left as [`empty`](Self::empty) (never half-filled), and the caller's validity flag stays
+    /// down.
+    pub fn read_into(&mut self, src: &dyn ByteSource) -> Result<(), Error> {
+        let r = self.fill_from(src);
+        if r.is_err() {
+            self.name.clear();
+            self.index.clear();
+            self.cum_seg.clear();
+            self.point_count = 0;
+        }
+        r
+    }
+
+    fn fill_from(&mut self, src: &dyn ByteSource) -> Result<(), Error> {
+        self.name.clear();
+        self.index.clear();
+        self.cum_seg.clear();
+
         let h = read_header(src)?;
         if h.chunk_count as usize > MAX_ROUTE_CHUNKS {
             return Err(Error::TooLarge);
         }
 
-        let mut index = Vec::new();
-        let mut cum_seg = Vec::new();
         let mut seg_acc: u32 = 0;
         let mut meta = [0u8; CHUNK_META_LEN];
         for k in 0..h.chunk_count {
@@ -232,27 +281,24 @@ impl RouteIndex {
             }
             // Running segment prefix sum, built alongside the index so the matcher never
             // re-walks the chunk list per fix.
-            cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
+            self.cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
             seg_acc += (point_count as u32).saturating_sub(1);
-            index.push(cm).map_err(|_| Error::TooLarge)?;
+            self.index.push(cm).map_err(|_| Error::TooLarge)?;
         }
         // Trailing total, so `cum_seg[chunk_count]` is the route's full segment count.
-        cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
+        self.cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
 
-        Ok(RouteIndex {
-            bbox: h.bbox,
-            start_lon: h.start_lon,
-            start_lat: h.start_lat,
-            point_count: h.point_count,
-            total_distance_m: h.total_distance_m,
-            total_ascent_m: h.total_ascent_m,
-            total_descent_m: h.total_descent_m,
-            min_ele_m: h.min_ele_m,
-            max_ele_m: h.max_ele_m,
-            name: h.name,
-            index,
-            cum_seg,
-        })
+        self.bbox = h.bbox;
+        self.start_lon = h.start_lon;
+        self.start_lat = h.start_lat;
+        self.point_count = h.point_count;
+        self.total_distance_m = h.total_distance_m;
+        self.total_ascent_m = h.total_ascent_m;
+        self.total_descent_m = h.total_descent_m;
+        self.min_ele_m = h.min_ele_m;
+        self.max_ele_m = h.max_ele_m;
+        self.name = h.name;
+        Ok(())
     }
 
     /// The route name.
