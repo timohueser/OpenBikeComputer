@@ -70,6 +70,17 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var discoverContinuation: CheckedContinuation<Void, Error>?
     private var authenticateContinuation: CheckedContinuation<Void, Error>?
     private var wantsConnect = false
+    /// True only across the #753 gated-phase retry beat — between a first,
+    /// retryable gated failure (`resolveAuthenticateRetryable`) and the second
+    /// attempt parking its continuation. In this window `authenticateContinuation`
+    /// is momentarily `nil`, so a disconnect must be treated as terminal here
+    /// (like a drop during a *pending* authenticate) rather than kicking the
+    /// reconnect loop — otherwise it could re-raise the passkey behind D5.
+    private var awaitingGatedRetry = false
+    /// The beat before the one #753 gated-phase retry — long enough for the
+    /// firmware's post-PairingComplete window (bond save under the GATT-serve
+    /// lock) to drain, short enough to stay imperceptible inside the D3 beat.
+    private static let gatedRetryBeat: Duration = .milliseconds(500)
     /// Services still awaiting their characteristics during `discover()`; discovery
     /// is done (the un-gated surface is ready) when it reaches zero.
     private var pendingServiceDiscovery = 0
@@ -156,8 +167,40 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // Phase 2 (#297): the gated ops (subscribe status/transferControl, read the
         // PSM, open the CoC) that establish the encrypted, LESC-authenticated link
         // and raise the system passkey sheet. Resolves when the CoC opens.
+        //
+        // #753: on a fresh pair the gated phase can fail *once* in the firmware's
+        // post-PairingComplete window even though SMP pairing completed and both
+        // sides bonded — see `GatedPairingWindowError`. Retry the gated phase once,
+        // after a short beat, on the now-bonded link (no passkey re-raise) rather
+        // than dropping straight to D5. Only an auth-class-while-connected failure
+        // is retried; a decline / link drop / CoC failure is terminal, as today.
+        do {
+            try await GatedPhaseRetry.runOnce(
+                beat: Self.gatedRetryBeat,
+                isRetryable: { $0 is GatedPairingWindowError },
+                attempt: { [self] in try await runGatedPhaseOnce() }
+            )
+        } catch is GatedPairingWindowError {
+            // The single retry also hit the pairing window — final. The retryable
+            // resolve deliberately left the link + intent up for the retry, so tear
+            // them down now (like `failAuthenticate`) and surface the D5 error.
+            await teardownAfterFailedRetry()
+            throw DeviceError.pairingFailed
+        }
+        // A terminal `DeviceError` from `runGatedPhaseOnce` already tore the intent
+        // down (`failAuthenticate`) and isn't retryable, so `runOnce` rethrew it
+        // straight through to the caller — no beat, no retry, D5 as today.
+    }
+
+    /// One gated-phase attempt (#753): park the authenticate continuation and kick
+    /// `beginAuthenticate()`; resolves on CoC open, throws `GatedPairingWindowError`
+    /// on a retryable failure or a plain `DeviceError` on a terminal one.
+    private func runGatedPhaseOnce() async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
+                // This attempt is now live; from here `authenticateContinuation`
+                // (not `awaitingGatedRetry`) owns drop handling.
+                awaitingGatedRetry = false
                 authenticateContinuation = cont
                 beginAuthenticate()
             }
@@ -738,10 +781,41 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// intent down so a background reconnect doesn't spin on a bond that won't take.
     private func failAuthenticate(_ error: DeviceError) {
         disarmChannelWatchdog()
+        awaitingGatedRetry = false
         wantsConnect = false
         stateMulticast.send(.disconnected)
         authenticateContinuation?.resume(throwing: error)
         authenticateContinuation = nil
+    }
+
+    /// #753: resolve a parked fresh-pair `authenticate()` as *retryable* — throw
+    /// `GatedPairingWindowError` so `authenticate()` runs the gated phase once
+    /// more on this same bonded link. Unlike `failAuthenticate`, it leaves
+    /// `wantsConnect` and the (still-up) link intact and publishes no
+    /// `.disconnected`; it flags the beat with `awaitingGatedRetry` so a drop in
+    /// the window (before the retry parks its continuation) is terminal.
+    private func resolveAuthenticateRetryable() {
+        disarmChannelWatchdog()
+        awaitingGatedRetry = true
+        authenticateContinuation?.resume(throwing: GatedPairingWindowError())
+        authenticateContinuation = nil
+    }
+
+    /// #753: the single retry also failed with the pairing-window error, so the
+    /// link may still be up with `wantsConnect` set (the retryable resolve left it
+    /// intact for the retry). Drop the half-bonded link and the intent so the
+    /// reconnect loop can't re-raise the passkey behind D5, and a fresh D5 "Try
+    /// again" can re-discover a disconnected peripheral.
+    private func teardownAfterFailedRetry() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async { [self] in
+                awaitingGatedRetry = false
+                wantsConnect = false
+                if let peripheral { central.cancelPeripheralConnection(peripheral) }
+                if stateMulticast.value != .disconnected { stateMulticast.send(.disconnected) }
+                cont.resume()
+            }
+        }
     }
 
     /// Whether an ATT/CB error means the encrypted, LESC-authenticated link the
@@ -776,6 +850,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // observers. The authenticate continuation still resolves unconditionally
         // (a fresh `authenticate()` completes here regardless of the state edge).
         if stateMulticast.value != .connected { stateMulticast.send(.connected) }
+        awaitingGatedRetry = false
         authenticateContinuation?.resume()
         authenticateContinuation = nil
     }
@@ -1092,6 +1167,16 @@ extension BLETransport: CBCentralManagerDelegate {
             failAuthenticate(.pairingFailed)
             return
         }
+        // #753: a drop during the gated-phase retry beat (continuation momentarily
+        // nil) is terminal, like a drop during a pending authenticate — the second
+        // attempt will fail `.notConnected` onto D5. Drop the intent so the
+        // reconnect loop below can't re-raise the passkey behind it.
+        if awaitingGatedRetry {
+            awaitingGatedRetry = false
+            wantsConnect = false
+            stateMulticast.send(.disconnected)
+            return
+        }
         stateMulticast.send(wantsConnect ? .outOfRange : .disconnected)
         // Reconnect (S4: the banner degrades, the link keeps trying): a connect
         // issued now has no timeout — iOS holds it pending until the peripheral
@@ -1182,11 +1267,25 @@ extension BLETransport: CBPeripheralDelegate {
                 // the link lands via `didDisconnectPeripheral`; on-glass polish.)
                 openingChannel = false
                 disarmChannelWatchdog()
-                let failure: DeviceError = Self.isAuthError(error) ? .pairingFailed : .channelOpenFailed
                 let waiters = channelWaiters
                 channelWaiters.removeAll()
-                for cont in waiters { cont.resume(throwing: failure) }
-                if authenticateContinuation != nil { failAuthenticate(failure) }
+                // #753: an auth-class failure on the gated PSM read while the
+                // peripheral is *still connected* is the conservative "pairing
+                // visibly completed, firmware momentarily refused" proxy (see
+                // `GatedPairingWindowError`). Resolve a parked fresh-pair
+                // `authenticate()` as retryable — it retries the gated phase once
+                // on this bonded link instead of dropping to D5. Any transfer's
+                // channel waiters (none during a fresh pair) fail as before; the
+                // retry re-opens the CoC.
+                if authenticateContinuation != nil, Self.isAuthError(error),
+                   peripheral.state == .connected {
+                    for cont in waiters { cont.resume(throwing: DeviceError.channelOpenFailed) }
+                    resolveAuthenticateRetryable()
+                } else {
+                    let failure: DeviceError = Self.isAuthError(error) ? .pairingFailed : .channelOpenFailed
+                    for cont in waiters { cont.resume(throwing: failure) }
+                    if authenticateContinuation != nil { failAuthenticate(failure) }
+                }
             }
             return
         }
