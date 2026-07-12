@@ -78,6 +78,11 @@ public final class UploadSheetModel {
     @ObservationIgnored private var handle: TransferHandle?
     @ObservationIgnored private var watchers: [Task<Void, Never>] = []
     @ObservationIgnored private var started = false
+    /// The drop watcher's running view of the link. The tick watcher reads it
+    /// to tell a genuine resume tick from a stale pre-drop one: ticks and link
+    /// states arrive on two independent streams, so a backlogged tick can be
+    /// delivered *after* the drop it preceded.
+    @ObservationIgnored private var linkUp = true
 
     public init(
         transport: any DeviceTransport,
@@ -145,12 +150,15 @@ public final class UploadSheetModel {
         let handle = transport.uploadRoute(blob)
         self.handle = handle
 
-        // Progress ticks. A tick is also the proof a resume is moving again.
+        // Progress ticks. A tick is also the proof a resume is moving again —
+        // but only while the link is up: a stale pre-drop tick delivered after
+        // the drop event must not flip the sheet back to `.uploading` (and
+        // re-claim the ledger) for a transfer whose link is already gone.
         watchers.append(Task { [weak self] in
             for await tick in handle.progress {
                 guard let self else { return }
                 progress = tick
-                if phase == .interrupted {
+                if phase == .interrupted, linkUp {
                     phase = .uploading
                     setTransferActive(true)  // moving again — re-claim
                 }
@@ -165,6 +173,7 @@ public final class UploadSheetModel {
             for await state in transport.state {
                 guard let self else { return }
                 let dropped = state == .outOfRange || state == .disconnected
+                linkUp = !dropped
                 if dropped, phase == .uploading, handle.currentOutcome == nil {
                     phase = .interrupted
                     // Stalled, not moving — release the ledger claim so the
