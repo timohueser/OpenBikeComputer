@@ -76,6 +76,33 @@ pub enum DfuFailure {
     Reverted,
 }
 
+/// Why the **install drain refused or failed to arm** an update (issue #755) — the failure twin of
+/// [`DfuScanError`], carried to the app by
+/// [`App::notify_dfu_install_failed`](crate::App::notify_dfu_install_failed) so a live
+/// [`DfuProgress`](crate::screen::DfuProgressScreen) spinner is replaced by the error card instead
+/// of hanging forever. Every non-reboot outcome of the board's `DfuAction::Install` drain maps to
+/// one of these. Kept **host-agnostic** like [`DfuScanError`]: the board maps its refusal guards and
+/// `obc_dfu` arm errors into these buckets (the re-scan bucket reuses [`DfuScanError`]'s fold).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DfuInstallError {
+    /// Refused: a ride is recording. Arming ends in a reboot that would lose the live ride, so the
+    /// drain declines (the board's `is_tracking` guard).
+    Recording,
+    /// Refused: a finished ride's save is still pending (the #438 deferred ORD-only save is RAM
+    /// state a reboot would drop). The board's `has_pending_save` guard.
+    PendingSave,
+    /// Refused: no SD card is mounted, so there is nothing to install from.
+    NoCard,
+    /// The arm re-scanned `UPDATE.BIN` (the confirm carried no validated ref) and it failed
+    /// validation — folded into the same [`DfuScanError`] buckets the scan card shows.
+    Scan(DfuScanError),
+    /// Writing the rollback snapshot (`ROLLBACK.BIN`) to the card failed — an SD IO error before
+    /// anything was armed.
+    SnapshotFailed,
+    /// The boot-state page write failed — nothing was armed; the device keeps running the old image.
+    StateWriteFailed,
+}
+
 /// Why the staging scan rejected `UPDATE.BIN`, phrased for the app's error card (issue #620 §2).
 /// The board folds `obc_dfu::ScanError`'s finer variants into these five user-facing buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
