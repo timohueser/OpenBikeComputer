@@ -361,6 +361,68 @@ final class RideSyncCoordinatorTests: XCTestCase {
         await waitFor("remainder synced") { relaunched.syncState == .done }
         XCTAssertEqual(relaunched.lastSyncCount, 4 - landed)
     }
+
+    // MARK: v2 list truncation (spec §7.4)
+
+    /// The v2 `rideList` header's truncation signal: a truncated list read sets
+    /// `hiddenRideCount` (the banner trigger), and a link edge back into
+    /// `.connected` clears it **before** any new list read. A count carried
+    /// across a reconnect could be stale (the rider freed space while away) or
+    /// a different device's entirely (the banner names the connected device) —
+    /// unknown-until-read is the honest state.
+    func testTruncatedListSetsTheCountAndReconnectClearsIt() async {
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        control.throughputBytesPerSec = 200_000_000
+        let coordinator = RideSyncCoordinator(
+            transport: TruncatedRideListTransport(
+                base: MockTransport(control: control), hiddenRideCount: 3),
+            library: InMemoryLibraryStore(), timing: Self.stickyTiming)
+        await startConnected(coordinator)
+
+        coordinator.sync()
+        await waitFor("truncation count from the list read") { coordinator.hiddenRideCount == 3 }
+        // Let the batch land before dropping the link, so the drop below is a
+        // clean idle-time edge (not an H10 interruption — separate machinery).
+        await waitFor("batch done") { coordinator.syncState == .done }
+
+        control.connection = .disconnected
+        await waitFor("link down") { coordinator.connection == .disconnected }
+        XCTAssertEqual(coordinator.hiddenRideCount, 3, "the count survives the drop itself")
+
+        control.connection = .connected
+        await waitFor("count cleared on the reconnect edge") { coordinator.hiddenRideCount == 0 }
+    }
+}
+
+/// Forwards everything to the mock, but reports the device's `rideList` as
+/// **truncated** (`hiddenRideCount` rides beyond what the list carried) — the
+/// v2 header's `total > count` signal the mock's fixture catalog never trips.
+private struct TruncatedRideListTransport: DeviceTransport {
+    let base: MockTransport
+    let hiddenRideCount: Int
+
+    var state: AsyncStream<ConnectionState> { base.state }
+    var battery: AsyncStream<Int> { base.battery }
+    var storeChanges: AsyncStream<StoreChanged> { base.storeChanges }
+    func connect() async throws { try await base.connect() }
+    func disconnect() async { await base.disconnect() }
+    func deviceInfo() async throws -> DeviceInfo { try await base.deviceInfo() }
+    func readConfig() async throws -> DeviceConfig { try await base.readConfig() }
+    func writeConfig(_ config: DeviceConfig) async throws { try await base.writeConfig(config) }
+    func listRoutes() async throws -> [RouteCatalogEntry] { try await base.listRoutes() }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
+    func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
+    func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
+    func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
+    func readDiagnostics() async throws -> Data { try await base.readDiagnostics() }
+    func downloadRides(_ ids: [RideID]) -> RideDownload { base.downloadRides(ids) }
+
+    func listRides() async throws -> RideCatalog {
+        var catalog = try await base.listRides()
+        catalog.hiddenRideCount = hiddenRideCount
+        return catalog
+    }
 }
 
 /// Forwards everything to the mock, but hands back a download whose rides
