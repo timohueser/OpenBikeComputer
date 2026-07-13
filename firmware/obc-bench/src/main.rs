@@ -1,6 +1,6 @@
 //! Host render benchmark harness + pixel-hash tripwire (issue #327, epic #326).
 //!
-//! Renders a fixed 6-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
+//! Renders a fixed 7-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
 //! fixture → `SliceSource` → `MapTables`/`MapCache`/`Reader` → `MapRenderer::render_timed` → the
 //! device-resolution [`Framebuffer565`] — and prints per-stage timings (min of 10 after a warm-up),
 //! the [`RenderStats`] counters, and an FNV-1a 64 hash of the frame's pixels.
