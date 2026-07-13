@@ -200,11 +200,13 @@ public struct TripDetailView: View {
     }
 
     private func deleteStages(at offsets: IndexSet) {
-        // A List delete can only hand one row at a time here; route it through the
-        // same last-stage guard as the swipe action.
-        for index in offsets {
-            guard index < stages.count else { continue }
-            attemptRemove(stages[index].id)
+        // Resolve offsets to ids BEFORE mutating: `stages` is computed off the
+        // live model, so after the first removal the remaining offsets would
+        // point at shifted rows. Each id then goes through the same last-stage
+        // guard as the swipe action.
+        let ids = offsets.compactMap { $0 < stages.count ? stages[$0].id : nil }
+        for id in ids {
+            attemptRemove(id)
         }
     }
 
