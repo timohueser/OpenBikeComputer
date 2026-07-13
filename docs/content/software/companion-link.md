@@ -365,8 +365,10 @@ connect, widened from a bare version to `version u16 · store_epoch u32`. So bef
 `ackRides` or any reconcile write fires, the app knows both the protocol version
 *and* which era it is looking at.
 
-**The epoch lives on the card.** It is persisted in a small file on the SD card,
-so the store carries its *own* era name. Swap the card and you transplant the
+**The epoch lives on the card.** It is persisted as a tiny **`EPOCH.OBE`** file in
+the card root — the record layout and its torn-file → fresh-era conventions are in
+the [BLE interface spec §1](src:obc-ble-interface-spec.md) — so the store carries
+its *own* era name. Swap the card and you transplant the
 store: the epoch travels with it, so the same device never conflates two cards' id
 spaces — and a card written by a *different* device presents *its own* epoch, a
 distinct era on this device by construction. A lost RRAM floor still stamps a
