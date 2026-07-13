@@ -12,7 +12,7 @@
 //! [`RouteReader`] for that tick+render (a borrow the caller must own across both). The caller opens
 //! it from [`HostLoop::session`] right after `reconcile` returns — no per-frame reparse.
 
-use obc_app::{App, HostCommand, HostMailbox, TrackAction};
+use obc_app::{App, DrainStatus, HostCommand, HostMailbox, TrackAction};
 
 use crate::{
     finish_nav_plan, ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackRepository, TripCatalog,
@@ -84,8 +84,14 @@ impl HostLoop {
         trips: &mut dyn TripCatalog,
         mut host: impl FnMut(&mut App, HostCommand),
     ) -> Option<TrackAction> {
-        let _ = tracks; // reserved for future track commands; keeps the repo set uniform per phase
-        let _ = app.drain_host_commands(&mut self.mailbox);
+        // Reserved for future track commands; keeps the repository set uniform per phase.
+        let _ = tracks;
+
+        // The mailbox is popped empty at the end of every pass and sized `HOST_COMMAND_CLASSES`
+        // (the `HostMailbox` default), so a full drain is guaranteed by construction — keep the
+        // invariant loud rather than suppressing the drain's `#[must_use]` status.
+        let status = app.drain_host_commands(&mut self.mailbox);
+        debug_assert_eq!(status, DrainStatus::Complete, "a canonical-capacity mailbox always drains completely");
         let mut finish: Option<TrackAction> = None;
         while let Some(cmd) = self.mailbox.pop() {
             match cmd {
@@ -165,7 +171,11 @@ fn reconcile_track(
     tracks: &mut dyn TrackRepository,
     finish: Option<TrackAction>,
 ) {
-    let name = active_route_name(app);
+    // The save name is only consumed when a log is (re)opened or finalised, both of which need a
+    // session or a drained action — skip the small String copy on the idle no-ride path. During an
+    // active ride it's one ≤48-byte name clone per pass, deliberately not cached: the active route
+    // (and thus the save name a mid-ride swap would freeze) can change between passes.
+    let name = (app.activity.session.is_some() || finish.is_some()).then(|| active_route_name(app)).flatten();
     let stats = matches!(finish, Some(TrackAction::Save)).then(|| app.ride_stats());
     tracks.reconcile(finish, app.activity.session, name.as_deref(), stats);
     if matches!(finish, Some(TrackAction::Save)) {
