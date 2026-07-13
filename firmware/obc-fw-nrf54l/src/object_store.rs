@@ -550,6 +550,26 @@ impl ObjectStore {
         self.routes.iter().position(|s| s.id == id)
     }
 
+    /// The stored **route** holding exactly this content — same byte length AND the same
+    /// whole-object CRC in the `/routes` sidecar — or `None`. The fresh-upload dedup lookup
+    /// (`upload_finish`): content identity is the CRC (epic #632), the length check is free
+    /// belt-and-braces. A route with no sidecar entry yet (side-loaded, not yet listed) simply
+    /// never matches — the safe direction (worst case a true duplicate of a side-load, never a
+    /// wrong id).
+    fn find_route_by_content(&self, shared: &SharedStore, crc: u32, byte_len: u32) -> Option<u16> {
+        let storage = shared.storage.as_ref()?;
+        let crcs = storage.load_route_crcs();
+        self.routes.iter().find(|s| s.byte_len == byte_len && crcs.get(s.id) == Some(crc)).map(|s| s.id)
+    }
+
+    /// The trip twin of [`find_route_by_content`](Self::find_route_by_content), against the
+    /// trip-CRC sidecar (`upload_finish_trip`'s dedup lookup).
+    fn find_trip_by_content(&self, shared: &SharedStore, crc: u32, byte_len: u32) -> Option<u16> {
+        let storage = shared.storage.as_ref()?;
+        let crcs = storage.load_trip_crcs();
+        self.trips.iter().find(|s| s.byte_len == byte_len && crcs.get(s.id) == Some(crc)).map(|s| s.id)
+    }
+
     /// Whether a route object with this id exists (the control plane's cheap `notFound` check).
     pub fn has_route(&self, id: u16) -> bool {
         self.slot_index(id).is_some()
@@ -829,6 +849,19 @@ impl ObjectStore {
             return (rx.object_id(), outcome.status);
         }
         let fresh = rx.object_id() == TransferControl::NEW_OBJECT_ID;
+        // Fresh-upload dedup (§4.2): a retry of an upload whose commit ack was lost (the link died
+        // between the device's commit and the phone's `transferResult`) re-sends the identical bytes
+        // as a *new* object — before this check, that minted a silent twin. Content identity IS the
+        // whole-object CRC (epic #632), so a fresh upload whose verified CRC + length match a stored
+        // route answers `committed` with the **existing** id and stores nothing; the phone links to
+        // that id exactly as if the first ack had arrived. Checked before the storage-full backstop:
+        // a dedup hit consumes no slot, so a full catalog must not fail it.
+        if fresh {
+            if let Some(id) = self.find_route_by_content(shared, whole_crc, rx.total_len()) {
+                self.upload_discard(shared);
+                return (id, TransferStatus::Committed);
+            }
+        }
         if fresh && (self.routes.is_full() || self.next_id >= SIDELOAD_ID_BASE) {
             // Storage-full backstop: `upload_open` already rejects new uploads at descriptor-open
             // time (before any byte streams), so reaching here means the catalog filled *during* the
@@ -916,6 +949,16 @@ impl ObjectStore {
             return (rx.object_id(), outcome.status);
         }
         let fresh = rx.object_id() == TransferControl::NEW_OBJECT_ID;
+        // Fresh-upload dedup, the trip twin of the route rule in `upload_finish` (§4.2): a retry
+        // whose first commit ack was lost must converge on the stored trip — same-name twin folders
+        // were exactly the on-glass duplicate-trip bug. Before the storage-full backstop for the same
+        // reason (a dedup hit consumes no trip slot).
+        if fresh {
+            if let Some(id) = self.find_trip_by_content(shared, whole_crc, rx.total_len()) {
+                self.upload_discard(shared);
+                return (id, TransferStatus::Committed);
+            }
+        }
         if fresh && (self.trips.is_full() || self.next_trip_id >= SIDELOAD_ID_BASE) {
             // Storage-full backstop: the catalog filled during the transfer (upload_open_trip already
             // rejects at descriptor-open). Same typed status either way.

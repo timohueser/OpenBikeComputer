@@ -363,6 +363,21 @@ stream, and **replace-by-id uploads of an existing trip are exempt**. The
 reference cap is **16 trips**. (A trip references route ids only, so its bytes are
 tiny — the cap bounds the trip *count*, independent of the 64-route cap.)
 
+**Fresh-upload dedup (idempotent retry).** A **new**-object upload (`op=1`,
+route or trip type, `object_id = 0xFFFF`) whose verified whole-object CRC-32
+**and** byte length match an object the device already stores (same type) is
+answered `committed` with the **existing** object's id — nothing new is stored,
+no catalog slot is consumed, and the store revision does not move. This makes an
+upload retry convergent: if the link dies between the device's commit and the
+app's `transferResult` (the ack is lost), the app re-sends the identical bytes
+as a new object, and without this rule the device minted a silent same-content
+twin. Content identity is the CRC (the same fingerprint `routeList` /
+`tripList` serve, §7.4); the app treats the result exactly like any commit and
+links to the reported id. Replace-by-id uploads are not deduplicated — they
+target a specific object. The dedup applies at commit time, so the retry's
+bytes still stream; a client that wants to skip the bytes entirely should
+reconcile against the list CRCs first.
+
 **`fwImage` staging (M4).** A `fwImage` upload (§7.6) stages a firmware update
 image to the card over the existing transfer machinery unchanged — whole-object
 CRC-32 at commit, no partial resume (an update is ~900 KB ≈ a large route). Two
