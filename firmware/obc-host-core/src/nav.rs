@@ -2,7 +2,6 @@
 //! plus the shared commit/answer tail both hosts run when it finishes.
 
 use crate::VecSink;
-use obc_route::RouteSummary;
 
 /// An in-flight route plan (#499): the resumable planner plus its caller-owned buffers and the
 /// in-memory sink. A live host holds one and steps it **once per frame**, so the frame loop stays
@@ -53,34 +52,16 @@ impl NavPlan {
     }
 }
 
-/// The slice of a host's route store the shared nav commit path ([`finish_nav_plan`]) drives:
-/// write the reserved nav-route bytes, then re-feed the id-carrying catalog and invalidate the
-/// change-gated active-route read. `obc-sim`'s folder-backed store and the in-memory
-/// [`MemRouteStore`](crate::MemRouteStore) both implement it, so the commit sequence — the exact
-/// rescan-then-answer order the device runs — lives in one place.
-pub trait NavRouteStore {
-    /// Persist the router's emitted OBCR as the reserved nav route (overwriting any previous
-    /// plan), returning its session-stable id — or `None` on an I/O failure (the caller degrades
-    /// to the generic routing-failure tier).
-    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16>;
-    /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
-    fn catalog(&self) -> &[RouteSummary];
-    /// Each catalog entry's session-stable id, parallel to [`catalog`](NavRouteStore::catalog).
-    fn ids(&self) -> &[u16];
-    /// Force the active route's bytes to re-read on the next sync even if the index is unchanged —
-    /// a re-route rewrites the nav bytes **under** an unchanged catalog index.
-    fn invalidate_active(&mut self);
-}
-
 /// Commit / report a finished plan and answer the app — the shared tail of the live hosts' stepped
 /// path and `obc-sim`'s headless one-shot: on success write the reserved nav route, rescan +
 /// re-feed the id-carrying catalog, and `notify_nav_result` (which swaps the planning screen for
 /// the computed-route overview or the failure card), then hand the app the decimated shape
 /// preview (#685 §4) — the emitted OBCR bytes are still in RAM here, so the ≤ 64-point copy is
-/// decimated straight off them.
+/// decimated straight off them. Drives the store through [`RouteRepository`](crate::RouteRepository),
+/// so the exact write→rescan→invalidate order lives in one place for every host.
 pub fn finish_nav_plan(
     app: &mut obc_app::App,
-    store: &mut dyn NavRouteStore,
+    store: &mut dyn crate::RouteRepository,
     outcome: Result<obc_route::RouteStats, obc_route::NavError>,
     sink_bytes: &[u8],
     tile_stats: obc_reader::NavCacheStats,

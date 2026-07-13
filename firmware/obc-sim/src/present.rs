@@ -583,42 +583,30 @@ mod tests {
         player: &mut obc_replay::GpxPlayer,
         baro: &mut obc_replay::BaroSensor,
         store: &mut crate::routes::RouteStore,
-        nav_plan: &mut Option<crate::NavPlan>,
+        host: &mut obc_host_core::HostLoop,
         reader: &obc_reader::Reader,
         tour_active: bool,
         frame_no: &mut usize,
         label: &str,
     ) {
-        use obc_route::{RouteIndex, RouteReader};
+        use obc_route::RouteReader;
 
         const W: u32 = obc_platform::FRAME_W as u32;
         const H: u32 = obc_platform::FRAME_H as u32;
 
-        // Route planner drains + one bounded step per frame (gui.rs).
-        if let Some(req) = app.take_nav_request() {
-            *nav_plan = Some(crate::NavPlan::start(&req, app.settings().bike_profile_idx));
-        }
-        if app.take_nav_cancel() {
-            *nav_plan = None;
-        }
-        let step = nav_plan.as_mut().map(|plan| plan.step(reader));
-        match step {
-            None | Some(obc_route::Step::Running) => {}
-            Some(obc_route::Step::Done(stats)) => {
-                let plan = nav_plan.take().expect("just stepped it");
-                crate::finish_nav_plan(app, store, Ok(stats), plan.bytes(), plan.tile_stats());
-            }
-            Some(obc_route::Step::Failed(e)) => {
-                let plan = nav_plan.take().expect("just stepped it");
-                crate::finish_nav_plan(app, store, Err(e), plan.bytes(), plan.tile_stats());
-            }
-        }
+        // Reconcile through the shared dispatcher — the same `obc-host-core::HostLoop` gui.rs drives
+        // (route planner lifecycle, one bounded step per frame). This tour uses only routes, so the
+        // ride/track/trip repositories are empty stand-ins and no host-specific command fires.
+        let mut rides = obc_host_core::MemRideStore::new(Vec::new());
+        let mut tracks = obc_host_core::MemTrackStore::new();
+        let mut no_trips = ();
+        host.reconcile(app, store, &mut rides, &mut tracks, &mut no_trips, reader, |_app, _cmd| {});
 
-        // Open the active route's geometry (gui.rs re-opens per frame).
-        store.sync_active(app.activity.active_route);
+        // Open the active route's geometry from the resident session (gui.rs's per-frame open).
+        let changed = store.sync_active(app.active_route_index());
+        host.session.reparse(changed, &*store);
         let route_src = store.active_source();
-        let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
-        let route = match (route_index.as_ref(), route_src.as_ref()) {
+        let route = match (host.session.index(), route_src.as_ref()) {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
@@ -697,7 +685,7 @@ mod tests {
         let mut player = GpxPlayer::new(track);
         player.set_speed(3.0); // the page's ambient pace (obc-web-demo's `DEMO_SPEED`)
         let mut baro = BaroSensor::new();
-        let mut nav_plan: Option<crate::NavPlan> = None;
+        let mut host = obc_host_core::HostLoop::new();
         let mut present = Present::new(W, H);
         let mut frame_no = 0usize;
 
@@ -711,7 +699,7 @@ mod tests {
             app.set_routes_with_ids(store.catalog(), store.ids());
             app.set_settings(settings);
             if !store.catalog().is_empty() {
-                app.activity.active_route = Some(0);
+                app.activate_route(0);
                 app.activity.start_session();
             }
             app
@@ -731,7 +719,7 @@ mod tests {
                         &mut player,
                         &mut baro,
                         &mut store,
-                        &mut nav_plan,
+                        &mut host,
                         &reader,
                         true,
                         &mut frame_no,
@@ -750,7 +738,7 @@ mod tests {
                         &mut player,
                         &mut baro,
                         &mut store,
-                        &mut nav_plan,
+                        &mut host,
                         &reader,
                         true,
                         &mut frame_no,
@@ -771,7 +759,7 @@ mod tests {
                 &mut player,
                 &mut baro,
                 &mut store,
-                &mut nav_plan,
+                &mut host,
                 &reader,
                 false,
                 &mut frame_no,
@@ -827,7 +815,7 @@ mod tests {
                 &mut player,
                 &mut baro,
                 &mut store,
-                &mut nav_plan,
+                &mut host,
                 &reader,
                 false,
                 &mut frame_no,
@@ -871,7 +859,7 @@ mod tests {
         let mut player = GpxPlayer::new(track);
         player.set_speed(3.0);
         let mut baro = BaroSensor::new();
-        let mut nav_plan: Option<crate::NavPlan> = None;
+        let mut host = obc_host_core::HostLoop::new();
         let mut present = Present::new(W, H);
         let mut frame_no = 0usize;
 
@@ -885,7 +873,7 @@ mod tests {
             app.set_routes_with_ids(store.catalog(), store.ids());
             app.set_settings(settings);
             if !store.catalog().is_empty() {
-                app.activity.active_route = Some(0);
+                app.activate_route(0);
                 app.activity.start_session();
             }
             app
@@ -895,12 +883,12 @@ mod tests {
                        player: &mut GpxPlayer,
                        baro: &mut BaroSensor,
                        store: &mut crate::routes::RouteStore,
-                       nav_plan: &mut Option<crate::NavPlan>,
+                       host: &mut obc_host_core::HostLoop,
                        tour: bool,
                        n: usize,
                        label: &str| {
             for _ in 0..n {
-                tour_frame(app, present, player, baro, store, nav_plan, &reader, tour, &mut frame_no, label);
+                tour_frame(app, present, player, baro, store, host, &reader, tour, &mut frame_no, label);
             }
         };
 
@@ -908,17 +896,17 @@ mod tests {
         let mut app = build_app(Settings::default(), &store);
         player.seek(0.0);
         player.play();
-        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut nav_plan, false, 60, "ambient");
+        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut host, false, 60, "ambient");
         app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
         player.seek(1500.0);
         player.play();
-        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut nav_plan, true, 300, "after enter");
+        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut host, true, 300, "after enter");
 
         // The `ambient` reset: rebuild + seek backward to the start.
         app = build_app(Settings::default(), &store);
         player.seek(0.0);
         player.play();
-        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut nav_plan, false, 300, "after ambient");
+        run(&mut app, &mut present, &mut player, &mut baro, &mut store, &mut host, false, 300, "after ambient");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
