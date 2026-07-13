@@ -163,6 +163,11 @@ public struct MainScreenView: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("main.screen")
+        // Selection is a Planned-tab mode: leaving the tab ends it, so the
+        // Group bar and Cancel never float over the Tracked list.
+        .onChange(of: model.tab) { _, _ in
+            if isSelecting { exitSelection() }
+        }
         .task { model.start() }
     }
 
