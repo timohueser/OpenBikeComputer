@@ -306,12 +306,16 @@ impl SimGui {
             let _ = self.app.take_store_changed();
             self.store.rescan();
             self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+            // The same edge covers the trips (epic #526): a dropped-in / removed `.obt` re-groups
+            // the menu. Fed after the routes so the stage ids resolve against the fresh catalog.
+            self.trip_store.rescan();
+            self.app.set_trips(&self.trip_store.inputs());
             // The same edge covers the ride catalog (#454): a dropped-in `RD{id}.ORD` or an edited
             // `SYNCED.SET` shows up on the Rides screen without a relaunch.
             self.ride_store.rescan();
             self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
         }
-        ui.weak("re-scans the routes + tracks folders like a BLE commit/delete");
+        ui.weak("re-scans the routes + trips + tracks folders like a BLE commit/delete");
 
         // Upload injection (P4): the route-upload popups' driver. Pick a catalog route, then
         // inject it as a fresh upload (a new file — copy of the pick) or a replace-by-id (the
@@ -350,6 +354,42 @@ impl SimGui {
         }
         if let Some(replace) = inject {
             self.inject_upload(self.panel.upload_sel, replace);
+        }
+
+        // Trip delete (epic #526, TR2): the protocol-level trip delete — removes the `.obt` and
+        // leaves the member routes as top-level routes (non-cascading, spec §7.7). Stands in for the
+        // on-device delete until the TR3 folder UI wires it to a hold gesture. Deleting drops the
+        // folder, so its member routes fall back to the unfiled top level on the next re-group.
+        let mut delete_trip: Option<u16> = None;
+        {
+            let trips = self.app.trips();
+            if !trips.is_empty() {
+                ui.separator();
+                self.panel.trip_sel = self.panel.trip_sel.min(trips.len() - 1);
+                egui::ComboBox::from_label("trip").selected_text(trips[self.panel.trip_sel].name.as_str()).show_ui(
+                    ui,
+                    |ui| {
+                        for (i, t) in trips.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut self.panel.trip_sel,
+                                i,
+                                format!("{} ({} stages, id {})", t.name.as_str(), t.stage_indices.len(), t.id),
+                            );
+                        }
+                    },
+                );
+                if ui.button("Delete trip (removes the .obt)").clicked() {
+                    delete_trip = Some(trips[self.panel.trip_sel].id);
+                }
+                ui.weak("non-cascading: member routes stay as top-level routes");
+            }
+        }
+        if let Some(id) = delete_trip {
+            if self.trip_store.delete_by_id(id) {
+                self.app.notify_store_changed();
+                let _ = self.app.take_store_changed();
+                self.app.set_trips(&self.trip_store.inputs());
+            }
         }
     }
 

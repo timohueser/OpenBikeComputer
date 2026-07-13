@@ -31,6 +31,7 @@ pub mod screen;
 pub mod sensors;
 pub mod settings;
 pub mod stat_fields;
+pub mod trip;
 pub mod wall_clock;
 
 pub use activity::{Activity, DfuAction, Mode, NavRequest, TrackAction};
@@ -61,4 +62,5 @@ pub use settings::{
     SYNCED_RIDES_MAX_LEN,
 };
 pub use stat_fields::{StatField, StatFieldList};
+pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 pub use wall_clock::{MinuteTicker, WallClock};
