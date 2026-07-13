@@ -65,6 +65,7 @@
 //! existing framebuffer/band types — into its own crate if the split pays.
 
 pub mod bridge;
+pub mod conformance;
 pub mod frame;
 pub mod presenter;
 
