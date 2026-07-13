@@ -215,7 +215,7 @@ use obc_route::RouteCache;
 use com::com_task;
 #[cfg(feature = "com-hw")]
 use com_hw::HwCom;
-use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Ls021Flpr};
+use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Frame64, Ls021Flpr};
 // The two planes' entry points `main` reaches: the input plane's executor + task + gesture channel,
 // and the map plane's display handle + boot-fault screen. (Unqualified so the input-plane items don't
 // read against the `input_plane` value binding constructed below — they're different namespaces, but
@@ -930,16 +930,19 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // The resident RGB222 plane the app renders into and the FLPR packs to the wire, plus the
-            // self-diffing present store the masked push derives its dirty rows from.
-            // SAFETY: sole references to FB / ROW_DIFF; held by `panel` for the rest of the program (the
-            // map plane is their only owner), never aliased.
+            // The resident RGB222 plane the app renders into and the FLPR packs to the wire —
+            // wrapped as the contracts' `Frame64` and owned by the map plane *next to* the
+            // presenter — plus the self-diffing present store the masked push derives its dirty
+            // rows from.
+            // SAFETY: sole references to FB / ROW_DIFF; held by the map plane's frame/panel pair
+            // for the rest of the program (the map plane is their only owner), never aliased.
             let fb: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FB) };
             let diff: &'static mut RowDiff<FRAME_H> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
-            let mut panel = Ls021Flpr::new_fb(fb, diff);
+            let frame = Frame64::new(fb);
+            let mut panel = Ls021Flpr::new(diff);
             // Datasheet Initial #0: an INTB-framed all-black frame (FB boots zeroed = black) while COM is
             // still held `Lo`. Then T4 ≥ 30 µs, then start COM — from here it free-runs forever.
-            panel.push_frame().await;
+            panel.push_frame(&frame).await;
             Timer::after_micros(50).await;
 
             // The shared `InputPlane`: `input_task` recognises + animates the bulge under this lock; the
@@ -969,6 +972,7 @@ async fn main(_spawner: Spawner) {
             hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender())));
             info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven, #219)");
             MapDisplay {
+                frame,
                 panel,
                 input_plane,
                 last_overlay_span: None,
