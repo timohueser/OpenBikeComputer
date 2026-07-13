@@ -1,5 +1,9 @@
 {
   "schema_version": 1,
+  "standalone_manifests": [
+    "obc-fw-nrf54l/Cargo.toml",
+    "obc-boot/Cargo.toml"
+  ],
   "groups": {
     "foundation": [
       "obc-formats",
@@ -29,6 +33,10 @@
       "obc-vectors",
       "obc-web-demo",
       "obcm-testkit"
+    ],
+    "standalone": [
+      "obc-boot",
+      "obc-fw-nrf54l"
     ]
   },
   "forbidden": [
@@ -53,6 +61,11 @@
       "reason": "foundation crates must remain no_std and host-framework independent"
     },
     {
+      "from_group": "foundation",
+      "to_group": "standalone",
+      "reason": "foundation crates must not depend upward on standalone firmware composition roots"
+    },
+    {
       "from_group": "core",
       "to_group": "app",
       "reason": "shared algorithms must not depend upward on the app facade"
@@ -68,6 +81,11 @@
       "reason": "shared no_std algorithms must not depend on host tools or shells"
     },
     {
+      "from_group": "core",
+      "to_group": "standalone",
+      "reason": "shared algorithms must not depend upward on standalone firmware composition roots"
+    },
+    {
       "from_group": "app",
       "to_group": "platform",
       "reason": "the app consumes semantic ports, not concrete platform adapters"
@@ -78,6 +96,11 @@
       "reason": "the app facade must remain host-independent"
     },
     {
+      "from_group": "app",
+      "to_group": "standalone",
+      "reason": "the app facade must not depend upward on standalone firmware composition roots"
+    },
+    {
       "from_group": "platform",
       "to_group": "app",
       "reason": "platform adapters belong below the app facade"
@@ -86,6 +109,16 @@
       "from_group": "platform",
       "to_group": "host",
       "reason": "platform adapters must not depend on host orchestration"
+    },
+    {
+      "from_group": "platform",
+      "to_group": "standalone",
+      "reason": "platform adapters must not depend upward on standalone firmware composition roots"
+    },
+    {
+      "from_group": "host",
+      "to_group": "standalone",
+      "reason": "host tools must not depend on standalone firmware composition roots"
     }
   ],
   "exceptions": [

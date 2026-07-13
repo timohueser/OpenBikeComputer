@@ -33,6 +33,27 @@ def metadata(*dependencies):
     return {"workspace_members": members, "packages": packages}
 
 
+def metadata_root(member_names, dependencies=()):
+    """A realistic `cargo metadata --no-deps` root; dependency targets may live in another root."""
+    packages = []
+    members = []
+    for name in member_names:
+        package_id = f"path+file:///{name}#0.1.0"
+        members.append(package_id)
+        packages.append(
+            {
+                "id": package_id,
+                "name": name,
+                "dependencies": [
+                    {"name": target, "kind": kind}
+                    for source, target, kind in dependencies
+                    if source == name
+                ],
+            }
+        )
+    return {"workspace_members": members, "packages": packages}
+
+
 def rules(exceptions=()):
     return {
         "groups": {"low": ["low"], "high": ["high"]},
@@ -73,7 +94,7 @@ class DependencyTests(unittest.TestCase):
     def test_unclassified_workspace_package_cannot_evade_rules(self):
         violations = check_dependencies.check_edges(set(), rules(), {"low", "high", "new-crate"})
         self.assertEqual(len(violations), 1)
-        self.assertIn("unclassified production workspace package", violations[0])
+        self.assertIn("unclassified production package", violations[0])
         self.assertIn("`new-crate`", violations[0])
 
     def test_unknown_forbidden_group_is_rejected(self):
@@ -93,6 +114,79 @@ class DependencyTests(unittest.TestCase):
         invalid = rules((exception, dict(exception)))
         with self.assertRaisesRegex(check_dependencies.DependencyError, "duplicate dependency exception"):
             check_dependencies.check_edges({check_dependencies.Edge("low", "high")}, invalid)
+
+    def test_excluded_board_target_is_visible_and_rejected(self):
+        workspace = metadata_root(
+            ("obc-ports",),
+            (("obc-ports", "obc-fw-nrf54l", None),),
+        )
+        board = metadata_root(("obc-fw-nrf54l",))
+        packages, edges = check_dependencies.dependency_graph([workspace, board])
+        production_rules = {
+            "groups": {"foundation": ["obc-ports"], "standalone": ["obc-fw-nrf54l"]},
+            "forbidden": [
+                {
+                    "from_group": "foundation",
+                    "to_group": "standalone",
+                    "reason": "foundation must stay below composition roots",
+                }
+            ],
+            "exceptions": [],
+        }
+
+        self.assertEqual(packages, {"obc-ports", "obc-fw-nrf54l"})
+        self.assertIn(check_dependencies.Edge("obc-ports", "obc-fw-nrf54l"), edges)
+        violations = check_dependencies.check_edges(edges, production_rules, packages)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("forbidden dependency edge `obc-ports -> obc-fw-nrf54l`", violations[0])
+
+    def test_excluded_boot_target_is_visible_and_rejected(self):
+        workspace = metadata_root(
+            ("obc-ports",),
+            (("obc-ports", "obc-boot", None),),
+        )
+        boot = metadata_root(("obc-boot",))
+        packages, edges = check_dependencies.dependency_graph([workspace, boot])
+        production_rules = {
+            "groups": {"foundation": ["obc-ports"], "standalone": ["obc-boot"]},
+            "forbidden": [
+                {
+                    "from_group": "foundation",
+                    "to_group": "standalone",
+                    "reason": "foundation must stay below composition roots",
+                }
+            ],
+            "exceptions": [],
+        }
+
+        self.assertIn(check_dependencies.Edge("obc-ports", "obc-boot"), edges)
+        violations = check_dependencies.check_edges(edges, production_rules, packages)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("forbidden dependency edge `obc-ports -> obc-boot`", violations[0])
+
+    def test_standalone_outgoing_edges_are_in_combined_graph(self):
+        workspace = metadata_root(("obc-app",))
+        board = metadata_root(
+            ("obc-fw-nrf54l",),
+            (("obc-fw-nrf54l", "obc-app", None),),
+        )
+        _, edges = check_dependencies.dependency_graph([workspace, board])
+        self.assertIn(check_dependencies.Edge("obc-fw-nrf54l", "obc-app"), edges)
+
+    def test_standalone_manifest_paths_are_relative_to_primary_root(self):
+        primary = Path("/repo/firmware/Cargo.toml")
+        manifests = check_dependencies.metadata_manifests(
+            primary,
+            {"standalone_manifests": ["obc-fw-nrf54l/Cargo.toml", "obc-boot/Cargo.toml"]},
+        )
+        self.assertEqual(
+            manifests,
+            [
+                primary,
+                Path("/repo/firmware/obc-fw-nrf54l/Cargo.toml"),
+                Path("/repo/firmware/obc-boot/Cargo.toml"),
+            ],
+        )
 
 
 if __name__ == "__main__":

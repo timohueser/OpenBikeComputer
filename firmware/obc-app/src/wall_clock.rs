@@ -8,7 +8,7 @@
 //!
 //! [`Settings::clock`]: crate::Settings::clock
 
-use crate::settings::DateTime;
+use crate::settings::{add_minutes_bounded, DateTime};
 
 /// Derives the current wall-clock [`DateTime`] from a set-point (`base`) and the monotonic millis
 /// at which that set-point was true (`epoch_ms`). [`now`](WallClock::now) is **recomputed from the
@@ -58,7 +58,7 @@ impl WallClock {
     /// millis wrap. Minute resolution — the clock only ever displays `HH:MM`.
     pub fn now(&self, now_ms: u32) -> DateTime {
         let elapsed_min = now_ms.wrapping_sub(self.epoch_ms) / 60_000;
-        self.base.add_minutes(elapsed_min)
+        add_minutes_bounded(self.base, elapsed_min)
     }
 
     /// Unix seconds at `now_ms`, reading the set-point as UTC: [`to_unix`](DateTime::to_unix) plus

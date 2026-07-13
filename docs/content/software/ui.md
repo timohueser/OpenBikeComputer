@@ -568,12 +568,15 @@ A setting is worthless if it's forgotten on power-off, so settings persist. The 
 
 ```rust
 pub trait SettingsStore {
-    fn load(&mut self) -> Option<Settings>; // None (blank/corrupt) → start from Settings::default()
-    fn save(&mut self, s: &Settings);       // encode the blob, persist it
+    type Value;
+    fn load(&mut self) -> Option<Self::Value>; // None (blank/corrupt) → use the app default
+    fn save(&mut self, value: &Self::Value);   // best-effort; the live value stays authoritative
 }
+
+// Both shipped adapters bind `type Value = Settings`.
 ```
 
-The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
+The nominal trait lives in dependency-free `obc-ports`; its associated value keeps that foundation from learning the app's `Settings` model. The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
 
 ## The UI speaks four languages
 
@@ -945,11 +948,11 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 - The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
 - The Rides screen, its Ride detail, and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/ride_detail.rs`](src:firmware/obc-app/src/screen/ride_detail.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
 - The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
-- The `Settings` value + its byte codec, the `Language` enum, and the `SettingsStore` seam: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs), [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The `Settings` value + its byte codec and the `Language` enum: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs); the dependency-free `SettingsStore` seam: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs) (compatibility re-exported by [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs))
 - The i18n catalogue + codegen — the per-language TOMLs, the `build.rs` that generates `Msg`/`TABLE`, and the `t()`/`rx.t()` lookup: [`obc-app/i18n/`](src:firmware/obc-app/i18n), [`obc-app/build.rs`](src:firmware/obc-app/build.rs), [`obc-app/src/i18n.rs`](src:firmware/obc-app/src/i18n.rs); the font-repertoire guard: [`obc-app/tests/i18n.rs`](src:firmware/obc-app/tests/i18n.rs)
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)
 - The input + overlay plane: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The app driver (frame loop, render-on-demand, compositing): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
-- The injected-hardware traits and input types: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); compatibility re-exports: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
 
 For how the two planes keep input responsive under a long render, and where the HAL fits, see [system architecture](../architecture/). For how a screen's `draw` actually puts pixels on the panel, see the [rendering pipeline](../rendering/).
