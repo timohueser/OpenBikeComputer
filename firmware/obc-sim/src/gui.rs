@@ -17,8 +17,9 @@ use std::path::Path;
 
 use eframe::egui;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-use obc_app::{App, AppState, Button, CameraMode, Dirty, Fix, InputClock, RideClock, Sensors, SettingsStore};
+use obc_app::{App, AppState, CameraMode, Dirty};
 use obc_platform::{DisplayDriver, FbDevice64};
+use obc_ports::{Button, Fix, InputClock, RideClock, Sensors, SettingsStore};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 use obc_route::{RouteIndex, RouteReader};
 

@@ -4,7 +4,7 @@
 //!
 //! All three chips sit on one **TWIM30** I²C bus on the low-power P0 domain (SDA P0.01 / SCL P0.02);
 //! the GPS **TX-Ready** line is the single interrupt (P0.03). The pure decode — UBX NAV-PVT framing,
-//! NAV-PVT → [`Fix`](obc_app::Fix), BMP581 raw → metres, magnetometer axes → heading — lives
+//! NAV-PVT → [`Fix`](obc_ports::Fix), BMP581 raw → metres, magnetometer axes → heading — lives
 //! host-tested in [`obc_platform::ubx`] / [`obc_platform::bmp581`] / [`obc_platform::compass`] /
 //! [`obc_platform::icm20948`]; this module owns only the concrete `Twim` transactions and the
 //! [`sensor_task`] that coalesces a GPS fix + a coincident baro + magnetometer reading into one
@@ -16,7 +16,7 @@
 //! directly at `0x0C` as if it were a standalone 3-axis compass. That's deliberate: the shipping
 //! board is expected to drop the ICM for a plain magnetometer, and swapping it is then a new chip
 //! module like [`obc_platform::icm20948`] plus new transaction calls here — the heading geometry
-//! ([`obc_platform::compass`]) and the app's `CompassSource` seam don't move.
+//! ([`obc_platform::compass`]) and the `obc-ports` `CompassSource` seam don't move.
 //!
 //! Unlike the altimeter (which is logged into each track point and so *must* be fix-coherent), the
 //! heading is **never stored** — it only orients a heading-up *map while the rider is stopped*. So it

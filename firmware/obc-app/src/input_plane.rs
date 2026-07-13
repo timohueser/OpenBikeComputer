@@ -18,9 +18,9 @@
 
 use embedded_graphics::draw_target::DrawTarget;
 
-use crate::hal::{InputClock, InputSource};
 use crate::hold_hint::HoldHints;
 use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+use obc_ports::{InputClock, InputSource};
 
 /// The high-priority input + overlay plane: gesture recognition, the long-press hint
 /// overlay, and the live hold-progress readout.

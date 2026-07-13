@@ -1,6 +1,7 @@
 //! One replay frame: advance the GPX playback and tick the shared app on the playback clock.
 
-use obc_app::{App, CadenceSource, CompassSource, HeartRateSource, PowerSource, RideClock, Sensors, TrackSink};
+use obc_app::App;
+use obc_ports::{CadenceSource, CompassSource, HeartRateSource, PowerSource, RideClock, Sensors, TrackSink};
 use obc_replay::{BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
 

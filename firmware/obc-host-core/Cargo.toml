@@ -7,6 +7,8 @@ description = "Shared std host glue for the two simulator hosts (obc-sim desktop
 
 [dependencies]
 obc-app = { path = "../obc-app" }
+# Semantic replay and track ports shared by both desktop and browser hosts.
+obc-ports = { path = "../obc-ports" }
 obc-reader = { path = "../obc-reader" }
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
 # (the ~39 KB A* table would overflow the wasm build's stack via a plain `Box::new`).

@@ -11,7 +11,7 @@
 //! The app reads it through the shared [`AltimeterSource`] trait, exactly as it will read
 //! the real barometer driver — it never learns this one is backed by a GPX file.
 
-use obc_app::AltimeterSource;
+use obc_ports::AltimeterSource;
 
 /// Emit a fresh reading at most this often (seconds of playback time). Coarser than and
 /// unaligned with the GPS fixes, modelling a barometer polled on its own schedule.

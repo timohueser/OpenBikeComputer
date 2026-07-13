@@ -14,7 +14,7 @@
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use obc_app::{AltimeterSource, ClockSource, CompassSource, Fix, GpsTime, LocationSource, TemperatureSource};
+use obc_ports::{AltimeterSource, ClockSource, CompassSource, Fix, GpsTime, LocationSource, TemperatureSource};
 
 /// Latest GPS fix, fresh-fix semantics (`try_take` yields it once) — set by the sensor task on a
 /// valid NAV-PVT, drained by [`GpsLocation`]. **Public** so the event-driven main loop (issue #219)

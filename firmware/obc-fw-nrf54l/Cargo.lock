@@ -1265,6 +1265,7 @@ dependencies = [
  "obc-ble",
  "obc-dfu",
  "obc-platform",
+ "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-route",
@@ -1294,7 +1295,7 @@ dependencies = [
  "embedded-sdmmc",
  "heapless 0.8.0",
  "libm",
- "obc-app",
+ "obc-ports",
  "obc-route",
 ]
 

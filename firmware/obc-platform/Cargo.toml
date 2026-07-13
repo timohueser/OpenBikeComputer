@@ -3,12 +3,12 @@ name = "obc-platform"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "Board-agnostic no_std firmware glue between obc-app and a concrete board — written once, reused by every OBC board crate: the framebuffer DrawTargets, the banded Panel seam, FatFs ByteSource/Sink adapters, the input debouncer, the synthetic GPS, and the transport-agnostic debug protocol."
+description = "Board-agnostic no_std firmware adapters over obc-ports — written once, reused by every OBC board crate: the framebuffer DrawTargets, the banded Panel seam, FatFs ByteSource/Sink adapters, the input debouncer, the synthetic GPS, and the transport-agnostic debug protocol."
 
 [features]
 # Transport-agnostic fake-sensor debug protocol (issue #38). The pure codec in `debug_link` (line
 # parser, `Telemetry`/fix encoders, `LineReader`) is always compiled — board-agnostic and
-# dependency-light (only `obc_app` types + heapless) — so the host feeder reuses one canonical wire
+# dependency-light (only `obc_ports` types + heapless) — so the host feeder reuses one canonical wire
 # format with default features. This feature adds only the embassy-sync `Signal`/`Channel` hand-off
 # plus the LocationSource/AltimeterSource/CompassSource impls that bridge parsed samples to the app
 # poll (the fresh-fix latch); the board crate owns the actual transport driver (the nRF runs it over
@@ -35,10 +35,9 @@ input-wait = ["dep:embedded-hal-async", "dep:embassy-futures"]
 # the renderer and app use so the target type unifies across the path deps.
 embedded-graphics = "0.8"
 
-# The shared HAL the button debouncer speaks: it emits `obc_app::InputEvent`s and
-# implements `obc_app::InputSource`, so a board drops it straight into
-# `App::handle_input`. obc-app is no_std, so this stays a clean no_std dep.
-obc-app = { path = "../obc-app" }
+# The dependency-light semantic HAL the button debouncer and sensor/storage adapters speak.
+# Adapters depend on the port contract directly, never upward on application/UI policy.
+obc-ports = { path = "../obc-ports" }
 
 # The GPIO trait the debouncer is generic over (`InputPin`). 1.0 — embassy-nrf's
 # `gpio::Input` implements this, so `ButtonInput` is board-agnostic.
@@ -63,7 +62,7 @@ libm = { version = "0.2", default-features = false } # no arch asm — see the o
 
 # The OBCR byte I/O the SD adapters implement (`ByteSource`/`ByteSink`/`Error`) plus the
 # track record codec — so `SdByteSource` drops into `RouteReader`/`RouteSummary::read` and
-# `SdTrackSink` encodes `obc_app::TrackPoint`s exactly like the simulator's host store.
+# `SdTrackSink` encodes `obc_ports::TrackPoint`s exactly like the simulator's host store.
 obc-route = { path = "../obc-route" }
 
 # The FatFs/SD-card stack the adapters wrap. The adapters are generic over its
