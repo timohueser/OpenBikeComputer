@@ -4,7 +4,7 @@
 //! what the project ships on — the **only** display path. This crate ports the
 //! shared `obc-app` onto it (load route → ride → save the ride object). Nothing app-facing lives here:
 //! `obc-render` / `obc-app` / `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic;
-//! only the nRF HAL wiring + the display `DisplayDriver` backends are board-specific.
+//! only the nRF HAL wiring + the display presenter backend are board-specific.
 //!
 //! **The `ble` build** (`cargo run --release --no-default-features --features ble`): the same
 //! firmware with the BLE stack folded in (`ble/`: MPSL, the SoftDevice Controller, TrouBLE) —
@@ -49,7 +49,8 @@
 //!   GPIO on the P2 header") — no soldering on current board revisions. The panel's logic wants
 //!   3–5 V, so the DK I/O rail is raised from its 1.8 V default to **3.3 V** (VDDM, also in the
 //!   Board Configurator — HW guide §2.2.1). The display path presents through the board-agnostic
-//!   `DisplayDriver` seam (`obc_platform::display`), so the rendering stack never couples to the panel.
+//!   display contracts (`obc_platform::display_contracts`), so the rendering stack never couples to
+//!   the panel.
 //!   (SERIAL00 / SPIM00 — the only 32 MHz instance — is now unused; the FLPR needs no SPI bus.)
 //!
 //! ## microSD SPIM — map/route/track storage
@@ -113,7 +114,7 @@
 
 mod sd;
 // LS021 FLPR backend — the display: `main.rs` runs the real app on the reflective LS021
-// panel via the FLPR (the VPR coprocessor). The FLPR `DisplayDriver` backend + launch live in
+// panel via the FLPR (the VPR coprocessor). The FLPR presenter backend + launch live in
 // `ls021_flpr`; `com::com_task` free-runs the COM lines (the FLPR drives frames; only the COM
 // electrode square wave stays on the M33).
 mod com;
@@ -128,7 +129,7 @@ mod com_hw;
 // double-consume error.
 #[cfg(all(feature = "com-hw", feature = "debug-uart"))]
 compile_error!("`com-hw` and `debug-uart` both claim P1.04/P1.05 — the hardware-COM build is the production low-power path, not the host-feed dev build");
-// The LS021/FLPR panel — this crate's `obc_platform::DisplayDriver` backend (the impl is folded in
+// The LS021/FLPR panel — this crate's display-contract presenter backend (the impls are folded in
 // at the bottom of the module), the single screen-write interface the map plane drives through
 // (`fb_mut` + `present`). The seam itself + the other backend (the simulator) live in obc-platform.
 mod ls021_flpr;
@@ -208,7 +209,7 @@ use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
 use obc_route::RouteCache;
 
-// LS021 FLPR backend: the resident-framebuffer `DisplayDriver` backend + its launch, and the
+// LS021 FLPR backend: the resident-framebuffer presenter backend + its launch, and the
 // free-running COM driver. The M33 `com_task` is the DK/default path; the `com-hw` build drives COM
 // from hardware instead, so the task isn't spawned there.
 #[cfg(not(feature = "com-hw"))]

@@ -62,13 +62,9 @@
 //! run the same suite, alongside the tile-grained proof pairing that keeps the contracts honest
 //! about geometry, storage, and grain.
 
-// The `DisplayDriver` compatibility adapter — deleted with the old seam at the end of #806's
-// migration; see `bridge.rs`.
-pub mod bridge;
 pub mod conformance;
 pub mod frame;
 pub mod presenter;
 
-pub use bridge::BridgedDriver;
 pub use frame::{Device64Frame, NativeFrame};
 pub use presenter::{OverlayPresenter, PresentStats, Presenter};
