@@ -354,7 +354,7 @@ fn parse_args() -> Result<Mode, String> {
             "--check" => check = Some(val("--check")?),
             "--repeat" => {
                 let n: usize = val("--repeat")?.parse().map_err(|e| format!("--repeat: {e}"))?;
-                if n == 0 || n % 2 == 0 {
+                if n == 0 || n.is_multiple_of(2) {
                     return Err("--repeat must be a positive odd number (so the median is unambiguous)".into());
                 }
                 repeat = Some(n);
