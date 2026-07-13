@@ -350,7 +350,7 @@ Two behaviours make it safe to press without thinking:
   <text class="d-sub" x="470" y="129" style="font-size:9px;fill:#6b7758">— hidden · item is active / recording</text>
 
 </svg>
-<figcaption>The footer reuses the guarded-hold machinery wholesale — the same <code>confirm_row</code> fill, driven by the same live <code>hold_progress</code> — so there's no new gesture and no new confirmation dialog. The Route overview's Delete-route and the Ride detail's Delete-ride rows are the same machinery in confirm-row clothes, with the same guards (the row is hidden outright for the actively-navigated route, and while a ride records). A device-side delete then flows through the object store, so the phone reconciles it on the next connect (see the <a href="../companion-link/#staying-in-sync-the-change-digest">companion link</a>).</figcaption>
+<figcaption>The footer reuses the guarded-hold machinery wholesale — the same <code>confirm_row</code> fill, driven by the same live <code>hold_progress</code> — so there's no new gesture and no new confirmation dialog. The Route overview's Delete-route and the Ride detail's Delete-ride rows are the same machinery in confirm-row clothes, with the same guards (the row is hidden outright for the actively-navigated route, and while a ride records). A device-side delete then flows through the object store, so the phone reconciles it on the next connect (see the <a href="../companion-link/#staying-in-sync-the-change-signal">companion link</a>).</figcaption>
 </figure>
 
 ## The POIs browser
