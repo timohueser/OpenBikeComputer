@@ -63,6 +63,15 @@
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 6240,
       "poll_frame_limit": 12288,
+      "floating_stable_observation": {
+        "rustc": "1.97.0 (2d8144b78 2026-07-07)",
+        "bss": 208240,
+        "data": 4528,
+        "resident": 212768,
+        "uninit": 1024,
+        "flash": 1034048,
+        "poll_frame": 6240
+      },
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,

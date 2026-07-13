@@ -97,7 +97,9 @@ run on rustc 1.97.0 (`2d8144b78 2026-07-07`) produced default `.bss` 200,772 B,
 increase and a 9,784 B flash decrease caused by the toolchain change alone. The
 default resident ceiling was explicitly re-baselined to 200,868 B from that CI
 ELF; the original 200,864 B capture remains recorded separately. BLE stayed
-within its existing ceiling on the same CI run.
+exactly at 212,768 B resident with the same 6,240 B poll frame on that CI run;
+its flash decreased to 1,034,048 B and its exact allocation report still
+matched, so its ceiling did not change.
 
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B
