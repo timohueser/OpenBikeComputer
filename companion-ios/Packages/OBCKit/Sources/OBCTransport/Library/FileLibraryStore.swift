@@ -8,6 +8,7 @@ import OBCDomain
 ///
 ///     planned/<id>/route.json     versioned record (summary + canonical route)
 ///     planned/<id>/source.<ext>   the original import file, byte-exact
+///     trips/<id>.json             versioned trip (name + ordered stage ids), TR5
 ///     rides/<id>/summary.json     versioned ride summary (the list row)
 ///     rides/<id>/points.json      versioned tracklog, compact JSON (read on demand)
 ///     synced-rides.json           every ride id ever downloaded (H9)
@@ -91,6 +92,88 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     public func deletePlannedRoute(_ id: RouteID) {
         try? FileManager.default.removeItem(
             at: plannedDir.appendingPathComponent(Self.fileSafe(id.rawValue), isDirectory: true))
+        // Prune the route from any trip that held it (a trip left empty dissolves).
+        for var trip in storedTripRecords() where trip.stageIDs.contains(id) {
+            trip.stageIDs.removeAll { $0 == id }
+            if trip.stageIDs.isEmpty {
+                removeTripFile(trip.id)
+            } else {
+                writeTrip(trip)
+            }
+        }
+    }
+
+    // MARK: Trips
+
+    public func trips() -> [TripRecord] {
+        let alive = existingRouteIDs()
+        return storedTripRecords()
+            .compactMap { trip -> TripRecord? in
+                var trip = trip
+                // Drop dangling stage ids (a route record gone out from under the
+                // trip); a trip with nothing resolvable left is dropped.
+                trip.stageIDs = trip.stageIDs.filter(alive.contains)
+                return trip.stageIDs.isEmpty ? nil : trip
+            }
+            .sorted { $0.addedAt > $1.addedAt }
+    }
+
+    public func saveTrip(_ record: TripRecord) {
+        writeTrip(record)
+        // Invariant: a RouteID lives in ≤ 1 trip — strip the saved trip's stages
+        // from every other stored trip; one thereby emptied dissolves.
+        let claimed = Set(record.stageIDs)
+        for var other in storedTripRecords() where other.id != record.id {
+            let kept = other.stageIDs.filter { !claimed.contains($0) }
+            guard kept.count != other.stageIDs.count else { continue }
+            if kept.isEmpty {
+                removeTripFile(other.id)
+            } else {
+                other.stageIDs = kept
+                writeTrip(other)
+            }
+        }
+    }
+
+    public func deleteTrip(_ id: TripID) {
+        removeTripFile(id)
+    }
+
+    /// Every stored trip, unpruned (the raw on-disk view the invariant + prune
+    /// logic operate on; `trips()` is the pruned public read).
+    private func storedTripRecords() -> [TripRecord] {
+        contents(of: tripsDir).compactMap { url -> TripRecord? in
+            guard url.pathExtension == "json",
+                let file: TripFile = read(url), file.version == Self.tripSchemaVersion
+            else { return nil }
+            return file.record
+        }
+    }
+
+    /// The set of planned-route ids currently on disk — read from each
+    /// `route.json` (no source-sidecar load), the alive-set the trip read prunes
+    /// dangling stages against.
+    private func existingRouteIDs() -> Set<RouteID> {
+        Set(
+            contents(of: plannedDir).compactMap { dir -> RouteID? in
+                guard let file: PlannedRouteFile = read(dir.appendingPathComponent("route.json")),
+                    file.version == Self.schemaVersion
+                else { return nil }
+                return RouteID(file.summary.id)
+            })
+    }
+
+    private func writeTrip(_ record: TripRecord) {
+        ensure(tripsDir)
+        write(TripFile(record), to: tripFileURL(record.id))
+    }
+
+    private func removeTripFile(_ id: TripID) {
+        try? FileManager.default.removeItem(at: tripFileURL(id))
+    }
+
+    private func tripFileURL(_ id: TripID) -> URL {
+        tripsDir.appendingPathComponent("\(Self.fileSafe(id.rawValue)).json")
     }
 
     // MARK: Tracked rides
@@ -247,8 +330,13 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     /// Rides split summary/points into separate files (#360); planned routes and
     /// the id sets stay on v1.
     private static let rideSchemaVersion = 2
+    /// Trips version independently of planned routes (the `rideSchemaVersion`
+    /// precedent) — used on **both** the write and the read side, so a future
+    /// planned-route bump can't silently stop stored trips from loading.
+    fileprivate static let tripSchemaVersion = 1
 
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
+    private var tripsDir: URL { directory.appendingPathComponent("trips", isDirectory: true) }
     private var ridesDir: URL { directory.appendingPathComponent("rides", isDirectory: true) }
     private var syncedURL: URL { directory.appendingPathComponent("synced-rides.json") }
     private var deletedURL: URL { directory.appendingPathComponent("deleted-rides.json") }
@@ -369,6 +457,62 @@ private struct PlannedRouteFile: Codable {
             route: route.domain,
             sourceFileName: sourceFileName,
             sourceFileData: sourceFileData,
+            deviceLink: link,
+            uploadedCRC32: uploadedCRC32,
+            addedAt: addedAt
+        )
+    }
+}
+
+/// `trips/<id>.json` (trip schema v1) — a trip's metadata: its name and the
+/// ordered stage route ids. Additive schema (a pre-trips library simply has no
+/// `trips/` dir, so `trips()` reads zero — no migration). Stage ordering is the
+/// file's, i.e. the domain's `stageIDs`, source of truth.
+///
+/// The device link persists exactly the way `PlannedRouteFile`'s does:
+/// `deviceObjectID`/`deviceSerial`/`deviceStoreEpoch` as separate optional
+/// fields, **all-or-nothing on read** — a partial/flat link (id without
+/// serial/epoch) decodes as **no link at all** (#769: the link is only real
+/// when all three parts are present, so it can never light a badge or drive a
+/// replace-by-id against the wrong device or era). The id stays a bare `UInt16`
+/// on disk (the domain's `DeviceObjectID` wraps it at the boundary); link +
+/// fingerprint optional-decoded so a not-yet-uploaded trip loads clean.
+private struct TripFile: Codable {
+    var version: Int
+    var id: String
+    var name: String
+    var stageIDs: [String]
+    var deviceObjectID: UInt16?
+    var deviceSerial: String?
+    var deviceStoreEpoch: UInt32?
+    var uploadedCRC32: UInt32?
+    var addedAt: Date
+
+    init(_ record: TripRecord) {
+        version = FileLibraryStore.tripSchemaVersion
+        id = record.id.rawValue
+        name = record.name
+        stageIDs = record.stageIDs.map(\.rawValue)
+        deviceObjectID = record.deviceLink?.objectID.raw
+        deviceSerial = record.deviceLink?.serial
+        deviceStoreEpoch = record.deviceLink?.epoch
+        uploadedCRC32 = record.uploadedCRC32
+        addedAt = record.addedAt
+    }
+
+    var record: TripRecord {
+        let link: DeviceRouteLink? =
+            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
+                DeviceRouteLink(
+                    serial: deviceSerial, epoch: deviceStoreEpoch,
+                    objectID: DeviceObjectID(deviceObjectID))
+            } else {
+                nil
+            }
+        return TripRecord(
+            id: TripID(id),
+            name: name,
+            stageIDs: stageIDs.map(RouteID.init),
             deviceLink: link,
             uploadedCRC32: uploadedCRC32,
             addedAt: addedAt
