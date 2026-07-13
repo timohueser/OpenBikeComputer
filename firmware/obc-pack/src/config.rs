@@ -5,9 +5,12 @@
 //! chunk size, and the `routing` section (island-pruning threshold + the §8.6 bike
 //! profiles the serializer bakes into the nav graph).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use serde_json::Value;
+use indexmap::IndexMap;
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
 
 use crate::nav::{
     highway_class_index, surface_class_index, DEFAULT_MIN_COMPONENT_EDGES, HIGHWAY_CLASS_NAMES, SURFACE_CLASS_NAMES,
@@ -19,33 +22,424 @@ use crate::serialize::{NavProfile, Style};
 /// 0xFF is the end-of-features sentinel in chunk payloads, so style IDs occupy
 /// 1..=254 (ID 0 left unused).
 const MAX_STYLE_ID: u32 = 254;
+const MAX_LODS: usize = 16;
+const DEFAULT_CHUNK_SIZE: usize = 4096;
+const DEFAULT_MARKER_COLOR: u16 = 0xF800;
 
-/// The config's JSON Schema, embedded verbatim and printed by `obc-pack schema`.
-/// The web builder derives UI capability from it (a field present in the schema
-/// ⇔ this binary parses it), so it must stay in lock-step with the parser below
-/// — the `schema_*` tests walk this document against `parse_style` & friends.
+/// Deterministically generated fallback schema served by the web builder when
+/// an `obc-pack` binary is unavailable. Production `obc-pack schema` output is
+/// generated directly from [`ConfigDocument`]; a stale-generation test requires
+/// this checked-in artifact to be semantically identical.
 pub const CONFIG_SCHEMA_JSON: &str = include_str!("../schema/config.schema.json");
 
 /// Version of the `obc-pack schema` envelope itself; bump only on breaking
 /// changes to the envelope shape, not on ordinary schema field additions.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
-/// The `obc-pack schema` output: the embedded schema wrapped with the envelope
-/// version and the OBCM format version this binary writes.
+/// Generate the config JSON Schema from the typed serde input model, then add
+/// the semantic constraints that cannot be represented by Rust field types
+/// alone (serializer capacities and the canonical routing-class vocabulary).
+pub fn config_schema() -> Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(ConfigDocument)).expect("config schema serializes");
+    let root = schema.as_object_mut().expect("root schema is an object");
+    root.insert("$schema".into(), Value::String("https://json-schema.org/draft/2020-12/schema".into()));
+    root.insert("title".into(), Value::String("obc-pack config".into()));
+    root.insert("description".into(), Value::String(CONFIG_DESCRIPTION.into()));
+
+    let properties = root.get_mut("properties").and_then(Value::as_object_mut).expect("config properties");
+    annotate_property(properties, "features", FEATURES_DESCRIPTION);
+    annotate_property(properties, "lods", LODS_DESCRIPTION);
+    annotate_property(properties, "marker", MARKER_DESCRIPTION);
+    annotate_property(properties, "chunk_size", CHUNK_SIZE_DESCRIPTION);
+    annotate_property(properties, "merge_fills", MERGE_FILLS_DESCRIPTION);
+    annotate_property(properties, "merge_lines", MERGE_LINES_DESCRIPTION);
+    annotate_property(properties, "routing", ROUTING_DESCRIPTION);
+    properties["lods"]["maxItems"] = Value::from(MAX_LODS);
+    properties["chunk_size"]["minimum"] = Value::from(crate::serialize::MIN_CHUNK_SIZE);
+    properties["chunk_size"]["maximum"] = Value::from(crate::serialize::MAX_SAFE_CHUNK_SIZE);
+    let routing_props = properties["routing"]["properties"].as_object_mut().expect("routing properties");
+    routing_props["min_component_edges"]["description"] =
+        Value::String("Drop disconnected graph components below this many edges; the largest is always kept.".into());
+    routing_props["profiles"]["description"] =
+        Value::String("Bike profiles selectable by index; every non-forbidden multiplier is >= 1.0.".into());
+    routing_props["profiles"].as_object_mut().expect("profiles schema").remove("default");
+    routing_props["profiles"]["minItems"] = Value::from(1);
+    routing_props["profiles"]["maxItems"] = Value::from(NAV_MAX_PROFILES);
+
+    let defs = root.get_mut("$defs").and_then(Value::as_object_mut).expect("config definitions");
+    annotate_definitions(defs);
+    schema
+}
+
+/// Stable pretty representation used to regenerate the checked-in web-builder
+/// fallback: `obc-pack schema --config > obc-pack/schema/config.schema.json`.
+pub fn config_schema_json() -> String {
+    let mut text = serde_json::to_string_pretty(&config_schema()).expect("config schema serializes");
+    text.push('\n');
+    text
+}
+
+/// The `obc-pack schema` output: the generated schema wrapped with the stable
+/// envelope version and the OBCM format version this binary writes.
 pub fn schema_envelope() -> String {
-    let schema: Value = serde_json::from_str(CONFIG_SCHEMA_JSON).expect("embedded schema is valid JSON");
     let envelope = serde_json::json!({
         "schema_version": CONFIG_SCHEMA_VERSION,
         "format_version": OBCM_VERSION,
-        "schema": schema,
+        "schema": config_schema(),
     });
     serde_json::to_string_pretty(&envelope).expect("envelope serializes")
+}
+
+const CONFIG_DESCRIPTION: &str = "Configuration for the obc-pack map packer (.osm.pbf -> .obcm). Feature styling is an ordered map: style IDs are assigned 1-based in document order (at most 254 styles), and a way is styled by the first (tag_key, value) match in that order. Unknown keys at the root and inside objects are ignored, so tooling metadata (`_meta`, `disabled`) can ride along and any exported file doubles as a CLI config.";
+const FEATURES_DESCRIPTION: &str = "OSM tag_key -> value -> style. Document order is load-bearing: it assigns style IDs and first-match wins. Within a tag_key, the value \"*\" is a catch-all: an exact value match wins, otherwise a \"*\" entry styles every other value that key carries (e.g. building -> \"*\" paints all buildings without listing each OSM type).";
+const LODS_DESCRIPTION: &str =
+    "LOD pyramid, coarsest tier first. Absent, null, or empty means a single coarsest layer.";
+const MARKER_DESCRIPTION: &str =
+    "User-position marker; the shape is fixed in firmware, only the color is configurable.";
+const CHUNK_SIZE_DESCRIPTION: &str = "Quadtree chunk payload target in bytes. The maximum is the reader's per-feature vertex cap; the minimum guards against chunks so small that features are dropped wholesale. Values outside the range are rejected at pack time. Governs the geometry sections (LODs) only; the nav graph's chunks are pinned to 512 bytes.";
+const MERGE_FILLS_DESCRIPTION: &str = "Dissolve fill polygons that render pixel-identically - same z_index, color, and priority, with no color2 - into one union per LOD. A pure map-size/render-cost optimization with no intended visual change; false (the default) packs byte-identically to before.";
+const MERGE_LINES_DESCRIPTION: &str = "Stitch same-styled connected line fragments into maximal polylines per LOD. No intended visual change for solid lines; a dashed or cased line's pattern runs continuously across a former join. false (the default) packs byte-identically to before.";
+const ROUTING_DESCRIPTION: &str = "Nav-graph routing config (OBCM v10 §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).";
+
+fn annotate_property(properties: &mut Map<String, Value>, name: &str, description: &str) {
+    properties[name]["description"] = Value::String(description.into());
+}
+
+/// Typed input model. Dynamic OSM keys deliberately use insertion-ordered JSON
+/// maps; every fixed config field is a serde type rather than an untyped tree.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+struct ConfigDocument {
+    #[serde(default = "default_features_document")]
+    #[schemars(default = "default_features_document")]
+    #[schemars(with = "Option<BTreeMap<String, BTreeMap<String, StyleDocument>>>")]
+    features: Option<IndexMap<String, IndexMap<String, StyleDocument>>>,
+    #[serde(default = "default_lods_document")]
+    #[schemars(default = "default_lods_document")]
+    lods: Option<Vec<LodDocument>>,
+    #[serde(default = "default_marker_document")]
+    #[schemars(default = "default_marker_document")]
+    marker: Option<MarkerDocument>,
+    #[serde(default = "default_chunk_size_document")]
+    #[schemars(default = "default_chunk_size_document")]
+    chunk_size: Option<usize>,
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    merge_fills: Option<bool>,
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    merge_lines: Option<bool>,
+    #[serde(default = "default_routing_document")]
+    #[schemars(default = "default_routing_document")]
+    routing: RoutingDocument,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "style")]
+struct StyleDocument {
+    color: ColorValue,
+    #[serde(default = "default_zero_i8_document")]
+    #[schemars(default = "default_zero_i8_document")]
+    z_index: Option<i8>,
+    #[serde(default = "default_weight_document")]
+    #[schemars(default = "default_weight_document")]
+    weight: Option<u8>,
+    #[serde(default = "default_priority_document")]
+    #[schemars(default = "default_priority_document")]
+    priority: Option<u8>,
+    #[serde(default = "default_zero_u8_document")]
+    #[schemars(default = "default_zero_u8_document")]
+    min_lod: Option<u8>,
+    #[serde(default = "default_line_style_document")]
+    #[schemars(default = "default_line_style_document")]
+    line_style: Option<LineStyle>,
+    #[serde(default, deserialize_with = "deserialize_optional_color", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ColorValue")]
+    color2: Option<ColorValue>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "lod")]
+struct LodDocument {
+    #[serde(default)]
+    max_mpp: Option<f64>,
+    #[serde(default = "default_zero_f64_document")]
+    #[schemars(default = "default_zero_f64_document")]
+    simplify: Option<f64>,
+    #[serde(default = "default_zero_f64_document")]
+    #[schemars(default = "default_zero_f64_document")]
+    min_area_px: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(inline)]
+struct MarkerDocument {
+    #[serde(default = "default_color_document")]
+    #[schemars(default = "default_color_document")]
+    color: ColorValue,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(inline)]
+struct RoutingDocument {
+    #[serde(default = "default_min_component_edges_document")]
+    #[schemars(default = "default_min_component_edges_document")]
+    min_component_edges: Option<usize>,
+    #[serde(default = "default_profiles_document")]
+    #[schemars(default = "default_profiles_document")]
+    profiles: Option<Vec<ProfileDocument>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "profile")]
+struct ProfileDocument {
+    name: String,
+    #[serde(default = "default_multiplier_document", rename = "default")]
+    #[schemars(default = "default_multiplier_document")]
+    default_multiplier: Option<MultiplierValue>,
+    #[serde(default)]
+    #[schemars(with = "BTreeMap<String, MultiplierValue>")]
+    highway: IndexMap<String, MultiplierValue>,
+    #[serde(default)]
+    #[schemars(with = "BTreeMap<String, MultiplierValue>")]
+    surface: IndexMap<String, MultiplierValue>,
+}
+
+fn default_features_document() -> Option<IndexMap<String, IndexMap<String, StyleDocument>>> {
+    Some(IndexMap::new())
+}
+
+fn default_lods_document() -> Option<Vec<LodDocument>> {
+    Some(vec![LodDocument { max_mpp: None, simplify: Some(0.0), min_area_px: Some(0.0) }])
+}
+
+fn default_marker_document() -> Option<MarkerDocument> {
+    Some(MarkerDocument { color: default_color_document() })
+}
+
+const fn default_chunk_size_document() -> Option<usize> {
+    Some(DEFAULT_CHUNK_SIZE)
+}
+
+const fn default_false_document() -> Option<bool> {
+    Some(false)
+}
+
+const fn default_zero_i8_document() -> Option<i8> {
+    Some(0)
+}
+
+const fn default_zero_u8_document() -> Option<u8> {
+    Some(0)
+}
+
+const fn default_zero_f64_document() -> Option<f64> {
+    Some(0.0)
+}
+
+const fn default_weight_document() -> Option<u8> {
+    Some(1)
+}
+
+const fn default_priority_document() -> Option<u8> {
+    Some(3)
+}
+
+const fn default_line_style_document() -> Option<LineStyle> {
+    Some(LineStyle::Solid)
+}
+
+const fn default_color_document() -> ColorValue {
+    ColorValue(DEFAULT_MARKER_COLOR)
+}
+
+const fn default_min_component_edges_document() -> Option<usize> {
+    Some(DEFAULT_MIN_COMPONENT_EDGES)
+}
+
+fn default_profiles_document() -> Option<Vec<ProfileDocument>> {
+    Some(serde_json::from_str(DEFAULT_PROFILES_JSON).expect("embedded default profiles are valid typed config"))
+}
+
+fn default_routing_document() -> RoutingDocument {
+    RoutingDocument {
+        min_component_edges: default_min_component_edges_document(),
+        profiles: default_profiles_document(),
+    }
+}
+
+const fn default_multiplier_document() -> Option<MultiplierValue> {
+    Some(MultiplierValue::Number(2.0))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ColorValue(u16);
+
+impl<'de> Deserialize<'de> for ColorValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+        impl de::Visitor<'_> for Visitor {
+            type Value = ColorValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an RGB565 integer 0..=65535 or 1..=4 digit hexadecimal string")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                u16::try_from(value)
+                    .map(ColorValue)
+                    .map_err(|_| E::custom(format_args!("color {value} out of range 0..=65535")))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                u16::try_from(value)
+                    .map(ColorValue)
+                    .map_err(|_| E::custom(format_args!("color {value} out of range 0..=65535")))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let hex = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")).unwrap_or(value);
+                u16::from_str_radix(hex, 16)
+                    .map(ColorValue)
+                    .map_err(|e| E::custom(format_args!("bad color {value:?}: {e}")))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+fn deserialize_optional_color<'de, D>(deserializer: D) -> Result<Option<ColorValue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ColorValue::deserialize(deserializer).map(Some)
+}
+
+impl Serialize for ColorValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&format!("0x{:04X}", self.0))
+    }
+}
+
+impl JsonSchema for ColorValue {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "color".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "RGB565 as a `0x`-prefixed hex string (1-4 digits) or an integer 0..=65535. Pick values on the panel's RGB222 grid (4 levels per channel) so the editor and the glass agree.",
+            "oneOf": [
+                { "type": "string", "pattern": "^(0[xX])?[0-9A-Fa-f]{1,4}$" },
+                { "type": "integer", "minimum": 0, "maximum": 65535 }
+            ]
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+enum MultiplierValue {
+    Number(f64),
+    Forbidden,
+}
+
+impl<'de> Deserialize<'de> for MultiplierValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+        impl de::Visitor<'_> for Visitor {
+            type Value = MultiplierValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a number >= 1.0 or the string \"forbidden\"")
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(MultiplierValue::Number(value))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(MultiplierValue::Number(value as f64))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(MultiplierValue::Number(value as f64))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value == "forbidden" {
+                    Ok(MultiplierValue::Forbidden)
+                } else {
+                    Err(E::custom(format_args!("expected \"forbidden\", got {value:?}")))
+                }
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl Serialize for MultiplierValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            MultiplierValue::Number(value) => serializer.serialize_f64(*value),
+            MultiplierValue::Forbidden => serializer.serialize_str("forbidden"),
+        }
+    }
+}
+
+impl JsonSchema for MultiplierValue {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "multiplier".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "One routing edge-weight multiplier: a number >= 1.0 or the string \"forbidden\". Values below 1.0 are rejected because the great-circle A* heuristic must stay admissible.",
+            "oneOf": [
+                { "type": "number", "minimum": 1.0 },
+                { "type": "string", "const": "forbidden" }
+            ]
+        })
+    }
 }
 
 /// A line's stroke style (OBCM v10 style-record flag bit 2). The config value is `"solid"` (the
 /// default) or `"dashed"`; the renderer draws dashes for `Dashed` lines and ignores it for polygons
 /// (#557 only carries the bit end to end — later sub-issues render it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[schemars(rename = "line_style", rename_all = "lowercase")]
 pub enum LineStyle {
     #[default]
     Solid,
@@ -140,15 +534,26 @@ impl Config {
 
     /// Parse `config.json` text.
     pub fn parse(text: &str) -> Result<Config, String> {
-        let root: Value = serde_json::from_str(text).map_err(|e| format!("config json: {e}"))?;
+        let mut deserializer = serde_json::Deserializer::from_str(text);
+        let document: ConfigDocument = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+            let path = error.path().to_string();
+            if path == "." {
+                format!("config json: {}", error.inner())
+            } else {
+                format!("config {path}: {}", error.inner())
+            }
+        })?;
+        Self::from_document(document)
+    }
 
-        // Number every (tag_key, value) pair 1-based in document order; any `id`
-        // present in the config is ignored.
+    fn from_document(document: ConfigDocument) -> Result<Config, String> {
+        // Number every (tag_key, value) pair 1-based in document order. Unknown
+        // object fields were ignored by serde; a configured `id` never enters
+        // the typed style model and therefore remains intentionally ignored.
         let mut features: Vec<(String, HashMap<String, FeatureStyle>)> = Vec::new();
         let mut next_id: u32 = 1;
-        if let Some(feature_map) = root.get("features").and_then(Value::as_object) {
+        if let Some(feature_map) = document.features {
             for (tag_key, values) in feature_map {
-                let values = values.as_object().ok_or_else(|| format!("features.{tag_key} must be an object"))?;
                 let mut by_value: HashMap<String, FeatureStyle> = HashMap::with_capacity(values.len());
                 for (value, style) in values {
                     if next_id > MAX_STYLE_ID {
@@ -156,44 +561,35 @@ impl Config {
                             "too many feature types: the style table supports at most {MAX_STYLE_ID} entries"
                         ));
                     }
-                    by_value.insert(value.clone(), parse_style(next_id as u8, style)?);
+                    by_value.insert(value.clone(), style.normalize(next_id as u8, &tag_key, &value)?);
                     next_id += 1;
                 }
-                features.push((tag_key.clone(), by_value));
+                features.push((tag_key, by_value));
             }
         }
 
         // --- lods (absent/empty ⇒ a single coarsest layer) ---
-        let lods = match root.get("lods").and_then(Value::as_array) {
-            Some(arr) if !arr.is_empty() => arr
-                .iter()
-                .map(|l| Lod {
-                    max_mpp: l.get("max_mpp").and_then(Value::as_f64),
-                    simplify_m: l.get("simplify").and_then(Value::as_f64).unwrap_or(0.0),
-                    min_area_px: l.get("min_area_px").and_then(Value::as_f64).unwrap_or(0.0),
-                })
-                .collect(),
+        let lods = match document.lods {
+            Some(entries) if !entries.is_empty() => entries
+                .into_iter()
+                .enumerate()
+                .map(|(index, lod)| lod.normalize(index))
+                .collect::<Result<Vec<_>, _>>()?,
             _ => vec![Lod { max_mpp: None, simplify_m: 0.0, min_area_px: 0.0 }],
         };
 
         // The reader parses the LOD table into a fixed `heapless::Vec<_, 16>` and the
         // header count is a `u8`, so cap here rather than let `lod_count as u8` wrap
         // or the reader silently drop layers.
-        const MAX_LODS: usize = 16;
         if lods.len() > MAX_LODS {
             return Err(format!("too many LODs: {} configured, the reader supports at most {MAX_LODS}", lods.len()));
         }
 
-        let marker_color =
-            root.get("marker").and_then(|m| m.get("color")).map(parse_color).transpose()?.unwrap_or(0xF800);
-
-        let chunk_size = root.get("chunk_size").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(4096);
-
-        // Off by default: an absent flag packs byte-identically to before.
-        let merge_fills = root.get("merge_fills").and_then(Value::as_bool).unwrap_or(false);
-        let merge_lines = root.get("merge_lines").and_then(Value::as_bool).unwrap_or(false);
-
-        let routing = parse_routing(root.get("routing"))?;
+        let marker_color = document.marker.map_or(DEFAULT_MARKER_COLOR, |marker| marker.color.0);
+        let chunk_size = document.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
+        let merge_fills = document.merge_fills.unwrap_or(false);
+        let merge_lines = document.merge_lines.unwrap_or(false);
+        let routing = document.routing.normalize()?;
 
         Ok(Config { features, lods, marker_color, chunk_size, merge_fills, merge_lines, routing })
     }
@@ -227,67 +623,39 @@ impl Config {
     }
 }
 
-/// `{z_index?, color, weight?, priority?, min_lod?, line_style?, color2?}` → `FeatureStyle`, `id`
-/// from the caller. Defaults: z_index 0, weight 1, priority 3, min_lod 0, line_style `solid`, no
-/// color2. Each numeric field is range-checked against its on-wire width: an out-of-range value is a
-/// hard error, not a silent wrap (e.g. `z_index: 200` would pack as `-56` and reorder the paint
-/// stack). `line_style` is `"solid"`/`"dashed"` (v10 flag bit 2); `color2` is an optional secondary
-/// color parsed exactly like `color` (v10 flag bit 3). Adding a field here? Extend
-/// `schema/config.schema.json` and the `schema_*` tests in the same change.
-fn parse_style(id: u8, v: &Value) -> Result<FeatureStyle, String> {
-    let color = v.get("color").map(parse_color).transpose()?.ok_or("style missing `color`")?;
-    Ok(FeatureStyle {
-        id,
-        z_index: int_field(v, "z_index", i8::MIN as i64, i8::MAX as i64, 0)? as i8,
-        color,
-        weight: int_field(v, "weight", 0, u8::MAX as i64, 1)? as u8,
-        // Priority is a 2-bit on-wire field; the serializer only writes 1..=4.
-        priority: int_field(v, "priority", 1, 4, 3)? as u8,
-        min_lod: int_field(v, "min_lod", 0, u8::MAX as i64, 0)? as usize,
-        line_style: parse_line_style(v)?,
-        // `color2` is optional (absent ⇒ `None`); when present it's a `color` in every respect.
-        color2: v.get("color2").map(parse_color).transpose()?,
-    })
-}
-
-/// Read the optional `line_style` field: `"solid"` (default) or `"dashed"`. Absent/null ⇒
-/// [`LineStyle::Solid`]; any other value is a descriptive error, not a silent fallback.
-fn parse_line_style(v: &Value) -> Result<LineStyle, String> {
-    match v.get("line_style") {
-        None | Some(Value::Null) => Ok(LineStyle::Solid),
-        Some(Value::String(s)) if s == "solid" => Ok(LineStyle::Solid),
-        Some(Value::String(s)) if s == "dashed" => Ok(LineStyle::Dashed),
-        Some(other) => Err(format!("style `line_style` must be \"solid\" or \"dashed\", got {other}")),
+impl StyleDocument {
+    /// Normalize a typed style into the serializer-facing representation. Rust
+    /// integer widths own the wire-sized ranges; priority's narrower 1..=4
+    /// policy remains an explicit semantic check.
+    fn normalize(self, id: u8, tag_key: &str, tag_value: &str) -> Result<FeatureStyle, String> {
+        let priority = self.priority.unwrap_or(3);
+        if !(1..=4).contains(&priority) {
+            return Err(format!("config features.{tag_key}.{tag_value}.priority: {priority} out of range 1..=4"));
+        }
+        Ok(FeatureStyle {
+            id,
+            z_index: self.z_index.unwrap_or(0),
+            color: self.color.0,
+            weight: self.weight.unwrap_or(1),
+            priority,
+            min_lod: self.min_lod.unwrap_or(0) as usize,
+            line_style: self.line_style.unwrap_or_default(),
+            color2: self.color2.map(|color| color.0),
+        })
     }
 }
 
-/// Read an optional integer style field, validating it fits `lo..=hi`. Absent/null ⇒
-/// `default`; a non-integer or out-of-range value is a descriptive error, not a wrap.
-fn int_field(v: &Value, key: &str, lo: i64, hi: i64, default: i64) -> Result<i64, String> {
-    match v.get(key) {
-        None | Some(Value::Null) => Ok(default),
-        Some(val) => {
-            let n = val.as_i64().ok_or_else(|| format!("style `{key}` must be an integer, got {val}"))?;
-            if n < lo || n > hi {
-                return Err(format!("style `{key}` {n} out of range {lo}..={hi}"));
-            }
-            Ok(n)
+impl LodDocument {
+    fn normalize(self, index: usize) -> Result<Lod, String> {
+        let simplify_m = self.simplify.unwrap_or(0.0);
+        if simplify_m < 0.0 {
+            return Err(format!("config lods[{index}].simplify: {simplify_m} must be >= 0"));
         }
-    }
-}
-
-/// Color is a JSON int or a hex string like `"0xFAA0"`. A value past the 16-bit
-/// RGB565 range is an error, not a silent truncation.
-fn parse_color(v: &Value) -> Result<u16, String> {
-    match v {
-        Value::String(s) => {
-            let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
-            u16::from_str_radix(hex, 16).map_err(|e| format!("bad color {s:?}: {e}"))
+        let min_area_px = self.min_area_px.unwrap_or(0.0);
+        if min_area_px < 0.0 {
+            return Err(format!("config lods[{index}].min_area_px: {min_area_px} must be >= 0"));
         }
-        Value::Number(n) => {
-            n.as_u64().and_then(|v| u16::try_from(v).ok()).ok_or_else(|| format!("color {n} out of range 0..=65535"))
-        }
-        other => Err(format!("color must be int or hex string, got {other}")),
+        Ok(Lod { max_mpp: self.max_mpp, simplify_m, min_area_px })
     }
 }
 
@@ -352,6 +720,58 @@ const DEFAULT_PROFILES_JSON: &str = r#"[
   }
 ]"#;
 
+fn annotate_definitions(defs: &mut Map<String, Value>) {
+    let style = defs.get_mut("style").expect("style schema");
+    style["description"] =
+        Value::String("One feature style. `id` is never configured - it is assigned from document order.".into());
+    let style_props = style["properties"].as_object_mut().expect("style properties");
+    style_props["z_index"]["description"] = Value::String("Painter's order; lower is drawn first.".into());
+    style_props["weight"]["description"] = Value::String("Stroke width in pixels (lines only).".into());
+    style_props["priority"]["description"] =
+        Value::String("Chunk-overflow drop order: 1 is kept longest, 4 dropped first.".into());
+    style_props["priority"]["minimum"] = Value::from(1);
+    style_props["priority"]["maximum"] = Value::from(4);
+    style_props["min_lod"]["description"] = Value::String(
+        "Index of the coarsest LOD tier that includes this feature; it appears in every tier >= min_lod.".into(),
+    );
+    style_props["line_style"]["description"] =
+        Value::String("Line stroke style: `solid` (the default) or `dashed`. Ignored for polygons.".into());
+    style_props["color2"]["description"] = Value::String("Optional secondary RGB565 color; absent means none.".into());
+
+    let lod = defs.get_mut("lod").expect("LOD schema");
+    let lod_props = lod["properties"].as_object_mut().expect("LOD properties");
+    lod_props["max_mpp"]["description"] =
+        Value::String("Meters-per-pixel upper bound for this tier; null means the coarsest tier.".into());
+    lod_props["max_mpp"]["default"] = Value::Null;
+    lod_props["simplify"]["description"] =
+        Value::String("Topology-preserving simplify tolerance in meters; 0 means no simplification.".into());
+    lod_props["simplify"]["minimum"] = Value::from(0.0);
+    lod_props["min_area_px"]["description"] = Value::String(
+        "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier.".into(),
+    );
+    lod_props["min_area_px"]["minimum"] = Value::from(0.0);
+
+    let profile = defs.get_mut("profile").expect("profile schema");
+    profile["description"] = Value::String(
+        "One bike profile: a display name plus per-class edge-weight multipliers. Unlisted classes use `default`."
+            .into(),
+    );
+    let props = profile["properties"].as_object_mut().expect("profile properties");
+    props["name"]["description"] =
+        Value::String("Display name shown on the device (UTF-8, at most 12 bytes on the wire).".into());
+    props["name"]["maxLength"] = Value::from(NAV_PROFILE_NAME_LEN);
+    props["name"]["x-maxUtf8Bytes"] = Value::from(NAV_PROFILE_NAME_LEN);
+    props["default"]["description"] =
+        Value::String("Multiplier applied to any highway/surface class not listed below.".into());
+    annotate_class_map(&mut props["highway"], &HIGHWAY_CLASS_NAMES, "highway");
+    annotate_class_map(&mut props["surface"], &SURFACE_CLASS_NAMES, "surface");
+}
+
+fn annotate_class_map(schema: &mut Value, classes: &[&str], kind: &str) {
+    schema["description"] = Value::String(format!("Per-{kind}-class multipliers, keyed by canonical class name."));
+    schema["propertyNames"] = serde_json::json!({ "enum": classes });
+}
+
 /// The default `routing` section used when a config omits it: [`DEFAULT_MIN_COMPONENT_EDGES`] plus
 /// [`default_profiles`].
 pub fn default_routing() -> Routing {
@@ -362,118 +782,98 @@ pub fn default_routing() -> Routing {
 /// Parsed from [`DEFAULT_PROFILES_JSON`] through the same path as user config, so the shipped
 /// defaults and the parser can never disagree.
 pub fn default_profiles() -> Vec<NavProfile> {
-    let arr: Value = serde_json::from_str(DEFAULT_PROFILES_JSON).expect("embedded default profiles are valid JSON");
-    parse_profiles(arr.as_array().expect("default profiles is a JSON array")).expect("embedded default profiles valid")
+    let profiles: Vec<ProfileDocument> =
+        serde_json::from_str(DEFAULT_PROFILES_JSON).expect("embedded default profiles are valid typed config");
+    normalize_profiles(profiles).expect("embedded default profiles pass semantic validation")
 }
 
-/// Parse the optional `routing` section. Absent ⇒ [`default_routing`]. A present-but-partial
-/// section fills each missing field from the default (an omitted `profiles` still ships the four
-/// defaults). `min_component_edges` is a non-negative integer; `profiles` is validated by
-/// [`parse_profiles`].
-fn parse_routing(v: Option<&Value>) -> Result<Routing, String> {
-    let Some(v) = v else {
-        return Ok(default_routing());
-    };
-    let obj = v.as_object().ok_or("`routing` must be an object")?;
-    let min_component_edges = match obj.get("min_component_edges") {
-        None | Some(Value::Null) => DEFAULT_MIN_COMPONENT_EDGES,
-        Some(n) => n.as_u64().ok_or("routing.min_component_edges must be a non-negative integer")? as usize,
-    };
-    let profiles = match obj.get("profiles") {
-        None | Some(Value::Null) => default_profiles(),
-        Some(p) => parse_profiles(p.as_array().ok_or("routing.profiles must be an array")?)?,
-    };
-    Ok(Routing { min_component_edges, profiles })
+impl RoutingDocument {
+    fn normalize(self) -> Result<Routing, String> {
+        let profiles = match self.profiles {
+            Some(profiles) => normalize_profiles(profiles)?,
+            None => default_profiles(),
+        };
+        Ok(Routing { min_component_edges: self.min_component_edges.unwrap_or(DEFAULT_MIN_COMPONENT_EDGES), profiles })
+    }
 }
 
-/// Validate + quantize `routing.profiles`: 1..=[`NAV_MAX_PROFILES`] entries, each a [`parse_profile`].
-fn parse_profiles(arr: &[Value]) -> Result<Vec<NavProfile>, String> {
-    if arr.is_empty() {
+/// Validate + quantize `routing.profiles`: 1..=[`NAV_MAX_PROFILES`] entries.
+fn normalize_profiles(profiles: Vec<ProfileDocument>) -> Result<Vec<NavProfile>, String> {
+    if profiles.is_empty() {
         return Err("routing.profiles must list at least one profile".into());
     }
-    if arr.len() > NAV_MAX_PROFILES {
+    if profiles.len() > NAV_MAX_PROFILES {
         return Err(format!(
             "routing.profiles has {} entries; the OBCM profile table supports at most {NAV_MAX_PROFILES}",
-            arr.len()
+            profiles.len()
         ));
     }
-    arr.iter().map(parse_profile).collect()
+    profiles.into_iter().enumerate().map(|(index, profile)| profile.normalize(index)).collect()
 }
 
-/// One profile object → the §8.6 wire form. `name` (required, ≤ 12 bytes) + a `default` multiplier
-/// (config field, default 2.0) that fills every class not listed in the `highway`/`surface` maps.
-/// Class keys are the canonical [`HIGHWAY_CLASS_NAMES`] / [`SURFACE_CLASS_NAMES`] (an unknown key is
-/// a typo error). Every multiplier is a float ≥ 1.0 or `"forbidden"` ([`quantize_multiplier`]).
-fn parse_profile(v: &Value) -> Result<NavProfile, String> {
-    let obj = v.as_object().ok_or("routing.profiles[*] must be an object")?;
-    let name = obj.get("name").and_then(Value::as_str).ok_or("routing profile missing string `name`")?.to_string();
-    if name.len() > NAV_PROFILE_NAME_LEN {
-        return Err(format!("routing profile name {name:?} exceeds {NAV_PROFILE_NAME_LEN} bytes on the wire"));
-    }
-    // Unlisted classes get the per-profile `default` (default 2.0×).
-    let default_q = match obj.get("default") {
-        None | Some(Value::Null) => 32u8, // 2.0× in 1/16 fixed-point
-        Some(d) => quantize_multiplier(d, &name, "default", "(unlisted)")?,
-    };
-    let mut highway = [default_q; 32];
-    let mut surface = [default_q; 8];
-    if let Some(hw) = obj.get("highway") {
-        let hw = hw.as_object().ok_or_else(|| format!("routing profile {name:?}: `highway` must be an object"))?;
-        for (class, val) in hw {
-            let idx = highway_class_index(class).ok_or_else(|| {
+impl ProfileDocument {
+    /// One profile object → the §8.6 wire form. Class maps remain dynamic but
+    /// typed; canonical-name validation and admissible quantization are semantic.
+    fn normalize(self, index: usize) -> Result<NavProfile, String> {
+        let name = self.name;
+        if name.len() > NAV_PROFILE_NAME_LEN {
+            return Err(format!(
+                "config routing.profiles[{index}].name: {name:?} exceeds {NAV_PROFILE_NAME_LEN} UTF-8 bytes on the wire"
+            ));
+        }
+        let default_q = match self.default_multiplier {
+            None => 32u8,
+            Some(multiplier) => quantize_multiplier_value(&multiplier, &name, "default", "(unlisted)")?,
+        };
+        let mut highway = [default_q; 32];
+        let mut surface = [default_q; 8];
+        for (class, val) in self.highway {
+            let idx = highway_class_index(&class).ok_or_else(|| {
                 format!(
-                    "routing profile {name:?}: unknown highway class {class:?}; valid: {}",
+                    "config routing.profiles[{index}].highway.{class}: routing profile {name:?} has unknown highway class {class:?}; valid: {}",
                     HIGHWAY_CLASS_NAMES.join(", ")
                 )
             })?;
-            highway[idx as usize] = quantize_multiplier(val, &name, "highway", class)?;
+            highway[idx as usize] = quantize_multiplier_value(&val, &name, "highway", &class)?;
         }
-    }
-    if let Some(sf) = obj.get("surface") {
-        let sf = sf.as_object().ok_or_else(|| format!("routing profile {name:?}: `surface` must be an object"))?;
-        for (class, val) in sf {
-            let idx = surface_class_index(class).ok_or_else(|| {
+        for (class, val) in self.surface {
+            let idx = surface_class_index(&class).ok_or_else(|| {
                 format!(
-                    "routing profile {name:?}: unknown surface class {class:?}; valid: {}",
+                    "config routing.profiles[{index}].surface.{class}: routing profile {name:?} has unknown surface class {class:?}; valid: {}",
                     SURFACE_CLASS_NAMES.join(", ")
                 )
             })?;
-            surface[idx as usize] = quantize_multiplier(val, &name, "surface", class)?;
+            surface[idx as usize] = quantize_multiplier_value(&val, &name, "surface", &class)?;
         }
+        debug_assert!(
+            highway.iter().chain(&surface).all(|&m| m == 0 || m >= 16),
+            "every non-zero multiplier must be ≥ 16 (admissible)"
+        );
+        Ok(NavProfile { name, highway, surface })
     }
-    // The admissibility invariant holds by construction (every value is 0 or ≥ 16); assert it so a
-    // future quantization change can't silently break the A* heuristic bound.
-    debug_assert!(
-        highway.iter().chain(&surface).all(|&m| m == 0 || m >= 16),
-        "every non-zero multiplier must be ≥ 16 (admissible)"
-    );
-    Ok(NavProfile { name, highway, surface })
 }
 
 /// Quantize one profile multiplier to §8.6's `u8` 1/16 fixed-point. `"forbidden"` ⇒ `0`; a number
 /// ≥ 1.0 ⇒ `round(v × 16)` clamped to `16..=255` (≈ 1.0×..16×). A number **below 1.0 is rejected**
 /// — the admissibility invariant (every non-zero weight ≥ 16) is what keeps the great-circle A*
 /// heuristic admissible, so the ε-optimality bound survives profile weighting.
-fn quantize_multiplier(v: &Value, profile: &str, kind: &str, class: &str) -> Result<u8, String> {
+fn quantize_multiplier_value(v: &MultiplierValue, profile: &str, kind: &str, class: &str) -> Result<u8, String> {
     match v {
-        Value::String(s) if s == "forbidden" => Ok(0),
-        Value::Number(_) => {
-            let f = v.as_f64().filter(|f| f.is_finite()).ok_or_else(|| {
-                format!("routing profile {profile:?}: {kind} {class:?} multiplier {v} is not a finite number")
-            })?;
-            if f < 1.0 {
+        MultiplierValue::Forbidden => Ok(0),
+        MultiplierValue::Number(f) => {
+            if !f.is_finite() {
+                return Err(format!("routing profile {profile:?}: {kind} {class:?} multiplier {f} is not finite"));
+            }
+            if *f < 1.0 {
                 return Err(format!(
                     "routing profile {profile:?}: {kind} {class:?} multiplier {f} is below 1.0 — every non-zero \
                      weight must be ≥ 1.0 (≥ 16 in 1/16 fixed-point) so the great-circle A* heuristic stays \
                      admissible; a weight < 1.0 lets the search underweight an edge and breaks the ε-optimality \
-                     bound. Use \"forbidden\" to exclude a class."
+                    bound. Use \"forbidden\" to exclude a class."
                 ));
             }
             Ok((f * 16.0).round().clamp(16.0, u8::MAX as f64) as u8)
         }
-        other => Err(format!(
-            "routing profile {profile:?}: {kind} {class:?} multiplier must be a number ≥ 1.0 or \"forbidden\", got {other}"
-        )),
     }
 }
 
@@ -481,9 +881,93 @@ fn quantize_multiplier(v: &Value, profile: &str, kind: &str, class: &str) -> Res
 mod tests {
     use super::*;
 
+    fn parse_style(id: u8, value: &Value) -> Result<FeatureStyle, String> {
+        let document: StyleDocument = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        document.normalize(id, "test", "style")
+    }
+
+    fn parse_color(value: &Value) -> Result<u16, String> {
+        serde_json::from_value::<ColorValue>(value.clone()).map(|color| color.0).map_err(|e| e.to_string())
+    }
+
+    fn parse_routing(value: Option<&Value>) -> Result<Routing, String> {
+        match value {
+            None => Ok(default_routing()),
+            Some(value) => {
+                serde_json::from_value::<RoutingDocument>(value.clone()).map_err(|e| e.to_string())?.normalize()
+            }
+        }
+    }
+
+    fn quantize_multiplier(value: &Value, profile: &str, kind: &str, class: &str) -> Result<u8, String> {
+        let value: MultiplierValue = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        quantize_multiplier_value(&value, profile, kind, class)
+    }
+
     fn corpus_config() -> Config {
         Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json"))
             .expect("load corpus config")
+    }
+
+    #[test]
+    fn every_shipped_preset_is_a_complete_cli_config() {
+        let presets = ["default.json", "high-detail.json", "minimal.json"];
+        for preset in presets {
+            let path = format!("{}/../../packer/presets/{preset}", env!("CARGO_MANIFEST_DIR"));
+            let config = Config::load(&path).unwrap_or_else(|error| panic!("{preset} must parse: {error}"));
+            assert!(!config.features.is_empty(), "{preset} must carry feature styles");
+            assert!(!config.lods.is_empty(), "{preset} must carry an LOD pyramid");
+            assert!(!config.routing.profiles.is_empty(), "{preset} must carry routing profiles");
+        }
+    }
+
+    #[test]
+    fn typed_errors_retain_the_failing_config_path() {
+        let color = Config::parse(r#"{"features":{"highway":{"primary":{"color":70000}}}}"#)
+            .err()
+            .expect("out-of-range color must fail");
+        assert!(color.contains("features.highway.primary.color"), "path missing from: {color}");
+        assert!(color.contains("0..=65535"), "range missing from: {color}");
+
+        let profile = Config::parse(r#"{"routing":{"profiles":[{"name":"Bad","highway":[]}]}}"#)
+            .err()
+            .expect("non-object class map must fail");
+        assert!(profile.contains("routing.profiles[0].highway"), "path missing from: {profile}");
+        assert!(profile.contains("map"), "expected-type detail missing from: {profile}");
+    }
+
+    #[test]
+    fn unknown_tooling_metadata_remains_compatible() {
+        let config = Config::parse(
+            r#"{
+                "_meta":{"id":"custom"}, "disabled":["highway/path"], "future_root":true,
+                "features":{"highway":{"path":{"color":"0x1234","id":99,"editor_note":"kept outside packer"}}}
+            }"#,
+        )
+        .expect("unknown root/style metadata remains ignored");
+        assert_eq!(config.styles().len(), 1);
+        assert_eq!(config.styles()[0].id, 1, "configured id remains ignored in favor of document order");
+    }
+
+    #[test]
+    fn null_defaults_and_required_colors_match_legacy_behavior() {
+        let config = Config::parse(
+            r#"{
+                "lods": null, "marker": null, "chunk_size": null,
+                "features":{"highway":{"path":{"color":"0x1234","weight":null,"line_style":null}}},
+                "routing":{"min_component_edges":null,"profiles":null}
+            }"#,
+        )
+        .expect("legacy null-as-default fields remain accepted");
+        assert_eq!(config.lods.len(), 1);
+        assert_eq!(config.features[0].1["path"].weight, 1);
+        assert_eq!(config.routing, default_routing());
+
+        assert!(Config::parse(r#"{"marker":{"color":null}}"#).is_err(), "a present marker color is not nullable");
+        assert!(
+            Config::parse(r#"{"features":{"highway":{"path":{"color":"0x1","color2":null}}}}"#).is_err(),
+            "a present secondary color is not nullable"
+        );
     }
 
     #[test]
@@ -623,66 +1107,31 @@ mod tests {
         assert!(Config::parse(&make(255)).is_err(), "a 255th style must error (config.rs ~78), not wrap past u8");
     }
 
-    // --- schema pinning: the embedded JSON Schema (served via `obc-pack schema`)
-    // must describe exactly what this parser accepts. The web builder derives its
-    // editor capability from the schema, so drift here means a UI that lies. ---
+    // --- schema pinning: `obc-pack schema` derives structure/defaults from the
+    // typed parser model. The checked-in web fallback must never drift from it. ---
 
     fn embedded_schema() -> Value {
-        serde_json::from_str(CONFIG_SCHEMA_JSON).expect("embedded schema is valid JSON")
-    }
-
-    fn style_with(field: &str, v: i64) -> Value {
-        let mut m = serde_json::Map::new();
-        m.insert("color".into(), Value::String("0x0001".into()));
-        m.insert(field.into(), Value::from(v));
-        Value::Object(m)
+        config_schema()
     }
 
     #[test]
-    fn schema_style_bounds_match_parser() {
-        let schema = embedded_schema();
-        for field in ["z_index", "weight", "priority", "min_lod"] {
-            let prop = &schema["$defs"]["style"]["properties"][field];
-            let lo = prop["minimum"].as_i64().expect("schema minimum");
-            let hi = prop["maximum"].as_i64().expect("schema maximum");
-            assert!(parse_style(1, &style_with(field, lo)).is_ok(), "{field}: schema minimum {lo} must parse");
-            assert!(parse_style(1, &style_with(field, hi)).is_ok(), "{field}: schema maximum {hi} must parse");
-            assert!(parse_style(1, &style_with(field, lo - 1)).is_err(), "{field}: below schema minimum must error");
-            assert!(parse_style(1, &style_with(field, hi + 1)).is_err(), "{field}: above schema maximum must error");
-        }
+    fn checked_in_schema_is_current_generated_schema() {
+        let checked_in: Value = serde_json::from_str(CONFIG_SCHEMA_JSON).expect("checked-in schema is valid JSON");
+        assert_eq!(checked_in, config_schema(), "schema/config.schema.json is stale; regenerate with `cargo run -p obc-pack --bin obc-pack -- schema --config > obc-pack/schema/config.schema.json`");
     }
 
     #[test]
-    fn schema_defaults_match_parser() {
-        let schema = embedded_schema();
-        let props = &schema["$defs"]["style"]["properties"];
-
-        // Per-style defaults: a color-only style must come out as the schema says.
+    fn typed_defaults_normalize_to_the_public_config() {
         let parsed = parse_style(1, &serde_json::json!({"color": "0x0001"})).expect("minimal style");
-        assert_eq!(props["z_index"]["default"].as_i64(), Some(parsed.z_index as i64));
-        assert_eq!(props["weight"]["default"].as_i64(), Some(parsed.weight as i64));
-        assert_eq!(props["priority"]["default"].as_i64(), Some(parsed.priority as i64));
-        assert_eq!(props["min_lod"]["default"].as_i64(), Some(parsed.min_lod as i64));
-        // v10: the schema's line_style default ("solid") matches the color-only parse; color2 is
-        // optional (no default) and a color-only style carries none.
-        assert_eq!(props["line_style"]["default"].as_str(), Some("solid"));
+        assert_eq!((parsed.z_index, parsed.weight, parsed.priority, parsed.min_lod), (0, 1, 3, 0));
         assert_eq!(parsed.line_style, LineStyle::Solid);
-        assert!(props["color2"].get("default").is_none(), "color2 is optional with no default");
         assert!(parsed.color2.is_none());
 
-        // Global defaults: an empty config must come out as the schema says.
         let cfg = Config::parse("{}").expect("empty config parses");
-        let marker_default = &schema["properties"]["marker"]["properties"]["color"]["default"];
-        assert_eq!(parse_color(marker_default).unwrap(), cfg.marker_color);
-        assert_eq!(schema["properties"]["chunk_size"]["default"].as_u64(), Some(cfg.chunk_size as u64));
-        let lods_default = schema["properties"]["lods"]["default"].as_array().expect("lods default");
-        assert_eq!(lods_default.len(), cfg.lods.len());
-        assert!(lods_default[0]["max_mpp"].is_null() && cfg.lods[0].max_mpp.is_none());
-        assert_eq!(lods_default[0]["simplify"].as_f64(), Some(cfg.lods[0].simplify_m));
-        // min_area_px is optional; absent ⇒ 0.0 (cull off), matching the schema default.
-        let lod_props = &schema["$defs"]["lod"]["properties"];
-        assert_eq!(lod_props["min_area_px"]["default"].as_f64(), Some(cfg.lods[0].min_area_px));
-        assert_eq!(cfg.lods[0].min_area_px, 0.0);
+        assert_eq!((cfg.marker_color, cfg.chunk_size), (DEFAULT_MARKER_COLOR, DEFAULT_CHUNK_SIZE));
+        assert_eq!(cfg.lods.len(), 1);
+        assert_eq!((cfg.lods[0].max_mpp, cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (None, 0.0, 0.0));
+        assert!(!cfg.merge_fills && !cfg.merge_lines);
     }
 
     #[test]
@@ -740,14 +1189,9 @@ mod tests {
         );
     }
 
-    /// `line_style` accepts only `"solid"` (default) / `"dashed"`; the schema enum lists exactly
-    /// those, and any other value is a hard parse error.
+    /// `line_style` accepts only `"solid"` (default) / `"dashed"`.
     #[test]
-    fn schema_line_style_enum_matches_parser() {
-        let schema = embedded_schema();
-        let enum_vals = schema["$defs"]["style"]["properties"]["line_style"]["enum"].as_array().expect("enum");
-        let names: Vec<&str> = enum_vals.iter().filter_map(Value::as_str).collect();
-        assert_eq!(names, ["solid", "dashed"]);
+    fn line_style_enum_is_typed() {
         assert_eq!(parse_style(1, &serde_json::json!({"color": "0x1"})).unwrap().line_style, LineStyle::Solid);
         assert_eq!(
             parse_style(1, &serde_json::json!({"color": "0x1", "line_style": "solid"})).unwrap().line_style,
@@ -758,18 +1202,6 @@ mod tests {
             LineStyle::Dashed
         );
         assert!(parse_style(1, &serde_json::json!({"color": "0x1", "line_style": "dotted"})).is_err());
-    }
-
-    #[test]
-    fn schema_declares_exactly_the_parsed_style_fields() {
-        let schema = embedded_schema();
-        let props = schema["$defs"]["style"]["properties"].as_object().expect("style properties");
-        let mut keys: Vec<&str> = props.keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        // The exact field set `parse_style` reads. Extending the parser (as v10 did with
-        // `line_style`/`color2`) must extend the schema in the same change.
-        assert_eq!(keys, ["color", "color2", "line_style", "min_lod", "priority", "weight", "z_index"]);
-        assert_eq!(schema["$defs"]["style"]["required"], serde_json::json!(["color"]));
     }
 
     /// The schema advertises the `"*"` catch-all in the `features` description, and the parser
@@ -787,29 +1219,13 @@ mod tests {
         assert_eq!(cfg.get_style(&tags).map(|s| s.color), Some(0x0002));
     }
 
-    /// `merge_fills` is an optional top-level boolean, default `false`; the schema's
-    /// declared default matches the parser, and both `true`/`false` parse.
+    /// Merge switches are typed optional booleans; absent/null/false are off.
     #[test]
-    fn schema_merge_fills_default_matches_parser() {
-        let schema = embedded_schema();
-        assert_eq!(schema["properties"]["merge_fills"]["type"].as_str(), Some("boolean"));
-        assert_eq!(schema["properties"]["merge_fills"]["default"].as_bool(), Some(false));
-        // Absent ⇒ default false (byte-identical contract), and both values parse.
-        assert!(!Config::parse("{}").unwrap().merge_fills, "absent ⇒ false");
-        assert!(Config::parse(r#"{"merge_fills": true}"#).unwrap().merge_fills);
-        assert!(!Config::parse(r#"{"merge_fills": false}"#).unwrap().merge_fills);
-    }
-
-    /// `merge_lines` is an optional top-level boolean, default `false`; the schema's
-    /// declared default matches the parser, and both `true`/`false` parse.
-    #[test]
-    fn schema_merge_lines_default_matches_parser() {
-        let schema = embedded_schema();
-        assert_eq!(schema["properties"]["merge_lines"]["type"].as_str(), Some("boolean"));
-        assert_eq!(schema["properties"]["merge_lines"]["default"].as_bool(), Some(false));
-        assert!(!Config::parse("{}").unwrap().merge_lines, "absent ⇒ false");
-        assert!(Config::parse(r#"{"merge_lines": true}"#).unwrap().merge_lines);
-        assert!(!Config::parse(r#"{"merge_lines": false}"#).unwrap().merge_lines);
+    fn merge_switches_are_typed_and_default_off() {
+        let cfg = Config::parse(r#"{"merge_fills": true, "merge_lines": null}"#).unwrap();
+        assert!(cfg.merge_fills);
+        assert!(!cfg.merge_lines);
+        assert!(Config::parse(r#"{"merge_fills": "yes"}"#).is_err());
     }
 
     #[test]
