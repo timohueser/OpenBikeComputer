@@ -15,6 +15,8 @@
       "measured_flash": 625200,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
+      "poll_frame_measured": 52,
+      "poll_frame_limit": 12288,
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,

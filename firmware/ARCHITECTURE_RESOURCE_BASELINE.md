@@ -70,7 +70,7 @@ python3 ../tools/resource_guard.py boot \
 
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
-| default | 200,768 B | 96 B | 200,864 B | 1,024 B | 625,200 B | 1 × 76,800 B | n/a |
+| default | 200,768 B | 96 B | 200,864 B | 1,024 B | 625,200 B | 1 × 76,800 B | 52 B |
 | BLE | 208,240 B | 4,528 B | 212,768 B | 1,024 B | 1,055,284 B | 1 × 76,800 B | 6,240 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
 
@@ -81,9 +81,10 @@ are linker headroom, not measured stack high-water. The independent 36,864 B
 `STACK_RESERVE` is a compile-time floor, also not a runtime measurement.
 
 The framebuffer guard requires exactly one `FB` symbol of 240 × 320 × 1 byte
-and exactly one writable symbol at least that large. The BLE disassembly guard
-checks every `TaskStorage<F>::poll` prologue and retains the 12,288 B safety
-ceiling; its current maximum is 6,240 B.
+and exactly one writable symbol at least that large. Both shipping profiles'
+disassembly guards check every `TaskStorage<F>::poll` prologue and retain the
+12,288 B safety ceiling; the current maxima are 52 B for default and 6,240 B
+for BLE.
 
 ## Named compile-time allocations
 
