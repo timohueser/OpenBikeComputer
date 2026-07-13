@@ -353,6 +353,16 @@ Two behaviours make it safe to press without thinking:
 <figcaption>The footer reuses the guarded-hold machinery wholesale — the same <code>confirm_row</code> fill, driven by the same live <code>hold_progress</code> — so there's no new gesture and no new confirmation dialog. The Route overview's Delete-route and the Ride detail's Delete-ride rows are the same machinery in confirm-row clothes, with the same guards (the row is hidden outright for the actively-navigated route, and while a ride records). A device-side delete then flows through the object store, so the phone reconciles it on the next connect (see the <a href="../companion-link/#staying-in-sync-the-change-signal">companion link</a>).</figcaption>
 </figure>
 
+## Trips — folders in the Route menu
+
+A **trip** groups routes into a multi-day plan — the Alps in five stages — and on the device it is exactly that: a **folder** in the Route menu. A trip is a tiny metadata object (a name plus the object ids of its member routes, in ride order); the routes themselves stay ordinary, unchanged route files that a trip merely *references*. So the folder is a grouping, never a copy: a route lives on the card once, filed into at most one trip or loose at the top level.
+
+The Route menu's **top level** lists the trip folders **first**, then the unfiled routes — each group in the catalog's order. A folder row is **visually distinct** from a route row — the trip's name wearing a rounded **count badge** (how many routes it resolves) on the name line, the summed distance and climb beneath in the same two columns a route row uses — but it keeps the same list chrome as everything else: uniform rows, names over metadata. Pressing a folder opens its **stage list**: the member routes as *completely standard* route rows, under the trip's own name as the title. Picking one there loads it **identically** to picking a loose route — same Route overview, same START, same ride loop; nothing downstream is trip-aware, because the device draws one route at a time and never needs to know it came from a folder. The hierarchy is exactly **one level deep**: a stage list never nests, and `back` pops it to the top level.
+
+Under the hood this is one screen, not two — the [`screens!`](#a-screen-is-a-value-not-a-widget-tree) Route-menu screen carries a *scope* (the whole catalog, or one trip's members), so the stage list is a thin variant of the top-level list rather than a fork. The folders are resolved from the trip catalog each frame: a member route deleted on its own simply drops out of its folder (a **dangling** reference the trip tolerates), and a folder whose every reference has dangled still lists — wearing a `0` badge and showing the empty-list state when opened — so it can always be cleaned up.
+
+That cleanup is a **long-press** on the folder. Unlike the in-place [hold-to-delete](#deleting-things-the-hold-to-delete-footer) of a single route or ride, deleting a trip removes *several* files at once — the trip **and every route inside it** (on-device delete is post-trip cleanup, so it cascades) — so it earns a deliberate **confirm dialog**: a card naming the trip, a warning-red hold-guarded *Delete all* row (the same guarded-hold idiom, entry resting on *Cancel* so nothing is armed on the way in), and *Cancel*. Confirming hands the host the trip's durable id; the host deletes the trip file and each member route file, then rescans — the folder is gone, its routes with it, and the menu regroups. The phone reconciles the removals on its next connect, exactly like any [store change](../companion-link/#staying-in-sync-the-change-signal).
+
 ## The POIs browser
 
 *POIs* is one of the compass Menu's stations, and it answers a bikepacker's question directly: *where's the nearest water / campsite / bakery?* The flow is two screens — a **category** list, then that category's **nearest-16** list — both built from the same [`screens!` table](#a-screen-is-a-value-not-a-widget-tree) rows and the shared list widget as every other menu, so there's almost nothing new in the plumbing. What's new is where the data comes from and how one element stays live.
@@ -558,12 +568,15 @@ A setting is worthless if it's forgotten on power-off, so settings persist. The 
 
 ```rust
 pub trait SettingsStore {
-    fn load(&mut self) -> Option<Settings>; // None (blank/corrupt) → start from Settings::default()
-    fn save(&mut self, s: &Settings);       // encode the blob, persist it
+    type Value;
+    fn load(&mut self) -> Option<Self::Value>; // None (blank/corrupt) → use the app default
+    fn save(&mut self, value: &Self::Value);   // best-effort; the live value stays authoritative
 }
+
+// Both shipped adapters bind `type Value = Settings`.
 ```
 
-The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
+The nominal trait lives in dependency-free `obc-ports`; its associated value keeps that foundation from learning the app's `Settings` model. The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
 
 ## The UI speaks four languages
 
@@ -935,11 +948,11 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 - The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
 - The Rides screen, its Ride detail, and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/ride_detail.rs`](src:firmware/obc-app/src/screen/ride_detail.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
 - The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
-- The `Settings` value + its byte codec, the `Language` enum, and the `SettingsStore` seam: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs), [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The `Settings` value + its byte codec and the `Language` enum: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs); the dependency-free `SettingsStore` seam: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs) (compatibility re-exported by [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs))
 - The i18n catalogue + codegen — the per-language TOMLs, the `build.rs` that generates `Msg`/`TABLE`, and the `t()`/`rx.t()` lookup: [`obc-app/i18n/`](src:firmware/obc-app/i18n), [`obc-app/build.rs`](src:firmware/obc-app/build.rs), [`obc-app/src/i18n.rs`](src:firmware/obc-app/src/i18n.rs); the font-repertoire guard: [`obc-app/tests/i18n.rs`](src:firmware/obc-app/tests/i18n.rs)
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)
 - The input + overlay plane: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The app driver (frame loop, render-on-demand, compositing): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
-- The injected-hardware traits and input types: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); compatibility re-exports: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
 
 For how the two planes keep input responsive under a long render, and where the HAL fits, see [system architecture](../architecture/). For how a screen's `draw` actually puts pixels on the panel, see the [rendering pipeline](../rendering/).

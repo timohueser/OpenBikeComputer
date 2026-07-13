@@ -33,6 +33,11 @@ use crate::format::{
 use crate::geo::{cos_lat, ground_dist_m_cl};
 use crate::poi_table::PoiCategory;
 use crate::{BBox, Error, M_PER_DEG};
+pub use obc_formats::obcm::{
+    HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN,
+    NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN as POI_NAME_MAX,
+};
+use obc_formats::obcm::{NAV_DIR_LEN, POI_CAT_ENTRY_LEN, POI_RECORD_LEN};
 
 /// Upper bound on the vertices of a single decoded feature — the capacity a caller
 /// sizes the `points` scratch buffer to for [`Reader::for_each_feature`].
@@ -40,16 +45,6 @@ pub const MAX_FEAT_PTS: usize = 2048;
 /// Upper bound on the rings (exterior + holes) of a single decoded feature — the
 /// capacity for the `ring_lens` scratch buffer of [`Reader::for_each_feature`].
 pub const MAX_FEAT_RINGS: usize = 32;
-
-/// The header is fixed-size; everything after it is reached via explicit offsets. v6 grew it from
-/// 32 to 36 bytes (the trailing `POI Section Offset` u32); v8 to 40 (the `Nav Graph Offset` u32).
-pub const HEADER_LEN: usize = 40;
-/// Each LOD table entry: `max_mpp f32, index_off u32, node_count u32, chunk_size u16, chunk_count u32`.
-pub const LOD_ENTRY_LEN: usize = 18;
-
-/// One POI-directory category entry (spec §7.1): `u8 category_id, u32 index_offset, u32
-/// index_node_count, u32 chunk_count`.
-const POI_CAT_ENTRY_LEN: usize = 13;
 
 /// POI directory categories in v7 (spec §7.1): category ids `1..=6`. The parsed [`MapTables::pois`]
 /// bounds its `heapless::Vec` at this so a corrupt `category_count` can't request an unbounded
@@ -63,25 +58,10 @@ pub const POI_MAX_CATEGORIES: usize = 8;
 /// approaching the geometry scratch.
 pub const POI_MAX_CHUNK_BYTES: usize = 4096;
 
-/// A POI record is a fixed 36 bytes (spec §7.3): `int32 lat, int32 lon, u8 subtype, u8 name_len,
-/// [u8;24] name, u16 hours_ref`. The record loop steps by this and derives records-per-chunk as
-/// `chunk_size / POI_RECORD_LEN` (`512 / 36 = 14`).
-const POI_RECORD_LEN: usize = 36;
-
-/// A single hours-pool blob (spec §7.5): `flags u8` + `7 days × 2 slots × (open_q, close_q)`.
-/// [`parse_poi_directory`] validates the pool region lies in-file; [`Reader::poi_hours`] reads one
-/// blob on demand into a stack buffer and decodes it to a [`crate::hours::WeeklySchedule`] (#443).
-pub const POI_HOURS_BLOB_LEN: usize = 29;
-
 /// Max results the nearest-N POI query returns (locked on epic #115). The caller owns a
 /// `heapless::Vec<Poi, MAX_POI_RESULTS>`; the query fills it ascending by distance and never
 /// exceeds it. 16 × ≈36 B ≈ 600 B, on the caller's stack.
 pub const MAX_POI_RESULTS: usize = 16;
-
-/// Max stored POI name length (spec §7.3: the 24-byte `Name` field). A [`Poi::name`] is a
-/// `heapless::String<POI_NAME_MAX>`; a record whose `name_len` exceeds this is clamped (defensive —
-/// the packer never writes one).
-pub const POI_NAME_MAX: usize = 24;
 
 /// Initial half-extent of the POI search bbox, in latitude µdeg (~2 km: `2000 / 111.32e-3 m/µdeg ≈
 /// 17 966`, rounded up). Doubled each pass until the nearest-16 are provably found (see
@@ -94,44 +74,6 @@ const POI_SEARCH_HALF_UDEG: i32 = 18_000;
 /// growth). Each read pulls a whole number of records (`take * POI_RECORD_LEN`), so a record never
 /// straddles two reads.
 const POI_SCAN_WINDOW: usize = 512;
-
-/// The v9 nav directory (spec §8.1): `index_offset u32, index_node_count u32, node_chunk_count u32,
-/// edge_pool_offset u32, edge_chunk_count u32, chunk_size u16, profile_table_offset u32,
-/// profile_count u8, reserved u8` — 28 bytes (v8 was 22). Parsed into [`NavDirectory`]; the profile
-/// table it points at is parsed into [`MapTables::profiles`].
-const NAV_DIR_LEN: usize = 28;
-
-/// The fixed nav chunk size (spec §8.1): v9 **pins** it to 512, so [`parse_nav_directory`] rejects
-/// any other value (the geometry sections' configurable chunk size is independent — nav is fixed).
-pub const NAV_CHUNK_SIZE: usize = 512;
-
-/// Fixed prefix of a §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`. The `degree`
-/// byte at record offset 12 doubles as the end-of-chunk sentinel (`0xFF`, mirroring the POI
-/// subtype sentinel — a real degree is capped far below it, spec §8.3).
-pub const NAV_NODE_FIXED_LEN: usize = 13;
-
-/// One v9 §8.3 neighbor entry, 15 bytes: `neighbor_id u32, dlat i16, dlon i16, edge_id u32,
-/// cost_m u16, way_kind u8`. `dlat`/`dlon` are µdeg deltas from the owning record's own coord
-/// (reconstructed inline so A* computes `f = g + h` at relaxation with no second fetch); `way_kind`
-/// is N1's packed class byte (N3 weights edges by it). v8 was 20 bytes (absolute i32 coords, u32
-/// cost, no kind).
-pub const NAV_NEIGHBOR_LEN: usize = 15;
-
-/// Fixed prefix of a v9 §8.4 edge record, 15 bytes: `length_m u32, pt_count u16, way_kind u8,
-/// anchor_lat i32, anchor_lon i32`; `pt_count - 1` × `(dlat i16, dlon i16)` deltas follow. v8 was
-/// 14 bytes (no `way_kind`).
-pub const NAV_EDGE_FIXED_LEN: usize = 15;
-
-/// One §8.6 profile record: `name [u8;12]` (0xFF-padded UTF-8), `highway_mult [u8;32]`,
-/// `surface_mult [u8;8]`.
-pub const NAV_PROFILE_LEN: usize = 52;
-
-/// The `Name` field width inside a profile record (§8.6): 12 bytes, `0xFF`-padded.
-pub const NAV_PROFILE_NAME_LEN: usize = 12;
-
-/// Profile-count cap (§8.6): `profile_count` is a `u8` the reader rejects outside `1..=8`, so at
-/// most eight profiles are ever resident.
-pub const NAV_MAX_PROFILES: usize = 8;
 
 /// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1), and the byte size of one
 /// [`NavTileCache`] slot. v9 pins the wire value to exactly [`NAV_CHUNK_SIZE`] (512), so this equals

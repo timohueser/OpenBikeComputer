@@ -844,7 +844,7 @@ fn main() {
         // Scan the `.obt` trips beside the routes (epic #526, TR2) — grouped-route folders. Fed
         // **after** the routes so the stage ids resolve against the catalog. The TR3 menu draws the
         // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
-        let trip_store = TripStore::open(args.routes_dir());
+        let mut trip_store = TripStore::open(args.routes_dir());
         app.set_trips(&trip_store.inputs());
         // Load the tracks folder so the Rides screen (#454) lists real `RD{id}.ORD` rides + their
         // synced flags.
@@ -906,6 +906,18 @@ fn main() {
                 if ride_store.delete_by_id(id) {
                     app.set_rides(ride_store.catalog(), ride_store.ids());
                 }
+            }
+            // A scripted long-press → confirm on a trip folder (epic #526, TR3) records a cascade
+            // delete: remove the trip's `.obt` AND every member route file, then re-feed both catalogs
+            // (routes first, so the trip's stage ids resolve) — the folder is gone and the menu
+            // regroups. Members resolved from the trip store before anything is deleted.
+            if let Some(trip_id) = app.take_trip_delete() {
+                for rid in trip_store.member_route_ids(trip_id) {
+                    store.delete_by_id(rid);
+                }
+                trip_store.delete_by_id(trip_id);
+                app.set_routes_with_ids(store.catalog(), store.ids());
+                app.set_trips(&trip_store.inputs());
             }
             // An open Ride detail's track request left by the script's last press (no trailing
             // `d`): fill the resident ride profile now so the final render draws the band.

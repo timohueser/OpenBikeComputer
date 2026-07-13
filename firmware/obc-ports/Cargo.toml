@@ -1,0 +1,8 @@
+[package]
+name = "obc-ports"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Dependency-light no_std semantic ports shared by OpenBikeComputer apps, adapters, and hosts"
+
+[dependencies]

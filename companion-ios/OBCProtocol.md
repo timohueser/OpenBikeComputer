@@ -207,6 +207,12 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
   channel opens, no partial file. **Replace-by-id uploads of an existing route are
   exempt** (they reuse a slot). The app surfaces this as "delete routes on the
   device".
+- **Fresh-upload dedup (idempotent retry, spec §4.2).** A new-object upload
+  (route or trip, `object_id = 0xFFFF`) whose verified whole-object CRC **and**
+  byte length match an object the device already stores answers `committed` with
+  the **existing** object's id — nothing new is stored. A retry after a lost
+  commit ack therefore converges on the stored copy instead of minting a
+  same-content twin; the app links to the reported id exactly like any commit.
 
 `fwImage` (type 5, S7) carries a firmware update — the whole OBCU `UPDATE.BIN`
 container (app → device, singleton `object_id = 0`); the transfer layer stays

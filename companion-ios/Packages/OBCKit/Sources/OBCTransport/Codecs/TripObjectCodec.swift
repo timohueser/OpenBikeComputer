@@ -28,7 +28,9 @@ import OBCDomain
 /// (`TripCodecTests`), which the firmware side pins too, so neither can drift
 /// from the spec without a test going red.
 public enum TripObjectCodec {
-    static let version: UInt8 = 1
+    /// The trip object format version this codec writes (spec §7.7). Public so the
+    /// mock's device-side trip store and the vector tests can stamp it.
+    public static let version: UInt8 = 1
     /// The fixed header size (spec §7.7); stage ids follow it.
     static let headerLength = 56
     static let stageIDLength = 2

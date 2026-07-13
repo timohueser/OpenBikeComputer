@@ -13,22 +13,11 @@ use crate::byte_io::{ByteSource, Error};
 use obc_reader::codec::{rd_i16, rd_i32, rd_u16, rd_u32};
 use obc_reader::BBox;
 
-/// Base header length, common to v1 and v2 (`OBCR_Spec.md` §1). Every field the ride path
-/// needs is in these bytes, so the reader parses only them regardless of version; the v2
-/// extension is read on demand by [`for_each_waypoint`].
-pub const HEADER_LEN: usize = 112;
-/// Full v2 header length: the base header plus the 16-byte waypoint extension (§1.1).
-pub const HEADER_V2_LEN: usize = 128;
-/// Per-chunk index entry length (§2).
-pub const CHUNK_META_LEN: usize = 44;
-/// Capacity of the inline route-name field, bytes.
-pub const NAME_CAP: usize = 48;
-/// Fixed waypoint record length (§4).
-pub const WAYPOINT_LEN: usize = 40;
-/// Capacity of a waypoint record's inline name, bytes.
-pub const WAYPOINT_NAME_CAP: usize = 24;
-/// Waypoint-elevation sentinel: "no elevation known" (§4).
-pub const WAYPOINT_ELE_NONE: i16 = i16::MIN;
+// Compatibility paths for the normative OBCR sizes and sentinel now owned by `obc-formats`.
+pub use obc_formats::obcr::{
+    CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, NAME_CAP, WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_CAP,
+};
+use obc_formats::obcr::{MAGIC, VERSIONS};
 /// The device's waypoint cap — one number for both roles: the converter's `<wpt>` emission cap
 /// ([`gpx_to_obcr`](crate::gpx_to_obcr)) and the resident [`Waypoints`] table the ride loop holds
 /// (~40 B/entry ≈ 1.3 KB — negligible on the 512 KB target). The *format* allows up to `u16::MAX`
@@ -48,13 +37,6 @@ pub const MAX_ROUTE_CHUNKS: usize = 512;
 pub const MAX_ROUTE_CHUNKS: usize = 128;
 /// Max points a single chunk may hold (bounds the per-chunk decode buffer).
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
-
-const MAGIC: &[u8; 4] = b"OBCR";
-/// Accepted format versions: v1 (no waypoints) and v2 (optional waypoints section). The v2
-/// additions live entirely *outside* the byte ranges this reader touches — a 16-byte header
-/// extension at offset 112 and a record table reached only via it — so v2 routes ride through
-/// the exact v1 code path; waypoints are skipped by construction, not by branching.
-const VERSIONS: core::ops::RangeInclusive<u8> = 1..=2;
 
 /// One decoded route point: position in microdegrees + elevation in meters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -221,6 +221,7 @@ mod tests {
             settings: &mut settings,
             routes: &[],
             rides: &[],
+            trips: &[],
             nav_profiles: &crate::NavProfiles::EMPTY,
             poi_scratch: &scratch,
             sensor_scan_hits: &[],

@@ -1,14 +1,14 @@
-//! OBC device application layer + hardware-abstraction traits.
+//! OBC device application layer + compatibility re-exports for semantic ports.
 //!
 //! `no_std`, so the **same** logic runs in the desktop simulator and on the nRF54L
 //! firmware. It owns *what the device is doing* and leaves *how pixels reach a screen* to
 //! the host. It adds no allocations of its own (the only heap use is the
 //! [`MapRenderer`](obc_render::MapRenderer) scratch, which clears-not-frees each frame).
 //!
-//! The boundary is a small hardware-abstraction layer (HAL): the app reads position from a
+//! The boundary is the dependency-light [`obc_ports`] layer: the app reads position from a
 //! [`LocationSource`] and buttons from an [`InputSource`], oblivious to whether those are a
 //! real GPS chip + GPIO or the simulator's control panel + GPX replay. The host injects an
-//! implementation; the app stays identical.
+//! implementation; the app stays identical. This crate re-exports those names for compatibility.
 
 #![no_std]
 
@@ -57,9 +57,9 @@ pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
 pub use settings::{
     decode_route_crcs, decode_store_epoch, decode_synced_rides, encode_route_crcs, encode_store_epoch,
-    encode_synced_rides, route_crcs_len, synced_rides_len, ClimbMode, DateTime, IdleReturn, RouteCrcs, SavedSensor,
-    Settings, SyncedRides, Units, WaypointMode, ROUTE_CRCS_MAX_LEN, SENSOR_SLOTS, STORE_EPOCH_LEN,
-    SYNCED_RIDES_MAX_LEN,
+    encode_synced_rides, route_crcs_len, synced_rides_len, ClimbMode, DateTime, DateTimeEditorExt, IdleReturn,
+    RouteCrcs, SavedSensor, Settings, SyncedRides, Units, WaypointMode, DATETIME_MAX_YEAR, DATETIME_MIN_YEAR,
+    ROUTE_CRCS_MAX_LEN, SENSOR_SLOTS, STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN,
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};

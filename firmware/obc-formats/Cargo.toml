@@ -1,0 +1,8 @@
+[package]
+name = "obc-formats"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Allocator-free persistent-format constants and primitive codecs for OpenBikeComputer"
+
+[dependencies]

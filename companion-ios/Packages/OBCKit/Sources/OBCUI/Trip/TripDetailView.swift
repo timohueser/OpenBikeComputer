@@ -26,9 +26,20 @@ public struct TripDetailView: View {
     @State private var renameShown = false
     @State private var renameDraft = ""
     @State private var deleteDialogShown = false
+    /// The whole-trip upload sheet's driver (TR8), created once at the Upload tap
+    /// (a model built inline in the `.sheet` closure would rebuild every body
+    /// pass, restarting the queue).
+    @State private var tripUploadModel: TripUploadModel?
+    /// Upload tapped, catalog re-read in flight (`prepareTripUpload`) — debounces
+    /// the button until the sheet's driver exists.
+    @State private var isPreparingUpload = false
     /// A pending "remove the last stage" — dissolving the trip needs an inline
     /// confirm (the trip is created with ≥ 1 route; emptying it removes it).
     @State private var dissolveConfirmStage: RouteID?
+    /// The full-screen interactive trip map (the route detail's hero idiom).
+    @State private var mapShown = false
+
+    @Environment(\.obcIsOnline) private var isOnline
 
     public init(
         model: MainScreenModel,
@@ -68,6 +79,33 @@ public struct TripDetailView: View {
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) { attemptRemove(stage.id) } label: {
                         Label("Remove", systemImage: "minus.circle")
+                    }
+                }
+                // Clip BOTH long-press lift previews — the context menu's and the
+                // reorder drag's — to the card's own rounded shape, exactly as the
+                // main screen's route rows do; without this the system snapshots
+                // the whole rectangular row and the card floats on a stark white
+                // slab. (iOS-only kind; macOS is the test host.)
+                #if os(iOS)
+                .contentShape(
+                    [.contextMenuPreview, .dragPreview],
+                    RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
+                )
+                #endif
+                // The same long-press affordance as the main screen's cards: a
+                // rounded lift with a small menu (the reorder drag still starts
+                // from the lift by moving, and the overflow's explicit reorder
+                // mode is untouched).
+                .contextMenu {
+                    Button {
+                        onSelectRoute(stage)
+                    } label: {
+                        Label("Open route", systemImage: "map")
+                    }
+                    Button(role: .destructive) {
+                        attemptRemove(stage.id)
+                    } label: {
+                        Label("Remove from trip", systemImage: "minus.circle")
                     }
                 }
             }
@@ -131,13 +169,87 @@ public struct TripDetailView: View {
         .onChange(of: model.trips) { _, _ in
             if model.trip(tripID) == nil { onClose() }
         }
+        .sheet(item: $tripUploadModel) { model in
+            TripUploadSheetView(model: model)
+        }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $mapShown) { tripMapCover }
+        #else
+        .sheet(isPresented: $mapShown) { tripMapCover }
+        #endif
     }
 
     // MARK: Header
 
+    /// The stages as colored preview tracks — the hero map's and the full-screen
+    /// map's shared input (palette color by stage index, the stage rows' rule).
+    private var previewStages: [MultiTrackPreviewView.Stage] {
+        stages.enumerated().map { index, summary in
+            MultiTrackPreviewView.Stage(
+                coordinates: summary.trackPreview?.coordinates ?? [],
+                color: OBCTheme.stageColor(index: index)
+            )
+        }
+    }
+
+    /// The hero can expand to the interactive map when there's real geometry
+    /// and a network path — the route detail's #294 rule, verbatim.
+    private var canExpandMap: Bool {
+        isOnline && previewStages.contains { !$0.coordinates.isEmpty }
+    }
+
+    /// The whole-trip hero map: every stage in its palette color, above the
+    /// stat strip. Tapping it (online, with geometry) opens the full-screen
+    /// interactive map — the same affordance as the route detail's hero.
+    @ViewBuilder
+    private var heroMap: some View {
+        let preview = MultiTrackPreviewView(stages: previewStages)
+            .frame(height: 190)
+
+        if canExpandMap {
+            Button { mapShown = true } label: {
+                // The preview ignores hits (the tap is ours) — make the whole
+                // hero the tap target.
+                preview.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("trip.expandMap")
+            .accessibilityLabel("Open full trip map")
+        } else {
+            preview
+        }
+    }
+
+    private var tripMapCover: some View {
+        // The interactive map draws each stage's FULL tracklog (the #294
+        // follow-up rule: never the downsampled preview when zooming is on
+        // offer), falling back to the preview's coordinates for a record whose
+        // geometry didn't survive. The summaries ride along so a tap on a
+        // segment raises its callout; Open route closes the cover and pushes
+        // the stage's ordinary detail page.
+        TrackMapView(
+            stages: stages.enumerated().map { index, summary in
+                MultiTrackPreviewView.Stage(
+                    coordinates: model.plannedGeometry(for: summary.id)?.points.map(\.coordinate)
+                        ?? summary.trackPreview?.coordinates ?? [],
+                    color: OBCTheme.stageColor(index: index)
+                )
+            },
+            stageSummaries: stages,
+            title: trip?.name ?? "Trip",
+            onClose: { mapShown = false },
+            onOpenStage: { summary in
+                mapShown = false
+                onSelectRoute(summary)
+            }
+        )
+    }
+
     private var header: some View {
         let stats = model.tripStats(tripID)
         return VStack(alignment: .leading, spacing: 14) {
+            heroMap
+
             OBCStatStrip([
                 OBCStat(
                     value: OBCFormat.distanceValue(meters: stats.distanceMeters), unit: "km",
@@ -149,15 +261,32 @@ public struct TripDetailView: View {
             ])
             .accessibilityIdentifier("trip.stats")
 
-            // Primary action — wired in TR8 (whole-trip upload). Disabled behind
-            // the transport seam here; the affordance is the design's.
-            Button {} label: {
+            // Primary action (TR8): one tap pushes the whole trip. Link-bound —
+            // dims when disconnected; disabled when the trip is already fully up
+            // to date on the device (nothing to send). The tap re-reads the
+            // device catalogs first (`prepareTripUpload`) so a retry after a
+            // failed upload plans against what actually landed — never a
+            // duplicate-minting plan cut from a pre-failure cache.
+            Button {
+                guard !isPreparingUpload else { return }
+                isPreparingUpload = true
+                Task {
+                    tripUploadModel = await model.prepareTripUpload(tripID)
+                    isPreparingUpload = false
+                }
+            } label: {
                 Label("Upload trip", systemImage: "square.and.arrow.up")
             }
             .buttonStyle(.obcPrimary)
-            .disabled(true)
+            .disabled(!canUploadTrip || isPreparingUpload)
             .accessibilityIdentifier("trip.upload")
         }
+    }
+
+    /// Upload is offered while connected and the trip isn't already fully current
+    /// on the device (an outdated / not-on-device trip has something to push).
+    private var canUploadTrip: Bool {
+        model.connection == .connected && model.tripOnDeviceState(tripID) != .upToDate
     }
 
     // MARK: Overflow

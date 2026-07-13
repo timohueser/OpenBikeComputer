@@ -2,7 +2,7 @@
 //! round-trips, name truncation, and the forward-compatibility rules (unknown version rejected,
 //! longer `entry_len` stepped over).
 
-use obc_ble::{ListHeader, RideListEntry, RouteListEntry};
+use obc_ble::{ListHeader, RideListEntry, RouteListEntry, TripListEntry};
 
 fn route_entry() -> RouteListEntry<'static> {
     RouteListEntry {
@@ -109,6 +109,59 @@ fn ride_entry_layout_and_roundtrip() {
     assert_eq!(&b[22..24], &810u16.to_le_bytes());
     assert_eq!(b[24] as usize, "Höhenweg".len()); // UTF-8 bytes, not chars
     assert_eq!(RideListEntry::decode(&b).unwrap(), e);
+}
+
+fn trip_entry() -> TripListEntry<'static> {
+    TripListEntry {
+        object_id: 1,
+        byte_len: 62,
+        total_distance_m: 4414,
+        total_ascent_m: 152,
+        stage_count: 3,
+        name: "Alpen Traverse".as_bytes(),
+        crc32: 0xDEAD_BEEF,
+    }
+}
+
+#[test]
+fn trip_entry_layout() {
+    // Offsets by hand (spec §7.4): id, reserved, byte_len, total_distance, total_ascent, stage_count,
+    // reserved, name_len, name[48] zero-padded, 3 reserved bytes, then the content crc32.
+    let b = trip_entry().encode();
+    assert_eq!(b.len(), TripListEntry::ENTRY_LEN);
+    assert_eq!(TripListEntry::ENTRY_LEN, RouteListEntry::ENTRY_LEN, "tripList mirrors routeList at 76 bytes");
+    assert_eq!(&b[0..2], &1u16.to_le_bytes());
+    assert_eq!(&b[2..4], &[0, 0]);
+    assert_eq!(&b[4..8], &62u32.to_le_bytes());
+    assert_eq!(&b[8..12], &4414u32.to_le_bytes());
+    assert_eq!(&b[12..16], &152u32.to_le_bytes());
+    assert_eq!(&b[16..18], &3u16.to_le_bytes());
+    assert_eq!(&b[18..20], &[0, 0]);
+    assert_eq!(b[20], 14);
+    assert_eq!(&b[21..35], b"Alpen Traverse");
+    assert!(b[35..72].iter().all(|&x| x == 0)); // name padding + the 3 reserved tail bytes
+    assert_eq!(&b[72..76], &0xDEAD_BEEFu32.to_le_bytes()); // content crc32
+}
+
+#[test]
+fn trip_entry_roundtrip_and_truncation() {
+    let b = trip_entry().encode();
+    assert_eq!(TripListEntry::decode(&b).unwrap(), trip_entry());
+
+    // A 60-byte name truncates to the 48-byte cap at encode; decode reports the stored prefix.
+    let long = [b'x'; 60];
+    let e = TripListEntry { name: &long, ..trip_entry() };
+    let b = e.encode();
+    assert_eq!(b[20], 48);
+    assert_eq!(TripListEntry::decode(&b).unwrap().name.len(), 48);
+
+    // The unknown-CRC sentinel round-trips; a dangling-heavy trip's stage_count can exceed its
+    // resolvable stages (totals summed over fewer than stage_count).
+    let unknown = TripListEntry { crc32: TripListEntry::CRC_UNKNOWN, stage_count: 5, ..trip_entry() };
+    let encoded = unknown.encode();
+    let d = TripListEntry::decode(&encoded).unwrap();
+    assert_eq!(d.crc32, 0);
+    assert_eq!(d.stage_count, 5);
 }
 
 #[test]

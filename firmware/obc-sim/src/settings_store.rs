@@ -21,6 +21,8 @@ impl FileSettingsStore {
 }
 
 impl SettingsStore for FileSettingsStore {
+    type Value = Settings;
+
     fn load(&mut self) -> Option<Settings> {
         // A missing file (first run) or an unreadable/short/corrupt blob both yield `None`, so
         // the app starts from `Settings::default` — never a half-parsed value.
