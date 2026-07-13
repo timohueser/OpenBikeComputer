@@ -41,23 +41,8 @@ impl UnitsScreen {
         title_frame(cv, w, h, rx.t(Msg::UnitsTitle), "");
 
         // The single value row — the current system centred, flanked by left/right arrows to read as
-        // "rotate to switch".
-        let area = super::row_rect(LIST_TOP + 8, w, 50);
-        super::row_cursor(cv, area, true, false);
-        let midy = area.top_left.y + area.size.height as i32 / 2;
-        cv.text_vcentered(
-            units.name(rx.settings.language),
-            w / 2,
-            (area.top_left.y, 50),
-            Font::Body,
-            TextAlign::Center,
-            INK,
-        );
-        // ◄ and ► as filled triangles, inset from the row edges.
-        let ax = area.top_left.x + 18;
-        cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), INK);
-        let bx = area.top_left.x + area.size.width as i32 - 18;
-        cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), INK);
+        // "rotate to switch". Shared with the Language picker (`value_row_with_arrows`).
+        let area = super::value_row_with_arrows(cv, LIST_TOP + 8, w, units.name(rx.settings.language));
 
         // What the system means for each readout — caption left, value right. The value is dimmed
         // one step (INK → the olive SUBTEXT the captions use) so the block reads as a **read-only

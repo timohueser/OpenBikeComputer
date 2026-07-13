@@ -20,6 +20,16 @@ use crate::settings::Language;
 // Pulls in `pub enum Msg { … }` and `pub const TABLE: [[&str; 4]; N] = [ … ];`.
 include!(concat!(env!("OUT_DIR"), "/i18n_gen.rs"));
 
+/// Backs the "index never panics" contract of [`t`]: `TABLE` ships exactly one column per
+/// [`Language`] variant. Nothing else ties the generated column count (the `4` in `[[&str; 4]; N]`,
+/// from `build.rs`'s `LANGS`) to the enum, so a fifth `Language` added without a fifth catalog
+/// column would make `TABLE[m][lang as usize]` index out of bounds. This turns that into a *compile*
+/// error instead of a first-draw panic (#614).
+const _: () = assert!(
+    TABLE[0].len() == Language::COUNT,
+    "i18n TABLE column count must equal Language::COUNT — add the missing per-language catalog file(s)"
+);
+
 /// The translation for `m` in `lang`: `TABLE[m as usize][lang as usize]`. The `Language`
 /// discriminants (En=0, De=1, Fr=2, Es=3) match TABLE's column order, and every `Msg` maps
 /// to a populated row, so the index never panics.
