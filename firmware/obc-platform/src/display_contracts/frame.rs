@@ -89,6 +89,13 @@ impl<'b, const W: usize, const H: usize> Device64Frame<'b, W, H> {
     pub fn bytes(&self) -> &[u8] {
         self.buf
     }
+
+    /// [`bytes`](Self::bytes), mutable — the board composition edge's render entry (it wraps these
+    /// bytes in the concrete draw target) without importing the trait. Same slice as
+    /// [`NativeFrame::backing_mut`].
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        self.buf
+    }
 }
 
 impl<const W: usize, const H: usize> NativeFrame for Device64Frame<'_, W, H> {
