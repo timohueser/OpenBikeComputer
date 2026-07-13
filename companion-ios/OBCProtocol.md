@@ -160,7 +160,8 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
    TransferControl (12 bytes, little-endian):
      op         u8    1 = upload (app → device) · 2 = download · 3 = abort
      type       u8    { route 1, ride 2, config(reserved) 3, diagnostics 4,
-                        fwImage 5, routeList 6, rideList 7, echo 8 }
+                        fwImage 5, routeList 6, rideList 7, echo 8,
+                        trip 9, tripList 10 }
      object_id  u16   0xFFFF on upload = "new" (device assigns the id)
      total_len  u32   upload: full object size · download request / abort: 0
      crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
@@ -294,6 +295,26 @@ Routes and rides both cross the wire as **compact binary**, never XML:
   to be `0` (probability 2⁻³²) is indistinguishable from "unknown" and is read as
   unknown — merely "no badge until re-upload", the conservative direction; don't
   special-case it. **diagnostics** is a CoC text blob (spec §7.5).
+- **Trips** — a **trip object v1** (type 9, spec §7.7) groups routes: a 56-byte
+  header (`version 1 · stage_count u16 · name ≤ 48`) + `stage_count × u16` route
+  object **ids** in ride order. It **references** routes, never carries route bytes;
+  a route in no trip is top-level, and membership is one level deep (a route is in
+  ≤ 1 trip or standalone). Trip ids come from a **separate device counter** (never a
+  route/ride id), `0xFFFF` = new, replace-by-id atomic, cap **16** (`storageFull` at
+  descriptor-open for new trips, replace-by-id exempt). **Dangling stage refs are
+  tolerated on read** (a member route deleted individually doesn't invalidate the
+  trip) and compacted on the next trip write; **upload order is stages-first,
+  trip-object-last** so an interrupted push never dangles and a re-run is
+  idempotent. **Protocol delete is non-cascading** — deleting the trip object frees
+  the trip and leaves member routes top-level; a "delete trip & routes" is composed
+  by the initiating UI as route deletes + the trip delete. `tripList` (type 10) is a
+  CoC list behind the same **6-byte v2 header**; its **76-byte** entries mirror
+  `routeList` (`object_id · byte_len · total_distance_m · total_ascent_m ·
+  stage_count · name ≤ 48 · trailing whole-object `crc32`, `0` = unknown`), with the
+  totals summed over resolvable stages and `stage_count` counting every stored
+  stage (dangling included). The `crc32` is the same content fingerprint routes use,
+  so `OnDeviceState.determine` detects an outdated trip (a stage reorder changes
+  neither `byte_len` nor `name`). TR5 (#654) reuses the route identity machinery.
 
 The byte layout of each object is owned by the spec. The device object codecs
 live in `OBCTransport/Codecs/` (`BLEChannel` only moves bytes; the interchange
