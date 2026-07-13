@@ -369,6 +369,8 @@ const SETTINGS_RETRY_BACKOFF_MS: u32 = 2_000;
 ///   host). A matching [`HostEvent::SettingsPersisted`] → **Clean**; a matching
 ///   [`HostEvent::SettingsPersistFailed`] → **Backoff**. An edit here → **Dirty** (supersede: the new
 ///   revision will re-emit; the old in-flight ack, when it lands, no longer matches and is ignored).
+///   A host that drains but never acks (the web demo has no persistent store) parks here terminally
+///   — by design: harmless (edits stay live in RAM and keep superseding), honest, no re-emission.
 /// - **Backoff** — the last write failed; re-emits (→ Awaiting) only once `now_ms` reaches
 ///   `retry_at_ms`. An edit → **Dirty** (a fresh revision skips the wait).
 ///
