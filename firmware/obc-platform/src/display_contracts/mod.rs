@@ -64,8 +64,10 @@
 //! module — deliberately self-contained, depending only on `embedded-graphics` and the crate's
 //! existing framebuffer/band types — into its own crate if the split pays.
 
+pub mod bridge;
 pub mod frame;
 pub mod presenter;
 
+pub use bridge::BridgedDriver;
 pub use frame::{Device64Frame, NativeFrame};
 pub use presenter::{OverlayPresenter, PresentStats, Presenter};
