@@ -3,10 +3,13 @@ import OBCDomain
 
 /// **Trip Card** (TR6) — the routes-list panel for a *trip*: every stage drawn
 /// on one multi-stage preview in its palette color, a serif name, and the
-/// `N stages · km · ↑m` stat line. Visually distinct from a ``RouteCard`` by its
-/// **stacked-cards edge** — two card faces peeking out behind the front one, so
-/// a trip reads as "a group of routes" at a glance. All within existing
-/// `OBCTheme` tokens (no new colors — repo rule).
+/// `N stages · km · ↑m` stat line. Visually distinct from a ``RouteCard`` by
+/// its **full-width hero preview** (route cards use the compact side-cell
+/// layout) — the multi-color stage map is the "group of routes" signal. All
+/// within existing `OBCTheme` tokens (no new colors — repo rule).
+///
+/// (An earlier cut added a stacked-cards deck edge behind the panel; the owner
+/// cut it 2026-07-13 — it read as noise and broke the list's card rhythm.)
 ///
 /// The on-device badge is the trip-level ``OnDeviceState`` the caller resolves
 /// (check only when the trip object *and* every stage are up to date).
@@ -54,20 +57,12 @@ public struct TripCard: View {
     }
 
     public var body: some View {
-        frontCard
-            // The stacked-deck edge: two card faces peeking out behind the
-            // front one (narrower + nudged down), so the panel reads as a group.
-            .background(alignment: .bottom) {
-                deckEdge(inset: 8, drop: 6, fill: OBCTheme.parchment2)
-            }
-            .background(alignment: .bottom) {
-                deckEdge(inset: 16, drop: 12, fill: OBCTheme.parchment3)
-            }
+        card
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("tripCard")
     }
 
-    private var frontCard: some View {
+    private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
             MultiTrackPreviewView(stages: stages, showsChrome: false)
                 .frame(height: 150)
@@ -94,16 +89,6 @@ public struct TripCard: View {
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
         .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
         .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)
-    }
-
-    /// One card face of the stack behind the front card — inset from the sides
-    /// and dropped below so its bottom edge peeks out.
-    private func deckEdge(inset: CGFloat, drop: CGFloat, fill: Color) -> some View {
-        RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
-            .fill(fill)
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
-            .padding(.horizontal, inset)
-            .offset(y: drop)
     }
 }
 

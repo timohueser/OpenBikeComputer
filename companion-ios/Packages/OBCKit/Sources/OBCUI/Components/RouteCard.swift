@@ -17,9 +17,11 @@ public struct RouteCard: View {
     /// The device-copy state — picks the small C1 badge (check = up to date,
     /// refresh = on device but out of date, nothing when not on the device).
     let onDevice: OnDeviceState
-    /// A trip stage's palette color (TR6), drawn as a leading edge swatch so a
-    /// route reads as stage *N* on the trip page. `nil` — the default — is the
-    /// plain top-level card everywhere else, byte-identical to before.
+    /// A trip stage's palette color (TR6), drawn as the divider bar between the
+    /// track cell and the text block so a route reads as stage *N* on the trip
+    /// page (owner pick 2026-07-13 — the earlier leading-edge sliver sat outside
+    /// the card's rhythm). `nil` — the default — is the plain top-level card
+    /// everywhere else, byte-identical to before.
     let stageAccent: Color?
 
     public init(
@@ -59,7 +61,18 @@ public struct RouteCard: View {
         HStack(spacing: 0) {
             MapTrackPreviewView(preview, showsChrome: false)
                 .frame(width: 128)
-                .overlay(alignment: .trailing) { OBCTheme.line.frame(width: 1) }
+                .overlay(alignment: .trailing) {
+                    if stageAccent == nil { OBCTheme.line.frame(width: 1) }
+                }
+
+            // The stage's palette color as the map/text divider — in place of
+            // the hairline, so the color reads as part of the card, not a
+            // sticker on its edge.
+            if let stageAccent {
+                stageAccent
+                    .frame(width: 4)
+                    .accessibilityIdentifier("routeCard.stageAccent")
+            }
 
             VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 6) {
@@ -80,14 +93,6 @@ public struct RouteCard: View {
             .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
         }
         .background(OBCTheme.panel)
-        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
-        .overlay(alignment: .leading) {
-            if let stageAccent {
-                stageAccent
-                    .frame(width: 5)
-                    .accessibilityIdentifier("routeCard.stageAccent")
-            }
-        }
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
         .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
         .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)
