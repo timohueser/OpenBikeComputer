@@ -14,7 +14,7 @@ That's what lets the live demo you can [run in your browser](../../) — the lan
 The crates form a stack with dependencies pointing **one way — downward**. The foundation parses bytes; each layer up adds capability; the *hosts* sit on top. Nothing in the shared core ever depends on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 410" role="img" aria-label="The crate dependency stack. At the top, the hosts — obc-sim and obc-web-demo (the desktop simulator and the browser demo, sharing host glue in obc-host-core) and obc-fw-nrf54l plus obc-platform (device) — all depend on obc-app. obc-app depends on obc-render and also directly on obc-reader and obc-route. obc-render depends only on obc-reader — routes reach it through a narrow overlay seam the app implements. obc-route also depends on obc-reader, the foundation. Every arrow points downward, so the shared core never depends on a host.">
+<svg viewBox="0 0 720 480" role="img" aria-label="The crate dependency stack. At the top, the hosts — obc-sim and obc-web-demo (the desktop simulator and the browser demo, sharing host glue in obc-host-core) and obc-fw-nrf54l plus obc-platform (device) — all depend on obc-app. obc-app depends on obc-render and also directly on obc-reader and obc-route. obc-render depends only on obc-reader — routes reach it through a narrow overlay seam the app implements. obc-route also depends on obc-reader. Both reader crates point down to the dependency-free obc-formats authority. Every arrow points downward, so the shared core never depends on a host.">
   <defs>
     <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -46,6 +46,9 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <rect class="d-panel" x="390" y="332" width="200" height="54" rx="10" />
   <text class="d-label" x="490" y="358" text-anchor="middle">obc-route</text>
   <text class="d-sub" x="490" y="374" text-anchor="middle">OBCR · GPX · map-match</text>
+  <rect class="d-panel-2" x="260" y="416" width="220" height="48" rx="10" />
+  <text class="d-label" x="370" y="438" text-anchor="middle">obc-formats</text>
+  <text class="d-sub" x="370" y="454" text-anchor="middle">versions · layouts · codecs · byte seam</text>
 
   <!-- arrows (depends-on, downward) -->
   <line class="d-flow" x1="240" y1="102" x2="258" y2="144" marker-end="url(#aA)" />
@@ -53,6 +56,8 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <line class="d-flow" x1="370" y1="202" x2="370" y2="240" marker-end="url(#aA)" />
   <line class="d-flow" x1="350" y1="292" x2="275" y2="330" marker-end="url(#aA)" />
   <line class="d-flow" x1="388" y1="356" x2="354" y2="356" marker-end="url(#aA)" />
+  <line class="d-flow" x1="250" y1="386" x2="330" y2="414" marker-end="url(#aA)" />
+  <line class="d-flow" x1="490" y1="386" x2="410" y2="414" marker-end="url(#aA)" />
 
   <!-- app also reaches past render straight to the two foundation crates -->
   <path class="d-flow" d="M186 202 C 170 252, 176 300, 206 330" marker-end="url(#aA)" opacity="0.8" />
@@ -62,10 +67,12 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <text class="d-sub" x="610" y="374" style="font-size:11px">obc-pack</text>
   <text class="d-sub" x="610" y="386" style="font-size:11px">→ obc-reader</text>
 </svg>
-<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well; render on reader <i>only</i> — the app hands the active route to the renderer through a narrow overlay seam (a trait of chunked polylines), so the renderer never learns the route format; route on reader. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, shares the reader's format code but isn't part of the runtime stack.)</figcaption>
+<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well; render on reader <i>only</i> — the app hands the active route to the renderer through a narrow overlay seam (a trait of chunked polylines), so the renderer never learns the route format; route on reader. Beneath both, <b>obc-formats</b> owns the fixed persistent-format facts and primitive byte seam without depending on an algorithm crate. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, shares the reader's format code but isn't part of the runtime stack.)</figcaption>
 </figure>
 
 The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-metal target (`thumbv8m.main-none-eabihf`) with no host present; the simulator and the firmware are just two different things that link *against* it. Swap the host, keep the core.
+
+At the bottom, [`obc-formats`](src:firmware/obc-formats) is deliberately smaller than a reader: it has no allocator, storage adapter, cache, converter, executor, or rendering policy. The root format specifications remain the normative byte contracts; this crate is their code authority for versions, fixed lengths, flags, sentinels, endian primitives, and the neutral byte-source/sink traits. `obc-reader` and `obc-route` keep the parsing and streaming algorithms, while their established public paths re-export the same foundation definitions for compatibility.
 
 ## Two hosts, one core — and the seams between them
 
@@ -390,7 +397,7 @@ The split is a behaviour-preserving relocation: the same `InputPlane` either run
 - The hardware-abstraction traits: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
 - The two-plane input model: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The on-device router (snap · weighted A\* · OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
-- The byte-streaming seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
+- Persistent-format constants, primitive codecs, and the byte-streaming seam: [`obc-formats`](src:firmware/obc-formats)
 - The device host (DrawTarget / ByteSource / sensors over real hardware): [`obc-platform`](src:firmware/obc-platform)
 
 For how the renderer in the middle of this stack actually draws a frame, see the [rendering pipeline](../rendering/). For the binary formats the reader streams, see [data formats](../formats/). For the screen stack and gestures the loop drives, see [the UI system](../ui/).
