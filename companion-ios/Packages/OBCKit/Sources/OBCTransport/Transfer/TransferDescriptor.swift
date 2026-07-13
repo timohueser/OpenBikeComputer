@@ -123,7 +123,7 @@ public struct TransferResult: Equatable, Sendable {
 }
 
 /// A change signal on the `storeChanged` status message (spec §4.3): which object
-/// store moved (route/ride) and the new revision.
+/// store moved (route/ride/trip) and the new revision.
 public struct StoreChanged: Equatable, Sendable {
     public var type: ObjectType
     public var revision: UInt32
