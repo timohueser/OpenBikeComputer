@@ -20,6 +20,7 @@ import OBCDomain
 /// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch (E1; `bad` → H5) |
 /// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
 /// | `-OBCFirmwareDemo` | (flag) | open the S7 firmware-update screen with a pre-staged sample update (the Files picker can't be automated) |
+/// | `-OBCDeviceRoutesFull` | (flag) | pad the device's route catalog to one below the cap so a multi-stage trip fails the whole-trip precheck (TR8 storage-precheck demo/test) |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
@@ -59,6 +60,10 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// screenshots + demos. `.staged` stops at the staged screen; `.sending`
     /// also fires Send, so a run walks transfer → confirm → done. Debug-only.
     public var firmwareDemo: FirmwareDemoStage?
+    /// Pad the mock device's route catalog to one below the route cap so a
+    /// multi-stage trip fails the whole-trip precheck **before any bytes** (TR8,
+    /// issue #657) — the storage-precheck-failure XCUITest / demo hook.
+    public var deviceRoutesFull: Bool
 
     public init(
         scenario: Scenario? = nil,
@@ -69,7 +74,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         showUIGallery: Bool = false,
         importSample: SampleRouteFile.Kind? = nil,
         networkOnline: Bool? = nil,
-        firmwareDemo: FirmwareDemoStage? = nil
+        firmwareDemo: FirmwareDemoStage? = nil,
+        deviceRoutesFull: Bool = false
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -80,6 +86,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.importSample = importSample
         self.networkOnline = networkOnline
         self.firmwareDemo = firmwareDemo
+        self.deviceRoutesFull = deviceRoutesFull
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with
@@ -140,6 +147,9 @@ public struct MockLaunchOptions: Equatable, Sendable {
             return FirmwareDemoStage(rawValue: env) ?? .staged
         }()
 
+        let deviceRoutesFull = arguments.contains("-OBCDeviceRoutesFull")
+            || environment["OBC_DEVICE_ROUTES_FULL"] == "1"
+
         return MockLaunchOptions(
             scenario: scenario,
             fixtures: fixtures,
@@ -149,7 +159,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             showUIGallery: showGallery,
             importSample: importSample,
             networkOnline: networkOnline,
-            firmwareDemo: firmwareDemo
+            firmwareDemo: firmwareDemo,
+            deviceRoutesFull: deviceRoutesFull
         )
     }
 
@@ -159,6 +170,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         let control = MockControl(scenario: scenario ?? .happyPath)
         if let fixtures { control.loadFixtures(fixtures) }
         if let connection { control.connection = connection }
+        control.routesNearlyFull = deviceRoutesFull
         return control
     }
 }

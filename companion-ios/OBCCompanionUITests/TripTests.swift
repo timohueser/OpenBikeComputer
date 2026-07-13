@@ -65,7 +65,8 @@ final class TripTests: XCTestCase {
     }
 
     /// Drill in: tapping the trip card opens the trip page with both stages and
-    /// the (disabled, TR8) Upload trip action.
+    /// the Upload trip action — enabled (TR8) since the connected device holds no
+    /// copy of this trip yet.
     @MainActor
     func testDrillIntoTripPage() {
         let app = launch()
@@ -74,7 +75,7 @@ final class TripTests: XCTestCase {
         XCTAssertTrue(app.buttons[stageBID].exists, "second stage row missing")
         let upload = app.buttons["trip.upload"]
         XCTAssertTrue(upload.exists, "Upload trip action missing")
-        XCTAssertFalse(upload.isEnabled, "Upload trip must be disabled until TR8")
+        XCTAssertTrue(upload.isEnabled, "Upload trip must be enabled on a connected device (TR8)")
         snap(app, "TR6-trip-page")
     }
 

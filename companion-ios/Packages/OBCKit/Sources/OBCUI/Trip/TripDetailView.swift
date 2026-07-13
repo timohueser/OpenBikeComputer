@@ -26,6 +26,10 @@ public struct TripDetailView: View {
     @State private var renameShown = false
     @State private var renameDraft = ""
     @State private var deleteDialogShown = false
+    /// The whole-trip upload sheet's driver (TR8), created once at the Upload tap
+    /// (a model built inline in the `.sheet` closure would rebuild every body
+    /// pass, restarting the queue).
+    @State private var tripUploadModel: TripUploadModel?
     /// A pending "remove the last stage" — dissolving the trip needs an inline
     /// confirm (the trip is created with ≥ 1 route; emptying it removes it).
     @State private var dissolveConfirmStage: RouteID?
@@ -131,6 +135,9 @@ public struct TripDetailView: View {
         .onChange(of: model.trips) { _, _ in
             if model.trip(tripID) == nil { onClose() }
         }
+        .sheet(item: $tripUploadModel) { model in
+            TripUploadSheetView(model: model)
+        }
     }
 
     // MARK: Header
@@ -149,15 +156,24 @@ public struct TripDetailView: View {
             ])
             .accessibilityIdentifier("trip.stats")
 
-            // Primary action — wired in TR8 (whole-trip upload). Disabled behind
-            // the transport seam here; the affordance is the design's.
-            Button {} label: {
+            // Primary action (TR8): one tap pushes the whole trip. Link-bound —
+            // dims when disconnected; disabled when the trip is already fully up
+            // to date on the device (nothing to send).
+            Button {
+                tripUploadModel = model.makeTripUploadModel(tripID)
+            } label: {
                 Label("Upload trip", systemImage: "square.and.arrow.up")
             }
             .buttonStyle(.obcPrimary)
-            .disabled(true)
+            .disabled(!canUploadTrip)
             .accessibilityIdentifier("trip.upload")
         }
+    }
+
+    /// Upload is offered while connected and the trip isn't already fully current
+    /// on the device (an outdated / not-on-device trip has something to push).
+    private var canUploadTrip: Bool {
+        model.connection == .connected && model.tripOnDeviceState(tripID) != .upToDate
     }
 
     // MARK: Overflow
