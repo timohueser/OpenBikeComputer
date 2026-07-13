@@ -14,6 +14,11 @@ struct TripReconcileModelTests {
     private static let fastTiming = TripUploadModel.Timing(doneAutoDismiss: .milliseconds(20))
 
     private func makeMain() async -> (MainScreenModel, MockControl) {
+        let (model, control, _) = await makeMainWithLibrary()
+        return (model, control)
+    }
+
+    private func makeMainWithLibrary() async -> (MainScreenModel, MockControl, InMemoryLibraryStore) {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
         control.throughputBytesPerSec = 40_000_000
@@ -23,7 +28,17 @@ struct TripReconcileModelTests {
         let model = MainScreenModel(transport: MockTransport(control: control), library: library)
         model.start()
         await poll("loaded") { model.loadState == .loaded }
-        return (model, control)
+        return (model, control, library)
+    }
+
+    /// Simulate the **lost commit ack**: the trip object landed on the device but
+    /// the phone never saw the `transferResult` — its library trip carries no
+    /// link, exactly as if `markTripUploaded` never ran.
+    private func stripTripLink(_ library: InMemoryLibraryStore, _ model: MainScreenModel) {
+        var trip = library.trips().first { $0.id == tripID }!
+        trip.deviceLink = nil
+        trip.uploadedCRC32 = nil
+        library.saveTrip(trip)
     }
 
     private func poll(
@@ -202,6 +217,67 @@ struct TripReconcileModelTests {
         upload.start()
         await poll("re-upload landed") { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "a failed tripList read must never cause a duplicate trip")
+    }
+
+    // MARK: Lost-ack recovery (the on-glass duplicate-trip bug, round 2)
+
+    /// The trip object committed on the device but the phone missed the ack
+    /// (link died at the wrong moment). The next reconcile must **adopt** the
+    /// on-device trip by content — the trip twin of the #770 route rule — so the
+    /// badge lights and a later push replaces in place.
+    @Test
+    func aLostTripCommitAckHealsByAdoptionOnTheNextReconcile() async {
+        let (model, control, library) = await makeMainWithLibrary()
+        await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+
+        stripTripLink(library, model)
+        model.reload()
+        await poll("trip re-adopted") { model.trip(tripID)?.deviceLink?.objectID == deviceTripID }
+        #expect(model.tripOnDeviceState(tripID) == .upToDate)
+        let plan = model.planTripUpload(tripID)!
+        #expect(plan.tripObject == .replace(deviceTripID))
+    }
+
+    /// The user's exact retry path: upload "failed" (ack lost after the device
+    /// committed), they tap **Upload trip** again. `prepareTripUpload` re-reads
+    /// the catalogs first, the reconcile adopts what actually landed, and the
+    /// retry converges — one device trip, never a same-name twin.
+    @Test
+    func retryAfterALostTripAckDoesNotMintADuplicate() async {
+        let (model, control, library) = await makeMainWithLibrary()
+        await uploadTrip(model)
+        #expect(control.deviceTripCount == 1)
+
+        stripTripLink(library, model)
+        // No reload in between — the retry itself must plan against fresh truth.
+        let upload = await model.prepareTripUpload(tripID, timing: Self.fastTiming)!
+        upload.start()
+        await poll("retry landed") { upload.phase == .done }
+        #expect(control.deviceTripCount == 1, "the retry must never mint a second device trip")
+        #expect(model.tripOnDeviceState(tripID) == .upToDate)
+    }
+
+    /// The device-side backstop (spec §4.2 fresh-upload dedup): even a client
+    /// that plans blind — a fresh trip push of identical bytes, no reconcile —
+    /// converges on the stored copy. The device answers with the existing id and
+    /// stores nothing new.
+    @Test
+    func aBlindFreshReUploadOfIdenticalBytesConvergesOnTheStoredTrip() async {
+        let (model, control, library) = await makeMainWithLibrary()
+        await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+
+        stripTripLink(library, model)
+        model.reloadTrips()
+        // The OLD path: plan straight off the (now amnesiac) library — the trip
+        // object plans fresh. The device's dedup still converges it.
+        let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
+        upload.start()
+        await poll("blind retry landed") { upload.phase == .done }
+        #expect(control.deviceTripCount == 1, "identical bytes must dedup onto the stored trip")
+        #expect(model.trip(tripID)?.deviceLink?.objectID == deviceTripID,
+            "the commit links back to the existing object id")
     }
 
     // MARK: Delete trip & routes while connected

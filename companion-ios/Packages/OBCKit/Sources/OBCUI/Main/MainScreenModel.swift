@@ -608,7 +608,9 @@ public final class MainScreenModel {
 
     /// Re-read trips from the library (dangling stages pruned there) and rebuild
     /// the interleaved Planned list — the one call every trip/route edit ends on.
-    private func reloadTrips() {
+    /// Internal (not private) so `@testable` tests can re-sync the model's trips
+    /// after mutating the library directly.
+    func reloadTrips() {
         trips = library.trips()
         rebuildPlannedItems()
     }
@@ -694,12 +696,17 @@ public final class MainScreenModel {
     }
 
     /// True-up every trip's `deviceLink` against the device's live `tripList`
-    /// (TR8) — the trip sibling of `reconcileOnDevice`. A device-side trip delete
-    /// (absent object) or a foreign replacement (a present object whose non-zero
-    /// CRC disagrees with what we committed) drops the link; a local edit (rename,
-    /// reorder) never does — it leaves the committed CRC intact and reads as
-    /// outdated through `currentTripPayloadCRC`. Scope-gated both ways (#769):
-    /// unknown scope writes nothing, known scope clears only links that match it.
+    /// (TR8) — the trip sibling of `reconcileOnDevice`, drop pass **and** adopt
+    /// pass. A device-side trip delete (absent object) or a foreign replacement
+    /// (a present object whose non-zero CRC disagrees with what we committed)
+    /// drops the link; a local edit (rename, reorder) never does — it leaves the
+    /// committed CRC intact and reads as outdated through `currentTripPayloadCRC`.
+    /// Then an *unlinked* catalog entry whose CRC matches a trip's current
+    /// encoding re-links it — the trip twin of `adoptByContent` (#770), and the
+    /// heal for the lost-ack fresh upload (the trip object landed, the commit ack
+    /// didn't): without it the retry planned a fresh trip and minted a same-name
+    /// twin folder on the device. Scope-gated both ways (#769): unknown scope
+    /// writes nothing, known scope clears only links that match it.
     private func reconcileTripsOnDevice(with catalog: [TripCatalogEntry]) {
         deviceTripCRCs = Dictionary(
             catalog.map { ($0.id, $0.crc32) }, uniquingKeysWith: { first, _ in first })
@@ -715,6 +722,38 @@ public final class MainScreenModel {
             trip.deviceLink = nil
             trip.uploadedCRC32 = nil
             library.saveTrip(trip)
+        }
+        adoptTripsByContent(scope: scope, catalog: catalog)
+    }
+
+    /// Adopt-by-content for trips — `adoptByContent`'s trip twin, with the same
+    /// tie-breaks (each side claimed at most once, deterministic order). The
+    /// fingerprint is the trip's *current* encoding (`currentTripPayloadCRC`:
+    /// name + committed device stage ids), so this runs after the **route**
+    /// reconcile has trued the stage links up — both call sites order it so.
+    private func adoptTripsByContent(scope: LibraryScope, catalog: [TripCatalogEntry]) {
+        var claimed = Set(library.trips().compactMap { trip -> DeviceObjectID? in
+            guard let link = trip.deviceLink, link.matches(scope) else { return nil }
+            return link.objectID
+        })
+        let adoptable = catalog.filter { $0.crc32 != 0 && !claimed.contains($0.id) }
+        guard !adoptable.isEmpty else { return }
+        let candidates = library.trips()
+            .filter { trip in
+                guard let link = trip.deviceLink else { return true }
+                return !link.matches(scope)
+            }
+            .sorted { $0.id.rawValue < $1.id.rawValue }
+        for var trip in candidates {
+            let currentCRC = currentTripPayloadCRC(for: trip)
+            guard let entry = adoptable.first(where: {
+                $0.crc32 == currentCRC && !claimed.contains($0.id)
+            }) else { continue }
+            trip.deviceLink = DeviceRouteLink(
+                serial: scope.serial, epoch: scope.epoch, objectID: entry.id)
+            trip.uploadedCRC32 = currentCRC
+            library.saveTrip(trip)
+            claimed.insert(entry.id)
         }
     }
 
@@ -752,6 +791,34 @@ public final class MainScreenModel {
             deviceRouteCount: lastRouteCatalog?.count ?? 0,
             deviceTripCount: lastTripCatalog?.count ?? 0
         )
+    }
+
+    /// Re-read both device catalogs and reconcile (adoption included) **before**
+    /// planning a whole-trip upload — the retry-after-a-failure path. A plan cut
+    /// from catalogs cached before the failure can't see what actually landed:
+    /// a stage (or the trip object) that committed but whose ack was lost would
+    /// re-plan as *fresh* and mint a device twin. The fresh read lets the
+    /// reconcile adopt those orphans by content first, so the retry plans skips
+    /// and replaces instead. Either read failing falls back to the cached
+    /// catalogs (the device-side fresh-upload dedup, spec §4.2, still backstops
+    /// convergence); order matters — routes before trips, the adoption rule's
+    /// dependency.
+    public func prepareTripUpload(
+        _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
+    ) async -> TripUploadModel? {
+        if connection == .connected {
+            if let deviceRoutes = try? await transport.listRoutes() {
+                lastRouteCatalog = deviceRoutes
+                reconcileOnDevice(with: deviceRoutes)
+                routes = plannedList()
+            }
+            if let deviceTrips = try? await transport.listTrips() {
+                lastTripCatalog = deviceTrips
+                reconcileTripsOnDevice(with: deviceTrips)
+            }
+            reloadTrips()
+        }
+        return makeTripUploadModel(id, timing: timing)
     }
 
     /// The whole-trip upload sheet's driver (TR8), or `nil` when the trip
