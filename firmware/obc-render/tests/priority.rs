@@ -73,6 +73,7 @@ fn priority_one_survives_saturation_across_chunks() {
     assert!(stats.features_dropped > 0, "buffers must saturate for this test to mean anything");
     assert_eq!(stats.feature_decode_capacity_drops, 0);
     assert_eq!(stats.malformed_features, 0);
+    assert_eq!(stats.map_structure_failures, 0);
     assert_eq!(stats.map_read_failures, 0);
     assert_eq!(
         stats.features_drawn + stats.features_dropped,

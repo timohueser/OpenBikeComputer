@@ -224,6 +224,8 @@ pub struct RenderStats {
     pub feature_decode_capacity_drops: u32,
     /// Structurally invalid feature records consumed without publishing partial geometry.
     pub malformed_features: u32,
+    /// Structural map/index/chunk-reference corruption outside an individual feature record.
+    pub map_structure_failures: u32,
     /// Backing-medium failures while walking indexes or loading geometry chunks.
     pub map_read_failures: u32,
     /// Legal cache re-entry/contention outcomes; these never panic through the safe API.

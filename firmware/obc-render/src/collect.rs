@@ -71,13 +71,13 @@ impl FrameScratch {
         let winners = self.select(reader);
         let drawn = self.decode_winners(reader, lod, view, winners, stats);
 
-        self.spans_len = winners;
+        self.spans_len = drawn;
         stats.features_drawn = drawn;
         // Every candidate that passed the cull is either drawn or dropped (evicted in pass A or cut
         // by the point/ring budget in select). Culled features count in `features_tried`, not here —
         // matching the old collector, so `drawn + dropped == tried` holds when nothing is culled.
         stats.features_dropped = candidates - winners;
-        stats.span_utilization = winners as f32 / self.slots.capacity() as f32;
+        stats.span_utilization = drawn as f32 / self.slots.capacity() as f32;
         stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
         stats.ring_utilization = self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
 
@@ -287,8 +287,9 @@ impl FrameScratch {
                 let pt_start = frame_points.len() as u16;
                 let ring_start = frame_ring_lens.len() as u16;
                 // Re-decode this winner. The point/ring budget was reserved for it in `select`, so
-                // the appends fit; the `is_ok` guards stay defensive against a corrupt refetch (then
-                // the slot becomes a no-draw span, keeping the winner count consistent).
+                // the appends fit; the `is_ok` guards stay defensive against a corrupt refetch. A
+                // failed slot is marked with a private no-draw span, then omitted by the compaction
+                // below — neither it nor any still-unplaced stub is ever exposed to the painter.
                 let span =
                     match reader.decode_feature_at(lod, cid, stub.offset as usize, &node, dec_points, dec_ring_lens) {
                         Ok(f)
@@ -332,7 +333,26 @@ impl FrameScratch {
         if let Err(error) = walk {
             record_read_error(stats, error);
         }
-        drawn
+
+        // The second index walk or a winner refetch may fail after only some slots were rewritten.
+        // Compact only successfully decoded spans. `placed` is the variant tag here: an unset bit
+        // means the slot is still a Stub and must not be read through the union's Span arm; a set
+        // bit means pass B wrote a Span, with `ring_count == 0` reserved for a failed refetch.
+        let mut compacted = 0usize;
+        for i in 0..winners {
+            if placed[i >> 5] & (1 << (i & 31)) == 0 {
+                continue;
+            }
+            let span = slots[i].span();
+            if span.ring_count == 0 {
+                continue;
+            }
+            slots[compacted] = Slot::of_span(span);
+            compacted += 1;
+        }
+        slots.truncate(compacted);
+        debug_assert_eq!(compacted, drawn);
+        compacted
     }
 
     /// The drawn features' spans (unordered; the caller sorts them into painter order). Valid only
@@ -360,7 +380,7 @@ fn record_read_error(stats: &mut RenderStats, error: MapReadError) {
         MapReadError::Cache(CacheError::Busy) => {
             stats.map_cache_contentions = stats.map_cache_contentions.saturating_add(1)
         }
-        MapReadError::Malformed => stats.malformed_features = stats.malformed_features.saturating_add(1),
+        MapReadError::Malformed => stats.map_structure_failures = stats.map_structure_failures.saturating_add(1),
     }
 }
 
@@ -472,6 +492,13 @@ impl Slot {
         // SAFETY: the caller only reads `stub` in a phase that wrote a `Stub` into this slot; both
         // variants are `Copy` plain-old-data, so the read is well-defined.
         unsafe { self.stub }
+    }
+    /// Read the `span` variant after pass B marked this slot as placed.
+    #[inline]
+    fn span(&self) -> Span {
+        // SAFETY: the caller checks pass B's placed bit, which is set only after `of_span` was
+        // written. Both variants are `Copy` plain-old-data.
+        unsafe { self.span }
     }
 }
 
