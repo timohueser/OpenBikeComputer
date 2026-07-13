@@ -245,7 +245,7 @@ The physical input model is tiny: a **rotary encoder** (which turns *and* pushes
 pub enum Gesture { Turn(i32), Press, Hold, Back, BackHold }
 ```
 
-That the recognizer is fed by an injected `InputSource` is the key boundary: on the device that source is the encoder driver and GPIO edges; in the simulator it's the control-panel knob and your keyboard. Neither the recognizer nor any screen knows which. (The location, altimeter and track sinks cross the same kind of [HAL seam](../architecture/#two-hosts-one-core-and-the-seams-between-them).)
+That the recognizer is fed by an injected `InputSource` is the key boundary: on the device [`ButtonInput`](src:firmware/obc-platform/src/button_input.rs) turns GPIO levels into the port's raw events; in the simulator [`DeviceInput`](src:firmware/obc-sim/src/device_input.rs) does the same for the control-panel knob and keyboard. Both implement [`obc-ports::InputSource`](src:firmware/obc-ports/src/lib.rs) directly, so neither the recognizer nor any screen knows which host supplied it. (The location, altimeter and track sinks cross the same kind of [HAL seam](../architecture/#two-hosts-one-core-and-the-seams-between-them).)
 
 ## Hold to confirm
 
@@ -576,7 +576,7 @@ pub trait SettingsStore {
 // Both shipped adapters bind `type Value = Settings`.
 ```
 
-The nominal trait lives in dependency-free `obc-ports`; its associated value keeps that foundation from learning the app's `Settings` model. The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
+The nominal trait lives in dependency-free `obc-ports`; its associated value keeps that foundation from learning the app's `Settings` model. The simulator's [`FileSettingsStore`](src:firmware/obc-sim/src/settings_store.rs) and the board's [`RramSettingsStore`](src:firmware/obc-fw-nrf54l/src/settings.rs) implement that port directly. The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
 
 ## The UI speaks four languages
 
@@ -948,11 +948,11 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 - The host-pushed cards — the passkey card and the route-upload prompts: [`obc-app/src/screen/passkey.rs`](src:firmware/obc-app/src/screen/passkey.rs), [`obc-app/src/screen/route_received.rs`](src:firmware/obc-app/src/screen/route_received.rs)
 - The Rides screen, its Ride detail, and the Bluetooth settings screen: [`obc-app/src/screen/rides.rs`](src:firmware/obc-app/src/screen/rides.rs), [`obc-app/src/screen/ride_detail.rs`](src:firmware/obc-app/src/screen/ride_detail.rs), [`obc-app/src/screen/settings/bluetooth.rs`](src:firmware/obc-app/src/screen/settings/bluetooth.rs)
 - The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
-- The `Settings` value + its byte codec and the `Language` enum: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs); the dependency-free `SettingsStore` seam: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs) (compatibility re-exported by [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs))
+- The `Settings` value + its byte codec and the `Language` enum: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs); the dependency-free `SettingsStore` seam: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); direct adapters: [`obc-sim/src/settings_store.rs`](src:firmware/obc-sim/src/settings_store.rs), [`obc-fw-nrf54l/src/settings.rs`](src:firmware/obc-fw-nrf54l/src/settings.rs)
 - The i18n catalogue + codegen — the per-language TOMLs, the `build.rs` that generates `Msg`/`TABLE`, and the `t()`/`rx.t()` lookup: [`obc-app/i18n/`](src:firmware/obc-app/i18n), [`obc-app/build.rs`](src:firmware/obc-app/build.rs), [`obc-app/src/i18n.rs`](src:firmware/obc-app/src/i18n.rs); the font-repertoire guard: [`obc-app/tests/i18n.rs`](src:firmware/obc-app/tests/i18n.rs)
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)
 - The input + overlay plane: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The app driver (frame loop, render-on-demand, compositing): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
-- The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); compatibility re-exports: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); platform adapters: [`obc-platform/src/`](src:firmware/obc-platform/src); compatibility-only app re-exports: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
 
 For how the two planes keep input responsive under a long render, and where the HAL fits, see [system architecture](../architecture/). For how a screen's `draw` actually puts pixels on the panel, see the [rendering pipeline](../rendering/).
