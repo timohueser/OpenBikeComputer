@@ -186,26 +186,34 @@ jobs:
         with:
           workspaces: firmware/obc-fw-nrf54l
           key: thumbv8m-nrf
-      # The FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an rv32emc GNU gcc; the
-      # apt package ships `riscv64-unknown-elf-gcc` (+ matching objcopy), which build.rs auto-detects.
+      # The FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an rv32emc GNU gcc;
+      # build.rs auto-detects the xPack `riscv-none-elf-gcc` (+ matching objcopy).
       #
-      # The runner's azure.archive.ubuntu.com mirror intermittently stalls mid-fetch on the ~51 MB
-      # toolchain, which used to wedge the job until the 6 h default timeout. Three layers of guard:
-      # short per-request apt timeouts (a stalled connection dies in 30 s instead of hanging), a
-      # 3-attempt retry loop (a fresh attempt lands on a healthy mirror), and a step timeout as the
-      # backstop so the worst case is a fast visible failure, never a stuck run.
+      # Deliberately NOT the apt package: the runner's azure.archive.ubuntu.com mirror kept
+      # stalling on the ~51 MB `gcc-riscv64-unknown-elf` — first wedging jobs until the 6 h
+      # default timeout, then (after per-request timeouts + retries) still burning the 10-minute
+      # step budget on a mirror that *trickles* instead of stalling, which apt's idle timeout
+      # never trips. So: a version-pinned xPack toolchain tarball from GitHub's own release CDN
+      # (runner-to-GitHub, no Ubuntu mirror involved), SHA-256-verified, restored from the
+      # actions cache on every run after the first. The curl retries + step timeout stay as the
+      # cache-miss backstop; worst case is a fast visible failure, never a stuck run.
+      - name: Cache the RISC-V GCC toolchain (xPack)
+        id: riscv-gcc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/xpack-riscv-none-elf-gcc-13.2.0-2
+          key: xpack-riscv-none-elf-gcc-13.2.0-2-linux-x64
       - name: Install RISC-V GCC for the FLPR blob
+        if: steps.riscv-gcc-cache.outputs.cache-hit != 'true'
         timeout-minutes: 10
         run: |
-          apt_flags=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-          for attempt in 1 2 3; do
-            sudo apt-get "${apt_flags[@]}" update &&
-              sudo apt-get "${apt_flags[@]}" install -y gcc-riscv64-unknown-elf && exit 0
-            echo "::warning::apt attempt ${attempt} failed or stalled — retrying"
-            sleep 10
-          done
-          echo "::error::could not install gcc-riscv64-unknown-elf after 3 attempts"
-          exit 1
+          url="https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v13.2.0-2/xpack-riscv-none-elf-gcc-13.2.0-2-linux-x64.tar.gz"
+          sha256="52545afb900200fbf65fe05f7ce7090b8a42c64091f4f5d43cae6bb68ea2434a"
+          curl -fL --retry 3 --retry-all-errors --max-time 300 -o /tmp/riscv-gcc.tar.gz "$url"
+          echo "$sha256  /tmp/riscv-gcc.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/riscv-gcc.tar.gz -C "$HOME"
+      - name: Put the RISC-V GCC on PATH
+        run: echo "$HOME/xpack-riscv-none-elf-gcc-13.2.0-2/bin" >> "$GITHUB_PATH"
       - name: "obc-fw-nrf54l: ${{ matrix.name }}"
         working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}
