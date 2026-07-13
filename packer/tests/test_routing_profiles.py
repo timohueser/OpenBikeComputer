@@ -34,6 +34,7 @@ HIGHWAY_CLASSES = [
 SURFACE_CLASSES = ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"]
 NAME_LEN = 12
 PROFILE_RECORD_LEN = 52  # 12 name + 32 highway + 8 surface
+OBCM_VERSION = 10
 
 
 def _pack_bin():
@@ -100,7 +101,7 @@ def _pack(tmp_path, profiles, min_component_edges=None):
 def _profile_table(data):
     """Locate and slice the §8.6 profile table out of a packed .obcm."""
     assert data[:4] == b"OBCM", "bad magic"
-    assert data[4] == 9, f"expected OBCM v9, got v{data[4]}"
+    assert data[4] == OBCM_VERSION, f"expected OBCM v{OBCM_VERSION}, got v{data[4]}"
     (nav_off,) = struct.unpack_from("<I", data, 36)  # header: Nav Graph Offset @ 36
     (table_off,) = struct.unpack_from("<I", data, nav_off + 22)  # dir: Profile Table Offset @ 22
     count = data[nav_off + 26]  # dir: Profile Count @ 26 (u8)

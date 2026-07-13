@@ -176,6 +176,7 @@
                     <StyleTable
                         cat={activeCat}
                         extras={extras as [string, Record<string, unknown>][]}
+                        schemaRoot={schema?.schema ?? {}}
                         catalogValues={catalog.keys[activeCat] ?? []}
                         ondeleted={() => (activeCat = "")}
                     />

@@ -28,7 +28,7 @@ export interface ProfileSchema {
     /** Min / max profile count (schema profiles minItems / maxItems). */
     minProfiles: number;
     maxProfiles: number;
-    /** Max name length on the wire, bytes (schema profile.name maxLength). */
+    /** Max name length on the wire, bytes (schema profile.name x-maxUtf8Bytes). */
     nameMaxBytes: number;
     /** The four shipped defaults (Road / Gravel / MTB / Touring), canonical. */
     defaultProfiles: NavProfile[];
@@ -48,7 +48,7 @@ interface SchemaTree {
         multiplier?: { oneOf?: { type?: string; minimum?: number }[] };
         profile?: {
             properties?: {
-                name?: { maxLength?: number };
+                name?: { maxLength?: number; "x-maxUtf8Bytes"?: number };
                 default?: { default?: number };
                 highway?: { propertyNames?: { enum?: string[] } };
                 surface?: { propertyNames?: { enum?: string[] } };
@@ -80,7 +80,7 @@ export function readProfileSchema(env: SchemaEnvelope | null): ProfileSchema | n
         defaultMultiplier: profile?.default?.default ?? 2,
         minProfiles: profilesSchema?.minItems ?? 1,
         maxProfiles: profilesSchema?.maxItems ?? 8,
-        nameMaxBytes: profile?.name?.maxLength ?? 12,
+        nameMaxBytes: profile?.name?.["x-maxUtf8Bytes"] ?? profile?.name?.maxLength ?? 12,
         defaultProfiles,
     };
 }

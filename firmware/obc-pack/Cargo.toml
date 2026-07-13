@@ -13,7 +13,16 @@ obc-formats = { path = "../obc-formats" }
 obc-reader = { path = "../obc-reader" }
 # `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+# Structural config schema comes from the same serde model the parser uses.
+# This is a host-only packer dependency and never enters a firmware crate.
+schemars = { version = "1", features = ["preserve_order"] }
+# Keep serde's typed errors actionable by retaining the failing JSON path.
+serde_path_to_error = "0.1"
+# Dynamic OSM tag/value maps must retain JSON document order for style IDs and
+# first-match behavior while still deserializing into typed values.
+indexmap = { version = "2", features = ["serde"] }
 heapless = "0.8"
 # `v3_14_0` matches the system libGEOS (3.14.1) and unlocks the area-assembly API
 # (`build_area`, the even-odd multipolygon primitive) used for relation polygons.
