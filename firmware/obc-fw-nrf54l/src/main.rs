@@ -257,13 +257,13 @@ bind_interrupts!(struct SensorIrqs {
 // is the true on-device size.
 //
 // The binding moment is a full redraw with everything resident at once:
-//   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, ~30 KB nrf-mem)
+//   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, 8,352 B nrf-mem)
 //                  plus the resident elevation `Profile` (~2.3 KB at PROFILE_COLS=256) and
-//                  `Breadcrumb` (~3 KB at SPINE_CAP=256); ~45 KB total. (The #270 cull: these
+//                  `Breadcrumb` (~3 KB at SPINE_CAP=256); 34,944 B total. (The #270 cull: these
 //                  caps were roughly halved again so the map plane leaves room for the BLE
 //                  stack in one image — the LM20 re-decides them generously.)
 //   - framebuffer  the single RGB222 frame: 240×320 × 1 B/px = 75 KB — the `FB` static below.
-//   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, ~20 KB).
+//   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, 14,444 B).
 //   - `RouteCache` the decoded-route-chunk cache (2 slots on nrf-mem, ~6 KB).
 //   - `RouteIndex` the active route's resident chunk index — the ride loop holds it across frames in
 //                  the map plane's task future to stream geometry without re-walking it (128 chunks on
@@ -443,8 +443,8 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 static mut ROW_DIFF: RowDiff<FRAME_H> = RowDiff::new();
 
 /// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place** (a
-/// `ptr::write` into the reserved region): the ~45 KB `App` (incl. the ~30 KB renderer scratch) and the
-/// ~20 KB cache must never form on the 256 KB part's small stack. [`MapCache::new`](obc_reader::MapCache)
+/// `ptr::write` into the reserved region): the 34,944 B `App` (including 8,352 B renderer scratch) and
+/// 14,444 B cache must never form on the 256 KB part's small stack. [`MapCache::new`](obc_reader::MapCache)
 /// is an all-zero `MaybeUninit::zeroed`, so writing it is a `.bss` memset.
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// The immutable map tables (header scalars + style table + LOD pyramid), parsed **once at boot** into
@@ -1060,7 +1060,7 @@ async fn main(_spawner: Spawner) {
         };
 
         // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. Built **in place**
-        // in `.bss` (`init_idle` writes each field where it sits; the ~30 KB renderer scratch is zeroed
+        // in `.bss` (`init_idle` writes each field where it sits; the 8,352 B renderer scratch is zeroed
         // in place), never on the stack. The Route menu is filled from the card's catalog scanned above;
         // selecting an entry opens the Map at that route's start and streams its geometry into the render
         // + the map-matcher.

@@ -139,7 +139,7 @@ const _: () = assert!(MAX_DECODE_RINGS == obc_reader::MAX_FEAT_RINGS, "ring scra
 /// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
 /// without re-deriving the formula. (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on
-/// the MCU.) ~90 KB on the default (512 KB LM20 / sim) profile, ~30 KB on `nrf-mem`.
+/// the MCU.) ~90 KB on the default (512 KB LM20 / sim) profile, 8,352 bytes on `nrf-mem`.
 pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
     + MAX_FRAME_POINTS * 8
