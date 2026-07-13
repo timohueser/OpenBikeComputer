@@ -25,6 +25,7 @@ RESOURCE_SECTION = ".obc_resources"
 RESOURCE_NAME_BYTES = 32
 RESOURCE_ENTRY_BYTES = RESOURCE_NAME_BYTES + 4
 WRITABLE_SYMBOL_TYPES = frozenset("bBdDsS")
+STRICT_ALIGN_PROBE = HERE / "strict_align_probe.rs"
 
 
 class GuardError(RuntimeError):
@@ -319,6 +320,64 @@ def check_boot(args: argparse.Namespace, baseline: dict[str, object]) -> None:
     print("obc-boot: flash guard passed")
 
 
+def function_assembly(assembly: str, function: str) -> str:
+    match = re.search(
+        rf"(?ms)^{re.escape(function)}:\n(?P<body>.*?)(?=^\.Lfunc_end\d+:)", assembly
+    )
+    if match is None:
+        raise GuardError(f"strict-align probe parser is stale: `{function}` assembly not found")
+    return match.group("body")
+
+
+def compile_probe(probe: Path, output: Path, strict: bool) -> tuple[str, str]:
+    command = [
+        "rustc",
+        "--crate-type",
+        "lib",
+        "--edition",
+        "2021",
+        "--target",
+        "thumbv8m.main-none-eabihf",
+        "-O",
+        "--emit",
+        f"asm={output}",
+    ]
+    if strict:
+        command.extend(("-C", "target-feature=+strict-align"))
+    command.append(str(probe))
+    try:
+        result = subprocess.run(command, check=True, text=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        detail = getattr(error, "stderr", "").strip() or str(error)
+        raise GuardError(f"strict-align compiler probe failed: {detail}") from error
+    return output.read_text(), result.stderr
+
+
+def check_strict_align(args: argparse.Namespace) -> None:
+    with tempfile.TemporaryDirectory(prefix="obc-strict-align-") as directory:
+        directory = Path(directory)
+        strict_asm, warning = compile_probe(args.probe, directory / "strict.s", True)
+        normal_asm, _ = compile_probe(args.probe, directory / "normal.s", False)
+    strict_body = function_assembly(strict_asm, "decode_u32")
+    normal_body = function_assembly(normal_asm, "decode_u32")
+    strict_byte_loads = len(re.findall(r"\bldrb(?:\.w)?\b", strict_body))
+    strict_word_loads = len(re.findall(r"\bldr(?:\.w)?\b", strict_body))
+    normal_word_loads = len(re.findall(r"\bldr(?:\.w)?\b", normal_body))
+    require(
+        strict_byte_loads == 4 and strict_word_loads == 0,
+        "+strict-align is not honored by the pinned backend: decode_u32 must lower to four byte "
+        f"loads and no word load (saw ldrb={strict_byte_loads}, ldr={strict_word_loads})",
+    )
+    require(
+        normal_word_loads >= 1,
+        "strict-align control probe is no longer discriminating: the build without the flag did "
+        "not combine the four bytes into a word load",
+    )
+    warning_line = next((line.strip() for line in warning.splitlines() if "strict-align" in line), "none")
+    print(f"rustc +strict-align diagnostic: {warning_line}")
+    print("strict-align backend check passed: 4 x ldrb with flag; ldr control without flag")
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
@@ -331,6 +390,8 @@ def parser() -> argparse.ArgumentParser:
     report.add_argument("--elf", type=Path, required=True)
     boot = commands.add_parser("boot", help="gate the bootloader flash slot")
     boot.add_argument("--elf", type=Path, required=True)
+    strict = commands.add_parser("strict-align", help="prove the pinned ARM backend honors +strict-align")
+    strict.add_argument("--probe", type=Path, default=STRICT_ALIGN_PROBE)
     return root
 
 
@@ -342,8 +403,10 @@ def main() -> int:
             check_board(args, baseline)
         elif args.command == "report":
             check_report(args, baseline)
-        else:
+        elif args.command == "boot":
             check_boot(args, baseline)
+        else:
+            check_strict_align(args)
     except (GuardError, KeyError, TypeError) as error:
         print(f"resource guard failed: {error}", file=sys.stderr)
         return 1
