@@ -142,10 +142,16 @@ mod tests {
     /// The committed sample route (`assets/grimsel-climb.obcr`) — the "Grimsel Climb" OBCR the fixture
     /// trip groups copies of.
     const SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.obcr");
+    /// The committed fixture trip (`assets/TP1.OBT`): "Alpen Traverse", stage ids `[0, 1, 99]` —
+    /// the first two are the sorted-scan ids of any two staged routes, 99 the deliberate dangling
+    /// ref. Copy it into a `--routes-dir` beside two or more routes for a groupable menu; TR3's
+    /// snapshot harness stages exactly this file.
+    const TRIP_ASSET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/TP1.OBT");
 
     /// Stage a routes folder with three copies of the sample route (`a`/`b`/`c`, so their sorted-scan
-    /// ids are 0/1/2) plus a `TP1.OBT` trip grouping the first two (ids 0, 1) with one dangling ref
-    /// (99). Route `c` (id 2) stays loose — a groupable menu: one folder + one top-level route.
+    /// ids are 0/1/2) plus the committed `TP1.OBT` trip grouping the first two (ids 0, 1) with one
+    /// dangling ref (99). Route `c` (id 2) stays loose — a groupable menu: one folder + one
+    /// top-level route.
     fn stage_fixture(tag: &str) -> std::path::PathBuf {
         let route = std::fs::read(SAMPLE).expect("sample route asset readable");
         let dir = std::env::temp_dir().join(format!("obc-trips-test-{}-{tag}", std::process::id()));
@@ -154,9 +160,16 @@ mod tests {
         for name in ["a.obcr", "b.obcr", "c.obcr"] {
             std::fs::write(dir.join(name), &route).unwrap();
         }
-        let mut trip = Vec::new();
-        struct VecSink<'a>(&'a mut Vec<u8>);
-        impl obc_route::ByteSink for VecSink<'_> {
+        std::fs::copy(TRIP_ASSET, dir.join("TP1.OBT")).expect("trip asset readable");
+        dir
+    }
+
+    /// The committed `TP1.OBT` asset equals the production writer's output byte-for-byte — the
+    /// asset's provenance pin (regenerate by re-running `write_trip` with these arguments).
+    #[test]
+    fn committed_trip_asset_matches_the_production_writer() {
+        struct VecSink(Vec<u8>);
+        impl obc_route::ByteSink for VecSink {
             fn write(&mut self, b: &[u8]) -> Result<(), obc_route::Error> {
                 self.0.extend_from_slice(b);
                 Ok(())
@@ -167,9 +180,9 @@ mod tests {
                 Ok(())
             }
         }
-        write_trip("Alpen Traverse", &[0, 1, 99], &mut VecSink(&mut trip)).unwrap();
-        std::fs::write(dir.join("TP1.OBT"), &trip).unwrap();
-        dir
+        let mut sink = VecSink(Vec::new());
+        write_trip("Alpen Traverse", &[0, 1, 99], &mut sink).unwrap();
+        assert_eq!(std::fs::read(TRIP_ASSET).expect("trip asset readable"), sink.0);
     }
 
     fn sample_distance_km() -> u32 {
