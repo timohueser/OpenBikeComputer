@@ -26,7 +26,9 @@ use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
 use obc_platform::display_contracts::conformance::{self, GlassProbe};
 use obc_platform::display_contracts::{Device64Frame, NativeFrame, OverlayPresenter, PresentStats, Presenter};
-use obc_platform::ls021::{composite_into_resident, spans_missed_changes, RowDamage, RowDiff, RowWindow};
+use obc_platform::ls021::{
+    composite_into_resident, spans_missed_changes, OverlayScratch, RowDamage, RowDiff, RowWindow,
+};
 use obc_platform::{device64_to_rgb565, Band};
 use obc_reader::rgb565_to_device64;
 use pollster::block_on;
@@ -141,8 +143,7 @@ impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H
             frame.backing_mut(),
             Size::new(W as u32, H as u32),
             r,
-            &mut scratch,
-            &mut save,
+            OverlayScratch { win: &mut scratch, save: &mut save },
             |px| {
                 let (dr, dg, db) = rgb565_to_device64(px);
                 ((dr / 85) << 4) | ((dg / 85) << 2) | (db / 85)

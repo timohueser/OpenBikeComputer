@@ -97,6 +97,18 @@ impl RowWindow {
     }
 }
 
+/// The paired scratch buffers one [`composite_into_resident`] call borrows — kept together because
+/// they describe the *same* window: `win` is the RGB565 composite the drawer paints
+/// ([`composite_overlay_window`]'s target), `save` the clean device-64 window bytes the engine
+/// restores after the push. Both are call-scoped transients on the caller's stack (the board's
+/// `MAX_OVERLAY_*`-sized arrays), never resident state.
+pub struct OverlayScratch<'a> {
+    /// RGB565 composite window, ≥ `w × rows` pixels.
+    pub win: &'a mut [u16],
+    /// Clean device-64 window bytes for the restore, ≥ `w × rows` bytes.
+    pub save: &'a mut [u8],
+}
+
 /// **The mutate-and-restore overlay composite** (#347): present `draw_overlay` composited over the
 /// clean resident `fb` backdrop within `window`, for a transport that scans the resident frame
 /// directly — so the composited window must transiently *be* in the frame. The clean window bytes
@@ -113,20 +125,20 @@ impl RowWindow {
 /// device-64 packer, passed in so this crate stays free of the reader's quantizer dependency —
 /// both the board and the host tests pass the same `rgb565_to_device64`-based closure.
 ///
-/// `win_scratch` and `save_scratch` must each hold at least `w × rows` entries (panics otherwise —
-/// a backend wiring bug, caught loudly). Transport-generic: the board's `push` is the blocking FLPR
+/// Both [`OverlayScratch`] slices must hold at least `w × rows` entries (panics otherwise — a
+/// backend wiring bug, caught loudly). Transport-generic: the board's `push` is the blocking FLPR
 /// span push; the host conformance double's copies the pushed rows to its glass — so the *same*
 /// save/composite/push/restore engine is what the clean-frame postcondition tests.
 pub fn composite_into_resident<E>(
     fb: &mut [u8],
     frame: Size,
     window: RowWindow,
-    win_scratch: &mut [u16],
-    save_scratch: &mut [u8],
+    scratch: OverlayScratch<'_>,
     quantize: impl Fn(u16) -> u8,
     draw_overlay: &mut dyn FnMut(&mut Band),
     push: impl FnOnce(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
+    let OverlayScratch { win: win_scratch, save: save_scratch } = scratch;
     let (x0, y0, w, rows) = (window.x0 as usize, window.y0 as usize, window.w as usize, window.rows as usize);
     let fw = frame.width as usize;
     assert!(win_scratch.len() >= w * rows && save_scratch.len() >= w * rows, "overlay scratch smaller than the window");
@@ -205,8 +217,7 @@ mod tests {
             &mut fb,
             Size::new(fw as u32, fh as u32),
             window,
-            &mut win,
-            &mut save,
+            OverlayScratch { win: &mut win, save: &mut save },
             quant,
             &mut |band| {
                 // Paint frame-absolute (5, 3) into the window.
@@ -237,8 +248,7 @@ mod tests {
             &mut fb,
             Size::new(fw as u32, fh as u32),
             window,
-            &mut win,
-            &mut save,
+            OverlayScratch { win: &mut win, save: &mut save },
             quant,
             &mut |band| {
                 band.fill_solid(&Rectangle::new(Point::new(2, 1), Size::new(2, 2)), white()).ok();
