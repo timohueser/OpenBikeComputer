@@ -319,6 +319,8 @@ Inside a chunk, each feature's geometry is stored as one absolute starting point
 <figcaption>The first vertex is the anchor, stored once and relative to the leaf's corner so even it stays small; every other vertex is a step from the one before. Most steps are a handful of microdegrees, so a whole ring usually fits in <b>single bytes</b> — and a feature with one long edge simply bumps the whole ring to 16-bit deltas. (The packer also pre-splits any segment longer than 30 000 µdeg, so a delta can never overflow 16 bits.)</figcaption>
 </figure>
 
+The device decodes one complete feature into fixed caller-owned point and ring buffers. Before it publishes that geometry, it validates every encoded ring and checks that the whole feature fits. An over-capacity or malformed feature is therefore consumed and **dropped whole** with a typed outcome; it is never exposed as a shortened line or an open polygon. Production maps stay within the format's 2,048-vertex cap, while this rule keeps smaller device profiles and damaged files honest without changing a byte on disk. The [rendering pipeline](../rendering/#4-decode-by-priority-the-clever-bit) explains how those outcomes are counted separately from ordinary frame-budget drops.
+
 Decoding a ring is exactly as simple as it looks — pick the delta width once, then walk:
 
 ```rust

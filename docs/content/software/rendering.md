@@ -338,14 +338,14 @@ The walk is a recursive descent that prunes whole subtrees by bounding box and r
 
 ```rust
 if idx >= lod.node_count || depth > MAX_DEPTH || !node.intersects(view) {
-    return;                          // prune: out of range, too deep, or off-screen
+    return Ok(());                   // prune: out of range, too deep, or off-screen
 }
-let val = self.read_node(lod, idx);
+let val = self.read_node(lod, idx)?; // medium/cache failures stay distinct
 if val & BRANCH_BIT == 0 {
     if val != EMPTY_LEAF {
         visit(val, node);            // a non-empty leaf = a chunk to decode
     }
-    return;
+    return Ok(());
 }
 // branch: child must advance (child > idx) — reject a corrupt back-reference —
 // then split `node`'s bbox into NW/NE/SW/SE and recurse into each child
@@ -397,6 +397,8 @@ self.decode_winners(reader, lod, view, winners, stats);                   // pas
 - **Pass A** walks each visible chunk **once**, decoding every drawn feature just far enough to get its bounding box, and records a fixed-size *stub* — style, chunk, byte offset, vertex count — but keeps **no geometry**. When the stub buffer fills, the lowest-priority stub is evicted, so it always holds the best candidates.
 - **Select** is pure RAM: sort the stubs by priority and admit them greedily against the exact point/span budget. Drops are strictly lowest-priority-first, *globally* — the same guarantee as before, now with the exact vertex cost of every candidate known before a single coordinate is copied.
 - **Pass B** walks the chunks once more and re-decodes only the **winners**, seeking straight to each by the byte offset its stub saved, and writes their geometry into the frame buffers. Only chunks that own a winner are re-read.
+
+There are two deliberately separate kinds of degradation here. A **frame-budget drop** happens only after a complete feature produced a stub; it follows the deterministic priority policy above and increments `features_dropped`. A **decode failure** never produces partial geometry: an over-capacity feature is consumed and dropped whole, malformed feature bytes are rejected, structural map/index corruption is distinguished from them, and medium/cache failures remain typed. The renderer counts these separately as capacity drops, malformed features, structural-map failures, read failures, and cache contentions. Pass A simply omits a failed feature's stub and continues when its byte extent is known. If a winner refetch or the second index walk fails in pass B, the collector rolls back any point/ring prefix and compacts only successfully decoded spans; failed placeholders and untouched stubs never reach the painter.
 
 A feature that survives is decoded twice (cheap, in RAM); a chunk is fetched at most twice instead of four times, so the SD traffic that dominates a wide frame roughly halves. The stubs live in the same buffer the spans end up in — a stub is sized to fit a span slot — so the split costs no extra RAM.
 

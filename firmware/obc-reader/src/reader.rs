@@ -214,6 +214,69 @@ pub enum Kind {
     Polygon,
 }
 
+/// Which caller-owned feature scratch bound rejected a complete encoded feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacityError {
+    Points,
+    Rings,
+}
+
+/// Why a feature was consumed but not published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureDecodeError {
+    Capacity(CapacityError),
+    Malformed,
+}
+
+/// A single-feature refetch failure, retaining decode/capacity vs. source/cache identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureReadError {
+    Decode(FeatureDecodeError),
+    Read(MapReadError),
+}
+
+/// A cache access failed without panicking through the safe reader API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheError {
+    Busy,
+}
+
+/// Failures while streaming a map index or geometry chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapReadError {
+    Source(IoError),
+    Cache(CacheError),
+    Malformed,
+}
+
+impl From<MapReadError> for Error {
+    fn from(error: MapReadError) -> Self {
+        match error {
+            MapReadError::Source(error) => Error::Source(error),
+            MapReadError::Cache(CacheError::Busy) => Error::CacheBusy,
+            MapReadError::Malformed => Error::BadOffset,
+        }
+    }
+}
+
+/// Outcome of a feature-chunk walk. Failed features are consumed whole and never visited.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecodeStatus {
+    pub complete: u32,
+    pub capacity_dropped: u32,
+    pub malformed: u32,
+}
+
+impl DecodeStatus {
+    #[inline]
+    fn dropped(&mut self, error: FeatureDecodeError) {
+        match error {
+            FeatureDecodeError::Capacity(_) => self.capacity_dropped = self.capacity_dropped.saturating_add(1),
+            FeatureDecodeError::Malformed => self.malformed = self.malformed.saturating_add(1),
+        }
+    }
+}
+
 /// One level of the LOD pyramid: a self-contained quadtree index + chunk set.
 #[derive(Debug, Clone, Copy)]
 pub struct Lod {
@@ -718,7 +781,7 @@ pub fn read_header(src: &dyn ByteSource) -> Result<MapHeader, Error> {
         return Err(Error::TooShort);
     }
     let mut h = [0u8; HEADER_LEN];
-    src.read_at(0, &mut h).map_err(|_| Error::TooShort)?;
+    src.read_at(0, &mut h).map_err(Error::Source)?;
     parse_header(&h)
 }
 
@@ -770,7 +833,7 @@ impl MapTables {
             return Err(Error::TooShort);
         }
         let mut header = [0u8; HEADER_LEN];
-        src.read_at(0, &mut header).map_err(|_| Error::TooShort)?;
+        src.read_at(0, &mut header).map_err(Error::Source)?;
         let MapHeader { version, bbox, marker_color } = parse_header(&header)?;
         let style_offset = rd_u32(&header, 21) as usize;
         let lod_count = header[25] as usize;
@@ -836,6 +899,9 @@ pub struct Reader<'a> {
     /// `read_at` takes `&self` but the cache mutates; the borrows are tightly scoped so the
     /// index-node read and the chunk decode never overlap.
     cache: &'a MapCache,
+    /// False only when construction legally re-entered an already borrowed cache. Streamed calls
+    /// then return `CacheError::Busy`; reconstructing the cheap reader is the retry.
+    cache_ready: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -847,14 +913,32 @@ impl<'a> Reader<'a> {
     /// slots, so a map switch (a re-`parse`) can never cross-serve the old map's chunks — no manual
     /// [`MapCache::clear`] required.
     pub fn new(src: &'a dyn ByteSource, tables: &'a MapTables, cache: &'a MapCache) -> Reader<'a> {
-        cache.adopt(tables.generation);
-        Reader { src, version: tables.version, bbox: tables.bbox, marker_color: tables.marker_color, tables, cache }
+        let cache_ready = cache.adopt(tables.generation).is_ok();
+        Reader {
+            src,
+            version: tables.version,
+            bbox: tables.bbox,
+            marker_color: tables.marker_color,
+            tables,
+            cache,
+            cache_ready,
+        }
     }
 
     /// Snapshot of the chunk-cache + streaming counters. Cumulative over the cache's life, so the
     /// renderer reports the per-frame delta.
     #[inline]
     pub fn chunk_cache_stats(&self) -> CacheStats {
+        self.try_chunk_cache_stats().unwrap_or_default()
+    }
+
+    /// Fallible cache-counter snapshot for callers that must distinguish legal contention from an
+    /// actually empty cache. The compatibility [`Reader::chunk_cache_stats`] view never panics.
+    #[inline]
+    pub fn try_chunk_cache_stats(&self) -> Result<CacheStats, CacheError> {
+        if !self.cache_ready {
+            return Err(CacheError::Busy);
+        }
         self.cache.stats()
     }
 
@@ -923,15 +1007,14 @@ impl<'a> Reader<'a> {
     /// contain the whole map (then the pass was exhaustive). No new persistent state: each chunk
     /// streams through a single 512-byte stack scratch, `pos`'s `cos_lat` is hoisted once, and the
     /// 16-slot best-set lives in `out`. A record revisited on a wider pass is deduped by its
-    /// `(lat, lon, subtype)` so it's never returned twice. Corrupt input (a `chunk_size == 0`, an
-    /// out-of-range subtype, a truncated chunk) is skipped, never a panic — matching the reader's
-    /// posture elsewhere.
+    /// `(lat, lon, subtype)` so it's never returned twice. Structurally invalid records such as an
+    /// out-of-range subtype are skipped; source or index-cache failures return a typed [`Error`]
+    /// rather than being mistaken for an empty category.
     ///
     /// # Reentrancy
     ///
-    /// Like the geometry walk, this streams from the source through the internal cache; do not call
-    /// it from inside a `for_each_feature*` / `for_each_chunk` callback (it would re-borrow the
-    /// cache and panic).
+    /// Like the geometry walk, this streams through the internal cache. Legal re-entry while a
+    /// feature callback holds that cache returns [`Error::CacheBusy`] instead of panicking.
     pub fn nearest_pois(
         &self,
         category: PoiCategory,
@@ -970,7 +1053,7 @@ impl<'a> Reader<'a> {
             };
             // Re-walk from scratch each pass (the set dedups revisits). The set only ever holds the
             // true nearest-16 seen so far, so a superset pass converges it.
-            self.poi_scan(&entry, dir.chunk_size, pos, cl, &search, out);
+            self.poi_scan(&entry, dir.chunk_size, pos, cl, &search, out)?;
 
             // The half-extent as a ground radius: everything outside the square is at least this far
             // (the tighter of the two axes' meter half-extents — they're ~equal by construction, but
@@ -1014,11 +1097,15 @@ impl<'a> Reader<'a> {
         cl: f32,
         search: &BBox,
         out: &mut Vec<Poi, MAX_POI_RESULTS>,
-    ) {
+    ) -> Result<(), Error> {
         // The whole chunk's record count. A chunk with no sentinel room (records × 32 == chunk_size)
         // is bounded by this count instead (mirrors `for_each_feature_filtered`).
         let records_per_chunk = chunk_size / POI_RECORD_LEN;
+        let mut read_error = None;
         self.walk_leaves(entry, 0, self.bbox, search, 0, &mut |cid, _node| {
+            if read_error.is_some() {
+                return;
+            }
             let (start, end) = match entry.chunk_range(cid, chunk_size) {
                 Some(r) => r,
                 None => return,
@@ -1026,8 +1113,15 @@ impl<'a> Reader<'a> {
             if end > self.src.len() as usize {
                 return;
             }
-            self.scan_poi_chunk(start as u32, records_per_chunk, pos, cl, out);
-        });
+            if let Err(error) = self.scan_poi_chunk(start as u32, records_per_chunk, pos, cl, out) {
+                read_error = Some(error);
+            }
+        })
+        .map_err(Error::from)?;
+        if let Some(error) = read_error {
+            return Err(Error::Source(error));
+        }
+        Ok(())
     }
 
     /// Stream one POI chunk's records through a single **512-byte** stack scratch — `POI_SCAN_WINDOW`
@@ -1043,21 +1137,19 @@ impl<'a> Reader<'a> {
         pos: (i32, i32),
         cl: f32,
         out: &mut Vec<Poi, MAX_POI_RESULTS>,
-    ) {
+    ) -> Result<(), IoError> {
         const RECS_PER_WINDOW: usize = POI_SCAN_WINDOW / POI_RECORD_LEN;
         let mut scratch = [0u8; POI_SCAN_WINDOW];
         let mut done = 0usize;
         while done < record_cap {
             let take = (record_cap - done).min(RECS_PER_WINDOW);
             let win = &mut scratch[..take * POI_RECORD_LEN];
-            if self.src.read_at(start + (done * POI_RECORD_LEN) as u32, win).is_err() {
-                return; // a flaky read ends this chunk cleanly (skip, no panic)
-            }
+            self.src.read_at(start + (done * POI_RECORD_LEN) as u32, win)?;
             for r in 0..take {
                 let off = r * POI_RECORD_LEN;
                 let subtype = win[off + 8];
                 if subtype == CHUNK_END {
-                    return; // end-of-records sentinel — nothing valid follows in this chunk
+                    return Ok(()); // end-of-records sentinel — nothing valid follows in this chunk
                 }
                 // Skip an out-of-range subtype (0, or past the table) cleanly — never panic/UB.
                 if crate::poi_table::subtype_row(subtype).is_none() {
@@ -1070,6 +1162,7 @@ impl<'a> Reader<'a> {
             }
             done += take;
         }
+        Ok(())
     }
 
     /// The parsed nav directory (spec §8.1). Always present in v9; `is_empty()` for a map with no
@@ -1095,13 +1188,13 @@ impl<'a> Reader<'a> {
     /// `scratch` is the caller-owned chunk buffer and must hold at least the directory's
     /// `chunk_size` bytes (≤ [`NAV_MAX_CHUNK_BYTES`], enforced at parse) — `Err(Error::TooShort)`
     /// otherwise. R3/R4 point this at their graph-tile cache slot; tests pass a stack array. An
-    /// empty graph visits nothing. Corrupt input (a truncated record, a chunk range past EOF) ends
-    /// that chunk cleanly — never a panic, matching the POI scan's posture.
+    /// empty graph visits nothing. A truncated record ends that chunk cleanly; source or
+    /// index-cache failures return a typed [`Error`] rather than being mistaken for an empty leaf.
     ///
     /// # Reentrancy
     ///
     /// Like [`Reader::nearest_pois`], the quadtree walk streams through the internal index cache;
-    /// do not call this from inside a `for_each_feature*` / `for_each_chunk` callback.
+    /// legal re-entry returns [`Error::CacheBusy`].
     pub fn for_each_nav_node(
         &self,
         view: &BBox,
@@ -1115,7 +1208,11 @@ impl<'a> Reader<'a> {
         if scratch.len() < dir.chunk_size {
             return Err(Error::TooShort);
         }
+        let mut read_error = None;
         self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| {
+            if read_error.is_some() {
+                return;
+            }
             let (start, end) = match dir.chunk_range(cid) {
                 Some(r) => r,
                 None => return,
@@ -1124,11 +1221,16 @@ impl<'a> Reader<'a> {
                 return;
             }
             let chunk = &mut scratch[..dir.chunk_size];
-            if self.src.read_at(start as u32, chunk).is_err() {
-                return; // a flaky read skips this leaf cleanly
+            if let Err(error) = self.src.read_at(start as u32, chunk) {
+                read_error = Some(error);
+                return;
             }
             decode_nav_chunk(chunk, &mut visit);
-        });
+        })
+        .map_err(Error::from)?;
+        if let Some(error) = read_error {
+            return Err(Error::Source(error));
+        }
         Ok(())
     }
 
@@ -1218,7 +1320,11 @@ impl<'a> Reader<'a> {
         if dir.is_empty() {
             return Ok(());
         }
+        let mut read_error = None;
         self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| {
+            if read_error.is_some() {
+                return;
+            }
             let (start, end) = match dir.chunk_range(cid) {
                 Some(r) => r,
                 None => return,
@@ -1231,10 +1337,15 @@ impl<'a> Reader<'a> {
                 Err(_) => return,
             };
             // A failed fill skips this leaf cleanly (the cache never keeps a bad slot).
-            if let Some(chunk) = tiles.chunk(self.src, off, dir.chunk_size) {
-                decode_nav_chunk(chunk, &mut visit);
+            match tiles.chunk(self.src, off, dir.chunk_size) {
+                Some(chunk) => decode_nav_chunk(chunk, &mut visit),
+                None => read_error = Some(IoError::Io),
             }
-        });
+        })
+        .map_err(Error::from)?;
+        if let Some(error) = read_error {
+            return Err(Error::Source(error));
+        }
         Ok(())
     }
 
@@ -1354,11 +1465,18 @@ impl<'a> Reader<'a> {
     /// region lies within the file (both guaranteed by `walk_leaves`/`parse_lod_table` /
     /// `parse_poi_directory`), so the offset never overflows `u32`.
     #[inline]
-    fn read_node(&self, index: &dyn QuadIndex, idx: usize) -> Option<u32> {
+    fn read_node(&self, index: &dyn QuadIndex, idx: usize) -> Result<u32, MapReadError> {
+        if !self.cache_ready {
+            return Err(MapReadError::Cache(CacheError::Busy));
+        }
         let off = (index.index_offset() + idx * 4) as u32;
         let mut b = [0u8; 4];
-        self.cache.borrow_mut().index_read(self.src, off, &mut b).ok()?;
-        Some(u32::from_le_bytes(b))
+        self.cache
+            .try_borrow_mut()
+            .map_err(MapReadError::Cache)?
+            .index_read(self.src, off, &mut b)
+            .map_err(MapReadError::Source)?;
+        Ok(u32::from_le_bytes(b))
     }
 
     /// Visit `(chunk_id, node_bbox)` for every non-empty leaf in `lod` overlapping `view`, in
@@ -1367,12 +1485,18 @@ impl<'a> Reader<'a> {
     /// chunk count — the renderer relies on this so a wide viewport never silently drops chunks.
     /// The walk only reads the index (bbox tests over `u32` nodes), so re-running it once per
     /// priority pass is cheap relative to decoding.
-    pub fn for_each_chunk(&self, lod: usize, view: &BBox, mut visit: impl FnMut(u32, BBox)) {
+    pub fn for_each_chunk(
+        &self,
+        lod: usize,
+        view: &BBox,
+        mut visit: impl FnMut(u32, BBox),
+    ) -> Result<(), MapReadError> {
         if let Some(l) = self.tables.lods.get(lod) {
             if l.node_count > 0 {
-                self.walk_leaves(l, 0, self.bbox, view, 0, &mut visit);
+                self.walk_leaves(l, 0, self.bbox, view, 0, &mut visit)?;
             }
         }
+        Ok(())
     }
 
     /// Visit `(chunk_id, node_bbox)` for every non-empty leaf of a [`QuadIndex`] overlapping `view`,
@@ -1388,23 +1512,20 @@ impl<'a> Reader<'a> {
         view: &BBox,
         depth: u32,
         visit: &mut F,
-    ) {
+    ) -> Result<(), MapReadError> {
         // The depth cap is the hard stack bound against a corrupt cyclic branch (see
         // `MAX_QUADTREE_DEPTH`); a well-formed tree never reaches it.
         if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
-            return;
+            return Ok(());
         }
         // Read the node *before* descending/visiting so the index-cache borrow is released by the
         // time a leaf's `visit` triggers a geometry-chunk read (no nested `RefCell` borrow).
-        let val = match self.read_node(index, idx) {
-            Some(v) => v,
-            None => return,
-        };
+        let val = self.read_node(index, idx)?;
         if val & BRANCH_BIT == 0 {
             if val != EMPTY_LEAF {
                 visit(val, node);
             }
-            return;
+            return Ok(());
         }
         let child = (val & !BRANCH_BIT) as usize;
         // The packer flattens the quadtree breadth-first, so a branch's children always lie after
@@ -1412,7 +1533,7 @@ impl<'a> Reader<'a> {
         // only appears in a corrupt map and would re-enter a node already on the stack; reject it
         // (the depth cap above is the backstop, this stops the most direct cycle at its source).
         if child <= idx {
-            return;
+            return Err(MapReadError::Malformed);
         }
         // Floor-division midpoints (`div_euclid` floors toward −∞) — must match the packer's
         // `quadtree.rs` split so reader and writer agree on every node bbox.
@@ -1426,8 +1547,9 @@ impl<'a> Reader<'a> {
             BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
         ];
         for (i, kb) in kids.iter().enumerate() {
-            self.walk_leaves(index, child + i, *kb, view, depth + 1, visit);
+            self.walk_leaves(index, child + i, *kb, view, depth + 1, visit)?;
         }
+        Ok(())
     }
 
     /// Decode every feature in a chunk of `lod`, invoking `visit` once per feature with a
@@ -1437,11 +1559,8 @@ impl<'a> Reader<'a> {
     ///
     /// # Reentrancy
     ///
-    /// The internal cache `RefCell` borrow is held while `visit` runs. A callback may read the
-    /// resident tables ([`Reader::style`], [`Reader::backdrop_style`], [`Reader::lods`],
-    /// [`Reader::select_lod_for_mpp`]) but must **not** call any `Reader` method that streams from
-    /// the source — [`Reader::for_each_chunk`] or another `for_each_feature*` — which re-borrows
-    /// the cache and panics at runtime with a borrow error.
+    /// The internal cache borrow is held while `visit` runs. Resident-table calls remain available;
+    /// a nested streaming call returns [`MapReadError::Cache`] instead of panicking.
     pub fn for_each_feature<const P: usize, const R: usize>(
         &self,
         lod: usize,
@@ -1450,8 +1569,8 @@ impl<'a> Reader<'a> {
         points: &mut Vec<(i32, i32), P>,
         ring_lens: &mut Vec<usize, R>,
         visit: impl FnMut(FeatureRef),
-    ) {
-        self.for_each_feature_filtered(lod, chunk_id, node, points, ring_lens, |_| true, visit);
+    ) -> Result<DecodeStatus, MapReadError> {
+        self.for_each_feature_filtered(lod, chunk_id, node, points, ring_lens, |_| true, visit)
     }
 
     /// Like [`Reader::for_each_feature`], but `should_decode` is consulted with each feature's
@@ -1462,11 +1581,8 @@ impl<'a> Reader<'a> {
     ///
     /// # Reentrancy
     ///
-    /// The internal cache `RefCell` borrow is held while `should_decode` and `visit` run. A
-    /// callback may read the resident tables ([`Reader::style`], [`Reader::backdrop_style`],
-    /// [`Reader::lods`], [`Reader::select_lod_for_mpp`]) but must **not** call any `Reader` method
-    /// that streams from the source — [`Reader::for_each_chunk`] or another `for_each_feature*` —
-    /// which re-borrows the cache and panics at runtime with a borrow error.
+    /// The internal cache borrow is held while `should_decode` and `visit` run. Resident-table calls
+    /// remain available; a nested streaming call returns [`MapReadError::Cache`].
     #[allow(clippy::too_many_arguments)]
     pub fn for_each_feature_filtered<const P: usize, const R: usize>(
         &self,
@@ -1477,39 +1593,42 @@ impl<'a> Reader<'a> {
         ring_lens: &mut Vec<usize, R>,
         should_decode: impl Fn(u8) -> bool,
         visit: impl FnMut(FeatureRef),
-    ) {
+    ) -> Result<DecodeStatus, MapReadError> {
         let l = match self.tables.lods.get(lod) {
             Some(l) => l,
-            None => return,
+            None => return Err(MapReadError::Malformed),
         };
         // `chunk_id` is unvalidated file data: reject an out-of-range id or an offset overflowing
         // `usize` (32-bit on device) instead of panicking or decoding an adjacent region.
         let (start, end) = match l.chunk_range(chunk_id) {
             Some(range) => range,
-            None => return,
+            None => return Err(MapReadError::Malformed),
         };
         if end > self.src.len() as usize {
-            return;
+            return Err(MapReadError::Malformed);
         }
         // `chunk_size` was capped at `MAX_CHUNK_BYTES` in `parse`; this defensive check keeps a
         // corrupt LOD from indexing past the decode scratch.
         let len = end - start;
         if len > MAX_CHUNK_BYTES {
-            return;
+            return Err(MapReadError::Malformed);
         }
         // Pull the chunk through the cache, then decode from the resident bytes. The borrow is held
         // across `decode_chunk_into` — safe because `should_decode`/`visit` only touch
         // `self.tables.styles`, never the cache.
-        let mut cache = self.cache.borrow_mut();
+        if !self.cache_ready {
+            return Err(MapReadError::Cache(CacheError::Busy));
+        }
+        let mut cache = self.cache.try_borrow_mut().map_err(MapReadError::Cache)?;
         let loc = match cache.load_chunk(self.src, lod as u8, chunk_id, start as u32, len) {
             Ok(loc) => loc,
-            Err(_) => return,
+            Err(error) => return Err(MapReadError::Source(error)),
         };
         let chunk = match loc {
             ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
             ChunkLoc::Scratch => &cache.scratch[..len],
         };
-        decode_chunk_into(chunk, node, points, ring_lens, should_decode, visit);
+        Ok(decode_chunk_into(chunk, node, points, ring_lens, should_decode, visit))
     }
 
     /// Decode exactly the feature at byte `offset` within chunk `cid` of `lod`, into the caller's
@@ -1521,16 +1640,15 @@ impl<'a> Reader<'a> {
     /// `node` is the leaf bbox [`Reader::for_each_chunk`] yields for `cid` (the per-feature anchor
     /// base). `offset` came from a [`FeatureRef::offset`] earlier this frame, but it is still
     /// validated against the chunk length and the `0xFF` end-marker, so a stale/corrupt offset
-    /// yields `None`, never a panic or an out-of-chunk read. Fetches the chunk through the same
-    /// cache as the full walk, so consecutive calls for one `cid` (pass B visits a chunk's winners
-    /// together) hit the resident slot instead of re-reading it.
+    /// yields [`FeatureReadError::Decode`], never a panic or an out-of-chunk read. Fetches the chunk
+    /// through the same cache as the full walk, so consecutive calls for one `cid` (pass B visits a
+    /// chunk's winners together) hit the resident slot instead of re-reading it.
     ///
     /// # Reentrancy
     ///
     /// Same rule as [`Reader::for_each_feature_filtered`]: this borrows the internal cache for the
-    /// fetch + decode. Call it from a [`Reader::for_each_chunk`] visit callback (which holds no
-    /// cache borrow) — as pass B does — but not from inside a `for_each_feature*` callback, which
-    /// still holds the borrow.
+    /// fetch + decode. Calling it from [`Reader::for_each_chunk`] is the normal pass-B path; legal
+    /// re-entry from a `for_each_feature*` callback returns a typed cache error.
     pub fn decode_feature_at<'p, const P: usize, const R: usize>(
         &self,
         lod: usize,
@@ -1539,26 +1657,40 @@ impl<'a> Reader<'a> {
         node: &BBox,
         points: &'p mut Vec<(i32, i32), P>,
         ring_lens: &'p mut Vec<usize, R>,
-    ) -> Option<FeatureRef<'p>> {
-        let l = self.tables.lods.get(lod)?;
-        let (start, end) = l.chunk_range(cid)?;
+    ) -> Result<FeatureRef<'p>, FeatureReadError> {
+        // Every error leaves caller scratch empty. Besides making retries deterministic, this is
+        // the public expression of the whole-feature contract: no stale geometry from a previous
+        // success and no prefix decoded before a malformed hole may escape through these buffers.
+        points.clear();
+        ring_lens.clear();
+        let l = self.tables.lods.get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
+        let (start, end) = l.chunk_range(cid).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
         if end > self.src.len() as usize {
-            return None;
+            return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed));
         }
         let len = end - start;
         // Same corrupt-chunk guards as the full walk, plus the offset must land inside the chunk.
         if len > MAX_CHUNK_BYTES || offset >= len {
-            return None;
+            return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed));
         }
-        let mut cache = self.cache.borrow_mut();
-        let loc = cache.load_chunk(self.src, lod as u8, cid, start as u32, len).ok()?;
+        if !self.cache_ready {
+            return Err(FeatureReadError::Read(MapReadError::Cache(CacheError::Busy)));
+        }
+        let mut cache =
+            self.cache.try_borrow_mut().map_err(|error| FeatureReadError::Read(MapReadError::Cache(error)))?;
+        let loc = cache
+            .load_chunk(self.src, lod as u8, cid, start as u32, len)
+            .map_err(|error| FeatureReadError::Read(MapReadError::Source(error)))?;
         let chunk = match loc {
             ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
             ChunkLoc::Scratch => &cache.scratch[..len],
         };
         // The `FeatureRef` borrows `points`/`ring_lens` (its coordinates are copied there), not the
         // cache bytes, so it outlives the `cache` borrow dropped at return.
-        decode_one_feature(chunk, offset, node, points, ring_lens).map(|(fref, _)| fref)
+        match decode_one_feature(chunk, offset, node, points, ring_lens) {
+            DecodeOne::Complete(fref, _) => Ok(fref),
+            DecodeOne::Dropped(error, _) => Err(FeatureReadError::Decode(error)),
+        }
     }
 }
 
@@ -1673,9 +1805,10 @@ fn decode_chunk_into<const P: usize, const R: usize>(
     ring_lens: &mut Vec<usize, R>,
     should_decode: impl Fn(u8) -> bool,
     mut visit: impl FnMut(FeatureRef),
-) {
+) -> DecodeStatus {
     let cs = chunk.len();
     let mut off = 0usize;
+    let mut status = DecodeStatus::default();
 
     while off + FEATURE_HEADER_LEN <= cs {
         if chunk[off] == CHUNK_END {
@@ -1686,48 +1819,60 @@ fn decode_chunk_into<const P: usize, const R: usize>(
         // Skip path: the caller doesn't want this style this pass, so advance past the geometry
         // without decoding (read only the header fields the skip needs).
         if !should_decode(style_id) {
-            let ext_pt_count = rd_u16(chunk, off + 1) as usize;
-            let flags = chunk[off + 11];
-            let is_16 = flags & FEATURE_FLAG_16BIT != 0;
-            let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
-            let has_holes = flags & FEATURE_FLAG_HOLES != 0;
-            let dsize = if is_16 { 2 } else { 1 };
-            off += FEATURE_HEADER_LEN;
-            off = skip_ring(chunk, off, ext_pt_count, false, dsize);
-            if is_poly && has_holes {
-                off = for_each_hole(chunk, off, |c, o, hpc| skip_ring(c, o, hpc, true, dsize));
+            match skip_feature(chunk, off) {
+                Ok(next) => off = next,
+                Err(error) => {
+                    // A filtered feature still participates in the public whole-feature scratch
+                    // contract. If its framing is malformed, discard geometry left by a previous
+                    // selected feature (or stale caller prefill) before reporting the drop.
+                    points.clear();
+                    ring_lens.clear();
+                    status.dropped(error);
+                    break;
+                }
             }
             continue;
         }
 
         match decode_one_feature(chunk, off, node, points, ring_lens) {
-            Some((fref, next)) => {
+            DecodeOne::Complete(fref, next) => {
                 visit(fref);
+                status.complete = status.complete.saturating_add(1);
                 off = next;
             }
-            // A `0xFF` end-marker or a header that runs off the chunk end stops the walk.
-            None => break,
+            DecodeOne::Dropped(error, next) => {
+                status.dropped(error);
+                off = next;
+            }
         }
     }
+    status
 }
 
 /// Decode the single feature whose 12-byte header starts at `off` in `chunk`, into `points`/
 /// `ring_lens` (cleared first), returning its [`FeatureRef`] (borrowing those buffers, with
-/// [`FeatureRef::offset`] set to `off`) plus the offset just past it. `None` if `off` leaves no room
-/// for a header or lands on the `0xFF` end-marker — so it is safe to call with an untrusted `off`
-/// (issue #564's pass-B re-decode hands back a `FeatureRef::offset` from earlier this frame). `node`
-/// gives the leaf's min corner, the per-feature anchor base. This is the exact decode
+/// [`FeatureRef::offset`] set to `off`) plus the offset just past it. A malformed/capacity result
+/// also leaves both buffers empty, so it is safe to call with an untrusted `off` (issue #564's
+/// pass-B re-decode hands back a `FeatureRef::offset` from earlier this frame). `node` gives the
+/// leaf's min corner, the per-feature anchor base. This is the exact decode
 /// [`decode_chunk_into`] runs, so a feature decodes byte-for-byte identically whether it comes from
 /// the full-chunk walk or from [`Reader::decode_feature_at`].
+enum DecodeOne<'a> {
+    Complete(FeatureRef<'a>, usize),
+    Dropped(FeatureDecodeError, usize),
+}
+
 fn decode_one_feature<'b, const P: usize, const R: usize>(
     chunk: &[u8],
     off: usize,
     node: &BBox,
     points: &'b mut Vec<(i32, i32), P>,
     ring_lens: &'b mut Vec<usize, R>,
-) -> Option<(FeatureRef<'b>, usize)> {
+) -> DecodeOne<'b> {
+    points.clear();
+    ring_lens.clear();
     if off + FEATURE_HEADER_LEN > chunk.len() || chunk[off] == CHUNK_END {
-        return None;
+        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
     }
     let feat_off = off;
     let style_id = chunk[off];
@@ -1742,22 +1887,67 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
     let has_holes = flags & FEATURE_FLAG_HOLES != 0;
     let dsize = if is_16 { 2 } else { 1 };
 
-    let anchor = (node.min_lon + ax, node.min_lat + ay);
+    if ext_pt_count == 0 || flags & !(FEATURE_FLAG_16BIT | FEATURE_FLAG_POLYGON | FEATURE_FLAG_HOLES) != 0 {
+        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
+    }
+    if has_holes && !is_poly {
+        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
+    }
 
-    points.clear();
-    ring_lens.clear();
+    let anchor = (node.min_lon.wrapping_add(ax), node.min_lat.wrapping_add(ay));
+
     let mut bounds = Bounds::new();
 
-    off = read_ring(chunk, off, ext_pt_count, anchor, is_16, dsize, false, points, &mut bounds);
-    let _ = ring_lens.push(points.len());
+    let mut failure = None;
+    let ext_end = match ring_end(chunk, off, ext_pt_count, false, dsize) {
+        Some(end) => end,
+        None => return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len()),
+    };
+    if ext_pt_count > points.capacity() {
+        failure = Some(FeatureDecodeError::Capacity(CapacityError::Points));
+    } else if ring_lens.is_full() {
+        failure = Some(FeatureDecodeError::Capacity(CapacityError::Rings));
+    } else {
+        read_ring(chunk, off, ext_pt_count, anchor, is_16, false, points, &mut bounds);
+        ring_lens.push(ext_pt_count).unwrap();
+    }
+    off = ext_end;
 
     if is_poly && has_holes {
-        off = for_each_hole(chunk, off, |c, o, hpc| {
-            let before = points.len();
-            let o = read_ring(c, o, hpc, anchor, is_16, dsize, true, points, &mut bounds);
-            let _ = ring_lens.push(points.len() - before);
-            o
-        });
+        let hole_count = match chunk.get(off) {
+            Some(count) => *count as usize,
+            None => return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len()),
+        };
+        off += 1;
+        for _ in 0..hole_count {
+            if off.checked_add(2).is_none_or(|end| end > chunk.len()) {
+                return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
+            }
+            let hpc = rd_u16(chunk, off) as usize;
+            off += 2;
+            if hpc == 0 {
+                return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
+            }
+            let end = match ring_end(chunk, off, hpc, true, dsize) {
+                Some(end) => end,
+                None => return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len()),
+            };
+            if failure.is_none() {
+                if hpc > points.capacity() - points.len() {
+                    failure = Some(FeatureDecodeError::Capacity(CapacityError::Points));
+                } else if ring_lens.is_full() {
+                    failure = Some(FeatureDecodeError::Capacity(CapacityError::Rings));
+                } else {
+                    read_ring(chunk, off, hpc, anchor, is_16, true, points, &mut bounds);
+                    ring_lens.push(hpc).unwrap();
+                }
+            }
+            off = end;
+        }
+    }
+
+    if let Some(error) = failure {
+        return dropped_feature(points, ring_lens, error, off);
     }
 
     let fref = FeatureRef {
@@ -1768,50 +1958,61 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
         bbox: bounds.to_bbox(),
         offset: feat_off,
     };
-    Some((fref, off))
+    DecodeOne::Complete(fref, off)
 }
 
-/// Walk a polygon's hole list: read the 1-byte hole count at `off`, then per hole read its `u16`
-/// point count and hand `(chunk, off, hpc)` to `ring` (which decodes or skips and returns the
-/// post-ring offset); returns the offset past the whole block. The skip and decode paths share this
-/// framing so their byte arithmetic can't drift. No-op when `off` is already at the chunk end.
 #[inline]
-fn for_each_hole(chunk: &[u8], mut off: usize, mut ring: impl FnMut(&[u8], usize, usize) -> usize) -> usize {
-    let cs = chunk.len();
-    if off >= cs {
-        return off;
-    }
-    let hole_count = chunk[off] as usize;
-    off += 1;
-    for _ in 0..hole_count {
-        if off + 2 > cs {
-            break;
-        }
-        let hpc = rd_u16(chunk, off) as usize;
-        off += 2;
-        off = ring(chunk, off, hpc);
-    }
-    off
+fn dropped_feature<'a, const P: usize, const R: usize>(
+    points: &mut Vec<(i32, i32), P>,
+    ring_lens: &mut Vec<usize, R>,
+    error: FeatureDecodeError,
+    next: usize,
+) -> DecodeOne<'a> {
+    points.clear();
+    ring_lens.clear();
+    DecodeOne::Dropped(error, next)
 }
 
-/// Advance `off` past one ring's encoded deltas without decoding, mirroring [`read_ring`]'s offset
-/// arithmetic exactly so skip and decode stay byte-aligned. `is_hole` selects the hole encoding
-/// (every point a delta) vs the exterior encoding (first point is the anchor, not stored).
-fn skip_ring(chunk: &[u8], off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> usize {
+fn ring_end(chunk: &[u8], off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> Option<usize> {
     if pt_count == 0 {
-        return off;
+        return None;
     }
     let num_deltas = if is_hole { pt_count } else { pt_count - 1 };
-    let step = dsize * 2;
-    // Common case: the whole ring fits in the chunk — one multiply, no division.
-    let want = num_deltas * step;
-    let remain = chunk.len().saturating_sub(off);
-    if want <= remain {
-        return off + want;
+    let bytes = num_deltas.checked_mul(dsize.checked_mul(2)?)?;
+    let end = off.checked_add(bytes)?;
+    (end <= chunk.len()).then_some(end)
+}
+
+fn skip_feature(chunk: &[u8], off: usize) -> Result<usize, FeatureDecodeError> {
+    if off.checked_add(FEATURE_HEADER_LEN).is_none_or(|end| end > chunk.len()) || chunk[off] == CHUNK_END {
+        return Err(FeatureDecodeError::Malformed);
     }
-    // Truncated ring: advance by whole delta steps only — mirrors the old loop's
-    // `off + step > len ⇒ break`, so skip and decode stay byte-for-byte aligned.
-    off + (remain / step) * step
+    let ext_pt_count = rd_u16(chunk, off + 1) as usize;
+    let flags = chunk[off + 11];
+    let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
+    let has_holes = flags & FEATURE_FLAG_HOLES != 0;
+    if ext_pt_count == 0
+        || flags & !(FEATURE_FLAG_16BIT | FEATURE_FLAG_POLYGON | FEATURE_FLAG_HOLES) != 0
+        || (has_holes && !is_poly)
+    {
+        return Err(FeatureDecodeError::Malformed);
+    }
+    let dsize = if flags & FEATURE_FLAG_16BIT != 0 { 2 } else { 1 };
+    let mut next =
+        ring_end(chunk, off + FEATURE_HEADER_LEN, ext_pt_count, false, dsize).ok_or(FeatureDecodeError::Malformed)?;
+    if is_poly && has_holes {
+        let hole_count = *chunk.get(next).ok_or(FeatureDecodeError::Malformed)? as usize;
+        next += 1;
+        for _ in 0..hole_count {
+            if next.checked_add(2).is_none_or(|end| end > chunk.len()) {
+                return Err(FeatureDecodeError::Malformed);
+            }
+            let hpc = rd_u16(chunk, next) as usize;
+            next += 2;
+            next = ring_end(chunk, next, hpc, true, dsize).ok_or(FeatureDecodeError::Malformed)?;
+        }
+    }
+    Ok(next)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1821,27 +2022,20 @@ fn read_ring<const P: usize>(
     pt_count: usize,
     anchor: (i32, i32),
     is_16: bool,
-    dsize: usize,
     is_hole: bool,
     out: &mut Vec<(i32, i32), P>,
     bounds: &mut Bounds,
-) -> usize {
-    if pt_count == 0 {
-        return off;
-    }
+) {
     let (mut px, mut py) = anchor;
     let num_deltas = if is_hole {
         // holes store all points as deltas (first relative to anchor)
         pt_count
     } else {
-        let _ = out.push(anchor);
+        out.push(anchor).unwrap();
         bounds.add(anchor.0, anchor.1);
         pt_count - 1
     };
     for _ in 0..num_deltas {
-        if off + dsize * 2 > chunk.len() {
-            break;
-        }
         let (dx, dy) = if is_16 {
             (
                 i16::from_le_bytes([chunk[off], chunk[off + 1]]) as i32,
@@ -1850,13 +2044,12 @@ fn read_ring<const P: usize>(
         } else {
             (chunk[off] as i8 as i32, chunk[off + 1] as i8 as i32)
         };
-        off += dsize * 2;
-        px += dx;
-        py += dy;
-        let _ = out.push((px, py));
+        off += if is_16 { 4 } else { 2 };
+        px = px.wrapping_add(dx);
+        py = py.wrapping_add(dy);
+        out.push((px, py)).unwrap();
         bounds.add(px, py);
     }
-    off
 }
 
 /// Parse the style table, read resident from `src` at `style_offset` (file is `total` bytes) into
@@ -1885,7 +2078,7 @@ fn parse_styles(
         return Err(Error::BadOffset);
     }
     let mut cb = [0u8; 1];
-    src.read_at(style_offset as u32, &mut cb).map_err(|_| Error::BadOffset)?;
+    src.read_at(style_offset as u32, &mut cb).map_err(Error::Source)?;
     let count = cb[0] as usize;
     // `count*8` record bytes follow the count, clamped to what the file holds so the `o + 8 > want`
     // break below stops at the last whole record in a truncated table.
@@ -1893,7 +2086,7 @@ fn parse_styles(
     let want = (count * STYLE_RECORD_LEN).min(avail);
     let mut buf = [0u8; 256 * STYLE_RECORD_LEN];
     if want > 0 {
-        src.read_at((style_offset + 1) as u32, &mut buf[..want]).map_err(|_| Error::BadOffset)?;
+        src.read_at((style_offset + 1) as u32, &mut buf[..want]).map_err(Error::Source)?;
     }
     let mut o = 0usize;
     for _ in 0..count {
@@ -1924,7 +2117,7 @@ fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total:
     let mut e = [0u8; LOD_ENTRY_LEN];
     for k in 0..lod_count {
         let o = offset + k * LOD_ENTRY_LEN;
-        src.read_at(o as u32, &mut e).map_err(|_| Error::BadOffset)?;
+        src.read_at(o as u32, &mut e).map_err(Error::Source)?;
         let lod = Lod {
             max_mpp: rd_f32(&e, 0),
             index_offset: rd_u32(&e, 4) as usize,
@@ -1971,7 +2164,7 @@ fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         return Err(Error::BadOffset);
     }
     let mut hdr = [0u8; 3];
-    src.read_at(offset as u32, &mut hdr).map_err(|_| Error::BadOffset)?;
+    src.read_at(offset as u32, &mut hdr).map_err(Error::Source)?;
     let category_count = hdr[0] as usize;
     let chunk_size = rd_u16(&hdr, 1) as usize;
     if category_count > POI_MAX_CATEGORIES || chunk_size > POI_MAX_CHUNK_BYTES {
@@ -1992,7 +2185,7 @@ fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
     let mut e = [0u8; POI_CAT_ENTRY_LEN];
     for k in 0..category_count {
         let o = offset + 3 + k * POI_CAT_ENTRY_LEN;
-        src.read_at(o as u32, &mut e).map_err(|_| Error::BadOffset)?;
+        src.read_at(o as u32, &mut e).map_err(Error::Source)?;
         let entry = PoiCatEntry {
             category_id: e[0],
             index_offset: rd_u32(&e, 1) as usize,
@@ -2022,7 +2215,7 @@ fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
     // blobs) must lie in-file — checked, so a corrupt count can't wrap `usize` past `total`. An
     // empty pool (count 0) still validates its 2-byte `count` header lies in-file.
     let mut pf = [0u8; 6];
-    src.read_at(pool_fields_off as u32, &mut pf).map_err(|_| Error::BadOffset)?;
+    src.read_at(pool_fields_off as u32, &mut pf).map_err(Error::Source)?;
     let hours_pool_offset = rd_u32(&pf, 0) as usize;
     let hours_pool_count = rd_u16(&pf, 4) as usize;
     if hours_pool_offset < HEADER_LEN {
@@ -2085,7 +2278,7 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         return Err(Error::BadOffset);
     }
     let mut d = [0u8; NAV_DIR_LEN];
-    src.read_at(offset as u32, &mut d).map_err(|_| Error::BadOffset)?;
+    src.read_at(offset as u32, &mut d).map_err(Error::Source)?;
     let dir = NavDirectory {
         index_offset: rd_u32(&d, 0) as usize,
         node_count: rd_u32(&d, 4) as usize,
@@ -2165,7 +2358,7 @@ fn parse_nav_profiles(
             .checked_add(i.checked_mul(NAV_PROFILE_LEN).ok_or(Error::BadOffset)?)
             .ok_or(Error::BadOffset)?;
         let off = u32::try_from(off).map_err(|_| Error::BadOffset)?;
-        src.read_at(off, &mut buf).map_err(|_| Error::BadOffset)?;
+        src.read_at(off, &mut buf).map_err(Error::Source)?;
         let mut name = [0u8; NAV_PROFILE_NAME_LEN];
         name.copy_from_slice(&buf[0..NAV_PROFILE_NAME_LEN]);
         // Name length = bytes up to the first 0xFF pad (the §7/§8 name convention).
@@ -2282,8 +2475,9 @@ impl MapCache {
     /// would cross-serve as a (wrong-geometry) hit — but [`Reader::new`] guards that structurally
     /// via [`MapCache::adopt`], so calling this on a switch is still correct, just no longer
     /// load-bearing. Cheap — only the `valid` flags + counters are touched, not the buffers.
-    pub fn clear(&self) {
-        self.inner.borrow_mut().clear();
+    pub fn clear(&self) -> Result<(), CacheError> {
+        self.inner.try_borrow_mut().map_err(|_| CacheError::Busy)?.clear();
+        Ok(())
     }
 
     /// Bind the cache to a [`MapTables`] parse `generation`, running the [`MapCache::clear`] logic
@@ -2291,22 +2485,23 @@ impl MapCache {
     /// forgotten-`clear()`-on-map-switch cross-serve impossible by construction. A zeroed cache
     /// sits at generation 0 — never a live generation — so the first adopt after boot clears an
     /// already-empty cache (harmless).
-    fn adopt(&self, generation: u32) {
-        let mut inner = self.inner.borrow_mut();
+    fn adopt(&self, generation: u32) -> Result<(), CacheError> {
+        let mut inner = self.inner.try_borrow_mut().map_err(|_| CacheError::Busy)?;
         if inner.generation != generation {
             inner.clear();
             inner.generation = generation;
         }
+        Ok(())
     }
 
     #[inline]
-    fn borrow_mut(&self) -> RefMut<'_, MapCacheInner> {
-        self.inner.borrow_mut()
+    fn stats(&self) -> Result<CacheStats, CacheError> {
+        Ok(self.inner.try_borrow().map_err(|_| CacheError::Busy)?.stats())
     }
 
     #[inline]
-    fn stats(&self) -> CacheStats {
-        self.inner.borrow().stats()
+    fn try_borrow_mut(&self) -> Result<RefMut<'_, MapCacheInner>, CacheError> {
+        self.inner.try_borrow_mut().map_err(|_| CacheError::Busy)
     }
 }
 
@@ -2578,7 +2773,7 @@ mod tests {
         let src = FlakySource { data: &data, fail_at, partial: 8 };
 
         let cache = MapCache::new();
-        let mut inner = cache.borrow_mut();
+        let mut inner = cache.inner.borrow_mut();
 
         // Prime all slots, oldest first — so the LRU victim of the next miss is slot 0 (cid 0).
         for cid in 0..MAP_CHUNK_SLOTS as u32 {
@@ -2618,9 +2813,9 @@ mod tests {
     #[test]
     fn new_boxed_is_a_fresh_unborrowed_cache() {
         let cache = MapCache::new_boxed();
-        let mut inner = cache.borrow_mut(); // panics here if zeroed ≠ unborrowed
+        let mut inner = cache.inner.borrow_mut(); // panics here if zeroed ≠ unborrowed
         assert_eq!(inner.generation, 0, "a zeroed cache must sit at the never-live generation 0");
-        assert_eq!(inner.stats(), MapCache::new().stats(), "counters must start where `new()`'s do");
+        assert_eq!(inner.stats(), MapCache::new().stats().unwrap(), "counters must start where `new()`'s do");
 
         const LEN: usize = 64;
         let data = [0xA5u8; LEN];
@@ -2668,7 +2863,8 @@ mod tests {
             let node = r.bbox;
             r.for_each_feature(0, 0, &node, &mut points, &mut ring_lens, |f| {
                 last = *f.exterior().last().unwrap();
-            });
+            })
+            .unwrap();
             (last, r.chunk_cache_stats())
         }
 
@@ -2694,6 +2890,45 @@ mod tests {
         assert_eq!((stats_b.chunk_hits, stats_b.chunk_misses), (0, 1), "the switch must miss + re-read");
     }
 
+    #[test]
+    fn safe_cache_reentry_returns_busy_and_recovers() {
+        use obcm_testkit::{build_file, pack_line, pad, LodSpec};
+
+        let bytes = build_file(
+            (0, 0, 1000, 1000),
+            &[(1, 3, 0xF800, 2, 3, false, None)],
+            &[LodSpec {
+                max_mpp: f32::INFINITY,
+                index: vec![0],
+                chunks: vec![pad(pack_line(1, 10, 10, &[(1, 1)]), 64)],
+                chunk_size: 64,
+            }],
+        );
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut points = Vec::<(i32, i32), 8>::new();
+        let mut rings = Vec::<usize, 2>::new();
+        let mut nested = None;
+
+        reader
+            .for_each_feature(0, 0, &reader.bbox, &mut points, &mut rings, |_| {
+                nested = Some(reader.for_each_chunk(0, &reader.bbox, |_, _| {}));
+                assert_eq!(reader.try_chunk_cache_stats(), Err(CacheError::Busy));
+                assert_eq!(cache.clear(), Err(CacheError::Busy));
+                let reentered = Reader::new(&src, &tables, &cache);
+                assert_eq!(
+                    reentered.for_each_chunk(0, &reader.bbox, |_, _| {}),
+                    Err(MapReadError::Cache(CacheError::Busy))
+                );
+            })
+            .unwrap();
+
+        assert_eq!(nested, Some(Err(MapReadError::Cache(CacheError::Busy))));
+        assert!(reader.for_each_chunk(0, &reader.bbox, |_, _| {}).is_ok(), "outer borrow must be released");
+    }
+
     /// A style-table read that *fails* (flaky card) must surface as a parse error, not an
     /// all-`None` table that loads "fine" and renders nothing. Exercises both reads — the count
     /// byte and the record block — via a `FlakySource` failing at exactly that offset. (A
@@ -2716,7 +2951,7 @@ mod tests {
         for fail_at in [style_off, style_off + 1] {
             let src = FlakySource { data: &bytes, fail_at, partial: 0 };
             assert!(
-                matches!(MapTables::parse(&src), Err(Error::BadOffset)),
+                matches!(MapTables::parse(&src), Err(Error::Source(IoError::Io))),
                 "a failed style read at {fail_at} must error the parse"
             );
         }
@@ -2734,7 +2969,7 @@ mod tests {
         let src = SliceSource(&data);
 
         let cache = MapCache::new();
-        let mut inner = cache.borrow_mut();
+        let mut inner = cache.inner.borrow_mut();
 
         // Resident, then a hit (no source read).
         inner.index_block(&src, 0).unwrap();
@@ -2744,8 +2979,8 @@ mod tests {
         drop(inner);
 
         // After clear the same offset must miss and re-read from the source.
-        cache.clear();
-        let mut inner = cache.borrow_mut();
+        cache.clear().unwrap();
+        let mut inner = cache.inner.borrow_mut();
         let before = inner.stats();
         inner.index_block(&src, 0).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
