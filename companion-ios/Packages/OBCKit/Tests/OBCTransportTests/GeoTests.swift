@@ -82,4 +82,39 @@ final class GeoTests: XCTestCase {
         let one = [Coordinate(latitude: 47, longitude: 8)]
         XCTAssertEqual(TrackPreview.normalizing(one).coordinates, one)
     }
+
+    // MARK: normalizingShared — the trip card's multi-stage preview (TR6)
+
+    func testNormalizingSharedPutsAllStagesInOneUnitSquare() {
+        // Two disjoint tracks: A in the north-west, B in the south-east.
+        let a = [Coordinate(latitude: 48.0, longitude: 8.0), Coordinate(latitude: 48.0, longitude: 8.4)]
+        let b = [Coordinate(latitude: 47.0, longitude: 8.6), Coordinate(latitude: 47.0, longitude: 9.0)]
+        let shared = TrackPreview.normalizingShared([a, b])
+
+        XCTAssertEqual(shared.count, 2)
+        // One shared bbox: every point is within the unit square, and across BOTH
+        // stages the extremes touch 0 and 1 (north/top, south/bottom; west/east).
+        let allPoints = shared.flatMap(\.points)
+        let xs = allPoints.map(\.x)
+        let ys = allPoints.map(\.y)
+        XCTAssertEqual(xs.min() ?? .nan, 0, accuracy: 1e-9)
+        XCTAssertEqual(xs.max() ?? .nan, 1, accuracy: 1e-9)
+        XCTAssertEqual(ys.min() ?? .nan, 0, accuracy: 1e-9)  // northmost (stage A) at top
+        XCTAssertEqual(ys.max() ?? .nan, 1, accuracy: 1e-9)  // southmost (stage B) at bottom
+        // A single shared aspect ratio.
+        XCTAssertEqual(shared[0].aspectRatio, shared[1].aspectRatio)
+        // Coordinates ride through per stage for the basemap path.
+        XCTAssertEqual(shared[0].coordinates, a)
+        XCTAssertEqual(shared[1].coordinates, b)
+    }
+
+    func testNormalizingSharedMapsEmptyTracksToEmpty() {
+        let one = [Coordinate(latitude: 47, longitude: 8), Coordinate(latitude: 47.1, longitude: 8.1)]
+        let shared = TrackPreview.normalizingShared([[], one, []])
+        XCTAssertTrue(shared[0].points.isEmpty)
+        XCTAssertFalse(shared[1].points.isEmpty)
+        XCTAssertTrue(shared[2].points.isEmpty)
+        // All-empty input → all empty (nothing to draw).
+        XCTAssertTrue(TrackPreview.normalizingShared([[], []]).allSatisfy { $0.points.isEmpty })
+    }
 }

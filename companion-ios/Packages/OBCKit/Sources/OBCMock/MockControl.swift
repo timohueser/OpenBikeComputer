@@ -259,6 +259,14 @@ public final class MockControl: @unchecked Sendable {
             }
             store.savePlannedRoute(record)
         }
+        // TR6: seed trips grouping some of those routes (a trip is phone-side
+        // metadata; the routes are written above first so no stage dangles).
+        // Idempotent over trip ids, like the routes above.
+        let trips = lock.withLocked { _fixtures.trips }
+        let existingTrips = Set(store.trips().map(\.id))
+        for entry in trips where !existingTrips.contains(entry.id) {
+            store.saveTrip(entry.record(base: base))
+        }
     }
 
     // MARK: Transport-facing helpers (module-internal — MockTransport delegates here)

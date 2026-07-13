@@ -1,5 +1,6 @@
 import XCTest
 import OBCDomain
+import OBCTransport
 @testable import OBCMock
 
 /// The bundled JSON fixture sets load, map to domain types, and match the design's
@@ -73,5 +74,38 @@ final class FixtureTests: XCTestCase {
     func testPayloadIsDeterministic() {
         XCTAssertEqual(MockPayload.make(count: 256), MockPayload.make(count: 256))
         XCTAssertEqual(MockPayload.make(count: 0).count, 0)
+    }
+
+    // MARK: Trips demo fixture (TR6)
+
+    func testTripsFixtureGroupsTwoRoutesAndKeepsLooseOnes() {
+        let set = FixtureSet.load("trips")
+        // Same five routes as `default`, plus one trip grouping two of them.
+        XCTAssertEqual(set.routes.count, 5)
+        XCTAssertEqual(set.trips.count, 1)
+        let trip = set.trips.first
+        XCTAssertEqual(trip?.id, TripID("driftless-weekender"))
+        XCTAssertEqual(trip?.name, "Driftless Weekender")
+        XCTAssertEqual(
+            trip?.stageIDs,
+            [RouteID("devils-lake-overnighter"), RouteID("cross-plains-gravel")])
+    }
+
+    func testDefaultFixtureHasNoTrips() {
+        XCTAssertTrue(FixtureSet.load("default").trips.isEmpty)
+    }
+
+    func testSeedLibraryWritesTheTripGroupingItsRoutes() {
+        let control = MockControl(scenario: .happyPath)
+        control.loadFixtures("trips")
+        let store = InMemoryLibraryStore()
+        control.seedLibrary(into: store)
+
+        let trips = store.trips()
+        XCTAssertEqual(trips.count, 1)
+        XCTAssertEqual(trips.first?.stageIDs.count, 2)
+        // The two grouped routes are still full library records (a stage must
+        // resolve to a detail), so all five planned routes are present.
+        XCTAssertEqual(store.plannedRoutes().count, 5)
     }
 }
