@@ -14,7 +14,7 @@ use heapless::Vec;
 
 use embedded_graphics::prelude::*;
 
-use obc_reader::{CacheError, Kind, Reader};
+use obc_map_scene::{Diagnostics, Kind, MapScene, ReadError};
 
 pub mod canvas;
 mod collect;
@@ -58,7 +58,7 @@ use stroke::{draw_line, Stroker};
 /// zoom (many small features).
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_SPANS: usize = 1152;
-// Trimmed hard on nrf-mem: the ride loop's deep per-frame render path (per-frame `Reader::new` +
+// Trimmed hard on nrf-mem: the ride loop's deep per-frame render path (per-frame source adapter +
 // streamed-chunk decode over embedded-sdmmc) needs a large MSP stack that must coexist with the
 // resident `RouteCache`/`RouteIndex` — and, on the combined image, the BLE stack — on the 256 KB
 // part; freeing scratch buys that headroom.
@@ -85,7 +85,7 @@ pub const MAX_FRAME_RINGS: usize = 1024;
 pub const MAX_FRAME_RINGS: usize = 48;
 
 /// Maximum vertices for a single feature during decode (reused per feature). On the host this
-/// equals `obc_reader::MAX_FEAT_PTS` (asserted below) — full format fidelity. On `nrf-mem` it is
+/// equals the OBCM production source's maximum feature size — full format fidelity. On `nrf-mem` it is
 /// trimmed **below the format's per-feature bound**: a feature past the cap is consumed but dropped
 /// whole and reported in [`RenderStats::feature_decode_capacity_drops`]. A deliberate 256 KB-DK compromise (issue #270 —
 /// the map path must coexist with the BLE stack); the 512 KB LM20 restores the format bound.
@@ -94,8 +94,7 @@ pub const MAX_DECODE_POINTS: usize = 2048;
 #[cfg(feature = "nrf-mem")]
 pub const MAX_DECODE_POINTS: usize = 256;
 
-/// Maximum rings for a single feature during decode. Must equal `obc_reader::MAX_FEAT_RINGS`
-/// (asserted below).
+/// Maximum rings for a single feature during decode. Matches the production source bound.
 pub const MAX_DECODE_RINGS: usize = 32;
 
 /// Maximum projected screen points for drawing one feature. The fill/polyline path projects
@@ -122,16 +121,8 @@ const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
 // (`screen[base..base + len]`), so it must hold at least a full decode buffer or it indexes
 // past the points and panics.
 const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
-// The decode scratch pairs with the reader's format bounds across the crate seam. On the host it
-// holds every valid feature; on `nrf-mem` the deliberate trim below the format bound causes an
-// explicit whole-feature drop. The direction stays pinned so the renderer never invents a looser
-// format limit than the reader.
-#[cfg(not(feature = "nrf-mem"))]
-const _: () =
-    assert!(MAX_DECODE_POINTS == obc_reader::MAX_FEAT_PTS, "decode scratch must hold the format's max feature");
-const _: () =
-    assert!(MAX_DECODE_POINTS <= obc_reader::MAX_FEAT_PTS, "decode scratch cannot exceed the format's max feature");
-const _: () = assert!(MAX_DECODE_RINGS == obc_reader::MAX_FEAT_RINGS, "ring scratch must hold the format's max rings");
+// These values are pinned by the production-source integration tests. On `nrf-mem`, the deliberate
+// trim below that source bound remains an explicit whole-feature drop.
 
 /// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
@@ -206,6 +197,26 @@ impl Clock for NoopClock {
     #[inline(always)]
     fn now_us(&self) -> u64 {
         0
+    }
+}
+
+#[inline]
+fn diagnostics<S: MapScene>(scene: &S, stats: &mut RenderStats, fallback: Diagnostics) -> Diagnostics {
+    match scene.diagnostics() {
+        Ok(Some(diagnostics)) => diagnostics,
+        Ok(None) => fallback,
+        Err(ReadError::Source) => {
+            stats.map_read_failures = stats.map_read_failures.saturating_add(1);
+            fallback
+        }
+        Err(ReadError::CacheBusy) => {
+            stats.map_cache_contentions = stats.map_cache_contentions.saturating_add(1);
+            fallback
+        }
+        Err(ReadError::Malformed) => {
+            stats.map_structure_failures = stats.map_structure_failures.saturating_add(1);
+            fallback
+        }
     }
 }
 
@@ -325,10 +336,10 @@ impl MapRenderer {
     /// (painter's algorithm) and draws polygons (even-odd scanline fill) and lines. `color_fn` maps
     /// a style's RGB565 to the target's pixel color (host chooses true-color vs. device
     /// quantization).
-    pub fn render<D, F>(
+    pub fn render<D, F, S>(
         &mut self,
         target: &mut D,
-        reader: &Reader,
+        scene: &S,
         vp: &Viewport,
         bg: D::Color,
         color_fn: F,
@@ -336,16 +347,17 @@ impl MapRenderer {
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: MapScene,
     {
-        self.render_timed(target, reader, vp, bg, color_fn, &NoopClock)
+        self.render_timed(target, scene, vp, bg, color_fn, &NoopClock)
     }
 
     /// Like [`render`](MapRenderer::render) but fills the per-stage timings on the returned
     /// [`RenderStats`] from `clock`. Base map only; see the [`RenderStats`] stage-field docs.
-    pub fn render_timed<D, F>(
+    pub fn render_timed<D, F, S>(
         &mut self,
         target: &mut D,
-        reader: &Reader,
+        scene: &S,
         vp: &Viewport,
         bg: D::Color,
         color_fn: F,
@@ -354,44 +366,44 @@ impl MapRenderer {
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: MapScene,
     {
         let t0 = clock.now_us();
         let _ = target.clear(bg);
         let t_cleared = clock.now_us();
 
-        let lod = reader.select_lod_for_mpp(vp.meters_per_pixel());
+        let lod_count = scene.lod_count();
+        if lod_count == 0 {
+            // An empty semantic scene is a valid background-only render. In particular, do not
+            // call LOD selection or enter draw paths that use `lod_count - 1`.
+            return RenderStats { draw_us: clock.now_us().saturating_sub(t0) as u32, ..Default::default() };
+        }
+        let requested_lod = scene.select_lod_for_mpp(vp.meters_per_pixel());
+        let lod = requested_lod.min(lod_count - 1);
+        let is_finest = lod == lod_count - 1;
         let view = vp.visible_bbox();
         let mut stats = RenderStats { lod, ..Default::default() };
+        if requested_lod >= lod_count {
+            stats.map_structure_failures = 1;
+        }
 
         // Collect → painter's order → draw. `seq` is the stable, alloc-free tie-break within a
         // z-index. Snapshot the streamed-map cache counters across `collect` (the only phase that
         // reads the map source) and record the per-frame delta — robust whether the caller hands us
-        // a fresh `Reader` each frame or a reused one.
-        let before = match reader.try_chunk_cache_stats() {
-            Ok(stats) => stats,
-            Err(CacheError::Busy) => {
-                stats.map_cache_contentions += 1;
-                Default::default()
-            }
-        };
-        self.frame.collect(reader, lod, &view, &mut stats);
-        let after = match reader.try_chunk_cache_stats() {
-            Ok(cache) => cache,
-            Err(CacheError::Busy) => {
-                stats.map_cache_contentions += 1;
-                before
-            }
-        };
+        // a fresh source adapter each frame or a reused one.
+        let before = diagnostics(scene, &mut stats, Diagnostics::default());
+        self.frame.collect(scene, lod, &view, &mut stats);
+        let after = diagnostics(scene, &mut stats, before);
         stats.map_chunk_hits = after.chunk_hits.wrapping_sub(before.chunk_hits);
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);
-        stats.map_sd_reads = after.sd_reads.wrapping_sub(before.sd_reads);
+        stats.map_sd_reads = after.source_reads.wrapping_sub(before.source_reads);
         stats.map_bytes_read = after.bytes_read.wrapping_sub(before.bytes_read);
         let t_collected = clock.now_us();
 
         self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
         let t_sorted = clock.now_us();
 
-        self.draw_map(target, reader, lod, vp, &color_fn);
+        self.draw_map(target, scene, is_finest, vp, &color_fn);
         let t_drawn = clock.now_us();
 
         // The clear is a framebuffer write, so it counts toward `draw` even though it ran first.
@@ -411,7 +423,7 @@ impl MapRenderer {
 
     /// Draw the collected, painter-ordered spans into `target`. Polygons fill via even-odd scanline;
     /// lines stroke via the view-clipped overlay path — resolving each line's full
-    /// [`Style`](obc_reader::Style) (`dashed`/`color2`) from `reader` via [`Span::style_id`].
+    /// complete style metadata (`dashed`/`color2`) from `scene` via [`Span::style_id`].
     ///
     /// **Road casing (#559).** Solid lines whose style carries a `color2` (the *cased* styles) get a
     /// `weight + 2*CASING_PX` stroke in `color2` painted **under** their normal fill — but only at the
@@ -428,11 +440,12 @@ impl MapRenderer {
     ///
     /// When no style is cased `split == spans.len()`: step 2 is empty and steps 1 + 3 collapse to
     /// today's single pass → **byte-identical** output at zero extra per-span cost. Coarser LODs skip
-    /// step 2 outright (`lod` gate). Polygons are never cased (that's #560).
-    fn draw_map<D, F>(&mut self, target: &mut D, reader: &Reader, lod: usize, vp: &Viewport, color_fn: &F)
+    /// step 2 outright (`is_finest` gate). Polygons are never cased (that's #560).
+    fn draw_map<D, F, S>(&mut self, target: &mut D, scene: &S, is_finest: bool, vp: &Viewport, color_fn: &F)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: MapScene,
     {
         // Disjoint borrows: spans/geometry read from `frame`, draw scratch written to `draw`.
         let Self { frame, draw } = self;
@@ -448,7 +461,7 @@ impl MapRenderer {
         // the railway stripe (#558), which never cases.
         let mut cased_mask = [0u32; 8];
         for id in 0..=255u8 {
-            if let Some(s) = reader.style(id) {
+            if let Some(s) = scene.style(id) {
                 if !s.dashed && s.color2.is_some() {
                     cased_mask[(id >> 5) as usize] |= 1 << (id & 31);
                 }
@@ -464,7 +477,7 @@ impl MapRenderer {
         // empty mask makes each call take today's exact single-loop path (byte-identical, zero cost).
         let mut outlined_mask = [0u32; 8];
         for id in 0..=255u8 {
-            if reader.style(id).is_some_and(|s| s.color2.is_some()) {
+            if scene.style(id).is_some_and(|s| s.color2.is_some()) {
                 outlined_mask[(id >> 5) as usize] |= 1 << (id & 31);
             }
         }
@@ -479,12 +492,12 @@ impl MapRenderer {
         };
 
         // (1) Everything below the road band, exactly as the base pass.
-        Self::draw_spans(frame, draw, target, reader, lod, vp, color_fn, wscale, &outlined_mask, &spans[..split]);
+        Self::draw_spans(frame, draw, target, scene, is_finest, vp, color_fn, wscale, &outlined_mask, &spans[..split]);
 
         // (2) Casing pass — finest LOD only. Each cased road strokes a solid `color2` base at the
         // **ramped** fill width + `2*CASING_PX` (tracks the #579 zoom ramp, not a fixed px), under the
         // fills step 3 paints on top. Re-projects each cased line (accepted; reuses `DrawScratch`).
-        if lod == reader.lods().len() - 1 {
+        if is_finest {
             for span in &spans[split..] {
                 if span.kind != Kind::Line || !is_cased(span.style_id) {
                     continue;
@@ -495,7 +508,7 @@ impl MapRenderer {
                 let pts = &frame.frame_points[pt_start..pt_start + n];
                 // `is_cased` guarantees `color2.is_some()`; quantize it like the fill color. The
                 // `unwrap_or` is a defensive no-op (falls back to an invisible same-color casing).
-                let casing_color = color_fn(reader.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
+                let casing_color = color_fn(scene.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
                 draw_line(
                     target,
                     vp,
@@ -511,7 +524,7 @@ impl MapRenderer {
         }
 
         // (3) The road band and above, exactly as the base pass, on top of the casings.
-        Self::draw_spans(frame, draw, target, reader, lod, vp, color_fn, wscale, &outlined_mask, &spans[split..]);
+        Self::draw_spans(frame, draw, target, scene, is_finest, vp, color_fn, wscale, &outlined_mask, &spans[split..]);
     }
 
     /// Draw a contiguous, painter-ordered `spans` slice: polygons even-odd fill, lines the view-clipped
@@ -536,12 +549,12 @@ impl MapRenderer {
     /// config with no polygon `color2`, and pass 2 is gated on the finest LOD — either case takes the
     /// early single-loop path, byte-identical to today. A group with no outlined polygon skips pass 2.
     #[allow(clippy::too_many_arguments)]
-    fn draw_spans<D, F>(
+    fn draw_spans<D, F, S>(
         frame: &FrameScratch,
         draw: &mut DrawScratch,
         target: &mut D,
-        reader: &Reader,
-        lod: usize,
+        scene: &S,
+        is_finest: bool,
         vp: &Viewport,
         color_fn: &F,
         wscale: f32,
@@ -550,14 +563,15 @@ impl MapRenderer {
     ) where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: MapScene,
     {
         let is_outlined = |sid: u8| outlined_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0;
         // Outlines exist only at the finest LOD and only when some style carries a `color2`. Neither
         // holds ⇒ today's exact single pass (byte-identical, and no group-boundary scan).
-        let any_outlined = lod == reader.lods().len() - 1 && outlined_mask.iter().any(|&w| w != 0);
+        let any_outlined = is_finest && outlined_mask.iter().any(|&w| w != 0);
         if !any_outlined {
             for span in spans {
-                Self::draw_span(frame, draw, target, reader, vp, color_fn, wscale, span);
+                Self::draw_span(frame, draw, target, scene, vp, color_fn, wscale, span);
             }
             return;
         }
@@ -576,7 +590,7 @@ impl MapRenderer {
             // pass 1 — every span exactly as the base pass, tracking whether this group needs pass 2.
             let mut group_has_outline = false;
             for span in group {
-                Self::draw_span(frame, draw, target, reader, vp, color_fn, wscale, span);
+                Self::draw_span(frame, draw, target, scene, vp, color_fn, wscale, span);
                 group_has_outline |= span.kind == Kind::Polygon && is_outlined(span.style_id);
             }
             if !group_has_outline {
@@ -588,7 +602,7 @@ impl MapRenderer {
                 if span.kind != Kind::Polygon || !is_outlined(span.style_id) {
                     continue;
                 }
-                Self::outline_polygon(frame, draw, target, reader, vp, color_fn, span);
+                Self::outline_polygon(frame, draw, target, scene, vp, color_fn, span);
             }
         }
     }
@@ -597,11 +611,11 @@ impl MapRenderer {
     /// with its resolved `dashed`/`color2` style at the frame's ramped width (`wscale`, #579). The
     /// unit of pass 1 in [`draw_spans`](Self::draw_spans), unchanged from the pre-#560 single loop.
     #[allow(clippy::too_many_arguments)]
-    fn draw_span<D, F>(
+    fn draw_span<D, F, S>(
         frame: &FrameScratch,
         draw: &mut DrawScratch,
         target: &mut D,
-        reader: &Reader,
+        scene: &S,
         vp: &Viewport,
         color_fn: &F,
         wscale: f32,
@@ -609,6 +623,7 @@ impl MapRenderer {
     ) where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: MapScene,
     {
         let ring_start = span.ring_start as usize;
         let pt_start = span.pt_start as usize;
@@ -624,7 +639,7 @@ impl MapRenderer {
                 // `color2` quantizes through `color_fn` exactly like the primary. A missing
                 // style (never collected) falls back to today's solid stroke.
                 let n = ring_lens.first().copied().unwrap_or(0);
-                let style = reader.style(span.style_id);
+                let style = scene.style(span.style_id);
                 let dashed = style.is_some_and(|s| s.dashed);
                 let color2 = style.and_then(|s| s.color2).map(color_fn);
                 draw_line(
@@ -656,21 +671,22 @@ impl MapRenderer {
     /// slab (measured: outline `color2` pixels ≫ fill pixels). A fixed `weight.max(1)` keeps the wall a
     /// crisp hairline at every finest-LOD zoom, which is the whole point of the feature.
     #[allow(clippy::too_many_arguments)]
-    fn outline_polygon<D, F>(
+    fn outline_polygon<D, F, S>(
         frame: &FrameScratch,
         draw: &mut DrawScratch,
         target: &mut D,
-        reader: &Reader,
+        scene: &S,
         vp: &Viewport,
         color_fn: &F,
         span: &Span,
     ) where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: MapScene,
     {
         // `outlined_mask` guarantees `color2.is_some()`; the `unwrap_or` is a defensive no-op that
         // falls back to an invisible same-color outline rather than panicking.
-        let color2 = color_fn(reader.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
+        let color2 = color_fn(scene.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
         let weight = span.weight.max(1) as u32;
         let (w, h) = (vp.w as i32, vp.h as i32);
 

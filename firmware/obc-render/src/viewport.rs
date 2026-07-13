@@ -2,12 +2,12 @@
 
 use embedded_graphics::prelude::*;
 
-use obc_reader::BBox;
+use obc_map_scene::BBox;
 
 /// Meters of ground per microdegree of latitude — the renderer's zoom is pixels per
 /// microdegree-lat, so this turns zoom into meters-per-pixel. Derived from the shared
-/// [`obc_reader::M_PER_DEG`] so the on-screen scale tracks the route/packer Earth model.
-const METERS_PER_MICRODEG_LAT: f32 = (obc_reader::M_PER_DEG / 1_000_000.0) as f32;
+/// [`obc_map_scene::M_PER_DEG`] so the on-screen scale tracks the route/packer Earth model.
+const METERS_PER_MICRODEG_LAT: f32 = (obc_map_scene::M_PER_DEG / 1_000_000.0) as f32;
 
 /// The zoom (pixels per microdegree of latitude) that yields a given ground **meters-per-pixel** —
 /// the inverse of [`mpp_for_zoom`]. Lets callers aim the camera at a real-world scale.

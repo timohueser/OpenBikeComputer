@@ -2400,6 +2400,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-map-scene"
+version = "0.1.0"
+dependencies = [
+ "heapless 0.8.0",
+ "libm",
+]
+
+[[package]]
 name = "obc-mkimage"
 version = "0.1.0"
 dependencies = [
@@ -2453,6 +2461,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "obc-formats",
+ "obc-map-scene",
  "obcm-testkit",
 ]
 
@@ -2463,6 +2472,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-map-scene",
  "obc-reader",
  "obcm-testkit",
 ]
