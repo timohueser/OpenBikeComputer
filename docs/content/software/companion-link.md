@@ -218,6 +218,20 @@ and back.
 > **adopted** as that object's device copy, and a whole-trip upload re-reads both
 > catalogs right before planning, so a retry sees what actually landed.
 
+> **Answers are bounded — a lost notify never wedges.** Every solicited answer
+> the app waits on — a transfer verdict, a download announce, a command ack —
+> rides the `status` notify, and the device deliberately **abandons** a notify
+> it can't deliver in time rather than stall a plane (a lost notification is the
+> app's to recover by re-reading, never a reason to wedge the link). The app
+> holds the same posture: each of those waits is time-bounded, because they hold
+> the app's single transfer slot — an unbounded wait on one lost verdict would
+> silently wedge every later list read, sync, and upload behind it until the app
+> restarts. A timed-out exchange fails like a drop: the slot frees, a retry
+> re-sends the whole object, and the convergence rules above absorb the
+> "committed but unheard" case. The same rule covers a data-plane stall under a
+> live link: a CoC that moves no bytes is failed by a watchdog and surfaces as a
+> plain retryable failure, never a progress bar parked at 99 %.
+
 ### When a route lands — the device's side
 
 A committed upload isn't silent on the device. A route usually arrives because
