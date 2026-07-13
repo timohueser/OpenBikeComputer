@@ -43,6 +43,12 @@ pub enum ObjectType {
     RideList = 7,
     /// Dev/test loopback: the device streams back exactly what it received.
     Echo = 8,
+    /// A trip object — a tiny metadata object referencing route object ids in ride order (spec §7.7),
+    /// app → device (upload) and device → app (detail read). Trip ids draw from a **separate** device
+    /// counter (§4.1), never shared with a route or ride id.
+    Trip = 9,
+    /// The trip catalog list object (device → app), spec §7.4 — 76-byte entries mirroring `routeList`.
+    TripList = 10,
 }
 
 impl ObjectType {
@@ -61,6 +67,8 @@ impl ObjectType {
             6 => Self::RouteList,
             7 => Self::RideList,
             8 => Self::Echo,
+            9 => Self::Trip,
+            10 => Self::TripList,
             other => return Err(DescriptorError::UnknownType(other)),
         })
     }
@@ -168,7 +176,8 @@ pub enum TransferStatus {
     NotFound = 4,
     /// A transfer is already active.
     Busy = 5,
-    /// The route catalog is full — a new-route upload was rejected at descriptor-open time.
+    /// A catalog is full — a new-object upload (a route past its cap, a trip past its cap) was
+    /// rejected at descriptor-open time.
     StorageFull = 6,
 }
 
@@ -190,11 +199,14 @@ impl TransferStatus {
         })
     }
 
-    /// The descriptor-open reject rule for a route **upload**, before any byte streams (issue #452).
+    /// The descriptor-open reject rule for a route **or trip upload**, before any byte streams
+    /// (issue #452; extended to trips in epic #526, TR4 #653 — the rule is type-agnostic, the caller
+    /// passes the relevant catalog's `catalog_full`/`id_known`).
     ///
     /// A *new* upload — id [`TransferControl::NEW_OBJECT_ID`] (`0xFFFF`) or a named id the device
     /// doesn't hold — grows the catalog, so it is refused when the store can't index another object
-    /// (`catalog_full`: the route table is at `MAX_ROUTES` or the durable id space is exhausted):
+    /// (`catalog_full`: the route table is at `MAX_ROUTES` / the trip table at `MAX_TRIPS`, or the
+    /// durable id space is exhausted):
     ///
     /// - new + full → [`StorageFull`](Self::StorageFull) — the phone tells the rider to free space.
     /// - named-but-unknown id with room to spare → [`NotFound`](Self::NotFound) — a real client error.

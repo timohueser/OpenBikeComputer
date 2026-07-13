@@ -70,6 +70,19 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedSto
                         (CommandStatus::NotFound, 0, None)
                     }
                 }
+                // A trip delete is **non-cascading** (spec §7.7): remove only the trip object — its
+                // member routes become top-level routes. Bumps the *trip* store revision → the caller
+                // notifies `storeChanged(trip)` (§4.3, its own counter). A cascade "delete trip &
+                // routes" is the initiating UI's composition (individual route deletes + this), never
+                // a wire verb.
+                Ok(ObjectType::Trip) => {
+                    if store.borrow_mut().delete_trip(shared, id) {
+                        info!("ble: [cmd] deleted trip object {}", id);
+                        (CommandStatus::Ok, 0, Some(ObjectType::Trip))
+                    } else {
+                        (CommandStatus::NotFound, 0, None)
+                    }
+                }
                 // Rides are never deleted over the link (see the fn doc); nothing else deletes.
                 _ => (CommandStatus::NotFound, 0, None),
             }
@@ -168,6 +181,13 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut Sha
             Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
             Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
         },
+        // A trip upload (epic #526 TR4): the same CoC streaming + commit-then-swap as a route, but the
+        // storage-full guard is against the *trip* catalog and the commit target is `TP{id}.OBT`. The
+        // finish routes on `desc.ty` in the data plane, exactly like the route/fwImage split.
+        (Op::Upload, ObjectType::Trip) => match store.borrow_mut().upload_open_trip(shared, &desc) {
+            Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
+            Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
+        },
         // A firmware update image (epic #615 S6, #621): the size guard rejects an oversize object at
         // announce, before any byte streams; a committed transfer promotes to /UPDATE.BIN (staging,
         // not installing — see `fwimage_finish` + the `installFw` command). Same `Armed::Upload` arm as
@@ -180,8 +200,10 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut Sha
             Op::Download,
             ObjectType::Route
             | ObjectType::Ride
+            | ObjectType::Trip
             | ObjectType::RouteList
             | ObjectType::RideList
+            | ObjectType::TripList
             | ObjectType::Diagnostics,
         ) => {
             // Cheap existence check here for the immediate `notFound`; the source itself (and
@@ -189,6 +211,7 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut Sha
             let known = match desc.ty {
                 ObjectType::Route => store.borrow().has_route(desc.object_id),
                 ObjectType::Ride => store.borrow().has_ride(desc.object_id),
+                ObjectType::Trip => store.borrow().has_trip(desc.object_id),
                 _ => true,
             };
             if !known {
