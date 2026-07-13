@@ -80,6 +80,17 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// and the forget is best-effort: a device that never answers must not stall
     /// the app's "Forget device" tap.
     private static let forgetBondAckTimeout: DispatchTimeInterval = .seconds(3)
+    /// How long any slot-holding exchange waits for the device's answering
+    /// `status` notification (a transfer verdict, a download announce, a
+    /// command ack) before giving up. The firmware abandons a notify it can't
+    /// deliver in time (`notify_bounded`: "a lost notification is the app's to
+    /// recover by re-reading, never a reason to wedge the link") — so an
+    /// unbounded wait here parks its continuation forever *while holding the
+    /// transfer slot*, wedging every later list read, sync, and upload until
+    /// the app restarts. Generous: the longest legitimate quiet stretch is the
+    /// device's whole-object CRC + commit pass after an upload's last byte,
+    /// well under a second per megabyte.
+    private static let answerTimeout: DispatchTimeInterval = .seconds(15)
 
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
@@ -320,7 +331,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         defer { releaseTransferSlot() }
         clearPendingStatuses()
         try await write(payload, to: GATT.command)
-        guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
+        guard try await bounded({ try await nextCommandResult() }).status == .ok else {
+            throw DeviceError.writeFailed
+        }
     }
 
     public func ackRides(_ ids: [RideID]) async throws {
@@ -340,7 +353,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             try await write(chunk, to: GATT.command)
             // Each chunk is answered on its own; the command is idempotent, so a
             // caller retrying after a mid-batch failure just re-sends everything.
-            guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
+            guard try await bounded({ try await nextCommandResult() }).status == .ok else {
+                throw DeviceError.writeFailed
+            }
         }
     }
 
@@ -448,7 +463,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         defer { releaseTransferSlot() }
         clearPendingStatuses()
         try await write(payload, to: GATT.command)
-        guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
+        guard try await bounded({ try await nextCommandResult() }).status == .ok else {
+            throw DeviceError.writeFailed
+        }
     }
 
     // MARK: DeviceTransport — data plane
@@ -554,7 +571,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         defer { releaseTransferSlot() }
         clearPendingStatuses()
         try await write(Data([3]), to: GATT.command)
-        return FirmwareInstallResult(commandStatus: try await nextCommandResult().status)
+        return FirmwareInstallResult(
+            commandStatus: try await bounded({ try await nextCommandResult() }).status)
     }
 
     public func forgetBond() async throws {
@@ -605,6 +623,39 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         for waiter in waiters { waiter.cont.resume(throwing: error) }
     }
 
+    /// `failStatusWaiters` plus the parked announce waiter — the answer
+    /// timeout's unwind (see `bounded`). Queue-confined like its sibling.
+    private func failSolicitedWaiters(_ error: DeviceError) {
+        failStatusWaiters(error)
+        announceWaiter?.resume(throwing: error)
+        announceWaiter = nil
+    }
+
+    /// Whether the link currently reads `.connected` — the transfer runners
+    /// consult this to classify a dead exchange: a stalled CoC or a lost answer
+    /// under a live link has no state edge coming to recover it (terminal),
+    /// while a genuine link drop stays unresolved-resumable as before.
+    fileprivate var isLinkUp: Bool { stateMulticast.value == .connected }
+
+    /// Await one solicited `status` answer under `answerTimeout` — the
+    /// `forgetBond` ack-timeout idiom, generalized to every slot-holding
+    /// exchange. The parked continuation is not cancellation-responsive (it
+    /// resolves only on a matching status or the disconnect cleanup), so a
+    /// device whose answering notify was abandoned under backpressure
+    /// (`notify_bounded`) would otherwise park it forever — with the transfer
+    /// slot held, wedging every later transfer until the app restarts. Failing
+    /// ALL solicited waiters is safe for `forgetBond`'s reason: every
+    /// status/announce-waiting op parks only while holding the transfer slot,
+    /// and the caller holds it — the only parked waiter is its own.
+    fileprivate func bounded<T: Sendable>(_ op: @Sendable () async throws -> T) async throws -> T {
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.failSolicitedWaiters(DeviceError.transferDropped)
+        }
+        queue.asyncAfter(deadline: .now() + Self.answerTimeout, execute: timeout)
+        defer { timeout.cancel() }
+        return try await op()
+    }
+
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
         // Real path (A7): one ride-object download per id, persisted ride-by-ride,
         // so a drop keeps what landed and "resume" re-requests only the missing
@@ -652,9 +703,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let channel = try await readyChannel()
         clearPendingStatuses()
         try await write(TransferControl(op: .download, type: type, objectID: objectID).encode(), to: GATT.transferControl)
-        let announce = try await nextAnnounce()
+        let announce = try await bounded { try await nextAnnounce() }
         let bytes = try await channel.receive(length: Int(announce.totalLen), expectedCRC: announce.crc32)
-        guard try await nextTransferResult().status == .committed else { throw DeviceError.readFailed }
+        guard try await bounded({ try await nextTransferResult() }).status == .committed else {
+            throw DeviceError.readFailed
+        }
         return bytes
     }
 
@@ -1184,8 +1237,10 @@ private actor UploadRunner {
             try await transport.write(descriptor.encode(), to: GATT.transferControl)
             let ticks = progress
             try await channel.send(payload) { ticks.yield($0) }
-            // Bytes flushed — now the only signal that counts: the device's verdict.
-            let result = try await transport.nextTransferResult()
+            // Bytes flushed — now the only signal that counts: the device's
+            // verdict. Bounded: an abandoned notify must fail the attempt, not
+            // park it forever with the transfer slot held.
+            let result = try await transport.bounded { try await transport.nextTransferResult() }
             switch result.status {
             case .committed:
                 assignedID.fulfill(result.objectID)
@@ -1204,8 +1259,16 @@ private actor UploadRunner {
         } catch DeviceError.writeFailed {
             finish(.failed(.writeFailed))  // GATT rejected the descriptor, link up
         } catch {
-            // The link/CoC dropped mid-attempt: stay unresolved — resumable. The
-            // device discards its partial; the next start() re-sends everything.
+            // The CoC dropped or the device's answer never came. A genuine link
+            // drop stays unresolved — resumable; the sheet's drop watch offers
+            // Resume off the state edge. But the same failure under a link that
+            // still reads `.connected` (a stalled CoC, an abandoned verdict
+            // notify) has no edge coming to unstick the sheet — the
+            // stuck-at-99% wedge. Give a racing disconnect a beat to land, then
+            // classify: link still up → terminal (a retry is a whole fresh
+            // attempt anyway); link down → resumable as before.
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled, transport.isLinkUp { finish(.failed(.transferDropped)) }
         }
     }
 
@@ -1292,6 +1355,16 @@ private actor RideDownloadRunner {
             // A link/CoC drop mid-batch (or a reconnect-needed): stay unresolved —
             // resumable. What landed is kept (already yielded + persisted); the
             // sync's drop watch raises H10 and `resume()` re-requests the rest.
+            // But the same failure with the link still up (a stalled CoC, an
+            // abandoned notify's answer timeout) has no state edge coming: the
+            // drop watch never fires and the sync would sit `.syncing` forever.
+            // Classify like the upload runner — give a racing disconnect a beat,
+            // then end the batch terminally when the link still reads connected;
+            // what landed is kept either way and the next sync fetches the rest.
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled, transport.isLinkUp {
+                finish(.failed((error as? DeviceError) ?? .transferDropped))
+            }
         }
     }
 
