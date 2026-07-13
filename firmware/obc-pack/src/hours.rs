@@ -34,20 +34,12 @@
 
 use std::collections::HashMap;
 
-/// The seven weekdays, index 0 = Monday, matching the blob's day order.
-pub const DAYS: usize = 7;
-/// Up to two open intervals per day.
-pub const SLOTS_PER_DAY: usize = 2;
-/// One schedule blob is exactly 29 bytes: `flags` + 7 days × 2 slots × 2 bytes.
-pub const BLOB_LEN: usize = 1 + DAYS * SLOTS_PER_DAY * 2;
-
-/// `flags` bit 0 — the source rule carried a month/date/season selector and we
-/// baked a representative (in-season) week.
-pub const FLAG_SEASONAL: u8 = 0b0000_0001;
-/// `flags` bit 1 — we dropped something the encoding can't model (a `PH`/`SH`
-/// non-`off` rule, `sunrise`/`sunset`, `week`/`easter`, a third+ interval on a
-/// day, or an unparseable sub-rule while other parts parsed).
-pub const FLAG_TRUNCATED: u8 = 0b0000_0010;
+// Existing packer-facing names remain aliases during FAR; remove them in #812 after downstream
+// callers import the OBCM authority directly.
+pub use obc_formats::obcm::{
+    POI_HOURS_BLOB_LEN as BLOB_LEN, POI_HOURS_DAYS as DAYS, POI_HOURS_FLAG_SEASONAL as FLAG_SEASONAL,
+    POI_HOURS_FLAG_TRUNCATED as FLAG_TRUNCATED, POI_HOURS_SLOTS_PER_DAY as SLOTS_PER_DAY,
+};
 
 /// One open interval, quarter-hours from midnight. `close_q <= open_q` (both
 /// nonzero) is an overnight wrap; `(0, 0)` is an unused slot.

@@ -303,7 +303,10 @@ impl RouteReader<'_> {
 /// `Profile` itself. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version,
 /// torn length).
 pub fn ride_elevation_profile(src: &dyn crate::ByteSource) -> Result<Profile, crate::Error> {
-    use crate::ride::{ride_header_len, ride_point_len, RIDE_ELE_NONE, RIDE_POINT_LEN_V2};
+    use obc_formats::ride::{
+        header_len as ride_header_len, point_len as ride_point_len, ELE_NONE as RIDE_ELE_NONE,
+        POINT_LEN_V2 as RIDE_POINT_LEN_V2,
+    };
 
     let info = crate::RideInfo::read(src)?;
     // Point records start after the version's fixed header bytes + the on-disk name. Re-read the
@@ -386,7 +389,9 @@ pub fn ride_elevation_profile(src: &dyn crate::ByteSource) -> Result<Profile, cr
 /// frame. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version, torn
 /// length).
 pub fn ride_preview_polyline<const N: usize>(src: &dyn crate::ByteSource) -> Result<Vec<(i32, i32), N>, crate::Error> {
-    use crate::ride::{ride_header_len, ride_point_len, RIDE_POINT_LEN_V2};
+    use obc_formats::ride::{
+        header_len as ride_header_len, point_len as ride_point_len, POINT_LEN_V2 as RIDE_POINT_LEN_V2,
+    };
 
     let info = crate::RideInfo::read(src)?;
     // Point records start after the version's fixed header bytes + the on-disk name (see

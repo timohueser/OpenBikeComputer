@@ -42,53 +42,20 @@
 /// secondary color, `None` writes `0x0000` with the bit clear.
 pub type Style = (u8, i8, u16, u8, u8, bool, Option<u16>);
 
-// The quadtree branch / empty-leaf sentinels are the format's, defined once in obc-reader
-// (issue #12) and re-exported here so the builders and their call sites keep the short names.
-pub use obc_reader::format::{BRANCH_BIT, EMPTY_LEAF};
-// The per-feature flag bits, composed by the `pack_*` encoders below (used, not re-exported).
-use obc_reader::format::{FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON};
+// Normative constants only: byte assembly below remains hand-written and never calls a production
+// serializer/parser, preserving the testkit as an independent oracle.
+pub use obc_formats::obcm::{
+    BRANCH_BIT, EMPTY_LEAF, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN,
+    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN,
+    POI_CHUNK_SIZE, POI_DIR_POOL_FIELDS_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN, POI_RECORD_LEN,
+};
+use obc_formats::obcm::{
+    FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT,
+    STYLE_PRIORITY_MASK, VERSION,
+};
 /// Distinctive (non-default) marker color baked into [`build_file`]'s header, so the
 /// reader's round-trip test is meaningful.
 pub const MARKER: u16 = 0xABCD;
-
-/// POI category count in a v7 directory (spec §7.1): ids 1..=6.
-pub const POI_CATEGORY_COUNT: u8 = 6;
-/// One 36-byte POI record (spec §7.3): v7 widened it from 32 (name 20 → 24 + a `hours_ref` u16).
-pub const POI_RECORD_LEN: usize = 36;
-/// The `Name` field width inside a v7 POI record (spec §7.3): 24 bytes, `0xFF`-padded.
-pub const POI_NAME_LEN: usize = 24;
-/// One hours-pool blob (spec §7.5): `flags u8` + `7 × 2 × (open_q, close_q)`.
-pub const POI_HOURS_BLOB_LEN: usize = 29;
-/// The fixed POI chunk capacity the packer writes (spec §7.1); the builders use it too.
-pub const POI_CHUNK_SIZE: usize = 512;
-/// One 13-byte POI-directory category entry (spec §7.1).
-pub const POI_CAT_ENTRY_LEN: usize = 13;
-/// The two v7 directory fields trailing the per-category entries (spec §7.1): `hours_pool_offset
-/// u32` + `hours_pool_count u16`.
-pub const POI_DIR_POOL_FIELDS_LEN: usize = 6;
-
-/// The v9 nav directory length (spec §8.1): `index_offset u32, index_node_count u32,
-/// node_chunk_count u32, edge_pool_offset u32, edge_chunk_count u32, chunk_size u16,
-/// profile_table_offset u32, profile_count u8, reserved u8` (v8 was 22).
-pub const NAV_DIR_LEN: usize = 28;
-/// Fixed prefix of a §8.3 junction record (`lat i32, lon i32, node_id u32, degree u8`).
-pub const NAV_NODE_FIXED_LEN: usize = 13;
-/// One v9 §8.3 neighbor entry (`neighbor_id u32, dlat i16, dlon i16, edge_id u32, cost_m u16,
-/// way_kind u8`), 15 bytes (v8 was 20 — absolute coords + u32 cost, no kind).
-pub const NAV_NEIGHBOR_LEN: usize = 15;
-/// Fixed prefix of a v9 §8.4 edge record (`length_m u32, pt_count u16, way_kind u8, anchor_lat i32,
-/// anchor_lon i32`), 15 bytes (v8 was 14 — no way_kind).
-pub const NAV_EDGE_FIXED_LEN: usize = 15;
-/// The fixed nav chunk capacity the packer writes (spec §8.1) — pinned to 512 in v9.
-pub const NAV_CHUNK_SIZE: usize = 512;
-/// One §8.6 profile record (`name [u8;12]`, `highway_mult [u8;32]`, `surface_mult [u8;8]`).
-pub const NAV_PROFILE_LEN: usize = 52;
-/// The `Name` field width inside a §8.6 profile record: 12 bytes, `0xFF`-padded.
-pub const NAV_PROFILE_NAME_LEN: usize = 12;
-
-/// The OBCM header length (bytes; 40 since v8); the Style Table conventionally follows immediately,
-/// so it is the builders' `style_off`. Kept in lock-step with [`obc_reader::HEADER_LEN`].
-pub const HEADER_LEN: usize = 40;
 
 /// One LOD layer: its quadtree index (flat u32 nodes) and padded data chunks.
 pub struct LodSpec {
@@ -103,7 +70,6 @@ pub struct LodSpec {
 /// plus bit 2 when `dashed` and bit 3 when `color2` is `Some`. `color2` writes its RGB565 value when
 /// present, else `0x0000` (ignored by the reader when bit 3 is clear). Shared by both file builders.
 fn style_table(styles: &[Style]) -> Vec<u8> {
-    use obc_reader::format::{STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK};
     let mut style_bytes = vec![styles.len() as u8];
     for &(id, z, color, weight, priority, dashed, color2) in styles {
         let mut flags = (priority - 1) & STYLE_PRIORITY_MASK;
@@ -139,8 +105,8 @@ fn obcm_header(
     nav_section_off: usize,
 ) -> Vec<u8> {
     let mut f = Vec::new();
-    f.extend_from_slice(b"OBCM");
-    f.push(10);
+    f.extend_from_slice(&MAGIC);
+    f.push(VERSION);
     f.extend_from_slice(&bbox.1.to_le_bytes()); // min_lat
     f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
     f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
@@ -151,7 +117,7 @@ fn obcm_header(
     f.extend_from_slice(&marker.to_le_bytes());
     f.extend_from_slice(&(poi_section_off as u32).to_le_bytes());
     f.extend_from_slice(&(nav_section_off as u32).to_le_bytes());
-    assert_eq!(f.len(), 40, "header must be 40 bytes");
+    assert_eq!(f.len(), HEADER_LEN, "header length follows the normative constant");
     f
 }
 
@@ -575,7 +541,7 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
     let style_bytes = style_table(styles);
 
     let lod_tab_off = style_off + style_bytes.len();
-    let mut cursor = lod_tab_off + lods.len() * 18;
+    let mut cursor = lod_tab_off + lods.len() * LOD_ENTRY_LEN;
     let mut table = Vec::new();
     let mut payload = Vec::new();
     for lod in lods {
@@ -631,7 +597,7 @@ pub fn build_priority_tree(
     let style_bytes = style_table(styles);
 
     let lod_tab_off = style_off + style_bytes.len();
-    let index_off = lod_tab_off + 18; // one 18-byte LOD entry
+    let index_off = lod_tab_off + LOD_ENTRY_LEN; // one LOD entry
 
     // Quadtree (9 nodes). Root branch -> [NW=branch@5, NE=chunk 4, SW/SE empty]; NW's four
     // children (idx 5..8) -> chunks 0,1,2,3. Walk order NW(→0,1,2,3) then NE(→4): the four

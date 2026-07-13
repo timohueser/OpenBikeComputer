@@ -5,15 +5,15 @@
 //! than checking in a binary fixture keeps the encoder + reader pinned to one layout: if either
 //! drifts, these break. `obcm-testkit` shares the layout with `obc-render`'s priority test.
 
-use obc_reader::{
-    BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, HEADER_LEN, MAX_FEAT_PTS, MAX_FEAT_RINGS,
+use obc_formats::obcm::{
+    BRANCH_BIT, EMPTY_LEAF, HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_LEN,
+    NAV_NODE_FIXED_LEN, POI_HOURS_BLOB_LEN, POI_RECORD_LEN,
 };
+use obc_reader::{BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
     build_file, default_nav_profile_table, empty_nav_directory, empty_poi_directory, hours_pool, nav_directory,
     pack_line, pack_line16, pack_nav_chunk, pack_nav_edge_record, pack_nav_record, pack_poi_chunk, pack_poi_record,
-    pack_poly_hole, pad, poi_dir_len, poi_directory, LodSpec, PoiCat, Style, BRANCH_BIT, EMPTY_LEAF, MARKER,
-    NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, POI_HOURS_BLOB_LEN,
-    POI_RECORD_LEN,
+    pack_poly_hole, pad, poi_dir_len, poi_directory, LodSpec, PoiCat, Style, MARKER,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -390,8 +390,8 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
 
     // The leaf's index entry is chunk 0 (high bit clear ⇒ a leaf, not a branch).
     let entry = u32::from_le_bytes([bin[idx_off], bin[idx_off + 1], bin[idx_off + 2], bin[idx_off + 3]]);
-    assert_eq!(entry & obc_reader::format::BRANCH_BIT, 0, "index entry is a leaf, not a branch");
-    assert_eq!(entry & !obc_reader::format::BRANCH_BIT, 0, "leaf maps to chunk id 0");
+    assert_eq!(entry & obc_formats::obcm::BRANCH_BIT, 0, "index entry is a leaf, not a branch");
+    assert_eq!(entry & !obc_formats::obcm::BRANCH_BIT, 0, "leaf maps to chunk id 0");
 
     // The single chunk holds only feature `a` (style 10); style 11 was dropped.
     let chunk_off = idx_off + node_count as usize * 4;
