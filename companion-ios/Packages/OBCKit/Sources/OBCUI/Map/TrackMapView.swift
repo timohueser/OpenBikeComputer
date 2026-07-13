@@ -15,6 +15,9 @@ import MapKit
 public struct TrackMapView: View {
     private let coordinates: [Coordinate]
     private let waypoints: [Waypoint]
+    /// Multi-stage mode (a trip page's hero, TR6): each stage stroked in its
+    /// palette color instead of the single accent track. Empty = single-track.
+    private let stages: [MultiTrackPreviewView.Stage]
     private let title: String
     private let onClose: () -> Void
 
@@ -26,6 +29,21 @@ public struct TrackMapView: View {
     ) {
         self.coordinates = coordinates
         self.waypoints = waypoints
+        self.stages = []
+        self.title = title
+        self.onClose = onClose
+    }
+
+    /// The trip variant: every stage on one interactive map, in its palette
+    /// color — the full-screen sibling of ``MultiTrackPreviewView``.
+    public init(
+        stages: [MultiTrackPreviewView.Stage],
+        title: String,
+        onClose: @escaping () -> Void
+    ) {
+        self.coordinates = stages.flatMap(\.coordinates)
+        self.waypoints = []
+        self.stages = stages
         self.title = title
         self.onClose = onClose
     }
@@ -53,7 +71,21 @@ public struct TrackMapView: View {
     private var mapBody: some View {
         #if canImport(MapKit)
         Map(initialPosition: .region(MapGeometry.boundingRegion(for: coordinates, pad: 1.4))) {
-            TrackMapContent(coordinates: coordinates, dotRadius: 7, waypoints: waypoints)
+            if stages.isEmpty {
+                TrackMapContent(coordinates: coordinates, dotRadius: 7, waypoints: waypoints)
+            } else {
+                ForEach(Array(stages.enumerated()), id: \.offset) { _, stage in
+                    let coords = MapGeometry.clLocations(stage.coordinates)
+                    MapPolyline(coordinates: coords)
+                        .stroke(
+                            OBCTheme.trackHalo,
+                            style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
+                    MapPolyline(coordinates: coords)
+                        .stroke(
+                            stage.color,
+                            style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+                }
+            }
         }
         .mapControls {
             MapCompass()

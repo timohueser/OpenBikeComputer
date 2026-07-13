@@ -376,13 +376,19 @@ public final class MainScreenModel {
                 lastRouteCatalog = deviceRoutes
                 reconcileOnDevice(with: deviceRoutes)
                 // The trip catalog rides the same reload (TR8): reconcile each
-                // trip's device link/badge against `tripList`, best-effort — a
-                // device predating trips answers an empty catalog (protocol
-                // default), which simply proves no trip.
-                let deviceTrips = (try? await transport.listTrips()) ?? []
-                guard !Task.isCancelled else { return }
-                lastTripCatalog = deviceTrips
-                reconcileTripsOnDevice(with: deviceTrips)
+                // trip's device link/badge against `tripList`. Best-effort, but
+                // fail-CLOSED: a failed read skips the reconcile entirely (stale
+                // links beat nuked ones) — treating a transient `listTrips`
+                // failure as "zero trips" dropped every trip link, and the next
+                // "Upload trip" then minted a duplicate device trip instead of
+                // replacing in place. A device predating trips rejects the read
+                // (`notFound`), lands here too, and has no trip links to keep —
+                // the old-firmware posture is unchanged.
+                if let deviceTrips = try? await transport.listTrips() {
+                    guard !Task.isCancelled else { return }
+                    lastTripCatalog = deviceTrips
+                    reconcileTripsOnDevice(with: deviceTrips)
+                }
                 routes = plannedList()
                 reloadTrips()
                 rides = trackedList()
@@ -728,9 +734,15 @@ public final class MainScreenModel {
                 committedObjectID: plannedDeviceObjectID(for: routeID)
             )
         }
+        // A valid scoped link IS the replace target — exactly `plannedDeviceObjectID`'s
+        // rule for route stages, no catalog-contains check. The reconcile owns dropping
+        // links for trips the device no longer lists (every successful `tripList` read);
+        // re-checking a *cached* catalog here demoted a valid link to a fresh upload
+        // whenever the cache was stale (e.g. the post-commit `listTrips` failed) — and a
+        // fresh upload of an already-stored trip mints a silent duplicate. A replace of
+        // a genuinely vanished trip fails loudly (`notFound`) instead — the safe side.
         let tripObjectID: DeviceObjectID? = {
-            guard let link = trip.deviceLink, let scope = connectedScope, link.matches(scope),
-                (lastTripCatalog ?? []).contains(where: { $0.id == link.objectID })
+            guard let link = trip.deviceLink, let scope = connectedScope, link.matches(scope)
             else { return nil }
             return link.objectID
         }()
