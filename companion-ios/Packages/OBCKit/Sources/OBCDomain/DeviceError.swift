@@ -43,7 +43,8 @@ public enum DeviceError: Error, Equatable, Sendable {
     case transferRejected
     /// The device rejected a **new**-route upload because its route storage is
     /// full (`storageFull`, spec §4.3) — the reject lands at descriptor-open time,
-    /// before any bytes stream, and nothing is committed. **Replace-by-id uploads
+    /// before the device consumes payload, and nothing is committed. The sender
+    /// resets any bytes already queued on the CoC. **Replace-by-id uploads
     /// of an existing route are exempt** (they reuse a slot), so this only ever
     /// surfaces for a route the device doesn't already hold.
     case storageFull
