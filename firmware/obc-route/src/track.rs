@@ -15,10 +15,10 @@ use core::fmt::Write;
 use heapless::String;
 pub use obc_ports::TrackPoint;
 
-use crate::byte_io::{ByteSink, ByteSource, Error};
+use obc_formats::io::{ByteSink, ByteSource, Error};
 
-// Compatibility paths for the normative track record size and sentinels now owned by
-// `obc-formats`; the encoder/decoder and streaming conversion remain in this crate.
+// Compatibility paths for existing module/root exports; the encoder/decoder and streaming
+// conversion remain here. Remove these aliases in the #812 final audit.
 use obc_formats::track::FLAG_SEGMENT_START;
 pub use obc_formats::track::{
     CAD_NONE as TRACK_CAD_NONE, HR_NONE as TRACK_HR_NONE, PWR_NONE as TRACK_PWR_NONE, RECORD_LEN as TRACK_RECORD_LEN,

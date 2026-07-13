@@ -3,11 +3,14 @@
 //! held-back version commit point) and the header reader's validation across **v1 and v2** (the
 //! torn-write / length rules a BLE `rideList` build leans on, and the old-ride compatibility rule).
 
-use obc_route::{
-    encode_record, ride_object_len, track_to_ride, Error, RideInfo, RideStats, SliceSource, TrackPoint, RIDE_CAD_NONE,
-    RIDE_HEADER_LEN_V1, RIDE_HEADER_LEN_V2, RIDE_HR_NONE, RIDE_POINT_LEN_V1, RIDE_POINT_LEN_V2, RIDE_PWR_NONE,
-    RIDE_VERSION,
+use obc_formats::io::{Error, SliceSource};
+use obc_formats::ride::{
+    object_len as ride_object_len, CAD_NONE as RIDE_CAD_NONE, ELE_NONE as RIDE_ELE_NONE,
+    HEADER_LEN_V1 as RIDE_HEADER_LEN_V1, HEADER_LEN_V2 as RIDE_HEADER_LEN_V2, HR_NONE as RIDE_HR_NONE,
+    POINT_LEN_V1 as RIDE_POINT_LEN_V1, POINT_LEN_V2 as RIDE_POINT_LEN_V2, PWR_NONE as RIDE_PWR_NONE,
+    VERSION as RIDE_VERSION,
 };
+use obc_route::{encode_record, track_to_ride, RideInfo, RideStats, TrackPoint};
 
 mod common;
 use common::VecSink;
@@ -304,7 +307,7 @@ fn ride_elevation_profile_reads_a_v1_object() {
 /// held-back (torn) version byte is rejected exactly as `RideInfo::read` rejects it.
 #[test]
 fn ride_elevation_profile_skips_ele_none_and_rejects_torn_saves() {
-    use obc_route::{ride_elevation_profile, RIDE_ELE_NONE};
+    use obc_route::ride_elevation_profile;
     let pts = [pt(0, 0, 150, 0, true), pt(0, 10_000, 0, 60_000, false), pt(0, 20_000, 250, 120_000, false)];
     let stats = RideStats { distance_m: 2_224, climb_m: 100, ..STATS };
     let mut ride = to_ride(&log_of(&pts), "R", &stats);

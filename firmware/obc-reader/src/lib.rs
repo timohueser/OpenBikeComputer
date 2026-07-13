@@ -1,7 +1,7 @@
 //! OBCM map format reader and renderer.
 //!
 //! `no_std`, zero-alloc (heapless) so the exact same code runs in the desktop
-//! simulator and in the nRF54L firmware. Parses format **v9** (the LOD pyramid,
+//! simulator and in the nRF54L firmware. Parses format **v10** (the LOD pyramid,
 //! a header marker color, a per-style priority level, the POI directory + hours
 //! pool, and the trailing nav-graph section with its profile table — see
 //! OBCM_Spec.md): a file holds N
@@ -14,20 +14,19 @@
 //! R3, #465).
 //!
 //! Modules:
-//! - [`byte_io`] — the [`ByteSource`]/[`ByteSink`] seam (+ [`SliceSource`]) the map and route
-//!   formats both stream through, so neither needs the whole file resident.
+//! - [`byte_io`] — compatibility paths for the `obc-formats` byte-I/O seam.
 //! - [`reader`] — header / style / LOD-table parsing and per-LOD query + decode.
 //! - [`hours`] — the device-side view over a hours-pool blob (spec §7.5): decode a pooled
 //!   [`WeeklySchedule`], select today's intervals, answer *open now*, and the Zeller weekday
 //!   helper the app maps its local clock through.
 //! - [`color`] — RGB565 → display color conversions.
-//! - [`codec`] — little-endian field readers/writers shared with the route format.
-//! - [`format`] — the OBCM flag/sentinel bit constants, shared by the reader and the packer.
+//! - [`codec`] / [`format`] — compatibility paths for `obc-formats` primitive codecs and OBCM
+//!   constants.
 //! - [`geo`] — the shared Earth-model distance core ([`M_PER_DEG`] in `f32` clothing):
 //!   microdegrees → ground meters, used identically by the route format's stored distances
 //!   and the layers that render or match against them.
-//! - [`poi_table`] — the canonical POI category/subtype table (spec §7.4), the single firmware
-//!   source of truth the packer and the app both mirror.
+//! - [`poi_table`] — compatibility paths for the canonical `obc-formats` POI category/subtype
+//!   table (spec §7.4).
 //!
 //! All coordinates are integer microdegrees (1e-6 degrees), as stored in the
 //! file. Projection to screen space is the renderer's job.

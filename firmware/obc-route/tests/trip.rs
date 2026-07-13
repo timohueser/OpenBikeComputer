@@ -1,15 +1,13 @@
 //! Trip-object codec (`obc-ble-interface-spec.md` §7.7): round-trip, the committed
 //! `protocol-vectors/trip-v1.bin` pin (dangling-ref fixture), and the read guards.
 
-use obc_route::{
-    trip_object_len, write_trip, Error, SliceSource, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN,
-    TRIP_VERSION,
-};
+use obc_formats::io::{ByteSink, Error, SliceSource};
+use obc_route::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
 
 /// A `ByteSink` over a `Vec` — the host's whole-object staging buffer.
 #[derive(Default)]
 struct VecSink(Vec<u8>);
-impl obc_route::ByteSink for VecSink {
+impl ByteSink for VecSink {
     fn write(&mut self, b: &[u8]) -> Result<(), Error> {
         self.0.extend_from_slice(b);
         Ok(())

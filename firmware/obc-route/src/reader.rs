@@ -9,15 +9,14 @@ use core::cell::RefCell;
 
 use heapless::{String, Vec};
 
-use crate::byte_io::{ByteSource, Error};
-use obc_reader::codec::{rd_i16, rd_i32, rd_u16, rd_u32};
+use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error};
 use obc_reader::BBox;
 
-// Compatibility paths for the normative OBCR sizes and sentinel now owned by `obc-formats`.
+// Compatibility paths for existing module/root exports. Remove in the #812 final audit.
 pub use obc_formats::obcr::{
     CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, NAME_CAP, WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_CAP,
 };
-use obc_formats::obcr::{MAGIC, VERSIONS};
+use obc_formats::obcr::{MAGIC, POINT_RECORD_LEN, VERSIONS, VERSION_V2};
 /// The device's waypoint cap — one number for both roles: the converter's `<wpt>` emission cap
 /// ([`gpx_to_obcr`](crate::gpx_to_obcr)) and the resident [`Waypoints`] table the ride loop holds
 /// (~40 B/entry ≈ 1.3 KB — negligible on the 512 KB target). The *format* allows up to `u16::MAX`
@@ -111,7 +110,7 @@ impl RouteObjectInfo {
     /// a non-OBCR payload out of the catalog.
     pub fn read(src: &dyn ByteSource) -> Result<RouteObjectInfo, Error> {
         let h = read_header(src)?;
-        let waypoint_count = if h.version >= 2 {
+        let waypoint_count = if h.version >= VERSION_V2 {
             let mut ext = [0u8; HEADER_V2_LEN - HEADER_LEN];
             src.read_at(HEADER_LEN as u32, &mut ext).map_err(|_| Error::BadOffset)?;
             rd_u16(&ext, 4)
@@ -426,8 +425,8 @@ fn decode_chunk_from(
     let _ = out.push(RoutePoint { lon: m.anchor_lon, lat: m.anchor_lat, ele: m.anchor_ele });
 
     // Remaining n-1 points are fixed 6-byte records; read the chunk in one go.
-    let want = (n - 1) * 6;
-    let mut buf = [0u8; (MAX_POINTS_PER_CHUNK - 1) * 6];
+    let want = (n - 1) * POINT_RECORD_LEN;
+    let mut buf = [0u8; (MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN];
     let bytes = buf.get_mut(..want).ok_or(Error::TooLarge)?;
     if want > 0 {
         src.read_at(m.byte_offset, bytes)?;
@@ -439,7 +438,7 @@ fn decode_chunk_from(
         lon += rd_i16(bytes, o) as i32;
         lat += rd_i16(bytes, o + 2) as i32;
         let ele = rd_i16(bytes, o + 4);
-        o += 6;
+        o += POINT_RECORD_LEN;
         let _ = out.push(RoutePoint { lon, lat, ele });
     }
     Ok(())

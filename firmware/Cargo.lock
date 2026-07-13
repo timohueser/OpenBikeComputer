@@ -2406,6 +2406,7 @@ version = "0.1.0"
 dependencies = [
  "geos",
  "heapless 0.8.0",
+ "obc-formats",
  "obc-reader",
  "osmpbf",
  "rayon",
@@ -2511,6 +2512,7 @@ name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "obc-formats",
  "obc-route",
 ]
 
@@ -2536,7 +2538,7 @@ dependencies = [
 name = "obcm-testkit"
 version = "0.1.0"
 dependencies = [
- "obc-reader",
+ "obc-formats",
 ]
 
 [[package]]
