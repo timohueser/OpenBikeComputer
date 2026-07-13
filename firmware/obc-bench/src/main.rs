@@ -13,9 +13,10 @@
 //!   pure-motion refactor must not touch them; an intentional rendering change updates the golden
 //!   file in the same PR — that is the review signal.
 //!
-//! Modes: default (print the table), `--write-hashes <file>`, `--check <file>` (exit 1 on
-//! mismatch), and `--map <path> --mpp <f> --heading <deg>` — a manual escape hatch to run one scene
-//! against a real local `.obcm` (never in CI: real maps aren't byte-stable fixtures).
+//! Modes: default (print the table), `--repeat <N>` (repeat the whole matrix and report
+//! min/median/max), `--write-hashes <file>`, `--check <file>` (exit 1 on mismatch), and `--map
+//! <path> --mpp <f> --heading <deg>` — a manual escape hatch to run one scene against a real local
+//! `.obcm` (never in CI: real maps aren't byte-stable fixtures).
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -282,6 +283,29 @@ fn print_table(results: &[SceneResult]) {
     }
 }
 
+/// Repeat the complete matrix and summarize each scene's end-to-end time. Each matrix result is
+/// already the min of [`ITERS`] warmed renders; the outer median rejects process/scheduler noise,
+/// while min/max expose the observed envelope used to set a review tolerance. Hashes must agree on
+/// every repeat, keeping this timing mode covered by the same deterministic-pixel contract.
+fn print_repeat_table(repeats: usize) {
+    let runs: Vec<Vec<SceneResult>> = (0..repeats).map(|_| run_matrix()).collect();
+    println!("{:13} {:>8} {:>8} {:>8} {:>8}  hash", "scene", "min", "median", "max", "spread");
+    for scene in 0..runs[0].len() {
+        let name = &runs[0][scene].name;
+        let hash = runs[0][scene].hash;
+        let mut totals: Vec<u64> = runs.iter().map(|run| run[scene].total_us).collect();
+        assert!(
+            runs.iter().all(|run| run[scene].name == *name && run[scene].hash == hash),
+            "scene order or pixel hash changed between benchmark repeats"
+        );
+        totals.sort_unstable();
+        let min = totals[0];
+        let median = totals[totals.len() / 2];
+        let max = totals[totals.len() - 1];
+        println!("{name:13} {min:>6}us {median:>6}us {max:>6}us {spread:>6}us  0x{hash:016x}", spread = max - min);
+    }
+}
+
 /// Compare the run's hashes to the golden file (`name=0x<hex>` lines). Any mismatch, missing, or
 /// unknown scene prints both sides and fails the check.
 fn check_hashes(results: &[SceneResult], golden: &str) -> bool {
@@ -312,6 +336,7 @@ fn hash_lines(results: &[SceneResult]) -> String {
 /// What the hand-parsed CLI asked for. No CLI framework — five flags, parsed by hand.
 enum Mode {
     Table,
+    Repeat(usize),
     WriteHashes(String),
     Check(String),
     Custom { map: String, mpp: f32, heading: f32 },
@@ -319,7 +344,7 @@ enum Mode {
 
 fn parse_args() -> Result<Mode, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut write, mut check, mut map) = (None, None, None);
+    let (mut write, mut check, mut map, mut repeat) = (None, None, None, None);
     let (mut mpp, mut heading) = (4.0f32, 0.0f32);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -327,18 +352,26 @@ fn parse_args() -> Result<Mode, String> {
         match a.as_str() {
             "--write-hashes" => write = Some(val("--write-hashes")?),
             "--check" => check = Some(val("--check")?),
+            "--repeat" => {
+                let n: usize = val("--repeat")?.parse().map_err(|e| format!("--repeat: {e}"))?;
+                if n == 0 || n % 2 == 0 {
+                    return Err("--repeat must be a positive odd number (so the median is unambiguous)".into());
+                }
+                repeat = Some(n);
+            }
             "--map" => map = Some(val("--map")?),
             "--mpp" => mpp = val("--mpp")?.parse().map_err(|e| format!("--mpp: {e}"))?,
             "--heading" => heading = val("--heading")?.parse().map_err(|e| format!("--heading: {e}"))?,
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
-    Ok(match (write, check, map) {
-        (Some(f), None, None) => Mode::WriteHashes(f),
-        (None, Some(f), None) => Mode::Check(f),
-        (None, None, Some(map)) => Mode::Custom { map, mpp, heading },
-        (None, None, None) => Mode::Table,
-        _ => return Err("pick one of --write-hashes / --check / --map".into()),
+    Ok(match (write, check, map, repeat) {
+        (Some(f), None, None, None) => Mode::WriteHashes(f),
+        (None, Some(f), None, None) => Mode::Check(f),
+        (None, None, Some(map), None) => Mode::Custom { map, mpp, heading },
+        (None, None, None, Some(n)) => Mode::Repeat(n),
+        (None, None, None, None) => Mode::Table,
+        _ => return Err("pick one of --repeat / --write-hashes / --check / --map".into()),
     })
 }
 
@@ -348,7 +381,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("obc-bench: {e}");
             eprintln!(
-                "usage: obc-bench [--write-hashes <file> | --check <file> | --map <path> [--mpp <f>] [--heading <deg>]]"
+                "usage: obc-bench [--repeat <odd-N> | --write-hashes <file> | --check <file> | --map <path> [--mpp <f>] [--heading <deg>]]"
             );
             return ExitCode::FAILURE;
         }
@@ -356,6 +389,7 @@ fn main() -> ExitCode {
 
     match mode {
         Mode::Table => print_table(&run_matrix()),
+        Mode::Repeat(n) => print_repeat_table(n),
         Mode::WriteHashes(path) => {
             let results = run_matrix();
             print_table(&results);
