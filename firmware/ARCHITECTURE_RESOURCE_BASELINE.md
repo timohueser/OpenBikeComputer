@@ -47,7 +47,7 @@ cargo run -p obc-bench --release --locked -- --repeat 9
 python3 tools/check_dependencies.py
 python3 -m unittest discover -s tools/tests -v
 
-# Prove the selected ARM backend actually honors the strict-alignment flag.
+# Prove both shipping Cargo roots wire strict-align and the selected ARM backend honors it.
 python3 tools/resource_guard.py strict-align
 ```
 
@@ -164,7 +164,9 @@ The checker covers the `firmware/Cargo.toml` workspace. The excluded
 `obc-fw-nrf54l` composition root and `obc-boot` boot root are independently
 built/linted in CI and are intentionally outside this workspace-layer graph.
 
-The ARM strict-alignment probe is also behavior-based: with
+The strict-alignment guard first parses both excluded Cargo configs and requires
+their embedded-target rustflags to select `+strict-align`. Its backend probe is
+also behavior-based: with
 `+strict-align`, an align-1 four-byte decoder must lower to four byte loads and
 no word load, while the no-flag control must contain a word load. Rustc 1.96.0
 prints an “unknown and unstable feature” diagnostic but its LLVM

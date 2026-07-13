@@ -71,6 +71,29 @@ other:
         with self.assertRaisesRegex(resource_guard.GuardError, "assembly not found"):
             resource_guard.function_assembly("unexpected assembly", "decode_u32")
 
+    def test_strict_align_config_requires_shipping_target_and_flag(self):
+        valid = {
+            "build": {"target": resource_guard.EMBEDDED_TARGET},
+            "target": {
+                resource_guard.EMBEDDED_TARGET_CFG: {
+                    "rustflags": ["-C", "target-feature=+strict-align"]
+                }
+            },
+        }
+        resource_guard.validate_strict_align_config(valid, Path("valid.toml"))
+
+        wrong_target = dict(valid)
+        wrong_target["build"] = {"target": "host"}
+        with self.assertRaisesRegex(resource_guard.GuardError, "does not select embedded target"):
+            resource_guard.validate_strict_align_config(wrong_target, Path("wrong-target.toml"))
+
+        missing_flag = {
+            "build": {"target": resource_guard.EMBEDDED_TARGET},
+            "target": {resource_guard.EMBEDDED_TARGET_CFG: {"rustflags": ["-C", "opt-level=3"]}},
+        }
+        with self.assertRaisesRegex(resource_guard.GuardError, "does not wire"):
+            resource_guard.validate_strict_align_config(missing_flag, Path("missing-flag.toml"))
+
     def test_resource_table_is_self_describing(self):
         def entry(name, value):
             return name.encode().ljust(32, b"\0") + struct.pack("<I", value)
