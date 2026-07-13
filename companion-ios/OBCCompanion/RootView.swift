@@ -209,6 +209,11 @@ struct RootView: View {
             deviceName: mainModel.deviceName,
             noDevicePaired: pending.noDevicePaired,
             replacing: pending.replacing,
+            // Scope-gated (#769): replace-by-id only when the replaced route's
+            // link is valid for the connected device's (serial, epoch).
+            replacingDeviceObjectID: pending.replacing.flatMap {
+                mainModel.plannedDeviceObjectID(for: $0.id)
+            },
             onSave: { detail in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 importModel.closeImport()
