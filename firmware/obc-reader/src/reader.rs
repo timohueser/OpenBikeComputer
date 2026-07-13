@@ -1822,6 +1822,11 @@ fn decode_chunk_into<const P: usize, const R: usize>(
             match skip_feature(chunk, off) {
                 Ok(next) => off = next,
                 Err(error) => {
+                    // A filtered feature still participates in the public whole-feature scratch
+                    // contract. If its framing is malformed, discard geometry left by a previous
+                    // selected feature (or stale caller prefill) before reporting the drop.
+                    points.clear();
+                    ring_lens.clear();
                     status.dropped(error);
                     break;
                 }

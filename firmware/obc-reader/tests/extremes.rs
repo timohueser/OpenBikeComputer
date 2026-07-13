@@ -286,6 +286,44 @@ fn decode_feature_at_clears_partial_and_stale_scratch_on_malformed_hole() {
     assert!(ring_lens.is_empty(), "partial exterior and stale ring lengths must be cleared");
 }
 
+/// A malformed feature rejected by the filter still clears scratch left by the preceding selected
+/// feature. The skip path parses framing without decoding coordinates, but exposes the same public
+/// whole-feature postcondition as the decode path.
+#[test]
+fn filtered_malformed_skip_clears_prior_feature_scratch() {
+    let mut chunk = pack_line(1, 100, 100, &[(10, 0)]);
+    chunk.extend_from_slice(&pack_line_decl(2, 120, 120, 40, &[(1, 0); 5]));
+    let bytes = single_leaf(GLOBAL, chunk, 64);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    points.push((-1, -1)).unwrap();
+    ring_lens.push(99).unwrap();
+    let mut visited = 0usize;
+
+    let status = r
+        .for_each_feature_filtered(
+            0,
+            0,
+            &r.bbox,
+            &mut points,
+            &mut ring_lens,
+            |style_id| style_id == 1,
+            |_| visited += 1,
+        )
+        .unwrap();
+
+    assert_eq!(visited, 1, "the valid selected feature must be visited first");
+    assert_eq!(status.complete, 1);
+    assert_eq!(status.malformed, 1);
+    assert_eq!(status.capacity_dropped, 0);
+    assert!(points.is_empty(), "malformed filtered framing must clear prior/stale points");
+    assert!(ring_lens.is_empty(), "malformed filtered framing must clear prior/stale ring lengths");
+}
+
 /// A feature header that itself straddles the chunk end: the `while off + 12 <= cs` guard
 /// must stop before reading a partial 12-byte header. We place one whole feature,
 /// then trailing bytes too short to be a header (and not 0xFF, so the 0xFF early-out doesn't mask
