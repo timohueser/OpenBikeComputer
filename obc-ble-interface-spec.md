@@ -294,7 +294,18 @@ foreign-card hole (#776). Conventions:
 
 At most **one transfer is in flight at a time** — the CoC carries exactly one
 object's bytes between a `transferControl` open and its `transferResult`. A
-second open while one is active is answered with `busy`.
+second open while one is active is answered with `busy`. The terminal result is
+the ownership boundary: the device clears its active gate **before** notifying
+that result, and the app holds its local transfer slot until it has consumed a
+correlated close (matching object id and committed byte count).
+
+The CoC is an unframed stream, so an exchange that does not reach that close is
+not reusable. After cancellation, timeout, a mismatched/late answer, or an upload
+descriptor-open reject, the app closes and reopens the CoC **before** handing its
+slot to another descriptor. This also discards bytes the upload sender may have
+queued before its asynchronous reject arrived. A device treats that channel drop
+as an implicit abort, discards the partial, clears the gate, and sends no late
+`transferResult` for the dead exchange.
 
 ### 4.2 `transferControl` — the transfer descriptor
 
@@ -339,7 +350,9 @@ download is re-requested whole (a fresh `op=2`, §1 principle 4).
 **Abort (`op=3`).** Either side stops cleanly: the app writes `op=3`
 (type/object_id echo the active transfer), the device drains and **discards** the
 partial, and notifies `transferResult` with `aborted` (`committed_offset = 0` —
-nothing is retained).
+nothing is retained). Closing the CoC is the implicit-abort/reset form: the
+device performs the same discard but sends no result for a channel the peer has
+already abandoned.
 
 A descriptor that names an unknown type/id or arrives mid-transfer is answered
 with a `transferResult` carrying `error` / `notFound` / `busy` (§4.3) and does not
@@ -348,8 +361,11 @@ disturb an active transfer.
 **Storage-full reject (descriptor-open).** A **new**-route upload — `op=1`,
 route type, `object_id = 0xFFFF` (or a route id the device doesn't hold) —
 that would grow the catalog past its cap is rejected at the `transferControl`
-write, **before any bytes stream**, with `transferResult` status `storageFull`
-(§4.3); no CoC opens and no partial file is created. **Replace-by-id uploads of
+write, **before the device consumes payload bytes**, with `transferResult` status
+`storageFull` (§4.3); no partial file is created. Because v2 has no separate
+upload-accepted handshake, the sender may already have queued raw CoC bytes when
+that asynchronous result arrives; it resets the CoC as described above.
+**Replace-by-id uploads of
 an existing route are exempt** — they reuse a catalog slot rather than growing
 it, so updating a stored (or actively-navigated) route never hits the cap. The
 `object_id` in the reject echoes the request (`0xFFFF` for a fresh upload). The
@@ -359,7 +375,7 @@ routes.
 The same descriptor-open reject guards **new-trip uploads** (`op=1`, trip type
 `9`, `object_id = 0xFFFF` or a trip id the device doesn't hold): a trip that would
 grow the trip catalog past its cap is refused with `storageFull` before any bytes
-stream, and **replace-by-id uploads of an existing trip are exempt**. The
+are consumed, and **replace-by-id uploads of an existing trip are exempt**. The
 reference cap is **16 trips**. (A trip references route ids only, so its bytes are
 tiny — the cap bounds the trip *count*, independent of the 64-route cap.)
 
@@ -383,7 +399,7 @@ image to the card over the existing transfer machinery unchanged — whole-objec
 CRC-32 at commit, no partial resume (an update is ~900 KB ≈ a large route). Two
 `fwImage`-specific rules ride the same descriptor path: (1) an announced
 `total_len` past the device's update-slot ceiling is rejected at the
-`transferControl` write with `error`, **before any bytes stream** — the ~900 KB
+`transferControl` write with `error`, **before any bytes are consumed** — the ~900 KB
 would otherwise transfer only to fail at commit; and (2) a CRC-verified commit
 promotes the staged bytes to `/UPDATE.BIN` in the card root, **overwriting any
 existing `UPDATE.BIN`**. A torn or CRC-failed transfer leaves no visible
@@ -545,9 +561,13 @@ link-drop follow the ack, never race ahead of it.
 ### 4.5 Change signalling
 
 The `storeChanged` status message (§4.3 `msg = 2`) is the **sole** change signal:
-notified on every store change, it names which store (route / ride) moved and
+notified on every store change, it names which store (route / ride / trip) moved and
 carries a monotonic-per-boot `revision`. The app's sync flow: on `storeChanged`
-(or on connect), download the relevant list object (§7.4). *(v1 additionally
+(or on connect), download the relevant list object (§7.4). Changes that arrive
+while a list is in flight are coalesced into a follow-up read; they do not cancel
+the opened transfer. Notifications remain best-effort BLE edges, so the app also
+performs a low-cadence catalog audit while connected (the reference app uses 60 s)
+to converge after a dropped edge. *(v1 additionally
 carried a 10-byte `objectStore` read/notify digest on characteristic `0003`; v2
 removes it — it double-signalled the same change and its per-boot `revision`
 tripped clients that persisted a last-seen value. The characteristic block is
@@ -798,7 +818,7 @@ unchanged.
   the card root, **replacing any existing `UPDATE.BIN`**. A torn or CRC-failed
   transfer never becomes a visible `UPDATE.BIN` (§4.2).
 - **Size**: an announced object past the device's update-slot ceiling is rejected
-  at announce with `error`, before any bytes stream (§4.2).
+  at announce with `error`, before the device consumes payload bytes (§4.2).
 - **Install is separate**: staging never installs. Installation is the
   physically-confirmed `installFw` command (§4.4). This mirrors the SD-sideload
   contract — the same `/UPDATE.BIN` a user could copy onto the card by hand.

@@ -129,7 +129,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // The one-transfer-at-a-time gate (spec §4.1) — reloads can't interleave a
     // list download with a running upload and cross their status notifications.
     private var transferBusy = false
-    private var transferWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Diagnostic ownership for the one-transfer gate. Besides making queue
+    /// handoffs visible, the token prevents a stray/duplicate release from
+    /// unlocking somebody else's exchange.
+    private var nextTransferSlotID: UInt64 = 1
+    private var transferOwner: (id: UInt64, label: String)?
+    private var transferWaiters: [(
+        id: UInt64, label: String, cont: CheckedContinuation<UInt64, Never>
+    )] = []
 
     public override init() {
         super.init()
@@ -327,8 +334,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // `transfer` results share one `pendingStatuses` buffer, so an ungated
         // delete could wipe a slot-holding transfer's buffered result out from
         // under it and hang that transfer forever. Serialize like the CoC exchanges.
-        await acquireTransferSlot()
-        defer { releaseTransferSlot() }
+        let slot = await acquireTransferSlot("command deleteRoute id=\(id.raw)")
+        defer { releaseTransferSlot(slot) }
         clearPendingStatuses()
         try await write(payload, to: GATT.command)
         guard try await bounded({ try await nextCommandResult() }).status == .ok else {
@@ -346,8 +353,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // reason (#302): command results and transfer results share one
         // `pendingStatuses` buffer, so an ungated command write could wipe a
         // slot-holding transfer's buffered result out from under it.
-        await acquireTransferSlot()
-        defer { releaseTransferSlot() }
+        let slot = await acquireTransferSlot("command ackRides chunks=\(chunks.count)")
+        defer { releaseTransferSlot(slot) }
         clearPendingStatuses()
         for chunk in chunks {
             try await write(chunk, to: GATT.command)
@@ -459,8 +466,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // cascade is composed by the caller. Same transfer-slot serialization as
         // `deleteRoute` (#302 — command and transfer results share one buffer).
         let payload = Data([1, ObjectType.trip.rawValue, UInt8(id.raw & 0xFF), UInt8(id.raw >> 8)])
-        await acquireTransferSlot()
-        defer { releaseTransferSlot() }
+        let slot = await acquireTransferSlot("command deleteTrip id=\(id.raw)")
+        defer { releaseTransferSlot(slot) }
         clearPendingStatuses()
         try await write(payload, to: GATT.command)
         guard try await bounded({ try await nextCommandResult() }).status == .ok else {
@@ -567,8 +574,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // share one `pendingStatuses` buffer, so an ungated command write could
         // wipe a slot-holding transfer's buffered result. The command returns as
         // soon as the request is accepted; it never waits for the on-glass confirm.
-        await acquireTransferSlot()
-        defer { releaseTransferSlot() }
+        let slot = await acquireTransferSlot("command installFirmware")
+        defer { releaseTransferSlot(slot) }
         clearPendingStatuses()
         try await write(Data([3]), to: GATT.command)
         return FirmwareInstallResult(
@@ -588,8 +595,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // — so we wait only briefly for the ack; a timeout or write failure throws,
         // and the caller (Settings forget) treats this as best-effort and clears
         // its local record regardless.
-        await acquireTransferSlot()
-        defer { releaseTransferSlot() }
+        let slot = await acquireTransferSlot("command forgetBond")
+        defer { releaseTransferSlot(slot) }
         clearPendingStatuses()
         try await write(Data([4]), to: GATT.command)
         // The ack timeout is a queue-confined one-shot (the watchdog idiom above),
@@ -653,7 +660,16 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
         queue.asyncAfter(deadline: .now() + Self.answerTimeout, execute: timeout)
         defer { timeout.cancel() }
-        return try await op()
+        return try await withTaskCancellationHandler {
+            try await op()
+        } onCancel: { [weak self] in
+            // Status continuations are queue-owned and otherwise ignore task
+            // cancellation. Unwind the current slot holder so its catch path can
+            // tear down the opened raw-byte exchange before handing off.
+            self?.queue.async { [weak self] in
+                self?.failSolicitedWaiters(DeviceError.transferDropped)
+            }
+        }
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
@@ -698,41 +714,92 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// a typed reject resolves it as a throw — stream the payload off the CoC
     /// verifying the whole-object CRC, then require the committed close.
     fileprivate func downloadObject(type: ObjectType, objectID: UInt16) async throws -> Data {
-        await acquireTransferSlot()
-        defer { releaseTransferSlot() }
-        let channel = try await readyChannel()
-        clearPendingStatuses()
-        try await write(TransferControl(op: .download, type: type, objectID: objectID).encode(), to: GATT.transferControl)
-        let announce = try await bounded { try await nextAnnounce() }
-        let bytes = try await channel.receive(length: Int(announce.totalLen), expectedCRC: announce.crc32)
-        guard try await bounded({ try await nextTransferResult() }).status == .committed else {
-            throw DeviceError.readFailed
+        let slot = await acquireTransferSlot("download type=\(type.rawValue) id=\(objectID)")
+        let descriptor = TransferControl(op: .download, type: type, objectID: objectID)
+        var exchangeOpened = false
+        do {
+            let channel = try await readyChannel()
+            clearPendingStatuses()
+            logDescriptor(descriptor, slot: slot)
+            // A failed write acknowledgement is ambiguous: the peripheral may
+            // already have armed it. Treat the exchange as open before writing.
+            exchangeOpened = true
+            try await write(descriptor.encode(), to: GATT.transferControl)
+            let announce = try await bounded { try await nextAnnounce() }
+            guard descriptor.acceptsDownloadAnnounce(announce) else {
+                throw DeviceError.readFailed
+            }
+            let bytes = try await channel.receive(length: Int(announce.totalLen), expectedCRC: announce.crc32)
+            let result = try await bounded { try await nextTransferResult() }
+            guard descriptor.acceptsCommittedResult(result, byteCount: announce.totalLen) else {
+                throw DeviceError.readFailed
+            }
+            exchangeOpened = false
+            releaseTransferSlot(slot)
+            return bytes
+        } catch {
+            // Once a descriptor may have landed, releasing the slot is safe only
+            // after closing the raw CoC. That discards an abandoned download or
+            // rejected upload's queued bytes on both peers.
+            if exchangeOpened { await teardownChannel() }
+            releaseTransferSlot(slot)
+            throw error
         }
-        return bytes
     }
 
     /// The transfer slot (spec §4.1: one transfer in flight). Holders release at
     /// the end of each attempt, so a stalled (drop-waiting) upload doesn't starve
     /// reconnect-time list reads.
-    fileprivate func acquireTransferSlot() async {
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+    fileprivate func acquireTransferSlot(_ label: String) async -> UInt64 {
+        await withCheckedContinuation { (cont: CheckedContinuation<UInt64, Never>) in
             queue.async { [self] in
-                if transferBusy { transferWaiters.append(cont) } else {
+                let id = nextTransferSlotID
+                nextTransferSlotID &+= 1
+                if transferBusy {
+                    let owner = transferOwner.map { "#\($0.id) \($0.label)" } ?? "unknown"
+                    print("[OBC BLE slot] queue #\(id) \(label) behind \(owner)")
+                    transferWaiters.append((id: id, label: label, cont: cont))
+                } else {
                     transferBusy = true
-                    cont.resume()
+                    transferOwner = (id: id, label: label)
+                    print("[OBC BLE slot] acquire #\(id) \(label)")
+                    cont.resume(returning: id)
                 }
             }
         }
     }
 
-    fileprivate func releaseTransferSlot() {
+    fileprivate func releaseTransferSlot(_ id: UInt64) {
         queue.async { [self] in
+            guard transferOwner?.id == id else {
+                let owner = transferOwner.map { "#\($0.id) \($0.label)" } ?? "none"
+                print("[OBC BLE slot] RELEASE MISMATCH #\(id); current owner \(owner)")
+                return
+            }
+            if let owner = transferOwner {
+                print("[OBC BLE slot] release #\(owner.id) \(owner.label)")
+            }
             if transferWaiters.isEmpty {
                 transferBusy = false
+                transferOwner = nil
             } else {
-                transferWaiters.removeFirst().resume()  // hand the slot over
+                let next = transferWaiters.removeFirst()
+                transferOwner = (id: next.id, label: next.label)
+                print("[OBC BLE slot] handoff -> #\(next.id) \(next.label)")
+                next.cont.resume(returning: next.id)
             }
         }
+    }
+
+    /// Print the exact descriptor associated with a slot token. Paired with the
+    /// firmware's decoded reject log, this tells us which logical owner crossed
+    /// the one-transfer boundary when the on-glass failure recurs.
+    fileprivate func logDescriptor(_ descriptor: TransferControl, slot: UInt64) {
+        print(
+            "[OBC BLE xfer] slot #\(slot) descriptor op=\(descriptor.op.rawValue) "
+                + "type=\(descriptor.type.rawValue) id=\(descriptor.objectID) "
+                + "len=\(descriptor.totalLen) crc=\(String(format: "%08X", descriptor.crc32))"
+        )
     }
 
     /// Drop buffered results/announces from a previous exchange before writing a
@@ -775,6 +842,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// its partial, and re-listens; the next transfer re-opens via `readyChannel`.
     fileprivate func teardownChannel() async {
         let channel: L2CAPByteChannel? = queue.sync {
+            // Closing an exchange is also its local control-plane reset. Resume
+            // any parked answer waiter before clearing buffers; the holder does
+            // not release its transfer slot until this method returns.
+            failSolicitedWaiters(DeviceError.transferDropped)
+            pendingStatuses.removeAll()
+            pendingAnnounces.removeAll()
             let current = byteChannel
             byteChannel = nil
             bleChannel = nil
@@ -786,6 +859,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // MARK: Status / announce notifications (queue-confined)
 
     private func deliverStatus(_ message: StatusMessage) {
+        logStatus(message)
         // A transferResult while a download announce is awaited IS the answer to
         // that request — a typed reject (notFound / busy / error), spec §4.2.
         if case .transferResult(let result) = message, let waiter = announceWaiter {
@@ -816,6 +890,35 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             storeChangedMulticast.send(change)
         case .downloadAnnounce, .unknown:
             break  // announce is handled above (unreachable here); unknowns aren't buffered
+        }
+    }
+
+    /// Log every inbound message in the status ordering domain. Together with
+    /// the slot token and outgoing descriptor logs this makes a crossed answer
+    /// visible without changing waiter selection or buffering.
+    private func logStatus(_ message: StatusMessage) {
+        switch message {
+        case .transferResult(let result):
+            let id = result.objectID?.raw ?? TransferControl.newObjectID
+            print(
+                "[OBC BLE status] transferResult id=\(id) status=\(result.status.rawValue) "
+                    + "offset=\(result.committedOffset)"
+            )
+        case .storeChanged(let change):
+            print("[OBC BLE status] storeChanged type=\(change.type.rawValue) revision=\(change.revision)")
+        case .commandResult(let result):
+            print(
+                "[OBC BLE status] commandResult command=\(result.command) "
+                    + "status=\(result.status.rawValue) detail=\(result.detail)"
+            )
+        case .downloadAnnounce(let descriptor):
+            print(
+                "[OBC BLE status] downloadAnnounce type=\(descriptor.type.rawValue) "
+                    + "id=\(descriptor.objectID) len=\(descriptor.totalLen) "
+                    + "crc=\(String(format: "%08X", descriptor.crc32))"
+            )
+        case .unknown(let discriminator):
+            print("[OBC BLE status] unknown discriminator=\(discriminator)")
         }
     }
 
@@ -1185,6 +1288,9 @@ private actor UploadRunner {
     private let outcome: AsyncPromise<TransferOutcome>
     private let assignedID: AsyncPromise<DeviceObjectID?>
     private var attempt: Task<Void, Never>?
+    /// True from the moment the descriptor may have reached the device until a
+    /// correlated committed close lands or the CoC reset completes.
+    private var exchangeOpened = false
 
     init(
         transport: BLETransport, payload: Data, descriptor: TransferControl,
@@ -1209,24 +1315,33 @@ private actor UploadRunner {
         }
     }
 
-    /// Abort: stop the pump and tear the CoC down — the device sees the drop and
-    /// discards its partial (its `aborted` result is cleared before the next
-    /// exchange's descriptor). Terminal.
+    /// Abort the attempt. Only the slot holder may tear down the shared CoC: an
+    /// upload still queued behind a list read must never close that list's
+    /// channel. If this attempt has opened its descriptor, resetting the channel
+    /// also unwinds its non-cancellation-aware status waiter.
     func cancel() async {
         attempt?.cancel()
-        await transport.teardownChannel()
+        if exchangeOpened {
+            await transport.teardownChannel()
+            exchangeOpened = false
+        }
         finish(.canceled)
     }
 
     private func runAttempt() async {
-        await transport.acquireTransferSlot()
-        defer { transport.releaseTransferSlot() }
+        let slot = await transport.acquireTransferSlot(
+            "upload type=\(descriptor.type.rawValue) id=\(descriptor.objectID) len=\(descriptor.totalLen)"
+        )
+        defer { transport.releaseTransferSlot(slot) }
         guard outcome.current == nil else { return }
 
         // No channel and no way to open one = no link at all (H4): terminal.
         let channel: BLEChannel
         do {
             channel = try await transport.readyChannel()
+            try Task.checkCancellation()
+        } catch is CancellationError {
+            return
         } catch {
             finish(.failed((error as? DeviceError) ?? .notConnected))
             return
@@ -1234,6 +1349,10 @@ private actor UploadRunner {
 
         do {
             transport.clearPendingStatuses()
+            transport.logDescriptor(descriptor, slot: slot)
+            // The write acknowledgement can fail after the peripheral accepted
+            // the descriptor, so cleanup responsibility starts before the call.
+            exchangeOpened = true
             try await transport.write(descriptor.encode(), to: GATT.transferControl)
             let ticks = progress
             try await channel.send(payload) { ticks.yield($0) }
@@ -1241,10 +1360,25 @@ private actor UploadRunner {
             // verdict. Bounded: an abandoned notify must fail the attempt, not
             // park it forever with the transfer slot held.
             let result = try await transport.bounded { try await transport.nextTransferResult() }
-            switch result.status {
-            case .committed:
+            if result.status == .committed {
+                guard descriptor.acceptsCommittedResult(result, byteCount: descriptor.totalLen) else {
+                    await resetOpenedExchange()
+                    finish(.failed(.transferRejected))
+                    return
+                }
+                exchangeOpened = false
                 assignedID.fulfill(result.objectID)
                 finish(.completed)
+                return
+            }
+
+            // A descriptor-open reject can arrive before the raw send finishes;
+            // those unconsumed bytes remain queued on this unframed CoC. Always
+            // reopen the channel before another descriptor can use it.
+            await resetOpenedExchange()
+            switch result.status {
+            case .committed:
+                finish(.failed(.transferRejected))  // handled above; defensive fallback
             case .crcMismatch:
                 finish(.failed(.crcMismatch))
             case .aborted:
@@ -1255,10 +1389,12 @@ private actor UploadRunner {
                 finish(.failed(.transferRejected))
             }
         } catch is CancellationError {
-            // cancel() resolves the outcome and tears the channel down.
+            await resetOpenedExchange()
         } catch DeviceError.writeFailed {
+            await resetOpenedExchange()
             finish(.failed(.writeFailed))  // GATT rejected the descriptor, link up
         } catch {
+            await resetOpenedExchange()
             // The CoC dropped or the device's answer never came. A genuine link
             // drop stays unresolved — resumable; the sheet's drop watch offers
             // Resume off the state edge. But the same failure under a link that
@@ -1272,7 +1408,14 @@ private actor UploadRunner {
         }
     }
 
+    private func resetOpenedExchange() async {
+        guard exchangeOpened else { return }
+        await transport.teardownChannel()
+        exchangeOpened = false
+    }
+
     private func finish(_ terminal: TransferOutcome) {
+        guard outcome.current == nil else { return }
         progress.finish()
         outcome.fulfill(terminal)
         if terminal != .completed { assignedID.fulfill(nil) }

@@ -199,9 +199,11 @@ and back.
 
 > **Full means full — up front.** The device holds a bounded route catalog (64
 > routes). A **new**-route upload that would overflow it is refused the instant the
-> descriptor arrives — *before any bytes stream* — with a distinct `storageFull`
+> descriptor arrives — *before the device consumes any payload* — with a distinct `storageFull`
 > result, so the phone can tell the rider to delete routes on the device rather
-> than wait out a doomed transfer. Re-uploading an *existing* route (a replace by
+> than wait out a doomed transfer. Since the raw sender may already have queued
+> bytes before that asynchronous result arrives, the app resets the CoC on the
+> reject. Re-uploading an *existing* route (a replace by
 > id) is exempt: it reuses a slot rather than growing the catalog, so updating the
 > route you're actively navigating never hits the cap.
 
@@ -226,7 +228,14 @@ and back.
 > holds the same posture: each of those waits is time-bounded, because they hold
 > the app's single transfer slot — an unbounded wait on one lost verdict would
 > silently wedge every later list read, sync, and upload behind it until the app
-> restarts. A timed-out exchange fails like a drop: the slot frees, a retry
+> restarts. The CoC is deliberately unframed, so the slot does not simply free:
+> the app first closes and reopens the channel on a timeout, cancellation,
+> crossed result, or descriptor-open reject. That reset discards raw upload
+> bytes that may already have queued before an asynchronous reject arrived; the
+> device treats the channel drop as an implicit abort and sends no late result.
+> A committed close is correlated by object id **and byte count**, so the 310-byte
+> close of a preceding catalog read can never complete a 9,360-byte upload. A
+> timed-out exchange fails like a drop: the slot then frees, a retry
 > re-sends the whole object, and the convergence rules above absorb the
 > "committed but unheard" case. The same rule covers a data-plane stall under a
 > live link: a CoC that moves no bytes is failed by a watchdog and surfaces as a
@@ -327,7 +336,7 @@ something changed.
   <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
   <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device marks synced</text>
 </svg>
-<figcaption><code>storeChanged</code> is the cheap "did anything change?" signal that replaces polling the CoC-sized lists — one notification per change, naming <em>which</em> store moved so a route upload never triggers a ride re-list. On it (or on connect) the app pulls the relevant <b>list</b> object — a compact catalog of fixed-size entries — then downloads only the objects new to it. A change is a change whether the phone caused it or the rider deleted something on the device: both go through the one object store, so both fire the same signal. It shares the <code>status</code> characteristic with every other device → app message, so there is one subscription and one ordering domain. <em>(v1 also carried a separate 10-byte <code>objectStore</code> digest characteristic; v2 drops it as a redundant second signal whose per-boot <code>revision</code> tripped clients that persisted it.)</em> The lower lane runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
+<figcaption><code>storeChanged</code> is the cheap immediate "did anything change?" signal — one notification per change, naming <em>which</em> store moved so a route upload never triggers a ride re-list. On it (or on connect) the app pulls the relevant <b>list</b> object — a compact catalog of fixed-size entries — then downloads only the objects new to it. Changes that arrive during a list transfer coalesce behind it instead of cancelling the open exchange. Because BLE notifications are best-effort edges, the app also runs a low-cadence 60-second catalog audit; a lost edge can delay a checkmark update, never leave it stale until restart. A change is a change whether the phone caused it or the rider deleted something on the device: both go through the one object store, so both fire the same signal. It shares the <code>status</code> characteristic with every other device → app message, so there is one subscription and one ordering domain. <em>(v1 also carried a separate 10-byte <code>objectStore</code> digest characteristic; v2 drops it as a redundant second signal whose per-boot <code>revision</code> tripped clients that persisted it.)</em> The lower lane runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
 </figure>
 
 The device is the other half of this loop. A change doesn't only come *from* the

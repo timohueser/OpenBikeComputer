@@ -3,8 +3,8 @@
 //!
 //! The CoC carries **only the object's payload bytes** (no per-chunk framing); the whole transfer state
 //! machine + CRC codecs live in the host-tested [`obc_ble`] crate. One transfer at a time: the
-//! [`super::state::TRANSFER_ACTIVE`] gate is cleared here when each concludes, and a latched abort that
-//! raced a completion is drained so it can't leak into the next transfer.
+//! [`super::state::TRANSFER_ACTIVE`] gate is cleared immediately before each terminal result is
+//! notified, and a latched abort that raced completion is drained at that same boundary.
 //!
 //! - **Echo loopback** ([`run_echo`]): stream each SDU straight back through an [`obc_ble::Receiver`]
 //!   (a running CRC-32, no reassembly buffer), verify **one** whole-object CRC — the data plane proven
@@ -47,8 +47,8 @@ use super::state::{
 /// The L2CAP CoC data plane: accept the app's channel on the OBC SPSM and serve the transfers
 /// [`super::control::serve_connection`] arms through [`TRANSFER_ARM`] — the echo loopback, route
 /// uploads → SD, and route/list downloads ← SD. One armed transfer at a time; the [`TRANSFER_ACTIVE`]
-/// gate is cleared here when each concludes, and a latched abort that raced a completion is drained so
-/// it can't leak into the next transfer. A channel drop mid-transfer breaks back to re-accept (the
+/// gate is cleared immediately before its terminal answer, and a latched abort that raced completion
+/// is drained at that same boundary. A channel drop mid-transfer breaks back to re-accept (the
 /// in-flight upload was discarded — uploads restart); `select` in `run` cancels the whole task on
 /// disconnect. Never returns.
 pub(crate) async fn serve_coc(
@@ -85,7 +85,25 @@ pub(crate) async fn serve_coc(
         }
         info!("ble: [coc] channel accepted (mtu {} mps {}) — data plane ready", ch.mtu(), ch.mps());
         loop {
-            let armed = TRANSFER_ARM.wait().await;
+            // Watch the byte pipe even while no descriptor is armed. An upload
+            // reject is asynchronous relative to the sender, so raw bytes may
+            // already be queued; discard those unclaimed bytes. Likewise, an
+            // app-side reset after a reject/cancellation must make us re-accept
+            // now, not only after sacrificing the next armed transfer to the
+            // stale closed channel. A valid sender waits for its GATT write ack;
+            // the control task signals TRANSFER_ARM before accepting that write,
+            // so its descriptor wins before its first payload can be observed.
+            let armed = match select(TRANSFER_ARM.wait(), ch.receive(stack, &mut buf)).await {
+                Either::First(armed) => armed,
+                Either::Second(Ok(n)) if n > 0 => {
+                    warn!("ble: [coc] discarded {} unclaimed bytes while idle", n);
+                    continue;
+                }
+                Either::Second(_) => {
+                    info!("ble: [coc] idle channel closed — re-accepting");
+                    break;
+                }
+            };
             if !requested_fast {
                 requested_fast = true;
                 request_fast_conn_params(stack, conn).await;
@@ -95,10 +113,6 @@ pub(crate) async fn serve_coc(
                 Armed::Upload(desc, rx) => run_upload(stack, server, store, shared, &mut ch, &desc, rx, &mut buf).await,
                 Armed::Download(desc) => run_download(stack, server, store, shared, &mut ch, &desc, &mut buf).await,
             };
-            // The transfer concluded (or the channel died): reopen the gate, and drain an abort
-            // that raced the conclusion so it can't insta-abort the next transfer.
-            TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
-            let _ = TRANSFER_ABORT.try_take();
             if let TransferOutcome::ChannelDropped = outcome {
                 warn!("ble: [coc] channel dropped mid-transfer — re-accepting (uploads restart)");
                 break;
@@ -112,6 +126,16 @@ pub(crate) async fn serve_coc(
 enum TransferOutcome {
     Answered,
     ChannelDropped,
+}
+
+/// Close the current descriptor's ownership before publishing its terminal
+/// answer. Receipt of `transferResult` is the app's permission to send the next
+/// descriptor, so keeping the gate set until after the notify returned created a
+/// real `busy` race. Drain only the old transfer's latched abort first; an abort
+/// arriving after the clear belongs to the next armed descriptor.
+fn close_transfer() {
+    let _ = TRANSFER_ABORT.try_take();
+    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
 }
 
 /// Notify the store movement after a commit/delete: the `storeChanged` status message (which store,
@@ -159,6 +183,7 @@ async fn run_upload(
     };
     if !began {
         warn!("ble: [coc] cannot open upload temp — rejecting");
+        close_transfer();
         notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;
     }
@@ -173,7 +198,10 @@ async fn run_upload(
                     store.borrow_mut().upload_discard(&mut guard);
                 }
                 info!("ble: [coc] upload interrupted — discarded (uploads restart)");
-                notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
+                // The peer closed this CoC to reset the unframed stream. There
+                // is no live exchange left to answer, and a late `aborted`
+                // could be consumed as the next descriptor's result.
+                close_transfer();
                 return TransferOutcome::ChannelDropped;
             }
             Either::Second(()) => {
@@ -183,6 +211,7 @@ async fn run_upload(
                     store.borrow_mut().upload_discard(&mut guard);
                 }
                 info!("ble: [coc] upload aborted by the app");
+                close_transfer();
                 notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
                 return TransferOutcome::Answered;
             }
@@ -198,6 +227,7 @@ async fn run_upload(
                 store.borrow_mut().upload_discard(&mut guard);
             }
             warn!("ble: [coc] SD append failed — upload rejected");
+            close_transfer();
             notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
@@ -226,6 +256,7 @@ async fn run_upload(
     let committed = status == TransferStatus::Committed;
     info!("ble: [coc] upload finished: id {} -> {}", id, if committed { "committed" } else { "rejected" });
     let offset = if committed { rx.total_len() } else { 0 };
+    close_transfer();
     notify_status(server, stack, transfer_result_at(id, status, offset)).await;
     // A committed route/trip moves its object store (`storeChanged`, typed accordingly); a `fwImage`
     // stage does not — /UPDATE.BIN is not a listed object, and the install is armed later by the
@@ -275,6 +306,7 @@ async fn run_download(
     let (mut tx, source) = match opened {
         Ok(open) => open,
         Err(status) => {
+            close_transfer();
             notify_status(server, stack, transfer_result(desc.object_id, status)).await;
             return TransferOutcome::Answered;
         }
@@ -299,8 +331,11 @@ async fn run_download(
         // a follow-up notify on that characteristic can't either — close and abandon; the app's own
         // download request times out (no cross-CCCD recovery notify to send).
         warn!("ble: [coc] download announce notify failed/timed out — abandoning download");
-        let mut guard = shared.lock().await;
-        store.borrow_mut().download_close(&mut guard);
+        {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().download_close(&mut guard);
+        }
+        close_transfer();
         return TransferOutcome::Answered;
     }
     while !tx.is_complete() {
@@ -310,6 +345,7 @@ async fn run_download(
                 store.borrow_mut().download_close(&mut guard);
             }
             info!("ble: [coc] download aborted by the app");
+            close_transfer();
             notify_status(server, stack, transfer_result_at(desc.object_id, TransferStatus::Aborted, tx.position()))
                 .await;
             return TransferOutcome::Answered;
@@ -325,6 +361,7 @@ async fn run_download(
                 store.borrow_mut().download_close(&mut guard);
             }
             warn!("ble: [coc] SD read failed — download abandoned");
+            close_transfer();
             notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
@@ -339,6 +376,7 @@ async fn run_download(
                     let mut guard = shared.lock().await;
                     store.borrow_mut().download_close(&mut guard);
                 }
+                close_transfer();
                 return TransferOutcome::ChannelDropped;
             }
             Either::Second(()) => {
@@ -347,6 +385,7 @@ async fn run_download(
                     store.borrow_mut().download_close(&mut guard);
                 }
                 info!("ble: [coc] download aborted by the app (mid-send)");
+                close_transfer();
                 notify_status(
                     server,
                     stack,
@@ -372,6 +411,7 @@ async fn run_download(
     }
     let result = tx.outcome().unwrap(); // complete ⇒ Some
     info!("ble: [coc] download done: {} bytes", result.committed_offset);
+    close_transfer();
     notify_status(server, stack, StatusMessage::TransferResult(result).encode()).await;
     TransferOutcome::Answered
 }
@@ -396,6 +436,7 @@ async fn run_echo(
         Err(_) => {
             // A nonsensical echo descriptor (the wrong op — echo restarts, never resumes; v2 has no
             // offset to reject) — answer error, leave the channel untouched (no bytes were promised).
+            close_transfer();
             notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
@@ -408,17 +449,20 @@ async fn run_echo(
                 // An empty SDU can't advance a transfer with bytes still expected — treat it as an
                 // end-of-stream rather than spinning the receive loop.
                 info!("ble: [coc] echo receive returned 0 bytes — ending");
+                close_transfer();
                 return TransferOutcome::ChannelDropped;
             }
             Ok(n) => n,
             Err(e) => {
                 info!("ble: [coc] echo receive ended: {:?}", defmt::Debug2Format(&e));
+                close_transfer();
                 return TransferOutcome::ChannelDropped;
             }
         };
         let consumed = rx.push(&buf[..n]);
         if let Err(e) = ch.send(stack, &buf[..consumed]).await {
             info!("ble: [coc] echo send failed: {:?}", defmt::Debug2Format(&e));
+            close_transfer();
             return TransferOutcome::ChannelDropped;
         }
     }
@@ -434,6 +478,7 @@ async fn run_echo(
         kbps,
         if committed { "committed" } else { "crcMismatch" }
     );
+    close_transfer();
     notify_status(server, stack, StatusMessage::TransferResult(result).encode()).await;
     TransferOutcome::Answered
 }

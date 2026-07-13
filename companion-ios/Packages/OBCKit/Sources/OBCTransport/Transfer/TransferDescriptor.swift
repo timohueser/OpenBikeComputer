@@ -122,6 +122,33 @@ public struct TransferResult: Equatable, Sendable {
     }
 }
 
+// MARK: - Exchange correlation
+
+extension TransferControl {
+    /// Whether a device download announce answers this exact request. The v2
+    /// status stream has no transaction id, so type + object id are the
+    /// correlation key; accepting a different announce would consume raw bytes
+    /// under the wrong length/CRC and desynchronise the shared CoC.
+    func acceptsDownloadAnnounce(_ announce: TransferControl) -> Bool {
+        op == .download
+            && announce.op == .download
+            && announce.type == type
+            && announce.objectID == objectID
+    }
+
+    /// Whether a committed close can belong to this exchange. In addition to
+    /// the object id, the durable byte count is an inexpensive transaction
+    /// fingerprint: it rejects a late result from the preceding transfer.
+    func acceptsCommittedResult(_ result: TransferResult, byteCount: UInt32) -> Bool {
+        guard result.status == .committed,
+              result.committedOffset == byteCount,
+              let resultID = result.objectID else { return false }
+        if op == .download { return resultID.raw == objectID }
+        if op == .upload, objectID != Self.newObjectID { return resultID.raw == objectID }
+        return op == .upload
+    }
+}
+
 /// A change signal on the `storeChanged` status message (spec §4.3): which object
 /// store moved (route/ride/trip) and the new revision.
 public struct StoreChanged: Equatable, Sendable {
