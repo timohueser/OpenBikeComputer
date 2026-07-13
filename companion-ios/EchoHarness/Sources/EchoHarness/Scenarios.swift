@@ -368,6 +368,128 @@ extension EchoHarness {
         print("echo-harness: trip-soak PASSED ✓ — full trip lifecycle, ledgers agree; \(after.summary)")
     }
 
+    // MARK: - Session churn (the 2026-07-13 instability report)
+
+    /// Everything the companion app does across a testing session, on **one** connection, with
+    /// numbers. Each cycle: upload a route (commit + its `storeChanged` edge, **timed**), verify by
+    /// `routeList` read (timed — the badge-reconcile read), read the `rideList` (timed — the sync
+    /// path's list read), delete the route (command ack + its `storeChanged`, timed — the on-device-
+    /// delete edge the app's badge clear rides on). Every `abortEvery`-th cycle additionally arms an
+    /// upload, streams half the bytes, and **aborts it (op 3)** before the normal cycle — proving the
+    /// device's transfer engine recycles on the same connection, with no disconnect to clean up
+    /// behind it (the device half of the "stuck upload wedged every later transfer until an app
+    /// restart" report; the app half is `BLETransport`'s bounded answer waits).
+    ///
+    /// Every wait is bounded, so a lost `storeChanged` / result notify fails the run **loudly** with
+    /// the cycle number — exactly the event the app-side wedge needed and never surfaced. Ends by
+    /// reconciling the ledgers (no reboot, no unexpected disconnects, catalog back to baseline) and
+    /// printing min/avg/max latency per edge.
+    static func runChurn(paths: [String], iterations: Int, abortEvery: Int) async throws {
+        let routes = try paths.map { (path: $0, bytes: try Data(contentsOf: URL(fileURLWithPath: $0))) }
+        let central = EchoCentral()
+        let link = try await central.connect()
+        let base = try await readDiagnostics(link: link, central: central)
+        let baseRoutes = try await routeCount(link: link, central: central)
+        print(
+            "echo-harness: churn — \(iterations) session cycle(s), mid-upload abort every "
+                + "\(abortEvery), one connection")
+        print("echo-harness: baseline — \(base.summary)")
+
+        var commitChangedMs: [Double] = []
+        var deleteChangedMs: [Double] = []
+        var listMs: [Double] = []
+        var rideListMs: [Double] = []
+        var aborts = 0
+
+        for i in 1...iterations {
+            let route = routes[(i - 1) % routes.count]
+
+            // ── Injected fault: an upload aborted mid-bytes, then business as usual ──
+            if abortEvery > 0, i % abortEvery == 0 {
+                let crc = CRC32.checksum(route.bytes)
+                let arm = TransferControl(
+                    op: .upload, type: .route, objectID: TransferControl.newObjectID,
+                    totalLen: UInt32(route.bytes.count), crc32: crc)
+                central.writeControl(arm.encode(), to: link.transferControl)
+                let l = link
+                _ = try? await withTimeout(30) { try await l.channel.send(route.bytes.prefix(route.bytes.count / 2)) }
+                let abort = TransferControl(op: .abort, type: .route, objectID: TransferControl.newObjectID)
+                central.writeControl(abort.encode(), to: link.transferControl)
+                let aborted = try await withTimeout(20) { await central.nextTransferResult() }
+                try expect(
+                    aborted.status == .aborted,
+                    "cycle \(i): mid-upload abort answered \(aborted.status), expected aborted")
+                aborts += 1
+            }
+
+            // ── Upload → commit + the timed storeChanged edge ──
+            let crc = CRC32.checksum(route.bytes)
+            let arm = TransferControl(
+                op: .upload, type: .route, objectID: TransferControl.newObjectID,
+                totalLen: UInt32(route.bytes.count), crc32: crc)
+            central.writeControl(arm.encode(), to: link.transferControl)
+            let result = try await withTimeout(60) { () -> TransferResult in
+                try await link.channel.send(route.bytes)
+                return await central.nextTransferResult()
+            }
+            guard result.status == .committed, let id = result.objectID?.raw else {
+                throw HarnessError.assertion("cycle \(i): upload answered \(result.status), expected committed")
+            }
+            var t = Date()
+            _ = try await withTimeout(20) { await central.nextStoreChanged() }
+            commitChangedMs.append(ms(since: t))
+
+            // ── The badge-reconcile read + the sync path's list read, timed ──
+            t = Date()
+            try await assertListed(link: link, central: central, id: id)
+            listMs.append(ms(since: t))
+            t = Date()
+            _ = try await downloadObject(link: link, central: central, type: .rideList, objectID: 0)
+            rideListMs.append(ms(since: t))
+
+            // ── Delete → command ack + the timed storeChanged edge (the badge-clear signal) ──
+            var command = Data([1, ObjectType.route.rawValue])
+            command.append(UInt8(id & 0xFF))
+            command.append(UInt8(id >> 8))
+            central.writeCommand(command)
+            let deleted = try await withTimeout(20) { await central.nextCommandResult() }
+            try expect(deleted.status == .ok, "cycle \(i): delete answered \(deleted.status), expected ok")
+            t = Date()
+            _ = try await withTimeout(20) { await central.nextStoreChanged() }
+            deleteChangedMs.append(ms(since: t))
+
+            if i % 10 == 0 || i == iterations {
+                print("echo-harness: [\(i)/\(iterations)] cycle ok — id \(id), \(aborts) abort(s) so far")
+            }
+        }
+
+        // Reconcile the ledgers.
+        let after = try await readDiagnostics(link: link, central: central)
+        let afterRoutes = try await routeCount(link: link, central: central)
+        print("echo-harness: final — \(after.summary)")
+        try expect(after.bootCount == base.bootCount, "device rebooted during churn (boot #\(base.bootCount)→#\(after.bootCount))")
+        try expect(after.disconnects == base.disconnects, "the link dropped during churn (disconnects \(base.disconnects)→\(after.disconnects))")
+        try expect(afterRoutes == baseRoutes, "routeCount drifted \(baseRoutes)→\(afterRoutes) despite per-cycle cleanup")
+        print("echo-harness: churn latencies —")
+        print("  storeChanged after commit  \(stats(commitChangedMs))")
+        print("  storeChanged after delete  \(stats(deleteChangedMs))")
+        print("  routeList read             \(stats(listMs))")
+        print("  rideList read              \(stats(rideListMs))")
+        print(
+            "echo-harness: churn PASSED ✓ — \(iterations) cycles, \(aborts) mid-upload aborts recycled, "
+                + "every answer arrived bounded, ledgers agree")
+    }
+
+    /// Milliseconds since `t` — the churn scenario's edge timer.
+    static func ms(since t: Date) -> Double { Date().timeIntervalSince(t) * 1000 }
+
+    /// "min 2 / avg 5 / max 18 ms (n=30)" — the churn report line.
+    static func stats(_ samples: [Double]) -> String {
+        guard let min = samples.min(), let max = samples.max(), !samples.isEmpty else { return "n=0" }
+        let avg = samples.reduce(0, +) / Double(samples.count)
+        return String(format: "min %.0f / avg %.0f / max %.0f ms (n=%d)", min, avg, max, samples.count)
+    }
+
     // MARK: - Diagnostics read
 
     /// Print the device's diagnostics blob (§7.5) — the health line, plus the full raw text with
