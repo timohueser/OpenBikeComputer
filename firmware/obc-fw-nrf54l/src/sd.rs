@@ -732,22 +732,39 @@ impl Storage {
     }
 
     /// Overwrite the store-epoch file (truncating) with `epoch`. Called once, from the boot mint
-    /// pass, when the mint rule fires — so the write rate is negligible. A write failure is warned,
-    /// not fatal: worst case the next boot reads "no epoch" and re-mints (a new era; the safe
-    /// direction — never a stale reused one). Read-modify-write within the call (open, write, close),
-    /// so it never counts against the open-file budget across an `await`.
-    pub fn save_card_epoch(&mut self, epoch: u32) {
+    /// pass, when the mint rule fires — so the write rate is negligible. Returns `true` only when
+    /// **every** step — open, write, flush, close — succeeded: a discarded flush/close error is a
+    /// torn persist, and the mint pass gates the id-marks write and the served epoch on this result
+    /// (unlike the other sidecar writers, whose failure direction is safe by design, a swallowed
+    /// epoch-write failure would let a clause-2 mint go permanently undetected: old valid epoch on
+    /// card + freshly-written valid floor = steady state next boot — the exact aliasing the epoch
+    /// exists to catch). Whole persist within the call (open, write truncating, flush, close), so it
+    /// never counts against the open-file budget across an `await`.
+    #[must_use]
+    pub fn save_card_epoch(&mut self, epoch: u32) -> bool {
         let bytes = encode_store_epoch(epoch);
-        match self.vmgr.open_file_in_dir(self.root, EPOCH_FILE, Mode::ReadWriteCreateOrTruncate) {
-            Ok(file) => {
-                if self.vmgr.write(file, &bytes).is_err() {
-                    defmt::warn!("SD: store-epoch write failed — the device may re-mint a fresh era next boot");
-                }
-                let _ = self.vmgr.flush_file(file);
-                let _ = self.vmgr.close_file(file);
+        let file = match self.vmgr.open_file_in_dir(self.root, EPOCH_FILE, Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => file,
+            Err(e) => {
+                defmt::warn!("SD: cannot open store-epoch file: {}", defmt::Debug2Format(&e));
+                return false;
             }
-            Err(e) => defmt::warn!("SD: cannot open store-epoch file: {}", defmt::Debug2Format(&e)),
+        };
+        let wrote = self.vmgr.write(file, &bytes).is_ok();
+        let flushed = self.vmgr.flush_file(file).is_ok();
+        let closed = self.vmgr.close_file(file).is_ok();
+        let ok = wrote && flushed && closed;
+        if !ok {
+            // The consequence log lives at the mint site (which knows whether this was a clause-2
+            // mint); here just name which step tore.
+            defmt::warn!(
+                "SD: store-epoch persist failed (write {=bool} flush {=bool} close {=bool})",
+                wrote,
+                flushed,
+                closed
+            );
         }
+        ok
     }
 
     /// Overwrite the synced-ride sidecar (truncating). A write failure is warned, not fatal — the
