@@ -38,6 +38,17 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
     private var peripheral: CBPeripheral?
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
+    /// The `(serial, epoch)` identity of the connected device, cached from the
+    /// last successful `deviceInfo()` — what `listRides()` mints scoped
+    /// `RideID`s with (#769). `nil` before the first identity read of a
+    /// connection (and after a failed one): the catalog then mints legacy
+    /// unscoped ids, which every scope-gated write ignores — and in practice
+    /// the sync path can't reach `listRides()` in that state anyway, because
+    /// the model's fail-closed gate opens only after an identity read that
+    /// produced a scope. Cleared on disconnect: a reconnect may come back in a
+    /// **new era** (chip erase, factory reset while away), and a stale scope
+    /// must never key its catalog. Queue-confined like all mutable state.
+    private var lastLibraryScope: LibraryScope?
     /// The live CoC byte pipe (`nil` until opened, or after a teardown). The
     /// `BLEChannel` wrapper is rebuilt around it on every (re)open.
     private var byteChannel: L2CAPByteChannel?
@@ -273,10 +284,15 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 | (UInt32(versionData[b + 4]) << 16) | (UInt32(versionData[b + 5]) << 24)
             : nil
         let name = await currentPeripheralName() ?? "OBC"
-        return DeviceInfo(
+        let info = DeviceInfo(
             name: name, firmwareVersion: try await fw, hardwareVersion: try await hw,
             serial: try await serial, protocolVersion: version, storeEpoch: storeEpoch
         )
+        // Cache the scope for `listRides()` minting (#769). A read that carried
+        // no epoch caches `nil` — deliberately: minting under a stale or absent
+        // scope is the aliasing this whole mechanism exists to prevent.
+        queue.async { [self] in lastLibraryScope = info.libraryScope }
+        return info
     }
 
     public func readConfig() async throws -> DeviceConfig {
@@ -349,10 +365,20 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // The `rideList` object (type 7, spec §7.4) — the ride catalog (empty
         // until the firmware stores rides, A7). The v2 header's `total` surfaces
         // truncation past the device's `MAX_RIDES` cap (`hiddenRideCount`).
+        //
+        // Ids are minted **scoped** to the connected device's (serial, epoch)
+        // identity (#769) — this is where the composite key enters the system;
+        // everything downstream (coordinator, library, sets) stays id-string
+        // driven. The scope comes from the identity read the connect flow runs
+        // before any sync can start (the fail-closed gate).
+        let scope = await withCheckedContinuation { (cont: CheckedContinuation<LibraryScope?, Never>) in
+            queue.async { [self] in cont.resume(returning: lastLibraryScope) }
+        }
         let decoded = try RideList.decode(try await downloadObject(type: .rideList, objectID: 0))
         let rides = decoded.entries.map { entry in
             RideSummary(
-                id: RideID(deviceObjectID: DeviceObjectID(entry.objectID)),
+                id: scope.map { RideID(deviceObjectID: DeviceObjectID(entry.objectID), scope: $0) }
+                    ?? RideID(deviceObjectID: DeviceObjectID(entry.objectID)),
                 name: entry.name,
                 date: Date(timeIntervalSince1970: TimeInterval(entry.startTime)),
                 distanceMeters: Double(entry.distanceMeters),
@@ -1254,6 +1280,9 @@ extension BLETransport: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         characteristics.removeAll()
+        // The scope dies with the link: the device may come back in a new id
+        // era (#769) — the next connection's identity read re-establishes it.
+        lastLibraryScope = nil
         disarmDiscoveryWatchdog()  // the channel watchdog is disarmed by failAllPending below
         // Close the dead CoC, don't just drop the reference: an `L2CAPByteChannel`
         // owns a dedicated run-loop thread + stall `Timer` that only stop via

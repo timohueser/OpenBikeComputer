@@ -100,7 +100,7 @@ struct RouteDetailScreen: View {
         plannedGeometry: ImportedRoute? = nil,
         rideGeometry: [Coordinate]? = nil,
         deviceObjectID: DeviceObjectID? = nil,
-        uploadedCRC32: UInt32? = nil,
+        provenCommittedCRC: UInt32? = nil,
         deviceName: String,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
@@ -109,7 +109,7 @@ struct RouteDetailScreen: View {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
-            deviceObjectID: deviceObjectID, uploadedCRC32: uploadedCRC32,
+            deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
             rideGeometry: rideGeometry
         ))
         self.transport = transport
@@ -181,6 +181,16 @@ struct ImportLandingHost: View {
         // that route in place instead of adding a duplicate (the old fingerprint
         // makes Upload read "Update on …").
         replacing: PlannedRouteRecord? = nil,
+        // The replace-by-id target for an upload from this landing — the
+        // caller derives it through the scope-gated helper (#769:
+        // `MainScreenModel.plannedDeviceObjectID(for:)`), so a link minted on
+        // another device / era can never aim the upload at the wrong object.
+        replacingDeviceObjectID: DeviceObjectID? = nil,
+        // The proven-held CRC of the route being replaced (#770), derived
+        // through `MainScreenModel.plannedProvenCommittedCRC(for:)` — the button
+        // reads "up to date" only on the same proof the list badge uses, never
+        // on a stale link.
+        replacingProvenCRC: UInt32? = nil,
         onSave: @escaping (RouteDetail) -> Void,
         onUploaded: @escaping (RouteDetail, DeviceObjectID?, UInt32) -> Void,
         onPair: @escaping (RouteDetail) -> Void,
@@ -189,8 +199,8 @@ struct ImportLandingHost: View {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
             dressing: .imported(route, fileName: fileName),
-            deviceObjectID: replacing?.deviceObjectID,
-            uploadedCRC32: replacing?.uploadedCRC32,
+            deviceObjectID: replacingDeviceObjectID,
+            provenCommittedCRC: replacingProvenCRC,
             importedRouteID: replacing?.id
         ))
         self.transport = transport

@@ -46,6 +46,12 @@ public struct RouteEntry: Sendable {
     /// The device object id this route is stored under on the (mock) device, or
     /// `nil` when it lives only in the phone's library.
     public var deviceObjectID: DeviceObjectID?
+    /// The whole-object CRC-32 the (mock) device reports for this copy in its
+    /// v2 `routeList` (spec §7.4) — the proof half of the app's identity-verified
+    /// badge (#770). `nil` = "derive it from the fixture geometry" (what a seeded
+    /// copy's committed CRC is); a real upload pins the committed payload's CRC
+    /// here so a re-listed copy proves against the same fingerprint.
+    public var crc32: UInt32?
 
     public init(
         summary: RouteSummary,
@@ -54,7 +60,8 @@ public struct RouteEntry: Sendable {
         elevationProfile: [Double] = [],
         maxGradePercent: Double? = nil,
         payloadByteCount: Int,
-        deviceObjectID: DeviceObjectID? = nil
+        deviceObjectID: DeviceObjectID? = nil,
+        crc32: UInt32? = nil
     ) {
         self.summary = summary
         self.points = points
@@ -63,6 +70,7 @@ public struct RouteEntry: Sendable {
         self.maxGradePercent = maxGradePercent
         self.payloadByteCount = payloadByteCount
         self.deviceObjectID = deviceObjectID
+        self.crc32 = crc32
     }
 
     /// The full uploadable route, with a deterministic synthesized payload.
@@ -82,13 +90,23 @@ public struct RouteEntry: Sendable {
     /// writes into the mock run's `InMemoryLibraryStore` so scenarios boot with a
     /// populated, library-first Planned list. `addedAt` fixes the list order
     /// (newest first, so pass descending dates for stable fixture order).
-    public func record(addedAt: Date) -> PlannedRouteRecord {
-        PlannedRouteRecord(
+    /// `scope` is the mock device's (serial, epoch) identity (#769): a fixture
+    /// the device holds seeds a fully scoped `deviceLink` — passing `nil`
+    /// (an identity-less mock) seeds no link at all, mirroring how a v1 flat
+    /// link decodes to no link.
+    public func record(addedAt: Date, scope: LibraryScope? = nil) -> PlannedRouteRecord {
+        let link: DeviceRouteLink? =
+            if let deviceObjectID, let scope {
+                DeviceRouteLink(serial: scope.serial, epoch: scope.epoch, objectID: deviceObjectID)
+            } else {
+                nil
+            }
+        return PlannedRouteRecord(
             summary: summary,
             route: ImportedRoute(name: summary.name, points: points, waypoints: waypoints),
             sourceFileName: "\(summary.id.rawValue).gpx",
             sourceFileData: Data(),
-            deviceObjectID: deviceObjectID,
+            deviceLink: link,
             addedAt: addedAt
         )
     }
@@ -146,9 +164,18 @@ extension FixtureSet {
         return file.fixtureSet
     }
 
+    /// The store epoch every mock device reports unless a fixture overrides it
+    /// (#769). Any stable value works — the mock never resets its id era on
+    /// its own — but it must be **present**: the app's identity gate is
+    /// fail-closed, so an epoch-less mock would boot every scenario with sync
+    /// and the possession ack dead.
+    public static let defaultStoreEpoch: UInt32 = 0x0BC0_0001
+
     /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
     public static let builtIn = FixtureSet(
-        deviceInfo: DeviceInfo(name: "OBC (mock)", firmwareVersion: "0.0.0-mock"),
+        deviceInfo: DeviceInfo(
+            name: "OBC (mock)", firmwareVersion: "0.0.0-mock",
+            serial: "OBC-MOCK-000000", storeEpoch: defaultStoreEpoch),
         config: DeviceConfig(name: "OBC (mock)"),
         battery: 72, routes: [], rides: [],
         diagnostics: Data("OBC diagnostics — built-in fallback\n".utf8)
@@ -254,11 +281,16 @@ private struct DeviceInfoDTO: Decodable {
     let hardwareVersion: String?
     let serial: String?
     let protocolVersion: UInt16?
+    /// Optional in the JSON; defaults to `FixtureSet.defaultStoreEpoch` so
+    /// every fixture device has an id era (#769 — the identity gate is
+    /// fail-closed, and a device without an epoch can't sync).
+    let storeEpoch: UInt32?
 
     var domain: DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion,
                    hardwareVersion: hardwareVersion ?? "", serial: serial ?? "",
-                   protocolVersion: protocolVersion ?? OBCProtocol.version)
+                   protocolVersion: protocolVersion ?? OBCProtocol.version,
+                   storeEpoch: storeEpoch ?? FixtureSet.defaultStoreEpoch)
     }
 }
 

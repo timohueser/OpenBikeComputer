@@ -114,9 +114,17 @@ public final class RideSyncCoordinator {
     /// This coordinator's claim while a batch is `.syncing`.
     @ObservationIgnored private var activityToken: TransferActivity.Token?
     /// The model's veto (#303): `false` while the connected device reports an
-    /// incompatible `protocol_version` — that state lives with the model's
-    /// reload/identity path; the coordinator only asks.
+    /// incompatible `protocol_version` — **or while the verdict is still
+    /// unknown** (the identity read hasn't settled), so an id-keyed operation
+    /// can't run ahead of the check. That state lives with the model's
+    /// reload/identity path; the coordinator only asks — always *after*
+    /// awaiting `identitySettled`.
     @ObservationIgnored public var canSync: () -> Bool = { true }
+    /// Awaits the model's identity read settling for the current connection
+    /// (#303): `runSync` suspends on this before consulting `canSync`, so an
+    /// early SYNC tap waits the few ms for the verdict instead of silently
+    /// no-oping. Defaults to already-settled (standalone coordinators, tests).
+    @ObservationIgnored public var identitySettled: () async -> Void = {}
     /// A ride just landed *and persisted* — the model mirrors it into its
     /// in-memory Tracked list. Delivery is per ride, so newly synced rides
     /// surface this session, not only after the next reload.
@@ -158,40 +166,52 @@ public final class RideSyncCoordinator {
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
-                // Possession-ack reconciliation (spec §4.4 `ackRides`), on every
-                // edge into `.connected` — including the stream's replayed first
-                // value (an app launched against a live link should heal too):
-                // send the device the ride ids the library holds, so its
-                // per-ride "synced" flag trues up against the phone's ground
-                // truth. This is what heals rides synced before the device
-                // tracked the flag, a sidecar lost with a reflashed card, or an
-                // app reinstall — cases a download-completion event can never
-                // reach, because an already-held ride is never re-downloaded.
+                // The possession ack no longer fires from this raw edge — the
+                // model triggers `reconcilePossession()` strictly downstream of
+                // the identity read (#764), which is what lets the store-epoch
+                // gate close it. Only the truncation reset stays edge-driven:
                 if state == .connected, !wasConnected {
                     // A fresh link is a fresh device truth: drop the previous
                     // session's truncation count (see `hiddenRideCount` — it may
                     // be stale, or a *different* device's). The next sync's list
                     // read re-establishes it.
                     hiddenRideCount = 0
-                    ackPossessedRides()
                 }
                 wasConnected = state == .connected
             }
         }
     }
 
-    /// Fire-and-forget the possession ack (the `DeviceNameReconciler` pattern:
-    /// a failed send self-heals on the next connect by construction — the whole
-    /// list is re-sent every time — so the error is deliberately dropped rather
-    /// than surfaced). Captures only the transport and the id snapshot, never
-    /// `self`. Tombstoned/trashed rides stay in `syncedRideIDs()` (they landed
-    /// once), which is exactly the flag's meaning — "downloaded at least once".
-    private func ackPossessedRides() {
+    /// Possession-ack reconciliation (spec §4.4 `ackRides`): send the device the
+    /// ride ids the library holds, so its per-ride "synced" flag trues up
+    /// against the phone's ground truth. This is what heals rides synced before
+    /// the device tracked the flag, a sidecar lost with a reflashed card, or an
+    /// app reinstall — cases a download-completion event can never reach,
+    /// because an already-held ride is never re-downloaded.
+    ///
+    /// Called by the owning model once per established connection, **after** the
+    /// identity read settles — an id-keyed write must never race the #303
+    /// protocol-version verdict, and the `scope` it settles on is the write's
+    /// key (#769): only synced ids minted under the **connected device's
+    /// current (serial, epoch)** are sent. Another device's ids, a previous
+    /// era's ids, and unclaimed flat legacy ids all stay home — acking those
+    /// is exactly the checkmark-stamping the 2026-07-12 incident produced. The
+    /// fail-closed half lives upstream: a failed identity read never produces
+    /// a scope, so this is never called for that connection. Deliberately no
+    /// link guard: the model calls on a live connection, and a send into a
+    /// dying link just throws into the dropped error. Fire-and-forget (the
+    /// `DeviceNameReconciler` pattern: a failed send self-heals on the next
+    /// connect by construction — the whole list is re-sent every time — so the
+    /// error is deliberately dropped rather than surfaced). Captures only the
+    /// transport and the id snapshot, never `self`. Tombstoned/trashed rides
+    /// stay in `syncedRideIDs()` (they landed once), which is exactly the
+    /// flag's meaning — "downloaded at least once".
+    public func reconcilePossession(for scope: LibraryScope) {
         guard canSync() else { return }
-        let ids = Array(library.syncedRideIDs())
+        let ids = library.syncedRideIDs().filter { $0.scope == scope }
         guard !ids.isEmpty else { return }
         Task { [transport] in
-            try? await transport.ackRides(ids)
+            try? await transport.ackRides(Array(ids))
         }
     }
 
@@ -208,10 +228,10 @@ public final class RideSyncCoordinator {
     /// link-bound actions). Starting fresh over a waiting interruption is fine:
     /// what landed is marked synced, so the new batch is exactly the remainder.
     public func sync() {
-        // `canSync` is the model's #303 veto: on an incompatible device the
-        // banner explains why, and decoding its ride objects would be the exact
-        // "silently proceed" the version check exists to prevent.
-        guard connection == .connected, syncState != .syncing, canSync() else { return }
+        // The #303 veto is consulted inside `runSync`, after `identitySettled`
+        // — a tap in the sub-second window before the identity read lands must
+        // wait for the verdict, not silently no-op.
+        guard connection == .connected, syncState != .syncing else { return }
         syncTask?.cancel()
         syncDropWatch?.cancel()
         // Tear down a superseded (interrupted-but-waiting) batch so its runner
@@ -239,6 +259,17 @@ public final class RideSyncCoordinator {
     private func runSync() async {
         syncState = .syncing
         lastSyncCount = nil
+        // The #303 gate, in order: wait for the identity read to settle, then
+        // ask. A veto lands the button back at idle — the model's mismatch
+        // banner is the explanation, not a toast. Decoding an incompatible
+        // device's ride objects would be the exact "silently proceed" the
+        // version check exists to prevent.
+        await identitySettled()
+        guard !Task.isCancelled else { return }
+        guard canSync() else {
+            syncState = .idle
+            return
+        }
         // The mirror trues up per sync (see its doc): a ride synced by an
         // earlier batch — or tombstoned by a phone-side delete — is not "new".
         syncedRideIDs = library.syncedRideIDs()

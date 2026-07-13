@@ -221,19 +221,21 @@ public struct PendingImport: Identifiable, Sendable {
     }
 
     /// The library record (B1S) a save/upload/pair action lands: the landing's
-    /// summary over the canonical parsed route + the original file. `deviceObjectID`
-    /// + `uploadedCRC32` are what an upload just committed; absent that, a
-    /// replace keeps the route it's replacing on the device — under its old
-    /// fingerprint, so the badge honestly reads **out of date** until the next
-    /// push updates the copy.
-    public func record(for detail: RouteDetail, deviceObjectID: DeviceObjectID? = nil, uploadedCRC32: UInt32? = nil) -> PlannedRouteRecord {
+    /// summary over the canonical parsed route + the original file. A replace
+    /// keeps the route it's replacing on the device — its `deviceLink` under
+    /// its old fingerprint, so the badge honestly reads **out of date** until
+    /// the next push updates the copy. An upload committed during the import
+    /// flow records its link afterwards via `markRouteUploaded` (the one place
+    /// that can scope a link to the connected device's identity, #769) —
+    /// nothing here mints links.
+    public func record(for detail: RouteDetail) -> PlannedRouteRecord {
         PlannedRouteRecord(
             summary: detail.summary,
             route: route,
             sourceFileName: fileName,
             sourceFileData: fileData,
-            deviceObjectID: deviceObjectID ?? replacing?.deviceObjectID,
-            uploadedCRC32: uploadedCRC32 ?? replacing?.uploadedCRC32
+            deviceLink: replacing?.deviceLink,
+            uploadedCRC32: replacing?.uploadedCRC32
         )
     }
 }
