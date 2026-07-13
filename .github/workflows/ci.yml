@@ -146,6 +146,8 @@ jobs:
         run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
       - name: firmware resource/dependency tool unit tests
         run: python3 -m unittest discover -s firmware/tools/tests -v
+      - name: firmware production dependency direction
+        run: python3 firmware/tools/check_dependencies.py
       # Renderer pixel-hash tripwire (issue #327): re-render the 6 fixed bench scenes over the
       # deterministic testkit fixture and fail if any frame hash drifts from the committed golden
       # file. Timings are printed to the log but never gated (shared runners are noisy); an
