@@ -337,6 +337,98 @@ const _: () = assert!(
     "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
 );
 
+// A report-only table of exact target-side allocation sizes. Keeping the table in this crate gives
+// it access to the board-private BLE arena types while `cfg(feature = "resource-report")` ensures
+// it is absent from every shipping ELF. `resource_guard.py report` extracts this section without
+// executing the firmware; the fixed-width names make the table self-describing and stale-parser
+// failures loud. Do not use these entries for linked resident RAM: `.bss + .data` from the shipping
+// ELF is the authority for that separate gate.
+#[cfg(feature = "resource-report")]
+mod resource_report {
+    use super::*;
+
+    const NAME_BYTES: usize = 32;
+
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    pub struct Entry {
+        name: [u8; NAME_BYTES],
+        bytes: u32,
+    }
+
+    const fn entry(name: &str, bytes: usize) -> Entry {
+        let src = name.as_bytes();
+        assert!(src.len() < NAME_BYTES);
+        assert!(bytes <= u32::MAX as usize);
+        let mut dst = [0; NAME_BYTES];
+        let mut i = 0;
+        while i < src.len() {
+            dst[i] = src[i];
+            i += 1;
+        }
+        Entry { name: dst, bytes: bytes as u32 }
+    }
+
+    #[cfg(feature = "ble")]
+    const BLE_ENTRIES: [Entry; 10] = [
+        entry("ble_total", ble::RESIDENT_BYTES),
+        entry("ble_mpsl", ble::MPSL_BYTES),
+        entry("ble_sdc_memory", ble::SDC_MEM_SIZE),
+        entry("ble_host_resources", ble::HOST_RESOURCES_BYTES),
+        entry("ble_packet_pool", ble::PACKET_POOL_BYTES),
+        entry("ble_cracen", ble::CRACEN_BYTES),
+        entry("ble_object_store", ble::OBJECT_STORE_BYTES),
+        entry("ble_server", ble::SERVER_BYTES),
+        entry("ble_gap_name", ble::GAP_NAME_BYTES),
+        entry("ble_sensor_manager", ble::SENSOR_MANAGER_BYTES),
+    ];
+
+    #[cfg(not(feature = "ble"))]
+    const BLE_ENTRIES: [Entry; 10] = [
+        entry("ble_total", 0),
+        entry("ble_mpsl", 0),
+        entry("ble_sdc_memory", 0),
+        entry("ble_host_resources", 0),
+        entry("ble_packet_pool", 0),
+        entry("ble_cracen", 0),
+        entry("ble_object_store", 0),
+        entry("ble_server", 0),
+        entry("ble_gap_name", 0),
+        entry("ble_sensor_manager", 0),
+    ];
+
+    const ENTRIES: usize = 23;
+
+    #[used]
+    #[no_mangle]
+    #[link_section = ".obc_resources"]
+    pub static OBC_RESOURCE_TABLE: [Entry; ENTRIES] = [
+        entry("format_version", 1),
+        entry("framebuffer", FB_BYTES),
+        entry("row_diff", core::mem::size_of::<RowDiff<FRAME_H>>()),
+        entry("app", core::mem::size_of::<App>()),
+        entry("map_cache", core::mem::size_of::<MapCache>()),
+        entry("map_tables", core::mem::size_of::<MapTables>()),
+        entry("route_cache", core::mem::size_of::<RouteCache>()),
+        entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
+        entry("renderer", core::mem::size_of::<obc_render::MapRenderer>()),
+        entry("nav_scratch", core::mem::size_of::<obc_route::NavScratch>()),
+        entry("nav_tile_cache", core::mem::size_of::<obc_reader::NavTileCache>()),
+        entry("nav_planner", core::mem::size_of::<obc_route::NavPlanner>()),
+        entry("stack_reserve", STACK_RESERVE),
+        BLE_ENTRIES[0],
+        BLE_ENTRIES[1],
+        BLE_ENTRIES[2],
+        BLE_ENTRIES[3],
+        BLE_ENTRIES[4],
+        BLE_ENTRIES[5],
+        BLE_ENTRIES[6],
+        BLE_ENTRIES[7],
+        BLE_ENTRIES[8],
+        BLE_ENTRIES[9],
+    ];
+}
+
 /// The resident device-native RGB222 framebuffer: one byte per pixel over the 240×320 panel
 /// (`FB_BYTES` = 75 KB), in `.bss`. [`App::render_map`](obc_app::App::render_map) quantizes into it on
 /// store ([`FbDevice64`]). It is owned by the `Ls021Flpr` panel — the map plane renders into it and
