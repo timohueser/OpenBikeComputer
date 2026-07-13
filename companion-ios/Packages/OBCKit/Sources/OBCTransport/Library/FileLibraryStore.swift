@@ -19,6 +19,15 @@ import OBCDomain
 /// (`rides/<id>.json`) migrates lazily: the first read rewrites it split and
 /// removes the old file.
 ///
+/// **(serial, epoch) scoping (#769) needs no layout of its own:** every ride
+/// path and set entry keys on the `RideID` raw string, and a v2-minted id
+/// *is* the `(serial, epoch, id)` composite — so scoped entries land in
+/// per-scope directory names (`rides/v2%3A<epoch>%3A<id>%3A<serial>/`) and
+/// scoped set ids by construction. An era change or device switch changes the
+/// strings; nothing here compares, migrates, or re-keys. Flat v1 entries (bare
+/// numeric names) coexist as archival rows until the claim-on-first-contact
+/// migration (`LibraryScopeMigrator`) moves the ones a device corroborates.
+///
 /// The JSON shape is an **app-owned schema** (versioned DTOs below), decoupled
 /// from both the domain types' memberwise layout and the device wire formats —
 /// a firmware `S0` byte-layout change never touches saved libraries. Unreadable
@@ -176,6 +185,13 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         write(SyncedRidesFile(version: Self.schemaVersion, ids: ids.map(\.rawValue).sorted()), to: syncedURL)
     }
 
+    public func unmarkRideSynced(_ id: RideID) {
+        var ids = syncedRideIDs()
+        guard ids.remove(id) != nil else { return }
+        ensure(directory)
+        write(SyncedRidesFile(version: Self.schemaVersion, ids: ids.map(\.rawValue).sorted()), to: syncedURL)
+    }
+
     public func deletedRideIDs() -> Set<RideID> {
         guard let file: SyncedRidesFile = read(deletedURL), file.version == Self.schemaVersion
         else { return [] }
@@ -185,6 +201,13 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     public func markRideDeleted(_ id: RideID) {
         var ids = deletedRideIDs()
         guard ids.insert(id).inserted else { return }
+        ensure(directory)
+        write(SyncedRidesFile(version: Self.schemaVersion, ids: ids.map(\.rawValue).sorted()), to: deletedURL)
+    }
+
+    public func unmarkRideDeleted(_ id: RideID) {
+        var ids = deletedRideIDs()
+        guard ids.remove(id) != nil else { return }
         ensure(directory)
         write(SyncedRidesFile(version: Self.schemaVersion, ids: ids.map(\.rawValue).sorted()), to: deletedURL)
     }
@@ -303,6 +326,17 @@ private struct PlannedRouteFile: Codable {
     /// `UInt16` on disk (the domain's `DeviceObjectID` wraps it at the
     /// boundary) — no schema bump for #359.
     var deviceObjectID: UInt16?
+    /// The (serial, epoch) scope of `deviceObjectID` (#769) — additive,
+    /// optional-decoded. A **v1 flat file** carries the id alone: it loads as
+    /// **no link at all** (the link is only real when all three parts are
+    /// present), so a flat link can never light a badge or drive a
+    /// replace-by-id upload against the wrong device — V6's CRC adoption is
+    /// the path that re-links such records properly. Deliberately *not*
+    /// claimed by serial guess in the one-time migration (a mixed two-device
+    /// library would mis-attribute the other device's links). No schema bump:
+    /// the fields are additive and every decoder skips unknown keys.
+    var deviceSerial: String?
+    var deviceStoreEpoch: UInt32?
     /// The committed upload payload's CRC-32 (the `OnDeviceState` fingerprint).
     /// Optional-decoded: a pre-fingerprint file loads as "content unknown",
     /// which reads as outdated and self-heals on the next upload.
@@ -314,18 +348,28 @@ private struct PlannedRouteFile: Codable {
         summary = RouteSummaryDTO(record.summary)
         route = ImportedRouteDTO(record.route)
         sourceFileName = record.sourceFileName
-        deviceObjectID = record.deviceObjectID?.raw
+        deviceObjectID = record.deviceLink?.objectID.raw
+        deviceSerial = record.deviceLink?.serial
+        deviceStoreEpoch = record.deviceLink?.epoch
         uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
     }
 
     func record(sourceFileData: Data) -> PlannedRouteRecord {
-        PlannedRouteRecord(
+        let link: DeviceRouteLink? =
+            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
+                DeviceRouteLink(
+                    serial: deviceSerial, epoch: deviceStoreEpoch,
+                    objectID: DeviceObjectID(deviceObjectID))
+            } else {
+                nil
+            }
+        return PlannedRouteRecord(
             summary: summary.domain,
             route: route.domain,
             sourceFileName: sourceFileName,
             sourceFileData: sourceFileData,
-            deviceObjectID: deviceObjectID.map(DeviceObjectID.init),
+            deviceLink: link,
             uploadedCRC32: uploadedCRC32,
             addedAt: addedAt
         )

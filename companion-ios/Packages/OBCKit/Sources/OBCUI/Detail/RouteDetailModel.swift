@@ -79,9 +79,12 @@ public final class RouteDetailModel {
     /// pressing Upload again on the same screen replaces that object instead of
     /// creating another copy.
     private var uploadTargetObjectID: DeviceObjectID?
-    /// The committed payload's CRC-32 (the `OnDeviceState` fingerprint) —
-    /// threaded from the library record, refreshed by `recordUploaded`.
-    private var uploadedCRC32: UInt32?
+    /// The CRC the device is **proven** to currently hold for this route (#770)
+    /// — threaded from the main model's identity-verified reconcile (a scoped
+    /// link + a matching non-zero catalog CRC), or set by `recordUploaded` when
+    /// an upload just verified it. `nil` = unproven → the button reads Upload,
+    /// never a checkmark on presence alone.
+    private var provenCommittedCRC: UInt32?
     /// The current payload's CRC, encoded lazily and cached — a rename
     /// invalidates it (the name is part of the payload).
     @ObservationIgnored private var cachedPayloadCRC: UInt32?
@@ -89,17 +92,17 @@ public final class RouteDetailModel {
     /// The device-copy state behind the Upload ↔ Update ↔ up-to-date button.
     public var deviceCopyState: OnDeviceState {
         OnDeviceState.determine(
-            deviceObjectID: uploadTargetObjectID,
-            uploadedCRC32: uploadedCRC32,
+            provenCommittedCRC: provenCommittedCRC,
             currentCRC: { currentPayloadCRC() }
         )
     }
 
-    /// An upload committed under `objectID`: pin the id + fingerprint so the
-    /// button flips to up-to-date and any further upload replaces in place.
+    /// An upload committed under `objectID`: pin the id + the verified
+    /// fingerprint (proof the device now holds it) so the button flips to
+    /// up-to-date and any further upload replaces in place.
     public func recordUploaded(objectID: DeviceObjectID, crc32: UInt32) {
         uploadTargetObjectID = objectID
-        uploadedCRC32 = crc32
+        provenCommittedCRC = crc32
     }
 
     private func currentPayloadCRC() -> UInt32 {
@@ -128,7 +131,7 @@ public final class RouteDetailModel {
         preloadedDetail: RouteDetail? = nil,
         plannedGeometry: ImportedRoute? = nil,
         deviceObjectID: DeviceObjectID? = nil,
-        uploadedCRC32: UInt32? = nil,
+        provenCommittedCRC: UInt32? = nil,
         importedRouteID: RouteID? = nil,
         // The tracked dressing's full tracklog (#294 follow-up), threaded from
         // the library's synced `Ride.points` — a ride carries no ImportedRoute,
@@ -138,7 +141,7 @@ public final class RouteDetailModel {
         self.transport = transport
         self.dressing = dressing
         self.uploadTargetObjectID = deviceObjectID
-        self.uploadedCRC32 = uploadedCRC32
+        self.provenCommittedCRC = provenCommittedCRC
         self.importedID = importedRouteID ?? RouteID("imported-\(UUID().uuidString.lowercased())")
         switch dressing {
         case .imported(let route, _): uploadGeometry = route  // E1 carries its own geometry

@@ -50,12 +50,21 @@ public protocol LibraryStore: Sendable {
     /// so a deleted ride is never re-counted as "new" (idempotent re-sync, H9).
     func syncedRideIDs() -> Set<RideID>
     func markRideSynced(_ id: RideID)
+    /// Remove one id from the synced set. **Migration-only** (#769): the
+    /// legacy claim re-keys a flat v1 id into its (serial, epoch, id) scope —
+    /// scoped mark first, then this removal, so an interruption can only leave
+    /// both marks, never neither. Nothing else may shrink the synced set (its
+    /// meaning, "downloaded at least once", is monotonic).
+    func unmarkRideSynced(_ id: RideID)
 
     /// Ride ids the user deleted *on the phone*. The device keeps its copy
     /// (the SD card is untouched), so the list merge must hide these device
     /// rides instead of resurrecting them on every sync/reload.
     func deletedRideIDs() -> Set<RideID>
     func markRideDeleted(_ id: RideID)
+    /// Remove one id from the tombstone set. **Migration-only** (#769), same
+    /// contract as ``unmarkRideSynced(_:)``.
+    func unmarkRideDeleted(_ id: RideID)
 
     /// Rides in the phone-side trash (#292), keyed to when each was trashed.
     /// A trashed ride keeps its stored files — `rideSummaries()`/`ridePoints()`
@@ -127,12 +136,20 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
         lock.withLock { _ = synced.insert(id) }
     }
 
+    public func unmarkRideSynced(_ id: RideID) {
+        lock.withLock { _ = synced.remove(id) }
+    }
+
     public func deletedRideIDs() -> Set<RideID> {
         lock.withLock { deleted }
     }
 
     public func markRideDeleted(_ id: RideID) {
         lock.withLock { _ = deleted.insert(id) }
+    }
+
+    public func unmarkRideDeleted(_ id: RideID) {
+        lock.withLock { _ = deleted.remove(id) }
     }
 
     public func trashedRideIDs() -> [RideID: Date] {

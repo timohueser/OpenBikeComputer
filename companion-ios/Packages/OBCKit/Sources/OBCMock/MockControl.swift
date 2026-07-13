@@ -243,14 +243,18 @@ public final class MockControl: @unchecked Sendable {
     public func seedLibrary(into store: any LibraryStore) {
         let existing = Set(store.plannedRoutes().map(\.id))
         let routes = lock.withLocked { _fixtures.routes }
+        // Seeded device links carry the mock device's own (serial, epoch)
+        // scope (#769) — the same link an upload against this mock would mint,
+        // so badges and replace-by-id behave exactly as on the real path.
+        let scope = deviceInfo.libraryScope
         let base = Date()
         for (index, entry) in routes.enumerated() where !existing.contains(entry.summary.id) {
-            var record = entry.record(addedAt: base.addingTimeInterval(-Double(index)))
+            var record = entry.record(addedAt: base.addingTimeInterval(-Double(index)), scope: scope)
             // A fixture the mock device holds boots **up to date** — the seeded
             // fingerprint matches what an upload of the record would send, so
             // the C1 badge shows the check (a rename then flips it to outdated,
             // same as on the real path).
-            if record.deviceObjectID != nil {
+            if record.deviceLink != nil {
                 record.uploadedCRC32 = RouteObjectCodec.payloadCRC(for: record)
             }
             store.savePlannedRoute(record)
@@ -315,11 +319,17 @@ public final class MockControl: @unchecked Sendable {
     func deviceRoutes() -> [RouteCatalogEntry] {
         lock.withLocked { _fixtures.routes }.compactMap { entry -> RouteCatalogEntry? in
             guard let objectID = entry.deviceObjectID else { return nil }
+            // The v2 `routeList` carries the whole-object CRC (#770): a real
+            // upload pinned it (`recordDeviceCopy`); a seeded copy derives it
+            // from the fixture geometry — the same OBCR encoding `seedLibrary`
+            // fingerprints, so a device-held fixture boots proven up to date.
+            let crc32 = entry.crc32 ?? RouteObjectCodec.payloadCRC(for: entry.record(addedAt: Date()))
             return RouteCatalogEntry(
                 id: objectID, name: entry.summary.name,
                 distanceMeters: entry.summary.distanceMeters,
                 elevationGainMeters: entry.summary.elevationGainMeters,
-                pointCount: entry.summary.pointCount
+                pointCount: entry.summary.pointCount,
+                crc32: crc32
             )
         }
     }
@@ -458,7 +468,10 @@ public final class MockControl: @unchecked Sendable {
             deviceInfo = DeviceInfo(
                 name: current.name, firmwareVersion: version,
                 hardwareVersion: current.hardwareVersion, serial: current.serial,
-                protocolVersion: current.protocolVersion
+                protocolVersion: current.protocolVersion,
+                // A DFU install is NOT an era event (RRAM survives): the
+                // epoch rides through, like on the real device.
+                storeEpoch: current.storeEpoch
             )
             connection = .connecting
             try? await Task.sleep(for: .seconds(1))
@@ -470,6 +483,10 @@ public final class MockControl: @unchecked Sendable {
     /// fixture set — replacing the entry that already owns `objectID`, or the
     /// library twin of the same route, before appending a new device-only entry.
     private func recordDeviceCopy(of blob: RouteBlob, objectID: DeviceObjectID) {
+        // The device CRCs exactly the payload bytes it received (#770) — the
+        // same value the upload sheet reports back to `markRouteUploaded`, so a
+        // re-list proves the badge against the fingerprint we committed.
+        let committedCRC = CRC32.checksum(blob.payload)
         lock.withLocked {
             if let index = _fixtures.routes.firstIndex(where: {
                 $0.deviceObjectID == objectID || $0.summary.id == blob.summary.id
@@ -477,10 +494,12 @@ public final class MockControl: @unchecked Sendable {
                 _fixtures.routes[index].summary = blob.summary
                 _fixtures.routes[index].waypoints = blob.waypoints
                 _fixtures.routes[index].deviceObjectID = objectID
+                _fixtures.routes[index].crc32 = committedCRC
             } else {
                 _fixtures.routes.append(RouteEntry(
                     summary: blob.summary, waypoints: blob.waypoints,
-                    payloadByteCount: max(1, blob.payload.count), deviceObjectID: objectID
+                    payloadByteCount: max(1, blob.payload.count), deviceObjectID: objectID,
+                    crc32: committedCRC
                 ))
             }
         }
@@ -553,7 +572,7 @@ extension DeviceInfo {
     /// A copy with a new name — the last-read `Config` name (Delta 1) surfacing in DIS.
     fileprivate func renamed(_ name: String) -> DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion,
-                   serial: serial, protocolVersion: protocolVersion)
+                   serial: serial, protocolVersion: protocolVersion, storeEpoch: storeEpoch)
     }
 }
 #endif

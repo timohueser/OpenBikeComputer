@@ -1,11 +1,14 @@
 import Foundation
 
-/// The device's copy of a planned route, as the phone can prove it: drives the
-/// C1 badge (check / out-of-date) and the detail's Upload ↔ Update ↔ disabled
+/// The device's copy of a planned route, as the phone can **prove** it: drives
+/// the C1 badge (check / out-of-date) and the detail's Upload ↔ Update ↔ disabled
 /// button. "Up to date" means the current upload payload's CRC-32 equals the
 /// one the device committed — the same whole-object CRC the transfer verified.
 public enum OnDeviceState: Equatable, Sendable {
-    /// The device holds no copy (never uploaded, or deleted device-side).
+    /// The device holds no *provable* copy — never uploaded, deleted
+    /// device-side, or unproven (no scoped link, an unknown catalog CRC, or a
+    /// CRC that disagrees with what we committed). V6 (#770): no badge without
+    /// proof.
     case notOnDevice
     /// The device's copy is byte-identical to what an upload would send now.
     case upToDate
@@ -14,19 +17,20 @@ public enum OnDeviceState: Equatable, Sendable {
     case outdated
 
     /// The one place the rule lives (the list model and the detail model both
-    /// call it). `currentCRC` is a closure so the payload is only encoded when
-    /// the comparison actually needs it. A device copy with an *unknown*
-    /// fingerprint (a pre-fingerprint library) reads as outdated — offering an
-    /// update self-heals it; calling it up-to-date would disable Upload with
-    /// no way out.
+    /// call it). `provenCommittedCRC` is the CRC the device is **proven** to
+    /// currently hold for this record — a valid scoped link plus a catalog
+    /// entry whose non-zero CRC equals the record's committed fingerprint (or a
+    /// just-completed upload's verified CRC). `nil` means unproven → **no
+    /// badge** (V6 #770: presence alone is never a checkmark; a `crc32 = 0`
+    /// entry proves nothing, and a mismatch drops the link before it reaches
+    /// here). `currentCRC` is a closure so the payload is only encoded when the
+    /// up-to-date/outdated split actually needs it.
     public static func determine(
-        deviceObjectID: DeviceObjectID?,
-        uploadedCRC32: UInt32?,
+        provenCommittedCRC: UInt32?,
         currentCRC: () -> UInt32
     ) -> OnDeviceState {
-        guard deviceObjectID != nil else { return .notOnDevice }
-        guard let uploadedCRC32 else { return .outdated }
-        return currentCRC() == uploadedCRC32 ? .upToDate : .outdated
+        guard let provenCommittedCRC else { return .notOnDevice }
+        return currentCRC() == provenCommittedCRC ? .upToDate : .outdated
     }
 }
 
@@ -46,14 +50,17 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     /// The original interchange file, byte-exact ("Schwarzwald.gpx" + bytes).
     public var sourceFileName: String
     public var sourceFileData: Data
-    /// The device object id this route was assigned on upload — the durable link
-    /// between a library route and its copy on the device (names/local ids can't
-    /// match across the BLE boundary). `nil` until an upload commits (an
-    /// H4 save-before-pairing import, or a route never pushed); a device-side
-    /// delete clears it again at reconcile.
-    public var deviceObjectID: DeviceObjectID?
+    /// The device copy this route was assigned on upload — the durable
+    /// `{serial, epoch, id}` link between a library route and its copy on
+    /// **one device in one id era** (#769; names/local ids can't match across
+    /// the BLE boundary, and a bare object id silently matched every device).
+    /// `nil` until an upload commits (an H4 save-before-pairing import, a
+    /// route never pushed, or a v1 flat link awaiting V6's CRC adoption); a
+    /// device-side delete clears it again at reconcile. Only meaningful when
+    /// ``DeviceRouteLink/matches(_:)`` holds for the connected device.
+    public var deviceLink: DeviceRouteLink?
     /// The CRC-32 of the upload payload the device last **committed** — the
-    /// fingerprint behind ``OnDeviceState``. Set alongside ``deviceObjectID``
+    /// fingerprint behind ``OnDeviceState``. Set alongside ``deviceLink``
     /// when an upload's result lands; `nil` when the copy's content is unknown
     /// (pre-fingerprint library), which reads as outdated until the next push.
     public var uploadedCRC32: UInt32?
@@ -62,15 +69,15 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
 
     public var id: RouteID { summary.id }
 
-    /// Whether the device holds a copy — derived from ``deviceObjectID``.
-    public var uploadedToDevice: Bool { deviceObjectID != nil }
+    /// Whether some device holds a copy — derived from ``deviceLink``.
+    public var uploadedToDevice: Bool { deviceLink != nil }
 
     public init(
         summary: RouteSummary,
         route: ImportedRoute,
         sourceFileName: String,
         sourceFileData: Data,
-        deviceObjectID: DeviceObjectID? = nil,
+        deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
         addedAt: Date = Date()
     ) {
@@ -78,7 +85,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
         self.route = route
         self.sourceFileName = sourceFileName
         self.sourceFileData = sourceFileData
-        self.deviceObjectID = deviceObjectID
+        self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
         self.addedAt = addedAt
     }

@@ -4,6 +4,7 @@
     "firmwareVersion": "0.4.2",
     "hardwareVersion": "nRF54LM20 rev B",
     "serial": "OBC-24-000317",
+    "storeEpoch": 197132289,
     "protocolVersion": 2
   },
   "config": { "name": "Trailhead", "units": "metric" },
