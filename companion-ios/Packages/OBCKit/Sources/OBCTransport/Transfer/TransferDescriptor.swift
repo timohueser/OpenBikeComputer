@@ -14,6 +14,8 @@ public enum ObjectType: UInt8, Equatable, Sendable, CaseIterable {
     case routeList = 6
     case rideList = 7
     case echo = 8  // dev/test loopback (A5)
+    case trip = 9  // trip object v1 (§7.7) — a named group of route ids
+    case tripList = 10  // list object (§7.4)
 }
 
 /// **Control-plane** descriptor written to the `transferControl` characteristic —
@@ -121,7 +123,7 @@ public struct TransferResult: Equatable, Sendable {
 }
 
 /// A change signal on the `storeChanged` status message (spec §4.3): which object
-/// store moved (route/ride) and the new revision.
+/// store moved (route/ride/trip) and the new revision.
 public struct StoreChanged: Equatable, Sendable {
     public var type: ObjectType
     public var revision: UInt32

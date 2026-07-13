@@ -20,7 +20,12 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "EchoHarness",
-            dependencies: [.product(name: "OBCTransport", package: "OBCKit")],
+            dependencies: [
+                .product(name: "OBCTransport", package: "OBCKit"),
+                // OBCDomain for `DeviceObjectID` — the trip codecs (`TripObjectCodec`, `TripList`)
+                // speak device object ids, which the trip-soak scenario constructs directly.
+                .product(name: "OBCDomain", package: "OBCKit"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
