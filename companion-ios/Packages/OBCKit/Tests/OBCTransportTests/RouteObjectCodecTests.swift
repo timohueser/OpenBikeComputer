@@ -168,4 +168,48 @@ final class RouteObjectCodecTests: XCTestCase {
         XCTAssertThrowsError(try RouteObjectCodec.decode(Data([0, 1, 2, 3, 4, 5])))
         XCTAssertThrowsError(try RouteObjectCodec.decode(Data("OBCR".utf8)))  // magic but truncated
     }
+
+    // MARK: Encoder-determinism pin (V6, #770)
+
+    /// Adopt-by-content (#770) re-links an unlinked device copy by comparing a
+    /// **fresh** OBCR re-encode's CRC-32 against the catalog, so byte-determinism
+    /// is load-bearing: were the encoder to emit even one different byte for an
+    /// unchanged route, adoption would silently degrade to re-upload — safe, but
+    /// it "looks like the badges went dark." This pins it: two encodes must be
+    /// byte-identical, their CRC must match the golden below, and `payloadCRC`
+    /// (the exact function adoption calls) must agree. An encoder change then
+    /// **fails here loudly** and must re-pin `goldenCRC` consciously.
+    func testEncoderIsByteDeterministicForAdoption() {
+        let elevations: [Double] = [500, 512, 524, 540, 560, 548, 536, 520, 505]
+        let points = elevations.enumerated().map { i, ele in
+            RoutePoint(
+                coordinate: Coordinate(
+                    latitude: 47.0 + 0.002 * Double(i), longitude: 11.0 + 0.001 * Double(i % 2)),
+                elevationMeters: ele)
+        }
+        let route = ImportedRoute(
+            name: "Determinism Pin", points: points,
+            waypoints: [Waypoint(index: 0, name: "Start", distanceAlongMeters: 0,
+                                 coordinate: points[0].coordinate)])
+
+        let first = RouteObjectCodec.encode(route, name: route.name!)
+        let second = RouteObjectCodec.encode(route, name: route.name!)
+        XCTAssertEqual(first, second, "the OBCR encode must be byte-identical run to run")
+
+        // The stored fixture CRC — an encoder change must re-pin this on purpose,
+        // not dim adoption silently.
+        let goldenCRC: UInt32 = 0x6B3F_72E3
+        XCTAssertEqual(
+            CRC32.checksum(first), goldenCRC,
+            "OBCR encoding changed; adoption's re-encode CRC moved — re-pin goldenCRC consciously")
+
+        // `payloadCRC(for:)` is the one CRC adoption compares against the catalog
+        // — it must equal the raw encode's CRC (same geometry, waypoints, name).
+        let record = PlannedRouteRecord(
+            summary: RouteSummary(
+                id: RouteID("pin"), name: "Determinism Pin",
+                distanceMeters: 0, elevationGainMeters: 0),
+            route: route, sourceFileName: "pin.gpx", sourceFileData: Data())
+        XCTAssertEqual(RouteObjectCodec.payloadCRC(for: record), goldenCRC)
+    }
 }
