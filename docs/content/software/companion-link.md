@@ -1,6 +1,6 @@
 ---
 title: The companion link
-description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, a whole-object transfer end to end, the device-side upload prompts, the digest-driven sync loop with synced-ride reconciliation, on-device deletes flowing back, and passkey pairing with reject-when-bonded and silent reconnect.
+description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, a whole-object transfer end to end, the device-side upload prompts, the single-channel change-signal sync loop with synced-ride reconciliation, card-borne store epochs that name each id era, proof-only route badges, on-device deletes flowing back, and passkey pairing with reject-when-bonded and silent reconnect.
 ---
 
 # The companion link
@@ -26,6 +26,9 @@ cover the design and the *why*. Four ideas run through all of it:
   the check the on-air link CRC can't give you.
 - **Interrupted transfers restart, not resume.** Objects are small enough that
   re-sending one whole is simpler and safer than continuing from an offset.
+- **One device → app channel.** Every message the device sends back — a transfer
+  result, a store-change signal, a download's announce — rides a single `status`
+  notify characteristic, so there is one subscription and one ordering domain.
 
 ## Two planes: control and data
 
@@ -37,7 +40,7 @@ transfer, notifications), and a single **L2CAP connection-oriented channel
 went*; the CoC carries *the bytes*.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="The link split into two planes between the companion app on the left (BLE central) and the OBC device on the right (BLE peripheral). The top lane is the control plane over GATT — small typed characteristics: command, status, objectStore, config, transferControl, psm, protocolVersion — with a note that each attribute is capped at 512 bytes. The bottom lane is the data plane over a single L2CAP connection-oriented channel: one raw byte pipe with credit-based flow control, carrying bulk objects one transfer at a time.">
+<svg viewBox="0 0 720 300" role="img" aria-label="The link split into two planes between the companion app on the left (BLE central) and the OBC device on the right (BLE peripheral). The top lane is the control plane over GATT — six small typed characteristics: command, status, config, transferControl, psm, protocolVersion — with a note that each attribute is capped at 512 bytes. The bottom lane is the data plane over a single L2CAP connection-oriented channel: one raw byte pipe with credit-based flow control, carrying bulk objects one transfer at a time.">
   <defs>
     <marker id="cl-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -59,7 +62,7 @@ went*; the CoC carries *the bytes*.
   <rect class="d-panel-2" x="150" y="88" width="420" height="86" rx="10" style="fill:#eef2df" />
   <text class="d-label" x="360" y="112" text-anchor="middle" style="fill:#3c6b39">Control plane · GATT</text>
   <text class="d-sub" x="360" y="132" text-anchor="middle">small, typed state — identity · config · orchestration</text>
-  <text class="d-sub" x="360" y="150" text-anchor="middle">command · status · objectStore · config · transferControl · psm</text>
+  <text class="d-sub" x="360" y="150" text-anchor="middle">command · status · config · transferControl · psm · protocolVersion</text>
   <text class="d-sub" x="360" y="168" text-anchor="middle" style="fill:#a9501c">≤ 512 bytes per attribute — a hard wall</text>
 
   <!-- data lane -->
@@ -94,7 +97,7 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `1` | `route` | app → device (upload) · device → app (detail read) | an [OBCR](../formats/) route file, verbatim |
 | `2` | `ride` | device → app | the compact [ride object](../formats/#recorded-rides-the-track-log-and-the-ride-object) (a tracked ride) — **v1**, or **v2** when it carries recorded sensor data |
 | `4` | `diagnostics` | device → app | an opaque text blob (boot count, link + storage counters, stack high-water…) |
-| `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed 72-byte entries |
+| `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed-size entries (`routeList` **76 B**, `rideList` **72 B**) |
 | `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
 | `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
 
@@ -122,7 +125,9 @@ and keeps **stable across reboots** — the reference firmware encodes it right 
 the filename (`RT{id}.OBR` for routes, `RD{id}.ORD` for rides). Durability is
 what lets the phone remember *"I uploaded route 7"* and later ask *"is 7 still
 there?"* or replace it in place — and it's what a ride sync's
-already-have-this-one set keys on.
+already-have-this-one set keys on. That promise holds **within an id era**; when
+the id space itself resets, a **store epoch** names the new era so the phone never
+mistakes a reused id for the old object — see [Store epochs](#store-epochs-which-id-era-youre-talking-to).
 
 ## A transfer, end to end
 
@@ -130,7 +135,7 @@ Every bulk exchange is the same three-beat shape: **announce over GATT, stream
 over the CoC, confirm over GATT.** Here is an upload — a route leaving the phone:
 
 <figure class="fig">
-<svg viewBox="0 0 720 372" role="img" aria-label="A sequence diagram of an upload between the companion app on the left and the OBC device on the right. Step one: the app writes a 16-byte transferControl descriptor over GATT — op equals upload, plus type, object id, total length and CRC-32 — which announces the transfer. Step two: the app streams the object's raw bytes over the L2CAP CoC. On the device side a note reads: sink to storage, updating a running CRC, with no reassembly buffer. Step three: once all bytes are in, the device verifies the whole-object CRC. Step four: the device notifies a transferResult over GATT — committed on a match, or crcMismatch which rejects the object so nothing is stored.">
+<svg viewBox="0 0 720 372" role="img" aria-label="A sequence diagram of an upload between the companion app on the left and the OBC device on the right. Step one: the app writes a 12-byte transferControl descriptor over GATT — op equals upload, plus type, object id, total length and CRC-32 — which announces the transfer. Step two: the app streams the object's raw bytes over the L2CAP CoC. On the device side a note reads: sink to storage, updating a running CRC, with no reassembly buffer. Step three: once all bytes are in, the device verifies the whole-object CRC. Step four: the device notifies a transferResult over GATT — committed on a match, or crcMismatch which rejects the object so nothing is stored.">
   <defs>
     <marker id="tf-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="tf-c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
@@ -148,7 +153,7 @@ over the CoC, confirm over GATT.** Here is an upload — a route leaving the pho
   <line x1="570" y1="74" x2="570" y2="352" style="stroke:#9aa884;stroke-width:1.2;stroke-dasharray:4 4" />
 
   <!-- 1: descriptor -->
-  <text class="d-sub" x="360" y="104" text-anchor="middle" style="fill:#3c6b39">1 · transferControl (16 B) — GATT write</text>
+  <text class="d-sub" x="360" y="104" text-anchor="middle" style="fill:#3c6b39">1 · transferControl (12 B) — GATT write (write-only)</text>
   <text class="d-sub" x="360" y="120" text-anchor="middle">op=upload · type · object_id · total_len · crc32</text>
   <line class="d-flow" x1="150" y1="130" x2="570" y2="130" marker-end="url(#tf-a)" />
 
@@ -170,7 +175,7 @@ over the CoC, confirm over GATT.** Here is an upload — a route leaving the pho
   <line class="d-hot" x1="570" y1="322" x2="150" y2="322" marker-end="url(#tf-c)" />
   <text class="d-sub" x="360" y="342" text-anchor="middle" style="fill:#a9501c">4 · transferResult — GATT notify: committed  ·  (mismatch → rejected, nothing stored)</text>
 </svg>
-<figcaption>The descriptor names the transfer (and carries the whole-object CRC); the CoC carries the payload; the <code>transferResult</code> closes it. A fresh upload sends object id <code>0xFFFF</code> ("new") and the device reports the <b>assigned</b> id in the result. A <b>download</b> is the exact mirror: the app asks with an <code>op=download</code> descriptor, the device <em>answers</em> with a descriptor (now carrying the size + CRC) and streams the object back.</figcaption>
+<figcaption>The descriptor names the transfer (and carries the whole-object CRC); the CoC carries the payload; the <code>transferResult</code> closes it. <code>transferControl</code> is <b>write-only</b> — the app writes it to <em>open</em> a transfer, the device never notifies it. A fresh upload sends object id <code>0xFFFF</code> ("new") and the device reports the <b>assigned</b> id in the result. A <b>download</b> is the mirror: the app asks with an <code>op=download</code> descriptor, and the device <em>answers</em> on the <code>status</code> channel with a <b>download announce</b> (a <code>status</code> message carrying the same descriptor, now with the size + CRC filled in), then streams the object back. Routing the announce through <code>status</code> is what keeps every device → app message on one characteristic.</figcaption>
 </figure>
 
 The checksum is a **whole-object CRC-32/IEEE**, verified once at commit — the
@@ -182,9 +187,11 @@ and back.
 > **Restart, not resume.** An object is tens of kilobytes — a couple of seconds
 > on the wire — so a dropped or aborted transfer is simply re-sent (or
 > re-requested) *whole*, never continued from a durable offset. The device
-> discards a partial upload the moment the link drops or an `abort` arrives; a
-> non-zero offset is rejected outright. (A suffix couldn't be checked against the
-> whole-object CRC anyway.) A multi-object flow — syncing several rides — resumes
+> discards a partial upload the moment the link drops or an `abort` arrives, and
+> the app re-sends from byte zero. (A suffix couldn't be checked against the
+> whole-object CRC anyway — which is why the descriptor carries no resume offset
+> at all; the field v1 kept permanently zero is gone in v2.) A multi-object flow
+> — syncing several rides — resumes
 > at **whole-object granularity**: the rides that fully landed are kept, and the
 > rest re-send from byte zero.
 
@@ -231,22 +238,25 @@ point *View route* at whatever route slid into the slot. A pending prompt
 is also **outranked** by the passkey card: if pairing starts, the route prompt
 is dropped (not queued) — it's only advisory, and the route is safe in the menu.
 
-## Staying in sync — the change digest
+## Staying in sync — the change signal
 
 After anything changes on the device — a route uploaded, a ride finished, an
 object deleted — the phone needs to know *what to re-fetch*, cheaply. Re-reading
 the full catalogs on every reconnect would burn the CoC for nothing. So the
-device publishes a tiny **10-byte digest**: a `revision` counter plus the route
-and ride counts, on a characteristic the app can read *and* subscribe to.
+device fires a tiny **`storeChanged`** message on the `status` channel: a byte
+naming *which* store moved (route or ride) plus a `revision` counter bumped on
+every change to it. It is the **sole** change signal — one notification says
+*"the ride store moved; re-list it"*, and the app reads nothing else to learn
+something changed.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="The sync loop as four stages left to right. One: a store change on the device — an upload from the phone commits, a ride is tracked, or the rider deletes a route or ride on the device itself; every path goes through the one object store. Two: the device bumps the revision in its 10-byte objectStore digest and notifies it. Three: the app compares the digest; if the revision moved it downloads the relevant list object — routeList or rideList — over the CoC. Four: the app fetches only the objects that actually changed. A curved arrow returns from stage four to stage one, labelled on the next change, showing the loop. Below, a separate reverse lane: on every connect the phone sends an ackRides command back to the device — the ids it holds — and the device marks those rides synced.">
+<svg viewBox="0 0 720 300" role="img" aria-label="The sync loop as four stages left to right. One: a store change on the device — an upload from the phone commits, a ride is tracked, or the rider deletes a route or ride on the device itself; every path goes through the one object store. Two: the device fires a storeChanged message on the status channel, naming which store moved and bumping its revision. Three: on that signal the app downloads the relevant list object — routeList or rideList — over the CoC. Four: the app fetches only the objects that actually changed. A curved arrow returns from stage four to stage one, labelled on the next change, showing the loop. Below, a separate reverse lane: on every connect the phone sends an ackRides command back to the device — the ids it holds — and the device marks those rides synced.">
   <defs>
     <marker id="sy-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="sy-m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa884" /></marker>
     <marker id="sy-k" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="22">The change signal — read the digest, fetch what moved</text>
+  <text class="d-tag" x="20" y="22">The change signal — storeChanged names the store, fetch what moved</text>
 
   <rect class="d-panel" x="16" y="70" width="150" height="72" rx="10" />
   <text class="d-sub" x="91" y="42" text-anchor="middle" style="fill:#6b7758">on the device</text>
@@ -255,13 +265,13 @@ and ride counts, on a characteristic the app can read *and* subscribe to.
   <text class="d-sub" x="91" y="132" text-anchor="middle" style="fill:#a9501c">device-side delete</text>
 
   <rect class="d-panel-2" x="198" y="70" width="150" height="72" rx="10" style="fill:#eef2df" />
-  <text class="d-label" x="273" y="98" text-anchor="middle" style="fill:#3c6b39">revision ++</text>
-  <text class="d-sub" x="273" y="118" text-anchor="middle">10-byte digest</text>
-  <text class="d-sub" x="273" y="134" text-anchor="middle">notify (GATT)</text>
+  <text class="d-label" x="273" y="98" text-anchor="middle" style="fill:#3c6b39">storeChanged</text>
+  <text class="d-sub" x="273" y="118" text-anchor="middle">names the store · rev ++</text>
+  <text class="d-sub" x="273" y="134" text-anchor="middle">notify (status)</text>
 
   <rect class="d-panel" x="380" y="70" width="150" height="72" rx="10" />
   <text class="d-sub" x="455" y="42" text-anchor="middle" style="fill:#6b7758">on the phone</text>
-  <text class="d-label" x="455" y="98" text-anchor="middle">digest moved?</text>
+  <text class="d-label" x="455" y="98" text-anchor="middle">store moved →</text>
   <text class="d-sub" x="455" y="118" text-anchor="middle">download the list</text>
   <text class="d-sub" x="455" y="134" text-anchor="middle">routeList / rideList</text>
 
@@ -288,7 +298,7 @@ and ride counts, on a characteristic the app can read *and* subscribe to.
   <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
   <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device marks synced</text>
 </svg>
-<figcaption>The digest is the cheap "did anything change?" signal that replaces polling the CoC-sized lists. The app reads it on connect and subscribes to it; when the <code>revision</code> moves it pulls the relevant <b>list</b> object (a compact catalog of fixed-size entries), then downloads only the objects that are new to it. A companion <code>storeChanged</code> notification additionally says <em>which</em> store moved, so a route upload doesn't trigger a ride re-list. A change is a change whether the phone caused it or the rider deleted something on the device — both go through the one object store, so both bump the same revision. The lower lane is the one flow that runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
+<figcaption><code>storeChanged</code> is the cheap "did anything change?" signal that replaces polling the CoC-sized lists — one notification per change, naming <em>which</em> store moved so a route upload never triggers a ride re-list. On it (or on connect) the app pulls the relevant <b>list</b> object — a compact catalog of fixed-size entries — then downloads only the objects new to it. A change is a change whether the phone caused it or the rider deleted something on the device: both go through the one object store, so both fire the same signal. It shares the <code>status</code> characteristic with every other device → app message, so there is one subscription and one ordering domain. <em>(v1 also carried a separate 10-byte <code>objectStore</code> digest characteristic; v2 drops it as a redundant second signal whose per-boot <code>revision</code> tripped clients that persisted it.)</em> The lower lane runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
 </figure>
 
 The device is the other half of this loop. A change doesn't only come *from* the
@@ -306,10 +316,13 @@ would after any other change.
 **Ids are never reused — which is what keeps the bookkeeping honest.** The phone
 persists *"I uploaded route 7"* and *"I've synced ride 12"* by durable object id.
 If a delete freed id 7 and the next upload re-took it, the phone's note would
-now point at a *different* route. So the device tracks a **high-water mark** for
-each store in its persistent settings and allocates strictly above it: a freed
-id stays retired forever. That is the invariant the whole reconciliation rests
-on — a `storeChanged` the phone can trust never to lie about identity.
+now point at a *different* route. So the device mints strictly above a persistent
+**floor** — an SD filename guards a stored id, an RRAM floor guards a *deleted*
+id — and a freed id stays retired. That invariant is what a trustworthy
+`storeChanged` rests on — *as long as the id space itself never resets underneath
+it.* When it does — a chip wipe, a factory reset, a freshly-formatted card — a
+**store epoch** makes the reset visible, so the phone never mistakes a reborn id
+for the old object (next section).
 
 ### Synced rides — reconciled state, not event inference
 
@@ -332,6 +345,88 @@ the list of ride ids it holds — a small `ackRides` command. The device sets
 Rides screen's cue updates live. The flag becomes *"the phone has confirmed it
 holds this"*, self-healing on every reconnect rather than riding on a single
 download event landing.
+
+## Store epochs — which id era you're talking to
+
+Everything above trusts durable ids to keep meaning the same object next connect.
+Within a store that holds — but an id space can *reset*. A full-chip reflash, a
+factory reset, a torn settings write, a freshly-formatted card: any of these can
+lose the floor that guards deleted ids, and the device's next upload re-mints ids
+that months-old phone-side state still points at. Reuse id 7, and the phone's
+*"route 7"* silently **aliases a different route** — a green *"up to date"* badge
+for the wrong thing, or worse, an upload that replace-by-ids over the *wrong* route
+on the device. (This bit the bench on 2026-07-12: new rides filtered as *"already
+synced"* while the app insisted everything was up to date.)
+
+The fix names each id era with something the phone can watch change: a **store
+epoch** — a `u32` random nonce. The device serves it in the same **open,
+pre-pairing** `protocolVersion` read the app already performs first on every
+connect, widened from a bare version to `version u16 · store_epoch u32`. So before
+`ackRides` or any reconcile write fires, the app knows both the protocol version
+*and* which era it is looking at.
+
+**The epoch lives on the card.** It is persisted as a tiny **`EPOCH.OBE`** file in
+the card root — the record layout and its torn-file → fresh-era conventions are in
+the [BLE interface spec §1](src:obc-ble-interface-spec.md) — so the store carries
+its *own* era name. Swap the card and you transplant the
+store: the epoch travels with it, so the same device never conflates two cards' id
+spaces — and a card written by a *different* device presents *its own* epoch, a
+distinct era on this device by construction. A lost RRAM floor still stamps a
+**fresh** epoch onto the card even when the card's epoch file survived intact: a
+compromised id namespace is a new era regardless of where the name is stored.
+
+**The app scopes every id-keyed fact by `(device serial, store epoch)`.** Ride
+entries, the synced set, delete tombstones, route links — all keyed by that triple,
+valid only when all three match the connected device. An era change then needs
+**no migration code**: the old era's keys simply never match again — they go
+archival *by construction* — and the new era starts empty. There is no multi-step
+re-key for an app kill to tear halfway.
+
+**No store ⇒ no epoch ⇒ nothing stamped.** A device with no card mounted has
+nothing to name and nothing to prove, so its `protocolVersion` read degrades to the
+**2-byte, version-only** form. The app reads the missing epoch as a **failed
+identity read** — not as epoch `0`, which is a legal value — and **fails closed**:
+no `ackRides`, no reconcile writes, no badges (plain library browsing is
+unaffected). The same gate catches a read that genuinely failed, so a device whose
+era can't be established can never stamp a checkmark under an unknown id space.
+
+The widened read's bytes, the exact mint rule, and the full list of era events live
+in the [BLE interface spec §1](src:obc-ble-interface-spec.md); the design rationale
+is epic [#632](https://github.com/timohueser/OpenBikeComputer/issues/632) item 5,
+with the card-resident decision in
+[#776](https://github.com/timohueser/OpenBikeComputer/issues/776).
+
+## Verified badges — presence you can prove
+
+A route the phone uploaded earns an **"on device"** badge in the app. A badge is
+only honest, though, if the app can *prove* the device still holds *that* route —
+not merely a route wearing the same id. v2 makes the proof cheap: each `routeList`
+entry carries the **whole-object CRC-32** the device computed at upload commit
+(persisted in a small `/routes` sidecar; `0` means *not yet known*, filled lazily
+the first time a side-loaded file is listed).
+
+**Proof-only presence.** The badge lights only when the per-serial link is valid
+**and** the catalog CRC matches the CRC the app recorded at upload — never on a
+matching id alone. Combined with epoch scoping, a stale link that outlived an era
+change simply fails to match and shows nothing. **No checkmark without proof.**
+
+**Adopt by content.** The CRC also heals the reverse case. After an app reinstall
+(or on a second phone) the device still holds routes the app has no link to — but
+an *unlinked* catalog entry whose CRC matches a route the app holds is **adopted**:
+the badge lights with no upload, and a later upload of that route **replaces by id**
+rather than creating a duplicate. Anything the app can't prove shows no badge — the
+worst case is a needless re-upload, which adoption makes rare.
+
+**The list never lies "up to date".** Past the device's catalog cap the store scan
+drops the excess in FAT order — in v1, silently. The v2 list header carries a
+`total` alongside the `count` actually returned: `total > count` means the object
+was truncated, and the app surfaces a one-line *"some items couldn't be listed"*
+warning instead of quietly reporting everything is synced.
+
+The `routeList` entry's `crc32`, the 6-byte list header with `total`, and their
+exact byte layout are the [BLE interface spec §7.4](src:obc-ble-interface-spec.md);
+the proof-only badge and adopt-by-content behaviour are epic
+[#632](https://github.com/timohueser/OpenBikeComputer/issues/632) item 6.
 
 ## Pairing, and staying paired
 
@@ -451,13 +546,16 @@ What the bond protects, and what stays open:
 
 | Surface | Before pairing |
 |---------|----------------|
-| Device Information · Battery · `protocolVersion` | **open** — so the app can identity- and version-check *before* pairing |
+| Device Information · Battery · `protocolVersion` (version **+ store epoch**) | **open** — so the app reads identity, version, *and* the store epoch *before* pairing |
 | every other OBC Control characteristic | **denied** — needs the encrypted, authenticated link |
 | the L2CAP CoC | **denied** — opening it on an unencrypted link is refused |
 
 Leaving identity and the protocol version readable pre-bond is deliberate: the
 app checks it's talking to a compatible device (and surfaces a mismatch as a
-banner rather than trapping) before it ever asks to pair.
+banner rather than trapping) before it ever asks to pair. The same open read now
+also carries the [store epoch](#store-epochs-which-id-era-youre-talking-to), so it
+lands *before* any `ackRides` — the app always knows the id era before it stamps
+anything, which is exactly what the fail-closed gate needs.
 
 ## Sensors — the device as BLE central
 
