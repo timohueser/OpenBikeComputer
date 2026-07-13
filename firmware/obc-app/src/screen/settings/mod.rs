@@ -142,6 +142,24 @@ pub(super) fn row_cursor(cv: &mut impl Surface, area: Rectangle, selected: bool,
     }
 }
 
+/// One centred value row flanked by ◄ ► triangles — the "rotate to switch" picker row shared by the
+/// single-row settings screens ([`Units`](units::UnitsScreen), [`Language`](language::LanguageScreen)).
+/// Always drawn as the cursor (these screens have one row, always focused). Returns the row rectangle
+/// so a caller can lay out further content beneath it (Units' consequence-preview rows). `y` is the
+/// row's top; the row is a fixed 50 px tall.
+pub(super) fn value_row_with_arrows(cv: &mut impl Surface, y: i32, w: i32, text: &str) -> Rectangle {
+    let area = row_rect(y, w, 50);
+    row_cursor(cv, area, true, false);
+    let midy = area.top_left.y + area.size.height as i32 / 2;
+    cv.text_vcentered(text, w / 2, (area.top_left.y, 50), Font::Body, TextAlign::Center, palette::INK);
+    // ◄ and ► as filled triangles, inset from the row edges.
+    let ax = area.top_left.x + 18;
+    cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), palette::INK);
+    let bx = area.top_left.x + area.size.width as i32 - 18;
+    cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), palette::INK);
+    area
+}
+
 /// Draw a row's left-hand label (Body) with an optional muted sub-caption (Label) under it. The
 /// caller draws the right-hand control.
 pub(super) fn row_label(cv: &mut impl Surface, area: Rectangle, label: &str, sub: Option<&str>) {

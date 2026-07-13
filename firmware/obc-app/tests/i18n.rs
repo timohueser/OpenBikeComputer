@@ -18,12 +18,12 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
+use obc_app::i18n::{t, Msg};
 use obc_app::settings::Language;
-use obc_app::{App, AppState, Button, ButtonEvent, InputClock, InputEvent, RideClock, Sensors, Settings};
-use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
+use obc_app::{App, AppState, Button, ButtonEvent, InputClock, InputEvent, Settings};
 
 mod common;
-use common::{build_min_obcm, keys, Buf, NoFix};
+use common::{build_min_obcm, keys, render_120};
 
 /// The four shipped languages, in `Language` discriminant order — the column order of
 /// [`obc_app::i18n::TABLE`].
@@ -84,6 +84,47 @@ fn guard_rejects_out_of_repertoire_chars() {
     assert!(obc_render::glyph_supported('?'), "'?' itself is a real glyph");
 }
 
+/// Catalog values that flow into a **fixed `heapless` buffer** whose `push_str`/`write!` result is
+/// discarded. A `heapless` overflow is an atomic no-op, so an over-length caption renders *fully
+/// blank* on-glass — a failure the repertoire test above can't see (every glyph is fine; there are
+/// just too many). This bounds each such key's byte length across all four languages, at the budget
+/// its call site leaves after the glued unit/number. No current value overflows; the guard is for
+/// the future accented edit that would (#614).
+#[test]
+fn fixed_buffer_captions_fit() {
+    // (key, byte budget, where the buffer lives). Budget = buffer capacity − the largest thing
+    // concatenated alongside the translation at the call site.
+    let bounds: &[(Msg, usize, &str)] = &[
+        // Climb tiles: `ClimbCell`'s `String<12>` caption (climb.rs). The three direct captions get
+        // the whole buffer; `ClimbToGo` is prefixed with the 2-char unit label ("KM"/"MI") by
+        // `cap_dist`, so it clears 10. This is the tightest screen — de's "Ø STEIG." is 9/12.
+        (Msg::ClimbToClimb, 12, "climb.rs ClimbCell caption (String<12>)"),
+        (Msg::ClimbGrade, 12, "climb.rs ClimbCell caption (String<12>)"),
+        (Msg::ClimbAvgGrad, 12, "climb.rs ClimbCell caption (String<12>)"),
+        (Msg::ClimbToGo, 10, "climb.rs cap_dist: 2-char unit label + this → String<12>"),
+        // Map off-route pill: `write_off_route`'s `String<20>` = this prefix + a distance suffix up
+        // to ~7 bytes ("9999km" / "5279ft"), so the prefix must clear ≤ 13 (map.rs).
+        (Msg::MapOffRoute, 13, "map.rs off-route pill (String<20>, ≤7-byte distance follows)"),
+    ];
+
+    let mut offenders: Vec<String> = Vec::new();
+    for &(msg, budget, where_) in bounds {
+        for lang in LANGS {
+            let s = t(msg, lang);
+            if s.len() > budget {
+                offenders.push(format!("  {where_}: {lang:?} {s:?} is {} bytes > {budget}-byte budget", s.len()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "i18n: {} caption(s) would overflow a fixed heapless buffer — heapless drops the overflow, so \
+         the caption renders fully blank on-glass:\n{}",
+        offenders.len(),
+        offenders.join("\n"),
+    );
+}
+
 /// Stateless render→assert per language: seed `Settings.language`, open the Menu (its title bar is
 /// translated — `MENU` / `MENÜ` / …), render, and assert the frame drew without panicking. Guards
 /// the draw path against a translated string blowing up, not just the catalog data.
@@ -101,37 +142,7 @@ fn render_smoke() {
         ]);
         app.handle_input(InputClock(0), &mut press);
 
-        let buf = render(&mut app, &bytes);
+        let buf = render_120(&mut app, &bytes);
         assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "menu rendered blank in {lang:?}",);
     }
-}
-
-/// Tick once (no fix) and composite one frame into a `120×120` recording buffer.
-fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    app.tick(
-        RideClock(0),
-        Sensors {
-            loc: &mut NoFix,
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: None,
-            hr: None,
-            power: None,
-            cadence: None,
-        },
-        None,
-    );
-    let cache = MapCache::new();
-    let src = SliceSource(bytes);
-    let tables = MapTables::parse(&src).expect("valid obcm");
-    let reader = Reader::new(&src, &tables, &cache);
-    let mut buf = Buf::new(120, 120);
-    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
-        let (r, g, b) = rgb565_to_rgb888(c);
-        Rgb888::new(r, g, b)
-    });
-    buf
 }

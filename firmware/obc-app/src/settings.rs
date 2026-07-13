@@ -351,6 +351,16 @@ impl Default for IdleReturn {
     }
 }
 
+/// Walk `order` `n` detents from `cur`, wrapping at both ends — the shared value-picker step behind
+/// every ordered enum row (Language, IdleReturn, …). Mirrors the list cursor's
+/// [`step_selection`](crate::screen::list::step_selection) `rem_euclid` wrap, but on the value array
+/// rather than a bare index. `cur` missing from `order` falls back to `fallback` (each caller's
+/// default index); in practice `order` lists every variant, so that arm is unreachable.
+fn step_order<T: Copy + PartialEq, const N: usize>(order: &[T; N], cur: T, n: i32, fallback: usize) -> T {
+    let i = order.iter().position(|&v| v == cur).unwrap_or(fallback);
+    order[(i as i32 + n).rem_euclid(N as i32) as usize]
+}
+
 impl IdleReturn {
     /// The ordered picker values (the left/right walk order), shortest to `Never`.
     const ORDER: [IdleReturn; 5] =
@@ -384,13 +394,10 @@ impl IdleReturn {
     }
 
     /// Walk the picker `n` detents through [`ORDER`](IdleReturn::ORDER), wrapping at both ends — the
-    /// Power row's left/right value step.
+    /// Power row's left/right value step. Falls back to the default [`S30`](IdleReturn::S30) index.
     #[inline]
     pub fn stepped(self, n: i32) -> Self {
-        let i = Self::ORDER.iter().position(|&v| v == self).unwrap_or(1);
-        let len = Self::ORDER.len() as i32;
-        let j = (i as i32 + n).rem_euclid(len) as usize;
-        Self::ORDER[j]
+        step_order(&Self::ORDER, self, n, 1)
     }
 
     /// Rebuild from a stored byte, sanitising an unknown value to the default
@@ -439,8 +446,18 @@ impl Default for Language {
 }
 
 impl Language {
-    /// The ordered picker values (the left/right walk order), English first.
-    const ORDER: [Language; 4] = [Language::En, Language::De, Language::Fr, Language::Es];
+    /// The number of variants — and the number of columns the i18n catalog must ship. A static
+    /// assertion in [`i18n`](crate::i18n) ties `TABLE`'s column count to this, so the "index never
+    /// panics" contract of [`t`](crate::i18n::t) is compiler-enforced: a fifth variant added
+    /// without a fifth `{lang}.toml` column fails the build instead of panicking on the first draw
+    /// (#614). Because [`ORDER`](Language::ORDER) is `[Language; COUNT]` and the picker only ever
+    /// selects out of it, [`Settings::language`](crate::Settings::language) is always in range.
+    pub const COUNT: usize = 4;
+
+    /// The ordered picker values (the left/right walk order), English first. Sized `[_; COUNT]`, so
+    /// wiring a newly-added variant into the picker without bumping [`COUNT`](Language::COUNT) — and
+    /// thus adding its catalog column — won't compile.
+    const ORDER: [Language; Self::COUNT] = [Language::En, Language::De, Language::Fr, Language::Es];
 
     /// The label for the Language screen's value picker — each language's **endonym** (its own name
     /// for itself), so the row reads to a speaker who can't yet read the current UI language. The
@@ -456,13 +473,10 @@ impl Language {
     }
 
     /// Walk the picker `n` detents through [`ORDER`](Language::ORDER), wrapping at both ends — the
-    /// Language row's left/right value step.
+    /// Language row's left/right value step. Falls back to the default [`En`](Language::En) index.
     #[inline]
     pub fn stepped(self, n: i32) -> Self {
-        let i = Self::ORDER.iter().position(|&v| v == self).unwrap_or(0);
-        let len = Self::ORDER.len() as i32;
-        let j = (i as i32 + n).rem_euclid(len) as usize;
-        Self::ORDER[j]
+        step_order(&Self::ORDER, self, n, 0)
     }
 
     /// The next language in the ring — the Language row's press action (one detent forward, like a
@@ -849,8 +863,8 @@ pub struct Settings {
     /// The UI language (epic #602, the Language settings screen cycles it). **Device-only**, like
     /// [`climb_mode`](Settings::climb_mode): deliberately *not* one of the BLE-writable fields
     /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across — the phone never repicks the
-    /// rider's on-device language. Default **English** (nothing consumes it yet; the catalog lands
-    /// later in the epic).
+    /// rider's on-device language. Default **English**; every user-facing string is looked up in
+    /// this language via [`t`](crate::i18n::t) at draw time.
     pub language: Language,
     /// The saved BLE sensors (SE7, epic #707), one slot per quantity — index **0 HR · 1 Power ·
     /// 2 Cadence**. An empty slot ([`SavedSensor::present`] `== false`) is "no sensor saved". Written
