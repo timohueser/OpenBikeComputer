@@ -9,6 +9,7 @@ use obc_route::{ClimbProfile, Climbs, Profile, RouteMatch, RouteReader, Waypoint
 use crate::activity::{Activity, Mode};
 use crate::breadcrumb::Breadcrumb;
 use crate::dirty::Dirty;
+use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 use crate::input::Gesture;
 use crate::input_plane::InputPlane;
 use crate::ride::RideSummary;
@@ -1562,16 +1563,19 @@ impl App {
 
     /// Drain the one-shot **card-free scan request** (T8 item 6) the System settings screen posts on
     /// entry — the board answers a `true` with a FAT free-cluster scan → [`set_card_free`](App::set_card_free).
+    ///
+    /// Compatibility adapter over [`HostCommand::ScanCardFree`] (#800); removal owned by #812.
     pub fn take_card_scan_request(&mut self) -> bool {
-        self.activity.take_card_scan_request()
+        self.drain_host_command(HostCommandClass::ScanCardFree).is_some()
     }
 
     /// Answer the card-free scan (T8 item 6): the host's free-space result in bytes, or `None` if the
     /// scan failed / is unavailable (the System screen keeps showing `--`). Dirties the frame so an
     /// open System screen repaints with the value.
+    ///
+    /// Compatibility adapter over [`HostEvent::CardScanned`] (#800); removal owned by #812.
     pub fn set_card_free(&mut self, bytes: Option<u64>) {
-        self.card_free_bytes = bytes;
-        self.map_dirty = true;
+        self.apply_event(HostEvent::CardScanned { free_bytes: bytes });
     }
 
     /// The loaded map's resident routing-profile names (read-only), for host inspection / tests.
@@ -1731,16 +1735,22 @@ impl App {
     /// against the live [`route_ids`](App::route_ids), so a rescan racing between the hold and this
     /// drain can never resolve to the wrong route: a still-present index yields its id, an
     /// out-of-range one (the route already vanished) drains to `None`.
+    ///
+    /// Compatibility adapter over [`HostCommand::DeleteRoute`] (#800); removal owned by #812.
     pub fn take_route_delete(&mut self) -> Option<u16> {
-        let idx = self.activity.take_route_delete()?;
-        self.catalog_ids.get(idx).copied()
+        match self.drain_host_command(HostCommandClass::DeleteRoute) {
+            Some(HostCommand::DeleteRoute { id }) => Some(id),
+            _ => None,
+        }
     }
 
     /// Non-consuming peek at whether a route-delete request is pending — lets the board gate its
     /// per-pass store work on actual change without draining the one-shot (mirrors
     /// [`Activity::has_track_action`](crate::Activity::has_track_action)).
+    ///
+    /// Compatibility adapter over the [`HostCommand::DeleteRoute`] pendency (#800); removal owned by #812.
     pub fn has_route_delete(&self) -> bool {
-        self.activity.has_route_delete()
+        self.peek_host_command(HostCommandClass::DeleteRoute)
     }
 
     /// Drain the Route menu's pending **trip cascade-delete** request (epic #526, TR3), the trip's
@@ -1754,15 +1764,22 @@ impl App {
     /// needed and a rescan racing the confirm is harmless — a vanished trip's id resolves to nothing
     /// at the host. The host owns the member-route resolution (its trip store still holds the stage
     /// ids), mirroring how it owns the file I/O for [`take_route_delete`](App::take_route_delete).
+    ///
+    /// Compatibility adapter over [`HostCommand::DeleteTrip`] (#800); removal owned by #812.
     pub fn take_trip_delete(&mut self) -> Option<u16> {
-        self.activity.take_trip_delete()
+        match self.drain_host_command(HostCommandClass::DeleteTrip) {
+            Some(HostCommand::DeleteTrip { id }) => Some(id),
+            _ => None,
+        }
     }
 
     /// Non-consuming peek at whether a trip-delete request is pending — lets the board gate its
     /// per-pass store work on actual change without draining the one-shot (mirrors
     /// [`has_route_delete`](App::has_route_delete)).
+    ///
+    /// Compatibility adapter over the [`HostCommand::DeleteTrip`] pendency (#800); removal owned by #812.
     pub fn has_trip_delete(&self) -> bool {
-        self.activity.has_trip_delete()
+        self.peek_host_command(HostCommandClass::DeleteTrip)
     }
 
     /// Replace the resident **ride** catalog from the host's store (epic #447, P7), carrying each
@@ -1827,15 +1844,21 @@ impl App {
     /// board, the tracks-dir file on the sim); the store-changed edge re-feeds the ride catalog with
     /// it gone. Resolved against the live [`ride_ids`](App::ride_ids), so a rescan racing the hold
     /// drains a vanished ride to `None` rather than the wrong id.
+    ///
+    /// Compatibility adapter over [`HostCommand::DeleteRide`] (#800); removal owned by #812.
     pub fn take_ride_delete(&mut self) -> Option<u16> {
-        let idx = self.activity.take_ride_delete()?;
-        self.ride_catalog_ids.get(idx).copied()
+        match self.drain_host_command(HostCommandClass::DeleteRide) {
+            Some(HostCommand::DeleteRide { id }) => Some(id),
+            _ => None,
+        }
     }
 
     /// Non-consuming peek at whether a ride-delete request is pending — lets the board gate its
     /// per-pass store work without draining the one-shot.
+    ///
+    /// Compatibility adapter over the [`HostCommand::DeleteRide`] pendency (#800); removal owned by #812.
     pub fn has_ride_delete(&self) -> bool {
-        self.activity.has_ride_delete()
+        self.peek_host_command(HostCommandClass::DeleteRide)
     }
 
     /// The Ride detail's pending **track request** (epic #678 T2 / #680): the durable object id of
@@ -1847,12 +1870,15 @@ impl App {
     /// the entry can't profile the wrong ride (a vanished index yields `None`, and the detail
     /// screen is showing its missing-ride state anyway). Re-polls until answered; answer `None`
     /// on a failed stream so a dead file isn't ground against every pass.
+    ///
+    /// Compatibility adapter over [`HostCommand::LoadRideTrack`] (#800) — a *derived level*, not a
+    /// stored one-shot (nothing is consumed; the cue clears when the answer lands). Removal owned
+    /// by #812.
     pub fn take_ride_track_request(&mut self) -> Option<u16> {
-        let viewed = self.activity.viewed_ride?;
-        if self.ride_profile_for == Some(viewed) {
-            return None; // already answered for this ride (profile or a recorded failure)
+        match self.drain_host_command(HostCommandClass::LoadRideTrack) {
+            Some(HostCommand::LoadRideTrack { id }) => Some(id),
+            _ => None,
         }
-        self.ride_catalog_ids.get(viewed).copied()
     }
 
     /// Park the host's answer to [`take_ride_track_request`](App::take_ride_track_request) in the
@@ -1887,14 +1913,21 @@ impl App {
     /// ([`set_routes_with_ids`](App::set_routes_with_ids)), and answer with
     /// [`notify_nav_result`](App::notify_nav_result) — all within the same pass, so the confirm
     /// screen is still up when the answer lands.
+    ///
+    /// Compatibility adapter over [`HostCommand::PlanRoute`] (#800); removal owned by #812.
     pub fn take_nav_request(&mut self) -> Option<crate::activity::NavRequest> {
-        self.activity.take_nav_request()
+        match self.drain_host_command(HostCommandClass::PlanRoute) {
+            Some(HostCommand::PlanRoute(req)) => Some(req),
+            _ => None,
+        }
     }
 
     /// Non-consuming peek at whether a route-planning request is pending — lets the board gate
     /// its per-pass router work without draining the one-shot.
+    ///
+    /// Compatibility adapter over the [`HostCommand::PlanRoute`] pendency (#800); removal owned by #812.
     pub fn has_nav_request(&self) -> bool {
-        self.activity.has_nav_request()
+        self.peek_host_command(HostCommandClass::PlanRoute)
     }
 
     /// Post the **install-update request** (epic #615 S4/S5) — the one-shot the board's ride loop
@@ -1948,8 +1981,13 @@ impl App {
     /// like [`take_nav_request`](App::take_nav_request). `Some(Scan)` runs the read-only validation
     /// and answers via [`notify_dfu_scan_result`](App::notify_dfu_scan_result); `Some(Install)`
     /// arms and reboots.
+    ///
+    /// Compatibility adapter over [`HostCommand::Dfu`] (#800); removal owned by #812.
     pub fn take_dfu_request(&mut self) -> Option<crate::activity::DfuAction> {
-        self.activity.take_dfu_request()
+        match self.drain_host_command(HostCommandClass::Dfu) {
+            Some(HostCommand::Dfu(action)) => Some(action),
+            _ => None,
+        }
     }
 
     /// The board's answer to a drained [`DfuAction::Scan`](crate::activity::DfuAction) (epic #615
@@ -1959,7 +1997,14 @@ impl App {
     /// with the confirm screen (`Ok`) or the error card (`Err`). If that screen is gone — the rider
     /// pressed Back out of the wait — the answer is dropped (nothing was armed; a scan costs
     /// nothing).
+    ///
+    /// Compatibility adapter over [`HostEvent::DfuScanned`] (#800); removal owned by #812.
     pub fn notify_dfu_scan_result(&mut self, result: Result<crate::dfu::DfuScanReport, crate::dfu::DfuScanError>) {
+        self.apply_event(HostEvent::DfuScanned(result));
+    }
+
+    /// [`HostEvent::DfuScanned`]: land the scan answer in the "Checking card..." wait, or drop it.
+    fn on_dfu_scanned(&mut self, result: Result<crate::dfu::DfuScanReport, crate::dfu::DfuScanError>) {
         let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuCheck(_))) else {
             return;
         };
@@ -1978,7 +2023,14 @@ impl App {
     /// COM wave alive), so this card *is* the install UI. With no spinner up (the `dfu-install`
     /// debug command arms without the confirm flow) the card is pushed instead — the pre-reset
     /// frame is right regardless of the door in.
+    ///
+    /// Compatibility adapter over [`HostEvent::DfuInstallBegan`] (#800); removal owned by #812.
     pub fn show_dfu_installing(&mut self) {
+        self.apply_event(HostEvent::DfuInstallBegan);
+    }
+
+    /// [`HostEvent::DfuInstallBegan`]: swap the spinner for (or push) the terminal installing card.
+    fn on_dfu_install_began(&mut self) {
         let card = Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new());
         if let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuProgress(_))) {
             self.stack[i] = card;
@@ -2000,7 +2052,14 @@ impl App {
     /// with the scan seam), the fact is dropped: nothing was armed. A successful arm never calls
     /// this — it reboots into the bootloader instead, so these screens only outlive their pass when
     /// the reset is genuinely imminent.
+    ///
+    /// Compatibility adapter over [`HostEvent::DfuInstallFailed`] (#800); removal owned by #812.
     pub fn notify_dfu_install_failed(&mut self, reason: crate::dfu::DfuInstallError) {
+        self.apply_event(HostEvent::DfuInstallFailed(reason));
+    }
+
+    /// [`HostEvent::DfuInstallFailed`]: land the failure in the live install wait, or drop it.
+    fn on_dfu_install_failed(&mut self, reason: crate::dfu::DfuInstallError) {
         let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuProgress(_) | Screen::DfuInstalling(_)))
         else {
             return;
@@ -2013,18 +2072,18 @@ impl App {
     /// board calls this right after the trial confirm writes `Idle { installed }` at the health
     /// anchor (first frame presented + SD mounted). `version` is the running image's OBCU
     /// version string (≤ 32 bytes by the container format; longer input is truncated).
+    ///
+    /// Compatibility adapter over [`HostEvent::UpdateConfirmed`] (#800); removal owned by #812.
     pub fn notify_update_confirmed(&mut self, version: &str) {
-        let mut v: heapless::String<32> = heapless::String::new();
-        let mut end = version.len().min(v.capacity());
-        while end > 0 && !version.is_char_boundary(end) {
-            end -= 1;
-        }
-        let _ = v.push_str(&version[..end]);
-        self.update_confirmed = Some(v);
+        self.apply_event(HostEvent::UpdateConfirmed(crate::dfu::clamp(version)));
     }
 
     /// Take the one-time "update confirmed" fact — the just-confirmed running version, if this
     /// boot set one. S5's toast is the consumer; taking it clears it (shown once).
+    ///
+    /// Not part of the host protocol: the fact is app-internal delivery state (the
+    /// [`reconcile_update_toast`](App::reconcile_update_toast) pass consumes it); this accessor
+    /// exists for tests/introspection. Its disposition is owned by #812.
     pub fn take_update_confirmed(&mut self) -> Option<heapless::String<32>> {
         self.update_confirmed.take()
     }
@@ -2034,8 +2093,10 @@ impl App {
     /// `staged` is the failed image's version string when the arm marker survived. The one-time
     /// fact the "UPDATE FAILED" card takes, delivered by the same reconcile pass as the success
     /// toast.
+    ///
+    /// Compatibility adapter over [`HostEvent::UpdateFailed`] (#800); removal owned by #812.
     pub fn notify_update_failed(&mut self, why: crate::dfu::DfuFailure, staged: Option<&str>) {
-        self.update_failed = Some((why, staged.map(crate::dfu::clamp)));
+        self.apply_event(HostEvent::UpdateFailed { why, staged: staged.map(crate::dfu::clamp) });
     }
 
     /// **Debug bench** (#500): start a route plan from `from` to `to` (both `(lon, lat)` µdeg) exactly
@@ -2077,8 +2138,10 @@ impl App {
     /// in-flight plan and discard the partial nav file; it answers **nothing** (there is no
     /// planning screen left to answer into). Drained once per pass; a stale cancel with no plan
     /// in flight is a no-op.
+    ///
+    /// Compatibility adapter over [`HostCommand::CancelRoutePlan`] (#800); removal owned by #812.
     pub fn take_nav_cancel(&mut self) -> bool {
-        self.activity.take_nav_cancel()
+        self.drain_host_command(HostCommandClass::CancelRoutePlan).is_some()
     }
 
     /// The host's answer to a drained [`take_nav_request`](App::take_nav_request) (epic #116, R4).
@@ -2102,7 +2165,14 @@ impl App {
     /// request was recorded). If it's gone — the rider cancelled (Back popped it), or a
     /// host-pushed card replaced it — the answer is dropped: a committed route is still in the
     /// Route menu, and a cancel already told the host to abort before any answer.
+    ///
+    /// Compatibility adapter over [`HostEvent::NavPlanned`] (#800); removal owned by #812.
     pub fn notify_nav_result(&mut self, result: Result<u16, obc_route::nav::NavError>) {
+        self.apply_event(HostEvent::NavPlanned(result));
+    }
+
+    /// [`HostEvent::NavPlanned`]: land the plan answer in the planning screen, or drop it.
+    fn on_nav_planned(&mut self, result: Result<u16, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
         let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::NavPlanning(_))) else {
             return;
@@ -2275,8 +2345,10 @@ impl App {
     /// most once per guarded hold. The board's ride loop rings the BLE plane (clear the RRAM bond
     /// slot + drop the bonded connection); the sim clears its injected `paired` flag. The
     /// `TrackAction` shape: a one-shot the host consumes, not a level.
+    ///
+    /// Compatibility adapter over [`HostCommand::ForgetBond`] (#800); removal owned by #812.
     pub fn take_ble_forget(&mut self) -> bool {
-        core::mem::take(&mut self.state.ble_forget_pending)
+        self.drain_host_command(HostCommandClass::ForgetBond).is_some()
     }
 
     /// Whether the base (lowest opaque) screen draws the connected indicator — Home, or any framed
@@ -2371,8 +2443,10 @@ impl App {
     /// Records the pending signal; the host drains it via
     /// [`take_store_changed`](App::take_store_changed) and answers with a `/routes` rescan →
     /// [`set_routes_with_ids`](App::set_routes_with_ids) (the live catalog + identity remap, #450).
+    ///
+    /// Compatibility adapter over [`HostEvent::StoreChanged`] (#800); removal owned by #812.
     pub fn notify_store_changed(&mut self) {
-        self.store_changed_pending = self.store_changed_pending.saturating_add(1);
+        self.apply_event(HostEvent::StoreChanged);
     }
 
     /// How many [`notify_store_changed`](App::notify_store_changed) signals are pending (not yet acted
@@ -2387,8 +2461,13 @@ impl App {
     /// calls this once per pass and, when non-zero, rescans its store and re-feeds
     /// [`set_routes_with_ids`](App::set_routes_with_ids). A count (not a bool) so a burst of
     /// commits is observable, though one rescan covers them all.
+    ///
+    /// Compatibility adapter over [`HostCommand::RescanStore`] (#800); removal owned by #812.
     pub fn take_store_changed(&mut self) -> u32 {
-        core::mem::take(&mut self.store_changed_pending)
+        match self.drain_host_command(HostCommandClass::RescanStore) {
+            Some(HostCommand::RescanStore { commits }) => commits,
+            _ => 0,
+        }
     }
 
     /// A route upload **committed** to the host's store (epic #447, P4) — the event that raises
@@ -2420,12 +2499,19 @@ impl App {
     /// the route has no elevation), which the host builds from the just-committed OBCR at commit
     /// time and the idle "ROUTE RECEIVED" card draws (#682). Carried with the event so a
     /// hold-deferred delivery still has it; the swap / active-replace variants ignore it.
+    ///
+    /// Compatibility adapter over [`HostEvent::RouteUploaded`] (#800); removal owned by #812.
     pub fn notify_route_uploaded(
         &mut self,
         id: u16,
         replaced: bool,
         elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
     ) {
+        self.apply_event(HostEvent::RouteUploaded { id, replaced, elevation });
+    }
+
+    /// [`HostEvent::RouteUploaded`]: forced adoption on an active replace + the advisory prompt.
+    fn on_route_uploaded(&mut self, id: u16, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>) {
         let active_id = self.activity.active_route.and_then(|i| self.catalog_ids.get(i).copied());
         let active_replace = replaced && active_id == Some(id);
         if active_replace {
@@ -2500,7 +2586,14 @@ impl App {
     /// is surfaced **once per boot** (a dismissed card doesn't nag, but a genuinely new flag
     /// re-opens it). Call it whenever a fault is discovered — order and timing don't matter, the
     /// flags accumulate. A no-op for [`WarningFlags::NONE`].
+    ///
+    /// Compatibility adapter over [`HostEvent::Warning`] (#800); removal owned by #812.
     pub fn notify_warning(&mut self, flags: WarningFlags) {
+        self.apply_event(HostEvent::Warning(flags));
+    }
+
+    /// [`HostEvent::Warning`]: accumulate the flags and deliver (or defer) the advisory card.
+    fn on_warning(&mut self, flags: WarningFlags) {
         if flags.is_empty() {
             return;
         }
@@ -2734,13 +2827,11 @@ impl App {
     /// writes to the same address. This relies on the invariant that **only the settings screens
     /// mutate [`settings`](App::settings)**; the trade-off is that an edit left un-exited when power
     /// is cut is lost (which the single-slot store already tolerates).
+    ///
+    /// Compatibility adapter over [`HostCommand::PersistSettings`] (#800); removal owned by #812
+    /// (the acknowledged/retryable revision protocol is #810's).
     pub fn take_settings_dirty(&mut self) -> bool {
-        if self.settings_dirty && !self.top_is_settings() {
-            self.settings_dirty = false;
-            true
-        } else {
-            false
-        }
+        self.drain_host_command(HostCommandClass::PersistSettings).is_some()
     }
 
     /// Whether the top (input-receiving) screen is one of the settings screens — the gate
@@ -3375,6 +3466,162 @@ impl App {
     /// The current operating mode.
     pub fn mode(&self) -> Mode {
         self.activity.mode
+    }
+}
+
+// ==================== The typed app↔host protocol (FAR-07, #800) ====================
+//
+// One vocabulary, one pending state. Every host-directed one-shot/counter the legacy `take_*` /
+// `has_*` methods expose is drained here as a typed [`HostCommand`], and every `notify_*` fact
+// lands here as a typed [`HostEvent`] — the per-latch methods above are compatibility adapters
+// over these two entry points (each drains/feeds the very same slot, so there is never a second
+// pending copy). Host-loop consolidation onto this seam is #801; adapter removal is #812.
+
+impl App {
+    /// Drain every pending host-directed command into the caller-owned mailbox, in the canonical
+    /// [`HostCommand::DRAIN_ORDER`] — the host's once-per-pass read of "what does the app want".
+    ///
+    /// Draining is **loss-free by construction**: a command class is consumed only when the
+    /// mailbox has room for it, so a full mailbox leaves the remaining classes latched (reported
+    /// as [`DrainStatus::MailboxFull`]) and they come out of the next drain. A mailbox with
+    /// `N >= HOST_COMMAND_CLASSES` — compile-time asserted here — always drains to
+    /// [`DrainStatus::Complete`] in one call. The derived fill cues
+    /// ([`LoadRideTrack`](HostCommand::LoadRideTrack) /
+    /// [`RefreshNavPreview`](HostCommand::RefreshNavPreview)) re-emit on every drain until their
+    /// `set_*` answer lands; [`HostMailbox`] coalesces them (and sums
+    /// [`RescanStore`](HostCommand::RescanStore) counts) so re-drains never duplicate work.
+    pub fn drain_host_commands<const N: usize>(&mut self, out: &mut HostMailbox<N>) -> DrainStatus {
+        const {
+            assert!(N >= HOST_COMMAND_CLASSES, "a HostMailbox must hold one command per class to drain completely");
+        }
+        for class in HostCommand::DRAIN_ORDER {
+            if out.is_full() {
+                // Consume nothing we can't hand over: everything still pending stays latched for
+                // the next drain — backpressure, never a silent drop.
+                let remaining =
+                    HostCommand::DRAIN_ORDER.iter().skip_while(|&&c| c != class).any(|&c| self.peek_host_command(c));
+                return if remaining { DrainStatus::MailboxFull } else { DrainStatus::Complete };
+            }
+            if let Some(cmd) = self.drain_host_command(class) {
+                let pushed = out.push_coalesced(cmd);
+                debug_assert!(pushed, "room was checked before the class was drained");
+            }
+        }
+        DrainStatus::Complete
+    }
+
+    /// Whether any host-directed command is currently pending — what a
+    /// [`drain_host_commands`](App::drain_host_commands) call would emit at least one command for.
+    /// The typed twin of the per-class `has_*` peeks: it consumes nothing.
+    pub fn has_pending_host_command(&self) -> bool {
+        HostCommand::DRAIN_ORDER.iter().any(|&c| self.peek_host_command(c))
+    }
+
+    /// Apply one host answer/fact to the app — the single typed entry every `notify_*`
+    /// compatibility adapter delegates to. Events are owned values, so a host can hold one across
+    /// however many passes its asynchronous work takes and apply it late; each arm keeps the
+    /// documented drop/defer rule of the seam it replaces (a late answer whose screen is gone is
+    /// dropped, advisory prompts defer behind the passkey card / a charging hold, and so on).
+    pub fn apply_event(&mut self, event: HostEvent) {
+        match event {
+            HostEvent::StoreChanged => {
+                self.store_changed_pending = self.store_changed_pending.saturating_add(1);
+            }
+            HostEvent::RouteUploaded { id, replaced, elevation } => self.on_route_uploaded(id, replaced, elevation),
+            HostEvent::Warning(flags) => self.on_warning(flags),
+            HostEvent::NavPlanned(result) => self.on_nav_planned(result),
+            HostEvent::CardScanned { free_bytes } => {
+                self.card_free_bytes = free_bytes;
+                self.map_dirty = true;
+            }
+            HostEvent::DfuScanned(result) => self.on_dfu_scanned(result),
+            HostEvent::DfuInstallFailed(reason) => self.on_dfu_install_failed(reason),
+            HostEvent::DfuInstallBegan => self.on_dfu_install_began(),
+            HostEvent::UpdateConfirmed(version) => self.update_confirmed = Some(version),
+            HostEvent::UpdateFailed { why, staged } => self.update_failed = Some((why, staged)),
+        }
+    }
+
+    /// Non-consuming per-class pendency — the shared predicate behind the `has_*` compatibility
+    /// peeks and the drain's backpressure check. For the delete classes this reports the request
+    /// slot itself (matching the legacy `has_*` semantics): a request whose subject vanished in a
+    /// racing rescan still peeks `true` and then drains to nothing.
+    fn peek_host_command(&self, class: HostCommandClass) -> bool {
+        match class {
+            HostCommandClass::RescanStore => self.store_changed_pending > 0,
+            HostCommandClass::CancelRoutePlan => self.activity.nav_cancel_pending(),
+            HostCommandClass::DeleteRoute => self.activity.has_route_delete(),
+            HostCommandClass::DeleteTrip => self.activity.has_trip_delete(),
+            HostCommandClass::DeleteRide => self.activity.has_ride_delete(),
+            HostCommandClass::FinishTrack => self.activity.has_track_action(),
+            HostCommandClass::PlanRoute => self.activity.has_nav_request(),
+            HostCommandClass::Dfu => self.activity.has_dfu_request(),
+            HostCommandClass::ForgetBond => self.state.ble_forget_pending,
+            HostCommandClass::PersistSettings => self.settings_dirty && !self.top_is_settings(),
+            HostCommandClass::ScanCardFree => self.activity.card_scan_pending(),
+            HostCommandClass::LoadRideTrack => self.ride_track_request().is_some(),
+            HostCommandClass::RefreshNavPreview => self.nav_preview_missing(),
+        }
+    }
+
+    /// Drain one command class from its single pending slot — the shared consumer behind both
+    /// [`drain_host_commands`](App::drain_host_commands) and every `take_*` compatibility adapter,
+    /// so a command drained through either door is gone through both. Preserves each latch's exact
+    /// semantics: one-shots drain exactly once, the store counter drains whole,
+    /// `PersistSettings` fires only once an edited value has left the settings subtree, the
+    /// delete indices resolve to durable ids at drain (a vanished subject consumes the slot and
+    /// yields nothing), and the derived fill cues consume nothing (they clear when answered).
+    fn drain_host_command(&mut self, class: HostCommandClass) -> Option<HostCommand> {
+        match class {
+            HostCommandClass::RescanStore => {
+                let commits = core::mem::take(&mut self.store_changed_pending);
+                (commits > 0).then_some(HostCommand::RescanStore { commits })
+            }
+            HostCommandClass::CancelRoutePlan => {
+                self.activity.take_nav_cancel().then_some(HostCommand::CancelRoutePlan)
+            }
+            HostCommandClass::DeleteRoute => {
+                let idx = self.activity.take_route_delete()?;
+                Some(HostCommand::DeleteRoute { id: self.catalog_ids.get(idx).copied()? })
+            }
+            HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
+            HostCommandClass::DeleteRide => {
+                let idx = self.activity.take_ride_delete()?;
+                Some(HostCommand::DeleteRide { id: self.ride_catalog_ids.get(idx).copied()? })
+            }
+            HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
+            HostCommandClass::PlanRoute => self.activity.take_nav_request().map(HostCommand::PlanRoute),
+            HostCommandClass::Dfu => self.activity.take_dfu_request().map(HostCommand::Dfu),
+            HostCommandClass::ForgetBond => {
+                core::mem::take(&mut self.state.ble_forget_pending).then_some(HostCommand::ForgetBond)
+            }
+            HostCommandClass::PersistSettings => {
+                if self.settings_dirty && !self.top_is_settings() {
+                    self.settings_dirty = false;
+                    Some(HostCommand::PersistSettings)
+                } else {
+                    None
+                }
+            }
+            HostCommandClass::ScanCardFree => {
+                self.activity.take_card_scan_request().then_some(HostCommand::ScanCardFree)
+            }
+            HostCommandClass::LoadRideTrack => self.ride_track_request().map(|id| HostCommand::LoadRideTrack { id }),
+            HostCommandClass::RefreshNavPreview => self.nav_preview_missing().then_some(HostCommand::RefreshNavPreview),
+        }
+    }
+
+    /// The Ride detail's derived track-fill cue (#680): the viewed ride's durable id while the
+    /// resident profile buffer isn't answered for it — the shared predicate behind
+    /// [`take_ride_track_request`](App::take_ride_track_request) and
+    /// [`HostCommand::LoadRideTrack`]. Pure state derivation: nothing is stored, so nothing can go
+    /// stale across a rescan (the identity remap moves the keys, and the cue follows).
+    fn ride_track_request(&self) -> Option<u16> {
+        let viewed = self.activity.viewed_ride?;
+        if self.ride_profile_for == Some(viewed) {
+            return None; // already answered for this ride (profile or a recorded failure)
+        }
+        self.ride_catalog_ids.get(viewed).copied()
     }
 }
 
@@ -5267,4 +5514,5 @@ mod tests {
         assert_eq!(app.activity.viewed_ride, None);
         assert_eq!(app.take_ride_track_request(), None);
     }
+
 }
