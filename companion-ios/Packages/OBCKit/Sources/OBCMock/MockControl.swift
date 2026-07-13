@@ -58,6 +58,7 @@ public final class MockControl: @unchecked Sendable {
     private var _pairingFail: PairingFail?
     private var _pendingFailures: [DeviceError]
     private var _dropFraction: Double?
+    private var _tripListFailure: DeviceError?
     private var _fixtures: FixtureSet
     /// Monotonic stand-in for the device's object-id assignment on upload — starts
     /// above every fixture `deviceObjectID` so a fresh id can't collide.
@@ -226,6 +227,25 @@ public final class MockControl: @unchecked Sendable {
     /// `TransferHandle.resume()` restores the link and finishes it.
     public func dropTransfer(atFraction fraction: Double) {
         lock.withLocked { _dropFraction = min(max(0, fraction), 1) }
+    }
+
+    /// Fail the **next** `listTrips()` read (one-shot; a retry succeeds) — the
+    /// transient trip-catalog failure a reload's reconcile must survive without
+    /// reading it as "the device stores zero trips" (which dropped every trip
+    /// link and made the next whole-trip upload mint a duplicate device trip).
+    /// Targeted (unlike `failNextOp`) so a test can fail `listTrips` while the
+    /// same reload's `listRoutes` succeeds — the exact on-glass sequence.
+    public func failNextTripList(_ error: DeviceError = .readFailed) {
+        lock.withLocked { _tripListFailure = error }
+    }
+
+    /// Consume the armed `listTrips` failure, if any (one-shot).
+    func takeTripListFailure() throws {
+        let error: DeviceError? = lock.withLocked {
+            defer { _tripListFailure = nil }
+            return _tripListFailure
+        }
+        if let error { throw error }
     }
 
     /// Force the radio state (H7/H8).

@@ -121,6 +121,7 @@ public struct MockTransport: DeviceTransport {
         // The device's trip catalog (`tripList`) — reconcile input for the trip
         // card badge, never list rows. Mirrors the real `tripList` download.
         try await preludeThrowing()
+        try control.takeTripListFailure()
         return control.deviceTripCatalog()
     }
 
