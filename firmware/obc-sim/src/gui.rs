@@ -395,7 +395,15 @@ impl SimGui {
                         app.apply_event(HostEvent::CardScanned { free_bytes: Some(1_288_490_188) });
                     }
                     HostCommand::ForgetBond => panel.ble.paired = false,
-                    HostCommand::PersistSettings => settings_store.save(app.settings()),
+                    HostCommand::PersistSettings { revision } => {
+                        // Persist to the RRAM stand-in file, then acknowledge the revision so the app
+                        // clears its dirty state (or, on failure, keeps it retryable) — #810.
+                        let event = match settings_store.save(app.settings()) {
+                            Ok(()) => HostEvent::SettingsPersisted { revision },
+                            Err(error) => HostEvent::SettingsPersistFailed { revision, error },
+                        };
+                        app.apply_event(event);
+                    }
                     // No real firmware to flash in the desktop sim; the headless `--png` path stages
                     // synthetic DFU answers directly, so the interactive loop just drops the request.
                     HostCommand::Dfu(_) => {}

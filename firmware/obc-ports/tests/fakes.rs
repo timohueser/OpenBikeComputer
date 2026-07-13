@@ -19,8 +19,9 @@ impl SettingsStore for FakeSettingsStore {
         self.0
     }
 
-    fn save(&mut self, value: &Self::Value) {
+    fn save(&mut self, value: &Self::Value) -> Result<(), obc_ports::SettingsSaveError> {
         self.0 = Some(*value);
+        Ok(())
     }
 }
 
@@ -143,6 +144,6 @@ fn independent_fake_implements_settings_port() {
     assert_eq!(store.load(), None);
 
     let settings = FakeSettings { brightness: 73 };
-    store.save(&settings);
+    store.save(&settings).expect("the in-memory fake's save is infallible");
     assert_eq!(store.load(), Some(settings));
 }

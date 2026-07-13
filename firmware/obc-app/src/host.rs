@@ -51,6 +51,8 @@
 //!   command is never silently dropped. A mailbox with `N >= HOST_COMMAND_CLASSES` (compile-time
 //!   asserted) always completes in one drain.
 
+use obc_ports::SettingsSaveError;
+
 use crate::activity::{DfuAction, NavRequest, TrackAction};
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, Version};
 use crate::screen::WarningFlags;
@@ -124,12 +126,21 @@ pub enum HostCommand {
     /// connection. One-shot, guarded-hold-posted.
     /// Compat adapter: [`take_ble_forget`](crate::App::take_ble_forget).
     ForgetBond,
-    /// Persist the live [`settings`](crate::App::settings). Emitted once when an edited settings
-    /// value leaves the settings subtree (the save is debounced to screen exit, not fired per
-    /// detent). The acknowledged/retryable revision protocol is #810's; until then this remains
-    /// fire-and-forget like the latch it replaces.
-    /// Compat adapter: [`take_settings_dirty`](crate::App::take_settings_dirty).
-    PersistSettings,
+    /// Persist the live [`settings`](crate::App::settings) at revision `revision` (#810). Emitted
+    /// once when an edited settings value leaves the settings subtree (the save is debounced to
+    /// screen exit, not fired per detent) and **not re-emitted while its ack is outstanding**, so a
+    /// slow host is never spammed with RRAM writes. The command carries the app's current settings
+    /// revision; under the **snapshot-at-drain rule** the host reads [`settings`](crate::App::settings)
+    /// in the same pass it drains this command (no `Settings` copy ever rides in the queue) and later
+    /// answers with [`HostEvent::SettingsPersisted`] or [`HostEvent::SettingsPersistFailed`] carrying
+    /// the same `revision`. A failed write keeps the revision dirty and retryable; a newer edit bumps
+    /// the revision and supersedes an older pending one (a stale ack cannot clear the newer state).
+    /// A host that drains this command but never acks it (the web demo has no persistent store)
+    /// leaves the app parked in Awaiting terminally — by design: harmless (edits stay live in RAM
+    /// and keep superseding), honest (nothing pretends the write landed), no re-emission.
+    /// Compat adapters: [`take_settings_persist`](crate::App::take_settings_persist) (revision-aware)
+    /// and [`take_settings_dirty`](crate::App::take_settings_dirty) (emit-only bool).
+    PersistSettings { revision: u16 },
     /// Run the FAT free-cluster scan and answer with [`HostEvent::CardScanned`] (T8 item 6).
     /// One-shot per System-screen entry; idempotent refresh.
     /// Compat adapter: [`take_card_scan_request`](crate::App::take_card_scan_request).
@@ -213,7 +224,7 @@ impl HostCommand {
             HostCommand::PlanRoute(_) => HostCommandClass::PlanRoute,
             HostCommand::Dfu(_) => HostCommandClass::Dfu,
             HostCommand::ForgetBond => HostCommandClass::ForgetBond,
-            HostCommand::PersistSettings => HostCommandClass::PersistSettings,
+            HostCommand::PersistSettings { .. } => HostCommandClass::PersistSettings,
             HostCommand::ScanCardFree => HostCommandClass::ScanCardFree,
             HostCommand::LoadRideTrack { .. } => HostCommandClass::LoadRideTrack,
             HostCommand::RefreshNavPreview => HostCommandClass::RefreshNavPreview,
@@ -268,6 +279,15 @@ pub enum HostEvent {
     /// the arm marker survived. Compat adapter:
     /// [`notify_update_failed`](crate::App::notify_update_failed).
     UpdateFailed { why: DfuFailure, staged: Option<Version> },
+    /// The answer to a drained [`HostCommand::PersistSettings`]: the host wrote `revision` to durable
+    /// storage (#810). Clears the app's dirty state **iff `revision` is still the latest** — a stale
+    /// ack (a newer edit already bumped the revision) leaves the newer content pending. No compat
+    /// adapter: settings persistence moved straight to the typed protocol.
+    SettingsPersisted { revision: u16 },
+    /// The answer to a drained [`HostCommand::PersistSettings`] whose write failed (#810): the app
+    /// keeps `revision` dirty and re-arms a bounded backoff retry, and surfaces the failure on the
+    /// shared advisory warning card. `error` is the bounded reason. No compat adapter.
+    SettingsPersistFailed { revision: u16, error: SettingsSaveError },
 }
 
 /// What [`App::drain_host_commands`](crate::App::drain_host_commands) reports about a drain pass.
@@ -360,7 +380,9 @@ impl<const N: usize> Default for HostMailbox<N> {
 // Layout tripwires (FAR-07, #800): the message payloads stay pocket-sized — bounded ids/enums and
 // the fixed-name `NavRequest` / version strings, never a catalog or profile. Measured 48 / 80 B on
 // the 32-bit target (48 / 88 B on a 64-bit host); a variant that inflates either enum past these
-// ceilings needs an explicit re-baseline, not an accident. The mailbox itself is caller-owned, so
-// `App` grows by none of this.
+// ceilings needs an explicit re-baseline, not an accident. #810's `PersistSettings { revision }` and
+// the two `SettingsPersisted/Failed` events add only a `u16` (and a byte-sized `SettingsSaveError`),
+// smaller than each enum's dominating variant, so both ceilings are unchanged. The mailbox itself is
+// caller-owned, so `App` grows by none of this.
 const _: () = assert!(core::mem::size_of::<HostCommand>() <= 48, "HostCommand grew — re-check the payload budget");
 const _: () = assert!(core::mem::size_of::<HostEvent>() <= 88, "HostEvent grew — re-check the payload budget");

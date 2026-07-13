@@ -602,7 +602,10 @@ impl ObjectStore {
         self.settings = shared.settings.load().unwrap_or_default();
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
-        shared.settings.save(&self.settings);
+        // The BLE plane persists its owned fields directly (best-effort): the store logs a write
+        // failure internally, and the phone re-asserts config on reconnect, so there is no App-side
+        // revision to retry here (the device-edit path owns the acknowledged handshake — #810).
+        let _ = shared.settings.save(&self.settings);
         BLE_CONFIG_WRITTEN.store(true, Ordering::Relaxed);
     }
 
