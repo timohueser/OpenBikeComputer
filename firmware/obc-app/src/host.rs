@@ -140,7 +140,7 @@ pub enum HostCommand {
     /// and keep superseding), honest (nothing pretends the write landed), no re-emission.
     /// Compat adapters: [`take_settings_persist`](crate::App::take_settings_persist) (revision-aware)
     /// and [`take_settings_dirty`](crate::App::take_settings_dirty) (emit-only bool).
-    PersistSettings { revision: u32 },
+    PersistSettings { revision: u16 },
     /// Run the FAT free-cluster scan and answer with [`HostEvent::CardScanned`] (T8 item 6).
     /// One-shot per System-screen entry; idempotent refresh.
     /// Compat adapter: [`take_card_scan_request`](crate::App::take_card_scan_request).
@@ -283,11 +283,11 @@ pub enum HostEvent {
     /// storage (#810). Clears the app's dirty state **iff `revision` is still the latest** — a stale
     /// ack (a newer edit already bumped the revision) leaves the newer content pending. No compat
     /// adapter: settings persistence moved straight to the typed protocol.
-    SettingsPersisted { revision: u32 },
+    SettingsPersisted { revision: u16 },
     /// The answer to a drained [`HostCommand::PersistSettings`] whose write failed (#810): the app
     /// keeps `revision` dirty and re-arms a bounded backoff retry, and surfaces the failure on the
     /// shared advisory warning card. `error` is the bounded reason. No compat adapter.
-    SettingsPersistFailed { revision: u32, error: SettingsSaveError },
+    SettingsPersistFailed { revision: u16, error: SettingsSaveError },
 }
 
 /// What [`App::drain_host_commands`](crate::App::drain_host_commands) reports about a drain pass.
@@ -381,7 +381,7 @@ impl<const N: usize> Default for HostMailbox<N> {
 // the fixed-name `NavRequest` / version strings, never a catalog or profile. Measured 48 / 80 B on
 // the 32-bit target (48 / 88 B on a 64-bit host); a variant that inflates either enum past these
 // ceilings needs an explicit re-baseline, not an accident. #810's `PersistSettings { revision }` and
-// the two `SettingsPersisted/Failed` events add only a `u32` (and a byte-sized `SettingsSaveError`),
+// the two `SettingsPersisted/Failed` events add only a `u16` (and a byte-sized `SettingsSaveError`),
 // smaller than each enum's dominating variant, so both ceilings are unchanged. The mailbox itself is
 // caller-owned, so `App` grows by none of this.
 const _: () = assert!(core::mem::size_of::<HostCommand>() <= 48, "HostCommand grew — re-check the payload budget");

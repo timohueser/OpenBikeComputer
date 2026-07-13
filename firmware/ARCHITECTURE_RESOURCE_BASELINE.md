@@ -121,7 +121,7 @@ These are exact 32-bit target `size_of` values from the report-only ELF:
 | :-- | --: | --: |
 | framebuffer | 76,800 B | 76,800 B |
 | row diff | 1,284 B | 1,284 B |
-| `App` | 34,952 B | 34,952 B |
+| `App` | 34,944 B | 34,944 B |
 | map cache | 14,444 B | 14,444 B |
 | map tables | 4,060 B | 4,060 B |
 | route cache | 6,180 B | 6,180 B |

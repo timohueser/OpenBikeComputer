@@ -32,7 +32,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 34952,
+        "app": 34944,
         "map_cache": 14444,
         "map_tables": 4060,
         "route_cache": 6180,
@@ -75,7 +75,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 34952,
+        "app": 34944,
         "map_cache": 14444,
         "map_tables": 4060,
         "route_cache": 6180,
