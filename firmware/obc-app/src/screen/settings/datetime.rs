@@ -268,7 +268,10 @@ fn draw_date(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Opti
     let _ = write!(yr, "{}", s.clock.year);
     let _ = mo.push_str(s.clock.month_name(lang));
     let _ = write!(da, "{}", s.clock.day);
-    draw_stepper_row(cv, area, t(Msg::DatetimeDate, lang), &[(&yr, 70), (&mo, 56), (&da, 44)], 8, editing);
+    // The month cell is 70 px (5 glyphs at Font::Body's 14 px), not 56: the four-char French months
+    // (`août`, `sept`, `févr`) exactly fill 56 px, sitting flush against the active cell's amber
+    // border. 70 px keeps a one-glyph margin either side, matching the year cell (#614).
+    draw_stepper_row(cv, area, t(Msg::DatetimeDate, lang), &[(&yr, 70), (&mo, 70), (&da, 44)], 8, editing);
 }
 
 /// Draw the `TIME` row: `TIME` over hour : minute Body steppers, captioned in `lang`.
