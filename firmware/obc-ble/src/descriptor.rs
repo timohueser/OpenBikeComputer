@@ -527,14 +527,18 @@ impl StatusMessage {
 }
 
 /// The `protocolVersion` characteristic read (widened for v2, epic #632 item 5): the wire version
-/// **and** the device's current **store epoch** — a `u32` TRNG nonce that changes on an id-era reset,
-/// which is exactly an RRAM loss (full-chip reflash, factory reset, a torn id-marks line). The card
-/// is not consulted by the mint rule — it only determines how much of the id space actually reopens
-/// when the RRAM floor is lost (a card written by a *different* device is the residual hole, #776).
+/// **and** the device's current **store epoch** — a `u32` TRNG nonce naming the store's id era. The
+/// epoch is **card-resident** (#776): it lives on the SD card, so the card carries its own era name.
+/// It changes on an id-era reset — a lost RRAM id floor (full-chip reflash, factory reset, a torn
+/// id-marks line) or an absent/torn card epoch file. Because it rides the card, a card swap
+/// transplants the era, and a card written by a *different* device presents *its own* epoch — a
+/// distinct `(serial, epoch)` scope on this device, which closes the former foreign-card hole (#776).
 /// The app reads it first on every connect, before any reconcile, so it knows the era before it acks
 /// or links anything; the epoch scopes all id-keyed app state to `(device serial, store epoch)` so a
-/// reset can't silently alias months-old ids. The mint rule lives on the device (V3); a random nonce
-/// leaks nothing beyond open DIS. Readable **without** encryption.
+/// reset can't silently alias months-old ids. A device with **no mounted store** has no epoch and
+/// serves only the 2-byte version — the app fail-closes the ack (never epoch `0`, a legal value). The
+/// mint rule lives on the device (V3); a random nonce leaks nothing beyond open DIS. Readable
+/// **without** encryption.
 ///
 /// ```text
 ///   version      u16   the protocol version (currently 2)

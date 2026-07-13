@@ -29,25 +29,33 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 ## Versioning & store epoch
 
 The `protocolVersion` characteristic read is widened in v2 to
-`version u16 · store_epoch u32` (6 bytes LE, readable without encryption). The
-`protocol_version` is **currently `2`**; `store_epoch` is a `u32` TRNG nonce the
-device changes only on an id-era reset — exactly the RRAM losses: a full-chip
-reflash, a factory reset, or a torn id-marks line. (The card is not consulted by
-the mint rule; it only determines how much of the id space actually reopens when
-the RRAM floor is lost. A card written by a *different* device can present foreign
-ids under the current epoch — the residual hole is #776, device-side only.)
-Because it is the pre-pairing read the app performs first on every connect, the
-app knows the epoch **before** it acks or reconciles anything.
+`version u16 · store_epoch u32` (6 bytes LE, readable without encryption) when a
+store is mounted. The `protocol_version` is **currently `2`**; `store_epoch` is a
+`u32` TRNG nonce naming the store's **id era**. It is **card-resident** — it lives
+on the SD card, so the card carries its own era name — and the device changes it
+only on an id-era reset: a lost RRAM id floor (a full-chip reflash, a factory
+reset, or a torn id-marks line) **or** an absent/torn card epoch file. Because the
+epoch rides the card, a **card swap transplants the era** (swap back and the old
+one returns), and a card written by a *different* device presents *its own* epoch —
+so on this device it reads as a distinct `(serial, epoch)` scope. That **closes**
+the former foreign-card residual hole (#776). Because it is the pre-pairing read
+the app performs first on every connect, the app knows the epoch **before** it acks
+or reconciles anything.
+
+**No store ⇒ no epoch (short read).** A device with no mounted card serves only the
+**2-byte version** (`version` alone). The app treats the absent epoch as a **failed
+identity read** — ack fail-closed (below), never epoch `0` (a legal value). The
+full 6-byte shape returns whenever a store is mounted.
 
 **Store epoch — why the app needs it.** Every durable link keys on bare `u16`
 object ids (ride synced-set + tombstones, route `deviceObjectID` links). A device
-reset can reopen the id space and silently **alias** months-old phone state, so
-the app scopes all id-keyed state to `(device serial, store epoch)`; an era change
-then makes old entries archival by construction. **Ack fail-closed:** the
-version+epoch read gates `ackRides` and all reconcile writes — a connection whose
-identity read *failed* sends no ack and reconciles nothing (library browsing is
-unaffected). The composite-key scoping is V5 (#769); this section is the wire fact
-it stands on.
+reset (or a swapped card) can reopen the id space and silently **alias** months-old
+phone state, so the app scopes all id-keyed state to `(device serial, store
+epoch)`; an era change then makes old entries archival by construction. **Ack
+fail-closed:** the version+epoch read gates `ackRides` and all reconcile writes — a
+connection whose identity read *failed* (including the short version-only read
+above) sends no ack and reconciles nothing (library browsing is unaffected). The
+composite-key scoping is V5 (#769); this section is the wire fact it stands on.
 
 **Mismatch behavior — surface, don't crash.** On connect the app reads the
 device's version (the first `u16` of the read) into `DeviceInfo.protocolVersion`

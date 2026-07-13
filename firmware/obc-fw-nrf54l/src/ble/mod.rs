@@ -322,6 +322,7 @@ pub async fn run(
     sdc_p: sdc::Peripherals<'static>,
     cracen_p: Peri<'static, peripherals::CRACEN>,
     shared: &'static SharedStoreMutex,
+    store_epoch: Option<u32>,
 ) -> ! {
     // The object store: the catalog/upload/revision semantics behind a RefCell — both BLE planes (GATT
     // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
@@ -441,16 +442,15 @@ pub async fn run(
     let _ = server.set(&server.dis.hardware_revision, &gatt_str::<16>(format_args!("{HARDWARE_REVISION}")));
     let _ = server.set(&server.dis.serial_number, &serial_string());
     let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
-    // `protocolVersion` (V2 / #632): the pre-pairing read serves `version u16 · store_epoch u32`.
-    // The epoch is read **once** here from the RRAM store — V3's boot mint runs before this task is
-    // spawned, so the line is always `Some` at this point (`unwrap!` it: a fallback to 0 would
-    // fabricate an era, and 0 is a legal epoch value). The value never changes for the device's life.
-    let store_epoch = {
-        let mut guard = shared.lock().await;
-        unwrap!(guard.settings.load_store_epoch())
-    };
-    let version_read = obc_ble::VersionRead { version: obc_ble::PROTOCOL_VERSION, store_epoch };
-    let _ = server.set(&server.obc.protocol_version, &version_read.encode());
+    // `protocolVersion` (V2 / #632; card-resident epoch #776): the pre-pairing read. `store_epoch` is
+    // the boot mint pass's outcome, threaded in (never re-read here) — the epoch lives on the card
+    // now, and a card swap must not silently change what this task serves. `Some(epoch)` → the full
+    // 6-byte `version u16 · store_epoch u32` [`VersionRead`]; `None` (no mounted store) → the 2-byte
+    // **version-only** form (`PROTOCOL_VERSION` LE), which the app decodes as `storeEpoch = nil` and
+    // fail-closes the ack — never a fabricated epoch (0 is a legal value). The attribute is a
+    // variable-length `Vec` so a 2- or 6-byte read is served verbatim. The value never changes for
+    // the connection's life.
+    let _ = server.set(&server.obc.protocol_version, &gatt::version_read_blob(store_epoch));
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",
         firmware_revision().as_str(),

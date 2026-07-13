@@ -439,8 +439,9 @@ async fn spawn_ble_stack(
     sdc_p: nrf_sdc::Peripherals<'static>,
     cracen_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::CRACEN>,
     shared: &'static SharedStoreMutex,
+    store_epoch: Option<u32>,
 ) {
-    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, shared)));
+    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, shared, store_epoch)));
 }
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
@@ -1086,42 +1087,66 @@ async fn main(_spawner: Spawner) {
         // construction temporary must not cost `main`'s frame or the trampoline's pool; see
         // `spawn_ble_stack`.)
 
-        // --- Store-epoch nonce (protocol v2, #632 item 5 / #767): mint & persist the per-device
-        // id-era nonce. Runs **unconditionally, in every build flavor** — the era invariant ("any
+        // --- Store-epoch nonce (protocol v2, #632 item 5 / #767; card-resident #776): mint & persist
+        // the store's id-era nonce. The epoch now lives on the **card** (`EPOCH.OBE`, so the card
+        // carries its own era name — a swap transplants the store identity), while the id-marks floor
+        // stays in RRAM. Runs **unconditionally, in every build flavor** — the era invariant ("any
         // boot that could allocate ids under a lost floor declares a new era") must hold across
         // mixed-flavor bench flashing: if only ble builds minted, a non-ble build could boot on a
-        // torn/absent id-marks line, rewrite it valid over a ride, and a later ble flash would see
-        // two valid lines and never mint — permanent undetected aliasing. Placed right after the
-        // shared store is built (the earliest point the RRAM lines are readable) and before
+        // torn/absent id-marks line, rewrite it valid over a ride, and a later ble flash would see a
+        // valid card epoch + valid floor and never mint — permanent undetected aliasing. Placed right
+        // after the shared store is built (the earliest point the card *and* the RRAM lines are
+        // readable — the card was mounted at boot and moved into the guard as `Some`) and before
         // anything can allocate an object id: the ride loop (`run_app`, below) and the ble build's
-        // ObjectStore (inside `ble::run`, spawned below) both start after this block in every
-        // flavor. On a clause-2 mint we seed "no floor", which the later card scan resolves via
-        // the existing `max(scan_max + 1, floor)` allocation — see `store_epoch_mint`. The TRNG
-        // word comes from a throwaway CRACEN reborrow: `Cracen` construction is side-effect-free,
-        // each op self-enables/-disables the RNG, and `Drop` is a no-op — so on ble builds the
-        // peripheral is pristine when it then moves into the LL (whose crypto RNG it becomes).
-        // `cracen_p` partial-moves `p.CRACEN` out so the reborrow has a `&mut`; non-ble builds
-        // simply drop it afterwards.
+        // ObjectStore (inside `ble::run`, spawned below) both start after this block in every flavor.
+        // On a clause-2 mint we seed "no floor", which the later card scan resolves via the existing
+        // `max(scan_max + 1, floor)` allocation — see `store_epoch_mint`. The read epoch is the value
+        // served over the pre-pairing `protocolVersion` read; it is threaded into `ble::run` below so
+        // that path never re-reads the card. A no-card boot never reaches here (it diverged into the
+        // fault/idle path above), so `storage` is `Some`; the `None` arm keeps the future card-less
+        // seam honest (no store ⇒ no epoch ⇒ the version read degrades to version-only). The TRNG word
+        // comes from a throwaway CRACEN reborrow: `Cracen` construction is side-effect-free, each op
+        // self-enables/-disables the RNG, and `Drop` is a no-op — so on ble builds the peripheral is
+        // pristine when it then moves into the LL (whose crypto RNG it becomes). `cracen_p`
+        // partial-moves `p.CRACEN` out so the reborrow has a `&mut`; non-ble builds drop it afterwards.
         let mut cracen_p = p.CRACEN;
-        {
+        // `_store_epoch` (underscore like `_spawner`): read only by the `ble` spawn below, so non-ble
+        // builds bind it without a use. The mint pass's *writes* (card epoch + RRAM marks) run in
+        // every flavor regardless — only the served value is ble-specific.
+        let _store_epoch: Option<u32> = {
             let mut guard = shared_store.lock().await;
-            let epoch = guard.settings.load_store_epoch();
-            let marks = guard.settings.load_id_marks();
-            // One TRNG word — cheap, and only the mint path consumes it (the pure decision fn
-            // ignores it when it keeps the stored epoch).
-            let fresh = {
-                let mut cracen = embassy_nrf::cracen::Cracen::new_blocking(cracen_p.reborrow());
-                cracen.blocking_next_u32()
-            };
-            match obc_app::settings::store_epoch_mint(epoch, marks, fresh) {
-                Some((new_epoch, new_marks)) => {
-                    guard.settings.save_store_epoch(new_epoch);
-                    guard.settings.save_id_marks(&new_marks);
-                    defmt::info!("store-epoch: minted id-era nonce {=u32:#010x} (+ id-marks re-seeded)", new_epoch);
+            if guard.storage.is_none() {
+                defmt::info!("store-epoch: no mounted store — no epoch to mint or serve");
+                None
+            } else {
+                // Read the card epoch (immutable storage borrow) then the RRAM floor (mutable settings
+                // borrow) — sequential, non-overlapping field borrows.
+                let card_epoch = guard.storage.as_ref().unwrap().load_card_epoch();
+                let marks = guard.settings.load_id_marks();
+                // One TRNG word — cheap, and only the mint path consumes it (the pure decision fn
+                // ignores it when it keeps the card's epoch).
+                let fresh = {
+                    let mut cracen = embassy_nrf::cracen::Cracen::new_blocking(cracen_p.reborrow());
+                    cracen.blocking_next_u32()
+                };
+                match obc_app::settings::store_epoch_mint(card_epoch, marks, fresh) {
+                    Some((new_epoch, new_marks)) => {
+                        guard.storage.as_mut().unwrap().save_card_epoch(new_epoch);
+                        guard.settings.save_id_marks(&new_marks);
+                        defmt::info!(
+                            "store-epoch: minted id-era nonce {=u32:#010x} to card (+ id-marks re-seeded)",
+                            new_epoch
+                        );
+                        Some(new_epoch)
+                    }
+                    None => {
+                        // Kept: mint returns `None` only when the card epoch was `Some`, so unwrap is safe.
+                        defmt::info!("store-epoch: kept card id-era nonce");
+                        card_epoch
+                    }
                 }
-                None => defmt::info!("store-epoch: kept stored id-era nonce"),
             }
-        }
+        };
 
         // --- The BLE stack, `ble` builds: group the peripheral claims (MPSL: GRTC CH7–11 + TIMER10/20
         // + TEMP + its PPI/PPIB lanes; SDC: the PPI10 fan-out + PPIB bridges; CRACEN for the LL's crypto
@@ -1169,8 +1194,17 @@ async fn main(_spawner: Spawner) {
                 p.PPIB10_CH3,
             );
             // CRACEN goes to the LL's crypto RNG — already partial-moved out of `p` by the
-            // store-epoch mint pass above (which only reborrowed it; see its comment).
-            _spawner.spawn(defmt::unwrap!(spawn_ble_stack(_spawner, mpsl_p, sdc_p, cracen_p, shared_store)));
+            // store-epoch mint pass above (which only reborrowed it; see its comment). `store_epoch`
+            // is the mint pass's outcome (the value the pre-pairing `protocolVersion` read serves;
+            // `None` ⇒ version-only), threaded through so `ble::run` never re-reads the card.
+            _spawner.spawn(defmt::unwrap!(spawn_ble_stack(
+                _spawner,
+                mpsl_p,
+                sdc_p,
+                cracen_p,
+                shared_store,
+                _store_epoch
+            )));
         }
 
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
