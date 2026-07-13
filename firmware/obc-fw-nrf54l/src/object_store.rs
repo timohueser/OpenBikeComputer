@@ -147,6 +147,24 @@ pub(crate) async fn wait_ride_delete() -> u16 {
     RIDE_DELETE_REQ.wait().await
 }
 
+/// On-device trip **cascade**-delete request (epic #526, TR3/TR4) — the trip-namespace sibling of
+/// [`ROUTE_DELETE_REQ`]. The Route menu's long-press → confirm posts the trip's durable object id
+/// (`App::take_trip_delete` in the ride loop); the BLE plane drains it and runs
+/// [`ObjectStore::delete_trip_cascade`] — member routes first, then the trip object — so both the
+/// route and the trip store revisions move and the phone gets **both** `storeChanged` edges (§4.3).
+static TRIP_CASCADE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+
+/// Post a trip cascade-delete from the ride loop (epic #526, TR3). Overwrites any un-drained request
+/// (one delete in flight at a time — the confirm dialog fires one and the drain runs promptly).
+pub(crate) fn request_trip_cascade(id: u16) {
+    TRIP_CASCADE_REQ.signal(id);
+}
+
+/// The BLE plane's trip-cascade arm: resolves with the trip id once the ride loop posts one.
+pub(crate) async fn wait_trip_cascade() -> u16 {
+    TRIP_CASCADE_REQ.wait().await
+}
+
 /// A locally-finished ride committed its `RD{id}.ORD` (the ride loop drained
 /// [`Storage::take_ride_saved`](crate::sd::Storage::take_ride_saved)). The BLE plane drains this and
 /// runs [`ObjectStore::adopt_saved_rides`] — the `/tracks` rescan + revision bump — so **one edge**
@@ -660,17 +678,10 @@ impl ObjectStore {
     /// so the **trip** store revision + `storeChanged(trip)` move — both edges emitted, as §4.3
     /// requires. A dangling stage id (already-deleted member) is skipped. `true` = the trip was deleted.
     ///
-    /// **TR3-INTEGRATION SEAM.** This is the store-level operation the on-device long-press drives; the
-    /// ride-loop hookup is the explicit TR3 integration point. TR3 adds the app edge (an
-    /// `App::has_trip_delete`/`take_trip_delete` twin of the route/ride delete edges); the ride loop
-    /// then posts the trip id to the BLE plane via a `request_trip_delete` signal (the twin of
-    /// [`request_route_delete`]) whose `wait_trip_delete` arm calls this — mirroring the
-    /// `request_route_delete` → [`delete_route`](Self::delete_route) seam already wired in `ble::run`.
-    /// Until that edge lands, this is reachable from tests / the A9 harness (a member-route delete +
-    /// the trip delete, driven over the wire).
-    // Dormant until the TR3 ride-loop drain posts to it (see the seam note above) — the store
-    // operation lands here in TR4 so TR3 only wires the app edge + the `request_trip_delete` post.
-    #[allow(dead_code)]
+    /// Driven by the ride loop's TR3 drain: `App::take_trip_delete` → [`request_trip_cascade`] →
+    /// the BLE plane's `trip_cascade_task`, mirroring the `request_route_delete` →
+    /// [`delete_route`](Self::delete_route) seam (the map-only build routes through
+    /// [`Storage::delete_trip_cascade_by_id`](crate::sd::Storage::delete_trip_cascade_by_id) instead).
     pub fn delete_trip_cascade(&mut self, shared: &mut SharedStore, id: u16) -> bool {
         let Some(idx) = self.trip_index(id) else { return false };
         // Resolve the member stage ids from the stored trip file before deleting anything.
