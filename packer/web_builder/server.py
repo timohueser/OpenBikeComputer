@@ -20,8 +20,8 @@ USER_CONFIG = os.path.join(PROJECT_ROOT, "user_config.json")
 # palette.json ships with the repo: the device's 64-color gamut offered as the
 # default color picker. Editable, with a generated fallback if it's missing.
 PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
-# Repo copy of obc-pack's embedded config schema — the fallback for /api/schema
-# when the binary isn't built yet.
+# Generated repo copy of obc-pack's config schema — the fallback for /api/schema
+# when the binary isn't built yet. A Rust stale-generation test pins this file.
 SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "firmware", "obc-pack", "schema", "config.schema.json")
 
 app = FastAPI(title="OBCM Web Builder")
