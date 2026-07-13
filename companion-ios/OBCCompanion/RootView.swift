@@ -211,6 +211,10 @@ struct RootView: View {
             fileName: pending.fileName,
             deviceName: mainModel.deviceName,
             noDevicePaired: pending.noDevicePaired,
+            // The optional TR7 "Add to trip" row's picker offers the existing
+            // trips (+ New trip…); a trip is app-local, so it works with no
+            // device paired just the same.
+            tripPickerItems: mainModel.tripPickerItems,
             replacing: pending.replacing,
             // Scope-gated (#769): replace-by-id only when the replaced route's
             // link is valid for the connected device's (serial, epoch).
@@ -220,8 +224,11 @@ struct RootView: View {
             replacingProvenCRC: pending.replacing.flatMap {
                 mainModel.plannedProvenCommittedCRC(for: $0.id)
             },
-            onSave: { detail in
+            onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
+                // File into the chosen trip as its last stage (TR7); `.none`
+                // leaves it loose (the opt-in default).
+                mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 importModel.closeImport()
             },
             // "Uploading saves it too" (B5): the route lands in Planned
@@ -230,16 +237,18 @@ struct RootView: View {
             // after F₂. The link is recorded through `markRouteUploaded` —
             // the model scopes it to the connected device's (serial, epoch)
             // identity (#769); `record(for:)` itself never mints links.
-            onUploaded: { detail, objectID, crc in
+            onUploaded: { detail, tripSelection, objectID, crc in
                 mainModel.addImportedRoute(pending.record(for: detail))
+                mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 if let objectID {
                     mainModel.markRouteUploaded(detail.summary.id, objectID: objectID, crc32: crc)
                 }
             },
             // H4 "Pair a device": save first (a pairing detour must not
             // cost the import), then drop into the D2 scan.
-            onPair: { detail in
+            onPair: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
+                mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 importModel.closeImport()
                 launchModel.startPairing()
             },
@@ -301,7 +310,13 @@ struct RootView: View {
                     // fingerprint it landed under (the badge + in-place replace).
                     onUploaded: { objectID, crc in
                         if let objectID { mainModel.markRouteUploaded(id, objectID: objectID, crc32: crc) }
-                    }
+                    },
+                    // TR7 route menu (detail overflow): Add to trip… on a loose
+                    // route, Move to trip… + Remove from trip on a filed one.
+                    tripPickerItems: mainModel.tripPickerItems,
+                    currentTripID: mainModel.tripContaining(id),
+                    onAddToTrip: { mainModel.fileRoute(id, into: $0) },
+                    onRemoveFromTrip: { mainModel.removeRouteFromTrip(id) }
                 )
             }
         case .ride(let id):

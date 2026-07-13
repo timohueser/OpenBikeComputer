@@ -21,6 +21,10 @@ public struct RouteDetailView: View {
     private let onSaveToPlanned: (() -> Void)?
     private let noDevicePaired: Bool
     private let onPair: (() -> Void)?
+    /// An optional row shown above the imported-dressing actions (E1) — the TR7
+    /// "Add to trip" row the import landing injects; `nil` on E2/E3 and when no
+    /// trip filing is offered.
+    private let importAccessory: AnyView?
 
     @State private var renameShown = false
     @State private var renameDraft = ""
@@ -38,7 +42,8 @@ public struct RouteDetailView: View {
         onRename: ((String) -> Void)? = nil,
         onSaveToPlanned: (() -> Void)? = nil,
         noDevicePaired: Bool = false,
-        onPair: (() -> Void)? = nil
+        onPair: (() -> Void)? = nil,
+        importAccessory: AnyView? = nil
     ) {
         self.model = model
         self.deviceName = deviceName
@@ -48,6 +53,7 @@ public struct RouteDetailView: View {
         self.onSaveToPlanned = onSaveToPlanned
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
+        self.importAccessory = importAccessory
     }
 
     public var body: some View {
@@ -263,7 +269,9 @@ public struct RouteDetailView: View {
                     )
             case .imported where noDevicePaired:
                 // H4 — a share can arrive before pairing: the route still
-                // saves; upload waits until a device exists.
+                // saves; upload waits until a device exists. A trip is app-local,
+                // so the Add-to-trip row works with no device just the same.
+                importAccessory
                 OBCInlineBanner(
                     systemImage: "antenna.radiowaves.left.and.right.slash",
                     title: "No device paired yet.",
@@ -277,6 +285,7 @@ public struct RouteDetailView: View {
                     .buttonStyle(.obcGhost)
                     .accessibilityIdentifier("detail.pairDevice")
             case .imported:
+                importAccessory
                 uploadButton
                 Button("Save to Planned") { onSaveToPlanned?() }
                     .buttonStyle(.obcGhost)
@@ -353,6 +362,9 @@ public struct ImportLandingView: View {
     private let onCancel: () -> Void
     private let noDevicePaired: Bool
     private let onPair: () -> Void
+    /// The TR7 "Add to trip" row, injected above the E1 actions (`nil` = no
+    /// trip filing offered).
+    private let importAccessory: AnyView?
 
     public init(
         model: RouteDetailModel,
@@ -361,7 +373,8 @@ public struct ImportLandingView: View {
         onSave: @escaping () -> Void = {},
         onCancel: @escaping () -> Void = {},
         noDevicePaired: Bool = false,
-        onPair: @escaping () -> Void = {}
+        onPair: @escaping () -> Void = {},
+        importAccessory: AnyView? = nil
     ) {
         self.model = model
         self.deviceName = deviceName
@@ -370,6 +383,7 @@ public struct ImportLandingView: View {
         self.onCancel = onCancel
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
+        self.importAccessory = importAccessory
     }
 
     public var body: some View {
@@ -380,7 +394,8 @@ public struct ImportLandingView: View {
                 onUpload: onUpload,
                 onSaveToPlanned: onSave,
                 noDevicePaired: noDevicePaired,
-                onPair: onPair
+                onPair: onPair,
+                importAccessory: importAccessory
             )
             .navigationTitle("Imported route")
             #if os(iOS)
