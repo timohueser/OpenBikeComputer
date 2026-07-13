@@ -8,7 +8,7 @@ render pipeline, formats, UI) read the docs site:
 in the [repo README](../README.md#repository-layout).
 
 The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
-(`obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
+(`obc-formats`, `obc-ports`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
 (`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
 both simulator hosts share in `obc-host-core`), the map packer (`obc-pack`),
 and the test/host helpers. The
@@ -64,8 +64,8 @@ cargo test -p obc-pack    # just the packer (fixtures under ../packer/tests/corp
 
 ### Render benchmark + pixel-hash tripwire
 
-`obc-bench` renders six fixed scenes (riding / mid / overview × north-up /
-rotated) through the real reader → renderer pipeline over a deterministic
+`obc-bench` renders seven fixed scenes (riding / mid / overview × north-up /
+rotated, plus route) through the real reader → renderer pipeline over a deterministic
 fixture and prints per-stage timings plus a frame hash per scene. CI re-renders
 them and fails if any hash drifts from the committed golden file — timings are
 printed but never gated.
@@ -73,6 +73,7 @@ printed but never gated.
 ```sh
 cargo run -p obc-bench --release                                  # the timing/hash table
 cargo run -p obc-bench --release -- --check obc-bench/hashes.txt  # what CI runs
+cargo run -p obc-bench --release -- --repeat 9                    # stable local timing sample
 ```
 
 A pure refactor must leave the hashes untouched. An **intentional** rendering
@@ -84,6 +85,12 @@ cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt
 
 One-off runs against a real map:
 `cargo run -p obc-bench --release -- --map ../freiburg.obcm --mpp 4 --heading 35`.
+
+The frozen firmware resource numbers, dependency-direction contract, benchmark
+reference host, and repeatable on-device capture procedure live in
+[`ARCHITECTURE_RESOURCE_BASELINE.md`](ARCHITECTURE_RESOURCE_BASELINE.md). Read it
+before approving a resource-baseline change: report-only firmware is diagnostic
+and must never be flashed as the shipping artifact.
 
 ## Format
 

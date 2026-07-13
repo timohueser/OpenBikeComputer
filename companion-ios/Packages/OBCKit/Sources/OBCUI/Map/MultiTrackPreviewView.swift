@@ -114,6 +114,12 @@ public struct MultiTrackPreviewView: View {
                     .stroke(stage.color, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
             }
         }
+        // `initialPosition` is read once per Map identity, so key the identity
+        // on the stage geometry: adding/removing a trip stage re-creates the
+        // (cheap, non-interactive) map and re-fits the viewport — without this
+        // a route added to the trip lay outside the frozen camera until the
+        // next app launch.
+        .id(stages.map(\.coordinates))
         // Light tiles always — the field-guide palette is light throughout (see
         // MapTrackPreviewView).
         .preferredColorScheme(.light)

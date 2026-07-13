@@ -22,6 +22,17 @@ public struct MainScreenView: View {
     private let onOpenTrash: () -> Void
 
     @State private var emptyStatePickerShown = false
+    // Multi-select grouping (TR7): the primary retrofit path — enter Select from
+    // the title bar, tap loose route cards, then Group into trip…. Selection is
+    // Planned-only; entering it swaps the card taps for toggles and shows the
+    // bottom action bar.
+    @State private var isSelecting = false
+    @State private var selectedRouteIDs: Set<RouteID> = []
+    @State private var groupPromptShown = false
+    @State private var groupName = "New trip"
+    /// The loose route whose "Add to trip…" context menu is opening the shared
+    /// picker (TR7) — `nil` when no picker is up.
+    @State private var pickerRequest: RouteTripPickerRequest?
     // Pull-to-reveal search (Mail-style): hidden until the list is tugged
     // down past the threshold; hides again on scroll-up once the query is
     // cleared. `scrollBaseline` is the sentinel row's resting position.
@@ -116,12 +127,32 @@ public struct MainScreenView: View {
             }
 
             OBCLargeTitleBar("Routes") {
-                OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
+                titleActions
             }
 
             list
         }
         .background(OBCTheme.parchment.ignoresSafeArea())
+        // The multi-select action bar (TR7): a bottom Group into trip… primary,
+        // shown only while selecting. Two or more routes make a group.
+        .safeAreaInset(edge: .bottom) { selectionBar }
+        // The name prompt — prefilled "New trip" (nothing fancier, locked).
+        .alert("Name the trip", isPresented: $groupPromptShown) {
+            TextField("Trip name", text: $groupName)
+            Button("Cancel", role: .cancel) {}
+            Button("Create") {
+                model.groupIntoTrip(Array(selectedRouteIDs), name: groupName)
+                exitSelection()
+            }
+        }
+        // The shared trip picker for a loose route's "Add to trip…" context menu.
+        .sheet(item: $pickerRequest) { request in
+            TripPickerSheet(
+                title: "Add to trip",
+                trips: model.tripPickerItems,
+                onPick: { model.fileRoute(request.id, into: $0) }
+            )
+        }
         #if os(iOS)
         // The screen draws its own chrome (top bar + large-title row).
         .toolbar(.hidden, for: .navigationBar)
@@ -132,7 +163,91 @@ public struct MainScreenView: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("main.screen")
+        // Selection is a Planned-tab mode: leaving the tab ends it, so the
+        // Group bar and Cancel never float over the Tracked list.
+        .onChange(of: model.tab) { _, _ in
+            if isSelecting { exitSelection() }
+        }
         .task { model.start() }
+    }
+
+    // MARK: Title actions + selection (TR7)
+
+    /// The large-title trailing controls: Select + import normally; a single
+    /// Cancel while multi-selecting (import is out of the way mid-group). Select
+    /// is Planned-only and hidden with no loose routes to group.
+    @ViewBuilder
+    private var titleActions: some View {
+        if isSelecting {
+            Button("Cancel") { exitSelection() }
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(OBCTheme.tint)
+                .accessibilityIdentifier("main.selectCancel")
+        } else {
+            if model.tab == .planned && looseRouteCount > 0 {
+                Button("Select") {
+                    isSelecting = true
+                    selectedRouteIDs = []
+                }
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(OBCTheme.tint)
+                .accessibilityIdentifier("main.select")
+            }
+            OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
+        }
+    }
+
+    /// The bottom Group into trip… bar, present only while selecting.
+    @ViewBuilder
+    private var selectionBar: some View {
+        if isSelecting {
+            let count = selectedRouteIDs.count
+            Button {
+                groupName = "New trip"
+                groupPromptShown = true
+            } label: {
+                Text(count > 0 ? "Group into trip (\(count))" : "Group into trip")
+            }
+            .buttonStyle(.obcPrimary)
+            .disabled(count < 2)
+            .accessibilityIdentifier("main.groupIntoTrip")
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+            .background(.ultraThinMaterial)
+        }
+    }
+
+    /// Loose (top-level) route cards — what Select can group. Trips aren't
+    /// selectable.
+    private var looseRouteCount: Int {
+        model.plannedItems.reduce(0) { count, item in
+            if case .route = item { return count + 1 }
+            return count
+        }
+    }
+
+    private func toggleSelection(_ id: RouteID) {
+        if selectedRouteIDs.contains(id) {
+            selectedRouteIDs.remove(id)
+        } else {
+            selectedRouteIDs.insert(id)
+        }
+    }
+
+    private func exitSelection() {
+        isSelecting = false
+        selectedRouteIDs = []
+    }
+
+    /// The selection tick over a route card while grouping.
+    private func selectionCheck(on id: RouteID) -> some View {
+        let selected = selectedRouteIDs.contains(id)
+        return Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(selected ? OBCTheme.forest : OBCTheme.inkFaint)
+            .padding(8)
+            .background(selected ? OBCTheme.panel.opacity(0.9) : .clear, in: Circle())
     }
 
     // MARK: List
@@ -313,6 +428,8 @@ public struct MainScreenView: View {
             }
         } else {
             // TR6: trip cards + loose route cards, interleaved by addedAt.
+            // TR7: while selecting, route cards toggle instead of navigating and
+            // trips dim out (a trip isn't a groupable stage).
             ForEach(model.filteredPlannedItems) { item in
                 switch item {
                 case .trip(let trip):
@@ -327,17 +444,51 @@ public struct MainScreenView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .disabled(isSelecting)
+                    .opacity(isSelecting ? 0.4 : 1)
                     .accessibilityIdentifier("main.trip.\(trip.id.rawValue)")
                 case .route(let route, _):
-                    Button {
-                        onSelectRoute(route)
-                    } label: {
-                        RouteCard(route: route, onDevice: model.onDeviceState(route.id))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("main.card.\(route.id.rawValue)")
-                    .obcSwipeToDelete {
-                        model.deleteRoute(route.id)
+                    if isSelecting {
+                        Button {
+                            toggleSelection(route.id)
+                        } label: {
+                            RouteCard(route: route, onDevice: model.onDeviceState(route.id))
+                                .overlay(alignment: .topTrailing) {
+                                    selectionCheck(on: route.id)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("main.card.\(route.id.rawValue)")
+                        .accessibilityAddTraits(
+                            selectedRouteIDs.contains(route.id) ? .isSelected : [])
+                    } else {
+                        Button {
+                            onSelectRoute(route)
+                        } label: {
+                            RouteCard(route: route, onDevice: model.onDeviceState(route.id))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("main.card.\(route.id.rawValue)")
+                        .obcSwipeToDelete {
+                            model.deleteRoute(route.id)
+                        }
+                        // Clip the long-press lift preview to the card's own
+                        // rounded shape — without this the system snapshots the
+                        // whole rectangular row and the card floats on a stark
+                        // white slab. (iOS-only kind; macOS is the test host.)
+                        #if os(iOS)
+                        .contentShape(
+                            .contextMenuPreview,
+                            RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
+                        )
+                        #endif
+                        .contextMenu {
+                            Button {
+                                pickerRequest = RouteTripPickerRequest(id: route.id)
+                            } label: {
+                                Label("Add to trip…", systemImage: "folder.badge.plus")
+                            }
+                        }
                     }
                 }
             }
@@ -422,6 +573,12 @@ public struct MainScreenView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 40)
     }
+}
+
+/// A loose route whose "Add to trip…" context menu is presenting the shared
+/// picker (TR7) — the `Identifiable` handle a `.sheet(item:)` needs.
+private struct RouteTripPickerRequest: Identifiable {
+    let id: RouteID
 }
 
 #if DEBUG

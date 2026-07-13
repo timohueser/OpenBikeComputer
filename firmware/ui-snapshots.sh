@@ -44,11 +44,20 @@ TRACKS="$(mktemp -d)"
 # A scratch routes dir for the create-route sweep below — the router writes its reserved
 # `_nav.obcr` there instead of littering a `routes/` in the working directory.
 NAVDIR="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR"' EXIT
+# A routes dir with a trip folder (epic #526, TR3): the two protocol-vectors routes + the sim crate's
+# grimsel-climb, named so their sorted-scan ids are 0/1/2, plus the committed `TP1.OBT` ("Alpen
+# Traverse", stages [0, 1, 99]) — so the top level shows one folder grouping ids 0+1 (its two vector
+# routes, the 99 dangling) above the loose grimsel route (id 2), and drilling in lists the two stages.
+TRIPDIR="$(mktemp -d)"
+trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR"' EXIT
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc status=none
 printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
+cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
+cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
+cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
+cp "$repo_root/firmware/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
@@ -61,6 +70,15 @@ printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
 # The Route list: arrow-less, column-aligned two-line rows (distance under the name, the climb group
 # at a fixed second column) with no footer — hold-to-delete moved to the Route overview (T3, #681).
 "$SIM" "$MAP" --boot --script "p p"          --routes-dir "$ROUTES" --png "$OUT/routemenu.png"
+# The Route menu with a trip folder (epic #526, TR3): the `--routes-dir` staged with `TP1.OBT` +
+# routes, so the top level shows the "Alpen Traverse" folder row (folder glyph + name + `N routes` +
+# summed km/climb) above the loose grimsel route. `p p p` then drills into the folder — the stage
+# list, the trip's member routes as standard route rows under the trip's own name as the title.
+"$SIM" "$MAP" --boot --script "p p"   --routes-dir "$TRIPDIR" --png "$OUT/routemenu-trips.png"
+"$SIM" "$MAP" --boot --script "p p p" --routes-dir "$TRIPDIR" --png "$OUT/trip-stage-list.png"
+# The trip cascade-delete confirm (TR3): long-press the folder (`h` fires the completed hold) → the
+# warning-red hold-guarded "Delete all" + "Cancel" card, naming the trip. Entry selects Cancel.
+"$SIM" "$MAP" --boot --script "p p h" --routes-dir "$TRIPDIR" --png "$OUT/trip-delete-confirm.png"
 "$SIM" "$MAP" --boot --battery 45 --script "B w"          --png "$OUT/menu.png"
 # Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
 # over the olive `D MON · distance` line — the fixture pins both sync states: RD0 (synced via the
@@ -272,7 +290,7 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # base riding view for the Climb screen; it isn't reachable by gesture until C5 wires the Back-cycle,
 # so this debug seam opens it. Staged in a temp routes dir (the fixture lives in the sim crate's
 # assets, not protocol-vectors).
-CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$CLIMBROUTES"' EXIT
+CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$CLIMBROUTES"' EXIT
 cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
@@ -366,6 +384,9 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p"      --png "$OUT/map-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --png "$OUT/routeoverview-$lang.png"
+    # The trip cascade-delete confirm (epic #526, TR3), per-language — the wrapped warning line + the
+    # shortened "Delete all" button are the copy to eyeball for clipping in the longer translations.
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$TRIPDIR" --script "p p h" --png "$OUT/trip-delete-confirm-$lang.png"
     # The received-route card family (#682): the idle card's View route / Dismiss rows, and the
     # mid-ride swap + ROUTE ACTIVE cards' Swap / Finish & new / Cancel rows — eyeball each for a
     # clipped option row now that the copy is per-language.
@@ -397,4 +418,4 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 150 screens rendered into $OUT/"
+echo "ui-snapshots: 156 screens rendered into $OUT/"

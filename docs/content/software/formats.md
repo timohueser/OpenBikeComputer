@@ -7,7 +7,7 @@ description: OBCM maps and OBCR routes — the binary, table-driven formats a mi
 
 The device reads two kinds of file: an **OBCM** map and an **OBCR** route. Both are binary, and both exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws.
 
-This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:OBCM_Spec.md) and [`OBCR_Spec.md`](src:OBCR_Spec.md) — so here we focus on *why* the bytes are shaped the way they are.
+This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:OBCM_Spec.md) and [`OBCR_Spec.md`](src:OBCR_Spec.md) — so here we focus on *why* the bytes are shaped the way they are. Those root specifications remain the normative contracts; the dependency-free [`obc-formats`](src:firmware/obc-formats) crate is the code authority beneath them for version numbers, fixed record lengths, flags, sentinels, endian primitives, and the shared byte-I/O seam. Parsing, caching, conversion, and file assembly stay in the reader, route, and packer crates.
 
 ## Two binaries, one philosophy
 
@@ -60,7 +60,7 @@ Four principles run through both formats:
 - **Binary and table-driven.** Numbers, not text. Colours and widths live in a small style table the map references by id; geometry is raw integers. Nothing is parsed from strings at read time.
 - **Integer microdegrees.** Every coordinate is an `i32` in millionths of a degree. There are no floats on disk and no projection baked in — turning ground coordinates into pixels is the [renderer's](../rendering/) job, not the file's.
 - **No runtime discovery.** Every section is reached through an explicit byte offset, and every count is stored. A `no_std` reader does *zero* traversal or sizing work to understand the file's structure — it reads a header and jumps.
-- **Streamed, never resident.** Both files are read through a [`ByteSource`](src:firmware/obc-reader/src/byte_io.rs) a piece at a time, so a map far larger than RAM — or a route hundreds of kilometres long — never has to fit in memory at once.
+- **Streamed, never resident.** Both files are read through a [`ByteSource`](src:firmware/obc-formats/src/io.rs) a piece at a time, so a map far larger than RAM — or a route hundreds of kilometres long — never has to fit in memory at once.
 
 Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route is a 1-D path indexed by a flat list. Everything below follows from that.
 
@@ -140,7 +140,7 @@ Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Because the in
 The 40-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (9), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
+<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (10), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
   <text class="d-tag" x="20" y="24">The 40-byte header, byte by byte</text>
 
   <!-- field names -->
@@ -181,7 +181,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
   </g>
   <!-- value + byte ranges -->
   <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">9</text>
+  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">10</text>
   <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
   <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
   <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
@@ -860,7 +860,7 @@ The exhaustive byte tables — every header and point field in both versions —
 
 ## Streaming: resident vs on-demand
 
-Both formats are read through one trait. Neither reader touches a filesystem directly — they ask a [`ByteSource`](src:firmware/obc-reader/src/byte_io.rs) for bytes at an offset:
+Both formats are read through one trait. Neither reader touches a filesystem directly — they ask a [`ByteSource`](src:firmware/obc-formats/src/io.rs) for bytes at an offset:
 
 ```rust
 pub trait ByteSource {
@@ -919,7 +919,7 @@ The map's caches matter because the [priority multi-pass](../rendering/#4-decode
 - The canonical POI category/subtype table (shared by reader + packer): [`obc-reader/src/poi_table.rs`](src:firmware/obc-reader/src/poi_table.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs)
 - The recorded-track log + its GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec + the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
-- The shared byte seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
+- Normative constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 
 Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).

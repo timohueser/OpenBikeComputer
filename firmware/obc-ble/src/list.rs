@@ -11,6 +11,8 @@ use crate::descriptor::DescriptorError;
 const ROUTE_ENTRY_LEN: usize = 76;
 /// `rideList` entry size — unchanged from v1.
 const RIDE_ENTRY_LEN: usize = 72;
+/// `tripList` entry size (spec §7.4) — mirrors `routeList` (76 bytes, same trailing content `crc32`).
+const TRIP_ENTRY_LEN: usize = 76;
 
 /// The smallest entry length any list type uses (`rideList` at [`RideListEntry::ENTRY_LEN`]) — the
 /// header decoder's floor sanity-check. A future entry growth appends fields and bumps the header's
@@ -241,6 +243,87 @@ impl<'a> RideListEntry<'a> {
             avg_speed_cms: u16::from_le_bytes([data[20], data[21]]),
             climb_m: u16::from_le_bytes([data[22], data[23]]),
             name: &data[25..25 + name_len],
+        })
+    }
+}
+
+/// One `tripList` entry — from the stored trip object (§7.7). **76 bytes**, mirroring
+/// [`RouteListEntry`]: the same trailing whole-object `crc32`, so the app's identity /
+/// outdated-copy machinery works on trips exactly as on routes (a stage reorder changes neither
+/// `byte_len` nor `name`, so only the `crc32` reveals it).
+///
+/// ```text
+///   object_id         u16
+///   reserved          u16  = 0
+///   byte_len          u32  stored trip file size
+///   total_distance_m  u32  summed over resolvable stages (device-computed)
+///   total_ascent_m    u32  summed over resolvable stages
+///   stage_count       u16  as stored (incl. dangling refs)
+///   reserved          u16  = 0
+///   name_len          u8   ≤ 48
+///   name              char[48]  UTF-8, zero-padded
+///   reserved          u8[3]  = 0
+///   crc32             u32  whole-object CRC-32 of the stored trip bytes · 0 = unknown
+/// ```
+///
+/// `total_*` are summed over the trip's **resolvable** stages (a dangling ref contributes nothing),
+/// while `stage_count` counts every stored stage — so `stage_count` can exceed the number the totals
+/// drew from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TripListEntry<'a> {
+    pub object_id: u16,
+    pub byte_len: u32,
+    pub total_distance_m: u32,
+    pub total_ascent_m: u32,
+    pub stage_count: u16,
+    /// UTF-8, ≤ [`TripListEntry::MAX_NAME`] bytes (the trip-object name cap); over-long input is
+    /// truncated at encode.
+    pub name: &'a [u8],
+    /// Whole-object CRC-32/IEEE of the stored trip bytes — the content fingerprint. `0` = unknown
+    /// (a side-loaded trip not yet fingerprinted; the device fills it lazily at first list build).
+    pub crc32: u32,
+}
+
+impl<'a> TripListEntry<'a> {
+    /// The name cap (matches the trip object's name field).
+    pub const MAX_NAME: usize = 48;
+    /// This entry's on-wire size (spec §7.4). Carried in the list header's `entry_len`.
+    pub const ENTRY_LEN: usize = TRIP_ENTRY_LEN;
+    /// Sentinel for an unknown content CRC (side-loaded trip not yet fingerprinted).
+    pub const CRC_UNKNOWN: u32 = 0;
+
+    pub fn encode(&self) -> [u8; TRIP_ENTRY_LEN] {
+        let mut b = [0u8; TRIP_ENTRY_LEN];
+        b[0..2].copy_from_slice(&self.object_id.to_le_bytes());
+        // b[2..4] reserved = 0.
+        b[4..8].copy_from_slice(&self.byte_len.to_le_bytes());
+        b[8..12].copy_from_slice(&self.total_distance_m.to_le_bytes());
+        b[12..16].copy_from_slice(&self.total_ascent_m.to_le_bytes());
+        b[16..18].copy_from_slice(&self.stage_count.to_le_bytes());
+        // b[18..20] reserved = 0.
+        let n = self.name.len().min(Self::MAX_NAME);
+        b[20] = n as u8;
+        b[21..21 + n].copy_from_slice(&self.name[..n]);
+        // b[21 + n .. 69] zero padding; b[69..72] reserved = 0.
+        b[72..76].copy_from_slice(&self.crc32.to_le_bytes());
+        b
+    }
+
+    /// Decode one entry from the first [`ENTRY_LEN`](Self::ENTRY_LEN) bytes of a slot — a longer
+    /// future entry's tail is ignored.
+    pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
+        if data.len() < Self::ENTRY_LEN {
+            return Err(DescriptorError::Truncated);
+        }
+        let name_len = (data[20] as usize).min(Self::MAX_NAME);
+        Ok(Self {
+            object_id: u16::from_le_bytes([data[0], data[1]]),
+            byte_len: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            total_distance_m: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+            total_ascent_m: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+            stage_count: u16::from_le_bytes([data[16], data[17]]),
+            name: &data[21..21 + name_len],
+            crc32: u32::from_le_bytes([data[72], data[73], data[74], data[75]]),
         })
     }
 }

@@ -149,11 +149,11 @@ const L2CAP_RXQ: u8 = 3;
 /// **CONFIRM on glass**: the boot RTT logs `ble: sdc required_memory = N bytes (SDC_MEM_SIZE =
 /// 8704)` — set this to that `N` (rounded up a little). If `build()` ever logs "Memory buffer too
 /// small. N bytes needed", raise it to `N`.
-const SDC_MEM_SIZE: usize = 8704;
+pub(crate) const SDC_MEM_SIZE: usize = 8704;
 
 /// TrouBLE's host arena for this config (connection state + the DefaultPacketPool at MTU 251 + the
 /// single-peer bond storage the `security` feature adds).
-type Resources = HostResources<
+pub(crate) type Resources = HostResources<
     nrf_sdc::SoftdeviceController<'static>,
     DefaultPacketPool,
     CONNECTIONS_MAX,
@@ -178,15 +178,24 @@ type Resources = HostResources<
 /// central-role + scan buffers via [`CONNECTIONS_MAX`]/[`L2CAP_CHANNELS_MAX`]/[`SDC_MEM_SIZE`]; this
 /// is the manager's plain `.bss` state on top. The transient `GattClient` + its 512 B `Notification`
 /// live in `run`'s task future per the #677 rule (bounded, not resident — re-measured on glass).
-pub const RESIDENT_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLayer<'static>>()
+pub(crate) const MPSL_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLayer<'static>>();
+pub(crate) const HOST_RESOURCES_BYTES: usize = core::mem::size_of::<Resources>();
+pub(crate) const PACKET_POOL_BYTES: usize = core::mem::size_of::<DefaultPacketPool>();
+pub(crate) const CRACEN_BYTES: usize = core::mem::size_of::<cracen::Cracen<'static, Blocking>>();
+pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<core::cell::RefCell<ObjectStore>>();
+pub(crate) const SERVER_BYTES: usize = core::mem::size_of::<Server<'static>>();
+pub(crate) const GAP_NAME_BYTES: usize = core::mem::size_of::<heapless::String<48>>();
+pub(crate) const SENSOR_MANAGER_BYTES: usize = sensors::RESIDENT_BYTES;
+
+pub const RESIDENT_BYTES: usize = MPSL_BYTES
     + SDC_MEM_SIZE
-    + core::mem::size_of::<Resources>()
-    + core::mem::size_of::<DefaultPacketPool>()
-    + core::mem::size_of::<cracen::Cracen<'static, Blocking>>()
-    + core::mem::size_of::<core::cell::RefCell<ObjectStore>>()
-    + core::mem::size_of::<Server<'static>>()
-    + core::mem::size_of::<heapless::String<48>>()
-    + sensors::RESIDENT_BYTES;
+    + HOST_RESOURCES_BYTES
+    + PACKET_POOL_BYTES
+    + CRACEN_BYTES
+    + OBJECT_STORE_BYTES
+    + SERVER_BYTES
+    + GAP_NAME_BYTES
+    + SENSOR_MANAGER_BYTES;
 
 // The resident statics (see the module doc): written exactly once in [`run`], never aliased.
 static mut MPSL: MaybeUninit<MultiprotocolServiceLayer<'static>> = MaybeUninit::uninit();
@@ -470,7 +479,9 @@ pub async fn run(
         sensors::run(stack, server),
         join5(
             host_task(runner),
-            route_delete_task(stack, server, store, shared),
+            // The trip cascade rides the route-delete slot (`join5` is embassy's ceiling): both are
+            // rare, signal-driven arms, so sharing a slot costs nothing.
+            join(route_delete_task(stack, server, store, shared), trip_cascade_task(stack, server, store, shared)),
             ride_delete_task(stack, server, store, shared),
             ride_saved_task(stack, server, store, shared),
             async {
@@ -704,6 +715,37 @@ async fn route_delete_task(
             data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
         } else {
             warn!("ble: [delete] on-device delete of route object {} found nothing", id);
+        }
+    }
+}
+
+/// Drain on-device trip **cascade**-delete requests (epic #526, TR3/TR4) for the whole `ble::run`
+/// lifetime — the trip sibling of [`route_delete_task`]. The Route menu's long-press → confirm posts
+/// the trip's durable id ([`request_trip_cascade`](crate::object_store::request_trip_cascade)); this
+/// executes [`ObjectStore::delete_trip_cascade`] — each member route through `delete_route`, then the
+/// trip object — and notifies **both** `storeChanged` edges (§4.3): the member deletes moved the
+/// route store, the trip delete its own store. The same borrow discipline as the route arm: the
+/// `RefCell` borrow ends before any `await`.
+async fn trip_cascade_task(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &core::cell::RefCell<ObjectStore>,
+    shared: &'static SharedStoreMutex,
+) -> ! {
+    loop {
+        let id = crate::object_store::wait_trip_cascade().await;
+        let deleted = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().delete_trip_cascade(&mut guard, id)
+        };
+        if deleted {
+            info!("ble: [delete] on-device cascade delete of trip object {}", id);
+            // Both edges (§4.3): member routes moved the route store, the trip its own. Harmless
+            // no-ops when disconnected; the revision bumps carry the change to the next connect.
+            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
+            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Trip).await;
+        } else {
+            warn!("ble: [delete] on-device cascade delete of trip object {} found nothing", id);
         }
     }
 }

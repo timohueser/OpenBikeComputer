@@ -14,8 +14,8 @@ public enum ObjectType: UInt8, Equatable, Sendable, CaseIterable {
     case routeList = 6
     case rideList = 7
     case echo = 8  // dev/test loopback (A5)
-    case trip = 9  // trip object v1 (§7.7) — a named group of route ids
-    case tripList = 10  // list object (§7.4)
+    case trip = 9  // TR1 (#650): the trip metadata object (spec §7.7)
+    case tripList = 10  // TR1 (#650): the device's trip catalog (spec §7.4)
 }
 
 /// **Control-plane** descriptor written to the `transferControl` characteristic —

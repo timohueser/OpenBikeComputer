@@ -48,6 +48,7 @@ mod route_received;
 mod route_swap;
 mod settings;
 mod statistics;
+mod trip_delete;
 mod warning;
 
 pub use climb::ClimbScreen;
@@ -78,6 +79,7 @@ pub use settings::{
     UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
+pub use trip_delete::TripDeleteScreen;
 pub use warning::{WarningFlags, WarningScreen};
 
 /// Maximum overlay depth. Sized with headroom; the real flow never nests more than a few deep.
@@ -148,6 +150,10 @@ pub struct Ctx<'a> {
     /// The resident ride catalog (read-only here) — the Rides screen lists it and its hold-to-delete
     /// footer records a delete by index against it (epic #447, P7).
     pub rides: &'a [RideSummary],
+    /// The resident trip catalog (epic #526, TR3) — the grouped-route folders. The Route menu's top
+    /// level lists these above the unfiled routes and its long-press → confirm dialog cascade-deletes
+    /// one; every other screen leaves it untouched.
+    pub trips: &'a [crate::trip::TripSummary],
     /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen cycles
     /// [`Settings::bike_profile_idx`](crate::Settings) within [`NavProfiles::len`](crate::NavProfiles).
     /// Empty before a map load / on a router-less image (the setting then cycles nowhere, inert).
@@ -198,6 +204,10 @@ pub struct Render<'a, 'd> {
     /// The resident ride catalog (read-only) — the Rides screen draws its two-line rows + the
     /// hold-to-delete footer from it (epic #447, P7).
     pub rides: &'a [RideSummary],
+    /// The resident trip catalog (epic #526, TR3) — the grouped-route folders. The Route menu draws
+    /// its folder rows above the unfiled routes and, scoped to one trip, its member routes' stage
+    /// list; every other screen leaves it untouched.
+    pub trips: &'a [crate::trip::TripSummary],
     /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen draws
     /// the selected profile's name (a stale index renders profile 0's — the router's fallback) and the created-route
     /// overview labels itself with it. Resident in the App because these frames draw without a
@@ -439,6 +449,11 @@ screens! {
     /// route here." / "Couldn't find a route."), info-only — any press/Back returns to the detail.
     NavFail(NavFailScreen) => Nav,
     RouteMenu(RouteMenuScreen) => Nav,
+    /// The trip cascade-delete confirm dialog (epic #526, TR3): reached by long-pressing a trip
+    /// folder row in the Route menu's top level. A warning-red hold-guarded Delete row + a Cancel
+    /// row; a completed hold records the trip's durable id for the host to cascade-delete (trip +
+    /// member routes).
+    TripDelete(TripDeleteScreen) => Nav,
     /// The Rides screen (Menu → Rides): the stored-rides list — name + sync glyph over an olive
     /// `D MON · distance` line; press opens the Ride detail. Epic #447 P7 (#454), rows
     /// redesigned by #680.
@@ -543,6 +558,7 @@ impl Screen {
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(activity, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
+            Screen::TripDelete(s) => s.selection_is_guarded(),
             _ => false,
         }
     }

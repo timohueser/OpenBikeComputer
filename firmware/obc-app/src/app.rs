@@ -1653,24 +1653,28 @@ impl App {
             self.activity.next_waypoint = None;
         }
 
-        // Every screen on the stack that holds a catalog index.
+        // Trips resolve stage *ids* into catalog indices, so a catalog replacement re-points them: a
+        // route that appeared re-files, one that vanished dangles (dropped from the resolved list,
+        // its stats no longer summed). Re-resolve from each trip's verbatim `stage_ids` (epic #526)
+        // **before** the stack walk below, so the Route menu's remap sees the regrouped folders.
+        for t in self.trips.iter_mut() {
+            t.reresolve(&self.catalog, &self.catalog_ids);
+        }
+
+        // Every screen on the stack that holds a catalog index. The Route menu also takes the
+        // re-resolved trips + the new route count so it can follow its highlight into the regrouped
+        // (folders + unfiled routes) list.
         let new_len = new_ids.len();
+        let trips = &self.trips;
         for s in self.stack.iter_mut() {
             match s {
-                Screen::RouteMenu(m) => m.remap_routes(&remap, new_len),
+                Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len),
                 Screen::RouteOverview(o) => o.remap_routes(&remap),
                 Screen::RouteSwap(sw) => sw.remap_routes(&remap),
                 Screen::RouteReceived(rc) => rc.remap_routes(&remap),
                 Screen::RouteUpdated(ru) => ru.remap_routes(&remap),
                 _ => {}
             }
-        }
-
-        // Trips resolve stage *ids* into catalog indices, so a catalog replacement re-points them: a
-        // route that appeared re-files, one that vanished dangles (dropped from the resolved list,
-        // its stats no longer summed). Re-resolve from each trip's verbatim `stage_ids` (epic #526).
-        for t in self.trips.iter_mut() {
-            t.reresolve(&self.catalog, &self.catalog_ids);
         }
     }
 
@@ -1737,6 +1741,28 @@ impl App {
     /// [`Activity::has_track_action`](crate::Activity::has_track_action)).
     pub fn has_route_delete(&self) -> bool {
         self.activity.has_route_delete()
+    }
+
+    /// Drain the Route menu's pending **trip cascade-delete** request (epic #526, TR3), the trip's
+    /// durable **object id**. The host calls this once per pass; a `Some(id)` is its cue to delete
+    /// the trip object (`TP{id}.OBT` on the board / sim) **and every member route** it references,
+    /// then rescan + re-feed the route and trip catalogs — the folder disappears and its routes are
+    /// gone (locked: the on-device delete cascades — it's post-trip cleanup).
+    ///
+    /// Unlike [`take_route_delete`](App::take_route_delete) the request is already the durable id (the
+    /// confirm screen carries a trip's own counter id, not a menu index), so no catalog translation is
+    /// needed and a rescan racing the confirm is harmless — a vanished trip's id resolves to nothing
+    /// at the host. The host owns the member-route resolution (its trip store still holds the stage
+    /// ids), mirroring how it owns the file I/O for [`take_route_delete`](App::take_route_delete).
+    pub fn take_trip_delete(&mut self) -> Option<u16> {
+        self.activity.take_trip_delete()
+    }
+
+    /// Non-consuming peek at whether a trip-delete request is pending — lets the board gate its
+    /// per-pass store work on actual change without draining the one-shot (mirrors
+    /// [`has_route_delete`](App::has_route_delete)).
+    pub fn has_trip_delete(&self) -> bool {
+        self.activity.has_trip_delete()
     }
 
     /// Replace the resident **ride** catalog from the host's store (epic #447, P7), carrying each
@@ -2818,6 +2844,7 @@ impl App {
             settings,
             catalog,
             ride_catalog,
+            trips,
             nav_profiles,
             stack,
             now_ms,
@@ -2831,6 +2858,7 @@ impl App {
             settings,
             routes: catalog.as_slice(),
             rides: ride_catalog.as_slice(),
+            trips: trips.as_slice(),
             nav_profiles,
             poi_scratch,
             sensor_scan_hits: sensor_scan_hits.as_slice(),
@@ -3174,6 +3202,7 @@ impl App {
             settings,
             catalog,
             ride_catalog,
+            trips,
             nav_profiles,
             renderer,
             stack,
@@ -3218,6 +3247,7 @@ impl App {
             settings,
             routes: catalog.as_slice(),
             rides: ride_catalog.as_slice(),
+            trips: trips.as_slice(),
             nav_profiles,
             route,
             profile: profile.as_ref(),
