@@ -164,15 +164,18 @@ deterministic CI gate.
 
 ## Dependency-direction baseline
 
-`tools/dependency_rules.json` groups the workspace into foundation, core, app,
-platform, and host layers. Production normal/build edges may not point upward;
-development-only fixture edges are ignored. New workspace packages fail until
-classified exactly once, and disappeared exceptions fail as stale. FAR-00 has
-one named exception: `obc-platform -> obc-app`, owned by #797.
+`tools/dependency_rules.json` groups the production packages into foundation,
+core, app, platform, and host layers. Production normal/build edges may not
+point upward; development-only fixture edges are ignored. New packages fail
+until classified exactly once, and disappeared exceptions fail as stale. The
+current graph has 58 production local edges and zero exceptions:
+`obc-platform -> obc-app` was removed by #797, and platform adapters now import
+their semantic contracts directly from `obc-ports`.
 
-The checker covers the `firmware/Cargo.toml` workspace. The excluded
-`obc-fw-nrf54l` composition root and `obc-boot` boot root are independently
-built/linted in CI and are intentionally outside this workspace-layer graph.
+The checker covers the `firmware/Cargo.toml` workspace plus the standalone
+manifests for the excluded `obc-fw-nrf54l` composition root and `obc-boot` boot
+root. Their production edges therefore participate in the same layer graph even
+though both crates remain independently built and linted in CI.
 
 The strict-alignment guard first parses both excluded Cargo configs and requires
 their embedded-target rustflags to select `+strict-align`. Its backend probe is
