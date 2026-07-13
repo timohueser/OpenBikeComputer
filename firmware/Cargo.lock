@@ -2349,6 +2349,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-route",
@@ -2431,6 +2432,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-ports"
+version = "0.1.0"
+
+[[package]]
 name = "obc-reader"
 version = "0.1.0"
 dependencies = [
@@ -2466,6 +2471,7 @@ dependencies = [
  "libm",
  "obc-formats",
  "obc-pack",
+ "obc-ports",
  "obc-reader",
 ]
 

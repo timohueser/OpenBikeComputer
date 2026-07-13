@@ -44,10 +44,11 @@ def workspace_packages(metadata: dict[str, object]) -> set[str]:
     return {package["name"] for package in packages}
 
 
-def local_edges(metadata: dict[str, object]) -> set[Edge]:
+def local_edges(metadata: dict[str, object], local_names: set[str] | None = None) -> set[Edge]:
     members = set(metadata.get("workspace_members", ()))
     packages = [package for package in metadata.get("packages", ()) if package["id"] in members]
-    local_names = {package["name"] for package in packages}
+    if local_names is None:
+        local_names = {package["name"] for package in packages}
     edges: set[Edge] = set()
     for package in packages:
         for dependency in package.get("dependencies", ()):
@@ -58,6 +59,23 @@ def local_edges(metadata: dict[str, object]) -> set[Edge]:
             if target in local_names:
                 edges.add(Edge(package["name"], target))
     return edges
+
+
+def dependency_graph(metadatas: list[dict[str, object]]) -> tuple[set[str], set[Edge]]:
+    """Combine workspace and standalone metadata into one production package graph."""
+    packages = set().union(*(workspace_packages(metadata) for metadata in metadatas))
+    edges = set().union(*(local_edges(metadata, packages) for metadata in metadatas))
+    return packages, edges
+
+
+def metadata_manifests(primary: Path, rules: dict[str, object]) -> list[Path]:
+    """Resolve every Cargo root that participates in the production graph."""
+    manifests = [primary]
+    for relative in rules.get("standalone_manifests", ()):
+        manifest = primary.parent / relative
+        if manifest not in manifests:
+            manifests.append(manifest)
+    return manifests
 
 
 def group_index(rules: dict[str, object]) -> dict[str, str]:
@@ -118,7 +136,7 @@ def check_edges(edges: set[Edge], rules: dict[str, object], packages: set[str] |
         unclassified = sorted(packages - groups.keys())
         if unclassified:
             violations.append(
-                "unclassified production workspace package(s): "
+                "unclassified production package(s): "
                 + ", ".join(f"`{package}`" for package in unclassified)
                 + "; add each package to exactly one dependency group before merging"
             )
@@ -190,16 +208,15 @@ def main() -> int:
         rules = load_json(args.rules)
         if rules.get("schema_version") != 1:
             raise DependencyError("unsupported dependency rule schema; expected schema_version 1")
-        metadata = cargo_metadata(args.manifest_path)
-        packages = workspace_packages(metadata)
-        edges = local_edges(metadata)
+        metadatas = [cargo_metadata(manifest) for manifest in metadata_manifests(args.manifest_path, rules)]
+        packages, edges = dependency_graph(metadatas)
         violations = check_edges(edges, rules, packages)
         if violations:
             raise DependencyError("\n".join(violations))
     except (DependencyError, json.JSONDecodeError, KeyError, TypeError) as error:
         print(f"dependency check failed: {error}", file=sys.stderr)
         return 1
-    print(f"dependency direction check passed ({len(edges)} production workspace edges)")
+    print(f"dependency direction check passed ({len(edges)} production local edges)")
     return 0
 
 

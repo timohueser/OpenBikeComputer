@@ -13,33 +13,9 @@
 use core::fmt::Write;
 
 use heapless::String;
+pub use obc_ports::TrackPoint;
 
 use crate::byte_io::{ByteSink, ByteSource, Error};
-
-/// One recorded fix: position (microdegrees), barometric elevation (m), a millisecond
-/// timestamp, whether it begins a new track segment (after a pause or a GPS gap), and the
-/// BLE-sensor values stamped onto it (heart rate / cadence / power — `None` when the sensor
-/// was absent or its last sample was stale, epic #707).
-///
-/// `t_ms` is stored for a future wall-clock but **not yet emitted** into the GPX `<time>` —
-/// the device has no date/time source, so writing one now would be a fabricated timestamp.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TrackPoint {
-    pub lon: i32,
-    pub lat: i32,
-    pub ele: i16,
-    pub t_ms: u32,
-    /// `true` on the first point of a new `<trkseg>` (start of ride, or first fix after a
-    /// pause / dropout). Drives segment splitting in [`track_to_gpx`].
-    pub segment_start: bool,
-    /// Heart rate (bpm) at this fix, or `None` when no strap was reporting fresh data. Encodes
-    /// as [`TRACK_HR_NONE`].
-    pub hr: Option<u8>,
-    /// Crank cadence (rpm) at this fix, or `None` when absent/stale. Encodes as [`TRACK_CAD_NONE`].
-    pub cadence: Option<u8>,
-    /// Power (W) at this fix, or `None` when absent/stale. Encodes as [`TRACK_PWR_NONE`].
-    pub power: Option<u16>,
-}
 
 // Compatibility paths for the normative track record size and sentinels now owned by
 // `obc-formats`; the encoder/decoder and streaming conversion remain in this crate.
