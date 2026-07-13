@@ -61,11 +61,12 @@ pub use hours::{
 };
 pub use poi_table::{category_of, label_of, subtype_row, PoiCategory, PoiSubtype, SUBTYPES};
 pub use reader::{
-    read_header, CacheStats, FeatureRef, Kind, Lod, MapCache, MapHeader, MapProfile, MapTables, NavCacheStats,
-    NavDirectory, NavNeighbor, NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, Style, HEADER_LEN,
-    MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN,
-    NAV_MAX_CHUNK_BYTES, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
-    NAV_TILE_SLOTS, POI_HOURS_BLOB_LEN, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
+    read_header, CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef,
+    Kind, Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavNeighbor,
+    NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS,
+    MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_CHUNK_BYTES, NAV_MAX_PROFILES,
+    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, NAV_TILE_SLOTS, POI_HOURS_BLOB_LEN,
+    POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
 };
 
 /// Meters of ground per degree of latitude (and of longitude at the equator) — the
@@ -79,6 +80,10 @@ pub enum Error {
     BadMagic,
     BadVersion,
     BadOffset,
+    /// The requested bytes were validly addressed, but the backing medium failed.
+    Source(obc_formats::io::Error),
+    /// A safe cache-backed call was re-entered while the cache was already borrowed.
+    CacheBusy,
 }
 
 /// Axis-aligned bounding box in microdegrees.

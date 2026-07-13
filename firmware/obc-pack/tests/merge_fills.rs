@@ -48,7 +48,7 @@ fn decode_stats(bytes: &[u8]) -> (usize, usize) {
     let tables = MapTables::parse(&src).expect("parse tables");
     let r = Reader::new(&src, &tables, &cache);
     let mut chunks = Vec::new();
-    r.for_each_chunk(0, &r.bbox, |cid, node| chunks.push((cid, node)));
+    r.for_each_chunk(0, &r.bbox, |cid, node| chunks.push((cid, node))).unwrap();
     let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
     let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
     let (mut nfeat, mut nverts) = (0, 0);
@@ -56,7 +56,8 @@ fn decode_stats(bytes: &[u8]) -> (usize, usize) {
         r.for_each_feature(0, cid, &node, &mut points, &mut ring_lens, |f| {
             nfeat += 1;
             nverts += f.exterior().len() + f.interiors().map(|h| h.len()).sum::<usize>();
-        });
+        })
+        .unwrap();
     }
     (nfeat, nverts)
 }

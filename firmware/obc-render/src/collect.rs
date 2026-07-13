@@ -26,7 +26,7 @@
 
 use heapless::Vec;
 
-use obc_reader::{BBox, Kind, Reader};
+use obc_reader::{BBox, CacheError, FeatureDecodeError, FeatureReadError, Kind, MapReadError, Reader};
 
 use crate::{RenderStats, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, MAX_FRAME_RINGS, MAX_SPANS};
 
@@ -69,10 +69,10 @@ impl FrameScratch {
 
         let candidates = self.collect_stubs(reader, lod, view, &vis_mask, stats);
         let winners = self.select(reader);
-        self.decode_winners(reader, lod, view, winners, stats);
+        let drawn = self.decode_winners(reader, lod, view, winners, stats);
 
         self.spans_len = winners;
-        stats.features_drawn = winners;
+        stats.features_drawn = drawn;
         // Every candidate that passed the cull is either drawn or dropped (evicted in pass A or cut
         // by the point/ring budget in select). Culled features count in `features_tried`, not here —
         // matching the old collector, so `drawn + dropped == tried` holds when nothing is culled.
@@ -127,9 +127,9 @@ impl FrameScratch {
         let mut level_count = [0u16; 4];
         let mut chunks = 0usize;
 
-        reader.for_each_chunk(lod, view, |cid, node| {
+        let walk = reader.for_each_chunk(lod, view, |cid, node| {
             chunks += 1;
-            reader.for_each_feature_filtered(
+            match reader.for_each_feature_filtered(
                 lod,
                 cid,
                 &node,
@@ -194,8 +194,18 @@ impl FrameScratch {
                         stats.stub_evictions += 1;
                     }
                 },
-            );
+            ) {
+                Ok(status) => {
+                    stats.feature_decode_capacity_drops =
+                        stats.feature_decode_capacity_drops.saturating_add(status.capacity_dropped);
+                    stats.malformed_features = stats.malformed_features.saturating_add(status.malformed);
+                }
+                Err(error) => record_read_error(stats, error),
+            }
         });
+        if let Err(error) = walk {
+            record_read_error(stats, error);
+        }
         stats.chunks_visited = chunks;
         candidates
     }
@@ -243,16 +253,24 @@ impl FrameScratch {
     /// re-decode the winners it owns via [`Reader::decode_feature_at`] — consecutive winners in one
     /// chunk hit the resident cache slot, so each winner-owning chunk is fetched once — append their
     /// geometry to the frame buffers, and rewrite each stub slot in place with its final [`Span`].
-    fn decode_winners(&mut self, reader: &Reader, lod: usize, view: &BBox, winners: usize, stats: &mut RenderStats) {
+    fn decode_winners(
+        &mut self,
+        reader: &Reader,
+        lod: usize,
+        view: &BBox,
+        winners: usize,
+        stats: &mut RenderStats,
+    ) -> usize {
         if winners == 0 {
-            return;
+            return 0;
         }
         let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
         // A winner slot, once rewritten to its `Span`, must not be re-read as a stub by a later
         // chunk's scan. `placed` marks the done slots so the scan skips them.
         let mut placed = [0u32; MAX_SPANS.div_ceil(32)];
+        let mut drawn = 0usize;
 
-        reader.for_each_chunk(lod, view, |cid, node| {
+        let walk = reader.for_each_chunk(lod, view, |cid, node| {
             let mut refetched = false;
             for i in 0..winners {
                 if placed[i >> 5] & (1 << (i & 31)) != 0 {
@@ -273,11 +291,12 @@ impl FrameScratch {
                 // the slot becomes a no-draw span, keeping the winner count consistent).
                 let span =
                     match reader.decode_feature_at(lod, cid, stub.offset as usize, &node, dec_points, dec_ring_lens) {
-                        Some(f)
+                        Ok(f)
                             if frame_points.extend_from_slice(f.points()).is_ok()
                                 && frame_ring_lens.extend_from_slice(f.ring_lens()).is_ok() =>
                         {
                             refetched = true;
+                            drawn += 1;
                             stats.points_drawn += f.points().len();
                             Span {
                                 kind: f.kind,
@@ -291,17 +310,17 @@ impl FrameScratch {
                                 seq: stub.seq,
                             }
                         }
-                        _ => Span {
-                            kind: Kind::Line,
-                            z,
-                            weight,
-                            style_id: stub.style_id,
-                            color,
-                            pt_start,
-                            ring_start,
-                            ring_count: 0,
-                            seq: stub.seq,
-                        },
+                        Err(error) => {
+                            record_feature_error(stats, error);
+                            frame_points.truncate(pt_start as usize);
+                            frame_ring_lens.truncate(ring_start as usize);
+                            empty_span(stub, z, weight, color, pt_start, ring_start)
+                        }
+                        Ok(_) => {
+                            frame_points.truncate(pt_start as usize);
+                            frame_ring_lens.truncate(ring_start as usize);
+                            empty_span(stub, z, weight, color, pt_start, ring_start)
+                        }
                     };
                 slots[i] = Slot::of_span(span);
                 placed[i >> 5] |= 1 << (i & 31);
@@ -310,6 +329,10 @@ impl FrameScratch {
                 stats.chunks_refetched += 1;
             }
         });
+        if let Err(error) = walk {
+            record_read_error(stats, error);
+        }
+        drawn
     }
 
     /// The drawn features' spans (unordered; the caller sorts them into painter order). Valid only
@@ -327,6 +350,45 @@ impl FrameScratch {
     pub(crate) fn spans_mut(&mut self) -> &mut [Span] {
         // SAFETY: as [`FrameScratch::spans`].
         unsafe { core::slice::from_raw_parts_mut(self.slots.as_mut_ptr() as *mut Span, self.spans_len) }
+    }
+}
+
+#[inline]
+fn record_read_error(stats: &mut RenderStats, error: MapReadError) {
+    match error {
+        MapReadError::Source(_) => stats.map_read_failures = stats.map_read_failures.saturating_add(1),
+        MapReadError::Cache(CacheError::Busy) => {
+            stats.map_cache_contentions = stats.map_cache_contentions.saturating_add(1)
+        }
+        MapReadError::Malformed => stats.malformed_features = stats.malformed_features.saturating_add(1),
+    }
+}
+
+#[inline]
+fn record_feature_error(stats: &mut RenderStats, error: FeatureReadError) {
+    match error {
+        FeatureReadError::Decode(FeatureDecodeError::Capacity(_)) => {
+            stats.feature_decode_capacity_drops = stats.feature_decode_capacity_drops.saturating_add(1)
+        }
+        FeatureReadError::Decode(FeatureDecodeError::Malformed) => {
+            stats.malformed_features = stats.malformed_features.saturating_add(1)
+        }
+        FeatureReadError::Read(error) => record_read_error(stats, error),
+    }
+}
+
+#[inline]
+fn empty_span(stub: Stub, z: i8, weight: u8, color: u16, pt_start: u16, ring_start: u16) -> Span {
+    Span {
+        kind: Kind::Line,
+        z,
+        weight,
+        style_id: stub.style_id,
+        color,
+        pt_start,
+        ring_start,
+        ring_count: 0,
+        seq: stub.seq,
     }
 }
 
