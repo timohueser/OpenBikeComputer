@@ -123,7 +123,9 @@ pub(crate) async fn publish_store_change(
     store: &RefCell<ObjectStore>,
     ty: ObjectType,
 ) {
-    let revision = store.borrow().revision();
+    // Each store keeps its own monotonic-per-boot revision (spec §4.3): a trip move stamps the trip
+    // store's counter, a route/ride move the shared route/ride counter.
+    let revision = if ty == ObjectType::Trip { store.borrow().trip_revision() } else { store.borrow().revision() };
     let msg = StatusMessage::StoreChanged(StoreChanged { ty, revision });
     notify_status(server, stack, msg.encode()).await;
 }
@@ -201,14 +203,20 @@ async fn run_upload(
         }
     }
     // The commit target is the object type: a `fwImage` promotes to /UPDATE.BIN in the card root
-    // (staging, no catalog id, no store-revision bump — spec §7.6); everything else is a route into the
-    // catalog. The CoC streaming above is identical either way.
+    // (staging, no catalog id, no store-revision bump — spec §7.6); a `trip` commits into the trip
+    // catalog as `TP{id}.OBT` (bumping the *trip* store, §4.3); everything else is a route into the
+    // route catalog. The CoC streaming above is identical for all three.
     let is_fwimage = desc.ty == ObjectType::FwImage;
+    let is_trip = desc.ty == ObjectType::Trip;
     let (id, status) = {
         let mut guard = shared.lock().await;
         let mut st = store.borrow_mut();
         if is_fwimage {
             (rx.object_id(), st.fwimage_finish(&mut guard, &rx))
+        } else if is_trip {
+            // `desc.crc32` is the whole-object CRC the Receiver just verified — persist it into the
+            // trip content-CRC sidecar in the same commit (epic #526 TR4).
+            st.upload_finish_trip(&mut guard, &rx, desc.crc32)
         } else {
             // `desc.crc32` is the whole-object CRC the Receiver just verified — persist it into the
             // route content-CRC sidecar in the same commit (epic #632 item 6).
@@ -219,10 +227,12 @@ async fn run_upload(
     info!("ble: [coc] upload finished: id {} -> {}", id, if committed { "committed" } else { "rejected" });
     let offset = if committed { rx.total_len() } else { 0 };
     notify_status(server, stack, transfer_result_at(id, status, offset)).await;
-    // A committed route moves the object store (`storeChanged` + digest); a `fwImage` stage does not —
-    // /UPDATE.BIN is not a listed object, and the install is armed later by the confirmed `installFw`.
+    // A committed route/trip moves its object store (`storeChanged`, typed accordingly); a `fwImage`
+    // stage does not — /UPDATE.BIN is not a listed object, and the install is armed later by the
+    // confirmed `installFw`.
     if committed && !is_fwimage {
-        publish_store_change(stack, server, store, ObjectType::Route).await;
+        let ty = if is_trip { ObjectType::Trip } else { ObjectType::Route };
+        publish_store_change(stack, server, store, ty).await;
     }
     TransferOutcome::Answered
 }

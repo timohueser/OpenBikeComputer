@@ -981,6 +981,9 @@ async fn main(_spawner: Spawner) {
         {
             ride::load_routes(&mut storage, app);
             ride::load_rides(&mut storage, app);
+            // Trip folders (epic #526 TR4): scan `TP{id}.OBT` and resolve each trip's stages against
+            // the route catalog just loaded — after `load_routes`, so the stage resolution sees it.
+            ride::load_trips(&mut storage, app);
             // Mirror the map's §8.6 routing-profile names into the app for the Bike-type settings
             // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image
             // too — the setting renders there but is inert (no router in that build).
