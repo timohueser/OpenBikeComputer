@@ -32,6 +32,7 @@ use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
 use crate::track::TrackStore;
+use crate::trips::TripStore;
 use crate::Args;
 
 mod housing;
@@ -58,6 +59,9 @@ struct PanelState {
     /// The "Inject upload" combo's selected catalog row (epic #447, P4) — which route the panel's
     /// upload-injection buttons duplicate (new) or rewrite (replace-by-id).
     upload_sel: usize,
+    /// The "Delete trip" combo's selected trip row (epic #526, TR2) — which trip the panel's
+    /// delete button removes (the `.obt`, non-cascading).
+    trip_sel: usize,
 }
 
 /// In-progress 1:1 size calibration: the user measures the on-screen reference bar and
@@ -110,6 +114,9 @@ struct SimGui {
     app: App,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
+    /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
+    /// re-fed alongside the route catalog so a rescan re-resolves the trips' stage ids.
+    trip_store: TripStore,
     /// The tracks folder as the **ride catalog** (device-SD `/tracks` stand-in): the `RD{id}.ORD`
     /// summaries + synced flags the Rides screen lists (#454). Rescanned when a ride is saved/deleted.
     ride_store: RideStore,
@@ -216,6 +223,7 @@ impl SimGui {
                 compass_deg: f.course.unwrap_or(0.0),
                 ble: obc_app::BleStatus::DISCONNECTED,
                 upload_sel: 0,
+                trip_sel: 0,
             },
             None => PanelState {
                 lat_deg: 0.0,
@@ -224,6 +232,7 @@ impl SimGui {
                 compass_deg: 0.0,
                 ble: obc_app::BleStatus::DISCONNECTED,
                 upload_sel: 0,
+                trip_sel: 0,
             },
         };
 
@@ -234,6 +243,7 @@ impl SimGui {
             app.reseed_home(seed);
         }
         let store = RouteStore::open(args.routes_dir());
+        let trip_store = TripStore::open(args.routes_dir());
         let ride_store = RideStore::open(args.tracks_dir());
         let tracks = TrackStore::open(args.tracks_dir());
         // Seed the live settings from the persisted store, falling back to defaults on a first
@@ -257,6 +267,7 @@ impl SimGui {
         let mut gui = SimGui {
             app,
             store,
+            trip_store,
             ride_store,
             tracks,
             settings_store,
@@ -294,6 +305,7 @@ impl SimGui {
             kbd_back: false,
         };
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
+        gui.app.set_trips(&gui.trip_store.inputs());
         gui.app.set_rides(gui.ride_store.catalog(), gui.ride_store.ids());
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {

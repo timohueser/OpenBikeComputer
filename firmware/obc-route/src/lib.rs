@@ -47,6 +47,7 @@ pub mod profile;
 pub mod reader;
 pub mod ride;
 pub mod track;
+pub mod trip;
 
 pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
 pub use climb::{
@@ -77,5 +78,6 @@ pub use track::{
     decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_CAD_NONE, TRACK_HR_NONE, TRACK_PWR_NONE,
     TRACK_RECORD_LEN,
 };
+pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
 
 pub use obc_reader::BBox;
