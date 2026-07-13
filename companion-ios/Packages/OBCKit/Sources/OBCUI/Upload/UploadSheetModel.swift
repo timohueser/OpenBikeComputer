@@ -66,6 +66,8 @@ public final class UploadSheetModel {
     /// id** (nil if the device didn't report one) and the committed payload's
     /// CRC-32 (the `OnDeviceState` fingerprint) — the E1 landing saves the route
     /// here ("Uploading saves it too") and records it as on-device, up to date.
+    /// Contract: fires **before** `phase` reads `.done` — an observer that sees
+    /// F₂ can rely on the save having happened.
     private let onCompleted: (DeviceObjectID?, UInt32) -> Void
     /// The foreground-only policy's in-flight ledger (#459) — `nil` in tests
     /// and previews that don't exercise the lifecycle.
@@ -151,14 +153,18 @@ public final class UploadSheetModel {
         self.handle = handle
 
         // Progress ticks. A tick is also the proof a resume is moving again —
-        // but only while the link is up: a stale pre-drop tick delivered after
-        // the drop event must not flip the sheet back to `.uploading` (and
-        // re-claim the ledger) for a transfer whose link is already gone.
+        // but only while the link is up. Ticks ride their own stream, so a
+        // backlogged one can land after the phase already moved on; a stale
+        // tick must not flip the sheet back to `.uploading` (and re-claim the
+        // ledger), move the parked bar, or disturb the settled one (`.done`
+        // snapped it to 100%).
         watchers.append(Task { [weak self] in
             for await tick in handle.progress {
                 guard let self else { return }
+                if phase == .done || phase == .failed { continue }
+                if phase == .interrupted, !linkUp { continue }
                 progress = tick
-                if phase == .interrupted, linkUp {
+                if phase == .interrupted {
                     phase = .uploading
                     setTransferActive(true)  // moving again — re-claim
                 }
@@ -196,8 +202,16 @@ public final class UploadSheetModel {
             setTransferActive(false)  // terminal either way — release the claim
             switch outcome {
             case .completed:
+                // The assigned id resolves with the outcome on BLE but a task-hop
+                // after it on the mock — await it *before* F₂, so `.done` is only
+                // observable once `onCompleted` (the E1 save) has already run.
+                let assignedID = await handle.assignedObjectID
+                guard !Task.isCancelled else { return }
+                // The final tick rides a separate stream and can land after the
+                // outcome — snap the bar so `.done` always reads 100%.
+                progress = TransferProgress(bytesDone: progress.total, total: progress.total)
+                onCompleted(assignedID, CRC32.checksum(blob.payload))
                 phase = .done
-                onCompleted(await handle.assignedObjectID, CRC32.checksum(blob.payload))
                 try? await Task.sleep(for: timing.doneAutoDismiss)
                 shouldDismiss = true
             case .canceled:

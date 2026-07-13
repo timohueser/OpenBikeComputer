@@ -132,10 +132,11 @@ struct TransferActivityTests {
     /// The tick and link-state watchers drain two independent streams, so under
     /// scheduler load a pre-drop progress tick can be *delivered* after the drop
     /// event (this suite's full-parallel flake: backlogged watchers, and the
-    /// state subscription replays `.outOfRange`). A stale tick must not read as
-    /// "moving again" — it would flip the sheet back to `.uploading` and
-    /// re-claim the ledger for a transfer whose link is already gone,
-    /// permanently, since the parked transfer emits nothing further.
+    /// state subscription replays `.outOfRange`). The parked sheet must
+    /// **discard** a stale tick outright — it must not read as "moving again"
+    /// (flipping back to `.uploading` and re-claiming the ledger for a transfer
+    /// whose link is already gone, permanently, since the parked transfer emits
+    /// nothing further), and it must not move the parked bar either.
     @Test func staleTickDeliveredAfterTheDropDoesNotReclaim() async {
         let activity = TransferActivity()
         let transport = HandDrivenUploadTransport()
@@ -167,11 +168,22 @@ struct TransferActivityTests {
 
         // A tick that was in flight before the drop lands late. Sequencing it
         // after `.interrupted` reproduces deterministically what full-suite
-        // parallel load produces by starving the MainActor.
+        // parallel load produces by starving the MainActor. Discarded ticks
+        // leave nothing to wait on, so settle, then assert nothing moved —
+        // slow delivery only makes the negative asserts vacuously true.
         transport.progress.yield(TransferProgress(bytesDone: 20_000, total: 100_000))
-        await eventually("stale tick delivered") { model.progress.bytesDone == 20_000 }
-        #expect(model.phase == .interrupted, "a stale pre-drop tick must not resurrect .uploading")
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(model.progress.bytesDone == 10_000, "a stale pre-drop tick must not move the parked bar")
+        #expect(model.phase == .interrupted, "…or resurrect .uploading")
         #expect(!activity.isActive, "…or re-claim the ledger")
+
+        // Resume unparks the sheet: ticks apply again (the ordered stream has
+        // drained the stale one by the time this lands) and the claim re-opens.
+        model.resume()
+        #expect(activity.isActive, "resume re-claims the ledger")
+        transport.progress.yield(TransferProgress(bytesDone: 30_000, total: 100_000))
+        await eventually("post-resume tick") { model.progress.bytesDone == 30_000 }
+        #expect(model.phase == .uploading)
     }
 
     @Test func dismissedSheetReleasesItsClaim() async {
