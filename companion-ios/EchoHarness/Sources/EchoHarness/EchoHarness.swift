@@ -28,6 +28,7 @@ import OBCTransport
 /// swift run echo-harness storm --iterations 50             # connect/disconnect churn
 /// swift run echo-harness concurrency route.obcr            # busy gate + back-to-back reconnects
 /// swift run echo-harness trip-soak a.obcr b.obcr           # trip (type 9) lifecycle: list/reorder/delete
+/// swift run echo-harness churn route.obcr --iterations 30  # timed session cycles + aborts, one connection
 /// ```
 @main
 struct EchoHarness {
@@ -76,6 +77,15 @@ struct EchoHarness {
                 let files = fileArgs(after: subcommand, in: args, valueFlags: [])
                 guard !files.isEmpty else { throw CLIError.usage("trip-soak <file.obcr> [second.obcr]") }
                 try await runTripSoak(paths: files)
+            case "churn":
+                let files = fileArgs(after: subcommand, in: args, valueFlags: ["--iterations", "--abort-every"])
+                guard !files.isEmpty else {
+                    throw CLIError.usage("churn <file.obcr> [more.obcr ...] [--iterations N] [--abort-every K]")
+                }
+                try await runChurn(
+                    paths: files,
+                    iterations: intOption("--iterations", default: 30, in: args),
+                    abortEvery: intOption("--abort-every", default: 5, in: args))
             case "diagnostics":
                 try await runDiagnostics(verbose: hasFlag("--verbose", in: args))
             default:
@@ -393,6 +403,9 @@ struct EchoHarness {
           storm [--iterations K]                          N connect/disconnect cycles; counters must track
           concurrency <file.obcr>                         busy gate, command-during-transfer, back-to-back reconnects
           trip-soak <file.obcr> [second.obcr]             trip (type 9) lifecycle: upload+list+reorder+delete
+          churn <file.obcr>... [--iterations N]           session cycles (upload/list/rideList/delete) with
+                [--abort-every K]                         timed storeChanged edges + mid-upload aborts recycled
+                                                          on ONE connection; fails loudly on any missed answer
 
           --help                                          this message
 
