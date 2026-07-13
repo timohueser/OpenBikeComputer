@@ -14,7 +14,7 @@ That's what lets the live demo you can [run in your browser](../../) — the lan
 The crates form a stack with dependencies pointing **one way — downward**. The foundation fixes byte contracts and semantic boundaries; each layer up adds capability; the *hosts* sit on top. Nothing in the shared core ever depends on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 480" role="img" aria-label="The crate dependency stack. At the top, the hosts — obc-sim and obc-web-demo (the desktop simulator and the browser demo, sharing host glue in obc-host-core) and obc-fw-nrf54l plus obc-platform (device) — all depend on obc-app. obc-app depends on obc-render and also directly on obc-reader, obc-route, and the dependency-free obc-ports semantic foundation. obc-render depends only on obc-reader — routes reach it through a narrow overlay seam the app implements. obc-route depends on obc-reader, obc-formats, and obc-ports; the algorithm crates point down to the dependency-free obc-formats byte-contract authority. The offline obc-pack tool imports persistent format facts directly from obc-formats and uses obc-reader only for higher-level algorithms. Every arrow points downward, so the shared core never depends on a host.">
+<svg viewBox="0 0 720 520" role="img" aria-label="The crate dependency stack. Hosts depend on obc-app. The app depends on obc-render, obc-reader, obc-route, and obc-ports. obc-render and obc-reader independently depend on the allocation-free obc-map-scene foundation, so rendering does not depend on the concrete OBCM reader. obc-reader and obc-route depend on obc-formats; route and app use obc-ports. Every arrow points downward, so the shared core never depends on a host.">
   <defs>
     <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -39,45 +39,52 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <text class="d-label" x="370" y="268" text-anchor="middle">obc-render</text>
   <text class="d-sub" x="370" y="283" text-anchor="middle">projection · culling · rasterising</text>
 
-  <!-- foundation -->
+  <!-- core sources -->
   <rect class="d-panel" x="150" y="332" width="200" height="54" rx="10" />
   <text class="d-label" x="250" y="358" text-anchor="middle">obc-reader</text>
   <text class="d-sub" x="250" y="374" text-anchor="middle">OBCM · quadtree · chunk decode</text>
   <rect class="d-panel" x="390" y="332" width="200" height="54" rx="10" />
   <text class="d-label" x="490" y="358" text-anchor="middle">obc-route</text>
   <text class="d-sub" x="490" y="374" text-anchor="middle">OBCR · GPX · map-match</text>
-  <rect class="d-panel-2" x="130" y="416" width="220" height="48" rx="10" />
-  <text class="d-label" x="240" y="438" text-anchor="middle">obc-formats</text>
-  <text class="d-sub" x="240" y="454" text-anchor="middle">versions · layouts · codecs · byte seam</text>
-  <rect class="d-panel-2" x="390" y="416" width="220" height="48" rx="10" />
-  <text class="d-label" x="500" y="438" text-anchor="middle">obc-ports</text>
-  <text class="d-sub" x="500" y="454" text-anchor="middle">semantic samples · narrow traits · no deps</text>
+  <!-- foundation -->
+  <rect class="d-panel-2" x="30" y="432" width="210" height="54" rx="10" />
+  <text class="d-label" x="135" y="454" text-anchor="middle">obc-map-scene</text>
+  <text class="d-sub" x="135" y="470" text-anchor="middle">styles · candidates · decode seam</text>
+  <rect class="d-panel-2" x="255" y="432" width="210" height="54" rx="10" />
+  <text class="d-label" x="360" y="454" text-anchor="middle">obc-formats</text>
+  <text class="d-sub" x="360" y="470" text-anchor="middle">versions · layouts · codecs · byte seam</text>
+  <rect class="d-panel-2" x="480" y="432" width="210" height="54" rx="10" />
+  <text class="d-label" x="585" y="454" text-anchor="middle">obc-ports</text>
+  <text class="d-sub" x="585" y="470" text-anchor="middle">semantic samples · narrow traits · no deps</text>
 
   <!-- arrows (depends-on, downward) -->
   <line class="d-flow" x1="240" y1="102" x2="258" y2="144" marker-end="url(#aA)" />
   <line class="d-flow" x1="490" y1="102" x2="472" y2="144" marker-end="url(#aA)" />
   <line class="d-flow" x1="370" y1="202" x2="370" y2="240" marker-end="url(#aA)" />
-  <line class="d-flow" x1="350" y1="292" x2="275" y2="330" marker-end="url(#aA)" />
+  <path class="d-flow" d="M350 292 C 300 340, 225 395, 150 430" marker-end="url(#aA)" />
   <line class="d-flow" x1="388" y1="356" x2="354" y2="356" marker-end="url(#aA)" />
-  <line class="d-flow" x1="250" y1="386" x2="245" y2="414" marker-end="url(#aA)" />
-  <line class="d-flow" x1="465" y1="386" x2="345" y2="414" marker-end="url(#aA)" />
-  <line class="d-flow" x1="515" y1="386" x2="495" y2="414" marker-end="url(#aA)" />
+  <line class="d-flow" x1="225" y1="386" x2="160" y2="430" marker-end="url(#aA)" />
+  <line class="d-flow" x1="275" y1="386" x2="340" y2="430" marker-end="url(#aA)" />
+  <line class="d-flow" x1="465" y1="386" x2="390" y2="430" marker-end="url(#aA)" />
+  <line class="d-flow" x1="515" y1="386" x2="570" y2="430" marker-end="url(#aA)" />
 
   <!-- app also reaches past render straight to the two foundation crates -->
   <path class="d-flow" d="M186 202 C 170 252, 176 300, 206 330" marker-end="url(#aA)" opacity="0.8" />
   <path class="d-flow" d="M554 202 C 570 252, 564 300, 534 330" marker-end="url(#aA)" opacity="0.8" />
-  <path class="d-flow" d="M590 174 C 684 220, 684 400, 482 434" marker-end="url(#aA)" opacity="0.8" />
+  <path class="d-flow" d="M590 174 C 700 240, 704 398, 610 430" marker-end="url(#aA)" opacity="0.8" />
 
   <text class="d-sub" x="610" y="360" style="font-size:11px">offline:</text>
   <text class="d-sub" x="610" y="374" style="font-size:11px">obc-pack</text>
   <text class="d-sub" x="610" y="386" style="font-size:11px">→ formats + reader</text>
 </svg>
-<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well; render on reader <i>only</i> — the app hands the active route to the renderer through a narrow overlay seam (a trait of chunked polylines), so the renderer never learns the route format; route on reader. Beneath them, <b>obc-formats</b> owns fixed persistent-format facts and the primitive byte seam, while <b>obc-ports</b> owns semantic samples and narrow sensor/input/track/settings traits; app, reader, and route re-export established paths during migration. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, imports format facts directly from <b>obc-formats</b> and uses <b>obc-reader</b> only for higher-level geometry and round-trip algorithms; it isn't part of the runtime stack.)</figcaption>
+<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well. Render and reader meet only through <b>obc-map-scene</b>: the reader streams visible candidates and complete selected geometry, while the renderer never learns OBCM offsets, quadtrees, or cache policy. The separate active-route overlay remains a narrow chunked-polyline seam. Beneath them, <b>obc-formats</b> owns persistent byte facts and <b>obc-ports</b> semantic host/device ports. Because every arrow points down, the shared core compiles without any host. (<b>obc-pack</b> is the offline producer and sits outside this runtime stack.)</figcaption>
 </figure>
 
 The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-metal target (`thumbv8m.main-none-eabihf`) with no host present; the simulator and the firmware are just two different things that link *against* it. Swap the host, keep the core.
 
 At the bottom, [`obc-formats`](src:firmware/obc-formats) is deliberately smaller than a reader: it has no allocator, storage adapter, cache, converter, executor, or rendering policy. The root format specifications remain the normative byte contracts; this crate is their code authority for versions, fixed lengths, flags, sentinels, endian primitives, and the neutral byte-source/sink traits. Every persistent-format producer and consumer imports those facts directly — including `obc-pack` and the deliberately independent `obcm-testkit` byte builder. `obc-reader` and `obc-route` keep the parsing and streaming algorithms, while their established public paths temporarily re-export the same foundation definitions for source compatibility.
+
+[`obc-map-scene`](src:firmware/obc-map-scene) is the equally small boundary between a map source and rasterisation. It owns neutral bounds, geometry/style metadata, LOD selection, candidate visitation, selected-feature decode into caller-owned buffers, and optional counter snapshots. The normal [`obc-reader` adapter](src:firmware/obc-reader/src/scene.rs) is monomorphised into the renderer's hot path and preserves its two native chunk-major cache walks; a static test scene can implement the same contract with no map file at all. Opaque six-byte candidate tokens let a source find winners again without leaking byte offsets or widening the renderer's existing span-sized stubs.
 
 Beside it, [`obc-ports`](src:firmware/obc-ports) owns dependency-free values and traits that cross the app/host boundary. Calendar arithmetic is semantic here, while the app keeps its own editor/storage year policy; `SettingsStore` uses an associated value so the foundation never depends upward on the app's `Settings` model.
 
