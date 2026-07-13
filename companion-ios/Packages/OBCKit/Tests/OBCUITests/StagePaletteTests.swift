@@ -20,6 +20,16 @@ struct StagePaletteTests {
     }
 
     @Test
+    func earlyStagesAvoidTheDarkGreenTealPair() {
+        // The on-glass feedback (2026-07-13): forest (stage 1) and water (stage 3)
+        // were near-indistinguishable on a thin divider bar. The first three
+        // stages — where most trips live — must be the high-contrast trio; the
+        // dark teal may not appear before index 3.
+        #expect(Array(OBCTheme.stagePalette.prefix(3)) == [OBCTheme.forest, OBCTheme.coral, OBCTheme.amber])
+        #expect(OBCTheme.stagePalette.firstIndex(of: OBCTheme.water).map { $0 >= 3 } == true)
+    }
+
+    @Test
     func everyPaletteColorIsAThemeAccent() {
         // No color outside the OBC accent tokens (#240).
         let accents: Set<Color> = [

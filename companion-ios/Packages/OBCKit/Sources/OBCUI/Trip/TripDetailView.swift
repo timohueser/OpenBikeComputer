@@ -30,6 +30,9 @@ public struct TripDetailView: View {
     /// (a model built inline in the `.sheet` closure would rebuild every body
     /// pass, restarting the queue).
     @State private var tripUploadModel: TripUploadModel?
+    /// Upload tapped, catalog re-read in flight (`prepareTripUpload`) — debounces
+    /// the button until the sheet's driver exists.
+    @State private var isPreparingUpload = false
     /// A pending "remove the last stage" — dissolving the trip needs an inline
     /// confirm (the trip is created with ≥ 1 route; emptying it removes it).
     @State private var dissolveConfirmStage: RouteID?
@@ -76,6 +79,33 @@ public struct TripDetailView: View {
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) { attemptRemove(stage.id) } label: {
                         Label("Remove", systemImage: "minus.circle")
+                    }
+                }
+                // Clip BOTH long-press lift previews — the context menu's and the
+                // reorder drag's — to the card's own rounded shape, exactly as the
+                // main screen's route rows do; without this the system snapshots
+                // the whole rectangular row and the card floats on a stark white
+                // slab. (iOS-only kind; macOS is the test host.)
+                #if os(iOS)
+                .contentShape(
+                    [.contextMenuPreview, .dragPreview],
+                    RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
+                )
+                #endif
+                // The same long-press affordance as the main screen's cards: a
+                // rounded lift with a small menu (the reorder drag still starts
+                // from the lift by moving, and the overflow's explicit reorder
+                // mode is untouched).
+                .contextMenu {
+                    Button {
+                        onSelectRoute(stage)
+                    } label: {
+                        Label("Open route", systemImage: "map")
+                    }
+                    Button(role: .destructive) {
+                        attemptRemove(stage.id)
+                    } label: {
+                        Label("Remove from trip", systemImage: "minus.circle")
                     }
                 }
             }
@@ -194,7 +224,9 @@ public struct TripDetailView: View {
         // The interactive map draws each stage's FULL tracklog (the #294
         // follow-up rule: never the downsampled preview when zooming is on
         // offer), falling back to the preview's coordinates for a record whose
-        // geometry didn't survive.
+        // geometry didn't survive. The summaries ride along so a tap on a
+        // segment raises its callout; Open route closes the cover and pushes
+        // the stage's ordinary detail page.
         TrackMapView(
             stages: stages.enumerated().map { index, summary in
                 MultiTrackPreviewView.Stage(
@@ -203,8 +235,13 @@ public struct TripDetailView: View {
                     color: OBCTheme.stageColor(index: index)
                 )
             },
+            stageSummaries: stages,
             title: trip?.name ?? "Trip",
-            onClose: { mapShown = false }
+            onClose: { mapShown = false },
+            onOpenStage: { summary in
+                mapShown = false
+                onSelectRoute(summary)
+            }
         )
     }
 
@@ -226,14 +263,22 @@ public struct TripDetailView: View {
 
             // Primary action (TR8): one tap pushes the whole trip. Link-bound —
             // dims when disconnected; disabled when the trip is already fully up
-            // to date on the device (nothing to send).
+            // to date on the device (nothing to send). The tap re-reads the
+            // device catalogs first (`prepareTripUpload`) so a retry after a
+            // failed upload plans against what actually landed — never a
+            // duplicate-minting plan cut from a pre-failure cache.
             Button {
-                tripUploadModel = model.makeTripUploadModel(tripID)
+                guard !isPreparingUpload else { return }
+                isPreparingUpload = true
+                Task {
+                    tripUploadModel = await model.prepareTripUpload(tripID)
+                    isPreparingUpload = false
+                }
             } label: {
                 Label("Upload trip", systemImage: "square.and.arrow.up")
             }
             .buttonStyle(.obcPrimary)
-            .disabled(!canUploadTrip)
+            .disabled(!canUploadTrip || isPreparingUpload)
             .accessibilityIdentifier("trip.upload")
         }
     }
