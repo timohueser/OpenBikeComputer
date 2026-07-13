@@ -586,6 +586,20 @@ public final class MainScreenModel {
     /// The trip behind `id`, or `nil` if it dissolved / never existed.
     public func trip(_ id: TripID) -> TripRecord? { trips.first { $0.id == id } }
 
+    /// The existing trips as picker rows (TR7) — the one projection the shared
+    /// `TripPickerSheet` reads for the import row and the route menus. Newest
+    /// first, matching the top-level list order.
+    public var tripPickerItems: [TripPickerItem] {
+        trips.map { TripPickerItem(id: $0.id, name: $0.name, stageCount: $0.stageIDs.count) }
+    }
+
+    /// The trip a route is currently filed in, or `nil` when it's loose (TR7) —
+    /// drives the route menu's Add-vs-Move/Remove split and the picker's
+    /// current-trip checkmark.
+    public func tripContaining(_ routeID: RouteID) -> TripID? {
+        trips.first { $0.stageIDs.contains(routeID) }?.id
+    }
+
     /// A trip's member routes as list summaries, **in ride order** — the trip
     /// page's rows. Skips any stage whose record is gone (already pruned on read;
     /// belt-and-suspenders here).
@@ -682,6 +696,72 @@ public final class MainScreenModel {
             library.deletePlannedRoute(stage)
         }
         reloadTrips()
+    }
+
+    // MARK: Create & file (TR7)
+
+    /// **Group** the selected routes into a new trip (the multi-select retrofit
+    /// path). Selection order is *not* stage order — stages default to the
+    /// routes **as listed in the Planned list** (newest `addedAt` first, the same
+    /// order the loose cards show), and reordering stays the trip page's job. The
+    /// new trip takes the slot of its newest member so its card appears in place.
+    /// Ids with no live record are dropped; an empty result creates nothing (no
+    /// empty trips). Returns the new trip's id.
+    @discardableResult
+    public func groupIntoTrip(_ routeIDs: [RouteID], name: String) -> TripID? {
+        let ordered = routeIDs
+            .compactMap { plannedRecords[$0] }
+            .sorted { $0.addedAt > $1.addedAt }
+        guard !ordered.isEmpty else { return nil }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trip = TripRecord(
+            id: TripID(UUID().uuidString.lowercased()),
+            name: trimmed.isEmpty ? "New trip" : trimmed,
+            stageIDs: ordered.map(\.id),
+            // In place: sit where the newest grouped route sat.
+            addedAt: ordered.map(\.addedAt).max() ?? now()
+        )
+        library.saveTrip(trip)  // ≤ 1-trip invariant enforced in the store
+        reloadTrips()
+        return trip.id
+    }
+
+    /// File a route per a picker `TripSelection` (TR7) — the one call the import
+    /// row and the route menus' Add/Move both end on. `.existing` appends the
+    /// route as the trip's **last stage** (the store's invariant strips it from
+    /// any other trip, so a move is an implicit remove); `.new` starts a trip
+    /// with it as the first stage, in that route's list slot; `.none` files
+    /// nothing (the import row's opt-out). Phone-local, offline-safe — library
+    /// writes only (device adoption is TR8's).
+    public func fileRoute(_ routeID: RouteID, into selection: TripSelection) {
+        switch selection {
+        case .none:
+            break
+        case .existing(let tripID):
+            guard var trip = trip(tripID), !trip.stageIDs.contains(routeID) else { return }
+            trip.stageIDs.append(routeID)  // last stage
+            library.saveTrip(trip)
+            reloadTrips()
+        case .new(let name):
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard plannedRecords[routeID] != nil else { return }
+            let trip = TripRecord(
+                id: TripID(UUID().uuidString.lowercased()),
+                name: trimmed.isEmpty ? "New trip" : trimmed,
+                stageIDs: [routeID],
+                addedAt: plannedRecords[routeID]?.addedAt ?? now()
+            )
+            library.saveTrip(trip)
+            reloadTrips()
+        }
+    }
+
+    /// Remove a route from whatever trip holds it (the route menu's "Remove from
+    /// trip") — the route returns to the top level, its record untouched;
+    /// emptying the trip dissolves it. A no-op on a loose route.
+    public func removeRouteFromTrip(_ routeID: RouteID) {
+        guard let tripID = tripContaining(routeID) else { return }
+        _ = removeStage(routeID, from: tripID)
     }
 
     // MARK: Delete (H11 → H1, post-confirm)
