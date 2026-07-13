@@ -1233,6 +1233,10 @@ name = "obc-dfu"
 version = "0.1.0"
 
 [[package]]
+name = "obc-formats"
+version = "0.1.0"
+
+[[package]]
 name = "obc-fw-nrf54l"
 version = "0.1.0"
 dependencies = [
@@ -1291,6 +1295,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-formats",
 ]
 
 [[package]]
@@ -1309,6 +1314,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-formats",
  "obc-reader",
 ]
 
