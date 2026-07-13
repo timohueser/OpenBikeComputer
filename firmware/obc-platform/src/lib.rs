@@ -14,7 +14,7 @@
 //!   reuses.
 //! - [`panel`] — the [`Band`] frame-absolute band/window view + the [`composite_overlay_window`]
 //!   overlay helper, for boards that stream a frame to the panel over SPI/DMA a band at a time. The
-//!   banded present loop itself lives behind each board's `DisplayDriver`.
+//!   banded present loop itself lives in each board's presenter backend.
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
 //!   [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture recognizer through
 //!   [`InputSource`](obc_ports::InputSource).
@@ -69,15 +69,10 @@ pub mod framebuffer;
 // shared damage/region vocabulary, and the mutate-and-restore overlay composite. Everything
 // LS021-specific lives here, off the generic display contracts.
 pub mod ls021;
-// The board-agnostic display-driver seam (`DisplayDriver`, `OverlayRegion`) both backends implement
-// — the on-device LS021/FLPR panel and the host simulator. Being deleted by #806: the backends are
-// migrating onto `display_contracts`; the frame geometry moved to `ls021::FRAME_W/H`.
-pub mod display;
-// The generic native-frame + presentation capability contracts (FAR-12, #805) the `display` seam is
-// migrating onto (#806 moves the backends): `NativeFrame`/`Device64Frame`, `Presenter`/
-// `OverlayPresenter`, the `DisplayDriver` compatibility bridge, and the backend-agnostic conformance
-// suite. Deliberately namespaced (not re-exported at the root): a clearly-bounded module #807 can
-// lift into its own crate if the split pays.
+// The generic native-frame + presentation capability contracts (#805/#806) — the display seam both
+// backends implement: `NativeFrame`/`Device64Frame`, `Presenter`/`OverlayPresenter`, and the
+// backend-agnostic conformance suite. Deliberately namespaced (not re-exported at the root): a
+// clearly-bounded module #807 can lift into its own crate if the split pays.
 pub mod display_contracts;
 // Stand-in battery fuel gauge — a fixed level until the nPM1300 PMIC gauge is wired in.
 pub mod fuel;
@@ -102,7 +97,6 @@ pub mod sensor_link;
 pub mod sensor_values;
 
 pub use button_input::{ButtonInput, Timing};
-pub use display::{DisplayDriver, OverlayRegion};
 pub use fat_extents::{ExtentSource, ExtentTable};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use fuel::StubFuelGauge;

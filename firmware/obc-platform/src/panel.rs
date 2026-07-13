@@ -2,7 +2,7 @@
 //! [`composite_overlay_window`] overlay helper.
 //!
 //! A frame — or a partial overlay window — is reformatted a **band** (a few rows) at a time. Each
-//! board's `DisplayDriver` owns the push to glass (the FLPR/LS021B7DD02 packs device-64 to the
+//! board's presenter backend owns the push to glass (the FLPR/LS021B7DD02 packs device-64 to the
 //! source-line wire bytes; the simulator expands to RGB565). This module supplies the board-agnostic
 //! pieces they share.
 //!

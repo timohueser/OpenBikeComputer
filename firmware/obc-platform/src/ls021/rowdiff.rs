@@ -149,7 +149,8 @@ impl<const H: usize> RowDiff<H> {
     }
 
     /// [`diff`](RowDiff::diff) with a live overlay's rows **clipped out** — the shared present
-    /// skeleton both display backends run (`DisplayDriver::present(exclude)`, issue #345).
+    /// skeleton both display backends run (a present with a live overlay's rows excluded,
+    /// issue #345).
     ///
     /// Diffs the whole frame (the store is updated for **every** row, the excluded ones included —
     /// it tracks the clean framebuffer, so when the overlay later goes quiet its rows re-push clean

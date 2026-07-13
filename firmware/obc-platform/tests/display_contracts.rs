@@ -15,7 +15,6 @@
 //!    composite). It exists to prove the contracts hard-code no LS021 assumption; it is test-only
 //!    code, never linked into a shipping image, and no RGB222 byte ever passes through its format.
 //!
-//! Plus the [`BridgedDriver`] check: the legacy `DisplayDriver` seam driven over pairing 1.
 //! (The simulator presenter — the other shipping backend — runs the same conformance suite in
 //! `obc-sim/src/present.rs`.)
 
@@ -26,11 +25,9 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
 use obc_platform::display_contracts::conformance::{self, GlassProbe};
-use obc_platform::display_contracts::{
-    BridgedDriver, Device64Frame, NativeFrame, OverlayPresenter, PresentStats, Presenter,
-};
+use obc_platform::display_contracts::{Device64Frame, NativeFrame, OverlayPresenter, PresentStats, Presenter};
 use obc_platform::ls021::{composite_into_resident, spans_missed_changes, RowDamage, RowDiff, RowWindow};
-use obc_platform::{device64_to_rgb565, Band, DisplayDriver, FbDevice64, OverlayRegion};
+use obc_platform::{device64_to_rgb565, Band};
 use obc_reader::rgb565_to_device64;
 use pollster::block_on;
 
@@ -584,52 +581,4 @@ fn overlay_leaves_the_frame_byte_identical() {
     }))
     .unwrap();
     assert_eq!(frame.bytes(), &before[..]);
-}
-
-// ─── The legacy-seam bridge over pairing 1 ───
-
-/// Drive the old `DisplayDriver` call shapes — `fb_mut` through `&mut dyn`, `present(exclude)`,
-/// `present_overlay(OverlayRegion, Band drawer)`, and the `false` transport outcome — over the
-/// (frame, presenter) pairing, proving the old seam is a special case of the contracts.
-#[test]
-fn bridged_driver_runs_the_old_seam_over_the_pairing() {
-    let mut buf = [0u8; 16 * 16];
-    let mut d = BridgedDriver::new(Device64Frame::<16, 16>::new(&mut buf), SpanPresenter::<16, 16>::new());
-    let glass_at = |d: &BridgedDriver<Device64Frame<16, 16>, SpanPresenter<16, 16>>, x: u32, y: u32| {
-        GlassProbe::<Device64Frame<16, 16>>::glass(d.presenter(), x, y)
-    };
-
-    // Render through the object-safe half of the old seam, exactly like the app loop.
-    {
-        let dyn_d: &mut dyn DisplayDriver = &mut d;
-        let mut fb = FbDevice64::new(dyn_d.fb_mut(), 16, 16);
-        fb.clear(rgb(RED)).unwrap();
-    }
-    assert!(block_on(d.present(None)), "a clean present reports true");
-    let g_red = glass_at(&d, 13, 5);
-
-    // The hold bulge over the clean backdrop, via the old Band-typed drawer.
-    let ok = block_on(d.present_overlay(OverlayRegion { x0: 12, y0: 4, w: 4, rows: 4 }, &mut |band: &mut Band| {
-        band.fill_solid(&Rectangle::new(Point::new(13, 5), Size::new(1, 1)), rgb(BLUE)).ok();
-    }));
-    assert!(ok);
-    let g_bulge = glass_at(&d, 13, 5);
-    assert_ne!(g_bulge, g_red, "the bulge reached glass");
-
-    // A map redraw presents around the live bulge: its rows are excluded, the rest updates.
-    {
-        let mut fb = FbDevice64::new(d.fb_mut(), 16, 16);
-        fb.clear(rgb(GREEN)).unwrap();
-    }
-    assert!(block_on(d.present(Some((4, 4)))));
-    assert_eq!(glass_at(&d, 13, 5), g_bulge, "exclude went around the live bulge");
-    assert_ne!(glass_at(&d, 0, 0), g_red, "the rest of the frame updated");
-
-    // The trailing clear: re-present the bulge rows with nothing composited.
-    assert!(block_on(d.present_overlay(OverlayRegion { x0: 12, y0: 4, w: 4, rows: 4 }, &mut |_band: &mut Band| {})));
-    assert_eq!(glass_at(&d, 13, 5), glass_at(&d, 0, 0), "the clean frame is restored under the bulge");
-
-    // A transport fault surfaces as the old seam's `false`.
-    d.presenter_mut().fail_next = true;
-    assert!(!block_on(d.present(None)));
 }
