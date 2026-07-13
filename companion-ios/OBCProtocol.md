@@ -86,7 +86,7 @@ not be reused**:
 
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
-| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below), `forgetBond` (cmd 4: no args — dissolve the device-side bond, below) — spec §4.4 |
+| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16` — routes (1) and trips (9); a trip delete is **non-cascading**, members become top-level, unknown id → `notFound`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below), `forgetBond` (cmd 4: no args — dissolve the device-side bond, below) — spec §4.4 |
 | `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult / **downloadAnnounce**) — the **sole** device → app channel, spec §4.3 |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
 | `0005` | `transferControl` | **write** | open / abort a CoC object transfer (§ below) — **write-only, no CCCD** in v2 |
@@ -182,9 +182,14 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
    `msg u8 = 1 · object_id u16 · status u8 {committed 0, crcMismatch 1, aborted 2,
    error 3, notFound 4, busy 5, storageFull 6} · committed_offset u32`; for a
    fresh upload the result carries the **assigned** id). `status` also carries
-   `storeChanged` (msg 2), `commandResult` (msg 3), and the **`downloadAnnounce`**
-   (msg 4) messages — unknown discriminators are ignored, and an unknown *status*
-   code decodes as a generic device error (forward compat).
+   `storeChanged` (msg 2: `type u8 {route 1, ride 2, trip 9 — mirrors the object-type
+   numbers} · revision u32` — each store keeps its **own** monotonic-per-boot
+   revision, so a UI-composed "delete trip & routes" cascade emits **both** a route
+   and a trip signal; unknown store types are ignored), `commandResult` (msg 3), and
+   the **`downloadAnnounce`** (msg 4) messages — unknown discriminators are ignored,
+   and an unknown *status* code decodes as a generic device error (forward compat).
+   `storageFull` covers whichever catalog the upload targeted (routes: cap 64,
+   trips: cap 16).
 
 - **CRC once, end-to-end.** One whole-object CRC verified at commit — a mismatch
   **rejects** the object (`DeviceError.crcMismatch`), never commits it. This is the
@@ -303,18 +308,21 @@ Routes and rides both cross the wire as **compact binary**, never XML:
   route/ride id), `0xFFFF` = new, replace-by-id atomic, cap **16** (`storageFull` at
   descriptor-open for new trips, replace-by-id exempt). **Dangling stage refs are
   tolerated on read** (a member route deleted individually doesn't invalidate the
-  trip) and compacted on the next trip write; **upload order is stages-first,
-  trip-object-last** so an interrupted push never dangles and a re-run is
-  idempotent. **Protocol delete is non-cascading** — deleting the trip object frees
-  the trip and leaves member routes top-level; a "delete trip & routes" is composed
-  by the initiating UI as route deletes + the trip delete. `tripList` (type 10) is a
-  CoC list behind the same **6-byte v2 header**; its **76-byte** entries mirror
-  `routeList` (`object_id · byte_len · total_distance_m · total_ascent_m ·
-  stage_count · name ≤ 48 · trailing whole-object `crc32`, `0` = unknown`), with the
-  totals summed over resolvable stages and `stage_count` counting every stored
-  stage (dangling included). The `crc32` is the same content fingerprint routes use,
-  so `OnDeviceState.determine` detects an outdated trip (a stage reorder changes
-  neither `byte_len` nor `name`). TR5 (#654) reuses the route identity machinery.
+  trip); **the device never rewrites a stored trip** — dangling refs persist until
+  the next trip **upload** replaces the object by id, and that upload arrives
+  compacted because the **app** (which owns validation) builds it from resolvable
+  stages. **Upload order is stages-first, trip-object-last** so an interrupted push
+  never dangles and a re-run is idempotent. **Protocol delete is non-cascading** —
+  deleting the trip object frees the trip and leaves member routes top-level; a
+  "delete trip & routes" is composed by the initiating UI as route deletes + the
+  trip delete (and emits both a route and a trip `storeChanged`). `tripList`
+  (type 10) is a CoC list behind the same **6-byte v2 header**; its **76-byte**
+  entries mirror `routeList` — `object_id · byte_len · total_distance_m ·
+  total_ascent_m · stage_count · name ≤ 48` plus a trailing whole-object `crc32`
+  (`0` = unknown) — with the totals summed over resolvable stages and `stage_count`
+  counting every stored stage (dangling included). The `crc32` is the same content
+  fingerprint routes use, so `OnDeviceState.determine` detects an outdated trip (a
+  stage reorder changes neither `byte_len` nor `name`).
 
 The byte layout of each object is owned by the spec. The device object codecs
 live in `OBCTransport/Codecs/` (`BLEChannel` only moves bytes; the interchange

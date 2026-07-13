@@ -192,12 +192,28 @@ fn trip_vectors_are_self_consistent() {
     assert_eq!(stages, vec![TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
 
     // The two resolvable stages are exactly the ids route-list.bin enumerates; the third dangles.
+    // Decode (object_id, distance_m, ascent_m) from each route-list entry so the expected tripList
+    // totals below are DERIVED by the spec's summation rule (a stage resolves iff a stored route
+    // holds its id; a dangling ref contributes nothing) — not restated as literals.
     let rl = fixture("route-list.bin");
     let (rl_count, rl_entry_len) = (u16::from_le_bytes([rl[2], rl[3]]) as usize, rl[1] as usize);
-    let held: Vec<u16> =
-        (0..rl_count).map(|k| u16::from_le_bytes([rl[6 + rl_entry_len * k], rl[6 + rl_entry_len * k + 1]])).collect();
+    let routes: Vec<(u16, u32, u32)> = (0..rl_count)
+        .map(|k| {
+            let b = 6 + rl_entry_len * k;
+            (
+                u16::from_le_bytes([rl[b], rl[b + 1]]),
+                u32::from_le_bytes(rl[b + 8..b + 12].try_into().unwrap()), // distance_m
+                u32::from_le_bytes(rl[b + 12..b + 16].try_into().unwrap()), // ascent_m
+            )
+        })
+        .collect();
+    let held: Vec<u16> = routes.iter().map(|&(id, ..)| id).collect();
     assert!(TRIP_STAGE_IDS.iter().all(|id| held.contains(id)), "both resolvable stages are stored routes");
     assert!(!held.contains(&TRIP_DANGLING_STAGE), "the third stage is deliberately dangling");
+    let resolved = || stages.iter().filter_map(|s| routes.iter().find(|&&(id, ..)| id == *s));
+    let want_distance: u32 = resolved().map(|&(_, d, _)| d).sum();
+    let want_ascent: u32 = resolved().map(|&(_, _, a)| a).sum();
+    assert_eq!(resolved().count(), 2, "exactly the two resolvable stages contribute to the totals");
 
     // tripList: 6-byte v2 header, one 76-byte entry, total == count == 1.
     let tl = fixture("trip-list.bin");
@@ -209,8 +225,8 @@ fn trip_vectors_are_self_consistent() {
     assert_eq!(e.len(), 76, "one 76-byte entry");
     assert_eq!(u16::from_le_bytes([e[0], e[1]]), TRIP_ID, "trip id (its own counter)");
     assert_eq!(u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as usize, trip.len(), "byte_len = stored trip file");
-    assert_eq!(u32::from_le_bytes([e[8], e[9], e[10], e[11]]), 2 * 2207, "distance summed over stages 7 + 8");
-    assert_eq!(u32::from_le_bytes([e[12], e[13], e[14], e[15]]), 2 * 76, "ascent summed over stages 7 + 8");
+    assert_eq!(u32::from_le_bytes([e[8], e[9], e[10], e[11]]), want_distance, "distance summed over resolvable stages");
+    assert_eq!(u32::from_le_bytes([e[12], e[13], e[14], e[15]]), want_ascent, "ascent summed over resolvable stages");
     assert_eq!(u16::from_le_bytes([e[16], e[17]]), stage_count, "stage_count as stored (incl. dangling)");
     let name_len = e[20] as usize;
     assert_eq!(&e[21..21 + name_len], TRIP_NAME.as_bytes());
