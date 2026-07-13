@@ -91,6 +91,14 @@ python3 ../tools/resource_guard.py boot \
 | BLE | 208,240 B | 4,528 B | 212,768 B | 1,024 B | 1,055,284 B | 1 × 76,800 B | 6,240 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
 
+The table is the reproducible rustc 1.96.0 capture. The first floating-stable CI
+run on rustc 1.97.0 (`2d8144b78 2026-07-07`) produced default `.bss` 200,772 B,
+`.data` 96 B, `.uninit` 1,024 B, and 615,416 B of flash: a measured 4 B resident
+increase and a 9,784 B flash decrease caused by the toolchain change alone. The
+default resident ceiling was explicitly re-baselined to 200,868 B from that CI
+ELF; the original 200,864 B capture remains recorded separately. BLE stayed
+within its existing ceiling on the same CI run.
+
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B
 after default `.bss + .data + .uninit` and 40,160 B after BLE. Those residuals
