@@ -86,11 +86,18 @@ protocolVersion read (6 bytes, little-endian):
   waypoint type) do **not** bump the version; changing an existing layout does.
 
 **Store epoch.** `store_epoch` is a `u32` TRNG nonce that names a store's **id
-era**. It is **card-resident** — persisted in a small file on the SD card, so the
-card carries its own era name — and changes only on an **id-era reset**. Its
-purpose and the app-side keying are epic #632 item 5; the mint rule lives with the
-device implementation (V3, card-resident move #776). The essentials the wire
-depends on:
+era**. It is **card-resident** — persisted as **`EPOCH.OBE`** in the card root, so
+the card carries its own era name — and changes only on an **id-era reset**. The
+file is a fixed 12-byte record — `magic "OBCE" · version u8 · pad u8 · epoch u32 ·
+crc16`, little-endian, CRC-16 over the first 10 bytes; the host-tested codec in
+`obc-app::settings` is the layout's authoritative home, as with the other card
+sidecars. An absent, short, torn (CRC-failed), or foreign-version read decodes to
+**no epoch**, and the device mints a fresh era onto the card. A boot whose epoch
+*persist* fails serves **no epoch** that session (the version-only short read
+below) and retries the mint next boot — a store with no *proven* era name is never
+given one on the wire. Its purpose and the app-side keying are epic #632 item 5;
+the mint rule lives with the device implementation (V3, card-resident move #776).
+The essentials the wire depends on:
 
 - **Every durable app↔device link keys on bare `u16` object ids** (the ride
   synced-set + delete tombstones, the route `deviceObjectID` links). Ids mint at
