@@ -144,7 +144,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     private func storedTripRecords() -> [TripRecord] {
         contents(of: tripsDir).compactMap { url -> TripRecord? in
             guard url.pathExtension == "json",
-                let file: TripFile = read(url), file.version == Self.schemaVersion
+                let file: TripFile = read(url), file.version == Self.tripSchemaVersion
             else { return nil }
             return file.record
         }
@@ -330,6 +330,10 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     /// Rides split summary/points into separate files (#360); planned routes and
     /// the id sets stay on v1.
     private static let rideSchemaVersion = 2
+    /// Trips version independently of planned routes (the `rideSchemaVersion`
+    /// precedent) — used on **both** the write and the read side, so a future
+    /// planned-route bump can't silently stop stored trips from loading.
+    fileprivate static let tripSchemaVersion = 1
 
     private var plannedDir: URL { directory.appendingPathComponent("planned", isDirectory: true) }
     private var tripsDir: URL { directory.appendingPathComponent("trips", isDirectory: true) }
@@ -460,38 +464,56 @@ private struct PlannedRouteFile: Codable {
     }
 }
 
-/// `trips/<id>.json` (v1) — a trip's metadata: its name and the ordered stage
-/// route ids. Additive schema (a pre-trips library simply has no `trips/` dir,
-/// so `trips()` reads zero — no migration). Stage ordering is the file's, i.e.
-/// the domain's `stageIDs`, source of truth. The device link stays a bare
-/// `UInt16` on disk (the domain's `DeviceObjectID` wraps it at the boundary),
-/// both link + fingerprint optional-decoded so a not-yet-uploaded trip loads
-/// clean.
+/// `trips/<id>.json` (trip schema v1) — a trip's metadata: its name and the
+/// ordered stage route ids. Additive schema (a pre-trips library simply has no
+/// `trips/` dir, so `trips()` reads zero — no migration). Stage ordering is the
+/// file's, i.e. the domain's `stageIDs`, source of truth.
+///
+/// The device link persists exactly the way `PlannedRouteFile`'s does:
+/// `deviceObjectID`/`deviceSerial`/`deviceStoreEpoch` as separate optional
+/// fields, **all-or-nothing on read** — a partial/flat link (id without
+/// serial/epoch) decodes as **no link at all** (#769: the link is only real
+/// when all three parts are present, so it can never light a badge or drive a
+/// replace-by-id against the wrong device or era). The id stays a bare `UInt16`
+/// on disk (the domain's `DeviceObjectID` wraps it at the boundary); link +
+/// fingerprint optional-decoded so a not-yet-uploaded trip loads clean.
 private struct TripFile: Codable {
     var version: Int
     var id: String
     var name: String
     var stageIDs: [String]
     var deviceObjectID: UInt16?
+    var deviceSerial: String?
+    var deviceStoreEpoch: UInt32?
     var uploadedCRC32: UInt32?
     var addedAt: Date
 
     init(_ record: TripRecord) {
-        version = 1
+        version = FileLibraryStore.tripSchemaVersion
         id = record.id.rawValue
         name = record.name
         stageIDs = record.stageIDs.map(\.rawValue)
-        deviceObjectID = record.deviceObjectID?.raw
+        deviceObjectID = record.deviceLink?.objectID.raw
+        deviceSerial = record.deviceLink?.serial
+        deviceStoreEpoch = record.deviceLink?.epoch
         uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
     }
 
     var record: TripRecord {
-        TripRecord(
+        let link: DeviceRouteLink? =
+            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
+                DeviceRouteLink(
+                    serial: deviceSerial, epoch: deviceStoreEpoch,
+                    objectID: DeviceObjectID(deviceObjectID))
+            } else {
+                nil
+            }
+        return TripRecord(
             id: TripID(id),
             name: name,
             stageIDs: stageIDs.map(RouteID.init),
-            deviceObjectID: deviceObjectID.map(DeviceObjectID.init),
+            deviceLink: link,
             uploadedCRC32: uploadedCRC32,
             addedAt: addedAt
         )
