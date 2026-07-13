@@ -24,10 +24,10 @@ use obc_render::{
     Surface,
 };
 
-use crate::hal::Fix;
 use crate::input::Gesture;
 use crate::settings::Units;
 use crate::Msg;
+use obc_ports::Fix;
 
 use super::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};

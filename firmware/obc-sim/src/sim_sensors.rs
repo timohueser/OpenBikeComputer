@@ -15,7 +15,7 @@
 //!
 //! [`feed`]: SimSensors::feed
 
-use obc_app::{CadenceSource, HeartRateSource, PowerSource};
+use obc_ports::{CadenceSource, HeartRateSource, PowerSource};
 
 /// Emit at most one sample per this many milliseconds of **ride-clock** time (playback time under a
 /// GPX replay, wall-clock under manual control) — the ~1 Hz cadence a real BLE sensor notifies at,

@@ -1,5 +1,5 @@
 //! Persistent settings over the nRF54L's on-chip **RRAM** — the device side of
-//! [`obc_app::SettingsStore`], the SD-independent store the simulator mirrors with a file
+//! [`obc_ports::SettingsStore`], the SD-independent store the simulator mirrors with a file
 //! ([`obc-sim/src/settings_store.rs`]).
 //!
 //! # Why RRAM (and why it's cheap)
@@ -29,7 +29,8 @@ use embassy_nrf::peripherals::RRAMC;
 use embassy_nrf::rramc::{Rramc, Unbuffered};
 use embassy_nrf::Peri;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
-use obc_app::{Settings, SettingsStore};
+use obc_app::Settings;
+use obc_ports::SettingsStore;
 #[cfg(feature = "ble")]
 use trouble_host::prelude::{
     AddrKind, Address, BdAddr, BondInformation, Identity, IdentityResolvingKey, LongTermKey, SecurityLevel,

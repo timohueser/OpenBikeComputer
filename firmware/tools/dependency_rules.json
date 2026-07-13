@@ -122,12 +122,5 @@
       "reason": "host tools must not depend on standalone firmware composition roots"
     }
   ],
-  "exceptions": [
-    {
-      "from": "obc-platform",
-      "to": "obc-app",
-      "issue": "#797",
-      "reason": "existing sensor/input/settings ports move below obc-app in FAR-04"
-    }
-  ]
+  "exceptions": []
 }

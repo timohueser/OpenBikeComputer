@@ -24,7 +24,7 @@
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use obc_app::{CadenceSource, HeartRateSource, PowerSource};
+use obc_ports::{CadenceSource, HeartRateSource, PowerSource};
 
 /// Latest heart rate (bpm), fresh-mailbox (`try_take` yields it once), drained by [`SensorHr`].
 static HR: Signal<CriticalSectionRawMutex, u16> = Signal::new();

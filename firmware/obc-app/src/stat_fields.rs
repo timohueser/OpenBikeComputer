@@ -20,9 +20,9 @@ use obc_render::text::TextAlign;
 use obc_route::{Profile, RouteReader, Waypoints};
 
 use crate::activity::Activity;
-use crate::hal::Fix;
 use crate::i18n::{t, Msg};
 use crate::settings::{DateTime, Language, Units};
+use obc_ports::Fix;
 
 /// The narrow live-data view a stat field formats from — exactly what [`StatField::cell`] reads,
 /// nothing more. Deliberately decoupled from the full draw context

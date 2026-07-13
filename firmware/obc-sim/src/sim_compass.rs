@@ -2,7 +2,7 @@
 //! host-side mirror of the device's magnetometer. Read through the same trait; the app only
 //! consults it while stopped on a heading-up map.
 
-use obc_app::CompassSource;
+use obc_ports::CompassSource;
 
 /// A compass backed by a single overridable heading (degrees CW from north). `None` until the
 /// panel sets one, so before then the app holds north / the last GPS course while stopped.

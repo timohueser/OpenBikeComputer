@@ -2,7 +2,7 @@
 //! screen through, so the panel is a *swappable part* and the rendering stack never couples to it.
 //!
 //! The whole shared rendering stack (`obc-render` / `obc-app` / `obc-reader` / `obc-route`,
-//! [`FbDevice64`](crate::FbDevice64), the [`Dirty`](obc_app::Dirty) model) is panel-agnostic:
+//! [`FbDevice64`](crate::FbDevice64), and the app's dirty model) is panel-agnostic:
 //! it renders a frame into one **RGB222 / device-64 framebuffer** (the 64-colour gamut is the cap, by
 //! design — one byte per pixel, `0b00_RR_GG_BB`). A concrete display is then nothing more than a
 //! [`DisplayDriver`]: hand it that framebuffer and it puts it on glass. Adding or swapping a panel is

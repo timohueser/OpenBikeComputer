@@ -381,7 +381,8 @@ mod tests {
     /// map pan **~all**. The oracle inside [`Present::present`] backs every count.
     #[test]
     fn app_scenarios_idle_is_free_tick_is_small_pan_is_most() {
-        use obc_app::{App, AppState, InputClock};
+        use obc_app::{App, AppState};
+        use obc_ports::InputClock;
         use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
         // The device resolution is the single obc-platform authority, not a re-declared literal.

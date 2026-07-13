@@ -160,6 +160,7 @@ embedded-graphics = "0.8"
 # feature unification then applies it to the obc-render/obc-reader/obc-route edges below (and
 # obc-platform's transitive ones) too. The board crate is the nRF, so it's always on.
 obc-app = { path = "../obc-app", features = ["nrf-mem"] } # App/init_map + render_map (#125); MAX_ROUTES / TrackAction / TrackSink for the SD `Storage`; the budget assert's App/cache sizes
+obc-ports = { path = "../obc-ports" } # Semantic sensor/input/track/settings contracts implemented by board composition.
 obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the N4 map path renders from (#125)
 obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx for the `/routes` catalog + GPX (SD `Storage`)
 # The SD-staged DFU foundation (epic #615): the OBCU container + boot-state codec the app-side

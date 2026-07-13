@@ -4,12 +4,11 @@
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_reader::Reader;
 use obc_render::{zoom_for_mpp, Canvas, Clock, MapRenderer, NoopClock, RenderStats, Viewport};
-use obc_route::{ClimbProfile, Climbs, Profile, RouteMatch, RouteReader, TrackPoint, Waypoints};
+use obc_route::{ClimbProfile, Climbs, Profile, RouteMatch, RouteReader, Waypoints};
 
 use crate::activity::{Activity, Mode};
 use crate::breadcrumb::Breadcrumb;
 use crate::dirty::Dirty;
-use crate::hal::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 use crate::input::Gesture;
 use crate::input_plane::InputPlane;
 use crate::ride::RideSummary;
@@ -17,6 +16,7 @@ use crate::route::{Catalog, RouteSummary};
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack, WarningFlags};
 use crate::settings::{DateTime, Settings};
 use crate::wall_clock::WallClock;
+use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors, TrackPoint};
 
 /// How the camera relates to the user's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2654,7 +2654,7 @@ impl App {
     }
 
     /// Seed the live settings from the host's persistent store at boot. The host calls this
-    /// once after construction with [`SettingsStore::load`](crate::hal::SettingsStore::load)'s
+    /// once after construction with [`SettingsStore::load`](obc_ports::SettingsStore::load)'s
     /// value (or [`Settings::default`] when nothing is stored); it leaves the dirty flag clear,
     /// so seeding the boot value never triggers a needless write-back.
     pub fn set_settings(&mut self, settings: Settings) {
@@ -3393,7 +3393,7 @@ fn union_rect(a: Rectangle, b: Rectangle) -> Rectangle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hal::{CompassSource, LocationSource};
+    use obc_ports::{CompassSource, LocationSource};
 
     /// A location source that yields one fix then runs dry (so a single `tick` integrates it).
     struct OneFix(Option<Fix>);
@@ -3443,16 +3443,16 @@ mod tests {
     /// An altimeter that yields one altitude sample then runs dry (so a single `tick`
     /// integrates exactly one barometric reading, matching the once-per-tick contract).
     struct OneAlt(Option<f32>);
-    impl crate::hal::AltimeterSource for OneAlt {
+    impl obc_ports::AltimeterSource for OneAlt {
         fn poll(&mut self) -> Option<f32> {
             self.0.take()
         }
     }
 
     /// A clock source that yields one GPS UTC time then runs dry (one fresh stamp per `tick`).
-    struct OneClock(Option<crate::hal::GpsTime>);
-    impl crate::hal::ClockSource for OneClock {
-        fn poll(&mut self) -> Option<crate::hal::GpsTime> {
+    struct OneClock(Option<obc_ports::GpsTime>);
+    impl obc_ports::ClockSource for OneClock {
+        fn poll(&mut self) -> Option<obc_ports::GpsTime> {
             self.0.take()
         }
     }
@@ -3463,7 +3463,7 @@ mod tests {
 
     /// Tick once with only a GPS clock source (no fix / other sensors), at the map-plane clock
     /// `now_ms` — the timebase `wall_clock_now` reads, set here so the stamp + read agree.
-    fn tick_clock(app: &mut App, t: crate::hal::GpsTime, now_ms: u32) {
+    fn tick_clock(app: &mut App, t: obc_ports::GpsTime, now_ms: u32) {
         app.now_ms = now_ms; // mirror `advance_animations(now)` running right before `tick(now)`
         let mut loc = OneFix(None);
         let mut clock = OneClock(Some(t));
@@ -3485,8 +3485,8 @@ mod tests {
         );
     }
 
-    fn gps_time(hour: u8, minute: u8, second: u8) -> crate::hal::GpsTime {
-        crate::hal::GpsTime { utc: DateTime { year: 2026, month: 6, day: 30, hour, minute }, second }
+    fn gps_time(hour: u8, minute: u8, second: u8) -> obc_ports::GpsTime {
+        obc_ports::GpsTime { utc: DateTime { year: 2026, month: 6, day: 30, hour, minute }, second }
     }
 
     /// In "Set from GPS" mode a resolved GPS UTC stamps the wall clock (the UTC anchor shifted into
@@ -3635,8 +3635,8 @@ mod tests {
     /// A track sink that counts recorded points.
     #[derive(Default)]
     struct CountSink(usize);
-    impl crate::hal::TrackSink for CountSink {
-        fn record(&mut self, _p: obc_route::TrackPoint) -> Result<(), crate::hal::TrackError> {
+    impl obc_ports::TrackSink for CountSink {
+        fn record(&mut self, _p: obc_ports::TrackPoint) -> Result<(), obc_ports::TrackError> {
             self.0 += 1;
             Ok(())
         }
@@ -3644,9 +3644,9 @@ mod tests {
 
     /// A track sink whose every append fails — the "card pulled / write error mid-ride" case.
     struct FailSink;
-    impl crate::hal::TrackSink for FailSink {
-        fn record(&mut self, _p: obc_route::TrackPoint) -> Result<(), crate::hal::TrackError> {
-            Err(crate::hal::TrackError)
+    impl obc_ports::TrackSink for FailSink {
+        fn record(&mut self, _p: obc_ports::TrackPoint) -> Result<(), obc_ports::TrackError> {
+            Err(obc_ports::TrackError)
         }
     }
 
@@ -3955,7 +3955,7 @@ mod tests {
 
     /// A heart-rate strap that yields one sample then runs dry (the fresh-mailbox contract).
     struct OneHr(Option<u16>);
-    impl crate::hal::HeartRateSource for OneHr {
+    impl obc_ports::HeartRateSource for OneHr {
         fn poll(&mut self) -> Option<u16> {
             self.0.take()
         }
@@ -3963,7 +3963,7 @@ mod tests {
 
     /// A power meter that yields one sample then runs dry.
     struct OnePower(Option<u16>);
-    impl crate::hal::PowerSource for OnePower {
+    impl obc_ports::PowerSource for OnePower {
         fn poll(&mut self) -> Option<u16> {
             self.0.take()
         }
@@ -3971,7 +3971,7 @@ mod tests {
 
     /// A cadence sensor that yields one sample then runs dry.
     struct OneCadence(Option<u8>);
-    impl crate::hal::CadenceSource for OneCadence {
+    impl obc_ports::CadenceSource for OneCadence {
         fn poll(&mut self) -> Option<u8> {
             self.0.take()
         }

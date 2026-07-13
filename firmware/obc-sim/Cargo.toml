@@ -12,6 +12,8 @@ obc-reader = { path = "../obc-reader" }
 obc-route = { path = "../obc-route", features = ["alloc"] }
 obc-render = { path = "../obc-render" }
 obc-app = { path = "../obc-app" }
+# Semantic sensor/input/track/settings ports implemented by the simulator host.
+obc-ports = { path = "../obc-ports" }
 # The DFU byte formats (epic #615 S5, #620): the sim stages a synthetic OBCU `UPDATE.BIN` with
 # `obc-dfu`'s encoder and runs the *real* `armer::scan` over it, so the "Install update from card"
 # confirm/progress/error screens render off the same validation the board runs.

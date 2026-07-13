@@ -7,6 +7,9 @@ description = "Desktop USB feeder for the OBC prototype (issue #38): replays a r
 
 [dependencies]
 # The `Fix` the player emits + the trait methods used to poll it (`LocationSource`/`AltimeterSource`).
+obc-ports = { path = "../obc-ports" }
+# Input gesture timing remains app policy; the feeder derives its synthetic hold duration from the
+# shared threshold so hardware-in-the-loop taps/holds cannot drift.
 obc-app = { path = "../obc-app" }
 # The canonical debug-link wire codec (`Telemetry`/`parse_telemetry`/`format_fix`), authored once on
 # the device side and reused here so the two halves can't drift (issue #71). DEFAULT features only — the

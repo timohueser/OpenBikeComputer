@@ -1,4 +1,4 @@
-//! Board-agnostic firmware glue between the shared [`obc_app`](../obc_app) and a concrete board
+//! Board-agnostic firmware glue between the shared app and a concrete board
 //! crate (`obc-fw-nrf54l`).
 //!
 //! `no_std`, over `embedded-hal` / `embedded-graphics`, so the board crate stays thin (clocks,
@@ -17,14 +17,14 @@
 //!   banded present loop itself lives behind each board's `DisplayDriver`.
 //! - [`button_input`] — a [`ButtonInput`] debouncer over four
 //!   [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture recognizer through
-//!   [`InputSource`](obc_app::InputSource).
+//!   [`InputSource`](obc_ports::InputSource).
 //! - [`sd`] — FatFs [`ByteSource`](obc_route::ByteSource)/[`ByteSink`](obc_route::ByteSink) and
-//!   [`TrackSink`](obc_app::TrackSink) adapters over an [`embedded_sdmmc`] SD card.
+//!   [`TrackSink`](obc_ports::TrackSink) adapters over an [`embedded_sdmmc`] SD card.
 //! - [`synth`] — [`SynthLocation`], a board-agnostic synthetic moving
-//!   [`LocationSource`](obc_app::LocationSource) — the `debug-link`-off fallback fake GPS that walks
+//!   [`LocationSource`](obc_ports::LocationSource) — the `debug-link`-off fallback fake GPS that walks
 //!   a slow square loop (always compiled, *not* behind `debug-link`, since it *is* the
 //!   debug-link-off path).
-//! - [`fuel`] — [`StubFuelGauge`], a fixed-level [`FuelGauge`](obc_app::FuelGauge) stand-in until
+//! - [`fuel`] — [`StubFuelGauge`], a fixed-level [`FuelGauge`](obc_ports::FuelGauge) stand-in until
 //!   the nPM1300 PMIC fuel gauge is wired in.
 //!
 //! ## Two-plane architecture — input/overlay vs. map (issue #48)
@@ -36,21 +36,21 @@
 //!
 //! - **High-priority plane** — an embassy **`InterruptExecutor`** at a priority *above* thread mode
 //!   but *below* the embassy-time driver (so its `Timer`s still wake mid-render). It owns the
-//!   [`ButtonInput`] debouncer, the shared [`InputPlane`](obc_app::InputPlane), and the **overlay**
+//!   [`ButtonInput`] debouncer, the shared app input plane, and the **overlay**
 //!   framebuffer. Every few ms it *preempts the map render*, samples the buttons, recognises
 //!   gestures into a channel, and repaints the hold bulge — so press-to-feedback latency stays
 //!   bounded regardless of map-render time.
-//! - **Low-priority plane** — the thread-mode executor running the [`App`](obc_app::App): screen
+//! - **Low-priority plane** — the thread-mode executor running the app: screen
 //!   stack, camera, sensors, SD, and the **map** render. Each loop it drains the gesture channel,
-//!   advances animations, polls sensors → [`App::tick`](obc_app::App::tick), and re-renders the map
-//!   on [`Dirty::map`](obc_app::Dirty) — never the overlay.
+//!   advances animations, polls sensors through [`obc_ports`], and re-renders the map on the app's
+//!   dirty signal — never the overlay.
 //!
 //! The only shared state is a lock-free `Channel<Gesture>` plus the two **disjoint** framebuffers,
 //! so the long map render holds no lock against the input plane. Whatever display resource the two
 //! planes genuinely share (the framebuffer/transport on a banded board, a frame-flip register on a
 //! scan-out board) is guarded by a short critical section in the board's present helper. A
 //! `single-executor` fallback drives both planes inline through
-//! [`App::handle_input`](obc_app::App::handle_input); the preemptive split is the shipping default.
+//! the app's input handler; the preemptive split is the shipping default.
 
 #![no_std]
 

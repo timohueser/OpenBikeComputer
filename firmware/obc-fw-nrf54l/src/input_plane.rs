@@ -25,8 +25,9 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
-use obc_app::{Gesture, InputClock, InputEvent, InputPlane, InputSource};
+use obc_app::{Gesture, InputPlane};
 use obc_platform::ButtonInput;
+use obc_ports::{InputClock, InputEvent, InputSource};
 
 // ============================ Two-plane input + overlay ============================
 // The map render (`render_map` + the FLPR frame scan the M33 awaits) would block its executor for
