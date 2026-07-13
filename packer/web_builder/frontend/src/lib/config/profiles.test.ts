@@ -35,7 +35,7 @@ function schemaEnvelope(): SchemaEnvelope {
                 multiplier: { oneOf: [{ type: "number", minimum: 1.0 }, { const: "forbidden" }] },
                 profile: {
                     properties: {
-                        name: { maxLength: 12 },
+                        name: { maxLength: 12, "x-maxUtf8Bytes": 12 },
                         default: { default: 2.0 },
                         highway: {
                             propertyNames: {
@@ -74,6 +74,13 @@ describe("readProfileSchema", () => {
         const bare = { schema_version: 1, format_version: 6, source: "binary", schema: { $defs: { style: { properties: {} } } } } as unknown as SchemaEnvelope;
         expect(readProfileSchema(bare)).toBeNull();
         expect(readProfileSchema(null)).toBeNull();
+    });
+
+    it("prefers the schema's UTF-8 byte cap over JSON Schema character length", () => {
+        const env = schemaEnvelope() as any;
+        env.schema.$defs.profile.properties.name.maxLength = 99;
+        env.schema.$defs.profile.properties.name["x-maxUtf8Bytes"] = 12;
+        expect(readProfileSchema(env)?.nameMaxBytes).toBe(12);
     });
 });
 

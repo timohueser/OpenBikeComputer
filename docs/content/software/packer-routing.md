@@ -590,7 +590,7 @@ That this is the *same* quadtree the device walks closes the loop with the other
 Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a drawn box the sources are cropped to), pick a style, build, download. Three ideas shape it:
 
 - **Presets over knobs.** The main page offers complete style presets — Bikepacking, Minimal, High detail — each a full packer config shipped in [`packer/presets/`](src:packer/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
-- **The binary is the schema authority.** `obc-pack schema` prints a JSON Schema describing exactly the config the installed binary parses, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear in the editor because the *schema* says so, not because the frontend shipped in lockstep.
+- **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the web server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten.
 - **A stateless server.** The working config lives in the browser ("Custom — based on Bikepacking"), never on the server; builds run through a bounded queue into per-job directories and stream progress live. That shape runs locally today and would survive a shared deployment unchanged.
 
 ## Following a route
@@ -710,7 +710,7 @@ let (back, fwd) = if !self.started {
 
 - The packer pipeline driver: [`obc-pack/src/main.rs`](src:firmware/obc-pack/src/main.rs)
 - Config + first-match styling: [`obc-pack/src/config.rs`](src:firmware/obc-pack/src/config.rs)
-- The config's JSON Schema (served as `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:firmware/obc-pack/schema/config.schema.json)
+- The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:firmware/obc-pack/schema/config.schema.json)
 - The web builder — FastAPI server + Svelte app: [`packer/web_builder/`](src:packer/web_builder)
 - OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:firmware/obc-pack/src/ingest.rs)
 - The quadtree build: [`obc-pack/src/quadtree.rs`](src:firmware/obc-pack/src/quadtree.rs)

@@ -335,7 +335,11 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.first().map(String::as_str) == Some("schema") {
-        println!("{}", obc_pack::config::schema_envelope());
+        if args.get(1).map(String::as_str) == Some("--config") {
+            print!("{}", obc_pack::config::config_schema_json());
+        } else {
+            println!("{}", obc_pack::config::schema_envelope());
+        }
         return ExitCode::SUCCESS;
     }
     match run() {
