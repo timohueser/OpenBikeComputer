@@ -24,20 +24,24 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use heapless::Vec;
 
-use crate::byte_io::{ByteSource, Error as IoError};
-use crate::codec::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32};
-use crate::format::{
+use crate::geo::{cos_lat, ground_dist_m_cl};
+use crate::{BBox, Error, M_PER_DEG};
+use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
+use obc_formats::obcm::PoiCategory;
+use obc_formats::obcm::{
     BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_DASHED_BIT,
     STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
 };
-use crate::geo::{cos_lat, ground_dist_m_cl};
-use crate::poi_table::PoiCategory;
-use crate::{BBox, Error, M_PER_DEG};
+use obc_formats::obcm::{
+    CHUNK_END, FEATURE_HEADER_LEN, MAGIC, NAV_DIR_LEN, POI_CAT_ENTRY_LEN, POI_HOURS_REF_NONE, POI_RECORD_LEN,
+    STYLE_RECORD_LEN, VERSION,
+};
+// Compatibility exports for existing `obc_reader::reader::*` and crate-root paths. Remove in the
+// #812 final audit once downstream crates import the authority directly.
 pub use obc_formats::obcm::{
     HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN,
     NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN as POI_NAME_MAX,
 };
-use obc_formats::obcm::{NAV_DIR_LEN, POI_CAT_ENTRY_LEN, POI_RECORD_LEN};
 
 /// Upper bound on the vertices of a single decoded feature — the capacity a caller
 /// sizes the `points` scratch buffer to for [`Reader::for_each_feature`].
@@ -690,11 +694,11 @@ pub struct MapHeader {
 /// Shared by [`read_header`] and [`MapTables::parse`] so the byte layout lives in one place.
 /// Offsets follow `obc-pack`'s header pack (see OBCM_Spec.md).
 fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
-    if &h[0..4] != b"OBCM" {
+    if h[0..4] != MAGIC {
         return Err(Error::BadMagic);
     }
     let version = h[4];
-    if version != 10 {
+    if version != VERSION {
         return Err(Error::BadVersion);
     }
     // Header field order: lat,lon,lat,lon (see `obc-pack`'s `serialize.rs` header pack).
@@ -888,7 +892,7 @@ impl<'a> Reader<'a> {
     pub fn poi_hours(&self, hours_ref: u16) -> Option<crate::hours::WeeklySchedule> {
         // The no-hours sentinel and any index past the pool ⇒ no schedule.
         let dir = &self.tables.pois;
-        if hours_ref == 0xFFFF || (hours_ref as usize) >= dir.hours_pool_count {
+        if hours_ref == POI_HOURS_REF_NONE || (hours_ref as usize) >= dir.hours_pool_count {
             return None;
         }
         // Byte offset of blob `hours_ref`: hours_pool_offset + 2 + hours_ref*29. All checked so a
@@ -1052,7 +1056,7 @@ impl<'a> Reader<'a> {
             for r in 0..take {
                 let off = r * POI_RECORD_LEN;
                 let subtype = win[off + 8];
-                if subtype == 0xFF {
+                if subtype == CHUNK_END {
                     return; // end-of-records sentinel — nothing valid follows in this chunk
                 }
                 // Skip an out-of-range subtype (0, or past the table) cleanly — never panic/UB.
@@ -1673,8 +1677,8 @@ fn decode_chunk_into<const P: usize, const R: usize>(
     let cs = chunk.len();
     let mut off = 0usize;
 
-    while off + 12 <= cs {
-        if chunk[off] == 0xFF {
+    while off + FEATURE_HEADER_LEN <= cs {
+        if chunk[off] == CHUNK_END {
             break;
         }
         let style_id = chunk[off];
@@ -1688,7 +1692,7 @@ fn decode_chunk_into<const P: usize, const R: usize>(
             let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
             let has_holes = flags & FEATURE_FLAG_HOLES != 0;
             let dsize = if is_16 { 2 } else { 1 };
-            off += 12;
+            off += FEATURE_HEADER_LEN;
             off = skip_ring(chunk, off, ext_pt_count, false, dsize);
             if is_poly && has_holes {
                 off = for_each_hole(chunk, off, |c, o, hpc| skip_ring(c, o, hpc, true, dsize));
@@ -1722,7 +1726,7 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
     points: &'b mut Vec<(i32, i32), P>,
     ring_lens: &'b mut Vec<usize, R>,
 ) -> Option<(FeatureRef<'b>, usize)> {
-    if off + 12 > chunk.len() || chunk[off] == 0xFF {
+    if off + FEATURE_HEADER_LEN > chunk.len() || chunk[off] == CHUNK_END {
         return None;
     }
     let feat_off = off;
@@ -1731,7 +1735,7 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
     let ax = rd_i32(chunk, off + 3);
     let ay = rd_i32(chunk, off + 7);
     let flags = chunk[off + 11];
-    let mut off = off + 12;
+    let mut off = off + FEATURE_HEADER_LEN;
 
     let is_16 = flags & FEATURE_FLAG_16BIT != 0;
     let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
@@ -1886,14 +1890,14 @@ fn parse_styles(
     // `count*8` record bytes follow the count, clamped to what the file holds so the `o + 8 > want`
     // break below stops at the last whole record in a truncated table.
     let avail = total - (style_offset + 1);
-    let want = (count * 8).min(avail);
-    let mut buf = [0u8; 256 * 8];
+    let want = (count * STYLE_RECORD_LEN).min(avail);
+    let mut buf = [0u8; 256 * STYLE_RECORD_LEN];
     if want > 0 {
         src.read_at((style_offset + 1) as u32, &mut buf[..want]).map_err(|_| Error::BadOffset)?;
     }
     let mut o = 0usize;
     for _ in 0..count {
-        if o + 8 > want {
+        if o + STYLE_RECORD_LEN > want {
             break;
         }
         let id = buf[o];
@@ -1907,7 +1911,7 @@ fn parse_styles(
         // whether they carry a color (black `0x0000` is a legal secondary color).
         let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(&buf, o + 6)) } else { None };
         styles[id as usize] = Some(Style { id, z_index, color, weight, priority, dashed, color2 });
-        o += 8;
+        o += STYLE_RECORD_LEN;
     }
     Ok(())
 }
@@ -2052,7 +2056,7 @@ fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
     let mut off = 0usize;
     while off + NAV_NODE_FIXED_LEN <= chunk.len() {
         let degree = chunk[off + 12] as usize;
-        if degree == 0xFF {
+        if degree == usize::from(CHUNK_END) {
             break;
         }
         let end = off + NAV_NODE_FIXED_LEN + degree * NAV_NEIGHBOR_LEN;
@@ -2165,7 +2169,7 @@ fn parse_nav_profiles(
         let mut name = [0u8; NAV_PROFILE_NAME_LEN];
         name.copy_from_slice(&buf[0..NAV_PROFILE_NAME_LEN]);
         // Name length = bytes up to the first 0xFF pad (the §7/§8 name convention).
-        let name_len = name.iter().position(|&b| b == 0xFF).unwrap_or(NAV_PROFILE_NAME_LEN);
+        let name_len = name.iter().position(|&b| b == CHUNK_END).unwrap_or(NAV_PROFILE_NAME_LEN);
         let mut highway = [0u8; 32];
         highway.copy_from_slice(&buf[12..44]);
         let mut surface = [0u8; 8];

@@ -6,8 +6,7 @@
 //! format. The on-disk layout is specified in `OBCR_Spec.md`.
 //!
 //! Modules:
-//! - [`byte_io`] — the [`ByteSource`]/[`ByteSink`] abstractions over file / SD / USB
-//!   bytes, plus a [`SliceSource`](byte_io::SliceSource) for in-memory bytes.
+//! - [`byte_io`] — compatibility paths for the `obc-formats` byte-I/O seam.
 //! - [`reader`] — header / chunk-index parsing and on-demand chunk decode
 //!   ([`RouteReader`], [`RouteSummary`], [`ChunkMeta`], [`RoutePoint`]).
 //! - [`profile`] — a route's elevation sampled to a fixed-width [`Profile`] for the

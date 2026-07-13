@@ -7,11 +7,12 @@
 mod common;
 
 use common::{decode, VecSink};
+use obc_formats::io::SliceSource;
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::{serialize_lods, LodLayer, NavProfile, Node as GeomNode};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch};
-use obc_route::{RouteIndex, RouteObjectInfo, RouteReader, SliceSource};
+use obc_route::{RouteIndex, RouteObjectInfo, RouteReader};
 
 /// Global bbox `(min_lon, min_lat, max_lon, max_lat)` µdeg — roomy so the node
 /// quadtree genuinely subdivides around the fixtures (multiple chunks ⇒ the tile

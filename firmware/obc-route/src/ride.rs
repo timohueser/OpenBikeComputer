@@ -50,12 +50,14 @@
 
 use heapless::String;
 
-use crate::byte_io::{ByteSink, ByteSource, Error};
-use crate::reader::NAME_CAP;
-use crate::track::{decode_record, TRACK_RECORD_LEN};
+use crate::track::decode_record;
+use obc_formats::io::{ByteSink, ByteSource, Error};
+use obc_formats::obcr::NAME_CAP;
+use obc_formats::ride::{is_supported_version, VERSION_V2};
+use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
 
-// Compatibility paths for the normative ride-object versions, sizes, sentinels, and primitive
-// length arithmetic now owned by `obc-formats`; streaming conversion remains in this crate.
+// Compatibility paths for existing module/root exports; streaming conversion remains here. Remove
+// these aliases in the #812 final audit.
 pub use obc_formats::ride::{
     checked_object_len as checked_ride_object_len, header_len as ride_header_len, object_len as ride_object_len,
     point_len as ride_point_len, CAD_NONE as RIDE_CAD_NONE, ELE_NONE as RIDE_ELE_NONE,
@@ -124,7 +126,7 @@ impl RideInfo {
         let mut head = [0u8; 3];
         src.read_at(0, &mut head)?;
         let version = head[0];
-        if version != 1 && version != 2 {
+        if !is_supported_version(version) {
             return Err(Error::BadVersion);
         }
         let name_len = u16::from_le_bytes([head[1], head[2]]) as usize;
@@ -140,7 +142,7 @@ impl RideInfo {
             return Err(Error::BadOffset);
         }
         // v2 sensor summary (tail offset 20..28); v1 has no such bytes → all absent.
-        let (avg_hr, max_hr, avg_cadence, avg_power, max_power) = if version >= 2 {
+        let (avg_hr, max_hr, avg_cadence, avg_power, max_power) = if version >= VERSION_V2 {
             (
                 opt_u8(tail[20], RIDE_HR_NONE),
                 opt_u8(tail[21], RIDE_HR_NONE),

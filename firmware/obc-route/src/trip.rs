@@ -34,9 +34,8 @@
 
 use heapless::{String, Vec};
 
-use crate::byte_io::{ByteSink, ByteSource, Error};
-use crate::reader::NAME_CAP;
-use obc_reader::codec::rd_u16;
+use obc_formats::io::{rd_u16, ByteSink, ByteSource, Error};
+use obc_formats::obcr::NAME_CAP;
 
 /// The trip-object version [`write_trip`] writes (spec §7.7). [`TripMeta::read`] / [`TripSummary::read`]
 /// accept only this version.

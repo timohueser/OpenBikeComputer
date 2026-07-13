@@ -6,8 +6,10 @@ publish = false  # internal firmware crate — not published to crates.io
 description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 
 [dependencies]
-# Shared definition of the binary format — the reader that reads back what this
-# writes; also used by the obcm_diff comparator.
+# Normative OBCM constants and primitive codecs shared with every producer/consumer.
+obc-formats = { path = "../obc-formats" }
+# High-level reader algorithms used for round-trip comparison, geometry capacity, POI distance,
+# and the obcm_diff tool. Format facts come from obc-formats, not this consumer.
 obc-reader = { path = "../obc-reader" }
 # `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.

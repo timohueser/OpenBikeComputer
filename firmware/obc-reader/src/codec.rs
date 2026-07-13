@@ -1,4 +1,5 @@
 //! Compatibility paths for the endian primitives now owned by `obc-formats`.
+//! Remove in the #812 final audit.
 
 pub use obc_formats::io::{
     checked_put_i16, checked_put_i32, checked_put_u16, checked_put_u32, checked_rd_f32, checked_rd_i16, checked_rd_i32,

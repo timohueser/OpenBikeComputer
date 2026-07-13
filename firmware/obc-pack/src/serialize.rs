@@ -13,9 +13,17 @@
 
 use std::io::{self, Seek, SeekFrom, Write};
 
-use obc_reader::format::{
-    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_DASHED_BIT,
-    STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
+use obc_formats::obcm::{
+    BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON,
+    FEATURE_HEADER_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN,
+};
+
+// FAR compatibility paths for existing packer callers. These aliases carry no independent values;
+// remove them in the #812 final audit after downstream imports use `obc_formats::obcm`.
+pub use obc_formats::obcm::{
+    HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_MAX_PROFILES,
+    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN,
+    POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, VERSION as OBCM_VERSION,
 };
 
 use crate::nav::{polyline_len_m, NavGraph};
@@ -26,98 +34,9 @@ use crate::poi::{table_row, Poi};
 /// midpoints `densify` will insert.
 pub(crate) const MAX_SEGMENT: i64 = 30_000;
 
-/// Fixed header length (bytes) — v6 appended the 4-byte POI Section Offset (§1),
-/// v8 the 4-byte Nav Graph Offset (36 → 40).
-pub const HEADER_LEN: usize = 40;
-/// One LOD-table entry, `<fIIHI>`.
-pub const LOD_ENTRY_LEN: usize = 18;
-
-/// The OBCM format version byte written into the header (`OBCM_Spec.md` §1). v10 (epic #556 #557)
-/// grows the style record 6 → 8 bytes: the flags byte gains a `dashed` bit (bit 2) and a
-/// `color2-present` bit (bit 3), and a trailing `color2` u16 (RGB565 secondary color) is appended.
-/// The header layout is unchanged (still 40 bytes); the geometry, POI, and nav sections are
-/// byte-identical to v9.
-pub const OBCM_VERSION: u8 = 10;
-
-/// POI category count baked into every v7 map's directory (§7.1). Fixed by the
-/// canonical [`crate::poi::POI_TABLE`]: category ids 1..=6.
-pub const POI_CATEGORY_COUNT: u8 = 6;
-
-/// One 36-byte POI record (§7.3): `int32 lat, int32 lon, u8 subtype, u8 name_len,
-/// [u8; 24] name, u16 hours_ref`. v7 widened the name 20 → 24 and replaced the two
-/// v6 reserved bytes with `hours_ref`.
-pub const POI_RECORD_LEN: usize = 36;
-
-/// The `Name` field width inside a POI record (§7.3): 24 bytes, `0xFF`-padded.
-pub const POI_NAME_LEN: usize = 24;
-
-/// `hours_ref` sentinel (§7.3): the POI has no pooled hours. Stored at record
-/// bytes `[34..36]` when a POI has no parseable `opening_hours`.
-pub const POI_HOURS_REF_NONE: u16 = 0xFFFF;
-
-/// One hours-pool blob (§7.5): `flags u8` + `7 days × 2 slots × (open_q, close_q)`.
-/// Matches [`crate::hours::BLOB_LEN`]; re-asserted equal below.
-pub const POI_HOURS_BLOB_LEN: usize = 29;
-
-/// Fixed POI chunk capacity (bytes) the packer writes (§7.1). 512 ⇒ `512 / 36 = 14`
-/// records per chunk. Shared by every category, stored once in the directory's
-/// `Chunk Size`.
-pub const POI_CHUNK_SIZE: usize = 512;
-
-/// One POI-directory category entry (§7.1): `u8 category_id, u32 index_offset,
-/// u32 index_node_count, u32 chunk_count`.
-pub const POI_CAT_ENTRY_LEN: usize = 13;
-
 // The serializer's blob length must equal `hours.rs`'s `Schedule::encode` width, or
 // the pool bytes and the `POI_HOURS_BLOB_LEN` the directory advertises disagree.
 const _: () = assert!(POI_HOURS_BLOB_LEN == crate::hours::BLOB_LEN, "hours blob length must match hours.rs");
-
-/// The v9 nav directory (§8.1): `index_offset u32, index_node_count u32, node_chunk_count u32,
-/// edge_pool_offset u32, edge_chunk_count u32, chunk_size u16, profile_table_offset u32,
-/// profile_count u8, reserved u8` — the graph's resident header (28 bytes; v8 was 22). The profile
-/// table (§8.6) is written immediately after this directory, before the node index.
-pub const NAV_DIR_LEN: usize = 28;
-
-/// Fixed nav chunk capacity (bytes) the packer writes (§8.1) — **pinned to 512** in v9 (the reader
-/// rejects any other value): shared by node chunks and edge-pool chunks. A leaf holds a handful of
-/// junction records (~58 B at degree 3) so one chunk read serves one A* settle. The geometry
-/// sections' configurable `chunk_size` (§5) is independent — nav is fixed.
-pub const NAV_CHUNK_SIZE: usize = 512;
-
-/// Fixed prefix of a node record (§8.3): `lat i32, lon i32, node_id u32, degree
-/// u8`; `degree` × [`NAV_NEIGHBOR_LEN`] neighbor entries follow.
-pub const NAV_NODE_FIXED_LEN: usize = 13;
-
-/// One v9 neighbor entry (§8.3), 15 bytes: `neighbor_id u32, dlat i16, dlon i16, edge_id u32,
-/// cost_m u16, way_kind u8`. `dlat`/`dlon` are µdeg **deltas from the record's own lat/lon** (N1
-/// guarantees they fit `i16`); `cost_m` is raw ground meters (N1 guarantees ≤ 60 000, fits `u16`);
-/// `way_kind` is N1's packed class byte. Slimmed from v8's 20 bytes (absolute i32 coords + u32
-/// cost, no kind) — the deltas are what shrink the adjacency 25%.
-pub const NAV_NEIGHBOR_LEN: usize = 15;
-
-/// Fixed prefix of a v9 edge record (§8.4), 15 bytes: `length_m u32, pt_count u16, way_kind u8,
-/// anchor_lat i32, anchor_lon i32`; `pt_count - 1` × `(dlat i16, dlon i16)` deltas follow. v8 was
-/// 14 bytes (no `way_kind`).
-pub const NAV_EDGE_FIXED_LEN: usize = 15;
-
-/// One §8.6 profile record (`Name [u8;12]`, `highway_mult [u8;32]`, `surface_mult [u8;8]`).
-pub const NAV_PROFILE_LEN: usize = 52;
-
-/// The `Name` field width inside a profile record (§8.6): 12 bytes, `0xFF`-padded UTF-8 (the POI
-/// name convention).
-pub const NAV_PROFILE_NAME_LEN: usize = 12;
-
-/// Profile-count cap (§8.6): the directory's `profile_count` is a `u8` the reader rejects outside
-/// `1..=8`, so a map carries at most eight named profiles.
-pub const NAV_MAX_PROFILES: usize = 8;
-
-/// Degree cap (§8.3). A record must fit one chunk
-/// (`NAV_NODE_FIXED_LEN + 24 × NAV_NEIGHBOR_LEN = 373 ≤ 512`), and real OSM
-/// highway junctions never approach it (a big roundabout is degree ~8). A node
-/// over the cap keeps its first 24 neighbors (adjacency-build order — edge-pool
-/// order, deterministic) and the packer warns; the dropped arcs survive one-way
-/// via the neighbor's own record. `0xFF` stays the end-of-chunk sentinel.
-pub const NAV_MAX_DEGREE: usize = 24;
 
 // A cap-degree record must fit one chunk, or `pack_nav_chunk` would drop real junctions.
 const _: () = assert!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN <= NAV_CHUNK_SIZE);
@@ -163,7 +82,7 @@ pub struct NavProfile {
 /// `(chunk_size - 12) / 2 + 1` vertices. Above this the reader **silently
 /// truncates** past-cap vertices (`heapless` push fails, no error either side),
 /// corrupting the feature's fill/stroke.
-pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + 12;
+pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + FEATURE_HEADER_LEN;
 
 // The safe ceiling must itself fit the on-wire `u16` chunk_size field, or the bound is moot.
 const _: () = assert!(MAX_SAFE_CHUNK_SIZE <= u16::MAX as usize, "chunk_size is a u16 in the format");
@@ -297,7 +216,7 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
 pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     let mut styles = styles.to_vec();
     styles.sort_by_key(|s| s.id);
-    let mut data = Vec::with_capacity(1 + styles.len() * 8);
+    let mut data = Vec::with_capacity(1 + styles.len() * STYLE_RECORD_LEN);
     data.push(styles.len() as u8);
     for s in &styles {
         let priority = (s.priority as i32).clamp(1, 4);
@@ -422,7 +341,7 @@ pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_s
         data.extend_from_slice(&packed);
         kept += 1;
     }
-    data.resize(chunk_size, 0xFF);
+    data.resize(chunk_size, CHUNK_END);
     (data, features.len() - kept)
 }
 
@@ -568,7 +487,7 @@ impl FlattenTree for PoiNode {
 /// ASCII-folded + ≤ 24 bytes at ingest ([`crate::poi::normalize_name`]); truncate
 /// defensively so a stray long name can never overrun the fixed field.
 fn pack_poi_record(p: &PoiPoint) -> [u8; POI_RECORD_LEN] {
-    let mut rec = [0xFFu8; POI_RECORD_LEN];
+    let mut rec = [CHUNK_END; POI_RECORD_LEN];
     rec[0..4].copy_from_slice(&p.lat_udeg.to_le_bytes());
     rec[4..8].copy_from_slice(&p.lon_udeg.to_le_bytes());
     rec[8] = p.subtype;
@@ -599,7 +518,7 @@ fn pack_poi_chunk(points: &[PoiPoint], chunk_size: usize) -> (Vec<u8>, usize) {
     // A 0xFF subtype byte ends the records (mirrors the geometry chunk's style-id
     // sentinel). `data.resize` writes it and the rest of the padding in one go —
     // never a truncation, since `kept * 32 <= chunk_size` by construction.
-    data.resize(chunk_size, 0xFF);
+    data.resize(chunk_size, CHUNK_END);
     (data, points.len() - kept)
 }
 
@@ -905,7 +824,7 @@ fn flatten_nav_tree(root: &NavTreeNode) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
     let chunk_count = bins.len() as u32;
     let mut chunks: Vec<u8> = Vec::with_capacity(bins.len() * NAV_CHUNK_SIZE);
     for mut b in bins {
-        b.resize(NAV_CHUNK_SIZE, 0xFF);
+        b.resize(NAV_CHUNK_SIZE, CHUNK_END);
         chunks.extend_from_slice(&b);
     }
 
@@ -1006,7 +925,7 @@ fn pack_profile_table(profiles: &[NavProfile]) -> Vec<u8> {
         let name = p.name.as_bytes();
         let n = name.len().min(NAV_PROFILE_NAME_LEN);
         out.extend_from_slice(&name[..n]);
-        out.resize(out.len() + (NAV_PROFILE_NAME_LEN - n), 0xFF); // 0xFF-pad the name field
+        out.resize(out.len() + (NAV_PROFILE_NAME_LEN - n), CHUNK_END); // 0xFF-pad the name field
         out.extend_from_slice(&p.highway);
         out.extend_from_slice(&p.surface);
     }
@@ -1133,12 +1052,12 @@ pub fn serialize_nav_section(
         debug_assert!(rec_len <= NAV_CHUNK_SIZE, "split bounded every record to one chunk");
         let within = pool.len() % NAV_CHUNK_SIZE;
         if within + rec_len > NAV_CHUNK_SIZE {
-            pool.resize(pool.len() + (NAV_CHUNK_SIZE - within), 0xFF);
+            pool.resize(pool.len() + (NAV_CHUNK_SIZE - within), CHUNK_END);
         }
         edge_ids.push(pool.len() as u32);
         pack_edge_record(e, &mut pool);
     }
-    pool.resize(pool.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE, 0xFF);
+    pool.resize(pool.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE, CHUNK_END);
     let edge_chunk_count = (pool.len() / NAV_CHUNK_SIZE) as u32;
 
     // Adjacency with inline neighbor coords, capped at NAV_MAX_DEGREE.
@@ -1204,7 +1123,7 @@ fn header_bytes(
     nav_section_offset: usize,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN);
-    out.extend_from_slice(b"OBCM");
+    out.extend_from_slice(&MAGIC);
     out.push(OBCM_VERSION);
     out.extend_from_slice(&(global_bbox.1 as i32).to_le_bytes()); // min_lat
     out.extend_from_slice(&(global_bbox.0 as i32).to_le_bytes()); // min_lon

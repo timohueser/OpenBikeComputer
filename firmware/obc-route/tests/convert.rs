@@ -1,7 +1,8 @@
 //! GPX → OBCR conversion tests: convert an in-memory GPX, read it back with the
 //! reader, and check the geometry round-trips and the stats are exact.
 
-use obc_route::{gpx_to_obcr, Error, RouteIndex, RoutePoint, RouteReader, SliceSource};
+use obc_formats::io::{Error, SliceSource};
+use obc_route::{gpx_to_obcr, RouteIndex, RoutePoint, RouteReader};
 
 mod common;
 use common::{convert, decode, VecSink};
