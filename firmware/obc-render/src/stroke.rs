@@ -449,7 +449,7 @@ where
 }
 
 /// Project and stroke one map line (its exterior ring) — the draw phase's `Kind::Line` arm, and the
-/// single point where per-feature line styling branches on the resolved [`Style`](obc_reader::Style)
+/// single point where per-feature line styling branches on the resolved scene style
 /// (`dashed` + optional device-quantized `color2`):
 ///
 /// - **solid, no `color2`** → today's single stroke, byte-for-byte unchanged (the zero-cost path).

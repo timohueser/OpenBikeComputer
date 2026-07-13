@@ -25,7 +25,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use heapless::Vec;
 
 use crate::geo::{cos_lat, ground_dist_m_cl};
-use crate::{BBox, Error, M_PER_DEG};
+use crate::{BBox, Error, Kind, Style, M_PER_DEG};
 use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
 use obc_formats::obcm::PoiCategory;
 use obc_formats::obcm::{
@@ -192,26 +192,6 @@ impl QuadIndex for PoiCatEntry {
     fn node_count(&self) -> usize {
         self.node_count
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Style {
-    pub id: u8,
-    pub z_index: i8,
-    pub color: u16, // RGB565
-    pub weight: u8,
-    pub priority: u8,
-    /// Flag bit 2: the line is drawn dashed (else solid). Ignored for polygons.
-    pub dashed: bool,
-    /// Flag bit 3: the record's optional secondary color (RGB565). `None` when the flag is clear —
-    /// the two wire bytes are `0x0000` then and mean "no color2", not black.
-    pub color2: Option<u16>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Line,
-    Polygon,
 }
 
 /// Which caller-owned feature scratch bound rejected a complete encoded feature.

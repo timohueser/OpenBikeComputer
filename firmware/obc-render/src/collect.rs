@@ -26,7 +26,9 @@
 
 use heapless::Vec;
 
-use obc_reader::{BBox, CacheError, FeatureDecodeError, FeatureReadError, Kind, MapReadError, Reader};
+use obc_map_scene::{
+    BBox, Candidate, Feature, FeatureError, FeatureToken, Kind, MapScene, ReadFailures, SelectedFeatures,
+};
 
 use crate::{RenderStats, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, MAX_FRAME_RINGS, MAX_SPANS};
 
@@ -34,7 +36,7 @@ use crate::{RenderStats, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, 
 /// accumulate every visible feature's geometry (and its [`Span`]). Cleared (not freed) each frame.
 #[derive(Default)]
 pub(crate) struct FrameScratch {
-    // Per-feature decode scratch handed to `Reader::for_each_feature_filtered` / `decode_feature_at`.
+    // Per-feature decode scratch handed to the scene source's two streamed passes.
     dec_points: Vec<(i32, i32), MAX_DECODE_POINTS>,
     dec_ring_lens: Vec<usize, MAX_DECODE_RINGS>,
     // All drawn features' geometry, concatenated (filled in pass B).
@@ -52,7 +54,7 @@ impl FrameScratch {
     /// two-phase stub-select collect (see the module docs). On return, [`FrameScratch::spans`] /
     /// [`FrameScratch::spans_mut`] expose the drawn features' [`Span`]s (unordered — the caller
     /// sorts them into painter order).
-    pub(crate) fn collect(&mut self, reader: &Reader, lod: usize, view: &BBox, stats: &mut RenderStats) {
+    pub(crate) fn collect<S: MapScene>(&mut self, scene: &S, lod: usize, view: &BBox, stats: &mut RenderStats) {
         self.frame_points.clear();
         self.frame_ring_lens.clear();
         self.slots.clear();
@@ -62,14 +64,14 @@ impl FrameScratch {
         // the old per-priority-level masks are gone: pass A decodes every drawn feature in one walk.
         let mut vis_mask = [0u32; 8];
         for id in 0..=255u8 {
-            if reader.style(id).is_some() {
+            if scene.style(id).is_some() {
                 vis_mask[(id >> 5) as usize] |= 1 << (id & 31);
             }
         }
 
-        let candidates = self.collect_stubs(reader, lod, view, &vis_mask, stats);
-        let winners = self.select(reader);
-        let drawn = self.decode_winners(reader, lod, view, winners, stats);
+        let candidates = self.collect_stubs(scene, lod, view, &vis_mask, stats);
+        let winners = self.select();
+        let drawn = self.decode_winners(scene, lod, view, winners, stats);
 
         self.spans_len = drawn;
         stats.features_drawn = drawn;
@@ -103,15 +105,15 @@ impl FrameScratch {
         }
     }
 
-    /// **Pass A.** One chunk-major walk over the viewport's leaves ([`Reader::for_each_chunk`]),
-    /// decoding every visible feature once (its bbox comes free from the decode) and recording a
+    /// **Pass A.** One source-native walk over the viewport, decoding every visible feature once
+    /// (its bbox comes free from the decode) and recording a
     /// [`Stub`] — no geometry kept. On stub-buffer overflow the lowest-priority stub is evicted, so
     /// the buffer always holds the best-by-priority candidates (the triage that keeps the priority
     /// guarantee under span saturation). Returns the number of candidates that passed the per-feature
     /// cull; leaves the surviving stubs in `self.slots`.
-    fn collect_stubs(
+    fn collect_stubs<S: MapScene>(
         &mut self,
-        reader: &Reader,
+        scene: &S,
         lod: usize,
         view: &BBox,
         vis_mask: &[u32; 8],
@@ -125,88 +127,81 @@ impl FrameScratch {
         // Count of resident stubs at each priority level (1..=4 → index 0..=3), for O(1) worst-level
         // eviction triage.
         let mut level_count = [0u16; 4];
-        let mut chunks = 0usize;
+        let report = scene.visit_candidates(
+            lod,
+            view,
+            dec_points,
+            dec_ring_lens,
+            |sid| vis_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0,
+            |Candidate { token, feature: f }| {
+                let pts = f.points();
+                stats.features_tried += 1;
+                stats.points_tried += pts.len();
+                let Some(style) = scene.style(f.style_id) else {
+                    stats.malformed_features = stats.malformed_features.saturating_add(1);
+                    return;
+                };
 
-        let walk = reader.for_each_chunk(lod, view, |cid, node| {
-            chunks += 1;
-            match reader.for_each_feature_filtered(
-                lod,
-                cid,
-                &node,
-                dec_points,
-                dec_ring_lens,
-                |sid| vis_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0,
-                |f| {
-                    let style = match reader.style(f.style_id) {
-                        Some(s) => s,
-                        None => return,
-                    };
-
-                    let pts = f.points();
-                    stats.features_tried += 1;
-                    stats.points_tried += pts.len();
-
-                    // Per-feature bbox cull (tighter than the leaf); bounds come free from decode.
-                    if pts.is_empty() || !f.bbox().intersects(view) {
-                        return;
-                    }
-                    candidates += 1;
-
-                    let level = style.priority; // 1..=4
-                    let stub = Stub::new(cid, f.offset(), pts.len(), f.ring_lens().len(), f.style_id, arrival);
-                    arrival = arrival.saturating_add(1);
-
-                    if !slots.is_full() {
-                        let _ = slots.push(Slot::of_stub(stub));
-                        level_count[(level - 1) as usize] += 1;
-                        return;
-                    }
-
-                    // Buffer full — a streaming "keep the K lowest-keyed" selection, key =
-                    // (priority_level, arrival). This candidate's arrival is the largest seen so far,
-                    // so it can only displace a *higher-level* held stub; and to keep exactly the K
-                    // lowest keys, the one it displaces is the **highest-arrival** stub at the worst
-                    // (highest) level present. Evicting that specific stub — not just any at that
-                    // level — makes the survivors identical to the old level-major collector's set
-                    // under saturation too, so the render stays byte-identical there, not only when
-                    // nothing saturates. Equal-or-worse candidates are dropped, so a higher-priority
-                    // feature is never lost to a lower one.
-                    let worst = worst_level(&level_count);
-                    if level < worst {
-                        let mut victim = 0usize;
-                        let mut victim_arrival = 0u16;
-                        let mut found = false;
-                        for (i, slot) in slots.iter().enumerate() {
-                            let held = slot.stub();
-                            // `held.seq` still holds the pass-A arrival (select overwrites it later).
-                            if reader.style(held.style_id).map_or(0, |s| s.priority) == worst
-                                && (!found || held.seq > victim_arrival)
-                            {
-                                victim = i;
-                                victim_arrival = held.seq;
-                                found = true;
-                            }
-                        }
-                        // `worst` has a positive count, so a victim always exists.
-                        slots[victim] = Slot::of_stub(stub);
-                        level_count[(worst - 1) as usize] -= 1;
-                        level_count[(level - 1) as usize] += 1;
-                        stats.stub_evictions += 1;
-                    }
-                },
-            ) {
-                Ok(status) => {
-                    stats.feature_decode_capacity_drops =
-                        stats.feature_decode_capacity_drops.saturating_add(status.capacity_dropped);
-                    stats.malformed_features = stats.malformed_features.saturating_add(status.malformed);
+                // Scene sources are outside the renderer's trust boundary. Reject malformed ring
+                // partitions and invalid priority levels before they can reserve a stub or index
+                // the four-level triage table.
+                if !f.has_valid_rings() || !(1..=4).contains(&style.priority) {
+                    stats.malformed_features = stats.malformed_features.saturating_add(1);
+                    return;
                 }
-                Err(error) => record_read_error(stats, error),
-            }
-        });
-        if let Err(error) = walk {
-            record_read_error(stats, error);
-        }
-        stats.chunks_visited = chunks;
+
+                // Per-feature bbox cull (tighter than the leaf); bounds come free from decode.
+                if !f.bbox().intersects(view) {
+                    return;
+                }
+                candidates += 1;
+
+                let level = style.priority; // 1..=4
+                let stub = Stub::new(token, pts.len(), f.ring_lens().len(), f.style_id, f.kind, level, arrival);
+                arrival = arrival.saturating_add(1);
+
+                if !slots.is_full() {
+                    let _ = slots.push(Slot::of_stub(stub));
+                    level_count[(level - 1) as usize] += 1;
+                    return;
+                }
+
+                // Buffer full — a streaming "keep the K lowest-keyed" selection, key =
+                // (priority_level, arrival). This candidate's arrival is the largest seen so far,
+                // so it can only displace a *higher-level* held stub; and to keep exactly the K
+                // lowest keys, the one it displaces is the **highest-arrival** stub at the worst
+                // (highest) level present. Evicting that specific stub — not just any at that
+                // level — makes the survivors identical to the old level-major collector's set
+                // under saturation too, so the render stays byte-identical there, not only when
+                // nothing saturates. Equal-or-worse candidates are dropped, so a higher-priority
+                // feature is never lost to a lower one.
+                let worst = worst_level(&level_count);
+                if level < worst {
+                    let mut victim = 0usize;
+                    let mut victim_arrival = 0u16;
+                    let mut found = false;
+                    for (i, slot) in slots.iter().enumerate() {
+                        let held = slot.stub();
+                        // `held.seq` still holds the pass-A arrival (select overwrites it later).
+                        if held.priority() == worst && (!found || held.seq > victim_arrival) {
+                            victim = i;
+                            victim_arrival = held.seq;
+                            found = true;
+                        }
+                    }
+                    // `worst` has a positive count, so a victim always exists.
+                    slots[victim] = Slot::of_stub(stub);
+                    level_count[(worst - 1) as usize] -= 1;
+                    level_count[(level - 1) as usize] += 1;
+                    stats.stub_evictions += 1;
+                }
+            },
+        );
+        stats.feature_decode_capacity_drops =
+            stats.feature_decode_capacity_drops.saturating_add(report.capacity_dropped);
+        stats.malformed_features = stats.malformed_features.saturating_add(report.malformed_features);
+        record_read_failures(stats, report.read_failures);
+        stats.chunks_visited = report.chunks_visited;
         candidates
     }
 
@@ -215,15 +210,14 @@ impl FrameScratch {
     /// so drops are strictly lowest-priority-first and, unsaturated, every candidate is admitted in
     /// the old collector's exact order. Admitted stubs are compacted to the front of `self.slots`
     /// with their `seq` set to the admission index; returns the admitted count.
-    fn select(&mut self, reader: &Reader) -> usize {
+    fn select(&mut self) -> usize {
         let slots = &mut self.slots;
         // `(priority_level, arrival)`: level-major, and within a level the pass-A encounter order —
         // which is the quadtree-walk order, identical to the old level-major collector's. Sorting
         // by it and assigning `seq` from the result reproduces the old paint order exactly.
         slots.sort_unstable_by_key(|slot| {
             let s = slot.stub();
-            let level = reader.style(s.style_id).map_or(u8::MAX, |st| st.priority);
-            (level, s.seq)
+            (s.priority(), s.seq)
         });
 
         let mut used_pts = 0usize;
@@ -248,14 +242,12 @@ impl FrameScratch {
         m
     }
 
-    /// **Pass B.** A second chunk-major walk ([`Reader::for_each_chunk`], same viewport as pass A, so
-    /// every winner's leaf is revisited and its `node` anchor comes free). For each visited chunk,
-    /// re-decode the winners it owns via [`Reader::decode_feature_at`] — consecutive winners in one
-    /// chunk hit the resident cache slot, so each winner-owning chunk is fetched once — append their
-    /// geometry to the frame buffers, and rewrite each stub slot in place with its final [`Span`].
-    fn decode_winners(
+    /// **Pass B.** Ask the scene to stream the same view again and re-decode only selected tokens.
+    /// The source retains its natural cache/grouping order; this renderer sees no file offsets or
+    /// quadtree records and appends complete geometry directly into its existing frame buffers.
+    fn decode_winners<S: MapScene>(
         &mut self,
-        reader: &Reader,
+        scene: &S,
         lod: usize,
         view: &BBox,
         winners: usize,
@@ -268,71 +260,12 @@ impl FrameScratch {
         // A winner slot, once rewritten to its `Span`, must not be re-read as a stub by a later
         // chunk's scan. `placed` marks the done slots so the scan skips them.
         let mut placed = [0u32; MAX_SPANS.div_ceil(32)];
-        let mut drawn = 0usize;
-
-        let walk = reader.for_each_chunk(lod, view, |cid, node| {
-            let mut refetched = false;
-            for i in 0..winners {
-                if placed[i >> 5] & (1 << (i & 31)) != 0 {
-                    continue;
-                }
-                let stub = slots[i].stub();
-                if stub.cid() != cid {
-                    continue;
-                }
-                let (z, weight, color) = match reader.style(stub.style_id) {
-                    Some(s) => (s.z_index, s.weight, s.color),
-                    None => (0, 0, 0),
-                };
-                let pt_start = frame_points.len() as u16;
-                let ring_start = frame_ring_lens.len() as u16;
-                // Re-decode this winner. The point/ring budget was reserved for it in `select`, so
-                // the appends fit; the `is_ok` guards stay defensive against a corrupt refetch. A
-                // failed slot is marked with a private no-draw span, then omitted by the compaction
-                // below — neither it nor any still-unplaced stub is ever exposed to the painter.
-                let span =
-                    match reader.decode_feature_at(lod, cid, stub.offset as usize, &node, dec_points, dec_ring_lens) {
-                        Ok(f)
-                            if frame_points.extend_from_slice(f.points()).is_ok()
-                                && frame_ring_lens.extend_from_slice(f.ring_lens()).is_ok() =>
-                        {
-                            refetched = true;
-                            drawn += 1;
-                            stats.points_drawn += f.points().len();
-                            Span {
-                                kind: f.kind,
-                                z,
-                                weight,
-                                style_id: stub.style_id,
-                                color,
-                                pt_start,
-                                ring_start,
-                                ring_count: f.ring_lens().len() as u16,
-                                seq: stub.seq,
-                            }
-                        }
-                        Err(error) => {
-                            record_feature_error(stats, error);
-                            frame_points.truncate(pt_start as usize);
-                            frame_ring_lens.truncate(ring_start as usize);
-                            empty_span(stub, z, weight, color, pt_start, ring_start)
-                        }
-                        Ok(_) => {
-                            frame_points.truncate(pt_start as usize);
-                            frame_ring_lens.truncate(ring_start as usize);
-                            empty_span(stub, z, weight, color, pt_start, ring_start)
-                        }
-                    };
-                slots[i] = Slot::of_span(span);
-                placed[i >> 5] |= 1 << (i & 31);
-            }
-            if refetched {
-                stats.chunks_refetched += 1;
-            }
-        });
-        if let Err(error) = walk {
-            record_read_error(stats, error);
-        }
+        let mut selected =
+            DecodeSink { scene, winners, frame_points, frame_ring_lens, slots, placed: &mut placed, stats, drawn: 0 };
+        let report = scene.decode_selected(lod, view, dec_points, dec_ring_lens, &mut selected);
+        selected.stats.chunks_refetched = selected.stats.chunks_refetched.saturating_add(report.chunks_refetched);
+        record_read_failures(selected.stats, report.read_failures);
+        let drawn = selected.drawn;
 
         // The second index walk or a winner refetch may fail after only some slots were rewritten.
         // Compact only successfully decoded spans. `placed` is the variant tag here: an unset bit
@@ -373,27 +306,143 @@ impl FrameScratch {
     }
 }
 
-#[inline]
-fn record_read_error(stats: &mut RenderStats, error: MapReadError) {
-    match error {
-        MapReadError::Source(_) => stats.map_read_failures = stats.map_read_failures.saturating_add(1),
-        MapReadError::Cache(CacheError::Busy) => {
-            stats.map_cache_contentions = stats.map_cache_contentions.saturating_add(1)
+struct DecodeSink<'a, S: MapScene> {
+    scene: &'a S,
+    winners: usize,
+    frame_points: &'a mut Vec<(i32, i32), MAX_FRAME_POINTS>,
+    frame_ring_lens: &'a mut Vec<usize, MAX_FRAME_RINGS>,
+    slots: &'a mut Vec<Slot, MAX_SPANS>,
+    placed: &'a mut [u32; MAX_SPANS.div_ceil(32)],
+    stats: &'a mut RenderStats,
+    drawn: usize,
+}
+
+impl<S: MapScene> SelectedFeatures for DecodeSink<'_, S> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.winners
+    }
+
+    #[inline]
+    fn is_pending(&self, index: usize) -> bool {
+        self.pending(index)
+    }
+
+    #[inline]
+    fn token(&self, index: usize) -> Option<FeatureToken> {
+        self.pending(index).then(|| self.slots[index].stub().token)
+    }
+
+    fn decoded(&mut self, index: usize, feature: Feature<'_>) -> bool {
+        if !self.pending(index) {
+            return false;
         }
-        MapReadError::Malformed => stats.map_structure_failures = stats.map_structure_failures.saturating_add(1),
+        let stub = self.slots[index].stub();
+        let Some(style) = self.scene.style(stub.style_id) else {
+            self.finish_error(index, FeatureError::Malformed);
+            return false;
+        };
+        if !feature.has_valid_rings()
+            || feature.style_id != stub.style_id
+            || feature.kind != stub.kind()
+            || feature.points().len() != stub.total_pts as usize
+            || feature.ring_lens().len() != stub.ring_count as usize
+        {
+            self.finish_error(index, FeatureError::Malformed);
+            return false;
+        }
+        if feature.points().len() > self.frame_points.capacity() - self.frame_points.len() {
+            self.finish_error(index, FeatureError::Capacity(obc_map_scene::CapacityError::Points));
+            return false;
+        }
+        if feature.ring_lens().len() > self.frame_ring_lens.capacity() - self.frame_ring_lens.len() {
+            self.finish_error(index, FeatureError::Capacity(obc_map_scene::CapacityError::Rings));
+            return false;
+        }
+
+        let pt_start = self.frame_points.len() as u16;
+        let ring_start = self.frame_ring_lens.len() as u16;
+        // The exact pass-A reservation plus the remaining-capacity checks above make these
+        // infallible and keep publication transactional: no partial geometry is ever visible.
+        if self.frame_points.extend_from_slice(feature.points()).is_err()
+            || self.frame_ring_lens.extend_from_slice(feature.ring_lens()).is_err()
+        {
+            unreachable!("prechecked frame capacity");
+        };
+        self.drawn += 1;
+        self.stats.points_drawn += feature.points().len();
+        let span = Span {
+            kind: feature.kind,
+            z: style.z_index,
+            weight: style.weight,
+            style_id: stub.style_id,
+            color: style.color,
+            pt_start,
+            ring_start,
+            ring_count: feature.ring_lens().len() as u16,
+            seq: stub.seq,
+        };
+        self.slots[index] = Slot::of_span(span);
+        self.placed[index >> 5] |= 1 << (index & 31);
+        true
+    }
+
+    fn failed(&mut self, index: usize, error: FeatureError) -> bool {
+        if !self.pending(index) {
+            return false;
+        }
+        self.finish_error(index, error);
+        true
+    }
+}
+
+impl<S: MapScene> DecodeSink<'_, S> {
+    #[inline]
+    fn pending(&self, index: usize) -> bool {
+        index < self.winners && self.placed[index >> 5] & (1 << (index & 31)) == 0
+    }
+
+    fn finish_error(&mut self, index: usize, error: FeatureError) {
+        debug_assert!(self.pending(index));
+        record_feature_error(self.stats, error);
+        let stub = self.slots[index].stub();
+        let (z, weight, color) =
+            self.scene.style(stub.style_id).map_or((0, 0, 0), |style| (style.z_index, style.weight, style.color));
+        let span =
+            empty_span(stub, z, weight, color, self.frame_points.len() as u16, self.frame_ring_lens.len() as u16);
+        self.slots[index] = Slot::of_span(span);
+        self.placed[index >> 5] |= 1 << (index & 31);
     }
 }
 
 #[inline]
-fn record_feature_error(stats: &mut RenderStats, error: FeatureReadError) {
+fn record_read_failures(stats: &mut RenderStats, failures: ReadFailures) {
+    stats.map_read_failures = stats.map_read_failures.saturating_add(failures.source);
+    stats.map_cache_contentions = stats.map_cache_contentions.saturating_add(failures.cache_busy);
+    stats.map_structure_failures = stats.map_structure_failures.saturating_add(failures.malformed);
+}
+
+#[inline]
+fn record_read_error(stats: &mut RenderStats, error: obc_map_scene::ReadError) {
     match error {
-        FeatureReadError::Decode(FeatureDecodeError::Capacity(_)) => {
+        obc_map_scene::ReadError::Source => stats.map_read_failures = stats.map_read_failures.saturating_add(1),
+        obc_map_scene::ReadError::CacheBusy => {
+            stats.map_cache_contentions = stats.map_cache_contentions.saturating_add(1)
+        }
+        obc_map_scene::ReadError::Malformed => {
+            stats.map_structure_failures = stats.map_structure_failures.saturating_add(1)
+        }
+    }
+}
+
+#[inline]
+fn record_feature_error(stats: &mut RenderStats, error: FeatureError) {
+    match error {
+        FeatureError::Capacity(_) => {
             stats.feature_decode_capacity_drops = stats.feature_decode_capacity_drops.saturating_add(1)
         }
-        FeatureReadError::Decode(FeatureDecodeError::Malformed) => {
-            stats.malformed_features = stats.malformed_features.saturating_add(1)
-        }
-        FeatureReadError::Read(error) => record_read_error(stats, error),
+        FeatureError::Malformed => stats.malformed_features = stats.malformed_features.saturating_add(1),
+        FeatureError::Read(error) => record_read_error(stats, error),
     }
 }
 
@@ -427,15 +476,11 @@ fn worst_level(level_count: &[u16; 4]) -> u8 {
 /// A pass-A candidate: exactly what selection and the pass-B re-decode need, and nothing else —
 /// never geometry. Sized to fit a [`Span`] slot (asserted below) so the whole candidate set lives in
 /// the same `slots` buffer pass B rewrites in place: the split into stubs + spans costs no extra
-/// frame RAM (issue #564). `#[repr(C)]`, and `cid` is split into two `u16` halves, to keep the struct
-/// 2-aligned and `<= size_of::<Span>()`.
+/// frame RAM (issue #564). The six-byte source token stays opaque to the renderer.
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Stub {
-    cid_lo: u16,
-    cid_hi: u16,
-    /// Feature byte offset within its chunk (chunks `<= MAX_CHUNK_BYTES`, so it fits a `u16`).
-    offset: u16,
+    token: FeatureToken,
     /// All-rings vertex count, for the exact point-budget admission.
     total_pts: u16,
     /// Ring count, for the ring-budget admission.
@@ -443,28 +488,51 @@ struct Stub {
     /// Pass-A encounter index (level-major seq replication), overwritten with the admission `seq`
     /// during select — pass B reads it for the painter's-order tie-break.
     seq: u16,
-    /// Style id. Priority / z / weight / color / kind all re-derive `O(1)` from the style table, so
-    /// none of them are copied here.
+    /// Style id. z / weight / color re-derive `O(1)` from the style table.
     style_id: u8,
+    /// Pass-A priority (bits 1..=3) and geometry kind (bit 0). Keeping both identity fields in the
+    /// old padding byte makes selection independent of later style-table answers while the stub and
+    /// span remain exactly 14 bytes.
+    priority_kind: u8,
 }
 
 impl Stub {
     #[inline]
-    fn new(cid: u32, offset: usize, total_pts: usize, ring_count: usize, style_id: u8, arrival: u16) -> Stub {
+    fn new(
+        token: FeatureToken,
+        total_pts: usize,
+        ring_count: usize,
+        style_id: u8,
+        kind: Kind,
+        priority: u8,
+        arrival: u16,
+    ) -> Stub {
+        let kind_bit = match kind {
+            Kind::Line => 0,
+            Kind::Polygon => 1,
+        };
         Stub {
-            cid_lo: cid as u16,
-            cid_hi: (cid >> 16) as u16,
-            offset: offset as u16,
+            token,
             total_pts: total_pts as u16,
             ring_count: ring_count as u16,
             seq: arrival,
             style_id,
+            priority_kind: priority << 1 | kind_bit,
         }
     }
 
     #[inline]
-    fn cid(&self) -> u32 {
-        (self.cid_hi as u32) << 16 | self.cid_lo as u32
+    fn priority(self) -> u8 {
+        self.priority_kind >> 1
+    }
+
+    #[inline]
+    fn kind(self) -> Kind {
+        if self.priority_kind & 1 == 0 {
+            Kind::Line
+        } else {
+            Kind::Polygon
+        }
     }
 }
 
@@ -514,8 +582,8 @@ const _: () = assert!(core::mem::size_of::<Slot>() == core::mem::size_of::<Span>
 /// Offsets are `u16` (not `usize`) to keep the struct to 14 bytes — thousands are buffered at
 /// coarse zoom. The frame buffers they index are asserted `<= u16::MAX` at the buffer constants.
 /// `style_id` fills what was a spare padding byte (the `u8` fields pack against the `u16`s), so the
-/// draw loop can re-resolve the full [`Style`](obc_reader::Style) — `dashed`/`color2` — via the
-/// reader's hot `O(1)` style table without widening `Span`.
+/// draw loop can re-resolve the full scene style — `dashed`/`color2` — via the source's hot `O(1)`
+/// style table without widening `Span`.
 #[derive(Clone, Copy)]
 pub(crate) struct Span {
     pub(crate) kind: Kind,
