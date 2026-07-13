@@ -69,6 +69,12 @@ pub mod ls021_wire;
 // backends implement — the on-device LS021/FLPR panel and the host simulator. No new deps: the trait
 // is dependency-free, so it stays compiled into every host workspace build.
 pub mod display;
+// The generic native-frame + presentation capability contracts (FAR-12, #805) the `display` seam is
+// migrating onto (#806 moves the backends): `NativeFrame`/`Device64Frame`, `Presenter`/
+// `OverlayPresenter`, the `DisplayDriver` compatibility bridge, and the backend-agnostic conformance
+// suite. Deliberately namespaced (not re-exported at the root): a clearly-bounded module #807 can
+// lift into its own crate if the split pays.
+pub mod display_contracts;
 // Stand-in battery fuel gauge — a fixed level until the nPM1300 PMIC gauge is wired in.
 pub mod fuel;
 pub mod panel;
