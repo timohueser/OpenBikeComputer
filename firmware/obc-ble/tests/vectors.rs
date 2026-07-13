@@ -56,6 +56,18 @@ fn version_read_vector() {
     assert_eq!(&vr.encode()[..], &bytes[..], "re-encode");
 }
 
+/// The version-only `protocolVersion` read (spec §1, card-resident epoch #776): a device with no
+/// mounted store serves just the 2-byte version. It carries the protocol version, but the full
+/// [`VersionRead`] decode **rejects** it as truncated — exactly the app's "short read ⇒ storeEpoch
+/// nil ⇒ ack fail-closed" gate. The 6-byte shape is unchanged when a store is mounted.
+#[test]
+fn version_read_nostore_vector() {
+    let bytes = fixture("version-read-nostore.bin");
+    assert_eq!(bytes.len(), 2, "version-only: just the u16 version, no epoch");
+    assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), obc_ble::PROTOCOL_VERSION, "pins protocol version 2");
+    assert!(VersionRead::decode(&bytes).is_err(), "a short read is not a full VersionRead — the app fail-closes");
+}
+
 /// The download announce (status `msg = 4`): the `msg` byte + the 12-byte descriptor. The
 /// production codec decodes it back through the shared `StatusMessage` envelope and the descriptor
 /// carries the download's size + CRC (matching the waypoint route).
