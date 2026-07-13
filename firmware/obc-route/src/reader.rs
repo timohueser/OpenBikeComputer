@@ -5,7 +5,10 @@
 //! hundreds-of-km route never has to be resident. It holds a `&dyn ByteSource` (not a
 //! generic), so it threads through the app/render layers without making them generic.
 
-use core::cell::RefCell;
+use core::{
+    cell::RefCell,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use heapless::{String, Vec};
 
@@ -34,6 +37,7 @@ pub const MAX_WAYPOINTS: usize = 32;
 pub const MAX_ROUTE_CHUNKS: usize = 512;
 #[cfg(feature = "nrf-mem")]
 pub const MAX_ROUTE_CHUNKS: usize = 128;
+const _: () = assert!(MAX_ROUTE_CHUNKS < u16::MAX as usize);
 /// Max points a single chunk may hold (bounds the per-chunk decode buffer).
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
 
@@ -147,11 +151,16 @@ pub struct RouteIndex {
     name: String<NAME_CAP>,
     index: Vec<ChunkMeta, MAX_ROUTE_CHUNKS>,
     /// Prefix sum of segments per chunk: `cum_seg[c]` = segments before chunk `c`
-    /// (∑ `point_count − 1`, the shared seam point not double-counted). A trailing entry
-    /// holds the total segment count, so an index at `chunk_count` is valid. Built once at
-    /// [`read`](Self::read) so [`global_seg_index`](Self::global_seg_index) — on the matcher's
-    /// per-fix hot path — is O(1), not a prefix scan.
-    cum_seg: Vec<u32, { MAX_ROUTE_CHUNKS + 1 }>,
+    /// (∑ `point_count − 1`, the shared seam point not double-counted). The total is derived in
+    /// O(1) from the last prefix + last chunk, avoiding a redundant trailing word; this offsets
+    /// the identity word so [`RouteIndex`] does not grow. Built once at [`read`](Self::read) so
+    /// [`global_seg_index`](Self::global_seg_index) — on the matcher's per-fix hot path — remains
+    /// O(1), not a prefix scan.
+    cum_seg: Vec<u32, MAX_ROUTE_CHUNKS>,
+    /// Non-persisted identity of this successful parse. Moves preserve it, so a by-value host
+    /// index and the board's in-place resident slot have identical cache-adoption semantics.
+    /// Zero belongs only to [`empty`](Self::empty) / a failed parse.
+    identity: u32,
 }
 
 /// A parsed route, ready to query and decode: a [`RouteIndex`] (resident, reusable across
@@ -188,6 +197,7 @@ impl RouteIndex {
             name: String::new(),
             index: Vec::new(),
             cum_seg: Vec::new(),
+            identity: 0,
         }
     }
 
@@ -216,6 +226,7 @@ impl RouteIndex {
             self.index.clear();
             self.cum_seg.clear();
             self.point_count = 0;
+            self.identity = 0;
         }
         r
     }
@@ -224,6 +235,7 @@ impl RouteIndex {
         self.name.clear();
         self.index.clear();
         self.cum_seg.clear();
+        self.identity = 0;
 
         let h = read_header(src)?;
         if h.chunk_count as usize > MAX_ROUTE_CHUNKS {
@@ -266,9 +278,6 @@ impl RouteIndex {
             seg_acc += (point_count as u32).saturating_sub(1);
             self.index.push(cm).map_err(|_| Error::TooLarge)?;
         }
-        // Trailing total, so `cum_seg[chunk_count]` is the route's full segment count.
-        self.cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
-
         self.bbox = h.bbox;
         self.start_lon = h.start_lon;
         self.start_lat = h.start_lat;
@@ -279,6 +288,7 @@ impl RouteIndex {
         self.min_ele_m = h.min_ele_m;
         self.max_ele_m = h.max_ele_m;
         self.name = h.name;
+        self.identity = next_route_identity()?;
         Ok(())
     }
 
@@ -296,7 +306,17 @@ impl RouteIndex {
     /// `cum_seg` prefix sum. `c` past the last chunk clamps to the total.
     pub(crate) fn global_seg_index(&self, c: usize, seg: usize) -> usize {
         let c = c.min(self.index.len());
-        self.cum_seg.get(c).copied().unwrap_or(0) as usize + seg
+        self.cum_seg.get(c).copied().unwrap_or_else(|| self.segment_count()) as usize + seg
+    }
+
+    /// Total seam-deduplicated segments. The last prefix excludes the last chunk, so add that
+    /// chunk's own `point_count - 1`; empty indexes have no segments.
+    #[inline]
+    fn segment_count(&self) -> u32 {
+        match (self.cum_seg.last(), self.index.last()) {
+            (Some(before_last), Some(last)) => before_last + (last.point_count as u32).saturating_sub(1),
+            _ => 0,
+        }
     }
 
     // Cumulative ascent at a position is read from the elevation `Profile`
@@ -338,9 +358,11 @@ impl<'a> RouteReader<'a> {
 
     /// Like [`new`](Self::new), but back [`decode_chunk`](Self::decode_chunk) with a resident
     /// [`RouteCache`], so a redraw of an unchanged route — and the matcher's per-fix decode —
-    /// hit RAM instead of re-reading geometry from the SD card. Slots are keyed by chunk index
-    /// only, so the caller must [`RouteCache::clear`] it whenever the active route changes.
+    /// hit RAM instead of re-reading geometry from the SD card. The cache adopts the index's
+    /// parse identity here, automatically invalidating same-key slots from a different route;
+    /// callers do not need to coordinate a [`RouteCache::clear`] on route switches.
     pub fn new_cached(idx: &'a RouteIndex, src: &'a dyn ByteSource, cache: &'a RouteCache) -> RouteReader<'a> {
+        cache.adopt(idx.identity);
         RouteReader { src, idx, cache: Some(cache) }
     }
 
@@ -357,13 +379,15 @@ impl<'a> RouteReader<'a> {
         if n == 0 {
             return Ok(());
         }
-        // A hit fills `out` with no SD read; a miss decodes and stores it.
+        // A hit fills `out` with no SD read; a miss decodes and stores it. Revalidate the reader
+        // identity for both operations: another safe reader can use the same cache between calls,
+        // including reentrantly from `ByteSource::read_at` while this miss is being decoded.
         if let Some(cache) = self.cache {
-            if cache.get(k, out) {
+            if cache.get(self.idx.identity, k, out) {
                 return Ok(());
             }
             decode_chunk_from(self.src, m, n, out)?;
-            cache.put(k, out);
+            cache.put(self.idx.identity, k, out);
             return Ok(());
         }
         decode_chunk_from(self.src, m, n, out)
@@ -379,12 +403,11 @@ impl<'a> RouteReader<'a> {
     /// its points (a sketch, not navigation data).
     pub fn preview_polyline<const N: usize>(&self) -> Vec<(i32, i32), N> {
         let mut out: Vec<(i32, i32), N> = Vec::new();
-        // Distinct points = total segments + 1 (`cum_seg`'s trailing entry); an index with no
-        // chunks has nothing to walk.
+        // Distinct points = total segments + 1; an index with no chunks has nothing to walk.
         if self.idx.index.is_empty() || N == 0 {
             return out;
         }
-        let total = *self.idx.cum_seg.last().unwrap_or(&0) as usize + 1;
+        let total = self.idx.segment_count() as usize + 1;
         let keep = N.min(total);
         let mut kept = 0usize; // points pushed so far
         let mut next = 0usize; // distinct-point index of the next kept point
@@ -444,6 +467,23 @@ fn decode_chunk_from(
     Ok(())
 }
 
+/// Allocate a non-zero, process-local parse identity. This is deliberately independent of the
+/// OBCR bytes and source: parsing the same bytes into a new resident session gets a new identity,
+/// while moving/reborrowing that parsed [`RouteIndex`] keeps its identity and cache hits.
+///
+/// A 32-bit token is the target's native atomic width and takes one word in [`RouteIndex`] plus one
+/// owner word in [`RouteCache`]. Zero preserves the all-zero empty/cache initialization contract,
+/// and the counter never wraps: after exhausting the non-zero token space, parses fail closed
+/// instead of reusing an identity that a long-lived cache could still own.
+fn next_route_identity() -> Result<u32, Error> {
+    // Zero-init keeps the allocator in `.bss`; the returned token is the successfully stored next
+    // value, so zero itself is never live.
+    static LAST: AtomicU32 = AtomicU32::new(0);
+    LAST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |identity| identity.checked_add(1))
+        .map(|identity| identity + 1)
+        .map_err(|_| Error::TooLarge)
+}
+
 /// Resident decoded-route-chunk cache slots. Only the chunks crossing the view are decoded,
 /// so a small LRU holds a frame's working set, sized to also absorb a wide zoomed-out view of
 /// a winding route. `nrf-mem` trims to 2 slots (~6 KB) — the matcher's chunk plus one more for
@@ -454,11 +494,15 @@ const ROUTE_CHUNK_SLOTS: usize = 32;
 #[cfg(feature = "nrf-mem")]
 const ROUTE_CHUNK_SLOTS: usize = 2;
 
-/// One cache slot: a decoded chunk's points, keyed by chunk index, with LRU recency.
+/// One cache slot: a decoded chunk's points, keyed by chunk index, with LRU recency. The owning
+/// route identity lives once on [`RouteCacheInner`]. The key is stored as `index + 1`, reserving
+/// zero as the empty tag so the cache remains safe to create from all-zero memory without a
+/// separate validity byte.
 struct RouteSlot {
-    valid: bool,
-    key: u32,
-    used: u32,
+    tag: u16,
+    // LRU order, not a diagnostic counter. It is rebased before exhaustion, preserving exact
+    // ordering while keeping the slot header at four bytes on the target.
+    used: u16,
     pts: Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
 }
 
@@ -469,9 +513,9 @@ struct RouteSlot {
 ///
 /// Caller-owned and reused across frames (the device places one in its reserved region; the
 /// host skips it), paired with the per-frame [`RouteReader`] via
-/// [`new_cached`](RouteReader::new_cached). Slots are keyed by chunk index only, so
-/// [`clear`](Self::clear) **must** be called on a route change, or a new route's chunk `k`
-/// would hit the old route's stale slot.
+/// [`new_cached`](RouteReader::new_cached). Slots remain keyed by chunk index, while the cache as a
+/// whole adopts the parsed [`RouteIndex`]'s identity. A different route therefore invalidates all
+/// same-key slots by construction; [`clear`](Self::clear) remains an optional explicit reset.
 ///
 /// State is in a `RefCell` so a `&RouteCache` `decode_chunk` (`&self`) can fill it; the borrow
 /// is scoped to a single get/put.
@@ -480,7 +524,10 @@ pub struct RouteCache {
 }
 
 struct RouteCacheInner {
-    tick: u32,
+    /// The successful [`RouteIndex`] parse whose chunks occupy the slots. Zero is the unowned
+    /// all-zero initialization state and is never assigned to a parsed index.
+    identity: u32,
+    tick: u16,
     slots: [RouteSlot; ROUTE_CHUNK_SLOTS],
     hits: u32,
     misses: u32,
@@ -499,16 +546,11 @@ impl RouteCache {
         RouteCache { inner: RefCell::new(RouteCacheInner::new()) }
     }
 
-    /// Drop every resident slot and zero the counters — call on a route switch so the next
-    /// decode misses. Only the `valid` flags + counters are touched, not the point buffers.
+    /// Drop every resident slot and zero the counters. Route switches already invalidate
+    /// automatically through [`RouteReader::new_cached`]; this remains useful for diagnostics and
+    /// explicit resets. Only the slot tags + counters are touched, not the point buffers.
     pub fn clear(&self) {
-        let mut inner = self.inner.borrow_mut();
-        for s in &mut inner.slots {
-            s.valid = false;
-        }
-        inner.tick = 0;
-        inner.hits = 0;
-        inner.misses = 0;
+        self.inner.borrow_mut().clear();
     }
 
     /// Cumulative `(hits, misses)` since the last [`clear`](Self::clear) — for the device's RTT
@@ -518,12 +560,24 @@ impl RouteCache {
         (inner.hits, inner.misses)
     }
 
+    /// Bind the cache to one parsed route session. A different identity clears all same-index
+    /// slots before the reader can decode; reborrowing or moving the same [`RouteIndex`] preserves
+    /// its identity and therefore preserves hits. Identity zero is accepted for the public empty
+    /// index: it owns no decodable chunks, and a later non-zero parsed identity still invalidates.
+    fn adopt(&self, identity: u32) {
+        self.inner.borrow_mut().adopt(identity);
+    }
+
     /// If chunk `key` is resident, copy its points into `out` (cleared first), bump recency + the
-    /// hit counter, and return `true`; otherwise leave `out` untouched and return `false`.
-    fn get(&self, key: usize, out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>) -> bool {
+    /// hit counter, and return `true`; otherwise leave `out` untouched and return `false`. Identity
+    /// adoption and lookup share one borrow so an interleaved reader cannot cross-serve a slot.
+    fn get(&self, identity: u32, key: usize, out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>) -> bool {
         let mut inner = self.inner.borrow_mut();
-        let key = key as u32;
-        let Some(i) = inner.slots.iter().position(|s| s.valid && s.key == key) else {
+        inner.adopt(identity);
+        // Bounded by `RouteIndex::index`; the compile-time assertion above leaves zero available
+        // as the empty tag after adding one.
+        let tag = key as u16 + 1;
+        let Some(i) = inner.slots.iter().position(|s| s.tag == tag) else {
             return false;
         };
         inner.hits = inner.hits.saturating_add(1);
@@ -535,15 +589,18 @@ impl RouteCache {
     }
 
     /// Store chunk `key`'s decoded `pts` into the LRU slot (evicting the least-recently-used) and
-    /// count the miss that prompted it.
-    fn put(&self, key: usize, pts: &[RoutePoint]) {
+    /// count the miss that prompted it. The identity is deliberately re-adopted here, after the
+    /// source read, because a reentrant source can fill the shared cache for another reader while
+    /// this reader's miss is in flight.
+    fn put(&self, identity: u32, key: usize, pts: &[RoutePoint]) {
         let mut inner = self.inner.borrow_mut();
+        inner.adopt(identity);
         inner.misses = inner.misses.saturating_add(1);
-        let i = route_lru(inner.slots.iter().map(|s| (!s.valid, s.used)));
+        let i = route_lru(inner.slots.iter().map(|s| (s.tag == 0, s.used)));
         let t = inner.touch();
         let s = &mut inner.slots[i];
-        s.valid = true;
-        s.key = key as u32;
+        // Bounded by `RouteIndex::index`; zero remains reserved for an empty slot.
+        s.tag = key as u16 + 1;
         s.used = t;
         s.pts.clear();
         let _ = s.pts.extend_from_slice(pts);
@@ -556,25 +613,62 @@ impl RouteCacheInner {
         // would emit a `.rodata` const then `memcpy` it — which overflowed flash for the larger
         // `MapCache`.
         //
-        // SAFETY: all-zero is a valid `RouteCacheInner` — no references, no non-zero-discriminant
-        // enums, its only `bool` (`RouteSlot::valid`) is false at zero, and each `heapless::Vec`
-        // is `{ len: 0, uninit buffer }` whose `MaybeUninit<RoutePoint>` backing is not read while
+        // SAFETY: all-zero is a valid `RouteCacheInner` — no references or non-zero-discriminant
+        // enums, a zero slot tag means empty, and each `heapless::Vec` is
+        // `{ len: 0, uninit buffer }` whose `MaybeUninit<RoutePoint>` backing is not read while
         // `len == 0`.
         unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
     }
 
+    fn adopt(&mut self, identity: u32) {
+        if self.identity != identity {
+            self.clear();
+            self.identity = identity;
+        }
+    }
+
+    /// Invalidate slots and reset diagnostics without changing the adopted identity. Keeping the
+    /// owner means an explicit clear followed by another reader over the same resident index simply
+    /// starts cold; a later different identity still runs this path before any lookup.
+    fn clear(&mut self) {
+        for s in &mut self.slots {
+            s.tag = 0;
+        }
+        self.tick = 0;
+        self.hits = 0;
+        self.misses = 0;
+    }
+
     #[inline]
-    fn touch(&mut self) -> u32 {
-        self.tick = self.tick.wrapping_add(1);
+    fn touch(&mut self) -> u16 {
+        if self.tick == u16::MAX {
+            // This path is extremely rare (once per 65,535 cache touches). Compress the live
+            // timestamps to their ranks before incrementing, preserving exact LRU order without
+            // allocating or letting an old slot become recent across integer wraparound.
+            let old = core::array::from_fn::<_, ROUTE_CHUNK_SLOTS, _>(|i| self.slots[i].used);
+            let mut live = 0;
+            for i in 0..ROUTE_CHUNK_SLOTS {
+                if self.slots[i].tag == 0 {
+                    continue;
+                }
+                let rank =
+                    1 + old.iter().enumerate().filter(|(j, used)| self.slots[*j].tag != 0 && **used < old[i]).count()
+                        as u16;
+                self.slots[i].used = rank;
+                live += 1;
+            }
+            self.tick = live;
+        }
+        self.tick += 1;
         self.tick
     }
 }
 
 /// Pick a slot to (re)fill: the first empty slot, else the least-recently-used. Input is
 /// `(is_empty, used)` per slot in order. Mirrors `obc_reader`'s `lru`.
-fn route_lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
+fn route_lru(slots: impl Iterator<Item = (bool, u16)>) -> usize {
     let mut best = 0usize;
-    let mut best_used = u32::MAX;
+    let mut best_used = u16::MAX;
     for (i, (empty, used)) in slots.enumerate() {
         if empty {
             return i;
@@ -585,6 +679,26 @@ fn route_lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
         }
     }
     best
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn lru_clock_rebases_without_changing_eviction_order() {
+        let mut inner = RouteCacheInner::new();
+        inner.slots[0].tag = 1;
+        inner.slots[0].used = 1;
+        inner.slots[1].tag = 2;
+        inner.slots[1].used = u16::MAX - 1;
+        inner.tick = u16::MAX;
+
+        assert_eq!(inner.touch(), 3);
+        assert_eq!(inner.slots[0].used, 1);
+        assert_eq!(inner.slots[1].used, 2);
+        assert_eq!(route_lru(inner.slots[..2].iter().map(|s| (s.tag == 0, s.used))), 0);
+    }
 }
 
 impl core::ops::Deref for RouteReader<'_> {
