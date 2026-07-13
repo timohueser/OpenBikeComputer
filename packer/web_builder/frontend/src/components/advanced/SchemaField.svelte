@@ -3,18 +3,29 @@
     // the forward-compatibility net: a knob added to obc-pack's schema shows
     // up here (typed input, bounds, enum options) before it gets bespoke UI.
     import OptionalColorControl from "./OptionalColorControl.svelte";
+    import {
+        enumDisplayValue,
+        resolveSchemaField,
+        stringEnumOptions,
+        type JsonSchema,
+    } from "../../lib/config/schema_fields";
 
     let {
         name,
         prop,
+        schemaRoot,
         value,
         onchange,
     }: {
         name: string;
-        prop: Record<string, unknown>;
+        prop: JsonSchema;
+        schemaRoot: JsonSchema;
         value: unknown;
         onchange: (v: unknown) => void;
     } = $props();
+
+    const resolved = $derived(resolveSchemaField(schemaRoot, prop));
+    const field = $derived(resolved.schema);
 
     // Color-shaped fields (v10 `color2`, …) get the real picker. The primary
     // `color` is bespoke in StyleTable, so any color reaching SchemaField is a
@@ -24,16 +35,14 @@
     // (as `color2` does) or inline its string-or-int oneOf, so match on both.
     const isColor = $derived(
         name.startsWith("color") ||
-            (typeof prop.$ref === "string" && (prop.$ref as string).endsWith("/color")) ||
-            (Array.isArray(prop.oneOf) &&
-                (prop.oneOf as { pattern?: string }[]).some((o) => o.pattern?.includes("0[xX]"))),
+            (typeof field.$ref === "string" && field.$ref.endsWith("/color")) ||
+            (Array.isArray(field.oneOf) &&
+                (field.oneOf as { pattern?: string }[]).some((o) => o.pattern?.includes("0[xX]"))),
     );
-    const options = $derived(
-        Array.isArray(prop.enum) ? (prop.enum as string[]) : null,
-    );
-    const isNumber = $derived(prop.type === "integer" || prop.type === "number");
-    const isBool = $derived(prop.type === "boolean");
-    const fallback = $derived(prop.default);
+    const options = $derived(stringEnumOptions(field));
+    const isNumber = $derived(field.type === "integer" || field.type === "number");
+    const isBool = $derived(field.type === "boolean");
+    const fallback = $derived(field.default);
 </script>
 
 {#if isColor}
@@ -43,9 +52,9 @@
     />
 {:else if options}
     <select
-        value={(value ?? fallback ?? options[0]) as string}
+        value={enumDisplayValue(value, field, options)}
         onchange={(e) => onchange(e.currentTarget.value)}
-        title={String(prop.description ?? name)}
+        title={String(field.description ?? name)}
     >
         {#each options as opt (opt)}
             <option value={opt}>{opt}</option>
@@ -61,12 +70,12 @@
     <input
         type="number"
         class="num"
-        min={prop.minimum as number | undefined}
-        max={prop.maximum as number | undefined}
+        min={field.minimum as number | undefined}
+        max={field.maximum as number | undefined}
         value={(value ?? fallback ?? 0) as number}
         oninput={(e) => {
             const v = parseFloat(e.currentTarget.value);
-            if (Number.isFinite(v)) onchange(prop.type === "integer" ? Math.trunc(v) : v);
+            if (Number.isFinite(v)) onchange(field.type === "integer" ? Math.trunc(v) : v);
         }}
     />
 {:else}

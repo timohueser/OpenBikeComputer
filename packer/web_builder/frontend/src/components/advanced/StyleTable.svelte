@@ -12,11 +12,13 @@
     let {
         cat,
         extras,
+        schemaRoot,
         catalogValues,
         ondeleted,
     }: {
         cat: string;
         extras: [string, Record<string, unknown>][];
+        schemaRoot: Record<string, unknown>;
         catalogValues: string[];
         ondeleted: () => void;
     } = $props();
@@ -192,6 +194,7 @@
                         <SchemaField
                             name={ename}
                             prop={eprop}
+                            {schemaRoot}
                             value={def[ename]}
                             onchange={(v) => {
                                 // undefined ⇒ the field is cleared (optional
