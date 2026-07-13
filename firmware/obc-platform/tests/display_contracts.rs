@@ -1,17 +1,23 @@
-//! FAR-12 (#805) contract tests: the conformance suite run against **two pairings** with nothing in
-//! common but the contracts —
+//! FAR-12/FAR-13 (#805/#806) contract tests: the conformance suite run against **two pairings**
+//! with nothing in common but the contracts —
 //!
-//! 1. the **LS021-semantics reference pairing** — `Device64Frame` (RGB222, one byte per pixel) +
-//!    [`SpanPresenter`], the migration template for #806's real backends: the row-hash self-diff
-//!    ([`RowDiff`]), span masking, full-width-row overlay grain, the shared
-//!    [`composite_overlay_window`] composite, and the exact-diff oracle
-//!    ([`spans_missed_changes`]) asserted inside every present;
+//! 1. the **FLPR-semantics host double** — `Device64Frame` (RGB222, one byte per pixel) +
+//!    [`SpanPresenter`]: the board presenter's host-testable half, built from the *same shared
+//!    parts* the board backend runs — the row-hash self-diff ([`RowDiff::diff_clipped`]), the
+//!    [`RowDamage`]/[`RowWindow`] vocabulary, and the mutate-and-restore overlay composite
+//!    ([`composite_into_resident`], the engine the FLPR transport needs because the coprocessor
+//!    scans the resident frame) — with only the transport faked (pushed rows copy to a host
+//!    "glass" instead of the wire), and the exact-diff oracle ([`spans_missed_changes`]) asserted
+//!    inside every present. The conformance clean-frame postcondition therefore checks the *real*
+//!    save/composite/push/restore path.
 //! 2. the **compile-only proof pairing** — [`MiniFrame`] (16×8, *padded* 20-cell stride, native
 //!    RGB565 `u16` cells) + [`TilePresenter`] (4×4-tile damage grain, bounded-scratch overlay
 //!    composite). It exists to prove the contracts hard-code no LS021 assumption; it is test-only
 //!    code, never linked into a shipping image, and no RGB222 byte ever passes through its format.
 //!
 //! Plus the [`BridgedDriver`] check: the legacy `DisplayDriver` seam driven over pairing 1.
+//! (The simulator presenter — the other shipping backend — runs the same conformance suite in
+//! `obc-sim/src/present.rs`.)
 
 use core::convert::Infallible;
 
@@ -23,10 +29,8 @@ use obc_platform::display_contracts::conformance::{self, GlassProbe};
 use obc_platform::display_contracts::{
     BridgedDriver, Device64Frame, NativeFrame, OverlayPresenter, PresentStats, Presenter,
 };
-use obc_platform::{
-    composite_overlay_window, device64_to_rgb565, spans_missed_changes, Band, DisplayDriver, FbDevice64, OverlayRegion,
-    RowDiff,
-};
+use obc_platform::ls021::{composite_into_resident, spans_missed_changes, RowDamage, RowDiff, RowWindow};
+use obc_platform::{device64_to_rgb565, Band, DisplayDriver, FbDevice64, OverlayRegion};
 use obc_reader::rgb565_to_device64;
 use pollster::block_on;
 
@@ -43,10 +47,11 @@ struct Fault;
 
 // ─── Pairing 1: the LS021-semantics reference presenter over `Device64Frame` ───
 
-/// The LS021 damage strategy behind the contracts, minus the FLPR transport: per-row-hash
-/// self-diff, exclusion clipped by the shared [`RowDiff::diff_clipped`], the shared window
-/// composite, and a host "glass" reconstruction updated only from pushed spans — checked by the
-/// exact-diff oracle on every present, exactly like the simulator backend.
+/// The board presenter minus the FLPR transport: per-row-hash self-diff, exclusion clipped by the
+/// shared [`RowDiff::diff_clipped`], the shared mutate-and-restore composite
+/// ([`composite_into_resident`]), and a host "glass" reconstruction updated only from pushed
+/// spans/rows — checked by the exact-diff oracle on every present, exactly like the simulator
+/// backend.
 struct SpanPresenter<const W: usize, const H: usize> {
     diff: RowDiff<H>,
     /// Device-64 bytes on glass, reconstructed from partial pushes (the oracle's `prev`).
@@ -61,44 +66,28 @@ impl<const W: usize, const H: usize> SpanPresenter<W, H> {
     }
 }
 
-enum SpanDamage {
-    /// Forced full repaint: re-seed the row-hash store and push every row.
-    Full,
-    /// Self-diff, optionally clipping a live overlay's rows out (the seam's `exclude`).
-    SelfDiff { exclude: Option<(u16, u16)> },
-}
-
-/// The LS021 overlay grain: a column window on full-width rows (the panel re-latches whole rows).
-#[derive(Clone, Copy)]
-struct RowWindow {
-    x0: u16,
-    y0: u16,
-    w: u16,
-    rows: u16,
-}
-
 impl<'b, const W: usize, const H: usize> Presenter<Device64Frame<'b, W, H>> for SpanPresenter<W, H> {
-    type Damage = SpanDamage;
+    type Damage = RowDamage;
     type Error = Fault;
 
-    fn damage_full() -> SpanDamage {
-        SpanDamage::Full
+    fn damage_full() -> RowDamage {
+        RowDamage::Full
     }
 
-    fn damage_unknown() -> SpanDamage {
-        SpanDamage::SelfDiff { exclude: None }
+    fn damage_unknown() -> RowDamage {
+        RowDamage::SelfDiff { exclude: None }
     }
 
-    async fn present(&mut self, frame: &Device64Frame<'b, W, H>, damage: SpanDamage) -> Result<PresentStats, Fault> {
+    async fn present(&mut self, frame: &Device64Frame<'b, W, H>, damage: RowDamage) -> Result<PresentStats, Fault> {
         if std::mem::take(&mut self.fail_next) {
             return Err(Fault);
         }
         let exclude = match damage {
-            SpanDamage::Full => {
+            RowDamage::Full => {
                 self.diff.reset(); // full = re-seed the store + push everything, like the board's recovery path
                 None
             }
-            SpanDamage::SelfDiff { exclude } => exclude,
+            RowDamage::SelfDiff { exclude } => exclude,
         };
         let mut scratch = [(0u16, 0u16); 16];
         let spans = self.diff.diff_clipped(frame.bytes(), W, exclude, &mut scratch);
@@ -125,17 +114,11 @@ impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H
     type OverlayTarget<'t> = Band<'t>;
 
     fn region(rect: Rectangle) -> RowWindow {
-        let c = rect.intersection(&Rectangle::new(Point::zero(), Size::new(W as u32, H as u32)));
-        RowWindow {
-            x0: c.top_left.x as u16,
-            y0: c.top_left.y as u16,
-            w: c.size.width as u16,
-            rows: c.size.height as u16,
-        }
+        RowWindow::from_rect(rect, W as u32, H as u32)
     }
 
-    fn damage_around(r: RowWindow) -> SpanDamage {
-        SpanDamage::SelfDiff { exclude: Some((r.y0, r.rows)) }
+    fn damage_around(r: RowWindow) -> RowDamage {
+        RowDamage::SelfDiff { exclude: Some(r.exclude_span()) }
     }
 
     async fn present_overlay(
@@ -147,27 +130,37 @@ impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H
         if std::mem::take(&mut self.fail_next) {
             return Err(Fault);
         }
-        // Composite over the clean frame through the one shared helper the device + sim use.
+        // The REAL mutate-and-restore engine the board backend runs (`composite_into_resident`):
+        // composite through the shared window helper, save the clean window bytes, write the
+        // re-quantized composite into the resident frame, "push" (here: the full-width rows
+        // [y0, y0+rows) copy to the host glass — the LS021 grain, wire replaced by a memcpy), and
+        // restore the clean bytes. The conformance snapshot check outside proves the restore.
         let (w, rows) = (r.w as usize, r.rows as usize);
         let mut scratch = vec![0u16; w * rows];
-        let window = Rectangle::new(Point::new(r.x0 as i32, r.y0 as i32), Size::new(r.w as u32, r.rows as u32));
+        let mut save = vec![0u8; w * rows];
         let mut draw = Some(draw);
-        composite_overlay_window(frame.bytes(), Size::new(W as u32, H as u32), window, &mut scratch, &mut |band| {
-            if let Some(d) = draw.take() {
-                d(band)
-            }
-        });
-        // LS021 grain: re-latch the full-width rows [y0, y0+rows) — clean frame bytes everywhere,
-        // the composited window re-quantized over its columns (the FLPR backend does the same
-        // transiently in the resident frame; the frame stays untouched here, glass carries it).
-        for row in 0..rows {
-            let y = r.y0 as usize + row;
-            self.glass[y * W..(y + 1) * W].copy_from_slice(&frame.bytes()[y * W..(y + 1) * W]);
-            for col in 0..w {
-                let (dr, dg, db) = rgb565_to_device64(scratch[row * w + col]);
-                self.glass[y * W + r.x0 as usize + col] = ((dr / 85) << 4) | ((dg / 85) << 2) | (db / 85);
-            }
-        }
+        let glass = &mut self.glass;
+        composite_into_resident(
+            frame.backing_mut(),
+            Size::new(W as u32, H as u32),
+            r,
+            &mut scratch,
+            &mut save,
+            |px| {
+                let (dr, dg, db) = rgb565_to_device64(px);
+                ((dr / 85) << 4) | ((dg / 85) << 2) | (db / 85)
+            },
+            &mut |band| {
+                if let Some(d) = draw.take() {
+                    d(band)
+                }
+            },
+            |fb| {
+                let span = r.y0 as usize * W..(r.y0 as usize + rows) * W;
+                glass[span.clone()].copy_from_slice(&fb[span]);
+                Ok::<(), Fault>(())
+            },
+        )?;
         Ok(PresentStats { pushed_units: r.rows as u32, total_units: H as u32, regions: 1 })
     }
 }
@@ -577,7 +570,8 @@ fn overlay_leaves_the_frame_byte_identical() {
     .unwrap();
     assert_eq!(frame.cells, before);
 
-    // Span pairing: composite goes through scratch + glass; the resident bytes stay the clean map.
+    // Span pairing: the mutate-and-restore engine composites into the resident frame and must
+    // restore it byte-identically.
     let mut buf = [0u8; 16 * 16];
     let mut frame = Device64Frame::<16, 16>::new(&mut buf);
     let mut p = SpanPresenter::<16, 16>::new();

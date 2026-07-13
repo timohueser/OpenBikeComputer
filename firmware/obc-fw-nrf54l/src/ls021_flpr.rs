@@ -50,7 +50,7 @@
 //! owns it for the duration of a push anyway (it presents, then renders — never both at once). So
 //! the M33's only per-frame work is publishing `fb_addr` + the span list and ringing the doorbell —
 //! the pack (~20 RISC-V integer ops/word, ported from the host-tested
-//! [`ls021_wire`](obc_platform::ls021_wire)) rides inside the panel's mandatory data-setup windows
+//! [`ls021::wire`](obc_platform::ls021::wire)) rides inside the panel's mandatory data-setup windows
 //! on the FLPR, where the old blob just busy-spun.
 //!
 //! ## Async push — the M33 is freed for the whole frame
@@ -82,13 +82,14 @@ use embassy_time::{with_deadline, Duration, Instant, Timer};
 // The panel width the wire pack is defined over — the C blob's pack is the line-for-line port of
 // `ls021_wire::pack_pair`/`pack_row` (the host-tested normative reference), so the seam geometry is
 // pinned to it below.
-use obc_platform::ls021_wire::WIDTH;
+use obc_platform::ls021::wire::WIDTH;
 // `composite_overlay_window` is the shared overlay-composite core: fill a window scratch from the
 // clean framebuffer (device-64 → RGB565) + draw the hold bulge over it through a `Band`, before this
 // backend re-quantises it back into the framebuffer.
 // `RowDiff` is the self-diffing present store: a per-row hash of the last-pushed frame so a present
 // pushes only the rows that actually changed.
-use obc_platform::{composite_overlay_window, Band, DisplayDriver, OverlayRegion, RowDiff};
+use obc_platform::ls021::RowDiff;
+use obc_platform::{composite_overlay_window, Band, DisplayDriver, OverlayRegion};
 // The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
 // re-quantised overlay window lands on the panel's RGB222 gamut exactly as the map style cards do.
 use obc_reader::rgb565_to_device64;
@@ -160,25 +161,25 @@ const DMSTATUS_ALLHALTED: u32 = 1 << 9; // DMSTATUS: the hart acknowledged the h
 /// halt is a courtesy (a clean instruction boundary), the reset is the actual guarantee.
 const HALT_DEADLINE: Duration = Duration::from_millis(10);
 
-// ── Frame geometry. The framebuffer is the seam's `obc_platform::FRAME_W × FRAME_H` frame; the
+// ── Frame geometry. The framebuffer is the LS021 pairing's `ls021::FRAME_W × FRAME_H` frame; the
 //    wire-word counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248) come from
-//    `obc_platform::ls021_wire`. The static asserts pin the seam geometry to the protocol constants it
-//    must equal, so the frame the app renders can never silently fork from the frame this backend
+//    `obc_platform::ls021::wire`. The static asserts pin the frame geometry to the protocol constants
+//    it must equal, so the frame the app renders can never silently fork from the frame this backend
 //    scans. ──
 /// Visible pixel rows the FLPR scans per frame — the `status` the M33 cross-checks, and the
 /// framebuffer height. The blob's gate scan is hard-wired to 320 rows, so the seam's `FRAME_H` must
 /// equal it (asserted below).
 pub const ROWS_PER_FRAME: u32 = 320;
 /// Framebuffer width = the seam's frame width (re-exported for the resident-plane sizing in the app).
-pub const FB_W: usize = obc_platform::FRAME_W;
+pub const FB_W: usize = obc_platform::ls021::FRAME_W;
 /// Framebuffer height = the seam's frame height = the visible row count.
-pub const FB_H: usize = obc_platform::FRAME_H;
+pub const FB_H: usize = obc_platform::ls021::FRAME_H;
 // The wire pack consumes exactly one `ls021_wire::WIDTH`-pixel row per framebuffer row, and the FLPR
 // blob scans exactly `ROWS_PER_FRAME` gate lines — the seam's frame must match both. (`obc_platform`
 // itself already asserts `ls021_wire::WIDTH == FRAME_W`; this pins the FLPR gate-scan height too.)
-const _: () = assert!(FB_W == WIDTH, "obc_platform::FRAME_W diverged from the LS021 wire row width");
+const _: () = assert!(FB_W == WIDTH, "ls021::FRAME_W diverged from the LS021 wire row width");
 const _: () =
-    assert!(FB_H == ROWS_PER_FRAME as usize, "obc_platform::FRAME_H diverged from the FLPR blob's 320-row gate scan");
+    assert!(FB_H == ROWS_PER_FRAME as usize, "ls021::FRAME_H diverged from the FLPR blob's 320-row gate scan");
 
 /// Max overlay region [`push_overlay`](Ls021Flpr::push_overlay)'s composite scratch holds — the hold
 /// bulge's right-edge window (16 cols × 192 rows). A region must fit this (asserted);
@@ -565,7 +566,7 @@ impl<'b> Ls021Flpr<'b> {
     /// after a fault the store already records the (un-pushed) current frame; a plain retry would then
     /// diff identical `fb` against an up-to-date store and re-push **nothing**, stranding the rows that
     /// missed glass. Resetting forces the retry to repaint every row. Delegates to
-    /// [`RowDiff::reset`](obc_platform::RowDiff::reset).
+    /// [`RowDiff::reset`](obc_platform::ls021::RowDiff::reset).
     pub fn reset_diff(&mut self) {
         self.diff.reset();
     }
@@ -574,7 +575,7 @@ impl<'b> Ls021Flpr<'b> {
     /// re-hash every framebuffer row against the [`RowDiff`] store and push only the rows that
     /// actually changed, optionally clipping the live hold bulge's rows out (`exclude`) so
     /// [`push_overlay`](Self::push_overlay) owns them. The first call after boot / a
-    /// [`RowDiff::reset`](obc_platform::RowDiff::reset) pushes the whole frame and seeds the store;
+    /// [`RowDiff::reset`](obc_platform::ls021::RowDiff::reset) pushes the whole frame and seeds the store;
     /// thereafter an idle Home clock tick repaints just its clock band.
     ///
     /// The diff/clip/fallback skeleton is the shared [`RowDiff::diff_clipped`] (see its docs for the

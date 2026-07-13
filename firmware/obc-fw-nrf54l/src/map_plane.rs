@@ -30,7 +30,8 @@ use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::InputPlane;
 // `Band` is the frame-absolute draw view the map plane's `present_overlay` drawer paints the
 // hold bulge into.
-use obc_platform::{Band, DisplayDriver, FbDevice64, OverlayRegion, FRAME_H, FRAME_W};
+use obc_platform::ls021::{FRAME_H, FRAME_W};
+use obc_platform::{Band, DisplayDriver, FbDevice64, OverlayRegion};
 use obc_render::RenderStats;
 
 #[cfg(feature = "com-hw")]
@@ -49,7 +50,7 @@ const OVL_W: u16 = 16;
 
 // The live-bulge "present the rows *around* it" discipline lives **inside** the self-diffing present:
 // the map plane passes the bulge's row span to the seam's `DisplayDriver::present(exclude)`, which
-// clips it out of the changed-row spans it pushes (`obc_platform::RowDiff::diff_clipped`), leaving
+// clips it out of the changed-row spans it pushes (`obc_platform::ls021::RowDiff::diff_clipped`), leaving
 // those rows for the map plane's own `MapDisplay::present_bulge`.
 
 /// What [`MapDisplay::render_present`] reports for one map frame: whether the push reached glass

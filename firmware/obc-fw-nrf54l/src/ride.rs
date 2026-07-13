@@ -28,7 +28,8 @@ use obc_platform::sensor_link;
 use obc_platform::SynthLocation;
 // The map render's framebuffer adapter (the status screen builds its own inside `ble.rs`) + the
 // battery stand-in until the nPM1300 PMIC gauge is read.
-use obc_platform::{DisplayDriver, FbDevice64, StubFuelGauge, FRAME_H, FRAME_W};
+use obc_platform::ls021::{FRAME_H, FRAME_W};
+use obc_platform::{DisplayDriver, FbDevice64, StubFuelGauge};
 use obc_reader::{MapCache, MapTables, Reader};
 // The ride loop's route types: the decoded-route-geometry cache, the resident per-route chunk
 // index, and the streamed route reader the matcher + map render share.

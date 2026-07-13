@@ -64,10 +64,14 @@ pub mod debug_link;
 // read-only file whose scattered reads dominate (the `.obcm` map).
 pub mod fat_extents;
 pub mod framebuffer;
-pub mod ls021_wire;
-// The board-agnostic display-driver seam (`DisplayDriver`, `OverlayRegion`, the frame geometry) both
-// backends implement — the on-device LS021/FLPR panel and the host simulator. No new deps: the trait
-// is dependency-free, so it stays compiled into every host workspace build.
+// The LS021B7DD02 pairing owner: the shipping panel's frame geometry (`ls021::FRAME_W/H`), the
+// row-hash/span damage strategy (`ls021::rowdiff`), the source-bus wire pack (`ls021::wire`), the
+// shared damage/region vocabulary, and the mutate-and-restore overlay composite. Everything
+// LS021-specific lives here, off the generic display contracts.
+pub mod ls021;
+// The board-agnostic display-driver seam (`DisplayDriver`, `OverlayRegion`) both backends implement
+// — the on-device LS021/FLPR panel and the host simulator. Being deleted by #806: the backends are
+// migrating onto `display_contracts`; the frame geometry moved to `ls021::FRAME_W/H`.
 pub mod display;
 // The generic native-frame + presentation capability contracts (FAR-12, #805) the `display` seam is
 // migrating onto (#806 moves the backends): `NativeFrame`/`Device64Frame`, `Presenter`/
@@ -78,7 +82,6 @@ pub mod display_contracts;
 // Stand-in battery fuel gauge — a fixed level until the nPM1300 PMIC gauge is wired in.
 pub mod fuel;
 pub mod panel;
-pub mod rowdiff;
 pub mod sd;
 // Always compiled: the synthetic GPS is the `synth`-feature fallback, so it must exist without the
 // real-sensor / `sensor-link` features.
@@ -99,12 +102,10 @@ pub mod sensor_link;
 pub mod sensor_values;
 
 pub use button_input::{ButtonInput, Timing};
-pub use display::{DisplayDriver, OverlayRegion, FRAME_H, FRAME_W};
+pub use display::{DisplayDriver, OverlayRegion};
 pub use fat_extents::{ExtentSource, ExtentTable};
 pub use framebuffer::{device64_to_rgb565, FbDevice64, Framebuffer565};
 pub use fuel::StubFuelGauge;
-pub use ls021_wire::pack_row as ls021_pack_row;
 pub use panel::{composite_overlay_window, Band};
-pub use rowdiff::{clip_span, diff_rows, row_hash, spans_missed_changes, RowDiff};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};
 pub use synth::SynthLocation;

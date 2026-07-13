@@ -201,7 +201,8 @@ use embassy_sync::mutex::Mutex;
 // The map/ride half of obc-app, alongside the shared `InputPlane`.
 use obc_app::InputPlane;
 use obc_app::{App, AppState};
-use obc_platform::{ButtonInput, RowDiff, FRAME_H, FRAME_W};
+use obc_platform::ls021::{RowDiff, FRAME_H, FRAME_W};
+use obc_platform::ButtonInput;
 use obc_reader::{MapCache, MapTables};
 use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
