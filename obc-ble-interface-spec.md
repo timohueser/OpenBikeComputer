@@ -253,7 +253,9 @@ Every bulk payload is a typed **object**:
 | `6` | `routeList` | device → app | list object, §7.4 |
 | `7` | `rideList` | device → app | list object, §7.4 |
 | `8` | `echo` | both | dev/test only: device streams back what it received (A5's loopback) |
-| `9`–`15` | — | — | reserved (sensors, M4) |
+| `9` | `trip` | app → device (upload), device → app (detail read) | trip object v1, §7.7 |
+| `10` | `tripList` | device → app | list object, §7.4 |
+| `11`–`15` | — | — | reserved (sensors, M4) |
 
 **Object ids** are `u16`, assigned by the device, **stable for the life of the
 stored object — including across device reboots** — and enumerated by the list
@@ -262,7 +264,7 @@ under and later reconcile ("is my copy still on the device?") or replace that
 object in place — and, for rides, what the app's synced-set and delete
 tombstones key on. Ids mint at `max(card-scan max + 1, RRAM floor)`: the
 reference firmware encodes the id in the stored filename (routes `RT{id}.OBR`,
-rides `RD{id}.ORD`) — **SD filenames guard stored ids** — and an RRAM floor
+rides `RD{id}.ORD`, trips `TP{id}.OBT`) — **SD filenames guard stored ids** — and an RRAM floor
 guards **deleted** ids. **Within a store epoch, an id the device minted is never
 re-issued to a different object.** The era events that legitimately reopen the id
 space are a lost RRAM floor (reflash / factory reset / torn id-marks write) or an
@@ -276,14 +278,19 @@ foreign-card hole (#776). Conventions:
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
   object atomically (commit-then-swap; a failed CRC never touches the old copy).
-- Objects that exist once (`routeList`, `rideList`, `diagnostics`, `echo`, and
-  the `fwImage` staging slot) use object id `0`. A `fwImage` upload is a
-  singleton stage: the app sends object id `0`, the device assigns no id and the
+- Objects that exist once (`routeList`, `rideList`, `tripList`, `diagnostics`,
+  `echo`, and the `fwImage` staging slot) use object id `0`. A `fwImage` upload is
+  a singleton stage: the app sends object id `0`, the device assigns no id and the
   `transferResult` echoes `0` (§7.6).
 - Ids `0xFF00`–`0xFFFE` are a **session-scoped** band for objects that exist on
   storage without a device-assigned identity (side-loaded dev files). They are
   valid transfer targets within a connection but must never be persisted by the
   app — they may name a different object after a reboot.
+- **Trip** objects (type `9`, §7.7) draw their ids from a **separate device
+  counter** — a trip id is never shared with a route or ride id — under the same
+  durability rules (stable across reboots, `0xFFFF` on upload = "new",
+  replace-by-id atomic). A trip **references** route object ids and never contains
+  route bytes; a route referenced by no stored trip is a top-level route (§7.7).
 
 At most **one transfer is in flight at a time** — the CoC carries exactly one
 object's bytes between a `transferControl` open and its `transferResult`. A
@@ -349,6 +356,13 @@ it, so updating a stored (or actively-navigated) route never hits the cap. The
 app surfaces this as "delete routes on the device"; the reference cap is 64
 routes.
 
+The same descriptor-open reject guards **new-trip uploads** (`op=1`, trip type
+`9`, `object_id = 0xFFFF` or a trip id the device doesn't hold): a trip that would
+grow the trip catalog past its cap is refused with `storageFull` before any bytes
+stream, and **replace-by-id uploads of an existing trip are exempt**. The
+reference cap is **16 trips**. (A trip references route ids only, so its bytes are
+tiny — the cap bounds the trip *count*, independent of the 64-route cap.)
+
 **`fwImage` staging (M4).** A `fwImage` upload (§7.6) stages a firmware update
 image to the card over the existing transfer machinery unchanged — whole-object
 CRC-32 at commit, no partial resume (an update is ~900 KB ≈ a large route). Two
@@ -376,15 +390,18 @@ msg = 1  transferResult (8 bytes total):
                          3 = error         storage / internal failure
                          4 = notFound      unknown object type/id
                          5 = busy          a transfer is already active
-                         6 = storageFull   the route catalog is full — a NEW-route
-                                           upload was rejected at descriptor-open
-                                           time (§4.2), before any bytes streamed
+                         6 = storageFull   the named catalog is full — a NEW-object
+                                           upload (route past its 64-route cap, trip
+                                           past its 16-trip cap) was rejected at
+                                           descriptor-open time (§4.2), before any
+                                           bytes streamed
   committed_offset  u32       durable byte count: total_len on `committed`, else 0
                               (a download's explicit close reports its total_len)
 
 msg = 2  storeChanged (6 bytes total):
   msg       u8   = 2
-  type      u8   which store changed: route (1) or ride (2)
+  type      u8   which store changed: route (1), ride (2), or trip (9) — the values
+                 mirror the object-type numbers (§4.1)
   revision  u32  a monotonic-per-boot counter bumped on any change to that store —
                  the cheap "refetch the list" signal (it is the sole change signal
                  in v2; the v1 objectStore digest is gone)
@@ -406,6 +423,13 @@ The **`downloadAnnounce`** (v2) is the device's answer to a download request
 device → app control traffic shares one notify characteristic and one ordering
 domain. Unknown `msg` values must be ignored by the app (forward compatibility).
 
+Each `storeChanged` store keeps **its own** monotonic-per-boot revision: a trip
+upload or delete bumps the **trip** store, never the route store. A UI-composed
+cascade ("delete trip & routes", §7.7 — individual route deletes plus the trip
+delete) therefore emits **both** a route and a trip `storeChanged`. Unknown
+`storeChanged.type` values must be ignored by the app (forward compatibility,
+the same posture as unknown `msg` values).
+
 ### 4.4 `command` — small imperatives
 
 A write of `cmd u8` + fixed args. Every command is answered with a
@@ -413,7 +437,7 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 
 | `cmd` | Command | Args | Effect |
 |---|---|---|---|
-| `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`); bumps the store revision. Ride (`2`) deletion over the link is **reserved** — the reference firmware answers `notFound`: rides are deleted only on the device itself (its Rides screen), and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
+| `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`) or trip (`9`); bumps that store's revision. A trip delete is **non-cascading** (§7.7): it removes only the stored trip object — its member routes become top-level routes — and an unknown trip id answers `notFound`. Ride (`2`) deletion over the link is **reserved** — the reference firmware answers `notFound`: rides are deleted only on the device itself (its Rides screen), and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
 | `2` | `ackRides` | `count u8 · count × object_id u16` | the app's **ride-possession ack**: the device marks every listed ride id it still stores as synced ("downloaded at least once"). `commandResult.detail` = the newly-flagged count (saturating at 255); a flag change bumps the **ride** store revision. See below |
 | `3` | `installFw` | none (`cmd` byte only) | ask the device to install the staged `UPDATE.BIN` — runs the on-device scan + **on-glass confirm** flow (see below). The command only *requests*; it never waits for the human and never installs on its own |
 | `4` | `forgetBond` | none (`cmd` byte only) | ask the device to dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged. The device answers `commandResult(ok)` **first**, then clears the bond + drops the link and returns to open-pairing advertising. **Honoured only on the bonded, authenticated link** (see below) |
@@ -642,24 +666,24 @@ image's version is the DIS **Firmware Revision String** (§3.1, `0x2A26`), which
 the app already reads on connect and which reflects the newly-installed image
 after a confirmed DFU. Duplicating it here would only risk the two disagreeing.
 
-### 7.4 `routeList` / `rideList` — list objects
+### 7.4 `routeList` / `rideList` / `tripList` — list objects
 
 Downloaded over the CoC (they outgrow the 512-byte ATT cap fast). Shared shape: a
 **6-byte header** + fixed entries, so entry `k` is at `6 + entry_len·k` — O(1)
-indexing, no string scanning. In v2 the two list types **differ in entry length**
-(`routeList` 76 bytes, `rideList` 72), so the entry size is carried per-list in the
-header's `entry_len` byte; readers step by it, never a constant.
+indexing, no string scanning. In v2 the list types **differ in entry length**
+(`routeList` 76 bytes, `rideList` 72, `tripList` 76), so the entry size is carried
+per-list in the header's `entry_len` byte; readers step by it, never a constant.
 
 ```
 List header (6 bytes):
   version     u8   = 2
-  entry_len   u8   the entry size (76 routeList · 72 rideList) — readers skip by it
-  count       u16  entries actually in this object (after the MAX_RIDES / MAX_ROUTES cap)
+  entry_len   u8   the entry size (76 routeList · 72 rideList · 76 tripList) — readers skip by it
+  count       u16  entries actually in this object (after the MAX_RIDES / MAX_ROUTES / MAX_TRIPS cap)
   total       u16  full catalog size BEFORE the cap
 ```
 
-**`total`** (v2, epic #632 item 7) makes the >`MAX_RIDES` (or >`MAX_ROUTES`)
-truncation visible on the wire: the object is **truncated iff `total > count`**
+**`total`** (v2, epic #632 item 7) makes the >`MAX_RIDES` (or >`MAX_ROUTES` /
+>`MAX_TRIPS`) truncation visible on the wire: the object is **truncated iff `total > count`**
 (the device dropped `total - count` entries in FAT order), and the app surfaces a
 one-line warning instead of silently answering "up to date". When nothing was
 dropped `total == count`.
@@ -705,6 +729,32 @@ entries are **unchanged** (72 bytes) — which is why entry length is now per-li
   name           char[47]  UTF-8, zero-padded
 ```
 
+`tripList` entry (**76 bytes**) — from the stored trip object (§7.7). It mirrors
+`routeList`: the same trailing whole-object `crc32`, so the app's identity /
+outdated-copy machinery works on trips exactly as on routes (a stage reorder
+changes neither `byte_len` nor `name`, so only the `crc32` reveals it):
+
+```
+  object_id         u16
+  reserved          u16  = 0
+  byte_len          u32  stored trip file size
+  total_distance_m  u32  summed over resolvable stages (device-computed)
+  total_ascent_m    u32  summed over resolvable stages
+  stage_count       u16  as stored (incl. dangling refs)
+  reserved          u16  = 0
+  name_len          u8   ≤ 48
+  name              char[48]  UTF-8, zero-padded
+  reserved          u8[3]  = 0
+  crc32             u32  whole-object CRC-32 (§6) of the stored trip bytes · 0 = unknown
+```
+
+**`total_distance_m` / `total_ascent_m`** are summed by the device over the trip's
+**resolvable** stages — a dangling stage ref (a member route deleted individually,
+§7.7) contributes nothing — while **`stage_count`** counts every stage as stored,
+dangling refs included, so `stage_count` can exceed the number of stages the totals
+drew from. **`crc32`** has the same semantics as the `routeList` `crc32`: computed
+at upload commit, `0` = unknown for a side-loaded trip not yet fingerprinted.
+
 ### 7.5 `diagnostics`
 
 An opaque UTF-8 text blob: the device's runtime diagnostics (boot count, uptime,
@@ -744,6 +794,51 @@ over an open characteristic before or after pairing; after a confirmed update it
 reflects the newly-installed image on the next connect. The app displays that —
 there is no `fwImage` metadata object and no version field duplicated into the
 Config object (§7.3).
+
+### 7.7 `trip` — a trip object (v1)
+
+A **trip** groups planned routes into one named unit (one folder on the device,
+one card in the app). It is a tiny metadata object that **references route object
+ids** in ride order — it never contains route bytes. Routes stay byte-identical
+OBCR v2 files (§7.1); membership edits never touch a route payload. The reference
+firmware stores each trip as `TP{id}.OBT` beside the `RT{id}.OBR` route files (no
+FAT subdirectories); trip ids come from a separate device counter (§4.1).
+
+```
+trip object v1 (56-byte header + 2 bytes/stage, little-endian):
+  version      u8   = 1
+  reserved     u8   = 0
+  stage_count  u16
+  name_len     u8   ≤ 48
+  name         char[48]  UTF-8, zero-padded
+  reserved     u8[3]  = 0
+  stages       stage_count × u16   route object ids, ride order
+```
+
+The object length is fully determined by its header: `56 + 2·stage_count` bytes.
+
+**Semantics:**
+
+- **Reference-only.** A stage is a route object id; the trip carries no route
+  bytes. A route referenced by no stored trip is a top-level route, and membership
+  is exactly one level deep — a route lives in at most one trip, or standalone.
+- **Dangling refs are tolerated on read.** A member route deleted individually
+  (over the link or on the device) does **not** invalidate the trip: the device
+  serves the trip verbatim, dangling ids and all. **The device never rewrites a
+  stored trip** — dangling refs persist until the next trip **upload** replaces
+  the object by id, and that upload arrives compacted because the **app** (which
+  owns validation) builds it from resolvable stages. The `tripList` totals (§7.4)
+  sum only resolvable stages, while its `stage_count` counts every stored stage.
+- **Uploads commit verbatim.** A trip upload referencing unknown route ids is
+  stored as sent — validation is the app's job, not the device's.
+- **Recommended upload order: stages first, the trip object last.** An interrupted
+  whole-trip push then never leaves a trip pointing at nothing, and re-running the
+  push is idempotent (each stage replace-by-id, the trip object replace-by-id).
+- **Protocol-level delete removes only the trip object.** `deleteObject` (§4.4)
+  with the trip type frees the trip and **leaves its member routes as top-level
+  routes** — it never cascades. A "delete trip *and* its routes" action is a UI
+  decision, composed by the initiating side as individual route deletes **plus**
+  the trip delete; the wire has no cascading delete.
 
 ---
 

@@ -3,7 +3,7 @@
 //! ride through `obc-route`. The app's `swift test` consumes the same files.
 
 use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
-use obc_vectors::{all, crc32, dir, ride_v1, ride_v2};
+use obc_vectors::{all, crc32, dir, ride_v1, ride_v2, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS};
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(dir().join(name)).unwrap_or_else(|e| {
@@ -169,6 +169,69 @@ fn ride_vector_reads_through_the_production_codec() {
     // The elevation profile reader streams the v2 object's points (p2's ele sentinel is skipped).
     let p = obc_route::ride_elevation_profile(&SliceSource(&v2)).unwrap();
     assert_eq!((p.min_ele_m, p.max_ele_m), (214, 219), "the ele-sentinel point contributes no sample");
+}
+
+/// The trip vectors pin §7.7 (the trip object) and the §7.4 `tripList` addition, and tie together:
+/// the trip references two route ids that `route-list.bin` actually holds (7, 8) plus one
+/// deliberately dangling id (99), and the `tripList` totals sum only the resolvable stages while its
+/// `stage_count` counts every stored stage (dangling included).
+#[test]
+fn trip_vectors_are_self_consistent() {
+    let trip = fixture("trip-v1.bin");
+    // Header: version 1, reserved 0, stage_count 3, name "Alpen Traverse".
+    assert_eq!(trip[0], 1, "trip object version");
+    assert_eq!(trip[1], 0, "reserved");
+    let stage_count = u16::from_le_bytes([trip[2], trip[3]]);
+    assert_eq!(stage_count, 3);
+    let name_len = trip[4] as usize;
+    assert_eq!(&trip[5..5 + name_len], TRIP_NAME.as_bytes());
+    // Length is self-describing: 56-byte header + 2 bytes/stage.
+    assert_eq!(trip.len(), 56 + 2 * stage_count as usize);
+    let stages: Vec<u16> =
+        (0..stage_count as usize).map(|k| u16::from_le_bytes([trip[56 + 2 * k], trip[56 + 2 * k + 1]])).collect();
+    assert_eq!(stages, vec![TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
+
+    // The two resolvable stages are exactly the ids route-list.bin enumerates; the third dangles.
+    // Decode (object_id, distance_m, ascent_m) from each route-list entry so the expected tripList
+    // totals below are DERIVED by the spec's summation rule (a stage resolves iff a stored route
+    // holds its id; a dangling ref contributes nothing) — not restated as literals.
+    let rl = fixture("route-list.bin");
+    let (rl_count, rl_entry_len) = (u16::from_le_bytes([rl[2], rl[3]]) as usize, rl[1] as usize);
+    let routes: Vec<(u16, u32, u32)> = (0..rl_count)
+        .map(|k| {
+            let b = 6 + rl_entry_len * k;
+            (
+                u16::from_le_bytes([rl[b], rl[b + 1]]),
+                u32::from_le_bytes(rl[b + 8..b + 12].try_into().unwrap()), // distance_m
+                u32::from_le_bytes(rl[b + 12..b + 16].try_into().unwrap()), // ascent_m
+            )
+        })
+        .collect();
+    let held: Vec<u16> = routes.iter().map(|&(id, ..)| id).collect();
+    assert!(TRIP_STAGE_IDS.iter().all(|id| held.contains(id)), "both resolvable stages are stored routes");
+    assert!(!held.contains(&TRIP_DANGLING_STAGE), "the third stage is deliberately dangling");
+    let resolved = || stages.iter().filter_map(|s| routes.iter().find(|&&(id, ..)| id == *s));
+    let want_distance: u32 = resolved().map(|&(_, d, _)| d).sum();
+    let want_ascent: u32 = resolved().map(|&(_, _, a)| a).sum();
+    assert_eq!(resolved().count(), 2, "exactly the two resolvable stages contribute to the totals");
+
+    // tripList: 6-byte v2 header, one 76-byte entry, total == count == 1.
+    let tl = fixture("trip-list.bin");
+    assert_eq!(tl[0], 2, "list version");
+    assert_eq!(tl[1], 76, "tripList entry_len (mirrors routeList)");
+    assert_eq!(u16::from_le_bytes([tl[2], tl[3]]), 1, "count");
+    assert_eq!(u16::from_le_bytes([tl[4], tl[5]]), 1, "total == count (nothing dropped)");
+    let e = &tl[6..];
+    assert_eq!(e.len(), 76, "one 76-byte entry");
+    assert_eq!(u16::from_le_bytes([e[0], e[1]]), TRIP_ID, "trip id (its own counter)");
+    assert_eq!(u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as usize, trip.len(), "byte_len = stored trip file");
+    assert_eq!(u32::from_le_bytes([e[8], e[9], e[10], e[11]]), want_distance, "distance summed over resolvable stages");
+    assert_eq!(u32::from_le_bytes([e[12], e[13], e[14], e[15]]), want_ascent, "ascent summed over resolvable stages");
+    assert_eq!(u16::from_le_bytes([e[16], e[17]]), stage_count, "stage_count as stored (incl. dangling)");
+    let name_len = e[20] as usize;
+    assert_eq!(&e[21..21 + name_len], TRIP_NAME.as_bytes());
+    // Trailing whole-object crc32 = the trip file's CRC-32 (the content fingerprint routes use).
+    assert_eq!(u32::from_le_bytes([e[72], e[73], e[74], e[75]]), crc32(&trip), "entry crc32 fingerprints the trip");
 }
 
 /// Rewrite every fixture from the builders. Run only after a deliberate spec change:

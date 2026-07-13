@@ -33,6 +33,8 @@ A drift on either side fails that side's tests — the files are the contract.
 | `status-store-changed.bin` | `status` msg 2 §4.3 | route store changed, revision 42 |
 | `route-list.bin` | `routeList` object §7.4 | both stored route fixtures as catalog entries (ids 7 + 8, fields from their OBCR headers, each with its whole-object `crc32`); **6-byte v2 header** (`total` = `count` = 2) + **76-byte entries** |
 | `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1) | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader` |
+| `trip-v1.bin` | trip object v1 (spec §7.7) | "Alpen Traverse", 3 stages referencing route ids 7 + 8 (the two `route-list.bin` entries) **plus one deliberately dangling id (99)** — pins read-tolerance; 56-byte header + 2 bytes/stage |
+| `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
 
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, UUIDs, and the CRC-32 check value) so a test suite can assert
