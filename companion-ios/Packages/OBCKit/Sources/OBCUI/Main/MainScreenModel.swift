@@ -78,6 +78,10 @@ public final class MainScreenModel {
     /// #303: non-nil once a connected device reports an incompatible
     /// `protocol_version` — drives the incompatibility banner and disables sync.
     public private(set) var protocolMismatch: ProtocolMismatch?
+    /// Whether the identity read has settled this session (with an answer *or*
+    /// a failed read) — the other half of the `canSync` gate, so an id-keyed
+    /// write can never run ahead of the #303 verdict. See `runIdentityCheck`.
+    @ObservationIgnored private var identityChecked = false
 
     /// The ride-sync state machine (B7/#358) — exposed whole so the view reads
     /// `sync.syncState`, `sync.syncProgress`, … without duplicated mirrors.
@@ -123,6 +127,11 @@ public final class MainScreenModel {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    /// The in-flight identity read (`runIdentityCheck`) for the current
+    /// connection — what the coordinator's `identitySettled` seam awaits.
+    /// Replaced (never cancelled) on a reconnect: a superseded read settles the
+    /// same session-stable verdict on its own.
+    @ObservationIgnored private var identityTask: Task<Void, Never>?
 
     /// How long a trashed ride survives before the start-up sweep removes it
     /// for good — the trash screen's copy quotes this.
@@ -152,7 +161,15 @@ public final class MainScreenModel {
         )
         // The coordinator's seams back into this model — weak, so the closures
         // the model's own coordinator holds can never pin the model.
-        sync.canSync = { [weak self] in self?.protocolMismatch == nil }
+        // Closed — not open — until the identity read settles: neither the SYNC
+        // decode path nor the possession ack may run ahead of the #303 verdict.
+        // The settle seam is what makes an early SYNC tap wait for that verdict
+        // instead of hitting the closed gate and no-oping.
+        sync.canSync = { [weak self] in
+            guard let self else { return false }
+            return identityChecked && protocolMismatch == nil
+        }
+        sync.identitySettled = { [weak self] in await self?.identityTask?.value }
         sync.onRideListRead = { [weak self] in self?.loadState = .loaded }
         // A landed ride is already persisted (the coordinator's job) — mirror
         // it into the session's list so newly synced rides surface at once,
@@ -206,6 +223,12 @@ public final class MainScreenModel {
                 // store, never this model.
                 if state == .connected, let was = previous, was != .connected {
                     reload()
+                    // Re-run the identity read per connection — the verdict can
+                    // genuinely change between connects (a DFU install), and
+                    // its completion is what re-fires the possession ack.
+                    identityTask = Task { [weak self] in
+                        await self?.runIdentityCheck()
+                    }
                     if let nameReconciler {
                         Task { await nameReconciler.reconcile() }
                     }
@@ -238,16 +261,10 @@ public final class MainScreenModel {
         // read carries the protocol-version check (#303) — surfaced here, on
         // connect, where `deviceInfo()` is consumed.
         let firstLoad = loadTask
-        streamTasks.append(Task { [weak self, transport] in
+        identityTask = Task { [weak self] in
             await firstLoad?.value
-            guard let info = try? await transport.deviceInfo() else { return }
-            guard let self else { return }
-            deviceName = info.name
-            if case let .protocolMismatch(expected, found)? =
-                OBCProtocol.versionMismatch(reportedBy: info.protocolVersion) {
-                protocolMismatch = ProtocolMismatch(expected: expected, found: found)
-            }
-        })
+            await self?.runIdentityCheck()
+        }
         // Desired-name reconcile for the *launch* connection (#361) — the
         // reconnect edge above never fires for the stream's replayed first
         // value. After the first load for the same reason as the identity
@@ -267,6 +284,7 @@ public final class MainScreenModel {
         // model owns (and cancels) only what it runs itself.
         streamTasks.forEach { $0.cancel() }
         loadTask?.cancel()
+        identityTask?.cancel()
     }
 
     /// (Re)read both lists — also the S3 "Retry" action. Cached content stays
@@ -299,6 +317,31 @@ public final class MainScreenModel {
                 loadState = .failed
             }
         }
+    }
+
+    /// One identity read (`deviceInfo()`) for the current connection: the #303
+    /// protocol-version verdict, and — strictly downstream of it — the trigger
+    /// for the coordinator's possession ack, so an id-keyed write can never
+    /// race the verdict (protocol v2's store-epoch check will hook into this
+    /// same ordering). "Settled" includes a *failed* read (launched offline, a
+    /// flaky link): the gate opens — the veto engages only on a known mismatch,
+    /// the v1 posture — and the next connect edge re-runs the check. A
+    /// compatible read clears a stale mismatch (a DFU install can fix the
+    /// device between connects).
+    private func runIdentityCheck() async {
+        if let info = try? await transport.deviceInfo() {
+            deviceName = info.name
+            if case let .protocolMismatch(expected, found)? =
+                OBCProtocol.versionMismatch(reportedBy: info.protocolVersion) {
+                protocolMismatch = ProtocolMismatch(expected: expected, found: found)
+            } else {
+                protocolMismatch = nil
+            }
+        }
+        identityChecked = true
+        // The per-connect possession ack (spec §4.4) — a send that misses a
+        // dying link is dropped and covered by the next connect's re-ack.
+        if protocolMismatch == nil { sync.reconcilePossession() }
     }
 
     /// True-up every record's `deviceObjectID` against the device's live catalog
