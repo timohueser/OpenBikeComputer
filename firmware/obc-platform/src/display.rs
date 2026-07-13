@@ -43,21 +43,6 @@
 
 use crate::Band;
 
-/// **The frame geometry — the single authority.** The frame the app renders and every backend
-/// presents: `FRAME_W × FRAME_H` device-64 bytes. Everything frame-sized derives from these two
-/// constants (`FB_BYTES`, the `RowDiff` height, the overlay-window columns, every render-call
-/// viewport, the simulator's default window); each backend statically asserts its panel-native
-/// geometry equals them, so a panel change can't silently desynchronize the framebuffer the app
-/// renders from the frame a backend scans.
-pub const FRAME_W: usize = 240;
-/// Frame height in rows — see [`FRAME_W`].
-pub const FRAME_H: usize = 320;
-
-// The wire pack ([`ls021_wire`](crate::ls021_wire)) consumes exactly one `WIDTH`-pixel row per
-// framebuffer row, so the panel-native row width *is* the frame width. Pin them together here at the
-// single authority (the LS021/FLPR backend also re-asserts it against its FLPR gate-scan height).
-const _: () = assert!(crate::ls021_wire::WIDTH == FRAME_W, "ls021_wire::WIDTH diverged from display::FRAME_W");
-
 /// A dirty rectangle of the frame to re-present with the overlay composited over it — today the hold
 /// bulge's right-edge window. The row-addressed LS021 panel widens it to full-width rows internally
 /// (it can't latch a sub-span of columns) but still only touches rows `[y0, y0 + rows)`.

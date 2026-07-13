@@ -5,9 +5,9 @@
 //! ([`fb_mut`](DisplayDriver::fb_mut), one byte per pixel, `0b00_RR_GG_BB`): the shared renderer
 //! draws the whole frame into it through an [`FbDevice64`](obc_platform::FbDevice64), then
 //! [`present`](DisplayDriver::present) pushes it. `present` drives the *same* self-diffing
-//! [`diff_rows`](obc_platform::diff_rows) core the device does — re-pushing only the rows whose
+//! [`diff_rows`](obc_platform::ls021::diff_rows) core the device does — re-pushing only the rows whose
 //! per-row hash changed, honouring the overlay `exclude` span with the *same*
-//! [`clip_span`](obc_platform::clip_span) — and [`present_overlay`](DisplayDriver::present_overlay)
+//! [`clip_span`](obc_platform::ls021::clip_span) — and [`present_overlay`](DisplayDriver::present_overlay)
 //! composites through the *same* [`composite_overlay_window`](obc_platform::composite_overlay_window)
 //! helper. The only host-specific step is expanding the pushed device-64 rows to the RGB888 texture
 //! egui uploads (via [`device64_to_rgb565`](obc_platform::device64_to_rgb565) → RGB888 — exactly the
@@ -15,7 +15,7 @@
 //!
 //! On top of the device's path it does what the device can't afford: it keeps a full copy of the
 //! last-presented frame, independently computes which rows *actually* changed, and asserts the
-//! hash-diff's spans covered every one ([`spans_missed_changes`](obc_platform::spans_missed_changes))
+//! hash-diff's spans covered every one ([`spans_missed_changes`](obc_platform::ls021::spans_missed_changes))
 //! — the exact-diff **oracle** that catches any *systematic* diff bug in CI (a real FNV-1a collision
 //! is ~2⁻³² per row-change and self-healing). Because the uploaded texture is reconstructed from the
 //! partial pushes (mutated **only on changed spans**), a diff bug also surfaces as a stale row on
@@ -26,10 +26,8 @@
 
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
-use obc_platform::{
-    clip_span, composite_overlay_window, device64_to_rgb565, diff_rows, row_hash, spans_missed_changes, Band,
-    DisplayDriver, OverlayRegion,
-};
+use obc_platform::ls021::{clip_span, diff_rows, row_hash, spans_missed_changes};
+use obc_platform::{composite_overlay_window, device64_to_rgb565, Band, DisplayDriver, OverlayRegion};
 use obc_reader::rgb565_to_rgb888;
 
 /// Last present's push metric, surfaced in the render-stats panel.
@@ -278,11 +276,11 @@ mod tests {
     #[test]
     fn geometry_matches_the_platform_authority() {
         // The sim's device resolution is the single obc-platform authority, not a re-declared literal.
-        assert_eq!(obc_platform::FRAME_W, 240);
-        assert_eq!(obc_platform::FRAME_H, 320);
-        let p = Present::new(obc_platform::FRAME_W as u32, obc_platform::FRAME_H as u32);
-        assert_eq!(p.width, obc_platform::FRAME_W);
-        assert_eq!(p.rows, obc_platform::FRAME_H);
+        assert_eq!(obc_platform::ls021::FRAME_W, 240);
+        assert_eq!(obc_platform::ls021::FRAME_H, 320);
+        let p = Present::new(obc_platform::ls021::FRAME_W as u32, obc_platform::ls021::FRAME_H as u32);
+        assert_eq!(p.width, obc_platform::ls021::FRAME_W);
+        assert_eq!(p.rows, obc_platform::ls021::FRAME_H);
     }
 
     #[test]
@@ -386,8 +384,8 @@ mod tests {
         use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
         // The device resolution is the single obc-platform authority, not a re-declared literal.
-        const W: u32 = obc_platform::FRAME_W as u32;
-        const H: u32 = obc_platform::FRAME_H as u32;
+        const W: u32 = obc_platform::ls021::FRAME_W as u32;
+        const H: u32 = obc_platform::ls021::FRAME_H as u32;
         let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
         let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
         let cache = MapCache::new();
@@ -591,8 +589,8 @@ mod tests {
     ) {
         use obc_route::RouteReader;
 
-        const W: u32 = obc_platform::FRAME_W as u32;
-        const H: u32 = obc_platform::FRAME_H as u32;
+        const W: u32 = obc_platform::ls021::FRAME_W as u32;
+        const H: u32 = obc_platform::ls021::FRAME_H as u32;
 
         // Reconcile through the shared dispatcher — the same `obc-host-core::HostLoop` gui.rs drives
         // (route planner lifecycle, one bounded step per frame). This tour uses only routes, so the
@@ -663,8 +661,8 @@ mod tests {
         use obc_reader::{MapCache, MapTables, Reader, SliceSource};
         use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
-        const W: u32 = obc_platform::FRAME_W as u32;
-        const H: u32 = obc_platform::FRAME_H as u32;
+        const W: u32 = obc_platform::ls021::FRAME_W as u32;
+        const H: u32 = obc_platform::ls021::FRAME_H as u32;
         let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
         let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
         let cache = MapCache::new();
@@ -839,8 +837,8 @@ mod tests {
         use obc_reader::{MapCache, MapTables, Reader, SliceSource};
         use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
-        const W: u32 = obc_platform::FRAME_W as u32;
-        const H: u32 = obc_platform::FRAME_H as u32;
+        const W: u32 = obc_platform::ls021::FRAME_W as u32;
+        const H: u32 = obc_platform::ls021::FRAME_H as u32;
         let bytes = include_bytes!("../assets/grimsel.obcm").to_vec();
         let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
         let cache = MapCache::new();

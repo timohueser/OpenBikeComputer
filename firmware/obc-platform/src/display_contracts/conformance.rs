@@ -1,6 +1,6 @@
 //! The **presenter conformance suite** — generic, backend-agnostic checks of the contracts'
-//! mandatory invariants, written once so every pairing (the test-only proof backend now; the real
-//! LS021/FLPR and simulator backends when #806 migrates them) runs the *same* semantics tests.
+//! mandatory invariants, written once so every pairing (both shipping backends' host-testable
+//! halves and the test-only proof backend) runs the *same* semantics tests.
 //!
 //! The checks observe a backend only through the contracts plus one test-side hook,
 //! [`GlassProbe`] — "what colour is on glass at (x, y)?" — implemented by each backend's test
@@ -90,7 +90,7 @@ pub async fn check_damage_translation<F, P>(
 /// Overlay backdrop composition: the composite reads the **clean frame** as its backdrop — pixels
 /// the overlay closure doesn't paint show the frame, painted ones show the overlay — and the
 /// frame's backing is **byte-identical when the call returns** (the clean-frame postcondition; a
-/// mutate-and-restore composite like the FLPR's passes only if its restore is exact).
+/// mutate-and-restore composite passes only if its restore is exact).
 ///
 /// `overlay_rect` is the frame-space overlay window; `mark_at` a pixel inside it the closure
 /// paints; `backdrop_at` a pixel inside it the closure leaves alone. `snapshot` captures the
