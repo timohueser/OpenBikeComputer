@@ -364,6 +364,12 @@ pub struct App {
     /// route is navigated. The firmware feeds the filename-encoded upload ids (+ session-scoped
     /// side-load ids); hosts without ids get positional ones from [`set_routes`](App::set_routes).
     catalog_ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }>,
+    /// The resident **trip** catalog (epic #526, TR2): the grouped-route folders the host feeds via
+    /// [`set_trips`](App::set_trips), each a [`TripSummary`](crate::trip::TripSummary) resolving its
+    /// stage route ids against [`catalog_ids`](App::catalog_ids). Re-resolved on every route rescan
+    /// so an appeared/vanished route re-files. The device UI rows land in TR3; the flat Route menu
+    /// (which reads [`catalog`](App::catalog)) is untouched, so filed routes keep listing until then.
+    trips: crate::trip::Trips,
     /// The resident ride catalog (summaries), populated by the host ([`set_rides`](App::set_rides)) —
     /// the Rides screen lists it (epic #447, P7). Each entry carries its `synced` flag; the parallel
     /// [`ride_catalog_ids`](App::ride_catalog_ids) holds the durable object ids the hold-to-delete
@@ -788,6 +794,7 @@ impl App {
             activity: Activity::new(Mode::Idle),
             catalog: Catalog::new(),
             catalog_ids: heapless::Vec::new(),
+            trips: crate::trip::Trips::new(),
             ride_catalog: crate::ride::RideCatalog::new(),
             ride_catalog_ids: heapless::Vec::new(),
             nav_profiles: crate::NavProfiles::new(),
@@ -879,6 +886,7 @@ impl App {
             addr_of_mut!((*slot).activity).write(Activity::new(Mode::Idle));
             addr_of_mut!((*slot).catalog).write(Catalog::new());
             addr_of_mut!((*slot).catalog_ids).write(heapless::Vec::new());
+            addr_of_mut!((*slot).trips).write(crate::trip::Trips::new());
             addr_of_mut!((*slot).ride_catalog).write(crate::ride::RideCatalog::new());
             addr_of_mut!((*slot).ride_catalog_ids).write(heapless::Vec::new());
             // (Was missing until #678 rework 3's field audit, like #680's `update_failed` catch:
@@ -966,6 +974,7 @@ impl App {
                 activity: _,
                 catalog: _,
                 catalog_ids: _,
+                trips: _,
                 ride_catalog: _,
                 ride_catalog_ids: _,
                 nav_profiles: _,
@@ -1656,6 +1665,13 @@ impl App {
                 _ => {}
             }
         }
+
+        // Trips resolve stage *ids* into catalog indices, so a catalog replacement re-points them: a
+        // route that appeared re-files, one that vanished dangles (dropped from the resolved list,
+        // its stats no longer summed). Re-resolve from each trip's verbatim `stage_ids` (epic #526).
+        for t in self.trips.iter_mut() {
+            t.reresolve(&self.catalog, &self.catalog_ids);
+        }
     }
 
     /// The resident route catalog.
@@ -1668,6 +1684,37 @@ impl App {
     /// [`set_routes`](App::set_routes)).
     pub fn route_ids(&self) -> &[u16] {
         &self.catalog_ids
+    }
+
+    /// Replace the resident **trip** catalog from the host's store (epic #526, TR2). Each
+    /// [`TripInput`](crate::trip::TripInput) carries the trip's durable id, name, and stage route ids;
+    /// the app resolves the ids against the current route catalog (`catalog_ids`) into a
+    /// [`TripSummary`](crate::trip::TripSummary) — resolved catalog indices in ride order + summed
+    /// distance/climb over the resolvable stages, dangling refs dropped. Clones up to
+    /// [`MAX_TRIPS`](crate::MAX_TRIPS) trips; any beyond that are ignored (the host warns + lists the
+    /// first N, mirroring the route-scan overflow). Call **after** the routes are set so the stage ids
+    /// resolve; a later [`set_routes_with_ids`](App::set_routes_with_ids) re-resolves them in place.
+    /// Dirties the map so an open (TR3) menu repaints.
+    pub fn set_trips(&mut self, trips: &[crate::trip::TripInput]) {
+        self.trips.clear();
+        for input in trips.iter().take(crate::trip::MAX_TRIPS) {
+            let _ = self.trips.push(crate::trip::TripSummary::resolve(input, &self.catalog, &self.catalog_ids));
+        }
+        self.map_dirty = true;
+    }
+
+    /// The resident trip catalog (epic #526) — the grouped-route folders. The TR3 Route menu lists
+    /// these above the unfiled routes; until then they're resolved but unrendered.
+    pub fn trips(&self) -> &[crate::trip::TripSummary] {
+        &self.trips
+    }
+
+    /// Whether the route at catalog index `idx` is **filed** into some trip (epic #526) — a filed
+    /// route shows only inside its folder, so the TR3 top level lists trips + unfiled routes. Until
+    /// TR3 the flat menu ignores this and lists every route.
+    pub fn route_filed(&self, idx: usize) -> bool {
+        let i = idx as u16;
+        self.trips.iter().any(|t| t.stage_indices.contains(&i))
     }
 
     /// Drain the Route menu's pending route-delete request (epic #447, P6), resolved to the route's

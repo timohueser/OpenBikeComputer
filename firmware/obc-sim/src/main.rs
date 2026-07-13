@@ -32,6 +32,7 @@ mod sim_compass;
 mod sim_location;
 mod sim_sensors;
 mod track;
+mod trips;
 use framebuffer::Framebuffer;
 use obc_host_core::{finish_nav_plan, initial_camera, replay_step, NavPlan, ReplaySensors, VecSink};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
@@ -39,6 +40,7 @@ use obc_route::{RouteIndex, RouteReader};
 use rides::RideStore;
 use routes::RouteStore;
 use track::TrackStore;
+use trips::TripStore;
 
 struct Args {
     map: String,
@@ -839,6 +841,11 @@ fn main() {
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
         app.set_routes_with_ids(store.catalog(), store.ids());
+        // Scan the `.obt` trips beside the routes (epic #526, TR2) — grouped-route folders. Fed
+        // **after** the routes so the stage ids resolve against the catalog. The TR3 menu draws the
+        // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
+        let trip_store = TripStore::open(args.routes_dir());
+        app.set_trips(&trip_store.inputs());
         // Load the tracks folder so the Rides screen (#454) lists real `RD{id}.ORD` rides + their
         // synced flags.
         let mut ride_store = RideStore::open(args.tracks_dir());
