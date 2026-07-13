@@ -11,7 +11,7 @@ use std::f32::consts::TAU;
 
 use std::time::Instant;
 
-use obc_app::{Button, ButtonEvent, InputEvent, InputSource};
+use obc_ports::{Button, ButtonEvent, InputEvent, InputSource};
 
 /// Radians of knob rotation per emitted detent (~15° ⇒ ~24 detents per turn,
 /// a typical encoder). Shared by drag and scroll so both feel the same.

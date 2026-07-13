@@ -23,7 +23,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use obc_app::{AltimeterSource, LocationSource};
+use obc_ports::{AltimeterSource, LocationSource};
 // The canonical USB-CDC codec, authored once on the device side, so the two halves of the protocol
 // can't drift: device→host `Telemetry`/`parse_telemetry` + host→device `format_fix` `F`-line
 // encoder. DEFAULT features only, so the pure codec is pulled without embassy-sync.

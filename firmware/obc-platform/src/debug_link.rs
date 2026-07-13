@@ -1,6 +1,6 @@
 //! Transport-agnostic fake-sensor debug protocol — the board-agnostic half.
 //!
-//! A host streams a recorded ride over a debug link and this module turns it into the `obc-app` HAL
+//! A host streams a recorded ride over a debug link and this module turns it into the `obc-ports` HAL
 //! traits the app already polls — [`DebugLocation`], [`DebugAltimeter`], [`DebugCompass`] — so the
 //! app can't tell them from real drivers. The board crate owns only the concrete transport driver
 //! (a UART/VCOM link on the nRF54L, which has no USB peripheral); it feeds received bytes to
@@ -64,7 +64,7 @@ use core::fmt::Write;
 // The pure protocol below (parser, encoders, `LineReader`, `Telemetry`) needs no embassy-sync, so
 // it is **always** compiled and the host feeder reuses one canonical codec. The `Signal`/`Channel`
 // plumbing pulls embassy-sync, so it stays behind `debug-link` at the bottom of the file.
-use obc_app::{Button, ButtonEvent, Fix, InputEvent};
+use obc_ports::{Button, ButtonEvent, Fix, InputEvent};
 
 /// Longest line we accept. The widest message is an `F` with full i32 lat/lon and float
 /// course/speed (`F -2147483648 -2147483648 359.99 99.99`) ≈ 45 bytes; 64 leaves slack.
@@ -371,7 +371,7 @@ mod handoff {
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::channel::Channel;
     use embassy_sync::signal::Signal;
-    use obc_app::{AltimeterSource, CompassSource, Fix, InputEvent, InputSource, LocationSource};
+    use obc_ports::{AltimeterSource, CompassSource, Fix, InputEvent, InputSource, LocationSource};
 
     use super::{LineReader, Msg, Telemetry};
 

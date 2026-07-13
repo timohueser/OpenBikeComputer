@@ -8,10 +8,12 @@ associated `Value` keeps the foundation independent of the app's settings
 model. It owns no drivers, buses, executor primitives, global mailboxes,
 UI/render policy, or allocation.
 
-`obc-app` and `obc-route` currently re-export compatibility names. FAR-04
-([#797](https://github.com/timohueser/OpenBikeComputer/issues/797)) owns moving
-board and host imports/direct dependencies to this crate; the compatibility
-re-exports keep existing callers source-compatible in the meantime.
+`obc-app` and `obc-route` retain compatibility re-exports for existing callers.
+Platform adapters and the board, simulator, shared host, replay, and USB
+implementations now import their semantic contracts directly from this crate
+and declare direct `obc-ports` dependencies. In particular, `obc-platform`
+depends on `obc-ports` instead of `obc-app`, and `obc-replay` no longer imports
+the application/UI layer.
 
 `DateTime` exposes semantic Gregorian arithmetic (`add_minutes`, signed UTC
 offsets, Unix conversion) without an app year range. OpenBikeComputer's

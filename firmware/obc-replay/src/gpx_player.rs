@@ -2,7 +2,7 @@
 //!
 //! [`GpxPlayer`] is the host's stand-in for the device's GPS chip when replaying a recorded
 //! [`Track`]: it implements [`LocationSource`] like a real receiver's driver would, so the
-//! shared [`App`](obc_app::App) can't tell a replay from a live fix.
+//! shared app can't tell a replay from a live fix.
 //!
 //! ## Fidelity
 //! GPX stores only position + time, never course or speed, so they're derived the
@@ -19,7 +19,7 @@
 //! time (scaled by the playback-speed multiplier). Keeping the clock external
 //! makes the interpolation unit-testable without a real timer.
 
-use obc_app::{Fix, LocationSource};
+use obc_ports::{Fix, LocationSource};
 
 use crate::gpx::Track;
 

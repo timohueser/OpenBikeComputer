@@ -4,7 +4,7 @@
 //! recorded track is purely a host convenience, so this lives in this host crate (it
 //! needs `std`) and produces nothing the shared crates know about — the
 //! [`GpxPlayer`](crate::gpx_player::GpxPlayer) turns a [`Track`] into the same
-//! [`Fix`](obc_app::Fix)es a GPS driver would emit.
+//! [`Fix`](obc_ports::Fix)es a GPS driver would emit.
 //!
 //! The parser is a small hand-rolled scan rather than a full XML stack: GPX track
 //! points are a regular `<trkpt lat=".." lon="..">` with an optional `<ele>` and

@@ -4,7 +4,7 @@
 //! the five UI [`Gesture`]s, identically across host and MCU. `no_std`, zero-alloc, and
 //! clock-agnostic — the caller passes the current time in, so no platform timer is baked in.
 
-use crate::hal::{Button, ButtonEvent, InputEvent};
+use obc_ports::{Button, ButtonEvent, InputEvent};
 
 /// Default long-press threshold (ms): how long the encoder or Back must be held to read as
 /// `Hold`/`BackHold` rather than `Press`/`Back`.
@@ -175,7 +175,7 @@ impl Gestures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hal::{Button, ButtonEvent, InputEvent};
+    use obc_ports::{Button, ButtonEvent, InputEvent};
 
     fn down(b: Button) -> InputEvent {
         InputEvent::Button(ButtonEvent::Down(b))

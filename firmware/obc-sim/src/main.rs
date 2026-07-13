@@ -11,9 +11,9 @@
 use std::time::Instant;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obc_app::{
-    App, AppState, Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackAction,
-    TrackSink,
+use obc_app::{App, AppState, TrackAction};
+use obc_ports::{
+    Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackError, TrackPoint, TrackSink,
 };
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
@@ -523,8 +523,8 @@ fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
 /// record failure and raises the recording-error card through the real path, not a shortcut.
 struct FailTrackSink;
 impl TrackSink for FailTrackSink {
-    fn record(&mut self, _p: obc_route::TrackPoint) -> Result<(), obc_app::TrackError> {
-        Err(obc_app::TrackError)
+    fn record(&mut self, _p: TrackPoint) -> Result<(), TrackError> {
+        Err(TrackError)
     }
 }
 
@@ -1058,26 +1058,26 @@ fn main() {
         if args.sensors_demo {
             if let Some(p) = player.as_mut() {
                 struct DemoHr;
-                impl obc_app::HeartRateSource for DemoHr {
+                impl obc_ports::HeartRateSource for DemoHr {
                     fn poll(&mut self) -> Option<u16> {
                         Some(152)
                     }
                 }
                 struct DemoPower;
-                impl obc_app::PowerSource for DemoPower {
+                impl obc_ports::PowerSource for DemoPower {
                     fn poll(&mut self) -> Option<u16> {
                         Some(210)
                     }
                 }
                 struct DemoCadence;
-                impl obc_app::CadenceSource for DemoCadence {
+                impl obc_ports::CadenceSource for DemoCadence {
                     fn poll(&mut self) -> Option<u8> {
                         Some(88)
                     }
                 }
                 let now_ms = (p.time() * 1000.0) as u32;
                 let (mut hr, mut power, mut cadence) = (DemoHr, DemoPower, DemoCadence);
-                let sensors = obc_app::Sensors {
+                let sensors = obc_ports::Sensors {
                     loc: p,
                     altimeter: None,
                     temperature: None,
@@ -1089,7 +1089,7 @@ fn main() {
                     power: Some(&mut power),
                     cadence: Some(&mut cadence),
                 };
-                app.tick(obc_app::RideClock(now_ms), sensors, route.as_ref());
+                app.tick(obc_ports::RideClock(now_ms), sensors, route.as_ref());
             }
         }
 

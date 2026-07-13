@@ -2394,6 +2394,7 @@ name = "obc-host-core"
 version = "0.1.0"
 dependencies = [
  "obc-app",
+ "obc-ports",
  "obc-reader",
  "obc-replay",
  "obc-route",
@@ -2445,7 +2446,7 @@ dependencies = [
  "embedded-sdmmc",
  "heapless 0.8.0",
  "libm",
- "obc-app",
+ "obc-ports",
  "obc-reader",
  "obc-route",
 ]
@@ -2481,7 +2482,7 @@ dependencies = [
 name = "obc-replay"
 version = "0.1.0"
 dependencies = [
- "obc-app",
+ "obc-ports",
 ]
 
 [[package]]
@@ -2507,6 +2508,7 @@ dependencies = [
  "obc-dfu",
  "obc-host-core",
  "obc-platform",
+ "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-replay",
@@ -2522,6 +2524,7 @@ dependencies = [
  "eframe",
  "obc-app",
  "obc-platform",
+ "obc-ports",
  "obc-replay",
  "rfd",
  "serialport",

@@ -8,7 +8,7 @@
 //! `debug-link`) because it *is* the debug-link-off path.
 
 use embassy_time::Instant;
-use obc_app::{Fix, LocationSource};
+use obc_ports::{Fix, LocationSource};
 
 /// Side length (m) and speed (m/s) of the square loop [`SynthLocation`] walks. Slow enough to watch
 /// the user marker / breadcrumb crawl, big enough that a saved ride is a real ~0.8 km loop.

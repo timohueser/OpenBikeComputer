@@ -8,7 +8,7 @@
 //!
 //! [`Band`] makes "render the whole frame, band at a time" invisible to the drawing code: it wraps
 //! one band's scratch slice as a [`Framebuffer565`] with the band's `y0` baked in, yet reports the
-//! **full frame** size. A whole-frame generator ([`App::render_frame`](obc_app::App::render_frame))
+//! **full frame** size. A whole-frame generator (the app's render entry point)
 //! draws in absolute coordinates; [`Band`] shifts each draw up by `y0` and clips away whatever falls
 //! outside this band's rows, so the frame reassembles seam-free with the generator none the wiser.
 

@@ -1,8 +1,8 @@
 //! Board-agnostic pushbutton input → the shared gesture recognizer.
 //!
-//! Turns raw GPIO levels into [`obc_app::InputEvent`]s and implements [`InputSource`], so a board
-//! drops it into [`App::handle_input`](obc_app), which runs the *shared*
-//! [`Gestures`](obc_app::Gestures) layer — the same path the host uses with its knob/keyboard. This
+//! Turns raw GPIO levels into [`InputEvent`]s and implements [`InputSource`], so a board
+//! drops it into the app's input handler, which runs the shared gesture recognizer — the same path
+//! the host uses with its knob/keyboard. This
 //! only manufactures the raw events from four buttons instead of an encoder.
 //!
 //! The hardware is four pushbuttons sharing one common pin (no rotary encoder), so:
@@ -25,7 +25,7 @@
 
 use embedded_hal::digital::InputPin;
 use heapless::Deque;
-use obc_app::{Button, ButtonEvent, InputEvent, InputSource};
+use obc_ports::{Button, ButtonEvent, InputEvent, InputSource};
 
 /// Default contact-settle window (ms): a level must hold this long before its edge is reported.
 /// 8 ms rejects switch bounce without a perceptible press delay.
@@ -121,7 +121,7 @@ impl<P: InputPin> Debounced<P> {
 /// Four pushbuttons → raw [`InputEvent`]s for the shared app. Generic over any [`InputPin`], so the
 /// same type serves the nRF board (`embassy_nrf::gpio::Input`) and the host test mock. Drive it as:
 /// [`update`](Self::update) once per loop with the current millis, then hand `&mut self` to
-/// [`App::handle_input`](obc_app), which drains it through [`InputSource`].
+/// the app's input handler, which drains it through [`InputSource`].
 pub struct ButtonInput<P> {
     prev: Debounced<P>,
     next: Debounced<P>,
@@ -156,7 +156,7 @@ impl<P: InputPin> ButtonInput<P> {
     }
 
     /// Sample all four pins at wall-clock `now_ms` and queue any resulting events.
-    /// Call once per loop, before [`App::handle_input`](obc_app); the app then drains
+    /// Call once per loop, before the app's input handler; the app then drains
     /// the queue via [`InputSource::poll`].
     pub fn update(&mut self, now_ms: u32) {
         let t = self.timing;

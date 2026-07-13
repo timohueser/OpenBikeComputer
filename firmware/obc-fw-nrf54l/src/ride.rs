@@ -16,8 +16,8 @@ use embassy_time::{Instant, Timer};
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 // `SettingsStore` (the load/save trait) is the ride loop's seam over the RRAM store; the `ble`
 // build's store lives inside `object_store` (which imports it itself).
-use obc_app::SettingsStore;
-use obc_app::{App, InputClock, RideClock, Sensors, TrackSink};
+use obc_app::App;
+use obc_ports::{InputClock, RideClock, Sensors, SettingsStore, TrackSink};
 // The real-sensor `Signal` sources: the `GpsLocation`/`BaroAltimeter`/`SensorTemp` ZSTs the ride
 // loop polls, fed by `sensors::sensor_task`. Real-sensor build only.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]

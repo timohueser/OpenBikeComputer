@@ -12,7 +12,7 @@
 
 use obc_route::{ground_dist_m, DeadBand, Match};
 
-use crate::hal::Fix;
+use obc_ports::Fix;
 
 /// A gap longer than this between fixes (s) is a GPS dropout, not real travel — skip the
 /// interval so a reconnect doesn't book a straight-line jump across it.
@@ -245,7 +245,7 @@ pub struct Activity {
     /// Dead-banded barometric climb — the `climbed` stat. The same hysteresis integrator the route
     /// converter uses, so an on-route ride lands near the route's precomputed ascent.
     climb: DeadBand<f32>,
-    /// Latest barometric altitude (m), stamped onto each logged [`TrackPoint`]'s elevation.
+    /// Latest barometric altitude (m), stamped onto each logged [`TrackPoint`](obc_ports::TrackPoint)'s elevation.
     last_alt: Option<f32>,
     /// `true` when a dropped fix (GPS gap / teleport) left a hole, so the next logged point starts a
     /// fresh track segment.
@@ -579,7 +579,7 @@ impl Activity {
         core::mem::take(&mut self.nav_cancel)
     }
 
-    /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_route::TrackPoint): the
+    /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_ports::TrackPoint): the
     /// latest barometric altitude, or 0 before any sample.
     pub(crate) fn track_ele(&self) -> i16 {
         self.last_alt.map_or(0, |a| a as i16)

@@ -27,11 +27,11 @@ use obc_render::{
 use obc_route::WptEntry;
 
 use crate::app::{Pan, PanAxis};
-use crate::hal::Fix;
 use crate::input::Gesture;
 use crate::settings::{DateTime, Units, WaypointMode};
 use crate::wall_clock::MinuteTicker;
 use crate::Msg;
+use obc_ports::Fix;
 
 use super::{Ctx, Render, Screen, ScreenTick, StatisticsScreen, Transition};
 
