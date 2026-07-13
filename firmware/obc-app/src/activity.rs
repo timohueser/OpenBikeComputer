@@ -438,6 +438,10 @@ impl Activity {
 
     /// Take (and clear) the pending [`TrackAction`], if any — the host calls this each frame
     /// and performs the file I/O (finalise / discard).
+    ///
+    /// Compatibility drain of [`HostCommand::FinishTrack`](crate::host::HostCommand::FinishTrack)
+    /// (#800) — the same single slot [`App::drain_host_commands`](crate::App::drain_host_commands)
+    /// consumes; removal owned by #812.
     pub fn take_track_action(&mut self) -> Option<TrackAction> {
         self.track_action.take()
     }
@@ -577,6 +581,16 @@ impl Activity {
     /// Take (and clear) the pending plan-cancel request.
     pub(crate) fn take_nav_cancel(&mut self) -> bool {
         core::mem::take(&mut self.nav_cancel)
+    }
+
+    /// Non-consuming peek at the pending plan-cancel one-shot (the typed drain's pendency check).
+    pub(crate) fn nav_cancel_pending(&self) -> bool {
+        self.nav_cancel
+    }
+
+    /// Non-consuming peek at the pending card-free scan one-shot (the typed drain's pendency check).
+    pub(crate) fn card_scan_pending(&self) -> bool {
+        self.card_scan_request
     }
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_ports::TrackPoint): the
