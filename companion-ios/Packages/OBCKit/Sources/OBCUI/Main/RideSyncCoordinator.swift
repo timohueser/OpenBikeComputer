@@ -191,21 +191,27 @@ public final class RideSyncCoordinator {
     ///
     /// Called by the owning model once per established connection, **after** the
     /// identity read settles — an id-keyed write must never race the #303
-    /// protocol-version verdict (and protocol v2's store-epoch check hooks into
-    /// exactly that ordering). Deliberately no link guard: the model calls on a
-    /// live connection, and a send into a dying link just throws into the
-    /// dropped error. Fire-and-forget (the `DeviceNameReconciler` pattern: a
-    /// failed send self-heals on the next connect by construction — the whole
-    /// list is re-sent every time — so the error is deliberately dropped rather
-    /// than surfaced). Captures only the transport and the id snapshot, never
-    /// `self`. Tombstoned/trashed rides stay in `syncedRideIDs()` (they landed
-    /// once), which is exactly the flag's meaning — "downloaded at least once".
-    public func reconcilePossession() {
+    /// protocol-version verdict, and the `scope` it settles on is the write's
+    /// key (#769): only synced ids minted under the **connected device's
+    /// current (serial, epoch)** are sent. Another device's ids, a previous
+    /// era's ids, and unclaimed flat legacy ids all stay home — acking those
+    /// is exactly the checkmark-stamping the 2026-07-12 incident produced. The
+    /// fail-closed half lives upstream: a failed identity read never produces
+    /// a scope, so this is never called for that connection. Deliberately no
+    /// link guard: the model calls on a live connection, and a send into a
+    /// dying link just throws into the dropped error. Fire-and-forget (the
+    /// `DeviceNameReconciler` pattern: a failed send self-heals on the next
+    /// connect by construction — the whole list is re-sent every time — so the
+    /// error is deliberately dropped rather than surfaced). Captures only the
+    /// transport and the id snapshot, never `self`. Tombstoned/trashed rides
+    /// stay in `syncedRideIDs()` (they landed once), which is exactly the
+    /// flag's meaning — "downloaded at least once".
+    public func reconcilePossession(for scope: LibraryScope) {
         guard canSync() else { return }
-        let ids = Array(library.syncedRideIDs())
+        let ids = library.syncedRideIDs().filter { $0.scope == scope }
         guard !ids.isEmpty else { return }
         Task { [transport] in
-            try? await transport.ackRides(ids)
+            try? await transport.ackRides(Array(ids))
         }
     }
 

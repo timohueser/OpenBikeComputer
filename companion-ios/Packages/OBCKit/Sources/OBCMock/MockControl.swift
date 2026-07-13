@@ -243,14 +243,18 @@ public final class MockControl: @unchecked Sendable {
     public func seedLibrary(into store: any LibraryStore) {
         let existing = Set(store.plannedRoutes().map(\.id))
         let routes = lock.withLocked { _fixtures.routes }
+        // Seeded device links carry the mock device's own (serial, epoch)
+        // scope (#769) — the same link an upload against this mock would mint,
+        // so badges and replace-by-id behave exactly as on the real path.
+        let scope = deviceInfo.libraryScope
         let base = Date()
         for (index, entry) in routes.enumerated() where !existing.contains(entry.summary.id) {
-            var record = entry.record(addedAt: base.addingTimeInterval(-Double(index)))
+            var record = entry.record(addedAt: base.addingTimeInterval(-Double(index)), scope: scope)
             // A fixture the mock device holds boots **up to date** — the seeded
             // fingerprint matches what an upload of the record would send, so
             // the C1 badge shows the check (a rename then flips it to outdated,
             // same as on the real path).
-            if record.deviceObjectID != nil {
+            if record.deviceLink != nil {
                 record.uploadedCRC32 = RouteObjectCodec.payloadCRC(for: record)
             }
             store.savePlannedRoute(record)
@@ -458,7 +462,10 @@ public final class MockControl: @unchecked Sendable {
             deviceInfo = DeviceInfo(
                 name: current.name, firmwareVersion: version,
                 hardwareVersion: current.hardwareVersion, serial: current.serial,
-                protocolVersion: current.protocolVersion
+                protocolVersion: current.protocolVersion,
+                // A DFU install is NOT an era event (RRAM survives): the
+                // epoch rides through, like on the real device.
+                storeEpoch: current.storeEpoch
             )
             connection = .connecting
             try? await Task.sleep(for: .seconds(1))
@@ -553,7 +560,7 @@ extension DeviceInfo {
     /// A copy with a new name — the last-read `Config` name (Delta 1) surfacing in DIS.
     fileprivate func renamed(_ name: String) -> DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion,
-                   serial: serial, protocolVersion: protocolVersion)
+                   serial: serial, protocolVersion: protocolVersion, storeEpoch: storeEpoch)
     }
 }
 #endif

@@ -216,9 +216,14 @@ struct RootView: View {
             // "Uploading saves it too" (B5): the route lands in Planned
             // the moment the upload completes (recorded as on-device, up to
             // date, under the id the device assigned); the cover closes
-            // after F₂.
+            // after F₂. The link is recorded through `markRouteUploaded` —
+            // the model scopes it to the connected device's (serial, epoch)
+            // identity (#769); `record(for:)` itself never mints links.
             onUploaded: { detail, objectID, crc in
-                mainModel.addImportedRoute(pending.record(for: detail, deviceObjectID: objectID, uploadedCRC32: crc))
+                mainModel.addImportedRoute(pending.record(for: detail))
+                if let objectID {
+                    mainModel.markRouteUploaded(detail.summary.id, objectID: objectID, crc32: crc)
+                }
             },
             // H4 "Pair a device": save first (a pairing detour must not
             // cost the import), then drop into the D2 scan.

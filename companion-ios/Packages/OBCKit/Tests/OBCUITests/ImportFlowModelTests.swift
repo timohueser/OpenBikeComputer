@@ -38,7 +38,7 @@ final class ImportFlowModelTests: XCTestCase {
     private func savedRecord(
         id: String = "saved-route",
         name: String = "Schwarzwald Tour · Tag 2",
-        deviceObjectID: DeviceObjectID? = nil,
+        deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil
     ) -> PlannedRouteRecord {
         PlannedRouteRecord(
@@ -52,9 +52,14 @@ final class ImportFlowModelTests: XCTestCase {
             ),
             sourceFileName: "tag2.gpx",
             sourceFileData: Data("<gpx/>".utf8),
-            deviceObjectID: deviceObjectID,
+            deviceLink: deviceLink,
             uploadedCRC32: uploadedCRC32
         )
+    }
+
+    /// A scoped device link for the replace-import tests (#769).
+    private func link(_ objectID: UInt16) -> DeviceRouteLink {
+        DeviceRouteLink(serial: "OBC-24-000317", epoch: 42, objectID: DeviceObjectID(objectID))
     }
 
     private func detail(named name: String, id: String) -> RouteDetail {
@@ -110,12 +115,14 @@ final class ImportFlowModelTests: XCTestCase {
     }
 
     /// Replace: the pending import is pinned to the saved record, and
-    /// `record(for:)` carries its `deviceObjectID` + `uploadedCRC32` through —
+    /// `record(for:)` carries its `deviceLink` + `uploadedCRC32` through —
     /// the device keeps the old copy (old fingerprint → honest "out of date")
-    /// until the next push.
+    /// until the next push. (An upload committed during the flow records its
+    /// fresh link via `markRouteUploaded` — `record(for:)` never mints one,
+    /// #769.)
     func testReplaceCarriesTheDeviceFingerprintThroughRecordFor() {
         let library = InMemoryLibraryStore()
-        let existing = savedRecord(deviceObjectID: DeviceObjectID(7), uploadedCRC32: 0xDEAD_BEEF)
+        let existing = savedRecord(deviceLink: link(7), uploadedCRC32: 0xDEAD_BEEF)
         library.savePlannedRoute(existing)
         let model = makeModel(library: library, decodedName: "Schwarzwald Tour · Tag 2")
 
@@ -128,27 +135,9 @@ final class ImportFlowModelTests: XCTestCase {
 
         let record = pending!.record(for: detail(named: "Schwarzwald Tour · Tag 2", id: existing.id.rawValue))
         XCTAssertEqual(record.id, existing.id)
-        XCTAssertEqual(record.deviceObjectID, DeviceObjectID(7))
+        XCTAssertEqual(record.deviceLink, link(7))
         XCTAssertEqual(record.uploadedCRC32, 0xDEAD_BEEF)
         XCTAssertEqual(record.sourceFileData, Data("<gpx2/>".utf8), "the record keeps the NEW file's bytes")
-    }
-
-    /// …but a fresh upload's committed fingerprint wins over the carried one.
-    func testRecordForPrefersAJustCommittedFingerprint() {
-        let library = InMemoryLibraryStore()
-        library.savePlannedRoute(savedRecord(deviceObjectID: DeviceObjectID(7), uploadedCRC32: 0xDEAD_BEEF))
-        let model = makeModel(library: library, decodedName: "Schwarzwald Tour · Tag 2")
-
-        model.open(data: Data("<gpx2/>".utf8), fileName: "tag2-v2.gpx")
-        model.chooseReplace()
-
-        let record = model.pendingImport!.record(
-            for: detail(named: "Schwarzwald Tour · Tag 2", id: "saved-route"),
-            deviceObjectID: DeviceObjectID(9),
-            uploadedCRC32: 0xC0FF_EE00
-        )
-        XCTAssertEqual(record.deviceObjectID, DeviceObjectID(9))
-        XCTAssertEqual(record.uploadedCRC32, 0xC0FF_EE00)
     }
 
     func testCancelingTheCollisionDropsTheImport() {
@@ -208,7 +197,7 @@ final class ImportFlowModelTests: XCTestCase {
     /// route, `replacing` cleared.
     func testAcceptedRenameOpensE1AsAPlainNewImport() {
         let library = InMemoryLibraryStore()
-        library.savePlannedRoute(savedRecord(deviceObjectID: DeviceObjectID(7)))
+        library.savePlannedRoute(savedRecord(deviceLink: link(7)))
         let model = makeModel(library: library, decodedName: "Schwarzwald Tour · Tag 2")
 
         model.open(data: Data("<gpx/>".utf8), fileName: "tag2.gpx")
@@ -221,7 +210,7 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertEqual(pending?.route.name, "Schwarzwald Tour · Tag 3")
         XCTAssertNil(pending?.replacing, "a renamed add is not a replace")
         let record = pending!.record(for: detail(named: "Schwarzwald Tour · Tag 3", id: "new-route"))
-        XCTAssertNil(record.deviceObjectID, "no fingerprint rides along without a replace")
+        XCTAssertNil(record.deviceLink, "no fingerprint rides along without a replace")
     }
 
     func testCancelingTheRenamePromptDropsTheImport() {
