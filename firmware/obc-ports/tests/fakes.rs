@@ -19,8 +19,9 @@ impl SettingsStore for FakeSettingsStore {
         self.0
     }
 
-    fn save(&mut self, value: &Self::Value) {
+    fn save(&mut self, value: &Self::Value) -> Result<(), obc_ports::SettingsSaveError> {
         self.0 = Some(*value);
+        Ok(())
     }
 }
 
