@@ -5515,4 +5515,215 @@ mod tests {
         assert_eq!(app.take_ride_track_request(), None);
     }
 
+    // ==================== The typed host protocol (FAR-07, #800) ====================
+
+    fn summary(name: &str) -> RouteSummary {
+        let mut n = heapless::String::<48>::new();
+        let _ = n.push_str(name);
+        RouteSummary {
+            name: n,
+            distance_km: 10,
+            climb_m: 100,
+            bbox: obc_route::BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
+            start_lon: 100,
+            start_lat: 100,
+        }
+    }
+
+    fn ride_summary(name: &str) -> crate::ride::RideSummary {
+        crate::ride::RideSummary {
+            name: heapless::String::try_from(name).unwrap(),
+            start_time: 1_720_000_000,
+            distance_m: 1_000,
+            moving_time_s: 600,
+            climb_m: 10,
+            synced: false,
+        }
+    }
+
+    /// Post one command of **every** class, then drain: the mailbox holds exactly one command per
+    /// class in the canonical order, the one-shots are gone on a re-drain, and the derived fill
+    /// cues re-emit until their `set_*` answers land — after which the drain is empty and
+    /// `Complete`.
+    #[test]
+    fn host_commands_drain_in_canonical_order_and_exactly_once() {
+        use crate::activity::{DfuAction, NavRequest, TrackAction};
+        use crate::host::{DrainStatus, HostCommand, HostMailbox, HOST_COMMAND_CLASSES};
+
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Alpha"), summary("Beta")], &[10, 11]);
+        app.set_rides(&[ride_summary("R")], &[7]);
+
+        // Every class, posted through the same doors the UI / hosts use (arrival order shuffled
+        // on purpose — the drain order is the class order, not arrival).
+        app.state.ble_forget_pending = true;
+        app.activity.request_card_scan();
+        app.activity.request_track(TrackAction::Save);
+        app.notify_store_changed();
+        app.notify_store_changed();
+        app.activity.request_nav(NavRequest::new((0, 0), (500, 500), "To the col"));
+        app.activity.request_nav_cancel();
+        app.activity.request_dfu(DfuAction::Scan);
+        app.activity.request_route_delete(1);
+        app.activity.request_trip_delete(42);
+        app.activity.request_ride_delete(0);
+        app.settings_dirty = true; // Home is on top — the settings subtree was left
+        app.activity.viewed_ride = Some(0); // derives LoadRideTrack { id: 7 }
+        app.activity.active_route = Some(0); // + an overview with no preview derives RefreshNavPreview
+        let _ = app.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
+
+        let mut mailbox: HostMailbox = HostMailbox::new();
+        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        assert_eq!(mailbox.len(), HOST_COMMAND_CLASSES, "one command per class");
+        let mut drained: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
+        while let Some(cmd) = mailbox.pop() {
+            let _ = drained.push(cmd);
+        }
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [
+                    HostCommand::RescanStore { commits: 2 },
+                    HostCommand::CancelRoutePlan,
+                    HostCommand::DeleteRoute { id: 11 },
+                    HostCommand::DeleteTrip { id: 42 },
+                    HostCommand::DeleteRide { id: 7 },
+                    HostCommand::FinishTrack(TrackAction::Save),
+                    HostCommand::PlanRoute(_),
+                    HostCommand::Dfu(DfuAction::Scan),
+                    HostCommand::ForgetBond,
+                    HostCommand::PersistSettings,
+                    HostCommand::ScanCardFree,
+                    HostCommand::LoadRideTrack { id: 7 },
+                    HostCommand::RefreshNavPreview,
+                ]
+            ),
+            "canonical order, ids resolved at drain: {drained:?}"
+        );
+
+        // One-shots drained exactly once; only the derived cues re-emit (still unanswered).
+        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        let mut redrained: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
+        while let Some(cmd) = mailbox.pop() {
+            let _ = redrained.push(cmd);
+        }
+        assert!(
+            matches!(redrained.as_slice(), [HostCommand::LoadRideTrack { id: 7 }, HostCommand::RefreshNavPreview]),
+            "only the level-derived cues re-emit: {redrained:?}"
+        );
+
+        // Their `set_*` answers clear them — the protocol goes quiet.
+        app.set_ride_profile(None);
+        app.set_nav_preview(&[(0, 0), (500, 500)]);
+        assert!(!app.has_pending_host_command());
+        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        assert!(mailbox.is_empty(), "nothing pending, nothing drained");
+    }
+
+    /// The saturation policy is backpressure, never loss: a drain into a mailbox without room
+    /// consumes nothing for the classes it can't hand over — they stay latched, are reported by
+    /// `MailboxFull`, and come out once the host makes room.
+    #[test]
+    fn full_mailbox_backpressures_without_losing_commands() {
+        use crate::host::{DrainStatus, HostCommand, HostMailbox};
+
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut mailbox: HostMailbox = HostMailbox::new();
+
+        // Fill the mailbox artificially by draining a command per pass without popping…
+        app.activity.request_nav_cancel();
+        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        while !mailbox.is_full() {
+            app.activity.request_card_scan();
+            let _ = app.drain_host_commands(&mut mailbox);
+        }
+        // …then post a destructive command with no room left.
+        app.state.ble_forget_pending = true;
+        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::MailboxFull);
+        assert!(app.state.ble_forget_pending, "the command stays latched — never silently dropped");
+        assert!(app.has_pending_host_command());
+
+        // The host makes room → the latched command drains intact.
+        while mailbox.pop().is_some() {}
+        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
+        assert!(!app.has_pending_host_command());
+    }
+
+    /// Mailbox coalescing: a counted `RescanStore` folds into a queued one by summing, and an
+    /// unanswered derived cue never queues twice — while distinct one-shots queue as distinct
+    /// commands.
+    #[test]
+    fn mailbox_coalesces_counts_and_derived_cues() {
+        use crate::host::{HostCommand, HostMailbox};
+
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_rides(&[ride_summary("R")], &[7]);
+        app.activity.viewed_ride = Some(0);
+
+        let mut mailbox: HostMailbox = HostMailbox::new();
+        app.notify_store_changed();
+        let _ = app.drain_host_commands(&mut mailbox);
+        app.notify_store_changed();
+        app.notify_store_changed();
+        let _ = app.drain_host_commands(&mut mailbox); // re-drain without popping
+        assert_eq!(mailbox.len(), 2, "RescanStore folded, LoadRideTrack deduped");
+        assert_eq!(mailbox.pop(), Some(HostCommand::RescanStore { commits: 3 }), "the burst count sums — never lost");
+        assert_eq!(mailbox.pop(), Some(HostCommand::LoadRideTrack { id: 7 }));
+    }
+
+    /// The DFU slot is most-recent-wins **by design** (one phase in flight; a later rider post
+    /// supersedes) — encoded here rather than inherited from `Option` replacement.
+    #[test]
+    fn dfu_slot_is_most_recent_wins() {
+        use crate::activity::DfuAction;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.activity.request_dfu(DfuAction::Scan);
+        app.activity.request_dfu(DfuAction::Install);
+        assert_eq!(app.take_dfu_request(), Some(DfuAction::Install), "the later phase superseded");
+        assert_eq!(app.take_dfu_request(), None);
+    }
+
+    /// `PersistSettings` stays gated on leaving the settings subtree — a dirty value under an open
+    /// settings screen is not yet a command (the per-detent debounce), through both the typed
+    /// drain and the compat adapter, which consume the same single flag.
+    #[test]
+    fn persist_settings_waits_for_subtree_exit_and_is_single_sourced() {
+        use crate::host::{HostCommand, HostMailbox};
+
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
+        app.settings_dirty = true;
+        assert!(!app.has_pending_host_command(), "still editing — no command yet");
+        assert!(!app.take_settings_dirty(), "the compat adapter agrees");
+
+        app.stack.pop(); // leave the subtree
+        let mut mailbox: HostMailbox = HostMailbox::new();
+        let _ = app.drain_host_commands(&mut mailbox);
+        assert_eq!(mailbox.pop(), Some(HostCommand::PersistSettings));
+        assert!(!app.take_settings_dirty(), "one flag, one drain — no second pending state");
+    }
+
+    /// Compat adapters and the typed drain consume the **same** pending slot, in both directions:
+    /// whichever door drains first empties the protocol for the other.
+    #[test]
+    fn compat_adapters_share_the_typed_pending_state() {
+        use crate::activity::NavRequest;
+        use crate::host::HostMailbox;
+
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut mailbox: HostMailbox = HostMailbox::new();
+
+        // Compat first → typed drain sees nothing.
+        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
+        assert!(app.take_nav_request().is_some());
+        let _ = app.drain_host_commands(&mut mailbox);
+        assert!(mailbox.is_empty(), "the compat take consumed the typed slot");
+
+        // Typed first → compat adapter sees nothing.
+        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "B"));
+        let _ = app.drain_host_commands(&mut mailbox);
+        assert_eq!(mailbox.len(), 1);
+        assert!(app.take_nav_request().is_none(), "the typed drain consumed the compat slot");
+    }
 }
