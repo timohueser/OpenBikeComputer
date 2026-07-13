@@ -10,6 +10,114 @@
 use crate::i18n::{t, Msg};
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
 
+pub use obc_ports::DateTime;
+
+/// First year accepted by the settings codec and Date & Time editor.
+pub const DATETIME_MIN_YEAR: u16 = 2020;
+/// Last year accepted by the settings codec and Date & Time editor.
+pub const DATETIME_MAX_YEAR: u16 = 2099;
+
+/// App-owned editing and persisted-value policy for the dependency-neutral [`DateTime`].
+///
+/// Calendar arithmetic (`add_minutes`, UTC offsets, leap years) stays inherent on `DateTime` in
+/// `obc-ports`; these methods are available when this trait is in scope because their wrapping and
+/// sanitising ranges are UI/storage choices specific to OpenBikeComputer.
+pub trait DateTimeEditorExt {
+    /// Force every field into the range accepted by the settings codec and editor.
+    fn sanitize(&mut self);
+    /// Step the year, wrapping through the app-supported range and re-clamping the day.
+    fn step_year(&mut self, n: i32);
+    /// Step the month, wrapping 1–12 and re-clamping the day.
+    fn step_month(&mut self, n: i32);
+    /// Step the day, wrapping within the current month.
+    fn step_day(&mut self, n: i32);
+    /// Step the hour, wrapping 0–23.
+    fn step_hour(&mut self, n: i32);
+    /// Step the minute, wrapping 0–59.
+    fn step_minute(&mut self, n: i32);
+}
+
+impl DateTimeEditorExt for DateTime {
+    fn sanitize(&mut self) {
+        self.year = self.year.clamp(DATETIME_MIN_YEAR, DATETIME_MAX_YEAR);
+        self.month = self.month.clamp(1, 12);
+        self.hour = self.hour.min(23);
+        self.minute = self.minute.min(59);
+        clamp_day(self);
+    }
+
+    fn step_year(&mut self, n: i32) {
+        self.year = wrap_inclusive(self.year, n, DATETIME_MIN_YEAR, DATETIME_MAX_YEAR);
+        clamp_day(self);
+    }
+
+    fn step_month(&mut self, n: i32) {
+        self.month = wrap_inclusive(self.month as u16, n, 1, 12) as u8;
+        clamp_day(self);
+    }
+
+    fn step_day(&mut self, n: i32) {
+        self.day = wrap_inclusive(self.day as u16, n, 1, DateTime::month_len(self.year, self.month) as u16) as u8;
+    }
+
+    fn step_hour(&mut self, n: i32) {
+        self.hour = wrap_inclusive(self.hour as u16, n, 0, 23) as u8;
+    }
+
+    fn step_minute(&mut self, n: i32) {
+        self.minute = wrap_inclusive(self.minute as u16, n, 0, 59) as u8;
+    }
+}
+
+fn clamp_day(date: &mut DateTime) {
+    date.day = date.day.clamp(1, DateTime::month_len(date.year, date.month));
+}
+
+fn wrap_inclusive(value: u16, step: i32, lo: u16, hi: u16) -> u16 {
+    let span = (hi - lo) as i32 + 1;
+    let offset = (value as i32 - lo as i32 + step).rem_euclid(span);
+    (lo as i32 + offset) as u16
+}
+
+fn clamp_app_year(date: DateTime) -> DateTime {
+    if date.year < DATETIME_MIN_YEAR {
+        DateTime { year: DATETIME_MIN_YEAR, month: 1, day: 1, ..date }
+    } else if date.year > DATETIME_MAX_YEAR {
+        DateTime { year: DATETIME_MAX_YEAR, month: 12, day: 31, ..date }
+    } else {
+        date
+    }
+}
+
+/// Advance a live app clock while retaining the settings model's bounded year behavior.
+pub(crate) fn add_minutes_bounded(date: DateTime, mins: u32) -> DateTime {
+    clamp_app_year(date.add_minutes(mins))
+}
+
+/// Apply the user's UTC offset while retaining the settings model's bounded year behavior.
+fn with_offset_bounded(date: DateTime, offset: i16) -> DateTime {
+    clamp_app_year(date.with_offset(offset))
+}
+
+/// The localized three-letter month name for a dependency-neutral calendar value.
+pub(crate) fn month_name(date: DateTime, lang: Language) -> &'static str {
+    const MONTHS: [Msg; 12] = [
+        Msg::MonthJan,
+        Msg::MonthFeb,
+        Msg::MonthMar,
+        Msg::MonthApr,
+        Msg::MonthMay,
+        Msg::MonthJun,
+        Msg::MonthJul,
+        Msg::MonthAug,
+        Msg::MonthSep,
+        Msg::MonthOct,
+        Msg::MonthNov,
+        Msg::MonthDec,
+    ];
+    t(MONTHS[(date.month.clamp(1, 12) - 1) as usize], lang)
+}
+
 /// Measurement system for the ride readouts. Re-captions and re-scales the
 /// [`Statistics`](crate::screen) tiles and the off-route distance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -500,248 +608,6 @@ impl Language {
     }
 }
 
-/// Wrap `v` by `n` steps within the inclusive range `lo..=hi`. Shared by every
-/// [`DateTime`] stepper so a turn past either end rolls round (year 2099→2020, hour 23→0),
-/// matching the list selection's [`step_selection`](crate::screen::list::step_selection) feel.
-fn wrap_inclusive(v: u16, n: i32, lo: u16, hi: u16) -> u16 {
-    let span = (hi - lo) as i32 + 1;
-    let off = (v as i32 - lo as i32 + n).rem_euclid(span);
-    (lo as i32 + off) as u16
-}
-
-/// A wall-clock date + time of day (no seconds — the device only ever sets to the minute).
-/// Edited field-by-field on the Date & Time screen; each stepper wraps within its field's
-/// range and re-clamps the day to the month length (so Jan 31 → Feb shows Feb 28/29, never
-/// Feb 31). Stored in [`Settings`] so a manually-set time survives a reboot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DateTime {
-    pub year: u16,
-    /// 1–12.
-    pub month: u8,
-    /// 1–`month_len`.
-    pub day: u8,
-    /// 0–23.
-    pub hour: u8,
-    /// 0–59.
-    pub minute: u8,
-}
-
-impl Default for DateTime {
-    /// A neutral in-range stamp; the real time comes from the user or (later) the GPS.
-    fn default() -> Self {
-        DateTime { year: 2025, month: 1, day: 1, hour: 12, minute: 0 }
-    }
-}
-
-impl DateTime {
-    pub const MIN_YEAR: u16 = 2020;
-    pub const MAX_YEAR: u16 = 2099;
-
-    /// The 12 month-abbreviation catalog keys in calendar order (`Jan`…`Dec`), so
-    /// [`month_name`](DateTime::month_name) is a per-language lookup (epic #602).
-    const MONTHS_MSG: [Msg; 12] = [
-        Msg::MonthJan,
-        Msg::MonthFeb,
-        Msg::MonthMar,
-        Msg::MonthApr,
-        Msg::MonthMay,
-        Msg::MonthJun,
-        Msg::MonthJul,
-        Msg::MonthAug,
-        Msg::MonthSep,
-        Msg::MonthOct,
-        Msg::MonthNov,
-        Msg::MonthDec,
-    ];
-
-    /// Gregorian leap-year test (the Feb-length input to [`month_len`](DateTime::month_len)).
-    pub const fn is_leap(year: u16) -> bool {
-        (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
-    }
-
-    /// Days in `month` (1–12) of `year` — leap-aware for February.
-    pub const fn month_len(year: u16, month: u8) -> u8 {
-        match month {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 if Self::is_leap(year) => 29,
-            2 => 28,
-            _ => 30, // unreachable for a sanitised value; a safe fallback
-        }
-    }
-
-    /// The three-letter month name (`Jan`…`Dec`) in the UI `lang` (epic #602).
-    pub fn month_name(self, lang: Language) -> &'static str {
-        t(Self::MONTHS_MSG[(self.month.clamp(1, 12) - 1) as usize], lang)
-    }
-
-    /// Re-pin the day inside the current month after a month/year change (Jan 31 → Feb 28/29).
-    fn clamp_day(&mut self) {
-        let max = Self::month_len(self.year, self.month);
-        self.day = self.day.clamp(1, max);
-    }
-
-    /// Force every field into its valid range — applied after a decode so a valid-CRC but
-    /// out-of-range blob (an older writer, a bit-flip the CRC missed) can't show "month 0".
-    fn sanitize(&mut self) {
-        self.year = self.year.clamp(Self::MIN_YEAR, Self::MAX_YEAR);
-        self.month = self.month.clamp(1, 12);
-        self.hour = self.hour.min(23);
-        self.minute = self.minute.min(59);
-        self.clamp_day();
-    }
-
-    /// Step the year by `n` (wrapping 2020–2099), re-clamping the day for the new year's Feb.
-    pub fn step_year(&mut self, n: i32) {
-        self.year = wrap_inclusive(self.year, n, Self::MIN_YEAR, Self::MAX_YEAR);
-        self.clamp_day();
-    }
-
-    /// Step the month by `n` (wrapping 1–12), re-clamping the day to the new month's length.
-    pub fn step_month(&mut self, n: i32) {
-        self.month = wrap_inclusive(self.month as u16, n, 1, 12) as u8;
-        self.clamp_day();
-    }
-
-    /// Step the day by `n`, wrapping within the current month's length.
-    pub fn step_day(&mut self, n: i32) {
-        let max = Self::month_len(self.year, self.month);
-        self.day = wrap_inclusive(self.day as u16, n, 1, max as u16) as u8;
-    }
-
-    /// Step the hour by `n`, wrapping 0–23.
-    pub fn step_hour(&mut self, n: i32) {
-        self.hour = wrap_inclusive(self.hour as u16, n, 0, 23) as u8;
-    }
-
-    /// Step the minute by `n`, wrapping 0–59.
-    pub fn step_minute(&mut self, n: i32) {
-        self.minute = wrap_inclusive(self.minute as u16, n, 0, 59) as u8;
-    }
-
-    /// The next calendar day — the day → month → year carry, leap-aware via
-    /// [`month_len`](DateTime::month_len), saturating at Dec 31 [`MAX_YEAR`](DateTime::MAX_YEAR)
-    /// rather than rolling to year 2100+. Shared by the forward clock advance
-    /// ([`add_minutes`](DateTime::add_minutes)) and the positive-offset side of
-    /// [`with_offset`](DateTime::with_offset).
-    const fn next_day(self) -> DateTime {
-        let mut dt = self;
-        if dt.day < Self::month_len(dt.year, dt.month) {
-            dt.day += 1;
-        } else if dt.month < 12 {
-            dt.month += 1;
-            dt.day = 1;
-        } else if dt.year < Self::MAX_YEAR {
-            dt.year += 1;
-            dt.month = 1;
-            dt.day = 1;
-        } // else already the last representable day — saturate (stay put).
-        dt
-    }
-
-    /// The previous calendar day — the symmetric day → month → year *borrow*, saturating at Jan 1
-    /// [`MIN_YEAR`](DateTime::MIN_YEAR). The negative-offset side of
-    /// [`with_offset`](DateTime::with_offset).
-    const fn prev_day(self) -> DateTime {
-        let mut dt = self;
-        if dt.day > 1 {
-            dt.day -= 1;
-        } else if dt.month > 1 {
-            dt.month -= 1;
-            dt.day = Self::month_len(dt.year, dt.month);
-        } else if dt.year > Self::MIN_YEAR {
-            dt.year -= 1;
-            dt.month = 12;
-            dt.day = 31;
-        } // else already the first representable day — saturate (stay put).
-        dt
-    }
-
-    /// Advance the stamp **forward** by `mins` minutes, carrying minute → hour → day → month → year
-    /// (leap-aware via [`month_len`](DateTime::month_len)). Unlike the field steppers (which wrap
-    /// within one field for the editor) this is a real clock advance: 23:59 + 1 rolls into the next
-    /// day. Pure, forward-only, saturating at `MAX_YEAR` — the [`WallClock`](crate::WallClock) only
-    /// ever advances its set-point by elapsed monotonic time.
-    pub fn add_minutes(self, mins: u32) -> DateTime {
-        let mut dt = self;
-        // Defensive re-pin: `next_day` assumes an in-range date. An unsanitised stamp (a future raw
-        // GPS-fix path) could carry a day past the month length and panic, so clamp before walking.
-        dt.month = dt.month.clamp(1, 12);
-        dt.day = dt.day.clamp(1, Self::month_len(dt.year, dt.month));
-        let total_min = dt.minute as u32 + mins;
-        dt.minute = (total_min % 60) as u8;
-        let total_hour = dt.hour as u32 + total_min / 60;
-        dt.hour = (total_hour % 24) as u8;
-        let mut days = total_hour / 24;
-        while days > 0 {
-            dt = dt.next_day();
-            days -= 1;
-        }
-        dt
-    }
-
-    /// This stamp shifted by a signed minute `offset` (a UTC offset), rolling the **date** across
-    /// midnight in *either* direction — the GPS UTC-anchor → local-time conversion. A positive
-    /// offset steps [`next_day`](DateTime::next_day), a negative one
-    /// [`prev_day`](DateTime::prev_day); the loops run at most once for a real ±14 h zone (and stay
-    /// bounded for any `i16`). Unlike [`add_minutes`](DateTime::add_minutes) this goes both ways,
-    /// since an offset can move the local clock earlier than the anchor.
-    pub fn with_offset(self, offset: i16) -> DateTime {
-        // Total minutes since the anchor's midnight, ± the offset; split into a whole-day carry and
-        // the local time-of-day so the date rolls and the clock re-pins independently.
-        let tod = self.hour as i32 * 60 + self.minute as i32 + offset as i32;
-        let local_tod = tod.rem_euclid(24 * 60);
-        let mut day_shift = tod.div_euclid(24 * 60);
-        let mut date = DateTime { hour: 0, minute: 0, ..self };
-        while day_shift > 0 {
-            date = date.next_day();
-            day_shift -= 1;
-        }
-        while day_shift < 0 {
-            date = date.prev_day();
-            day_shift += 1;
-        }
-        // Re-pin the local time-of-day: a sub-day `add_minutes` only sets HH:MM, never re-rolling.
-        date.add_minutes(local_tod as u32)
-    }
-
-    /// Unix seconds at this stamp's `HH:MM:00`, reading the stamp **as UTC** — the caller owns any
-    /// zone shift (see [`App::wall_unix_now`](crate::App::wall_unix_now)). Days-from-civil (standard
-    /// Gregorian era arithmetic); the whole 2020–2099 range fits a `u32` (Dec 31 2099 ≈ 4.10 × 10⁹).
-    pub fn to_unix(self) -> u32 {
-        // Shift Jan/Feb to the tail of the previous year so the leap day ends the "March year".
-        let y = self.year as i64 - (self.month <= 2) as i64;
-        let era = y.div_euclid(400);
-        let yoe = y - era * 400; // year of era: 0..=399
-        let m = self.month as i64;
-        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + self.day as i64 - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day of era: 0..=146096
-        let days = era * 146_097 + doe - 719_468; // days since 1970-01-01
-        (days * 86_400 + self.hour as i64 * 3_600 + self.minute as i64 * 60) as u32
-    }
-
-    /// The inverse of [`to_unix`](DateTime::to_unix): a UTC date/time from unix seconds (Howard
-    /// Hinnant's `civil_from_days`). Used by the Rides screen to date a ride's `start_time`; a caller
-    /// wanting *local* time adds the UTC offset before calling. Seconds are dropped (the struct's
-    /// finest field is the minute).
-    pub fn from_unix(secs: u32) -> DateTime {
-        let secs = secs as i64;
-        let days = secs.div_euclid(86_400);
-        let rem = secs.rem_euclid(86_400);
-        let z = days + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z - era * 146_097; // 0..=146096
-        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // 0..=399
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // 0..=365
-        let mp = (5 * doy + 2) / 153; // 0..=11 (Mar-based)
-        let day = (doy - (153 * mp + 2) / 5 + 1) as u8; // 1..=31
-        let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u8; // 1..=12
-        let year = (y + (month <= 2) as i64) as u16;
-        DateTime { year, month, day, hour: (rem / 3_600) as u8, minute: (rem % 3_600 / 60) as u8 }
-    }
-}
-
 /// UTC-offset stepper bounds + granularity (minutes). 15-minute steps cover the real-world
 /// `:30` / `:45` zones (India +5:30, Nepal +5:45) over the −12:00…+14:00 span.
 pub const UTC_OFFSET_MIN: i16 = -12 * 60;
@@ -905,11 +771,11 @@ impl Settings {
     /// The **local** wall-clock set-point the device shows: [`clock`](Settings::clock) verbatim in
     /// manual mode, or — when GPS-stamped ([`gps_time`](Settings::gps_time)) — the UTC anchor
     /// shifted into local time by [`utc_offset_min`](Settings::utc_offset_min) (via
-    /// [`DateTime::with_offset`], so a shift across midnight rolls the date too). In manual mode the
+    /// calendar offset operation, so a shift across midnight rolls the date too). In manual mode the
     /// clock is already local, so the offset is deliberately *not* applied (it would double-count).
     pub fn local_clock(&self) -> DateTime {
         if self.gps_time {
-            self.clock.with_offset(self.utc_offset_min)
+            with_offset_bounded(self.clock, self.utc_offset_min)
         } else {
             self.clock
         }
@@ -2418,9 +2284,9 @@ mod tests {
     /// Every field stepper wraps at its bounds rather than running off the end.
     #[test]
     fn datetime_steppers_wrap() {
-        let mut d = DateTime { year: DateTime::MAX_YEAR, month: 12, day: 30, hour: 23, minute: 59 };
+        let mut d = DateTime { year: DATETIME_MAX_YEAR, month: 12, day: 30, hour: 23, minute: 59 };
         d.step_year(1);
-        assert_eq!(d.year, DateTime::MIN_YEAR, "year wraps 2099 → 2020");
+        assert_eq!(d.year, DATETIME_MIN_YEAR, "year wraps 2099 → 2020");
         d.step_month(1);
         assert_eq!(d.month, 1, "month wraps 12 → 1");
         d.step_hour(1);
@@ -2428,7 +2294,7 @@ mod tests {
         d.step_minute(1);
         assert_eq!(d.minute, 0, "minute wraps 59 → 0");
         d.step_year(-1);
-        assert_eq!(d.year, DateTime::MAX_YEAR, "and backward off the bottom wraps to the top");
+        assert_eq!(d.year, DATETIME_MAX_YEAR, "and backward off the bottom wraps to the top");
     }
 
     /// `add_minutes` carries across every boundary the field steppers deliberately *don't*:
@@ -2494,9 +2360,9 @@ mod tests {
         let bad = DateTime { year: 2025, month: 6, day: 99, hour: 0, minute: 0 };
         assert!((1..=30).contains(&bad.add_minutes(0).day), "an over-long day is re-pinned into the month");
         // Near the top of the range + two years of minutes pins at the last representable day.
-        let near_max = DateTime { year: DateTime::MAX_YEAR, month: 12, day: 31, hour: 12, minute: 0 };
-        let sat = near_max.add_minutes(2 * 365 * 24 * 60);
-        assert_eq!(sat.year, DateTime::MAX_YEAR, "the year never climbs past MAX_YEAR");
+        let near_max = DateTime { year: DATETIME_MAX_YEAR, month: 12, day: 31, hour: 12, minute: 0 };
+        let sat = add_minutes_bounded(near_max, 2 * 365 * 24 * 60);
+        assert_eq!(sat.year, DATETIME_MAX_YEAR, "the app clock never climbs past its maximum year");
         assert_eq!((sat.month, sat.day), (12, 31), "it saturates at Dec 31 rather than rolling over");
     }
 
