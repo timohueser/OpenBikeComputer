@@ -90,7 +90,7 @@ use obc_platform::ls021::wire::WIDTH;
 // and `composite_into_resident` (the shared save→composite→push→restore overlay engine — the FLPR
 // scans the resident frame directly, so the composited window must transiently live in it).
 use obc_platform::display_contracts::{Device64Frame, OverlayPresenter, PresentStats, Presenter};
-use obc_platform::ls021::{composite_into_resident, RowDamage, RowDiff, RowWindow};
+use obc_platform::ls021::{composite_into_resident, OverlayScratch, RowDamage, RowDiff, RowWindow};
 use obc_platform::Band;
 // The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
 // re-quantised overlay window lands on the panel's RGB222 gamut exactly as the map style cards do.
@@ -696,8 +696,7 @@ impl OverlayPresenter<Frame64> for Ls021Flpr<'_> {
             frame.bytes_mut(),
             Size::new(FB_W as u32, FB_H as u32),
             region,
-            &mut win,
-            &mut save,
+            OverlayScratch { win: &mut win, save: &mut save },
             |px| {
                 let (dr, dg, db) = rgb565_to_device64(px);
                 ((dr / 85) << 4) | ((dg / 85) << 2) | (db / 85)
