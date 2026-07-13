@@ -46,15 +46,15 @@ use embedded_sdmmc::{
 use heapless::{String, Vec};
 use obc_app::{
     decode_route_crcs, decode_store_epoch, decode_synced_rides, encode_route_crcs, encode_store_epoch,
-    encode_synced_rides, RouteCrcs, SyncedRides, MAX_RIDES, MAX_ROUTES, ROUTE_CRCS_MAX_LEN, STORE_EPOCH_LEN,
-    SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
+    encode_synced_rides, RouteCrcs, SyncedRides, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, ROUTE_CRCS_MAX_LEN,
+    STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_platform::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, ByteSource, Profile, RideInfo, RideStats, RouteIndex,
-    RouteObjectInfo, RouteSummary, NAME_CAP,
+    RouteObjectInfo, RouteSummary, TripMeta, TripSummary, NAME_CAP,
 };
 
 /// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
@@ -87,6 +87,15 @@ const SYNCED_SET: &str = "SYNCED.SET";
 /// pre-v2 route fills lazily at first list build. A missing/torn file = the empty map (every route
 /// serves `0 = unknown`). Codec + torn-line semantics live in `obc-app::settings` (host-tested).
 const ROUTE_CRCS: &str = "ROUTES.CRC";
+
+/// The trip-CRC sidecar in `/routes` (epic #526 TR4, #653) — the trip twin of [`ROUTE_CRCS`]: trip
+/// object id → whole-object CRC-32 of the stored `TP{id}.OBT` bytes, so a `tripList` entry carries a
+/// content fingerprint the app verifies (a stage reorder changes neither `byte_len` nor `name`, only
+/// the CRC). Same file-resident, survives-a-reflash, torn-line-is-empty-map contract as the route
+/// sidecar; a BLE upload writes its entry at commit, a side-loaded trip fills lazily at first list
+/// build. Reuses the [`RouteCrcs`] codec (a `u16 → u32` map — the trip-id namespace is disjoint from
+/// the route-id one only *logically*; the sidecar is a separate file, so no key can collide).
+const TRIP_CRCS: &str = "TRIPS.CRC";
 
 /// The store-epoch nonce file in the **card root** (protocol v2 #632 item 5; card-resident #776):
 /// the `u32` id-era name the phone reads over the pre-pairing `protocolVersion` read. Kept in the
@@ -241,6 +250,21 @@ pub struct Storage {
     /// — filename-encoded (`RD{id}.ORD`), the identity the app's ride-menu remap and the phone's
     /// synced/tombstone sets key on.
     ride_ids: Vec<u16, UI_RIDES_CAP>,
+    /// Each scanned trip's **durable object id**, parallel to [`trip_metas`](Storage::trip_metas) and
+    /// [`trip_files`](Storage::trip_files) — recovered from an uploaded `TP{id}.OBT` name, or a
+    /// session-scoped side-load id for an id-less `.obt` file (epic #526 TR4). The app's trip folders
+    /// (TR3) remap by this id across rescans.
+    trip_ids: Vec<u16, MAX_TRIPS>,
+    /// The 8.3 filename of each scanned trip, parallel to [`trip_ids`](Storage::trip_ids) — so a
+    /// trip's durable id resolves back to its `TP{id}.OBT` file for a hold-to-delete cascade on the
+    /// map-only build (`delete_trip_cascade_by_id`), the trip twin of
+    /// [`ride_files`](Storage::ride_files).
+    trip_files: Vec<ShortFileName, MAX_TRIPS>,
+    /// The scanned trips' decoded metadata (name + stage route ids in ride order), fed to
+    /// [`App::set_trips`](obc_app::App::set_trips) as [`TripInput`]s (borrowing these) so the app
+    /// resolves each stage id against the live route catalog. Held resident (like the route/ride
+    /// filename tables) so the `TripInput`s can borrow stable storage across the `set_trips` call.
+    trip_metas: Vec<TripMeta, MAX_TRIPS>,
     /// The session's side-load id registry: filename → assigned [`SIDELOAD_ID_BASE`]-band id.
     /// **Append-only** (a delete leaves a tombstone), so a name keeps one id for the whole session
     /// no matter how often — or in which order — the ride loop and the BLE `ObjectStore` rescan;
@@ -416,6 +440,9 @@ impl Storage {
             route_ids: Vec::new(),
             ride_files: Vec::new(),
             ride_ids: Vec::new(),
+            trip_ids: Vec::new(),
+            trip_files: Vec::new(),
+            trip_metas: Vec::new(),
             sideload_ids: Vec::new(),
             next_sideload: SIDELOAD_ID_BASE as u32,
             open_route: None,
@@ -527,6 +554,88 @@ impl Storage {
     /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     pub fn route_ids(&self) -> &[u16] {
         &self.route_ids
+    }
+
+    /// Scan `/routes` for the **trip catalog** (epic #526 TR4, #653): the uploaded `TP{id}.OBT` files
+    /// and any side-loaded `.obt` files, decoding each into its [`TripMeta`] (name + stage route ids)
+    /// held resident in [`trip_metas`](Storage::trip_metas), parallel to its durable/​session id in
+    /// [`trip_ids`](Storage::trip_ids). Feed the app via [`trip_inputs`](Storage::trip_inputs) →
+    /// [`App::set_trips`](obc_app::App::set_trips), which resolves each stage id against the route
+    /// catalog. Called at boot and on every store-changed edge, next to [`scan_routes`](Storage::scan_routes).
+    ///
+    /// Trips live flat in `/routes` beside the routes (no subdirectories, spec §7.7). A trip whose
+    /// stored `stage_count` exceeds the resident cap ([`obc_route::MAX_TRIP_STAGES`]) reads its first
+    /// stages windowed (`TripMeta.truncated`) rather than overflowing. More than [`MAX_TRIPS`] trips →
+    /// the first `MAX_TRIPS` are listed and the excess warned, mirroring the route-scan overflow.
+    ///
+    /// #480 open-handle lesson: a trip file this `Storage` already holds open (a detail download's
+    /// `open_object`) is read **through** that handle — a second `open_file_in_dir` would answer
+    /// `FileAlreadyOpen` and silently drop the trip from the catalog.
+    pub fn scan_trips(&mut self) {
+        self.trip_ids.clear();
+        self.trip_files.clear();
+        self.trip_metas.clear();
+        let Some(dir) = self.routes_dir else { return };
+
+        let mut names: Vec<ShortFileName, MAX_TRIPS> = Vec::new();
+        let mut overflow = false;
+        self.iter_dir_lfn(dir, |e, long| {
+            if is_trip_entry(e, long) && names.push(e.name.clone()).is_err() {
+                overflow = true;
+            }
+        });
+        if overflow {
+            defmt::warn!("SD: scan: more than {=usize} trip files — the excess is not listed", MAX_TRIPS);
+        }
+
+        for n in &names {
+            // A trip without a resolvable id can't be listed (the app's folder remap keys on it) —
+            // only the exhausted side-load band hits this, warned in `sideload_id`.
+            let Some(id) = uploaded_trip_id(n).or_else(|| self.sideload_id(n)) else {
+                defmt::warn!("SD: scan: trip {} has no object id — not listed", defmt::Debug2Format(n));
+                continue;
+            };
+            // Open the file — or serve it through the download handle this `Storage` already holds.
+            let (file, len, borrowed) = match self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
+                Ok(f) => (f, self.vmgr.file_length(f).unwrap_or(0), false),
+                Err(e) => match &self.open_object {
+                    Some((on, of, olen)) if on == n => (*of, *olen, true),
+                    _ => {
+                        defmt::warn!(
+                            "SD: scan: cannot open trip {}: {} — not listed until the next rescan",
+                            defmt::Debug2Format(n),
+                            defmt::Debug2Format(&e)
+                        );
+                        continue;
+                    }
+                },
+            };
+            let meta = TripMeta::read(&SdByteSource::new(&self.vmgr, file, len));
+            if !borrowed {
+                let _ = self.vmgr.close_file(file);
+            }
+            match meta {
+                Ok(m) => {
+                    if self.trip_metas.push(m).is_ok() {
+                        let _ = self.trip_ids.push(id);
+                        let _ = self.trip_files.push(n.clone());
+                    }
+                }
+                Err(_) => defmt::warn!("SD: scan: trip {} unreadable — not listed", defmt::Debug2Format(n)),
+            }
+        }
+        defmt::info!("SD: {=usize} trip(s) in /routes", self.trip_metas.len());
+    }
+
+    /// The scanned trips as [`TripInput`]s for [`App::set_trips`](obc_app::App::set_trips) — each
+    /// borrows its resident [`TripMeta`] (name + stage ids), so the returned vec borrows `self` and
+    /// must outlive the `set_trips` call. Run [`scan_trips`](Storage::scan_trips) first.
+    pub fn trip_inputs(&self) -> Vec<TripInput<'_>, MAX_TRIPS> {
+        let mut out = Vec::new();
+        for (id, meta) in self.trip_ids.iter().zip(self.trip_metas.iter()) {
+            let _ = out.push(TripInput { id: *id, name: meta.name.as_str(), stage_ids: &meta.stage_ids });
+        }
+        out
     }
 
     /// Scan `/tracks` for stored ride objects into the app's Rides menu (epic #447 P7 / #454):
@@ -1725,6 +1834,215 @@ impl Storage {
         None
     }
 
+    // ==================== trips (epic #526 TR4, #653) ====================
+    //
+    // Trips store flat in `/routes` as `TP{id}.OBT` beside `RT{id}.OBR` (spec §7.7), and ride the same
+    // atomic-commit machinery as routes: the upload sinks into `UPLOAD.TMP` (only one transfer at a
+    // time, so the temp is shared) and `upload_commit_trip` copies it to its final name with the first
+    // four bytes (version + reserved + stage_count) **held back as zeros** via `copy_with_held_magic`
+    // — a torn commit leaves `version = 0`, which `TripSummary::read` rejects (`BadVersion`) and
+    // `is_aborted_commit` (first-4-bytes-zero) sweeps, exactly as a torn route's zeroed OBCR magic is.
+
+    /// Visit every trip file in `/routes` — the uploaded `TP{id}.OBT` files and any side-loaded `.obt`.
+    pub fn for_each_trip_file(&self, mut f: impl FnMut(&ShortFileName)) {
+        let Some(dir) = self.routes_dir else { return };
+        self.iter_dir_lfn(dir, |e, long| {
+            if is_trip_entry(e, long) {
+                f(&e.name);
+            }
+        });
+    }
+
+    /// Read a stored trip object: its byte length, decoded [`TripMeta`] (name + windowed stage ids),
+    /// and the **true** stored `stage_count` (from the header, even when it exceeds the resident stage
+    /// cap). One open, two tiny header reads. `None` when the file doesn't validate as a trip object v1
+    /// (incl. a torn commit's held-back zero version). The `tripList` build and the wire-catalog rescan
+    /// both read through this. #480: the actively-open download handle (`open_object`) is read through
+    /// rather than re-opened.
+    pub fn read_trip(&self, name: &ShortFileName) -> Option<(u32, TripMeta, u16)> {
+        let dir = self.routes_dir?;
+        fn read(src: &Source<'_>, len: u32) -> Option<(u32, TripMeta, u16)> {
+            let meta = TripMeta::read(src).ok()?;
+            let summary = TripSummary::read(src).ok()?;
+            Some((len, meta, summary.stage_count))
+        }
+        if let Some((on, of, olen)) = &self.open_object {
+            if on == name {
+                return read(&SdByteSource::new(&self.vmgr, *of, *olen), *olen);
+            }
+        }
+        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let out = read(&SdByteSource::new(&self.vmgr, file, len), len);
+        let _ = self.vmgr.close_file(file);
+        out
+    }
+
+    /// Promote the CRC-verified upload temp into the trip catalog — the trip twin of
+    /// [`upload_commit`](Self::upload_commit). `replace` is the file the trip id already owns (deleted
+    /// only *after* the temp validated); `None` names it `TP{fresh_id}.OBT`. Validates the temp parses
+    /// as a trip (the transfer CRC only proved the bytes match what the app sent, not that they are a
+    /// trip). Returns the final name + byte length, or `None` (temp dropped on an invalid payload, kept
+    /// on a transient copy failure — a retry is a whole fresh upload).
+    pub fn upload_commit_trip(
+        &mut self,
+        replace: Option<&ShortFileName>,
+        fresh_id: u16,
+    ) -> Option<(ShortFileName, u32)> {
+        self.upload_close();
+        let dir = self.routes_dir?;
+
+        let src_file = self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(src_file).unwrap_or(0);
+        let valid = TripSummary::read(&SdByteSource::new(&self.vmgr, src_file, len)).is_ok();
+        if !valid {
+            let _ = self.vmgr.close_file(src_file);
+            let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+            defmt::warn!("SD: trip upload is not a valid trip object — rejected");
+            return None;
+        }
+
+        let final_name = match replace {
+            Some(name) => {
+                // A trip isn't held open as route geometry, but a detail download could hold it as
+                // `open_object` — release that first so the delete + truncate-open below aren't refused.
+                self.close_object_if(name);
+                if let Err(e) = self.vmgr.delete_file_in_dir(dir, name) {
+                    defmt::warn!(
+                        "SD: trip replace: cannot delete old {}: {}",
+                        defmt::Debug2Format(name),
+                        defmt::Debug2Format(&e)
+                    );
+                }
+                name.clone()
+            }
+            None => match self.fresh_object_name(dir, "TP", fresh_id, "OBT") {
+                Some(name) => name,
+                None => {
+                    let _ = self.vmgr.close_file(src_file);
+                    defmt::warn!("SD: trip upload name TP{=u16}.OBT unavailable", fresh_id);
+                    return None;
+                }
+            },
+        };
+
+        let copied = match self.vmgr.open_file_in_dir(dir, &final_name, Mode::ReadWriteCreateOrTruncate) {
+            Ok(dst_file) => {
+                let ok = self.copy_with_held_magic(src_file, dst_file, len);
+                if !ok {
+                    defmt::warn!("SD: trip upload copy failed — commit aborted (a replaced trip's old file is gone)");
+                }
+                let _ = self.vmgr.close_file(dst_file);
+                ok
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot create {}: {}", defmt::Debug2Format(&final_name), defmt::Debug2Format(&e));
+                false
+            }
+        };
+        let _ = self.vmgr.close_file(src_file);
+        let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
+        if !copied {
+            return None;
+        }
+        defmt::info!("SD: trip committed → routes/{} ({=u32} B)", defmt::Debug2Format(&final_name), len);
+        Some((final_name, len))
+    }
+
+    /// Close the detail-download handle if it currently holds `name` — the trip analogue of
+    /// [`close_route_if_open`](Self::close_route_if_open) (trips have no route-geometry handle, only
+    /// the shared `open_object` download slot).
+    fn close_object_if(&mut self, name: &ShortFileName) {
+        if matches!(&self.open_object, Some((on, ..)) if on == name) {
+            self.close_object();
+        }
+    }
+
+    /// Delete a stored trip file (the `deleteObject` trip type / a replace-upload's swap / the
+    /// on-device cascade). Releases our own download handle on it first (an open file can't be deleted).
+    pub fn delete_trip_file(&mut self, name: &ShortFileName) -> bool {
+        let Some(dir) = self.routes_dir else { return false };
+        self.close_object_if(name);
+        match self.vmgr.delete_file_in_dir(dir, name) {
+            Ok(()) => true,
+            Err(e) => {
+                defmt::warn!("SD: delete trip {} failed: {}", defmt::Debug2Format(name), defmt::Debug2Format(&e));
+                false
+            }
+        }
+    }
+
+    /// The on-device long-press **cascade** delete (epic #526 TR3/TR4), map-only build: delete the
+    /// trip's member route files *and* the trip file itself, resolving the trip's stage route ids from
+    /// its resident [`TripMeta`] (parallel to [`trip_files`](Storage::trip_files)). `true` = the trip
+    /// file was deleted; the caller re-scans routes + trips. The `ble` build routes the cascade through
+    /// [`ObjectStore::delete_trip_cascade`](crate::object_store::ObjectStore::delete_trip_cascade)
+    /// instead, so the wire revision + `storeChanged` stay coherent. A dangling stage id (no such route
+    /// file) is simply skipped.
+    pub fn delete_trip_cascade_by_id(&mut self, id: u16) -> bool {
+        let Some(pos) = self.trip_ids.iter().position(|&x| x == id) else { return false };
+        // Snapshot the stage ids + the trip file before mutating (the scan tables are rebuilt after).
+        let stages: Vec<u16, { obc_route::MAX_TRIP_STAGES }> = self.trip_metas[pos].stage_ids.clone();
+        let trip_file = self.trip_files[pos].clone();
+        // Release any active route geometry once up front — `delete_route_file` also closes the handle
+        // on the specific file it deletes, but a member being previewed must not block the sweep.
+        self.reconcile_route(None);
+        for stage_id in &stages {
+            // Delete the member route by id (a no-op if the stage id is dangling — already gone).
+            let _ = self.delete_route_by_id(*stage_id);
+        }
+        self.delete_trip_file(&trip_file)
+    }
+
+    /// Read the trip-CRC sidecar (`/routes/TRIPS.CRC`) — the trip twin of
+    /// [`load_route_crcs`](Self::load_route_crcs); reuses the [`RouteCrcs`] `u16 → u32` codec. A
+    /// missing/torn file = the empty map (every trip serves `0 = unknown`).
+    pub fn load_trip_crcs(&self) -> RouteCrcs {
+        let Some(dir) = self.routes_dir else { return RouteCrcs::new() };
+        let Ok(file) = self.vmgr.open_file_in_dir(dir, TRIP_CRCS, Mode::ReadOnly) else {
+            return RouteCrcs::new();
+        };
+        let mut buf = [0u8; ROUTE_CRCS_MAX_LEN];
+        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
+        let _ = self.vmgr.close_file(file);
+        decode_route_crcs(&buf[..n])
+    }
+
+    /// Upsert trip `id`'s whole-object CRC into the sidecar at upload commit (persisting only on a
+    /// change) — the trip twin of [`set_route_crc`](Self::set_route_crc).
+    pub fn set_trip_crc(&mut self, id: u16, crc: u32) {
+        let mut map = self.load_trip_crcs();
+        if map.insert(id, crc) {
+            self.write_trip_crcs(&map);
+        }
+    }
+
+    /// Retire trip `id`'s CRC entry (a deleted trip — ids never reuse, belt-and-braces tidiness).
+    pub fn forget_trip_crc(&mut self, id: u16) {
+        let mut map = self.load_trip_crcs();
+        if map.remove(id) {
+            self.write_trip_crcs(&map);
+        }
+    }
+
+    /// Overwrite the trip-CRC sidecar (truncating). A write failure is warned, not fatal — the worst
+    /// case is a trip serves `0 = unknown` and re-fills lazily next list build.
+    pub fn write_trip_crcs(&mut self, map: &RouteCrcs) {
+        let Some(dir) = self.routes_dir else { return };
+        let mut buf = [0u8; ROUTE_CRCS_MAX_LEN];
+        let n = encode_route_crcs(map, &mut buf);
+        match self.vmgr.open_file_in_dir(dir, TRIP_CRCS, Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                if self.vmgr.write(file, &buf[..n]).is_err() {
+                    defmt::warn!("SD: trip-crc sidecar write failed — a trip may serve crc 0 next list build");
+                }
+                let _ = self.vmgr.flush_file(file);
+                let _ = self.vmgr.close_file(file);
+            }
+            Err(e) => defmt::warn!("SD: cannot open trip-crc sidecar: {}", defmt::Debug2Format(&e)),
+        }
+    }
+
     /// Visit every stored ride object in `/tracks` (the `RD{id}.ORD` files) with its filename-encoded
     /// durable id. An in-progress `TRACK.OBT` (or any foreign file) never matches.
     pub fn for_each_ride_file(&self, mut f: impl FnMut(u16, &ShortFileName)) {
@@ -1988,6 +2306,24 @@ pub fn uploaded_route_id(name: &ShortFileName) -> Option<u16> {
 /// device reboots.
 pub fn stored_ride_id(name: &ShortFileName) -> Option<u16> {
     id_in_name(name, b"RD", b"ORD")
+}
+
+/// Whether a `/routes` directory entry is a trip file (epic #526 TR4): a BLE-uploaded `TP{id}.OBT`
+/// (plain 8.3 like the route uploads' `.OBR`) **or** a side-loaded `.obt` (long-filename match, the
+/// trip twin of `.obcr`). Dot-prefixed clutter is excluded on both arms. (The ride log's `TRACK.OBT`
+/// shares the `OBT` extension but lives in `/tracks`, never `/routes`, so it can't collide here.)
+fn is_trip_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
+    if e.attributes.is_directory() {
+        return false;
+    }
+    long_has_ext(long, b".obt") || (e.name.extension() == b"OBT" && !long.is_some_and(|n| n.starts_with('.')))
+}
+
+/// The **durable trip object id** in an uploaded trip's filename — `TP{id}.OBT` → `id` (spec §7.7;
+/// trip ids draw from a device counter separate from routes/rides, §4.1). `None` for a side-loaded
+/// `.obt` (no id in the name — it gets a session-scoped one from the reserved band).
+pub fn uploaded_trip_id(name: &ShortFileName) -> Option<u16> {
+    id_in_name(name, b"TP", b"OBT")
 }
 
 /// Parse `{prefix}{decimal u16}.{ext}` from an 8.3 name; `None` for anything else.

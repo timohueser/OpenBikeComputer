@@ -145,6 +145,18 @@ pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     app.set_rides(&catalog, storage.ride_ids());
 }
 
+/// Scan the card's `/routes` **trip catalog** (`TP{id}.OBT` files) into the app's trip folders (epic
+/// #526 TR4), carrying each trip's durable object id + stage route ids; [`App::set_trips`] resolves
+/// each stage against the route catalog into a folder with summed stats. Called at boot and on every
+/// store-changed edge — **after** [`load_routes`], so a route deleted individually re-resolves the
+/// trip's stage totals against the fresh route catalog (a dangling stage then contributes nothing).
+/// Its own `#[inline(never)]` frame for the same stack reason as [`load_routes`]/[`load_rides`].
+#[inline(never)]
+pub(crate) fn load_trips(storage: &mut sd::Storage, app: &mut App) {
+    storage.scan_trips();
+    app.set_trips(&storage.trip_inputs());
+}
+
 /// Fill an open Ride detail's pending **track-profile request** (epic #678 T2 / #680): drain the
 /// ride's durable id, stream its `RD{id}.ORD` once (chunked SD reads — no whole-track buffer),
 /// and answer `App::set_ride_profile` — a stream failure (or no card) answers `None`, so a dead
@@ -821,6 +833,10 @@ pub(crate) async fn run_app(
                 // flipped a synced flag): re-scan `/tracks` and re-feed the Rides menu, which remaps
                 // its highlight by id (#454). Cheap when nothing ride-related moved.
                 load_rides(s, app);
+                // …and trips (epic #526 TR4): a trip upload/delete moved the trip store, or a member
+                // route delete changed a trip's resolvable stage totals — rescan `/routes` for trips
+                // and re-feed the folders (resolved against the freshly-scanned route catalog above).
+                load_trips(s, app);
             }
             prev_active = None; // force reconcile_route/track to re-run against the new indexing
             index_route = None; // and the chunk index to rebuild off the freshly-opened file
