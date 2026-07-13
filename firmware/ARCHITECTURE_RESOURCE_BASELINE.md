@@ -16,8 +16,9 @@ LM20/simulator capacities, but there is no LM20 board ELF yet, so this document
 does not invent an LM20 linked baseline.
 
 The board ELF was built on an arm64 MacBookPro18,3 running macOS 26.5.1
-(25F80), with `riscv64-elf-gcc (GCC) 16.1.0` producing the FLPR blob. Record a
-new compiler/host whenever the ELF baseline is deliberately refreshed.
+(25F80), with `riscv64-elf-gcc (GCC) 16.1.0` and GNU objcopy/binutils 2.46.1
+producing the FLPR blob. Record a new compiler/host whenever the ELF baseline is
+deliberately refreshed.
 
 ## Reproduce the automated baseline
 
@@ -33,8 +34,8 @@ export RUSTUP_TOOLCHAIN=1.96.0
 rustc --version --verbose
 ```
 
-Also install a RISC-V compiler compatible with the recorded GCC 16.1.0; it
-builds the board crate's FLPR blob. Then, from `firmware/`:
+Also install RISC-V GCC/binutils compatible with the recorded GCC 16.1.0 and
+binutils 2.46.1; they build the board crate's FLPR blob. Then, from `firmware/`:
 
 ```sh
 # Host correctness, deterministic pixels, and repeatable timing sample.
@@ -173,7 +174,10 @@ change cannot silently alter that assumption.
 CI intentionally uses the floating stable toolchain declared by the repository.
 If stable changes linked sizes or code generation, the resource gate must fail;
 the resulting drift needs an explicit, measured re-baseline rather than a silent
-toolchain assumption.
+toolchain assumption. Its FLPR build likewise installs Ubuntu's distro-current
+`gcc-riscv64-unknown-elf` package rather than pinning the local versions above:
+CI validates the resource contract, but does not promise a byte-identical copy
+of the captured macOS board ELF.
 
 ## On-device capture (required before merge)
 

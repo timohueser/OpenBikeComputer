@@ -5,6 +5,7 @@
     "rustc": "1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.2",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
+    "riscv_binutils": "GNU objcopy (GNU Binutils) 2.46.1",
     "build_host": "MacBookPro18,3 (arm64), macOS 26.5.1 (25F80)",
     "target": "thumbv8m.main-none-eabihf",
     "capacity_profile": "nrf-mem (nRF54L15-DK, 256 KiB SRAM; the board crate does not yet build an LM20 ELF)"
