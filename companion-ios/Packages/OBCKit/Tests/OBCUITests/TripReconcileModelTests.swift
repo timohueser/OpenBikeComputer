@@ -143,6 +143,67 @@ struct TripReconcileModelTests {
         #expect(model.tripOnDeviceState(tripID) == .notOnDevice)
     }
 
+    /// The on-glass regression (2026-07-13): the device deletes ONE member route
+    /// (Route overview hold-delete); re-running "Upload trip" must re-send the
+    /// missing stage and **replace the existing trip object in place** — never
+    /// mint a second device trip.
+    @Test
+    func reUploadAfterADeviceSideStageDeleteReplacesTheTripInPlace() async {
+        let (model, control) = await makeMain()
+        await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+        let stageA = RouteID("devils-lake-overnighter")
+        let stageDeviceID = model.plannedDeviceObjectID(for: stageA)!
+
+        // The device-side route delete → storeChanged(route) → the app's
+        // reconcile drops the stage link (trip badge goes off).
+        control.deviceDeletesRoute(stageDeviceID)
+        await poll("stage link cleared") { model.onDeviceState(stageA) == .notOnDevice }
+        #expect(model.tripOnDeviceState(tripID) != .upToDate)
+
+        // The re-upload plan: the missing stage is fresh, the trip object is a
+        // replace of the existing device trip — never a second trip.
+        let plan = model.planTripUpload(tripID)!
+        #expect(plan.tripObject == .replace(deviceTripID))
+        #expect(plan.stages.first { $0.routeID == stageA }?.action == .fresh)
+
+        let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
+        upload.start()
+        await poll("re-upload landed") { upload.phase == .done }
+        #expect(control.deviceTripCount == 1, "the re-upload must not mint a second device trip")
+        #expect(control.deviceTripStageIDs(deviceTripID).count == 2)
+        await poll("trip back up to date") { model.tripOnDeviceState(tripID) == .upToDate }
+    }
+
+    /// The root cause behind the on-glass duplicate: a **transient `listTrips`
+    /// failure** during a reload must not read as "the device stores zero trips".
+    /// Before the fix it dropped every trip's device link, and the next "Upload
+    /// trip" minted a second device trip instead of replacing in place.
+    @Test
+    func aFailedTripListReadKeepsTheLinkAndTheNextUploadStillReplaces() async {
+        let (model, control) = await makeMain()
+        await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+        let stageA = RouteID("devils-lake-overnighter")
+        let stageDeviceID = model.plannedDeviceObjectID(for: stageA)!
+
+        // The device deletes a member route; the reload this triggers reads
+        // `routeList` fine but the `tripList` read fails (a flaky link mid-read).
+        control.failNextTripList(.readFailed)
+        control.deviceDeletesRoute(stageDeviceID)
+        await poll("stage link cleared") { model.onDeviceState(stageA) == .notOnDevice }
+
+        // The trip's link survived the failed read — the plan still replaces.
+        #expect(model.trip(tripID)?.deviceLink != nil, "a failed tripList read must not drop the link")
+        let plan = model.planTripUpload(tripID)!
+        #expect(plan.tripObject == .replace(deviceTripID))
+
+        let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
+        upload.start()
+        await poll("re-upload landed") { upload.phase == .done }
+        #expect(control.deviceTripCount == 1, "a failed tripList read must never cause a duplicate trip")
+    }
+
     // MARK: Delete trip & routes while connected
 
     @Test
