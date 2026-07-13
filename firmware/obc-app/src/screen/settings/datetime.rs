@@ -16,7 +16,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
-use crate::settings::{Language, Settings, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP};
+use crate::settings::{DateTimeEditorExt, Language, Settings, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP};
 use crate::{t, Msg};
 
 /// One row of the Date & Time screen. The set in play depends on `GPS clock`; the two info rows
@@ -192,7 +192,7 @@ impl DateTimeScreen {
                         v,
                         "{} {} {}  {:02}:{:02}",
                         local.year,
-                        local.month_name(lang),
+                        crate::settings::month_name(local, lang),
                         local.day,
                         local.hour,
                         local.minute
@@ -266,7 +266,7 @@ fn draw_date(cv: &mut impl Surface, area: Rectangle, s: &Settings, editing: Opti
     let (mut yr, mut mo, mut da) =
         (heapless::String::<8>::new(), heapless::String::<8>::new(), heapless::String::<8>::new());
     let _ = write!(yr, "{}", s.clock.year);
-    let _ = mo.push_str(s.clock.month_name(lang));
+    let _ = mo.push_str(crate::settings::month_name(s.clock, lang));
     let _ = write!(da, "{}", s.clock.day);
     // The month cell is 70 px (5 glyphs at Font::Body's 14 px), not 56: the four-char French months
     // (`août`, `sept`, `févr`) exactly fill 56 px, sitting flush against the active cell's amber

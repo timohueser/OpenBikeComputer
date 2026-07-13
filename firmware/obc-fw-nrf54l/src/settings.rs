@@ -495,6 +495,8 @@ fn decode_bond(buf: &[u8; BOND_SLOT_LEN]) -> Option<BondInformation> {
 }
 
 impl SettingsStore for RramSettingsStore {
+    type Value = Settings;
+
     fn load(&mut self) -> Option<Settings> {
         let off = region_offset();
         let mut buf = [0u8; SLOT_LEN];
