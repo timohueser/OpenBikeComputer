@@ -564,13 +564,16 @@ The **Stats** screen configures the riding grid itself. Its *Page cycle* row set
 
 ### Settings survive a reboot — independent of the SD card
 
-A setting is worthless if it's forgotten on power-off, so settings persist. The values live in a small `Settings` value (`Copy`, no floats) that the screens edit; the *medium* is a host concern behind one more trait, exactly like the sensor seams. The app seeds itself from `load()` at boot and asks the host to `save()` only when something actually changed — detected by the same one-`==` before/after compare the camera uses to decide it's dirty.
+A setting is worthless if it's forgotten on power-off, so settings persist. The values live in a small `Settings` value (`Copy`, no floats) that the screens edit; the *medium* is a host concern behind one more trait, exactly like the sensor seams. The app seeds itself from `load()` at boot and asks the host to `save()` only when something actually changed — detected by the same one-`==` before/after compare the camera uses to decide it's dirty. The write is **debounced to leaving the settings subtree**: a stepper sweep edits live in RAM but never drives a write per detent, and nothing is written while any settings screen is still on top — the store sees exactly one write when you back out.
+
+Persistence is **acknowledged**, not fire-and-forget. `save()` reports whether the write reached durable storage; the app keeps the change marked *pending* until the host confirms it, so a failed RRAM/file write is **retried** (with a small backoff) instead of being silently lost, and a fresh edit safely supersedes an older pending one. A persistent failure also raises the shared advisory card ("Settings not saved") so it's visible, not just logged — the edit stays live in RAM the whole time.
 
 ```rust
 pub trait SettingsStore {
     type Value;
-    fn load(&mut self) -> Option<Self::Value>; // None (blank/corrupt) → use the app default
-    fn save(&mut self, value: &Self::Value);   // best-effort; the live value stays authoritative
+    fn load(&mut self) -> Option<Self::Value>;                     // None (blank/corrupt) → app default
+    fn save(&mut self, value: &Self::Value)
+        -> Result<(), SettingsSaveError>;                          // Ok = durable; Err = retried
 }
 
 // Both shipped adapters bind `type Value = Settings`.
