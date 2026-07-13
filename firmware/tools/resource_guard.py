@@ -3,7 +3,7 @@
 
 This is the single parser used for board RAM/framebuffer/poll-frame checks, the bootloader flash
 budget, and the report-only compile-time allocation table. It intentionally consumes LLVM's text
-tools rather than an ELF Python package so a fresh checkout needs only the pinned Rust toolchain.
+tools rather than an ELF Python package so a fresh checkout needs only the selected Rust toolchain.
 """
 
 from __future__ import annotations
@@ -365,7 +365,7 @@ def check_strict_align(args: argparse.Namespace) -> None:
     normal_word_loads = len(re.findall(r"\bldr(?:\.w)?\b", normal_body))
     require(
         strict_byte_loads == 4 and strict_word_loads == 0,
-        "+strict-align is not honored by the pinned backend: decode_u32 must lower to four byte "
+        "+strict-align is not honored by the active backend: decode_u32 must lower to four byte "
         f"loads and no word load (saw ldrb={strict_byte_loads}, ldr={strict_word_loads})",
     )
     require(
@@ -390,7 +390,7 @@ def parser() -> argparse.ArgumentParser:
     report.add_argument("--elf", type=Path, required=True)
     boot = commands.add_parser("boot", help="gate the bootloader flash slot")
     boot.add_argument("--elf", type=Path, required=True)
-    strict = commands.add_parser("strict-align", help="prove the pinned ARM backend honors +strict-align")
+    strict = commands.add_parser("strict-align", help="prove the active ARM backend honors +strict-align")
     strict.add_argument("--probe", type=Path, default=STRICT_ALIGN_PROBE)
     return root
 

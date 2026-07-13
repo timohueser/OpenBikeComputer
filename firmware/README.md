@@ -86,7 +86,7 @@ cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt
 One-off runs against a real map:
 `cargo run -p obc-bench --release -- --map ../freiburg.obcm --mpp 4 --heading 35`.
 
-The pinned firmware resource numbers, dependency-direction contract, benchmark
+The frozen firmware resource numbers, dependency-direction contract, benchmark
 reference host, and repeatable on-device capture procedure live in
 [`ARCHITECTURE_RESOURCE_BASELINE.md`](ARCHITECTURE_RESOURCE_BASELINE.md). Read it
 before approving a resource-baseline change: report-only firmware is diagnostic
