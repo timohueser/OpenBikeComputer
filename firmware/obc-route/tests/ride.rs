@@ -4,7 +4,7 @@
 //! torn-write / length rules a BLE `rideList` build leans on, and the old-ride compatibility rule).
 
 use obc_route::{
-    encode_record, ride_object_len, track_to_ride, RideInfo, RideStats, SliceSource, TrackPoint, RIDE_CAD_NONE,
+    encode_record, ride_object_len, track_to_ride, Error, RideInfo, RideStats, SliceSource, TrackPoint, RIDE_CAD_NONE,
     RIDE_HEADER_LEN_V1, RIDE_HEADER_LEN_V2, RIDE_HR_NONE, RIDE_POINT_LEN_V1, RIDE_POINT_LEN_V2, RIDE_PWR_NONE,
     RIDE_VERSION,
 };
@@ -188,6 +188,16 @@ fn reader_rejects_length_disagreement() {
     let mut long = ride.clone();
     long.push(0);
     assert!(RideInfo::read(&SliceSource(&long)).is_err(), "over-long");
+}
+
+#[test]
+fn reader_rejects_wrapped_point_count_length() {
+    // v2 stride 18 × 0x8000_0000 wraps to zero under unchecked u32 arithmetic, which used to make
+    // this 31-byte header-only object appear length-correct.
+    let mut ride = [0u8; RIDE_HEADER_LEN_V2];
+    ride[0] = 2;
+    ride[19..23].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+    assert!(matches!(RideInfo::read(&SliceSource(&ride)), Err(Error::BadOffset)));
 }
 
 /// The length check is **per version**: a v1 header claiming a point count whose v1 length (14 B

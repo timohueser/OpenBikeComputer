@@ -41,30 +41,12 @@ pub struct TrackPoint {
     pub power: Option<u16>,
 }
 
-/// On-disk size of one record. The whole log is `N × TRACK_RECORD_LEN` bytes, no header.
-///
-/// **Format v2 (20 bytes, epic #707):** the original 16 bytes plus a `hr u8 · cad u8 · pwr u16`
-/// (LE) sensor tail. The log is headerless and **never crosses a firmware upgrade**, so there is
-/// no in-band version to distinguish a 16-byte (pre-sensor) log from this 20-byte one — the
-/// upgrade guard is structural instead: the temp `TRACK.OBT` (board `sd.rs`) / `.track-{id}.obct`
-/// (sim `track.rs`) is only ever converted through an **in-RAM** handle (`Storage::pending_save`
-/// / `TrackStore::open`) set by *this* boot's Finish, and the next ride's `begin_track` opens it
-/// truncating. That RAM handle cannot survive a reboot, so an orphaned open log left by older
-/// firmware can never reach [`track_to_ride`](crate::track_to_ride) after an upgrade — it is
-/// silently truncated by the next session, never misparsed as 20-byte records. Boot provably
-/// discards orphans, so no versioned temp filename is needed (SE3, #710).
-pub const TRACK_RECORD_LEN: usize = 20;
-
-/// Layout: `lon`(i32) `lat`(i32) `ele`(i16) `flags`(u16, bit0 = segment_start) `t_ms`(u32)
-/// `hr`(u8) `cad`(u8) `pwr`(u16).
-const FLAG_SEGMENT_START: u16 = 0x0001;
-
-/// The `hr` sentinel for "no heart-rate sample on this fix" (255 bpm is not a real reading).
-pub const TRACK_HR_NONE: u8 = 0xFF;
-/// The `cad` sentinel for "no cadence sample on this fix".
-pub const TRACK_CAD_NONE: u8 = 0xFF;
-/// The `pwr` sentinel for "no power sample on this fix".
-pub const TRACK_PWR_NONE: u16 = 0xFFFF;
+// Compatibility paths for the normative track record size and sentinels now owned by
+// `obc-formats`; the encoder/decoder and streaming conversion remain in this crate.
+use obc_formats::track::FLAG_SEGMENT_START;
+pub use obc_formats::track::{
+    CAD_NONE as TRACK_CAD_NONE, HR_NONE as TRACK_HR_NONE, PWR_NONE as TRACK_PWR_NONE, RECORD_LEN as TRACK_RECORD_LEN,
+};
 
 /// Encode a point to its fixed 20-byte record (little-endian). Absent sensor values encode as
 /// their sentinels ([`TRACK_HR_NONE`] / [`TRACK_CAD_NONE`] / [`TRACK_PWR_NONE`]).

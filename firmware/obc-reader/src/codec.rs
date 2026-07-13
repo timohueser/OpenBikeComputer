@@ -1,56 +1,6 @@
-//! Little-endian field codecs for the binary map (`OBCM`) and route (`OBCR`) formats, both
-//! fixed-offset little-endian records.
-//!
-//! These read/write one field over an already-bounds-checked slice: callers validate a record's
-//! whole length up front, so these stay branch-free and simply index, panicking only on a truly
-//! out-of-range offset (a format/bounds bug, not untrusted input).
-//!
-//! One copy so the map reader, route reader, and route writer can't disagree on byte order or field
-//! width — the kind of skew that corrupts a file silently.
+//! Compatibility paths for the endian primitives now owned by `obc-formats`.
 
-/// Read a little-endian `i16` at byte offset `o`.
-#[inline]
-pub fn rd_i16(d: &[u8], o: usize) -> i16 {
-    i16::from_le_bytes([d[o], d[o + 1]])
-}
-/// Read a little-endian `u16` at byte offset `o`.
-#[inline]
-pub fn rd_u16(d: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([d[o], d[o + 1]])
-}
-/// Read a little-endian `i32` at byte offset `o`.
-#[inline]
-pub fn rd_i32(d: &[u8], o: usize) -> i32 {
-    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
-}
-/// Read a little-endian `u32` at byte offset `o`.
-#[inline]
-pub fn rd_u32(d: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
-}
-/// Read a little-endian `f32` at byte offset `o`.
-#[inline]
-pub fn rd_f32(d: &[u8], o: usize) -> f32 {
-    f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
-}
-
-/// Write `v` as little-endian `i16` at byte offset `o`.
-#[inline]
-pub fn put_i16(b: &mut [u8], o: usize, v: i16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
-}
-/// Write `v` as little-endian `u16` at byte offset `o`.
-#[inline]
-pub fn put_u16(b: &mut [u8], o: usize, v: u16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
-}
-/// Write `v` as little-endian `i32` at byte offset `o`.
-#[inline]
-pub fn put_i32(b: &mut [u8], o: usize, v: i32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
-}
-/// Write `v` as little-endian `u32` at byte offset `o`.
-#[inline]
-pub fn put_u32(b: &mut [u8], o: usize, v: u32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
-}
+pub use obc_formats::io::{
+    checked_put_i16, checked_put_i32, checked_put_u16, checked_put_u32, checked_rd_f32, checked_rd_i16, checked_rd_i32,
+    checked_rd_u16, checked_rd_u32, put_i16, put_i32, put_u16, put_u32, rd_f32, rd_i16, rd_i32, rd_u16, rd_u32,
+};
