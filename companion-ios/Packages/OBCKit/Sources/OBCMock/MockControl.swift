@@ -500,16 +500,25 @@ public final class MockControl: @unchecked Sendable {
     func beginTripUpload(_ blob: TripBlob) -> TransferHandle {
         if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
         if blob.payload.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }
-        // Cap check at open (new only): a full trip catalog rejects with storageFull.
         let isNew = blob.targetObjectID == nil
+        // Fresh-upload dedup (spec §4.2), mirroring the device's commit-time rule:
+        // identical content re-sent as a *new* object (a retry after a lost commit
+        // ack) converges on the stored copy — the transfer paces and completes as
+        // normal, but the assigned id is the existing trip's and nothing new is
+        // stored. Checked before the cap (a dedup hit consumes no slot).
+        let dedupID: DeviceObjectID? = !isNew ? nil : lock.withLocked {
+            let crc = CRC32.checksum(blob.payload)
+            return _deviceTrips.first { $0.crc32 == crc }?.id
+        }
+        // Cap check at open (new only): a full trip catalog rejects with storageFull.
         let full = lock.withLocked { _deviceTrips.count >= DeviceStorage.tripCapacity }
-        if isNew && full { return .immediatelyFinished(.failed(.storageFull)) }
+        if isNew && full && dedupID == nil { return .immediatelyFinished(.failed(.storageFull)) }
         let assignedID = AsyncPromise<DeviceObjectID?>()
         // A trip object is tiny; pace off a small design-scale minimum so the F
         // bar is still visible (the mock's realism is timing, not wire bytes).
         let pacingBytes = max(blob.payload.count, 4_000, 1)
         let handle = startTransfer(total: pacingBytes, segments: [], rides: nil, assignedObjectID: assignedID)
-        let objectID = blob.targetObjectID ?? lock.withLocked { () -> DeviceObjectID in
+        let objectID = blob.targetObjectID ?? dedupID ?? lock.withLocked { () -> DeviceObjectID in
             let id = _nextTripID
             _nextTripID &+= 1
             return DeviceObjectID(id)
@@ -606,13 +615,22 @@ public final class MockControl: @unchecked Sendable {
     func beginRouteUpload(_ blob: RouteBlob) -> TransferHandle {
         if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
         if blob.payload.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }
+        // Fresh-upload dedup (spec §4.2) — see `beginTripUpload`: a re-sent new
+        // object whose payload CRC matches an on-device copy answers with that
+        // copy's id instead of minting a twin. Entries with no pinned CRC (a
+        // seeded fixture never uploaded) never match — the device's posture for
+        // a side-loaded file with an unfilled sidecar.
+        let dedupID: DeviceObjectID? = blob.targetObjectID != nil ? nil : lock.withLocked {
+            let crc = CRC32.checksum(blob.payload)
+            return _fixtures.routes.first { $0.deviceObjectID != nil && $0.crc32 == crc }?.deviceObjectID
+        }
         let assignedID = AsyncPromise<DeviceObjectID?>()
         // Whichever is larger: an explicit test payload, or the design-scale
         // minimum from the route length (so a real few-kB OBCR still paces long
         // enough to see F).
         let pacingBytes = max(blob.payload.count, Int(blob.summary.distanceMeters * 37), 1)
         let handle = startTransfer(total: pacingBytes, segments: [], rides: nil, assignedObjectID: assignedID)
-        let objectID = blob.targetObjectID ?? lock.withLocked { () -> DeviceObjectID in
+        let objectID = blob.targetObjectID ?? dedupID ?? lock.withLocked { () -> DeviceObjectID in
             let id = _nextObjectID
             _nextObjectID &+= 1
             return DeviceObjectID(id)
