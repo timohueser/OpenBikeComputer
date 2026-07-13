@@ -38,6 +38,31 @@ final class TransferDescriptorTests: XCTestCase {
         XCTAssertEqual(request.crc32, 0)
     }
 
+    func testExchangeCorrelationRejectsLateOrCrossedAnswers() {
+        let download = TransferControl(op: .download, type: .routeList, objectID: 0)
+        XCTAssertTrue(download.acceptsDownloadAnnounce(TransferControl(
+            op: .download, type: .routeList, objectID: 0, totalLen: 310, crc32: 1)))
+        XCTAssertFalse(download.acceptsDownloadAnnounce(TransferControl(
+            op: .download, type: .tripList, objectID: 0, totalLen: 64, crc32: 2)))
+        XCTAssertTrue(download.acceptsCommittedResult(
+            TransferResult(objectID: DeviceObjectID(0), status: .committed, committedOffset: 310),
+            byteCount: 310))
+        XCTAssertFalse(download.acceptsCommittedResult(
+            TransferResult(objectID: DeviceObjectID(0), status: .committed, committedOffset: 234),
+            byteCount: 310))
+
+        let upload = TransferControl(
+            op: .upload, type: .route, objectID: .max, totalLen: 9_360, crc32: 3)
+        XCTAssertTrue(upload.acceptsCommittedResult(
+            TransferResult(objectID: DeviceObjectID(86), status: .committed, committedOffset: 9_360),
+            byteCount: 9_360))
+        // The exact crossed result from the RTT failure: a preceding 310-byte
+        // list close must never complete the following 9,360-byte upload.
+        XCTAssertFalse(upload.acceptsCommittedResult(
+            TransferResult(objectID: DeviceObjectID(0), status: .committed, committedOffset: 310),
+            byteCount: 9_360))
+    }
+
     func testStatusMessageRoundTrips() throws {
         for status in TransferResult.Status.allCases {
             let msg = StatusMessage.transferResult(TransferResult(objectID: DeviceObjectID(7), status: status, committedOffset: 2_048))

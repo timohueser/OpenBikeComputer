@@ -263,8 +263,9 @@ pub(crate) static TRANSFER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// An abort aimed at the in-flight transfer: the control plane signals, the data plane consumes it at
 /// its next step (between SDUs / chunks), discards, and answers `aborted` with the durable offset.
-/// Latched — an abort that races the transfer's own completion is drained by `serve_coc` after each
-/// transfer, so it can't leak into the next one.
+/// Latched — an abort that races the transfer's own completion is drained at the same boundary that
+/// clears [`TRANSFER_ACTIVE`], before the terminal result is notified, so it can't leak into the next
+/// one.
 pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 // ============================ Status-message vocabulary ============================

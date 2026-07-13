@@ -85,6 +85,10 @@ public final class MockControl: @unchecked Sendable {
     /// How many `forgetBond` commands (#756) the transport sent — the forget
     /// tests assert a connected forget reaches the device before clearing.
     private var _forgetBondCount = 0
+    /// Test-only evidence that a catalog read was abandoned by its caller. A
+    /// store-change burst must coalesce behind a live read instead of cancelling
+    /// it halfway through the real transport's CoC exchange.
+    private var _cancelledRouteListReadCount = 0
     /// The version string of the firmware the phone staged this session (from the
     /// last completed `fwImage` upload) — what a modelled reboot reconnects on.
     /// `nil` until an upload completes.
@@ -420,6 +424,14 @@ public final class MockControl: @unchecked Sendable {
     /// the connected forget reached the device before clearing the local record.
     public var forgetBondCount: Int {
         lock.withLocked { _forgetBondCount }
+    }
+
+    public var cancelledRouteListReadCount: Int {
+        lock.withLocked { _cancelledRouteListReadCount }
+    }
+
+    func recordCancelledRouteListReadIfNeeded() {
+        if Task.isCancelled { lock.withLocked { _cancelledRouteListReadCount += 1 } }
     }
 
     /// Delete a stored route by its device object id (the `deleteObject`

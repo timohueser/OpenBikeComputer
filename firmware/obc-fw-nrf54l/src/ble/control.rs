@@ -162,39 +162,82 @@ enum TransferDisposition {
 fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> TransferDisposition {
     let Ok(desc) = TransferControl::decode(data) else {
         // A malformed descriptor — the app can't have meant a real transfer; report `error`.
+        warn!(
+            "ble: [gatt] transfer_control reject: malformed {} B descriptor -> status {}",
+            data.len(),
+            TransferStatus::Error.as_u8()
+        );
         return TransferDisposition::Answer(transfer_result(0, TransferStatus::Error));
     };
     if desc.op == Op::Abort {
         if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
+            info!("ble: [gatt] transfer_control abort active: type {} id {}", desc.ty.as_u8(), desc.object_id);
             return TransferDisposition::AbortActive;
         }
         // Nothing in flight: discard any stray temp and confirm the abort.
         store.borrow_mut().upload_discard(shared);
+        info!(
+            "ble: [gatt] transfer_control answer: op {} type {} id {} len {} -> status {}",
+            desc.op.as_u8(),
+            desc.ty.as_u8(),
+            desc.object_id,
+            desc.total_len,
+            TransferStatus::Aborted.as_u8()
+        );
         return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted));
     }
     if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
+        warn!(
+            "ble: [gatt] transfer_control reject: op {} type {} id {} len {} -> status {} (active)",
+            desc.op.as_u8(),
+            desc.ty.as_u8(),
+            desc.object_id,
+            desc.total_len,
+            TransferStatus::Busy.as_u8()
+        );
         return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Busy));
     }
     match (desc.op, desc.ty) {
-        (Op::Upload, ObjectType::Echo) => TransferDisposition::Arm(Armed::Echo(desc)),
+        (Op::Upload, ObjectType::Echo) => {
+            log_transfer_arm(&desc);
+            TransferDisposition::Arm(Armed::Echo(desc))
+        }
         (Op::Upload, ObjectType::Route) => match store.borrow_mut().upload_open(shared, &desc) {
-            Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
-            Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
+            Ok(rx) => {
+                log_transfer_arm(&desc);
+                TransferDisposition::Arm(Armed::Upload(desc, rx))
+            }
+            Err(status) => {
+                log_transfer_reject(&desc, status);
+                TransferDisposition::Answer(transfer_result(desc.object_id, status))
+            }
         },
         // A trip upload (epic #526 TR4): the same CoC streaming + commit-then-swap as a route, but the
         // storage-full guard is against the *trip* catalog and the commit target is `TP{id}.OBT`. The
         // finish routes on `desc.ty` in the data plane, exactly like the route/fwImage split.
         (Op::Upload, ObjectType::Trip) => match store.borrow_mut().upload_open_trip(shared, &desc) {
-            Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
-            Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
+            Ok(rx) => {
+                log_transfer_arm(&desc);
+                TransferDisposition::Arm(Armed::Upload(desc, rx))
+            }
+            Err(status) => {
+                log_transfer_reject(&desc, status);
+                TransferDisposition::Answer(transfer_result(desc.object_id, status))
+            }
         },
         // A firmware update image (epic #615 S6, #621): the size guard rejects an oversize object at
-        // announce, before any byte streams; a committed transfer promotes to /UPDATE.BIN (staging,
+        // announce, before any byte is consumed; a committed transfer promotes to /UPDATE.BIN (staging,
         // not installing — see `fwimage_finish` + the `installFw` command). Same `Armed::Upload` arm as
         // a route — the CoC streaming is identical; only the commit target differs (`desc.ty`).
         (Op::Upload, ObjectType::FwImage) => match store.borrow_mut().fwimage_open(shared, &desc) {
-            Ok(rx) => TransferDisposition::Arm(Armed::Upload(desc, rx)),
-            Err(status) => TransferDisposition::Answer(transfer_result(desc.object_id, status)),
+            Ok(rx) => {
+                log_transfer_arm(&desc);
+                TransferDisposition::Arm(Armed::Upload(desc, rx))
+            }
+            Err(status) => {
+                log_transfer_reject(&desc, status);
+                TransferDisposition::Answer(transfer_result(desc.object_id, status))
+            }
         },
         (
             Op::Download,
@@ -215,13 +258,42 @@ fn classify_transfer(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut Sha
                 _ => true,
             };
             if !known {
+                log_transfer_reject(&desc, TransferStatus::NotFound);
                 return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::NotFound));
             }
+            log_transfer_arm(&desc);
             TransferDisposition::Arm(Armed::Download(desc))
         }
         // Uploads of ride/list/config/diagnostics types are nonsensical.
-        _ => TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error)),
+        _ => {
+            log_transfer_reject(&desc, TransferStatus::Error);
+            TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error))
+        }
     }
+}
+
+/// Log one accepted descriptor in the same numeric vocabulary as the iOS
+/// console, so an on-device trace correlates both sides of the exchange.
+fn log_transfer_arm(desc: &TransferControl) {
+    info!(
+        "ble: [gatt] transfer_control arm: op {} type {} id {} len {}",
+        desc.op.as_u8(),
+        desc.ty.as_u8(),
+        desc.object_id,
+        desc.total_len
+    );
+}
+
+/// Instrument an immediate semantic reject with its exact wire status.
+fn log_transfer_reject(desc: &TransferControl, status: TransferStatus) {
+    warn!(
+        "ble: [gatt] transfer_control reject: op {} type {} id {} len {} -> status {}",
+        desc.op.as_u8(),
+        desc.ty.as_u8(),
+        desc.object_id,
+        desc.total_len,
+        status.as_u8()
+    );
 }
 
 /// Serve GATT + connection events until the peer drops the link. Returns the disconnect reason (HCI

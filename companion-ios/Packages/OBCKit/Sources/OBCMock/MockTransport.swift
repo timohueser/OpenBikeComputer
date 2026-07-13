@@ -106,6 +106,7 @@ public struct MockTransport: DeviceTransport {
         // the "on device" badge, never list rows (the Planned list is
         // library-first, #289). Mirrors the real `routeList` download.
         try await preludeThrowing()
+        control.recordCancelledRouteListReadIfNeeded()
         return control.deviceRoutes()
     }
 

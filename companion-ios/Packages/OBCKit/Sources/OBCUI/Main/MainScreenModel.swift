@@ -152,6 +152,10 @@ public final class MainScreenModel {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    /// A reload requested while `loadTask` is already reading the catalogs.
+    /// Store-change bursts set this bit instead of cancelling the live CoC
+    /// download; the running task consumes it with one more reconcile pass.
+    @ObservationIgnored private var reloadRequested = false
     /// The last route catalog a reload read — kept so `runIdentityCheck` can
     /// re-run the badge reconcile once the scope settles (#769): on launch the
     /// catalog read usually lands *before* the identity verdict, and clearing
@@ -315,9 +319,20 @@ public final class MainScreenModel {
                 // clears (and a re-upload is offered) without a reconnect.
                 // Rides move only through Sync, so only route/trip movements
                 // trigger the reload (a device-side route or trip delete, TR3's
-                // long-press cascade); `reload()` cancels its predecessor, so a
-                // burst of movements coalesces into one fresh read.
+                // long-press cascade). A burst coalesces behind the in-flight
+                // read; an opened CoC exchange is never cancelled halfway.
                 if change.type == .route || change.type == .trip { reload() }
+            }
+        })
+        // Notifications are deliberately best-effort on BLE. Keep them as the
+        // immediate path, then audit the tiny route/trip catalogs occasionally
+        // so a dropped edge cannot leave an "on device" checkmark stale until
+        // the next app launch or reconnect.
+        streamTasks.append(Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled, let self else { return }
+                if connection == .connected { reload() }
             }
         })
         reload()
@@ -355,24 +370,38 @@ public final class MainScreenModel {
     /// (Re)read both lists — also the S3 "Retry" action. Cached content stays
     /// up while the fresh read runs; only an *empty* library shows skeletons.
     public func reload() {
-        loadTask?.cancel()
         // An incompatible device (#303): don't decode its objects — keep the
         // library-first content up and let the banner explain. The first load
         // (before the version is read) may still run; every reload after the
         // mismatch is known is gated here.
         guard protocolMismatch == nil else {
+            reloadRequested = false
             loadState = .loaded
             return
         }
+        reloadRequested = true
+        // Never cancel a list transfer after its descriptor has opened the raw
+        // CoC exchange. The next requested pass runs as soon as this one closes.
+        guard loadTask == nil else { return }
         loadState = .loading
-        loadTask = Task { [transport] in
+        loadTask = Task { [weak self] in
+            await self?.runReloadLoop()
+        }
+    }
+
+    /// Drain coalesced catalog requests serially. This method is main-actor
+    /// isolated, so clearing the dirty bit and retiring `loadTask` cannot race a
+    /// `storeChanged` callback that asks for another pass.
+    private func runReloadLoop() async {
+        while reloadRequested, !Task.isCancelled {
+            reloadRequested = false
             do {
                 // Only the route catalog is read here: Planned reconciles its
                 // on-device badges against it, and Tracked is library-first
                 // (#296) so its rows come from the local library — the device's
                 // rides are pulled only by Sync, never on a plain (re)load.
                 let deviceRoutes = try await transport.listRoutes()
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { break }
                 lastRouteCatalog = deviceRoutes
                 reconcileOnDevice(with: deviceRoutes)
                 // The trip catalog rides the same reload (TR8): reconcile each
@@ -385,7 +414,7 @@ public final class MainScreenModel {
                 // (`notFound`), lands here too, and has no trip links to keep —
                 // the old-firmware posture is unchanged.
                 if let deviceTrips = try? await transport.listTrips() {
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled else { break }
                     lastTripCatalog = deviceTrips
                     reconcileTripsOnDevice(with: deviceTrips)
                 }
@@ -394,10 +423,11 @@ public final class MainScreenModel {
                 rides = trackedList()
                 loadState = .loaded
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { break }
                 loadState = .failed
             }
         }
+        loadTask = nil
     }
 
     /// One identity read (`deviceInfo()`) for the current connection: the #303
