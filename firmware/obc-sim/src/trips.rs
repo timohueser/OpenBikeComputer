@@ -107,6 +107,16 @@ impl TripStore {
         id
     }
 
+    /// The member route object ids of the trip with session id `id` — its stage refs verbatim
+    /// (dangling ids and all), ride order. Used by the on-device **cascade** delete (TR3): the host
+    /// deletes each of these route files alongside the trip's `.obt`. Empty if the id is unknown.
+    pub fn member_route_ids(&self, id: u16) -> Vec<u16> {
+        match self.ids.iter().position(|&x| x == id) {
+            Some(pos) => self.trips[pos].stage_ids.iter().copied().collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// Delete the trip with session id `id` (the on-device trip delete): remove its `.obt` from the
     /// folder and rescan. `true` = a file was deleted. Non-cascading — member routes are untouched
     /// (spec §7.7); the caller then re-feeds [`App::set_trips`](obc_app::App::set_trips).

@@ -321,6 +321,18 @@ delete_ride = "Delete ride"
 title = "ROUTES"
 no_routes = "No routes yet"
 no_routes_sub = "Import a GPX file"
+# A trip folder row's count word (epic #526): "1 route" (singular) vs "N routes" (plural).
+folder_route = "route"
+folder_routes = "routes"
+# Shown inside a folder whose every route reference dangled (an empty trip).
+folder_empty_sub = "This trip has no routes"
+
+# --- Trip cascade-delete confirm (epic #526, TR3) ---
+[trip_delete]
+title = "DELETE TRIP"
+warn = "Deletes the trip and all its routes"
+confirm = "Delete all"
+cancel = "Cancel"
 
 # --- Route overview screen ---
 [route_overview]
