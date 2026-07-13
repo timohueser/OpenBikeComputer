@@ -41,18 +41,15 @@ public enum TripObjectCodec {
 
     // MARK: Encode
 
-    /// Encode a trip object from its record (name + ride order) and the resolved
-    /// device object ids of its stages, **in ride order** — the caller resolves
-    /// `TripRecord.stageIDs` to device ids and drops any unresolvable stage
-    /// (the compaction the spec's stages-first-trip-last upload relies on).
-    /// `stage_count` is `deviceStageIDs.count`; the name is truncated to
-    /// ``nameCap`` UTF-8 bytes on a character boundary.
-    public static func encode(_ trip: TripRecord, deviceStageIDs: [DeviceObjectID]) -> Data {
-        encode(name: trip.name, deviceStageIDs: deviceStageIDs)
-    }
-
-    /// Encode from a raw name + ordered device ids (the `TripRecord`-free form
-    /// the vector round-trip and the tests call).
+    /// Encode a trip object from its display name and the resolved device object
+    /// ids of its stages, **in ride order** — the caller resolves
+    /// `TripRecord.stageIDs` to device ids (passing `trip.name` explicitly) and
+    /// drops any unresolvable stage (the compaction the spec's
+    /// stages-first-trip-last upload relies on). Deliberately **not** a
+    /// `TripRecord` overload: the record's `stageIDs` are library ids the codec
+    /// can't resolve, so a record-taking signature would silently ignore half
+    /// its input. `stage_count` is `deviceStageIDs.count`; the name is truncated
+    /// to ``nameCap`` UTF-8 bytes on a character boundary.
     public static func encode(name: String, deviceStageIDs: [DeviceObjectID]) -> Data {
         let stages = deviceStageIDs.prefix(Int(UInt16.max))
         var data = Data(count: headerLength)
@@ -71,8 +68,8 @@ public enum TripObjectCodec {
     /// trip-level ``OnDeviceState`` fingerprint (the sibling of
     /// `RouteObjectCodec.payloadCRC`). The one canonical "payload for a trip"
     /// definition: the trip's name + its resolved stage ids in ride order.
-    public static func payloadCRC(for trip: TripRecord, deviceStageIDs: [DeviceObjectID]) -> UInt32 {
-        CRC32.checksum(encode(trip, deviceStageIDs: deviceStageIDs))
+    public static func payloadCRC(name: String, deviceStageIDs: [DeviceObjectID]) -> UInt32 {
+        CRC32.checksum(encode(name: name, deviceStageIDs: deviceStageIDs))
     }
 
     // MARK: Decode

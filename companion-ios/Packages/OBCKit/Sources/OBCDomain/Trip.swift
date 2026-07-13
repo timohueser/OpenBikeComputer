@@ -5,7 +5,7 @@ import Foundation
 ///
 /// A thin `String` wrapper for type safety, the exact ``RouteID`` idiom: a trip
 /// groups routes the phone owns, and its device copy is named by a
-/// ``DeviceObjectID`` (`TripRecord.deviceObjectID`) — a `TripID` never crosses
+/// ``DeviceObjectID`` (via `TripRecord.deviceLink`) — a `TripID` never crosses
 /// the transport's data plane.
 public struct TripID: Hashable, Sendable {
     public let rawValue: String
@@ -33,15 +33,19 @@ public struct TripRecord: Identifiable, Equatable, Sendable {
     /// route bytes. The `LibraryStore` keeps each id in ≤ 1 trip and drops any
     /// whose route record is gone.
     public var stageIDs: [RouteID]
-    /// The device object id this trip is stored under — the durable link between
-    /// a library trip and its copy on a device, the same pair routes use. `nil`
-    /// until an upload commits (or after a device-side delete clears it at
-    /// reconcile). Trip ids come from the device's **own** counter, never a
-    /// route/ride id.
-    public var deviceObjectID: DeviceObjectID?
+    /// The device copy this trip was assigned on upload — the durable
+    /// `{serial, epoch, id}` link between a library trip and its copy on **one
+    /// device in one id era**, the same ``DeviceRouteLink`` routes use (#769: a
+    /// bare object id silently matched every connected device, and trip ids come
+    /// from the device's own per-store counter). `nil` until an upload commits;
+    /// a device-side delete clears it again at reconcile. Only meaningful when
+    /// ``DeviceRouteLink/matches(_:)`` holds for the connected device — TR8's
+    /// adoption rule ("push the trip iff it already exists on the device") and
+    /// replace-by-id both consume it through that predicate.
+    public var deviceLink: DeviceRouteLink?
     /// The CRC-32 of the trip object the device last **committed** — the
     /// fingerprint behind the trip-level ``OnDeviceState``. Set alongside
-    /// ``deviceObjectID`` when an upload's result lands; `nil` when the copy's
+    /// ``deviceLink`` when an upload's result lands; `nil` when the copy's
     /// content is unknown (which reads as outdated until the next push). A stage
     /// reorder changes this CRC while leaving `byte_len`/`name` untouched, so it
     /// is the only signal that detects an outdated trip.
@@ -49,21 +53,21 @@ public struct TripRecord: Identifiable, Equatable, Sendable {
     /// When the trip entered the library — newest-first list order.
     public var addedAt: Date
 
-    /// Whether some device holds a copy — derived from ``deviceObjectID``.
-    public var uploadedToDevice: Bool { deviceObjectID != nil }
+    /// Whether some device holds a copy — derived from ``deviceLink``.
+    public var uploadedToDevice: Bool { deviceLink != nil }
 
     public init(
         id: TripID,
         name: String,
         stageIDs: [RouteID],
-        deviceObjectID: DeviceObjectID? = nil,
+        deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
         addedAt: Date = Date()
     ) {
         self.id = id
         self.name = name
         self.stageIDs = stageIDs
-        self.deviceObjectID = deviceObjectID
+        self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
         self.addedAt = addedAt
     }
@@ -116,8 +120,10 @@ public struct TripStats: Equatable, Sendable {
 /// One entry of the device's trip catalog (`tripList`, spec §7.4): the durable
 /// trip object id plus the summed display fields the device computed over its
 /// resolvable stages. Deliberately **not** a `TripRecord` — the catalog is keyed
-/// by ``DeviceObjectID`` and its one consumer (reconciling the trip's "on
-/// device" badge) compares those ids against `TripRecord.deviceObjectID`; it
+/// by ``DeviceObjectID`` (per-connection reconcile state from the connected
+/// device, so the bare id is unambiguous here) and its one consumer (reconciling
+/// the trip's "on device" badge) compares those ids against
+/// `TripRecord.deviceLink` for links whose scope matches the connection; it
 /// never feeds list rows. The exact mirror of ``RouteCatalogEntry``.
 public struct TripCatalogEntry: Identifiable, Equatable, Sendable {
     public let id: DeviceObjectID

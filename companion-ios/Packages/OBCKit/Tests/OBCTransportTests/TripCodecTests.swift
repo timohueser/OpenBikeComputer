@@ -42,15 +42,12 @@ struct TripCodecTests {
         // as stored (the device tolerates it on read, never rewrites the object).
         #expect(trip.stageObjectIDs == [DeviceObjectID(7), DeviceObjectID(8), DeviceObjectID(99)])
 
-        // Re-encode from the decoded name + ids reproduces the fixture byte-for-byte…
+        // Re-encode from the decoded name + ids reproduces the fixture byte-for-byte.
         #expect(TripObjectCodec.encode(name: trip.name, deviceStageIDs: trip.stageObjectIDs) == bytes)
-        // …and so does the `TripRecord` form (ride order = the record's stageIDs).
-        let record = TripRecord(id: TripID("t1"), name: "Alpen Traverse", stageIDs: [])
-        #expect(TripObjectCodec.encode(record, deviceStageIDs: trip.stageObjectIDs) == bytes)
 
         // The whole-object CRC the tripList fingerprint / OnDeviceState reads.
         #expect(CRC32.checksum(bytes) == 0xA3C5_D591)
-        #expect(TripObjectCodec.payloadCRC(for: record, deviceStageIDs: trip.stageObjectIDs) == 0xA3C5_D591)
+        #expect(TripObjectCodec.payloadCRC(name: trip.name, deviceStageIDs: trip.stageObjectIDs) == 0xA3C5_D591)
     }
 
     @Test

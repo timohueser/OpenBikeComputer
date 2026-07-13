@@ -43,7 +43,8 @@ struct TripLibraryStoreTests {
         let store = makeStore(kind)
         ["a", "b", "c"].forEach { store.savePlannedRoute(plannedRoute($0)) }
         var t = trip("t1", ["c", "a", "b"], name: "Alpen Traverse")
-        t.deviceObjectID = DeviceObjectID(5)
+        let link = DeviceRouteLink(serial: "OBC-001", epoch: 0xA1B2_C3D4, objectID: DeviceObjectID(5))
+        t.deviceLink = link
         t.uploadedCRC32 = 0xDEAD_BEEF
         store.saveTrip(t)
 
@@ -52,7 +53,7 @@ struct TripLibraryStoreTests {
         #expect(got[0].id == TripID("t1"))
         #expect(got[0].name == "Alpen Traverse")
         #expect(got[0].stageIDs == [RouteID("c"), RouteID("a"), RouteID("b")])  // order preserved
-        #expect(got[0].deviceObjectID == DeviceObjectID(5))
+        #expect(got[0].deviceLink == link)
         #expect(got[0].uploadedCRC32 == 0xDEAD_BEEF)
     }
 
@@ -137,21 +138,48 @@ struct TripLibraryStoreTests {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("obc-trip-persist-\(UUID().uuidString)", isDirectory: true)
         var t = trip("t1", ["r1", "r2"], name: "Persisted")
-        t.deviceObjectID = DeviceObjectID(9)
+        let link = DeviceRouteLink(serial: "OBC-042", epoch: 0x0BAD_F00D, objectID: DeviceObjectID(9))
+        t.deviceLink = link
         t.uploadedCRC32 = 0x1234_5678
         do {
             let store = FileLibraryStore(directory: dir)
             ["r1", "r2"].forEach { store.savePlannedRoute(plannedRoute($0)) }
             store.saveTrip(t)
         }
-        // A fresh instance = an app relaunch.
+        // A fresh instance = an app relaunch — the scoped link survives whole.
         let reopened = FileLibraryStore(directory: dir)
         let got = reopened.trips()
         #expect(got.count == 1)
         #expect(got[0].name == "Persisted")
         #expect(got[0].stageIDs == [RouteID("r1"), RouteID("r2")])
-        #expect(got[0].deviceObjectID == DeviceObjectID(9))
+        #expect(got[0].deviceLink == link)
         #expect(got[0].uploadedCRC32 == 0x1234_5678)
+    }
+
+    @Test
+    func aPartialOnDiskLinkDecodesAsNoLink() throws {
+        // #769's all-or-nothing rule, same as PlannedRouteFile: a trip file
+        // carrying a bare object id (no serial/epoch) must load with **no**
+        // device link at all — a flat link can never light a badge or drive a
+        // replace-by-id against the wrong device or era.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("obc-trip-flat-\(UUID().uuidString)", isDirectory: true)
+        let store = FileLibraryStore(directory: dir)
+        store.savePlannedRoute(plannedRoute("r1"))
+        store.saveTrip(trip("t1", ["r1"]))
+
+        // Rewrite the stored file with the id alone (a hand-rolled flat link).
+        let url = dir.appendingPathComponent("trips/t1.json")
+        var json = try #require(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        json["deviceObjectID"] = 9
+        json.removeValue(forKey: "deviceSerial")
+        json.removeValue(forKey: "deviceStoreEpoch")
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+
+        let got = store.trips()
+        #expect(got.count == 1)
+        #expect(got[0].deviceLink == nil)
     }
 }
 
