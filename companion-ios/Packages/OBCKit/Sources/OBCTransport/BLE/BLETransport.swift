@@ -424,6 +424,33 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         throw DeviceError.readFailed
     }
 
+    public func listTrips() async throws -> [TripCatalogEntry] {
+        // The `tripList` object (type 10, spec §7.4) over the CoC → the trip
+        // catalog. Reconcile-only (the trip card's "on device" badge, TR8), never
+        // list rows — trips are library-first like routes.
+        try TripList.catalog(try await downloadObject(type: .tripList, objectID: 0))
+    }
+
+    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+        // "Download the trip object" (spec §7.7) — the stored trip blob, decoded
+        // app-side for its name + stage ids. Reconcile falls back to it only when
+        // the `tripList` `crc32` can't confirm the fingerprint.
+        try TripObjectCodec.decode(try await downloadObject(type: .trip, objectID: id.raw))
+    }
+
+    public func deleteTrip(_ id: DeviceObjectID) async throws {
+        // `deleteObject` for a trip (cmd 1, type 9) — **non-cascading** (spec §4.4:
+        // the trip metadata goes, member routes stay); the "Delete trip & routes"
+        // cascade is composed by the caller. Same transfer-slot serialization as
+        // `deleteRoute` (#302 — command and transfer results share one buffer).
+        let payload = Data([1, ObjectType.trip.rawValue, UInt8(id.raw & 0xFF), UInt8(id.raw >> 8)])
+        await acquireTransferSlot()
+        defer { releaseTransferSlot() }
+        clearPendingStatuses()
+        try await write(payload, to: GATT.command)
+        guard try await nextCommandResult().status == .ok else { throw DeviceError.writeFailed }
+    }
+
     // MARK: DeviceTransport — data plane
 
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
@@ -445,6 +472,35 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let assignedID = AsyncPromise<DeviceObjectID?>()
         let runner = UploadRunner(
             transport: self, payload: route.payload, descriptor: descriptor,
+            progress: continuation, outcome: outcome, assignedID: assignedID
+        )
+        Task { await runner.start() }
+        return TransferHandle(
+            progress: stream,
+            outcome: outcome,
+            assignedObjectID: assignedID,
+            onCancel: { Task { await runner.cancel() } },
+            onResume: { Task { await runner.start() } }
+        )
+    }
+
+    public func uploadTrip(_ trip: TripBlob) -> TransferHandle {
+        // The trip object (type 9) — the trip sibling of `uploadRoute`, reusing
+        // the same runner; only the descriptor's type differs. Fresh sends 0xFFFF
+        // (the device mints a trip id); a re-push / adoption sends the stored id
+        // to replace in place (spec §4.1/§4.2). Uploaded last in a whole-trip push.
+        guard !trip.payload.isEmpty else {
+            return .immediatelyFinished(.failed(.transferRejected))
+        }
+        let descriptor = TransferControl(
+            op: .upload, type: .trip, objectID: trip.targetObjectID?.raw ?? TransferControl.newObjectID,
+            totalLen: UInt32(trip.payload.count), crc32: CRC32.checksum(trip.payload)
+        )
+        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
+        let outcome = AsyncPromise<TransferOutcome>()
+        let assignedID = AsyncPromise<DeviceObjectID?>()
+        let runner = UploadRunner(
+            transport: self, payload: trip.payload, descriptor: descriptor,
             progress: continuation, outcome: outcome, assignedID: assignedID
         )
         Task { await runner.start() }

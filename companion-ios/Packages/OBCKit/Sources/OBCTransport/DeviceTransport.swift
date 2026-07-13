@@ -88,6 +88,27 @@ public protocol DeviceTransport: Sendable {
     func uploadRoute(_ route: RouteBlob) -> TransferHandle
     /// Delete a route from the device.
     func deleteRoute(_ id: DeviceObjectID) async throws
+    /// Enumerate trips stored on the device — the `tripList` object (type 10,
+    /// spec §7.4) decoded to the reconcile catalog (TR8). Reconcile input for the
+    /// trip card's "on device" badge (the per-entry `crc32` is the fingerprint),
+    /// never list rows (trips are library-first, like routes).
+    func listTrips() async throws -> [TripCatalogEntry]
+    /// Full contents of one stored trip object (spec §7.7 — "download the trip
+    /// object"): the name + the stage device ids in ride order, dangling refs
+    /// included. Reconcile only fetches this when the `tripList` fingerprint can't
+    /// decide (the primary check is the entry's `crc32`).
+    func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded
+    /// Upload a whole trip object (app → device, TR8) — the trip sibling of
+    /// `uploadRoute`. A fresh trip sends `0xFFFF` (the device mints an id from its
+    /// own trip counter); a re-push / adoption sends the stored id to replace it
+    /// in place. Success is the device's committed `transferResult`. The queue
+    /// sends it **last**, after every member route (spec §7.7).
+    func uploadTrip(_ trip: TripBlob) -> TransferHandle
+    /// Delete a trip object from the device (`deleteObject` for a trip, spec §4.4)
+    /// — **non-cascading**: only the trip metadata goes, its member routes stay.
+    /// The "Delete trip & routes" cascade is composed by the caller (per-route
+    /// deletes + this).
+    func deleteTrip(_ id: DeviceObjectID) async throws
     /// Enumerate tracked rides on the device — the summaries plus the v2 header's
     /// truncation signal (`RideCatalog.hiddenRideCount`, spec §7.4).
     func listRides() async throws -> RideCatalog
@@ -185,4 +206,26 @@ extension DeviceTransport {
     /// tolerates. `BLETransport` sends the real command; `MockTransport` records
     /// the request.
     public func forgetBond() async throws {}
+
+    // MARK: Trips (TR8) — defaults for stand-ins that don't model trips
+    //
+    // A preview/test transport that predates trips (or doesn't care) reads as a
+    // device with an empty trip catalog and no trip transfer support — the same
+    // way a v1 peer would (spec §4.4 forward-compat). `BLETransport` and
+    // `MockTransport` override all four with the real trip object plane.
+
+    /// Default: no trips on the device (empty catalog).
+    public func listTrips() async throws -> [TripCatalogEntry] { [] }
+    /// Default: the trip object can't be downloaded (no trip store).
+    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+        throw DeviceError.readFailed
+    }
+    /// Default: trip upload isn't supported — reads as "no link" rather than
+    /// trapping (the same as the firmware/ride download stand-in defaults).
+    public func uploadTrip(_ trip: TripBlob) -> TransferHandle {
+        .immediatelyFinished(.failed(.notConnected))
+    }
+    /// Default: nothing to delete (no trip store) — a best-effort no-op, like
+    /// `forgetBond` / `ackRides`.
+    public func deleteTrip(_ id: DeviceObjectID) async throws {}
 }

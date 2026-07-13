@@ -62,6 +62,22 @@ public final class MockControl: @unchecked Sendable {
     /// Monotonic stand-in for the device's object-id assignment on upload — starts
     /// above every fixture `deviceObjectID` so a fresh id can't collide.
     private var _nextObjectID: UInt16 = 1000
+    /// The device's **trip** object store (TR8) — trips uploaded this session,
+    /// keyed by the id the device assigned. Empty at boot (a trip lands on the
+    /// device only via a whole-trip upload); `listTrips()` serves its catalog.
+    private var _deviceTrips: [DeviceTrip] = []
+    /// The device's trip-id counter — its own namespace, distinct from route ids
+    /// (spec §4.1). Any base works; the app never assumes a value.
+    private var _nextTripID: UInt16 = 1
+    /// Device object ids the app asked the device to delete this session, in
+    /// order — the "Delete trip & routes" cascade tests assert the per-route +
+    /// trip delete commands landed (routes then trip, or however composed).
+    private var _deletedRouteObjectIDs: [DeviceObjectID] = []
+    private var _deletedTripObjectIDs: [DeviceObjectID] = []
+    /// When set, `deviceRoutes()` pads its catalog to one below the route cap so
+    /// a multi-stage fresh trip fails the whole-trip precheck **before any bytes**
+    /// (issue #657) — the storage-precheck XCUITest hook (`-OBCDeviceRoutesFull`).
+    private var _routesNearlyFull = false
     /// Every `ackRides` batch the transport sent, in order — the coordinator
     /// tests assert the connect-time possession ack lands here.
     private var _ackedRideBatches: [[RideID]] = []
@@ -325,7 +341,7 @@ public final class MockControl: @unchecked Sendable {
     /// shape the real `routeList` download produces. The app consumes this only
     /// to reconcile the "on device" badge (#289) — never as list rows.
     func deviceRoutes() -> [RouteCatalogEntry] {
-        lock.withLocked { _fixtures.routes }.compactMap { entry -> RouteCatalogEntry? in
+        var catalog = lock.withLocked { _fixtures.routes }.compactMap { entry -> RouteCatalogEntry? in
             guard let objectID = entry.deviceObjectID else { return nil }
             // The v2 `routeList` carries the whole-object CRC (#770): a real
             // upload pinned it (`recordDeviceCopy`); a seeded copy derives it
@@ -340,6 +356,20 @@ public final class MockControl: @unchecked Sendable {
                 crc32: crc32
             )
         }
+        // Storage-precheck hook: pad to one below the route cap so exactly one
+        // slot is free — a multi-stage fresh trip then can't fit (issue #657).
+        if lock.withLocked({ _routesNearlyFull }) {
+            let used = Set(catalog.map(\.id.raw))
+            var filler = UInt16(50_000)
+            while catalog.count < DeviceStorage.routeCapacity - 1 {
+                while used.contains(filler) { filler &+= 1 }
+                catalog.append(RouteCatalogEntry(
+                    id: DeviceObjectID(filler), name: "On-device route \(filler)",
+                    distanceMeters: 0, elevationGainMeters: 0, pointCount: 0, crc32: 0))
+                filler &+= 1
+            }
+        }
+        return catalog
     }
 
     /// The stored copy behind a device object id (`routeDetail` on the mock).
@@ -390,6 +420,159 @@ public final class MockControl: @unchecked Sendable {
     public func deviceDeletesRoute(_ id: DeviceObjectID) {
         removeRoute(id)
         storeChangedMulticast.send(StoreChanged(type: .route, revision: 0))
+    }
+
+    // MARK: Trips (TR8 — the device-side trip object store)
+
+    /// Whether a device holds a copy of `routesNearlyFull` — the storage-precheck
+    /// XCUITest hook. When true, `deviceRoutes()` pads its catalog so exactly one
+    /// route slot is free, forcing a multi-stage fresh trip to fail the precheck.
+    public var routesNearlyFull: Bool {
+        get { lock.withLocked { _routesNearlyFull } }
+        set { lock.withLocked { _routesNearlyFull = newValue } }
+    }
+
+    /// One trip the (mock) device stores — the device's own copy, keyed by the id
+    /// it assigned. `stageIDs` are **device** route object ids in ride order.
+    struct DeviceTrip: Sendable {
+        var id: DeviceObjectID
+        var name: String
+        var stageIDs: [DeviceObjectID]
+        var payloadByteCount: Int
+        var crc32: UInt32
+    }
+
+    /// The device's trip catalog (`tripList`, spec §7.4) — one entry per stored
+    /// trip, its stats **summed over resolvable stages** (a stage whose device
+    /// route is gone is dangling: counted in `stageCount`, excluded from the
+    /// totals), exactly as the firmware computes them. Reconcile input only.
+    func deviceTripCatalog() -> [TripCatalogEntry] {
+        lock.withLocked {
+            _deviceTrips.map { trip in
+                var distance = 0.0
+                var ascent = 0.0
+                for stageID in trip.stageIDs {
+                    guard let route = _fixtures.routes.first(where: { $0.deviceObjectID == stageID }) else { continue }
+                    distance += route.summary.distanceMeters
+                    ascent += route.summary.elevationGainMeters
+                }
+                return TripCatalogEntry(
+                    id: trip.id, name: trip.name,
+                    distanceMeters: distance, elevationGainMeters: ascent,
+                    stageCount: trip.stageIDs.count, crc32: trip.crc32
+                )
+            }
+        }
+    }
+
+    /// The stored trip object behind a device id (`downloadTrip` on the mock) —
+    /// byte-faithful decode of what an upload wrote (dangling refs included).
+    func deviceTripDecoded(_ id: DeviceObjectID) -> TripObjectCodec.Decoded? {
+        guard let trip = (lock.withLocked { _deviceTrips.first { $0.id == id } }) else { return nil }
+        return TripObjectCodec.Decoded(version: TripObjectCodec.version, name: trip.name, stageObjectIDs: trip.stageIDs)
+    }
+
+    /// Begin a simulated trip upload (TR8). New trips (`targetObjectID == nil`)
+    /// take a fresh id from the trip counter; a `storageFull` reject fires at
+    /// descriptor-open when the trip catalog is at its cap (replace-by-id is
+    /// exempt, spec §7.4). On commit the device records the copy so a later
+    /// `listTrips()` reconcile keeps the badge lit.
+    func beginTripUpload(_ blob: TripBlob) -> TransferHandle {
+        if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
+        if blob.payload.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }
+        // Cap check at open (new only): a full trip catalog rejects with storageFull.
+        let isNew = blob.targetObjectID == nil
+        let full = lock.withLocked { _deviceTrips.count >= DeviceStorage.tripCapacity }
+        if isNew && full { return .immediatelyFinished(.failed(.storageFull)) }
+        let assignedID = AsyncPromise<DeviceObjectID?>()
+        // A trip object is tiny; pace off a small design-scale minimum so the F
+        // bar is still visible (the mock's realism is timing, not wire bytes).
+        let pacingBytes = max(blob.payload.count, 4_000, 1)
+        let handle = startTransfer(total: pacingBytes, segments: [], rides: nil, assignedObjectID: assignedID)
+        let objectID = blob.targetObjectID ?? lock.withLocked { () -> DeviceObjectID in
+            let id = _nextTripID
+            _nextTripID &+= 1
+            return DeviceObjectID(id)
+        }
+        Task { [weak self] in
+            guard await handle.outcome == .completed else {
+                assignedID.fulfill(nil)
+                return
+            }
+            self?.recordDeviceTripCopy(of: blob, objectID: objectID)
+            assignedID.fulfill(objectID)
+        }
+        return handle
+    }
+
+    /// A committed trip upload landed on the (mock) device: store (or replace) the
+    /// copy under `objectID`, CRCing exactly the payload bytes received (#770's
+    /// rule for routes, applied to trips) so a re-list proves the badge against
+    /// the fingerprint the app committed.
+    private func recordDeviceTripCopy(of blob: TripBlob, objectID: DeviceObjectID) {
+        let committedCRC = CRC32.checksum(blob.payload)
+        let stored = DeviceTrip(
+            id: objectID, name: blob.name, stageIDs: blob.deviceStageIDs,
+            payloadByteCount: max(1, blob.payload.count), crc32: committedCRC)
+        lock.withLocked {
+            if let index = _deviceTrips.firstIndex(where: { $0.id == objectID }) {
+                _deviceTrips[index] = stored
+            } else {
+                _deviceTrips.append(stored)
+            }
+        }
+    }
+
+    /// Delete a stored trip by device id (`deleteObject` for a trip) — **non
+    /// cascading**: the trip metadata goes, member device routes stay. Records the
+    /// id so the cascade tests can assert the command reached the device.
+    func removeTrip(_ id: DeviceObjectID) {
+        lock.withLocked {
+            _deviceTrips.removeAll { $0.id == id }
+            _deletedTripObjectIDs.append(id)
+        }
+    }
+
+    /// Record an app-issued route delete (the "Delete trip & routes" cascade's
+    /// per-route half) alongside the store mutation — so a test asserts both
+    /// commands landed. `removeRoute` handles the store side.
+    func recordRouteObjectDelete(_ id: DeviceObjectID) {
+        lock.withLocked { _deletedRouteObjectIDs.append(id) }
+    }
+
+    /// The device object ids the app deleted this session (test hooks).
+    public var deletedRouteObjectIDs: [DeviceObjectID] { lock.withLocked { _deletedRouteObjectIDs } }
+    public var deletedTripObjectIDs: [DeviceObjectID] { lock.withLocked { _deletedTripObjectIDs } }
+    /// How many trips the (mock) device currently stores (test hook).
+    public var deviceTripCount: Int { lock.withLocked { _deviceTrips.count } }
+    /// The device object ids of the trips currently stored (test hook) — lets a
+    /// test drive a device-side trip delete against a real assigned id.
+    public var deviceTripObjectIDs: [DeviceObjectID] { lock.withLocked { _deviceTrips.map(\.id) } }
+    /// The stage device ids the device trip `id` references (test hook).
+    public func deviceTripStageIDs(_ id: DeviceObjectID) -> [DeviceObjectID] {
+        lock.withLocked { _deviceTrips.first { $0.id == id }?.stageIDs ?? [] }
+    }
+
+    /// Simulate an **on-device trip delete** (TR3 long-press → cascade): the
+    /// device forgets the trip **and its member routes** and notifies
+    /// `storeChanged` for both stores — the wire sequence the real firmware sends,
+    /// the app's live badge-reconcile input. Dev-panel/test hook.
+    public func deviceDeletesTripCascade(_ id: DeviceObjectID) {
+        let stageIDs: [DeviceObjectID] = lock.withLocked {
+            let stages = _deviceTrips.first { $0.id == id }?.stageIDs ?? []
+            _deviceTrips.removeAll { $0.id == id }
+            return stages
+        }
+        for stageID in stageIDs { removeRoute(stageID) }
+        storeChangedMulticast.send(StoreChanged(type: .route, revision: 0))
+        storeChangedMulticast.send(StoreChanged(type: .trip, revision: 0))
+    }
+
+    /// Simulate a device-side **trip-only** delete (no cascade) — clears the
+    /// app's trip link at reconcile while the member routes stay.
+    public func deviceDeletesTrip(_ id: DeviceObjectID) {
+        lock.withLocked { _deviceTrips.removeAll { $0.id == id } }
+        storeChangedMulticast.send(StoreChanged(type: .trip, revision: 0))
     }
 
     /// Begin a simulated route upload. On commit it reports a device object id (a

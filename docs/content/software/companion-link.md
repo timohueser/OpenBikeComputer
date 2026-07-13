@@ -98,6 +98,8 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `2` | `ride` | device → app | the compact [ride object](../formats/#recorded-rides-the-track-log-and-the-ride-object) (a tracked ride) — **v1**, or **v2** when it carries recorded sensor data |
 | `4` | `diagnostics` | device → app | an opaque text blob (boot count, link + storage counters, stack high-water…) |
 | `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed-size entries (`routeList` **76 B**, `rideList` **72 B**) |
+| `9` | `trip` | app → device (upload) · device → app (detail read) | a **trip** — tiny metadata that *references* member routes by object id in ride order (spec §7.7); routes stay standalone OBCR files |
+| `10` | `tripList` | device → app | the trip catalog — fixed-size **76 B** entries, the mirror of `routeList` |
 | `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
 | `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
 
@@ -312,6 +314,19 @@ store moved"* on the next notify — no separate "the device deleted something"
 message, and no way for the two to disagree about what's on the card. The phone
 reconciles by re-reading the list and tombstoning what vanished, exactly as it
 would after any other change.
+
+**Trips ride the same loop.** A trip (`type 9`) is a third store alongside
+routes and rides — tiny metadata that references member routes by object id — and
+its catalog (`tripList`, `type 10`) reconciles exactly like `routeList`: the
+device fires `storeChanged` for the trip store, the phone pulls the list, and each
+entry's `crc32` is the fingerprint that decides whether a stored trip is current.
+A whole-trip upload is *stages first, trip object last* — every member route
+commits, then the trip that references them — so an interrupted push never leaves
+a trip pointing at a route that isn't there, and re-running skips whatever already
+landed. A device-side "delete this whole folder" is a cascade the device composes
+from ordinary object deletes (the member routes, then the trip), each flowing back
+as its own `storeChanged`; the wire trip delete itself is non-cascading. The
+byte layout is the [BLE interface spec §7.4 / §7.7](src:obc-ble-interface-spec.md).
 
 **Ids are never reused — which is what keeps the bookkeeping honest.** The phone
 persists *"I uploaded route 7"* and *"I've synced ride 12"* by durable object id.
