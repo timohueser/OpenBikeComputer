@@ -304,6 +304,14 @@ delete_ride = "Borrar salida"
 title = "RUTAS"
 no_routes = "Sin rutas"
 no_routes_sub = "Importa un GPX"
+folder_empty_sub = "Este viaje no tiene rutas"
+
+# --- Trip cascade-delete confirm (epic #526, TR3) ---
+[trip_delete]
+title = "ELIMINAR VIAJE"
+warn = "Elimina el viaje y todas sus rutas"
+confirm = "Eliminar todo"
+cancel = "Cancelar"
 
 # --- Route overview screen ---
 [route_overview]

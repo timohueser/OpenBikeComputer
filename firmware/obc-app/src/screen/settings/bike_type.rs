@@ -134,6 +134,7 @@ mod tests {
             settings: s,
             routes: &[],
             rides: &[],
+            trips: &[],
             nav_profiles: profs,
             poi_scratch: &scratch,
             sensor_scan_hits: &[],
