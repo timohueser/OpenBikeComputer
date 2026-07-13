@@ -159,6 +159,15 @@ pub struct Activity {
     /// twin of [`delete_route`](Activity::delete_route); the host deletes the ride object + rescans,
     /// and the resulting store-changed edge re-feeds the ride catalog with it gone.
     delete_ride: Option<usize>,
+    /// A one-shot **trip-delete request** (epic #526, TR3): the trip's durable **object id** the
+    /// Route menu's long-press → confirm dialog asked to cascade-delete (the trip **and** all its
+    /// member routes — locked). Drained by the host via
+    /// [`App::take_trip_delete`](crate::App::take_trip_delete). Unlike
+    /// [`delete_route`](Activity::delete_route) this is the id, not an index: a trip id is already
+    /// durable (its own device counter), the confirm screen carries it verbatim, and a trip that
+    /// vanished in a racing rescan simply drains to a no-op at the host. The host deletes the
+    /// `TP{id}.OBT` **and** every member route file, then rescans + re-feeds trips + routes.
+    delete_trip: Option<u16>,
     /// A one-shot **route-planning request** (epic #116, R4), set by the POI create-route confirm
     /// and drained by the host via [`App::take_nav_request`](crate::App::take_nav_request), which
     /// steps the resumable router, writes the reserved nav route, rescans, and answers through
@@ -477,6 +486,26 @@ impl Activity {
     /// store work on this without draining the one-shot.
     pub(crate) fn has_ride_delete(&self) -> bool {
         self.delete_ride.is_some()
+    }
+
+    /// Record a one-shot request to cascade-delete the trip with durable object `id` (epic #526, TR3)
+    /// — set by the Route menu's long-press → confirm dialog, drained by
+    /// [`App::take_trip_delete`](crate::App::take_trip_delete). The id (not an index) because a trip
+    /// id is durable; the host deletes the `TP{id}.OBT` **and** every member route file.
+    pub(crate) fn request_trip_delete(&mut self, id: u16) {
+        self.delete_trip = Some(id);
+    }
+
+    /// Take (and clear) the pending trip-delete request's durable **object id**, if any — the host
+    /// drains this and cascade-deletes the trip + its member routes.
+    pub(crate) fn take_trip_delete(&mut self) -> Option<u16> {
+        self.delete_trip.take()
+    }
+
+    /// Non-consuming peek at whether a trip-delete request is pending — the board gates its per-pass
+    /// store work on this without draining the one-shot.
+    pub(crate) fn has_trip_delete(&self) -> bool {
+        self.delete_trip.is_some()
     }
 
     /// Record a one-shot route-planning request (epic #116, R4) — set by the POI create-route

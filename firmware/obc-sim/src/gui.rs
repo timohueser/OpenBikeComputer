@@ -388,6 +388,20 @@ impl SimGui {
             }
         }
 
+        // Drain a trip **cascade**-delete request from the Route menu (epic #526, TR3): the confirmed
+        // long-press deletes the trip **and every member route** (locked: post-trip cleanup). Resolve
+        // the members from the trip store first, delete each route file + the `TP{id}.OBT`, then
+        // re-feed both catalogs (routes first so the trip's stage ids resolve). The device wires this
+        // to `ObjectStore` in TR4; the sim deletes the files directly.
+        if let Some(trip_id) = self.app.take_trip_delete() {
+            for rid in self.trip_store.member_route_ids(trip_id) {
+                self.store.delete_by_id(rid);
+            }
+            self.trip_store.delete_by_id(trip_id);
+            self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+            self.app.set_trips(&self.trip_store.inputs());
+        }
+
         // Fill an open Ride detail's track request (#680): stream the ride's `RD{id}.ORD` once
         // into the app's resident ride profile — the detail's elevation band source, exactly the
         // board's per-pass drain. A failed read parks `None` so a dead file isn't re-read per frame.
