@@ -149,11 +149,11 @@ const L2CAP_RXQ: u8 = 3;
 /// **CONFIRM on glass**: the boot RTT logs `ble: sdc required_memory = N bytes (SDC_MEM_SIZE =
 /// 8704)` — set this to that `N` (rounded up a little). If `build()` ever logs "Memory buffer too
 /// small. N bytes needed", raise it to `N`.
-const SDC_MEM_SIZE: usize = 8704;
+pub(crate) const SDC_MEM_SIZE: usize = 8704;
 
 /// TrouBLE's host arena for this config (connection state + the DefaultPacketPool at MTU 251 + the
 /// single-peer bond storage the `security` feature adds).
-type Resources = HostResources<
+pub(crate) type Resources = HostResources<
     nrf_sdc::SoftdeviceController<'static>,
     DefaultPacketPool,
     CONNECTIONS_MAX,
@@ -178,15 +178,24 @@ type Resources = HostResources<
 /// central-role + scan buffers via [`CONNECTIONS_MAX`]/[`L2CAP_CHANNELS_MAX`]/[`SDC_MEM_SIZE`]; this
 /// is the manager's plain `.bss` state on top. The transient `GattClient` + its 512 B `Notification`
 /// live in `run`'s task future per the #677 rule (bounded, not resident — re-measured on glass).
-pub const RESIDENT_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLayer<'static>>()
+pub(crate) const MPSL_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLayer<'static>>();
+pub(crate) const HOST_RESOURCES_BYTES: usize = core::mem::size_of::<Resources>();
+pub(crate) const PACKET_POOL_BYTES: usize = core::mem::size_of::<DefaultPacketPool>();
+pub(crate) const CRACEN_BYTES: usize = core::mem::size_of::<cracen::Cracen<'static, Blocking>>();
+pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<core::cell::RefCell<ObjectStore>>();
+pub(crate) const SERVER_BYTES: usize = core::mem::size_of::<Server<'static>>();
+pub(crate) const GAP_NAME_BYTES: usize = core::mem::size_of::<heapless::String<48>>();
+pub(crate) const SENSOR_MANAGER_BYTES: usize = sensors::RESIDENT_BYTES;
+
+pub const RESIDENT_BYTES: usize = MPSL_BYTES
     + SDC_MEM_SIZE
-    + core::mem::size_of::<Resources>()
-    + core::mem::size_of::<DefaultPacketPool>()
-    + core::mem::size_of::<cracen::Cracen<'static, Blocking>>()
-    + core::mem::size_of::<core::cell::RefCell<ObjectStore>>()
-    + core::mem::size_of::<Server<'static>>()
-    + core::mem::size_of::<heapless::String<48>>()
-    + sensors::RESIDENT_BYTES;
+    + HOST_RESOURCES_BYTES
+    + PACKET_POOL_BYTES
+    + CRACEN_BYTES
+    + OBJECT_STORE_BYTES
+    + SERVER_BYTES
+    + GAP_NAME_BYTES
+    + SENSOR_MANAGER_BYTES;
 
 // The resident statics (see the module doc): written exactly once in [`run`], never aliased.
 static mut MPSL: MaybeUninit<MultiprotocolServiceLayer<'static>> = MaybeUninit::uninit();
