@@ -72,8 +72,38 @@ def group_index(rules: dict[str, object]) -> dict[str, str]:
     return index
 
 
-def check_edges(edges: set[Edge], rules: dict[str, object], packages: set[str] | None = None) -> list[str]:
+def validate_rules(rules: dict[str, object]) -> dict[str, str]:
     groups = group_index(rules)
+    group_names = set(rules.get("groups", ()))
+    forbidden_pairs: set[tuple[str, str]] = set()
+    for item in rules.get("forbidden", ()):
+        source = item["from_group"]
+        target = item["to_group"]
+        for role, group in (("from_group", source), ("to_group", target)):
+            if group not in group_names:
+                raise DependencyError(
+                    f"dependency rule references unknown {role} `{group}`; declared groups: "
+                    + ", ".join(sorted(group_names))
+                )
+        pair = (source, target)
+        if pair in forbidden_pairs:
+            raise DependencyError(f"duplicate forbidden dependency pair `{source} -> {target}`")
+        forbidden_pairs.add(pair)
+
+    exception_edges: set[Edge] = set()
+    for item in rules.get("exceptions", ()):
+        edge = Edge(item["from"], item["to"])
+        if edge in exception_edges:
+            raise DependencyError(f"duplicate dependency exception `{edge.source} -> {edge.target}`")
+        exception_edges.add(edge)
+        for package in (edge.source, edge.target):
+            if package not in groups:
+                raise DependencyError(f"dependency exception references unclassified package `{package}`")
+    return groups
+
+
+def check_edges(edges: set[Edge], rules: dict[str, object], packages: set[str] | None = None) -> list[str]:
+    groups = validate_rules(rules)
     exceptions = {
         Edge(item["from"], item["to"]): item for item in rules.get("exceptions", ())
     }

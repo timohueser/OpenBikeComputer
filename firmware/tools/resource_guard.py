@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,12 @@ RESOURCE_NAME_BYTES = 32
 RESOURCE_ENTRY_BYTES = RESOURCE_NAME_BYTES + 4
 WRITABLE_SYMBOL_TYPES = frozenset("bBdDsS")
 STRICT_ALIGN_PROBE = HERE / "strict_align_probe.rs"
+EMBEDDED_TARGET = "thumbv8m.main-none-eabihf"
+EMBEDDED_TARGET_CFG = 'cfg(all(target_arch = "arm", target_os = "none"))'
+STRICT_ALIGN_CONFIGS = (
+    HERE.parent / "obc-fw-nrf54l" / ".cargo" / "config.toml",
+    HERE.parent / "obc-boot" / ".cargo" / "config.toml",
+)
 
 
 class GuardError(RuntimeError):
@@ -329,6 +336,39 @@ def function_assembly(assembly: str, function: str) -> str:
     return match.group("body")
 
 
+def validate_strict_align_config(config: dict[str, object], path: Path) -> None:
+    target = config.get("build", {}).get("target")
+    require(
+        target == EMBEDDED_TARGET,
+        f"{path} does not select embedded target `{EMBEDDED_TARGET}` (found {target!r})",
+    )
+    target_table = config.get("target", {}).get(EMBEDDED_TARGET_CFG)
+    require(
+        isinstance(target_table, dict),
+        f"{path} is missing target table `{EMBEDDED_TARGET_CFG}`",
+    )
+    rustflags = target_table.get("rustflags", [])
+    wired = isinstance(rustflags, list) and any(
+        rustflags[index] == "-C" and rustflags[index + 1] == "target-feature=+strict-align"
+        for index in range(len(rustflags) - 1)
+    )
+    require(
+        wired,
+        f"{path} does not wire `-C target-feature=+strict-align` for `{EMBEDDED_TARGET_CFG}`",
+    )
+
+
+def check_strict_align_configs(paths: list[Path] | tuple[Path, ...]) -> None:
+    for path in paths:
+        try:
+            with path.open("rb") as file:
+                config = tomllib.load(file)
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise GuardError(f"cannot read strict-align Cargo config {path}: {error}") from error
+        validate_strict_align_config(config, path)
+        print(f"strict-align Cargo wiring passed: {path}")
+
+
 def compile_probe(probe: Path, output: Path, strict: bool) -> tuple[str, str]:
     command = [
         "rustc",
@@ -354,6 +394,7 @@ def compile_probe(probe: Path, output: Path, strict: bool) -> tuple[str, str]:
 
 
 def check_strict_align(args: argparse.Namespace) -> None:
+    check_strict_align_configs(args.configs or STRICT_ALIGN_CONFIGS)
     with tempfile.TemporaryDirectory(prefix="obc-strict-align-") as directory:
         directory = Path(directory)
         strict_asm, warning = compile_probe(args.probe, directory / "strict.s", True)
@@ -392,6 +433,13 @@ def parser() -> argparse.ArgumentParser:
     boot.add_argument("--elf", type=Path, required=True)
     strict = commands.add_parser("strict-align", help="prove the active ARM backend honors +strict-align")
     strict.add_argument("--probe", type=Path, default=STRICT_ALIGN_PROBE)
+    strict.add_argument(
+        "--config",
+        dest="configs",
+        action="append",
+        type=Path,
+        help="Cargo config that must wire +strict-align (repeatable; defaults to board + boot)",
+    )
     return root
 
 

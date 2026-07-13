@@ -76,6 +76,24 @@ class DependencyTests(unittest.TestCase):
         self.assertIn("unclassified production workspace package", violations[0])
         self.assertIn("`new-crate`", violations[0])
 
+    def test_unknown_forbidden_group_is_rejected(self):
+        invalid = rules()
+        invalid["forbidden"][0]["from_group"] = "typo-low"
+        with self.assertRaisesRegex(check_dependencies.DependencyError, "unknown from_group `typo-low`"):
+            check_dependencies.check_edges(set(), invalid)
+
+    def test_duplicate_forbidden_pair_is_rejected(self):
+        invalid = rules()
+        invalid["forbidden"].append(dict(invalid["forbidden"][0]))
+        with self.assertRaisesRegex(check_dependencies.DependencyError, "duplicate forbidden dependency pair"):
+            check_dependencies.check_edges(set(), invalid)
+
+    def test_duplicate_exception_edge_is_rejected(self):
+        exception = {"from": "low", "to": "high", "issue": "#1", "reason": "migration"}
+        invalid = rules((exception, dict(exception)))
+        with self.assertRaisesRegex(check_dependencies.DependencyError, "duplicate dependency exception"):
+            check_dependencies.check_edges({check_dependencies.Edge("low", "high")}, invalid)
+
 
 if __name__ == "__main__":
     unittest.main()
