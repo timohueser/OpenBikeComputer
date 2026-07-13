@@ -82,6 +82,9 @@ struct UploadRequest: Identifiable {
 struct RouteDetailScreen: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
+    /// TR7 route-menu picker (planned dressing only): the detail overflow's
+    /// Add/Move to trip presents the shared `TripPickerSheet`.
+    @State private var tripPickerShown = false
     private let transport: any DeviceTransport
     /// The #459 in-flight ledger the upload sheet claims a token from — `nil`
     /// in previews that don't exercise the lifecycle.
@@ -91,6 +94,13 @@ struct RouteDetailScreen: View {
     private let onRename: ((String) -> Void)?
     private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
     private let isRide: Bool
+    /// TR7 trip filing (planned only): the existing trips, this route's current
+    /// trip (nil = loose → Add; non-nil → Move + Remove), and the two edits.
+    /// `onAddToTrip == nil` suppresses the overflow entirely (rides / imports).
+    private let tripPickerItems: [TripPickerItem]
+    private let currentTripID: TripID?
+    private let onAddToTrip: ((TripSelection) -> Void)?
+    private let onRemoveFromTrip: (() -> Void)?
 
     init(
         transport: any DeviceTransport,
@@ -104,7 +114,11 @@ struct RouteDetailScreen: View {
         deviceName: String,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
-        onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil
+        onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
+        tripPickerItems: [TripPickerItem] = [],
+        currentTripID: TripID? = nil,
+        onAddToTrip: ((TripSelection) -> Void)? = nil,
+        onRemoveFromTrip: (() -> Void)? = nil
     ) {
         _model = State(initialValue: RouteDetailModel(
             transport: transport, dressing: dressing,
@@ -118,6 +132,10 @@ struct RouteDetailScreen: View {
         self.onDelete = onDelete
         self.onRename = onRename
         self.onUploaded = onUploaded
+        self.tripPickerItems = tripPickerItems
+        self.currentTripID = currentTripID
+        self.onAddToTrip = onAddToTrip
+        self.onRemoveFromTrip = onRemoveFromTrip
         if case .tracked = dressing { isRide = true } else { isRide = false }
     }
 
@@ -145,9 +163,55 @@ struct RouteDetailScreen: View {
         )
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let onAddToTrip {
+                ToolbarItem(placement: .primaryAction) {
+                    tripMenu(onAddToTrip: onAddToTrip)
+                }
+            }
+        }
         .sheet(item: $uploadRequest) { request in
             UploadSheetView(model: request.model)
         }
+        .sheet(isPresented: $tripPickerShown) {
+            TripPickerSheet(
+                title: currentTripID == nil ? "Add to trip" : "Move to trip",
+                trips: tripPickerItems,
+                currentTripID: currentTripID,
+                onPick: { onAddToTrip?($0) }
+            )
+        }
+    }
+
+    /// The detail overflow's trip menu (TR7): Add to trip… for a loose route, or
+    /// Move to trip… + Remove from trip for one already filed.
+    private func tripMenu(onAddToTrip: @escaping (TripSelection) -> Void) -> some View {
+        Menu {
+            if currentTripID == nil {
+                Button {
+                    tripPickerShown = true
+                } label: {
+                    Label("Add to trip…", systemImage: "folder.badge.plus")
+                }
+                .accessibilityIdentifier("detail.addToTrip")
+            } else {
+                Button {
+                    tripPickerShown = true
+                } label: {
+                    Label("Move to trip…", systemImage: "folder")
+                }
+                .accessibilityIdentifier("detail.moveToTrip")
+                Button(role: .destructive) {
+                    onRemoveFromTrip?()
+                } label: {
+                    Label("Remove from trip", systemImage: "minus.circle")
+                }
+                .accessibilityIdentifier("detail.removeFromTrip")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityIdentifier("detail.overflow")
     }
 }
 
@@ -159,14 +223,21 @@ struct ImportLandingHost: View {
     @State private var model: RouteDetailModel
     @State private var uploadRequest: UploadRequest?
     @State private var uploadCompleted = false
+    /// TR7: the optional "Add to trip" choice for this import (opt-in, default
+    /// none) and the shared picker's presentation.
+    @State private var tripSelection: TripSelection = .none
+    @State private var tripPickerShown = false
     private let transport: any DeviceTransport
     /// The #459 in-flight ledger the upload sheet claims a token from.
     private let activity: TransferActivity?
     private let deviceName: String
     private let noDevicePaired: Bool
-    private let onSave: (RouteDetail) -> Void
-    private let onUploaded: (RouteDetail, DeviceObjectID?, UInt32) -> Void
-    private let onPair: (RouteDetail) -> Void
+    /// Existing trips for the TR7 import row's picker (empty = no trips yet, so
+    /// the row still offers New trip…).
+    private let tripPickerItems: [TripPickerItem]
+    private let onSave: (RouteDetail, TripSelection) -> Void
+    private let onUploaded: (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void
+    private let onPair: (RouteDetail, TripSelection) -> Void
     private let onCancel: () -> Void
 
     init(
@@ -176,6 +247,7 @@ struct ImportLandingHost: View {
         fileName: String,
         deviceName: String,
         noDevicePaired: Bool,
+        tripPickerItems: [TripPickerItem] = [],
         // When this import replaces an existing route (name-collision → Replace),
         // the landing reuses its id + device link so a save/upload updates
         // that route in place instead of adding a duplicate (the old fingerprint
@@ -191,9 +263,9 @@ struct ImportLandingHost: View {
         // reads "up to date" only on the same proof the list badge uses, never
         // on a stale link.
         replacingProvenCRC: UInt32? = nil,
-        onSave: @escaping (RouteDetail) -> Void,
-        onUploaded: @escaping (RouteDetail, DeviceObjectID?, UInt32) -> Void,
-        onPair: @escaping (RouteDetail) -> Void,
+        onSave: @escaping (RouteDetail, TripSelection) -> Void,
+        onUploaded: @escaping (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void,
+        onPair: @escaping (RouteDetail, TripSelection) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _model = State(initialValue: RouteDetailModel(
@@ -207,6 +279,7 @@ struct ImportLandingHost: View {
         self.activity = activity
         self.deviceName = deviceName
         self.noDevicePaired = noDevicePaired
+        self.tripPickerItems = tripPickerItems
         self.onSave = onSave
         self.onUploaded = onUploaded
         self.onPair = onPair
@@ -226,14 +299,15 @@ struct ImportLandingHost: View {
                     onCompleted: { [model] objectID, crc in
                         uploadCompleted = true
                         if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
-                        onUploaded(model.makeDetail(), objectID, crc)
+                        onUploaded(model.makeDetail(), tripSelection, objectID, crc)
                     }
                 ))
             },
-            onSave: { onSave(model.makeDetail()) },
+            onSave: { onSave(model.makeDetail(), tripSelection) },
             onCancel: onCancel,
             noDevicePaired: noDevicePaired,
-            onPair: { onPair(model.makeDetail()) }
+            onPair: { onPair(model.makeDetail(), tripSelection) },
+            importAccessory: AnyView(tripRow)
         )
         .sheet(
             item: $uploadRequest,
@@ -243,6 +317,37 @@ struct ImportLandingHost: View {
             onDismiss: { if uploadCompleted { onCancel() } }
         ) { request in
             UploadSheetView(model: request.model)
+        }
+        .sheet(isPresented: $tripPickerShown) {
+            TripPickerSheet(
+                title: "Add to trip",
+                trips: tripPickerItems,
+                allowsNone: true,
+                onPick: { tripSelection = $0 }
+            )
+        }
+    }
+
+    /// The optional "Add to trip" row (TR7): opt-in, default None; opens the
+    /// shared picker and shows the current choice.
+    private var tripRow: some View {
+        OBCDisclosureRow(
+            systemImage: "folder.badge.plus",
+            label: "Add to trip",
+            value: tripSelectionLabel,
+            accessibilityID: "import.addToTrip",
+            action: { tripPickerShown = true }
+        )
+        .padding(.bottom, 2)
+    }
+
+    /// The current import trip choice as a row value: None, an existing trip's
+    /// name, or the new trip's name.
+    private var tripSelectionLabel: String {
+        switch tripSelection {
+        case .none: "None"
+        case .existing(let id): tripPickerItems.first { $0.id == id }?.name ?? "Trip"
+        case .new(let name): name
         }
     }
 }
