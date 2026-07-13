@@ -429,7 +429,16 @@ fn span_pairing_overlay_backdrop() {
     let mut buf = [0u8; 16 * 16];
     let mut frame = Device64Frame::<16, 16>::new(&mut buf);
     let mut p = SpanPresenter::<16, 16>::new();
-    block_on(conformance::check_overlay_backdrop(&mut frame, &mut p, rgb(RED), rgb(BLUE), SPAN_RECT, (13, 5), (14, 6)));
+    block_on(conformance::check_overlay_backdrop(
+        &mut frame,
+        &mut p,
+        rgb(RED),
+        rgb(BLUE),
+        SPAN_RECT,
+        (13, 5),
+        (14, 6),
+        |f| f.bytes().to_vec(),
+    ));
 }
 
 #[test]
@@ -447,6 +456,8 @@ fn span_pairing_overlay_exclusion() {
         (13, 5),
         (14, 6),
         (0, 0),
+        |f| f.bytes().to_vec(),
+        true,
     ));
 }
 
@@ -463,6 +474,7 @@ fn span_pairing_overlay_pop_retract_clear() {
         SPAN_RECT,
         (12, 5),
         (15, 6),
+        |f| f.bytes().to_vec(),
         true,
     ));
 }
@@ -489,7 +501,16 @@ fn tile_pairing_damage_translation() {
 fn tile_pairing_overlay_backdrop() {
     let mut frame = MiniFrame { cells: [0; MSTRIDE * MH] };
     let mut p = TilePresenter::new();
-    block_on(conformance::check_overlay_backdrop(&mut frame, &mut p, rgb(RED), rgb(BLUE), TILE_RECT, (10, 2), (13, 5)));
+    block_on(conformance::check_overlay_backdrop(
+        &mut frame,
+        &mut p,
+        rgb(RED),
+        rgb(BLUE),
+        TILE_RECT,
+        (10, 2),
+        (13, 5),
+        |f| f.cells,
+    ));
 }
 
 #[test]
@@ -506,6 +527,8 @@ fn tile_pairing_overlay_exclusion() {
         (10, 2),
         (13, 5),
         (0, 0),
+        |f| f.cells,
+        true,
     ));
 }
 
@@ -521,6 +544,7 @@ fn tile_pairing_overlay_pop_retract_clear() {
         TILE_RECT,
         (9, 1),
         (14, 6),
+        |f| f.cells,
         true,
     ));
 }
