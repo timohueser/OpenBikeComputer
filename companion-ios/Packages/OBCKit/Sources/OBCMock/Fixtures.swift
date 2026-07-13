@@ -13,16 +13,48 @@ public struct FixtureSet: Sendable {
     public var battery: Int
     public var routes: [RouteEntry]
     public var rides: [RideEntry]
+    /// Trips grouping some of `routes` (TR6) — seeded into the library as phone
+    /// records (a trip is app metadata; the device knows nothing of it until an
+    /// upload). Empty in every fixture set but the trips demo.
+    public var trips: [TripEntry]
     public var diagnostics: Data
 
     public init(deviceInfo: DeviceInfo, config: DeviceConfig, battery: Int,
-                routes: [RouteEntry], rides: [RideEntry], diagnostics: Data) {
+                routes: [RouteEntry], rides: [RideEntry], trips: [TripEntry] = [],
+                diagnostics: Data) {
         self.deviceInfo = deviceInfo
         self.config = config
         self.battery = battery
         self.routes = routes
         self.rides = rides
+        self.trips = trips
         self.diagnostics = diagnostics
+    }
+}
+
+/// A fixture trip — the app-side grouping of member routes by their **library**
+/// id, in ride order (TR6). Seeded into the mock run's `LibraryStore` as a
+/// `TripRecord`; carries no device link (a trip lands on the device only via
+/// TR8's whole-trip upload). `order` fixes its `addedAt` so it interleaves with
+/// the loose route cards deterministically.
+public struct TripEntry: Sendable {
+    public var id: TripID
+    public var name: String
+    public var stageIDs: [RouteID]
+    /// Seconds subtracted from the seed base date (bigger = older) — the trip's
+    /// slot in the newest-first list among the seeded routes.
+    public var order: Double
+
+    public init(id: TripID, name: String, stageIDs: [RouteID], order: Double = 0) {
+        self.id = id
+        self.name = name
+        self.stageIDs = stageIDs
+        self.order = order
+    }
+
+    /// The library record this fixture seeds — a phone-local trip (no device link).
+    public func record(base: Date) -> TripRecord {
+        TripRecord(id: id, name: name, stageIDs: stageIDs, addedAt: base.addingTimeInterval(-order))
     }
 }
 
@@ -262,6 +294,9 @@ private struct FixtureFile: Decodable {
     let diagnostics: String?
     let routes: [RouteDTO]
     let rides: [RideDTO]
+    /// Optional (only the trips demo fixture carries it) — grouping some of
+    /// `routes` into trips by their string ids.
+    let trips: [TripDTO]?
 
     var fixtureSet: FixtureSet {
         FixtureSet(
@@ -270,8 +305,22 @@ private struct FixtureFile: Decodable {
             battery: battery,
             routes: routes.map(\.entry),
             rides: rides.map(\.entry),
+            trips: (trips ?? []).map(\.entry),
             diagnostics: Data((diagnostics ?? "").utf8)
         )
+    }
+}
+
+private struct TripDTO: Decodable {
+    let id: String
+    let name: String
+    let stages: [String]
+    let order: Double?
+
+    var entry: TripEntry {
+        TripEntry(
+            id: TripID(id), name: name,
+            stageIDs: stages.map(RouteID.init), order: order ?? 0)
     }
 }
 

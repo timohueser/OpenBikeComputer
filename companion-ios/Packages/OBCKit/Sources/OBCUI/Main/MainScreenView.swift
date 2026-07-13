@@ -16,6 +16,7 @@ public struct MainScreenView: View {
     private let importFileExtensions: Set<String>
     private let onImportFile: (URL) -> Void
     private let onSelectRoute: (RouteSummary) -> Void
+    private let onSelectTrip: (TripRecord) -> Void
     private let onSelectRide: (RideSummary) -> Void
     private let onSettings: () -> Void
     private let onOpenTrash: () -> Void
@@ -32,6 +33,7 @@ public struct MainScreenView: View {
         importFileExtensions: Set<String> = ["gpx", "tcx"],
         onImportFile: @escaping (URL) -> Void = { _ in },
         onSelectRoute: @escaping (RouteSummary) -> Void = { _ in },
+        onSelectTrip: @escaping (TripRecord) -> Void = { _ in },
         onSelectRide: @escaping (RideSummary) -> Void = { _ in },
         onSettings: @escaping () -> Void = {},
         onOpenTrash: @escaping () -> Void = {}
@@ -40,6 +42,7 @@ public struct MainScreenView: View {
         self.importFileExtensions = importFileExtensions
         self.onImportFile = onImportFile
         self.onSelectRoute = onSelectRoute
+        self.onSelectTrip = onSelectTrip
         self.onSelectRide = onSelectRide
         self.onSettings = onSettings
         self.onOpenTrash = onOpenTrash
@@ -285,7 +288,7 @@ public struct MainScreenView: View {
             readError
         } else if model.loadState == .loading && model.routes.isEmpty {
             skeletons
-        } else if model.filteredRoutes.isEmpty && !model.searchText.isEmpty {
+        } else if model.filteredPlannedItems.isEmpty && !model.searchText.isEmpty {
             noMatches(noun: "routes", scope: "all planned routes")
         } else if model.routes.isEmpty {
             // S1 — empty ≠ broken: point at the import that fills it (B10 owns
@@ -309,16 +312,33 @@ public struct MainScreenView: View {
                 if case .success(let url) = result { onImportFile(url) }
             }
         } else {
-            ForEach(model.filteredRoutes) { route in
-                Button {
-                    onSelectRoute(route)
-                } label: {
-                    RouteCard(route: route, onDevice: model.onDeviceState(route.id))
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("main.card.\(route.id.rawValue)")
-                .obcSwipeToDelete {
-                    model.deleteRoute(route.id)
+            // TR6: trip cards + loose route cards, interleaved by addedAt.
+            ForEach(model.filteredPlannedItems) { item in
+                switch item {
+                case .trip(let trip):
+                    Button {
+                        onSelectTrip(trip)
+                    } label: {
+                        TripCard(
+                            name: trip.name,
+                            stats: model.tripStats(trip.id),
+                            stageSummaries: model.tripStages(trip.id),
+                            onDevice: model.tripOnDeviceState(trip.id)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("main.trip.\(trip.id.rawValue)")
+                case .route(let route, _):
+                    Button {
+                        onSelectRoute(route)
+                    } label: {
+                        RouteCard(route: route, onDevice: model.onDeviceState(route.id))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("main.card.\(route.id.rawValue)")
+                    .obcSwipeToDelete {
+                        model.deleteRoute(route.id)
+                    }
                 }
             }
         }

@@ -12,7 +12,7 @@ import OBCDomain
 /// | argument | values | effect |
 /// |---|---|---|
 /// | `-OBCScenario <name>` | any `Scenario.rawValue` | boot into that scenario |
-/// | `-OBCFixtures <name>` | `default` / `empty` / `large` | override the fixture set |
+/// | `-OBCFixtures <name>` | `default` / `empty` / `large` / `trips` | override the fixture set (`trips` = the TR6 trip-grouping demo) |
 /// | `-OBCConnection <state>` | `disconnected` / `connecting` / `connected` / `outOfRange` | override the initial link state |
 /// | `-OBCTransport <kind>` | `ble` / `mock` | force the real `BLETransport` in a Debug build |
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |

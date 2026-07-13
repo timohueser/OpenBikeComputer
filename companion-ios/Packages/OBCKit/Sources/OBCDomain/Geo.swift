@@ -134,4 +134,55 @@ public struct TrackPreview: Equatable, Sendable {
         // downsample), so the basemap path can draw the real lat/lon polyline.
         return TrackPreview(points: points, aspectRatio: aspect, coordinates: sampled)
     }
+
+    /// Project + normalize **several** tracks into **one shared** unit square so
+    /// they can be drawn overlaid and aligned — the trip card's multi-stage
+    /// preview (TR6). Every returned `TrackPreview` shares the same bounding box
+    /// and `aspectRatio` (one equirectangular projection around the *combined*
+    /// centroid latitude), so a single fitting transform lays all the stages out
+    /// in register. Each track is downsampled independently (its `points` and
+    /// `coordinates` stay index-aligned, like ``normalizing(_:maxPoints:)``); an
+    /// empty input track maps to `.empty`, and an all-empty input yields all
+    /// `.empty` (the grid-fallback renderer then draws nothing).
+    public static func normalizingShared(
+        _ tracks: [[Coordinate]], maxPointsPerTrack: Int = 256
+    ) -> [TrackPreview] {
+        let sampledTracks = tracks.map { downsampleCoordinates($0, to: maxPointsPerTrack) }
+        let all = sampledTracks.flatMap { $0 }
+        guard !all.isEmpty else { return tracks.map { _ in .empty } }
+
+        // One equirectangular projection around the combined centroid latitude.
+        let meanLat = all.reduce(0) { $0 + $1.latitude } / Double(all.count)
+        let lonScale = Foundation.cos(meanLat * .pi / 180)
+        func project(_ c: Coordinate) -> (x: Double, y: Double) {
+            (c.longitude * lonScale, c.latitude)
+        }
+        let projected = all.map(project)
+        let minX = projected.map(\.x).min()!, maxX = projected.map(\.x).max()!
+        let minY = projected.map(\.y).min()!, maxY = projected.map(\.y).max()!
+        let spanX = maxX - minX
+        let spanY = maxY - minY
+        let aspect = spanY > 0 ? (spanX > 0 ? spanX / spanY : 1) : 1
+
+        return sampledTracks.map { track in
+            guard !track.isEmpty else { return TrackPreview.empty }
+            let points = track.map { c -> Point in
+                let p = project(c)
+                let u = spanX > 0 ? (p.x - minX) / spanX : 0.5
+                let v = spanY > 0 ? (p.y - minY) / spanY : 0.5
+                return Point(x: u, y: 1 - v)  // flip so north is at the top
+            }
+            return TrackPreview(points: points, aspectRatio: aspect, coordinates: track)
+        }
+    }
+
+    /// Uniform-stride downsample of a coordinate array, always keeping the last
+    /// point — the same rule ``normalizing(_:maxPoints:)`` applies inline.
+    private static func downsampleCoordinates(
+        _ coordinates: [Coordinate], to maxPoints: Int
+    ) -> [Coordinate] {
+        guard maxPoints > 1, coordinates.count > maxPoints else { return coordinates }
+        let stride = Double(coordinates.count - 1) / Double(maxPoints - 1)
+        return (0..<maxPoints).map { coordinates[Int((Double($0) * stride).rounded())] }
+    }
 }
