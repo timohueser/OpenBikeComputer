@@ -438,6 +438,10 @@ impl Activity {
 
     /// Take (and clear) the pending [`TrackAction`], if any — the host calls this each frame
     /// and performs the file I/O (finalise / discard).
+    ///
+    /// Compatibility drain of [`HostCommand::FinishTrack`](crate::host::HostCommand::FinishTrack)
+    /// (#800) — the same single slot [`App::drain_host_commands`](crate::App::drain_host_commands)
+    /// consumes; removal owned by #812.
     pub fn take_track_action(&mut self) -> Option<TrackAction> {
         self.track_action.take()
     }
@@ -570,13 +574,32 @@ impl Activity {
 
     /// Record a one-shot plan-cancel (#499) — set by the planning screen's Back, drained by
     /// [`App::take_nav_cancel`](crate::App::take_nav_cancel).
+    ///
+    /// **Annihilates** a still-undrained [`request_nav`](Self::request_nav): Back always comes
+    /// from the planning screen of the *latest* request, so a request still latched at
+    /// cancel-post time was confirmed and cancelled inside one input batch — the net intent is
+    /// "no plan", and executing it anyway would commit a ghost route whose answer nobody is
+    /// showing (both legacy host drain orders net no plan here). The cancel itself still
+    /// latches: with nothing in flight it is a harmless host-side no-op, and a plan the host
+    /// already drained is still aborted.
     pub(crate) fn request_nav_cancel(&mut self) {
+        self.nav_request = None;
         self.nav_cancel = true;
     }
 
     /// Take (and clear) the pending plan-cancel request.
     pub(crate) fn take_nav_cancel(&mut self) -> bool {
         core::mem::take(&mut self.nav_cancel)
+    }
+
+    /// Non-consuming peek at the pending plan-cancel one-shot (the typed drain's pendency check).
+    pub(crate) fn nav_cancel_pending(&self) -> bool {
+        self.nav_cancel
+    }
+
+    /// Non-consuming peek at the pending card-free scan one-shot (the typed drain's pendency check).
+    pub(crate) fn card_scan_pending(&self) -> bool {
+        self.card_scan_request
     }
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_ports::TrackPoint): the

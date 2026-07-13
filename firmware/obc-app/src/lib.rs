@@ -21,6 +21,7 @@ pub mod dirty;
 pub mod fault;
 pub mod hal;
 pub mod hold_hint;
+pub mod host;
 pub mod i18n;
 pub mod input;
 pub mod input_plane;
@@ -47,6 +48,7 @@ pub use hal::{
     SettingsStore, TemperatureSource, TrackError, TrackSink,
 };
 pub use hold_hint::HoldHints;
+pub use host::{DrainStatus, HostCommand, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 pub use i18n::{t, Msg};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
