@@ -9,8 +9,11 @@ use core::cell::Cell;
 
 use obc_route::{
     ByteSource, Error, RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN,
-    HEADER_LEN, MAX_POINTS_PER_CHUNK,
+    HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
 };
+
+mod common;
+use common::decode;
 
 /// A [`ByteSource`] that wraps a [`SliceSource`] and counts `read_at` calls, so a test can prove
 /// the [`RouteCache`] really skips the source on a hit.
@@ -143,12 +146,6 @@ fn two_chunk_route() -> Vec<u8> {
     )
 }
 
-fn decode(r: &RouteReader, k: usize) -> Vec<RoutePoint> {
-    let mut out = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
-    r.decode_chunk(k, &mut out).unwrap();
-    out.to_vec()
-}
-
 #[test]
 fn header_and_summary() {
     let bytes = two_chunk_route();
@@ -180,6 +177,39 @@ fn header_and_summary() {
     assert_eq!(s2.name, "Black Forest");
     assert_eq!(s2.distance_km, 12);
     assert_eq!(s2.bbox.max_lon, 90);
+}
+
+/// `read_into` fills the caller's **resident** slot in place (the board path — the by-value
+/// `read` transits ~6.7 KB of stack, which overflowed the DK's main stack on the post-upload
+/// index rebuild). Pins the slot's lifecycle: a reused slot is fully replaced by the new route,
+/// and a failed read leaves it cleared — never a half-filled or stale index.
+#[test]
+fn read_into_reuses_and_clears_the_resident_slot() {
+    let first = two_chunk_route();
+    let mut idx = RouteIndex::empty();
+    idx.read_into(&SliceSource(&first)).unwrap();
+    assert_eq!(idx.name(), "Black Forest");
+    assert_eq!(idx.chunks().len(), 2);
+
+    // Reuse the same slot for a different route: every field must be the new route's.
+    let second = build_route(
+        "Vosges",
+        (5, 6),
+        (2_000, 100, 80),
+        (300, 340),
+        &[ChunkIn { points: vec![(5, 6, 300), (7, 9, 340)], cum_distance_m: 0, cum_ascent_m: 0 }],
+    );
+    idx.read_into(&SliceSource(&second)).unwrap();
+    assert_eq!(idx.name(), "Vosges");
+    assert_eq!(idx.chunks().len(), 1);
+    assert_eq!(idx.point_count, 2);
+    assert_eq!(idx.total_distance_m, 2_000);
+
+    // A failed read clears the slot (the caller's validity flag is already down).
+    assert!(idx.read_into(&SliceSource(&first[..10])).is_err());
+    assert_eq!(idx.chunks().len(), 0, "a failed read must not leave a half-filled index");
+    assert_eq!(idx.name(), "");
+    assert_eq!(idx.point_count, 0);
 }
 
 #[test]
@@ -285,6 +315,75 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_chunk_route();
-    bytes[4] = 2; // unsupported version
+    bytes[4] = 3; // unsupported version (v2 is accepted — the waypoint extension)
     assert_eq!(err(&bytes), Error::BadVersion);
+
+    let mut bytes = two_chunk_route();
+    bytes[4] = 0;
+    assert_eq!(err(&bytes), Error::BadVersion);
+}
+
+/// `chunk_count > MAX_ROUTE_CHUNKS` is rejected before any chunk is read: a corrupt header must
+/// fail with `TooLarge`, not overrun the fixed-capacity index buffer.
+#[test]
+fn rejects_chunk_count_over_cap() {
+    let mut bytes = two_chunk_route();
+    // Header byte 52 is the u32 chunk_count (OBCR_Spec §1). Claim one past the cap.
+    let bad = (MAX_ROUTE_CHUNKS as u32 + 1).to_le_bytes();
+    bytes[52..56].copy_from_slice(&bad);
+    let src = SliceSource(&bytes);
+    assert_eq!(RouteIndex::read(&src).err(), Some(Error::TooLarge));
+}
+
+/// A chunk with `point_count > MAX_POINTS_PER_CHUNK` is rejected up front with `TooLarge` rather
+/// than overflowing the fixed-capacity decode buffer during decode.
+#[test]
+fn rejects_point_count_over_cap() {
+    let mut bytes = two_chunk_route();
+    // index_offset = HEADER_LEN (chunk metas follow the header); point_count is at meta byte 26.
+    let pc_off = HEADER_LEN + 26;
+    let bad = (MAX_POINTS_PER_CHUNK as u16 + 1).to_le_bytes();
+    bytes[pc_off..pc_off + 2].copy_from_slice(&bad);
+    let src = SliceSource(&bytes);
+    assert_eq!(RouteIndex::read(&src).err(), Some(Error::TooLarge));
+}
+
+/// A chunk whose `byte_offset + byte_len` runs past the source is rejected with `BadOffset` at
+/// parse time (so the hot decode path needs no per-read check), never reading out of bounds.
+#[test]
+fn rejects_chunk_data_region_past_end() {
+    let mut bytes = two_chunk_route();
+    // Inflate chunk 0's byte_len (meta byte 40) so byte_offset + byte_len exceeds the file.
+    let len_off = HEADER_LEN + 40;
+    let bad = (bytes.len() as u32 + 1).to_le_bytes();
+    bytes[len_off..len_off + 4].copy_from_slice(&bad);
+    let src = SliceSource(&bytes);
+    assert_eq!(RouteIndex::read(&src).err(), Some(Error::BadOffset));
+}
+
+/// `preview_polyline` (#685 §4): the two-chunk fixture has 5 distinct points (the seam point
+/// deduped). `N` at/above that keeps all 5 verbatim; `N = 3` keeps first / middle / last; and
+/// every preview is a route-order subset with the endpoints exact.
+#[test]
+fn preview_polyline_decimates_uniformly_with_exact_endpoints() {
+    let bytes = two_chunk_route();
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    // The full distinct polyline, seam deduped.
+    let all: Vec<(i32, i32)> = vec![(10, 10), (20, 25), (40, 40), (60, 30), (90, 70)];
+
+    let keep_all = r.preview_polyline::<8>();
+    assert_eq!(keep_all.as_slice(), all.as_slice(), "N ≥ total keeps every distinct point once");
+
+    let three = r.preview_polyline::<3>();
+    assert_eq!(
+        three.as_slice(),
+        &[(10, 10), (40, 40), (90, 70)],
+        "N = 3 keeps first / middle / last (indices 0, 2, 4)"
+    );
+
+    let two = r.preview_polyline::<2>();
+    assert_eq!(two.as_slice(), &[(10, 10), (90, 70)], "N = 2 keeps exactly the endpoints");
 }

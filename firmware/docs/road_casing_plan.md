@@ -1,4 +1,14 @@
-# Road casing / borders at the finest LOD — PLAN (STATUS: PLANNED)
+# Road casing / borders at the finest LOD — PLAN (STATUS: SHIPPED — superseded by epic #556)
+
+> **Shipped as sub-issue #559 of epic [#556](https://github.com/timohueser/OpenBikeComputer/issues/556)**
+> (OBCM **v10**). ⚠ **The casing order in this plan is WRONG as written** — it runs the casing pass
+> *before the entire main pass*, which lets the low-z landuse/water/forest fills paint over the
+> casings and erase them. The shipped renderer instead inserts the casing pass at the **z boundary**
+> where the cased road lines begin (a split index into the `(z, seq)`-sorted spans), so casings land
+> above the low-z fills but under all road fills — see `draw_map` in `../obc-render/src/lib.rs` and
+> the rendering docs (`../../docs/content/software/rendering.md`, §6, "the z-boundary that makes
+> junctions work"). The `lib.rs` line numbers and `serialize.py` references below are also stale.
+> **Trust the shipped code, not this plan.**
 
 **Part 3 of 3** of the line-rendering roadmap ([route arrows](route_arrows_plan.md) →
 [line styles](line_styles_plan.md) → road casing). **Depends on [part 2](line_styles_plan.md)**: it
@@ -22,11 +32,11 @@ keep today's flat strokes.
 - Lines and polygons are drawn **interleaved in one painter's-order loop**, sorted by `(z_index, seq)`
   ([`render` draw phase, lib.rs:461](../obc-render/src/lib.rs#L461)). Each road line is a single
   `Polyline::with_stroke(color, weight)` ([Kind::Line arm, lib.rs:478](../obc-render/src/lib.rs#L478)).
-- Roads occupy a **z-band ~24–60** ([`config.json` highway block](../../config.json#L9)); areas/water sit
+- Roads occupy a **z-band ~24–60** ([default-preset highway block](../../packer/presets/default.json#L16)); areas/water sit
   below, admin/labels above.
 - `render()` already selects and reports the LOD (`stats.lod`); the finest is
   `reader.lods().len() - 1`. The config's finest level is **LOD 2** (`simplify: 0`,
-  [config.json:5](../../config.json#L5)).
+  [default.json:13](../../packer/presets/default.json#L13)).
 - The `Span` doesn't carry `style_id`; part 2 adds it (or the fields) so the draw loop can see a style's
   casing flag + `color2`.
 
@@ -68,7 +78,7 @@ artifact); it needs a **casing pass before the fill pass** within the road band.
 - **`obc-render/src/lib.rs`** — restructure the `render` draw phase into casing-pass + main-pass; the
   casing pass needs each road span's casing flag + `color2` (via the `style_id`-in-`Span` lookup from
   part 2). Gate on finest LOD.
-- **`config.json`** — mark the cased road classes with a casing line-style + a `color2` that is a
+- **`packer/presets/default.json`** (and the other presets) — mark the cased road classes with a casing line-style + a `color2` that is a
   *darker* step on the RGB222 grid (visibly distinct from the fill — the panel is 64-colour).
 - **`screen/map.rs`** — nothing required (optional debug toggle).
 

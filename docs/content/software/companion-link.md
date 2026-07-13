@@ -1,0 +1,592 @@
+---
+title: The companion link
+description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, a whole-object transfer end to end, the device-side upload prompts, the digest-driven sync loop with synced-ride reconciliation, on-device deletes flowing back, and passkey pairing with reject-when-bonded and silent reconnect.
+---
+
+# The companion link
+
+The device is a self-contained navigator, but a route is usually *planned* on a
+phone and a ride is worth keeping once it's ridden. A small **iOS companion app**
+bridges the two over **Bluetooth Low Energy**: push a planned route to the
+device, pull tracked rides back, rename the device, read its diagnostics. Once
+you've paired, powered, and are in range, it just works — no accounts, no cloud,
+nothing leaves the two devices.
+
+This page is the *shape* of that link. The normative, byte-level reference is the
+[BLE interface spec](src:obc-ble-interface-spec.md) (the same tier as the
+[`OBCM`](src:OBCM_Spec.md) / [`OBCR`](src:OBCR_Spec.md) format specs); here we
+cover the design and the *why*. Four ideas run through all of it:
+
+- **Two planes.** Small typed control state rides GATT; bulk bytes ride a single
+  L2CAP channel. Nothing large ever crosses GATT.
+- **Objects are files the device already speaks.** A route crosses the wire as
+  an [OBCR](../formats/) file and is written to storage verbatim; the phone does
+  every format conversion, so **the device never parses XML**.
+- **One CRC, end to end.** A whole-object checksum is verified once, at commit —
+  the check the on-air link CRC can't give you.
+- **Interrupted transfers restart, not resume.** Objects are small enough that
+  re-sending one whole is simpler and safer than continuing from an offset.
+
+## Two planes: control and data
+
+A BLE **GATT attribute is capped at 512 bytes** — a hard wall, not a soft
+budget. A route is tens of kilobytes. So the link is split in two: GATT carries
+the small, typed *control* state (identity, config, the orchestration of a
+transfer, notifications), and a single **L2CAP connection-oriented channel
+(CoC)** is the bulk *data* pipe. GATT says *what is about to happen and how it
+went*; the CoC carries *the bytes*.
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="The link split into two planes between the companion app on the left (BLE central) and the OBC device on the right (BLE peripheral). The top lane is the control plane over GATT — small typed characteristics: command, status, objectStore, config, transferControl, psm, protocolVersion — with a note that each attribute is capped at 512 bytes. The bottom lane is the data plane over a single L2CAP connection-oriented channel: one raw byte pipe with credit-based flow control, carrying bulk objects one transfer at a time.">
+  <defs>
+    <marker id="cl-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="22">Two planes — control on GATT, bulk on L2CAP</text>
+
+  <!-- phone -->
+  <rect class="d-panel" x="16" y="88" width="120" height="180" rx="12" />
+  <text class="d-title" x="76" y="164" text-anchor="middle">companion app</text>
+  <text class="d-sub" x="76" y="186" text-anchor="middle">BLE central</text>
+  <text class="d-sub" x="76" y="202" text-anchor="middle">(iPhone)</text>
+
+  <!-- device -->
+  <rect class="d-panel" x="584" y="88" width="120" height="180" rx="12" />
+  <text class="d-title" x="644" y="164" text-anchor="middle">OBC device</text>
+  <text class="d-sub" x="644" y="186" text-anchor="middle">BLE peripheral</text>
+  <text class="d-sub" x="644" y="202" text-anchor="middle">nRF54L</text>
+
+  <!-- control lane -->
+  <rect class="d-panel-2" x="150" y="88" width="420" height="86" rx="10" style="fill:#eef2df" />
+  <text class="d-label" x="360" y="112" text-anchor="middle" style="fill:#3c6b39">Control plane · GATT</text>
+  <text class="d-sub" x="360" y="132" text-anchor="middle">small, typed state — identity · config · orchestration</text>
+  <text class="d-sub" x="360" y="150" text-anchor="middle">command · status · objectStore · config · transferControl · psm</text>
+  <text class="d-sub" x="360" y="168" text-anchor="middle" style="fill:#a9501c">≤ 512 bytes per attribute — a hard wall</text>
+
+  <!-- data lane -->
+  <rect class="d-panel-2" x="150" y="190" width="420" height="78" rx="10" />
+  <text class="d-label" x="360" y="216" text-anchor="middle" style="fill:#33575b">Data plane · L2CAP CoC</text>
+  <text class="d-sub" x="360" y="236" text-anchor="middle">one raw byte pipe · credit-based flow control</text>
+  <text class="d-sub" x="360" y="254" text-anchor="middle">bulk objects, one transfer at a time</text>
+
+  <!-- connectors -->
+  <line class="d-flow" x1="136" y1="131" x2="150" y2="131" marker-start="url(#cl-a)" marker-end="url(#cl-a)" />
+  <line class="d-flow" x1="136" y1="229" x2="150" y2="229" marker-start="url(#cl-a)" marker-end="url(#cl-a)" />
+  <line class="d-flow" x1="570" y1="131" x2="584" y2="131" marker-start="url(#cl-a)" marker-end="url(#cl-a)" />
+  <line class="d-flow" x1="570" y1="229" x2="584" y2="229" marker-start="url(#cl-a)" marker-end="url(#cl-a)" />
+</svg>
+<figcaption>The <b>control plane</b> is GATT: three services — Device Information and Battery (both standard SIG services) plus a custom <b>OBC Control</b> service whose characteristics orchestrate everything. The <b>data plane</b> is a single L2CAP CoC — a reliable, ordered byte pipe. The one object small enough to live on GATT is the <code>config</code> blob, so renaming the device is a plain characteristic write; everything bigger goes over the CoC.</figcaption>
+</figure>
+
+**The CoC is a raw byte pipe — deliberately.** The BLE Link Layer already CRCs
+and retransmits every packet, so the channel is reliable and ordered. That means
+bulk transfer needs **no per-chunk framing**: a control-plane descriptor
+announces the transfer, the CoC then carries *exactly* the object's payload
+bytes, and the device sinks them straight to storage while updating a running
+checksum. There is **no reassembly buffer** — which is the whole point on a
+RAM-limited microcontroller.
+
+## Objects are files the device already speaks
+
+Every bulk payload is a typed **object**. The set is small and closed:
+
+| `type` | Object | Direction | Payload |
+|--------|--------|-----------|---------|
+| `1` | `route` | app → device (upload) · device → app (detail read) | an [OBCR](../formats/) route file, verbatim |
+| `2` | `ride` | device → app | the compact [ride object](../formats/#recorded-rides-the-track-log-and-the-ride-object) (a tracked ride) — **v1**, or **v2** when it carries recorded sensor data |
+| `4` | `diagnostics` | device → app | an opaque text blob (boot count, link + storage counters, stack high-water…) |
+| `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed 72-byte entries |
+| `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
+| `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
+
+The key move is that **a route on the wire is the same bytes as a route on the
+card.** The phone converts an imported GPX or TCX to an OBCR file and streams
+that; the device writes it to storage byte-for-byte and later serves it back the
+same way. There is no separate "detail" codec — the app's route-detail screen
+decodes the very OBCR bytes it uploaded. One layout, one truth. A tracked ride
+is the mirror in the other direction: the device stores each finished ride as
+the exact bytes it will later stream, so a ride download is a verbatim file copy.
+
+One object is not a stored file but a **firmware update**: a `fwImage` upload
+carries an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, which the device
+writes to the card root verbatim — the transfer layer stays format-blind, exactly
+as with a route's OBCR bytes. **Staging is not installing.** A committed `fwImage`
+only *places* the file; the app then sends a separate `installFw` command to
+*request* an install, and the device runs its own scan and shows a **confirm card**
+that the rider must approve with a physical encoder press. The phone can never arm
+or reboot the device on its own — the same on-glass gate the pairing passkey uses.
+The whole trust model, the two delivery paths, and the RRAM layout are on the
+[firmware updates](../firmware-updates/) page.
+
+**Object ids are durable.** Each stored object has a `u16` id the device assigns
+and keeps **stable across reboots** — the reference firmware encodes it right in
+the filename (`RT{id}.OBR` for routes, `RD{id}.ORD` for rides). Durability is
+what lets the phone remember *"I uploaded route 7"* and later ask *"is 7 still
+there?"* or replace it in place — and it's what a ride sync's
+already-have-this-one set keys on.
+
+## A transfer, end to end
+
+Every bulk exchange is the same three-beat shape: **announce over GATT, stream
+over the CoC, confirm over GATT.** Here is an upload — a route leaving the phone:
+
+<figure class="fig">
+<svg viewBox="0 0 720 372" role="img" aria-label="A sequence diagram of an upload between the companion app on the left and the OBC device on the right. Step one: the app writes a 16-byte transferControl descriptor over GATT — op equals upload, plus type, object id, total length and CRC-32 — which announces the transfer. Step two: the app streams the object's raw bytes over the L2CAP CoC. On the device side a note reads: sink to storage, updating a running CRC, with no reassembly buffer. Step three: once all bytes are in, the device verifies the whole-object CRC. Step four: the device notifies a transferResult over GATT — committed on a match, or crcMismatch which rejects the object so nothing is stored.">
+  <defs>
+    <marker id="tf-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="tf-c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="22">One upload — announce · stream · confirm</text>
+
+  <!-- actors -->
+  <rect class="d-panel" x="80" y="40" width="140" height="34" rx="9" />
+  <text class="d-title" x="150" y="62" text-anchor="middle">companion app</text>
+  <rect class="d-panel" x="500" y="40" width="140" height="34" rx="9" />
+  <text class="d-title" x="570" y="62" text-anchor="middle">OBC device</text>
+
+  <!-- lifelines -->
+  <line x1="150" y1="74" x2="150" y2="352" style="stroke:#9aa884;stroke-width:1.2;stroke-dasharray:4 4" />
+  <line x1="570" y1="74" x2="570" y2="352" style="stroke:#9aa884;stroke-width:1.2;stroke-dasharray:4 4" />
+
+  <!-- 1: descriptor -->
+  <text class="d-sub" x="360" y="104" text-anchor="middle" style="fill:#3c6b39">1 · transferControl (16 B) — GATT write</text>
+  <text class="d-sub" x="360" y="120" text-anchor="middle">op=upload · type · object_id · total_len · crc32</text>
+  <line class="d-flow" x1="150" y1="130" x2="570" y2="130" marker-end="url(#tf-a)" />
+
+  <!-- 2: stream -->
+  <text class="d-sub" x="360" y="164" text-anchor="middle" style="fill:#33575b">2 · the object's bytes — L2CAP CoC, raw stream</text>
+  <line x1="150" y1="176" x2="565" y2="176" style="stroke:#33575b;stroke-width:6;opacity:0.5" marker-end="url(#tf-a)" />
+
+  <!-- device note -->
+  <rect class="d-panel-2" x="404" y="196" width="230" height="46" rx="9" style="fill:#f7f4e6" />
+  <text class="d-sub" x="519" y="216" text-anchor="middle">sink → storage, running CRC</text>
+  <text class="d-sub" x="519" y="232" text-anchor="middle" style="fill:#a9501c">no reassembly buffer</text>
+
+  <!-- 3: verify -->
+  <rect class="d-hot" x="470" y="258" width="200" height="42" rx="9" style="fill:#f8efe4" />
+  <text class="d-sub" x="570" y="278" text-anchor="middle">3 · all bytes in →</text>
+  <text class="d-sub" x="570" y="294" text-anchor="middle">verify whole-object CRC-32</text>
+
+  <!-- 4: result -->
+  <line class="d-hot" x1="570" y1="322" x2="150" y2="322" marker-end="url(#tf-c)" />
+  <text class="d-sub" x="360" y="342" text-anchor="middle" style="fill:#a9501c">4 · transferResult — GATT notify: committed  ·  (mismatch → rejected, nothing stored)</text>
+</svg>
+<figcaption>The descriptor names the transfer (and carries the whole-object CRC); the CoC carries the payload; the <code>transferResult</code> closes it. A fresh upload sends object id <code>0xFFFF</code> ("new") and the device reports the <b>assigned</b> id in the result. A <b>download</b> is the exact mirror: the app asks with an <code>op=download</code> descriptor, the device <em>answers</em> with a descriptor (now carrying the size + CRC) and streams the object back.</figcaption>
+</figure>
+
+The checksum is a **whole-object CRC-32/IEEE**, verified once at commit — the
+same variant as gzip/PNG. It is deliberately *not* a per-packet CRC (the link
+already covers the air); it catches what the link can't — an encode bug, a
+storage error — **end to end**, from the phone's encoder to the device's flash
+and back.
+
+> **Restart, not resume.** An object is tens of kilobytes — a couple of seconds
+> on the wire — so a dropped or aborted transfer is simply re-sent (or
+> re-requested) *whole*, never continued from a durable offset. The device
+> discards a partial upload the moment the link drops or an `abort` arrives; a
+> non-zero offset is rejected outright. (A suffix couldn't be checked against the
+> whole-object CRC anyway.) A multi-object flow — syncing several rides — resumes
+> at **whole-object granularity**: the rides that fully landed are kept, and the
+> rest re-send from byte zero.
+
+> **Full means full — up front.** The device holds a bounded route catalog (64
+> routes). A **new**-route upload that would overflow it is refused the instant the
+> descriptor arrives — *before any bytes stream* — with a distinct `storageFull`
+> result, so the phone can tell the rider to delete routes on the device rather
+> than wait out a doomed transfer. Re-uploading an *existing* route (a replace by
+> id) is exempt: it reuses a slot rather than growing the catalog, so updating the
+> route you're actively navigating never hits the cap.
+
+### When a route lands — the device's side
+
+A committed upload isn't silent on the device. A route usually arrives because
+the rider just pressed *send* on the phone sitting next to it, so the display
+**wakes** and shows a short prompt — then returns to warm sleep. The prompt is
+strictly **advisory**: the route is already in the store (and the Route menu)
+before it appears, so dismissing it loses nothing. It **auto-closes after 30
+seconds**, and that timeout *is* a dismiss. What the prompt offers depends on
+what the rider is doing:
+
+- **Not riding** → *"Route received — View route / Dismiss."* The card shows the
+  route's name, its distance/climb, and a mini elevation sparkline; *View route*
+  opens the same **Route overview** picking the route in the Route menu opens
+  (where START RIDE is one press away) — it never starts a ride directly.
+- **Riding** → the same guarded **swap** shape a mid-ride route pick uses (*Swap
+  route / Finish &amp; new / Cancel*), retitled for a received route and carrying the
+  route's distance/climb — so an uploaded route mid-ride can't silently take over
+  navigation.
+- **Replacing the route you're navigating** → an **info-only** card. The device
+  has no choice here: the replace-commit already overwrote the file on the card,
+  so the old bytes are gone. The device *adopts the new version immediately* —
+  it reopens the geometry handle, re-runs map-matching from the current fix, and
+  recomputes progress — and the card just tells the rider it happened. The
+  recording session is untouched.
+
+Two rules keep the prompt from ever doing harm. It **never lands while a hold
+gesture is charging** — a popup appearing under a half-completed *Finish &amp; new*
+hold could complete onto the wrong action, so it waits a tick (the same
+stack-change hold-cancel the [UI page](../ui/#hold-to-confirm) describes).
+And consecutive uploads **replace** the prompt rather than stacking — most
+recent wins, carried by object id, not menu position, so a live rescan can't
+point *View route* at whatever route slid into the slot. A pending prompt
+is also **outranked** by the passkey card: if pairing starts, the route prompt
+is dropped (not queued) — it's only advisory, and the route is safe in the menu.
+
+## Staying in sync — the change digest
+
+After anything changes on the device — a route uploaded, a ride finished, an
+object deleted — the phone needs to know *what to re-fetch*, cheaply. Re-reading
+the full catalogs on every reconnect would burn the CoC for nothing. So the
+device publishes a tiny **10-byte digest**: a `revision` counter plus the route
+and ride counts, on a characteristic the app can read *and* subscribe to.
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="The sync loop as four stages left to right. One: a store change on the device — an upload from the phone commits, a ride is tracked, or the rider deletes a route or ride on the device itself; every path goes through the one object store. Two: the device bumps the revision in its 10-byte objectStore digest and notifies it. Three: the app compares the digest; if the revision moved it downloads the relevant list object — routeList or rideList — over the CoC. Four: the app fetches only the objects that actually changed. A curved arrow returns from stage four to stage one, labelled on the next change, showing the loop. Below, a separate reverse lane: on every connect the phone sends an ackRides command back to the device — the ids it holds — and the device marks those rides synced.">
+  <defs>
+    <marker id="sy-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="sy-m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa884" /></marker>
+    <marker id="sy-k" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="22">The change signal — read the digest, fetch what moved</text>
+
+  <rect class="d-panel" x="16" y="70" width="150" height="72" rx="10" />
+  <text class="d-sub" x="91" y="42" text-anchor="middle" style="fill:#6b7758">on the device</text>
+  <text class="d-label" x="91" y="98" text-anchor="middle">store changes</text>
+  <text class="d-sub" x="91" y="116" text-anchor="middle">upload · ride</text>
+  <text class="d-sub" x="91" y="132" text-anchor="middle" style="fill:#a9501c">device-side delete</text>
+
+  <rect class="d-panel-2" x="198" y="70" width="150" height="72" rx="10" style="fill:#eef2df" />
+  <text class="d-label" x="273" y="98" text-anchor="middle" style="fill:#3c6b39">revision ++</text>
+  <text class="d-sub" x="273" y="118" text-anchor="middle">10-byte digest</text>
+  <text class="d-sub" x="273" y="134" text-anchor="middle">notify (GATT)</text>
+
+  <rect class="d-panel" x="380" y="70" width="150" height="72" rx="10" />
+  <text class="d-sub" x="455" y="42" text-anchor="middle" style="fill:#6b7758">on the phone</text>
+  <text class="d-label" x="455" y="98" text-anchor="middle">digest moved?</text>
+  <text class="d-sub" x="455" y="118" text-anchor="middle">download the list</text>
+  <text class="d-sub" x="455" y="134" text-anchor="middle">routeList / rideList</text>
+
+  <rect class="d-hot" x="562" y="70" width="142" height="72" rx="10" style="fill:#f8efe4" />
+  <text class="d-label" x="633" y="98" text-anchor="middle" style="fill:#a9501c">fetch changed</text>
+  <text class="d-sub" x="633" y="118" text-anchor="middle">objects, over</text>
+  <text class="d-sub" x="633" y="134" text-anchor="middle">the CoC</text>
+
+  <line class="d-flow" x1="166" y1="106" x2="196" y2="106" marker-end="url(#sy-a)" />
+  <line class="d-flow" x1="348" y1="106" x2="378" y2="106" marker-end="url(#sy-a)" />
+  <line class="d-flow" x1="530" y1="106" x2="560" y2="106" marker-end="url(#sy-a)" />
+
+  <!-- loop back -->
+  <path d="M633 142 C 633 190, 91 190, 91 144" fill="none" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#sy-m)" />
+  <text class="d-sub" x="360" y="182" text-anchor="middle" style="fill:#6b7758">on the next change</text>
+
+  <!-- ackRides reverse lane -->
+  <line x1="20" y1="216" x2="700" y2="216" style="stroke:#d6cda8;stroke-width:1" />
+  <text class="d-tag" x="20" y="242" style="fill:#a9501c">The other direction — reconcile synced rides on connect</text>
+  <rect class="d-panel" x="380" y="252" width="150" height="34" rx="9" />
+  <text class="d-sub" x="455" y="273" text-anchor="middle">phone — ids it holds</text>
+  <line x1="378" y1="269" x2="168" y2="269" style="stroke:#cf6a2a;stroke-width:1.6" marker-end="url(#sy-k)" />
+  <text class="d-sub" x="273" y="262" text-anchor="middle" style="fill:#a9501c;font-size:9px">ackRides (GATT command)</text>
+  <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
+  <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device marks synced</text>
+</svg>
+<figcaption>The digest is the cheap "did anything change?" signal that replaces polling the CoC-sized lists. The app reads it on connect and subscribes to it; when the <code>revision</code> moves it pulls the relevant <b>list</b> object (a compact catalog of fixed-size entries), then downloads only the objects that are new to it. A companion <code>storeChanged</code> notification additionally says <em>which</em> store moved, so a route upload doesn't trigger a ride re-list. A change is a change whether the phone caused it or the rider deleted something on the device — both go through the one object store, so both bump the same revision. The lower lane is the one flow that runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
+</figure>
+
+The device is the other half of this loop. A change doesn't only come *from* the
+phone — the rider can delete a stored route from the device's Route overview or a
+tracked ride from its Ride detail, each with the same guarded hold-to-delete row
+(see the
+[UI system](../ui/#deleting-things-the-hold-to-delete-footer)). A device-side
+delete goes **through the same object store** the wire commits do, so it bumps
+the `revision`, fires `storeChanged`, and shows up to the phone as *"the ride
+store moved"* on the next notify — no separate "the device deleted something"
+message, and no way for the two to disagree about what's on the card. The phone
+reconciles by re-reading the list and tombstoning what vanished, exactly as it
+would after any other change.
+
+**Ids are never reused — which is what keeps the bookkeeping honest.** The phone
+persists *"I uploaded route 7"* and *"I've synced ride 12"* by durable object id.
+If a delete freed id 7 and the next upload re-took it, the phone's note would
+now point at a *different* route. So the device tracks a **high-water mark** for
+each store in its persistent settings and allocates strictly above it: a freed
+id stays retired forever. That is the invariant the whole reconciliation rests
+on — a `storeChanged` the phone can trust never to lie about identity.
+
+### Synced rides — reconciled state, not event inference
+
+A tracked ride is precious (unlike a route, the phone can't re-upload it), so the
+device keeps a **"synced" flag** per ride — has the phone downloaded this one at
+least once? It drives the small check mark on a synced Rides-list row (an
+unsynced ride shows nothing there) and the *"synced" / "not synced"* slot in the
+Ride detail's title bar, so a rider deleting an un-downloaded ride is told what
+they're about to lose.
+
+The naïve way to set that flag is to flip it when a ride download completes. But
+that makes it an *event inference* — and events are lossy. A ride synced before
+the device tracked the flag, a card reflashed, an app reinstalled: any of these
+leaves the device's flag out of step with what the phone actually holds, and
+*permanently*, because a ride the phone already has is never re-downloaded to
+correct it. So the flag is instead **reconciled state**. The phone's library is
+the ground truth for "I have this ride", and on every connect it sends the device
+the list of ride ids it holds — a small `ackRides` command. The device sets
+(never clears) the synced flag for each; a change bumps the ride revision so the
+Rides screen's cue updates live. The flag becomes *"the phone has confirmed it
+holds this"*, self-healing on every reconnect rather than riding on a single
+download event landing.
+
+## Pairing, and staying paired
+
+Access is gated by a **bond** — a one-time, mutually-authenticated pairing. The
+device is a *display-only* peer: it shows a **6-digit passkey** on its screen
+that the rider types into the phone's system dialog. That's LE Secure
+Connections passkey entry — man-in-the-middle-protected — and the on-screen code
+is what makes it safe: **physical possession of the device is the control.** On
+the device that code is a full-screen [**passkey card**](../ui/#the-passkey-card):
+the host pushes it the instant the radio raises a passkey and pops it the instant
+pairing ends, and it's deliberately non-dismissible — no button can lose the code
+mid-pairing — because the SMP handshake time-boxes the window anyway.
+
+There is exactly one bonded peer — and while that bond exists the device
+**rejects any new pairing attempt**: a stranger's phone gets a generic pairing
+failure and the device screen shows nothing (no passkey card, because there's no
+pairing to complete). Re-pairing (a new or reset phone) goes through the
+hold-guarded **Forget phone** action in the device's Settings ▸ Bluetooth, which
+clears the bond and re-opens pairing — so physical possession still gates the
+swap, at the *clear* step. This *reverses* an earlier "a fresh pairing replaces
+the stored bond" rule: a lost or wiped phone can no longer silently re-pair.
+There is one more way to clear the bond, and it needs no on-device step: the
+**bonded** phone can send a `forgetBond` command over its own encrypted link, so
+the app's "Forget device" dissolves the device's side of the bond too rather than
+leaving the pair wedged (a one-sided app forget would otherwise keep hitting the
+reject). It's safe precisely because it rides the bonded link — only the paired
+phone can issue it, a stranger never can. The same screen carries the Bluetooth
+**off** switch: off stops advertising and drops the link, while the bond survives
+for when the radio comes back.
+
+<figure class="fig">
+<svg viewBox="0 0 720 400" role="img" aria-label="Pairing, reconnect, and rejection in three rows. Top row, first pairing, done once: the device shows a six-digit passkey on its screen; the rider reads it and types it into the phone; the two run an LESC elliptic-curve key exchange; both sides store the resulting bond keys. Middle row, every time after, silent: the device advertises with a stable address; the phone recognises that identity from the bond; the two re-encrypt with the stored long-term key and the phone's rotating address is resolved via the stored identity key; the result is a connected, encrypted link with no dialog. Bottom row, reject-when-bonded: a different phone tries to pair while a bond already exists; the device suppresses its passkey and drops the link; the other phone sees only a generic pairing failure; the only way through is the rider running Forget phone on the device to clear the bond.">
+  <defs>
+    <marker id="pk-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+
+  <!-- Row 1: first pairing -->
+  <text class="d-tag" x="20" y="24">① First pairing — once</text>
+
+  <rect class="d-panel" x="16" y="38" width="150" height="60" rx="10" />
+  <text class="d-sub" x="91" y="60" text-anchor="middle">device shows</text>
+  <text class="d-title" x="91" y="82" text-anchor="middle" style="fill:#a9501c">428 913</text>
+
+  <rect class="d-panel-2" x="222" y="38" width="150" height="60" rx="10" />
+  <text class="d-sub" x="297" y="64" text-anchor="middle">rider reads it,</text>
+  <text class="d-sub" x="297" y="80" text-anchor="middle">types it on the phone</text>
+
+  <rect class="d-panel-2" x="428" y="38" width="150" height="60" rx="10" style="fill:#eef2df" />
+  <text class="d-label" x="503" y="62" text-anchor="middle" style="fill:#3c6b39">LESC ECDH</text>
+  <text class="d-sub" x="503" y="80" text-anchor="middle">MITM-protected</text>
+
+  <rect class="d-hot" x="622" y="38" width="82" height="60" rx="10" style="fill:#f8efe4" />
+  <text class="d-sub" x="663" y="60" text-anchor="middle">bond</text>
+  <text class="d-sub" x="663" y="78" text-anchor="middle">stored</text>
+
+  <line class="d-flow" x1="166" y1="68" x2="220" y2="68" marker-end="url(#pk-a)" />
+  <line class="d-flow" x1="372" y1="68" x2="426" y2="68" marker-end="url(#pk-a)" />
+  <line class="d-flow" x1="578" y1="68" x2="620" y2="68" marker-end="url(#pk-a)" />
+
+  <!-- divider -->
+  <line x1="20" y1="130" x2="700" y2="130" style="stroke:#d6cda8;stroke-width:1" />
+
+  <!-- Row 2: reconnect -->
+  <text class="d-tag" x="20" y="164">② Every time after — silent</text>
+
+  <rect class="d-panel" x="16" y="180" width="150" height="66" rx="10" />
+  <text class="d-sub" x="91" y="206" text-anchor="middle">device advertises</text>
+  <text class="d-sub" x="91" y="224" text-anchor="middle" style="fill:#3c6b39">stable address</text>
+
+  <rect class="d-panel-2" x="222" y="180" width="150" height="66" rx="10" />
+  <text class="d-sub" x="297" y="206" text-anchor="middle">phone knows</text>
+  <text class="d-sub" x="297" y="224" text-anchor="middle">this identity</text>
+
+  <rect class="d-panel-2" x="428" y="180" width="150" height="66" rx="10" style="fill:#eef2df" />
+  <text class="d-sub" x="503" y="202" text-anchor="middle">re-encrypt · stored LTK</text>
+  <text class="d-sub" x="503" y="220" text-anchor="middle">resolve RPA · stored IRK</text>
+
+  <rect class="d-hot" x="622" y="180" width="82" height="66" rx="10" style="fill:#f8efe4" />
+  <text class="d-sub" x="663" y="204" text-anchor="middle">connected</text>
+  <text class="d-sub" x="663" y="222" text-anchor="middle" style="fill:#a9501c">encrypted</text>
+  <text class="d-sub" x="663" y="238" text-anchor="middle">no dialog</text>
+
+  <line class="d-flow" x1="166" y1="213" x2="220" y2="213" marker-end="url(#pk-a)" />
+  <line class="d-flow" x1="372" y1="213" x2="426" y2="213" marker-end="url(#pk-a)" />
+  <line class="d-flow" x1="578" y1="213" x2="620" y2="213" marker-end="url(#pk-a)" />
+  <text class="d-sub" x="360" y="266" text-anchor="middle" style="fill:#6b7758">bonded + powered + in range  ⇒  connected + encrypted, no interaction</text>
+
+  <!-- divider -->
+  <line x1="20" y1="290" x2="700" y2="290" style="stroke:#d6cda8;stroke-width:1" />
+
+  <!-- Row 3: reject-when-bonded -->
+  <text class="d-tag" x="20" y="322" style="fill:#a9501c">③ Another phone, while bonded — rejected</text>
+
+  <rect class="d-panel" x="16" y="336" width="150" height="52" rx="10" />
+  <text class="d-sub" x="91" y="358" text-anchor="middle">a different phone</text>
+  <text class="d-sub" x="91" y="374" text-anchor="middle">tries to pair</text>
+
+  <rect class="d-panel-2" x="222" y="336" width="184" height="52" rx="10" style="fill:#f4e7de" />
+  <text class="d-sub" x="314" y="358" text-anchor="middle" style="fill:#a9501c">bond exists →</text>
+  <text class="d-sub" x="314" y="374" text-anchor="middle" style="fill:#a9501c">no passkey, link dropped</text>
+
+  <rect class="d-panel-2" x="462" y="336" width="120" height="52" rx="10" />
+  <text class="d-sub" x="522" y="358" text-anchor="middle">phone sees a</text>
+  <text class="d-sub" x="522" y="374" text-anchor="middle">generic failure</text>
+
+  <rect class="d-hot" x="606" y="336" width="98" height="52" rx="10" style="fill:#f8efe4" />
+  <text class="d-sub" x="655" y="356" text-anchor="middle" style="fill:#a9501c">only way in:</text>
+  <text class="d-sub" x="655" y="372" text-anchor="middle">Forget phone</text>
+
+  <line class="d-flow" x1="166" y1="362" x2="220" y2="362" marker-end="url(#pk-a)" />
+  <line class="d-flow" x1="406" y1="362" x2="460" y2="362" marker-end="url(#pk-a)" />
+</svg>
+<figcaption>Pairing happens once, with the passkey on the glass. After that the device keeps a <b>stable</b> address (no device-side privacy rotation), so the phone — which stored that identity at bonding — reconnects silently on any contact and re-encrypts with the stored long-term key; the phone's own rotating address is resolved back to it via the stored identity key. The bond lives in the device's persistent settings storage, so it survives power cycles <em>and firmware updates</em>. The third row is the guard: while a bond exists, <b>a second phone can't pair</b> — the device shows no passkey and drops the attempt, so the interloper sees only a generic failure and the rider must deliberately <b>Forget phone</b> to open a swap.</figcaption>
+</figure>
+
+What the bond protects, and what stays open:
+
+| Surface | Before pairing |
+|---------|----------------|
+| Device Information · Battery · `protocolVersion` | **open** — so the app can identity- and version-check *before* pairing |
+| every other OBC Control characteristic | **denied** — needs the encrypted, authenticated link |
+| the L2CAP CoC | **denied** — opening it on an unencrypted link is refused |
+
+Leaving identity and the protocol version readable pre-bond is deliberate: the
+app checks it's talking to a compatible device (and surfaces a mismatch as a
+banner rather than trapping) before it ever asks to pair.
+
+## Sensors — the device as BLE central
+
+The phone link is only half of the device's Bluetooth life. To a *phone* the
+device is a **peripheral** — the phone scans, connects, and drives it. To a
+**heart-rate strap, power meter, or cadence sensor** it is the opposite: the
+**central**, the side that scans, connects, and subscribes. Both roles run on
+the **one radio**. trouble-host 0.7 runs a peripheral and a central role
+concurrently on a single `Stack`, and MPSL time-slices the airtime between them —
+so a sensor link and the phone link coexist with no second radio and no mode
+switch. The whole feature is **BLE-only**; there is no ANT+.
+
+<figure class="fig">
+<svg viewBox="0 0 720 340" role="img" aria-label="The device plays two BLE roles on one radio. On the left the companion phone is the central and the device is the peripheral it connects to — the phone link. On the right the device is itself the central, connecting out to three sensors: a heart-rate strap, a power meter, and a cadence sensor. A band along the bottom notes that a single radio carries both directions, with MPSL time-slicing the airtime between the peripheral (phone) and central (sensor) roles, and that sensors are open GATT servers connected by stored address with no bond, one saved slot per quantity.">
+  <defs>
+    <marker id="se-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="se-c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#33575b" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Two roles, one radio — peripheral to the phone, central to the sensors</text>
+
+  <!-- phone (device = peripheral) -->
+  <rect class="d-panel" x="24" y="128" width="128" height="84" rx="11" />
+  <text class="d-title" x="88" y="162" text-anchor="middle">companion app</text>
+  <text class="d-sub" x="88" y="182" text-anchor="middle">BLE central</text>
+  <text class="d-sub" x="88" y="198" text-anchor="middle">(iPhone)</text>
+
+  <!-- device -->
+  <rect class="d-panel" x="278" y="112" width="184" height="116" rx="12" style="fill:#eef2df" />
+  <text class="d-title" x="370" y="150" text-anchor="middle">OBC device</text>
+  <text class="d-sub" x="370" y="172" text-anchor="middle" style="fill:#3c6b39">peripheral · to phone</text>
+  <text class="d-sub" x="370" y="190" text-anchor="middle" style="fill:#33575b">central · to sensors</text>
+  <text class="d-sub" x="370" y="210" text-anchor="middle">one radio · nRF54L</text>
+
+  <!-- phone <-> device -->
+  <line class="d-flow" x1="152" y1="170" x2="276" y2="170" marker-start="url(#se-a)" marker-end="url(#se-a)" />
+  <text class="d-sub" x="214" y="160" text-anchor="middle" style="font-size:9px;fill:#3c6b39">the phone link</text>
+
+  <!-- sensors (device = central) -->
+  <rect class="d-panel-2" x="566" y="70" width="138" height="48" rx="10" />
+  <text class="d-label" x="635" y="90" text-anchor="middle" style="font-size:10.5px">heart-rate strap</text>
+  <text class="d-sub" x="635" y="106" text-anchor="middle" style="font-size:8.5px">HRS · 0x180D</text>
+
+  <rect class="d-panel-2" x="566" y="146" width="138" height="48" rx="10" />
+  <text class="d-label" x="635" y="166" text-anchor="middle" style="font-size:10.5px">power meter</text>
+  <text class="d-sub" x="635" y="182" text-anchor="middle" style="font-size:8.5px">Cycling Power · 0x1818</text>
+
+  <rect class="d-panel-2" x="566" y="222" width="138" height="48" rx="10" />
+  <text class="d-label" x="635" y="242" text-anchor="middle" style="font-size:10.5px">cadence sensor</text>
+  <text class="d-sub" x="635" y="258" text-anchor="middle" style="font-size:8.5px">CSC · 0x1816</text>
+
+  <!-- device -> each sensor -->
+  <line class="d-flow" x1="462" y1="150" x2="564" y2="96" style="stroke:#33575b" marker-end="url(#se-c)" />
+  <line class="d-flow" x1="462" y1="170" x2="564" y2="170" style="stroke:#33575b" marker-end="url(#se-c)" />
+  <line class="d-flow" x1="462" y1="192" x2="564" y2="244" style="stroke:#33575b" marker-end="url(#se-c)" />
+  <text class="d-sub" x="520" y="143" text-anchor="middle" style="font-size:9px;fill:#33575b">scan · connect · subscribe</text>
+
+  <!-- bottom band -->
+  <rect class="d-panel-2" x="24" y="292" width="680" height="40" rx="9" />
+  <text class="d-sub" x="364" y="309" text-anchor="middle" style="font-size:9.5px">one radio — <tspan style="fill:#a9501c">MPSL time-slices</tspan> the peripheral (phone) and central (sensor) roles; no second radio</text>
+  <text class="d-sub" x="364" y="325" text-anchor="middle" style="font-size:9px">sensors are open GATT servers — connected by stored address, <tspan style="fill:#a9501c">no bond</tspan>, one saved slot per quantity</text>
+</svg>
+<figcaption>The device wears both BLE hats at once. To the phone it is the <b>peripheral</b> (the phone link, left); to each sensor it is the <b>central</b> that scans, connects, and subscribes (right). A single radio carries both — <b>MPSL time-slices</b> the airtime, so there is no second radio and no switching between roles. Sensors need no bond: they are open GATT servers the manager reaches by a <b>stored address</b>, one saved slot per quantity (heart rate · power · cadence).</figcaption>
+</figure>
+
+**The manager loop: scan → connect → subscribe → decode → dispatch.** A small
+central-role task runs beside the peripheral lifecycle. Given the radio on and a
+sensor saved, it connects to the stored address, discovers the profile's
+measurement characteristic, reads the battery level once, subscribes to the
+notifications, and then just pumps them: each notification is decoded and its raw
+value dispatched. The decode is pure `no_std` byte→value parsing that lives in the
+radio-free [`obc-ble`](src:firmware/obc-ble) crate — Heart Rate Measurement
+(`0x2A37`), Cycling Power Measurement (`0x2A63`), CSC Measurement (`0x2A5B`), and
+Battery Level (`0x2A19`), plus a crank-revolution→rpm accumulator — so it is
+host-tested with no radio in the loop. The dispatched value lands in an
+[`obc-platform`](src:firmware/obc-platform/src/sensor_values.rs) mailbox the app
+drains like any other sensor — the **same** mailbox the simulator's sliders and
+the USB-injection `H`/`P`/`R` lines feed, so the app can't tell a real strap from
+an injected one (last-writer-wins). The app never learns BLE exists; to it a
+sensor is just *a thing that produces bpm.*
+
+**No bonding — sensors are open.** A strap or power meter is an open GATT server:
+no pairing, no passkey, no encryption. The manager connects by the address the
+rider saved and that's it. The phone-bond machinery is completely untouched — the
+single bond slot is the phone's alone, and a sensor never consumes it. (Sensor
+bonding, encrypted sensors, and ANT+ are all deliberately out of scope.)
+
+**One slot per quantity.** There are three fixed slots — heart rate, power,
+cadence — one saved sensor each. Cadence is the one *arbitrated* quantity: a saved
+**dedicated** cadence sensor owns it, but with none saved the crank data a power
+meter already reports fills the cadence slot, so a power meter doubles as a
+cadence source for free.
+
+**What a link costs, and the cap.** Every central link the host tracks costs real
+controller memory — about 2.3 KB of SoftDevice-Controller buffers plus host arena —
+so the number of concurrent sensor links is a pinned constant, `SENSOR_LINKS`,
+arbitrated by the same compile-time RAM budget assert as the rest of the BLE
+statics (the [#677](https://github.com/timohueser/OpenBikeComputer/issues/677)
+rule: everything sizeable is a summed `.bss` static). On the 256 KB DK it is **1** —
+the phone plus one sensor, enough to bring up a Garmin watch broadcasting HR; the
+512 KB **LM20 raises it to 3**, so all three quantities can be live at once. One
+link is about **+7 KB** of RAM over the phone-only build; three is about +12 KB.
+Runtime behaviour matches the phone link's discipline: the manager auto-reconnects
+with a ~15 s backoff whenever the radio is on and a slot is saved, a sensor link
+**parks with the radio switch** exactly like the phone link, and a value older than
+**5 s** renders `--` and records as *absent* — a dropped strap must never freeze
+its last reading into the log.
+
+**Where the values go.** Live, they drive three [stat tiles](../ui/#the-sensors-screen) —
+heart rate, power, cadence — plus per-ride averages and maxima. Recorded, they
+widen the ride's on-disk records: the freshest sample is stamped onto each logged
+track point and, at Finish, carried into the **ride object v2** — the very object
+the phone downloads. There is deliberately **no live sensor streaming to the
+phone**; like everything else, the phone gets the numbers *after* the ride, inside
+the ride object it syncs. Those recording formats — the track log and the v1/v2
+ride object — are the [recorded-rides section](../formats/#recorded-rides-the-track-log-and-the-ride-object)
+of the data-formats page (normative bytes in the
+[BLE interface spec §7.2](src:obc-ble-interface-spec.md)).
+
+---
+
+## Where this lives
+
+- The wire contract, normative: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md)
+- The host-tested, radio-free core — descriptor codecs, CRC-32, the transfer state machine: [`obc-ble`](src:firmware/obc-ble) ([`transfer.rs`](src:firmware/obc-ble/src/transfer.rs) · [`descriptor.rs`](src:firmware/obc-ble/src/descriptor.rs))
+- On the device — the GATT server, connection lifecycle, and the CoC data plane: [`obc-fw-nrf54l/src/ble/`](src:firmware/obc-fw-nrf54l/src/ble)
+- The central-role **sensor manager** — scan / connect / subscribe / decode / dispatch, the `SENSOR_LINKS` cap and its budget: [`obc-fw-nrf54l/src/ble/sensors.rs`](src:firmware/obc-fw-nrf54l/src/ble/sensors.rs)
+- The radio-free sensor profile codecs, the advertisement classifier, and the crank→rpm accumulator: [`obc-ble`](src:firmware/obc-ble) (`sensors.rs`)
+- The app-facing sensor mailboxes both the radio manager and the injection path feed: [`obc-platform/src/sensor_values.rs`](src:firmware/obc-platform/src/sensor_values.rs)
+- The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
+- The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
+- Shared fixtures pinning the byte layouts on both sides: [`protocol-vectors/`](src:protocol-vectors)
+- The route and ride formats that cross the link: [Data formats](../formats/)

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# obc — thin wrapper around `just` for OpenBikeComputer dev tasks.
+# Runs the repo's justfile from wherever you are (so relative MAP/GPX paths still
+# resolve against your current directory). Try `obc` with no args for the task list.
+set -euo pipefail
+
+# Resolve this script's real directory, following symlinks (e.g. ~/.local/bin/obc).
+src="${BASH_SOURCE[0]}"
+while [ -h "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+  src="$(readlink "$src")"; [[ "$src" != /* ]] && src="$dir/$src"
+done
+root="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+
+if ! command -v just >/dev/null 2>&1; then
+  echo "obc: 'just' is not installed — install it with:  cargo install just" >&2
+  exit 127
+fi
+
+exec just --justfile "$root/justfile" --working-directory "$PWD" "$@"

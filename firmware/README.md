@@ -1,96 +1,180 @@
 # OBC firmware (Rust)
 
-The OpenBikeComputer (OBC) firmware, as a Rust workspace: the device application
-and a desktop simulator share one rendering path for `.obcm` maps (target hardware
-nRF54L + LS021B7DD02, via `embedded-graphics`).
+The OpenBikeComputer Rust workspace: the device application and a desktop
+simulator share **one** rendering path for `.obcm` maps. This file is the
+**build / test / dev-loop guide** — for *how the system works* (crate graph,
+render pipeline, formats, UI) read the docs site:
+<https://timohueser.github.io/OpenBikeComputer/>. Per-crate roles are tabulated
+in the [repo README](../README.md#repository-layout).
 
-- **`obc-reader/`** — `no_std + alloc` crate, the pure parsing logic. Parses the OBCM **v5**
-  LOD-pyramid format ([spec](../OBCM_Spec.md)) — header, styles, LOD table, per-LOD
-  quadtree query + chunk decode, and `select_lod_for_mpp`. Dependency-light.
-- **`obc-render/`** — `no_std` crate, the *shared rendering path* —
-  `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering,
-  even-odd scanline polygon fill and line drawing — written generically over an
-  `embedded-graphics` `DrawTarget` so the host and the MCU run identical drawing
-  code.
-- **`obc-app/`** — `no_std` *application + hardware-abstraction layer* shared by
-  the simulator and the firmware. Owns *what the device is doing* — the camera,
-  the camera mode (follow-user / free), and the last known user fix — behind a
-  small HAL: a `LocationSource` (GPS / control panel / GPX replay) and an
-  `InputSource` (buttons). `App::render_frame` is the single per-frame entry point
-  both hosts call; it drives `obc-render`'s `Viewport` + `MapRenderer`. Builds for the
-  nRF54L bare-metal target (`thumbv8m.main-none-eabihf`).
-- **`obc-sim/`** — thin desktop *host shell* on **eframe/egui** (pure Rust, no
-  SDL): the device-screen window renders `obc-app` into an in-house `Framebuffer`
-  (`DrawTarget`) blitted to a GPU texture at integer scale; mouse drag pans and
-  scroll zooms (Free mode). It also owns the host-only `LocationSource`
-  (`SimLocationSource`), PNG output, and the color policy. Defaults to the
-  device's 240×320 / 64-color (RGB222) look so the preview matches the panel.
+The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
+(`obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
+(`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
+both simulator hosts share in `obc-host-core`), the map packer (`obc-pack`),
+and the test/host helpers. The
+**board crate** — `obc-fw-nrf54l` — is **`exclude`d** from the workspace (it has
+its own MCU target + `.cargo/config.toml`) and is built on its own; see
+[`obc-fw-nrf54l/README.md`](obc-fw-nrf54l/README.md) for the real-hardware target.
 
-The dependency direction is `obc-sim → obc-app → obc-render → obc-reader`; the firmware will be a
-second host beside `obc-sim`, reusing `obc-app`, `obc-render`, and `obc-reader` unchanged.
+## Prerequisites
 
-## Building
+| For… | You need |
+| :-- | :-- |
+| Anything Rust | A stable toolchain (`rustup`). |
+| The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew**. |
+| The packer (`obc-pack`) | System **GEOS** (`brew install geos`); optionally `osmium` on `PATH` for multi-`.pbf` input. |
+| Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
-Just Rust — the GUI host is pure Rust (eframe/egui), so **no SDL2/Homebrew setup
-is needed** anymore:
+## Build
 
 ```sh
-cargo build --release
-```
+# From this directory. Builds the simulator + shared crates + packer for the host.
+cargo build --release        # → target/release/{obc-sim, obc-pack}
 
-To check the shared crates still compile for the device, build them for the
-nRF54L application core:
-
-```sh
-rustup target add thumbv8m.main-none-eabihf
+# Confirm the shared stack still compiles for the nRF54L application core:
 cargo build -p obc-app --target thumbv8m.main-none-eabihf
 ```
 
-## Running
-
-Maps must be **v5** (`.obcm` files in an earlier format version won't load).
-`../freiburg.obcm` is a current v5 sample.
+The board crate is built from **inside** its own directory (its target is
+discovered from `.cargo/config.toml` by the working directory, not by
+`--manifest-path` — building it via `--manifest-path` from here
+silently targets the host and fails):
 
 ```sh
-# Interactive, simulating the device (240x320, 64 colors), 3x window scale:
-./target/release/obc-sim ../freiburg.obcm
+cd obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
 
-# Larger window / different simulated resolution:
-./target/release/obc-sim ../freiburg.obcm --size 480x640 --scale 2
-
-# Full-color (skip the 64-color quantization) to compare:
-./target/release/obc-sim ../freiburg.obcm --true-color
-
-# Headless: render one frame to PNG (no window):
-./target/release/obc-sim ../freiburg.obcm --png out.png
-
-# Capture the live GUI's first composited frame, then exit (good for verifying
-# the on-screen result without a window manager in the loop):
-./target/release/obc-sim ../freiburg.obcm --screenshot gui.png
+# The BLE build (companion-app link): the same firmware with the nrf-sdc + TrouBLE stack
+# folded in. The board crate README has the pins, flashing, and on-glass verify.
+cd obc-fw-nrf54l && cargo build --release --no-default-features --features ble
 ```
 
-Interactive controls: drag to pan, scroll to zoom.
+The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
+`cargo test` below already exercises it. The wire contract those bytes cross to the phone
+is [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md); the concepts are on the docs
+site under [the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/).
 
-## Status
+## Test
 
-The full app runs on the desktop simulator; the shared stack (`obc-reader`,
-`obc-route`, `obc-render`, `obc-app`) compiles `no_std` for the device target.
+```sh
+cargo test            # the whole host workspace
+cargo test -p obc-pack    # just the packer (fixtures under ../packer/tests/corpus/)
+```
 
-- **Map render** (`obc-render`) — per-LOD quadtree query + chunk decode,
-  meters-per-pixel layer selection, even-odd polygon fill with holes, view-clipped
-  weighted polylines, z-ordering, RGB565→RGB222 quantization.
-- **App + HAL** (`obc-app`) — a `LocationSource`/`InputSource`-driven app behind one
-  `App::render_frame` entry point: follow/free + heading-up camera, a screen stack
-  (Home, Map with a pan mode, Menu, Route menu, Ride control, Statistics), an
-  encoder + Back gesture recognizer, and a user-position marker.
-- **Routes & tracking** (`obc-route`, the OBCR route format) — load a `.obcr`
-  route, live map-matching (progress / off-route), actually-ridden distance / time
-  / climb (barometer), a zoomable elevation profile, a recorded breadcrumb, and a
-  ride log exported back to GPX.
-- **Host** (`obc-sim`) — an eframe/egui control panel, GPX replay as a simulated
-  GPS, 1:1 physical-size preview, and PNG / scripted headless capture.
+`cargo test` does **not** touch the excluded board crate.
 
-**Next:** Settings / Shutdown screens and a Ride-control rework; richer line
-styling (dashed / two-color lines — a future OBCM v6 — and road casing); then the
-real device front-end (embassy + LS021B7DD02 driver, GPS / GPIO / storage) as a
-second host beside `obc-sim`, deferred until the hardware is in hand.
+### Render benchmark + pixel-hash tripwire
+
+`obc-bench` renders six fixed scenes (riding / mid / overview × north-up /
+rotated) through the real reader → renderer pipeline over a deterministic
+fixture and prints per-stage timings plus a frame hash per scene. CI re-renders
+them and fails if any hash drifts from the committed golden file — timings are
+printed but never gated.
+
+```sh
+cargo run -p obc-bench --release                                  # the timing/hash table
+cargo run -p obc-bench --release -- --check obc-bench/hashes.txt  # what CI runs
+```
+
+A pure refactor must leave the hashes untouched. An **intentional** rendering
+change regenerates the golden file in the same PR (that's the review signal):
+
+```sh
+cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt
+```
+
+One-off runs against a real map:
+`cargo run -p obc-bench --release -- --map ../freiburg.obcm --mpp 4 --heading 35`.
+
+## Format
+
+`rustfmt.toml` is committed (`max_width = 120`, `use_small_heuristics = "Max"`),
+so let rustfmt own style — don't hand-format. Formatting takes **three
+invocations**, and CI checks all of them (the workspace is a *virtual* manifest,
+so `--all` is required or it formats nothing; the board crate and the bootloader
+are excluded, so `--all` skips them):
+
+```sh
+cargo fmt --all                                    # the workspace
+cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml # the board crate, separately
+cargo fmt --manifest-path obc-boot/Cargo.toml      # the bootloader, separately
+```
+
+## Run the simulator
+
+`obc-sim` renders `.obcm` maps (which must be **v5**) through the exact code the
+firmware runs. `../freiburg.obcm` is a current sample.
+
+```sh
+# Interactive: device look (240×320, 64 colors), 3× window scale. Drag to pan,
+# scroll to zoom.
+./target/release/obc-sim ../freiburg.obcm
+
+./target/release/obc-sim ../freiburg.obcm --size 480x640 --scale 2  # bigger window
+./target/release/obc-sim ../freiburg.obcm --true-color             # skip 64-color quantization
+./target/release/obc-sim ../freiburg.obcm --gpx ../kandel.gpx      # replay a GPX as a fake GPS
+./target/release/obc-sim ../freiburg.obcm --png out.png            # headless one-frame render
+./target/release/obc-sim ../freiburg.obcm --screenshot gui.png     # capture the live GUI's first frame
+```
+
+Run `obc-sim --help` for the full flag set (routes/tracks folders, `--import`,
+`--physical`/`--calibrate`, `--script`/`--boot`, headless `--center`/`--zoom`).
+Packing maps and the web builder are covered in the [repo README](../README.md).
+
+## Run the web demo (`obc-web-demo`)
+
+The landing page's live demo is the same shared crates compiled to wasm behind a
+small `obc_demo_*` API (no egui/wgpu — the page's JS owns the frame loop). Trunk
+drives the build from the site config (`rustup target add wasm32-unknown-unknown`
++ `cargo install trunk` once):
+
+```sh
+# From the repo root. Dev server with rebuild-on-change:
+trunk serve --config docs/Trunk.toml           # http://127.0.0.1:8080/
+
+# The shipped, wasm-opt'd binary (what CI + Pages deploy build):
+trunk build --release --config docs/Trunk.toml # → docs/dist/
+```
+
+The demo core is target-independent, so its unit tests run in the plain
+`cargo test` above — no browser needed for the logic.
+
+## Firmware update images (OBCU)
+
+Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header
+plus the raw app image — dropped on the SD card as `/UPDATE.BIN`. The byte format is
+[`OBCU_Spec.md`](../OBCU_Spec.md); the shared codec + boot-decision logic live in
+`obc-dfu` (a `no_std` workspace member, host-tested by the `cargo test` above). The
+producer is `obc-mkimage`.
+
+The pipeline is **objcopy → wrap**. Strip the board ELF to a raw binary (vector table
+first), then wrap it:
+
+```sh
+# From the board crate — its .cargo/config.toml selects the nRF54L target (see its README).
+# cargo-binutils provides `cargo objcopy`; `-O binary` emits the raw image in LMA order.
+cd obc-fw-nrf54l
+cargo objcopy --release -- -O binary app.bin
+# (equivalently, on the ELF: llvm-objcopy -O binary target/<triple>/release/obc-fw-nrf54l app.bin)
+
+# Wrap into an OBCU container tagged with the build's git describe.
+cargo run -p obc-mkimage -- wrap \
+    --bin app.bin \
+    --version "$(git describe --always --dirty)" \
+    --out UPDATE.BIN
+
+# Inspect: decode + verify both CRCs (non-zero exit if invalid).
+cargo run -p obc-mkimage -- inspect UPDATE.BIN
+```
+
+`wrap` refuses an image over the app-slot limit (`MAX_IMAGE_LEN`, 1,480,000 bytes)
+and **warns** if the binary's first word isn't a plausible initial stack pointer in
+RAM (`0x2000_0000 … 0x2004_0000`) — a raw `.bin` starts with the vector table, so a
+failed check usually means an ELF or a wrong-section-order strip slipped through.
+
+Installing a staged `UPDATE.BIN` on the device is the app-side armer (S4, #619): copy
+the file to the card root and trigger the install — from the S5 UI once it lands, or
+today over the debug VCOM link (`dfu-install`; recipe in the
+[board README](obc-fw-nrf54l/README.md#triggering-a-firmware-update-over-the-vcom-dfu-install-s4-619)).
+The armer validates the file, snapshots the running image to `/ROLLBACK.BIN`, arms the
+boot-state page, and resets into `obc-boot`, which does the actual flash
+([its README](obc-boot/README.md) has the LED codes).

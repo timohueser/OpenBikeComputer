@@ -1,23 +1,20 @@
-//! `land.rs` — generate the land-fill polygons for an extract by clipping the
-//! global [land-polygons-split-3857] dataset to the map's bounding box. Self-
-//! contained: no GIS stack, just a direct shapefile read + closed-form
-//! reprojection + a GEOS clip.
+//! `land.rs` — land-fill polygons for an extract, by clipping the global
+//! [land-polygons-split-3857] dataset to the map bbox. No GIS stack: a direct
+//! shapefile read + closed-form reprojection + a GEOS clip.
 //!
 //! [land-polygons-split-3857]: https://osmdata.openstreetmap.de/data/land-polygons.html
 //!
-//!   - **Shapefile read** — the `.shp` is parsed directly (the polygon record
-//!     format is trivial), with a per-record **bounding-box skip** so only records
-//!     that touch the query box are decoded (the dataset has no spatial index).
-//!   - **Reproject** — EPSG:3857 here is the *Web Mercator Auxiliary Sphere*
-//!     (`SPHEROID` radius = `6378137`, the `.prj` confirms), i.e. the closed-form
-//!     spherical mercator, computed directly below — no PROJ datum grids.
-//!   - **Clip** — a GEOS `intersection` against the box built from the forward-
-//!     projected bbox corners, done in 3857 *before* reprojecting the result.
+//!   - **Shapefile read** — parse the `.shp` directly, with a per-record
+//!     bounding-box skip so only records touching the query box are decoded (the
+//!     dataset has no spatial index).
+//!   - **Reproject** — EPSG:3857 here is the Web Mercator Auxiliary Sphere
+//!     (`SPHEROID` radius `6378137`, per the `.prj`): closed-form spherical
+//!     mercator, no PROJ datum grids.
+//!   - **Clip** — a GEOS `intersection` against the forward-projected bbox box,
+//!     done in 3857 *before* reprojecting the result.
 //!
-//! Output is one [`Geom::Polygon`] per land face (a clip can split one shapefile
-//! polygon into several, or yield a multipolygon — we flatten to simple polygons,
-//! like the relation path, so each flows through the existing simplify+quadtree
-//! path; `main.rs` styles them with the `natural.land` style).
+//! Output is one [`Geom::Polygon`] per land face (flattened to simple polygons,
+//! like the relation path, then styled `natural.land` in `main.rs`).
 
 use std::fs::File;
 use std::io::{BufReader, ErrorKind, Read};
@@ -25,12 +22,11 @@ use std::path::{Path, PathBuf};
 
 use geos::{Geom as _, Geometry};
 
-use crate::geom::{collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
+use crate::geom::{box_polygon, collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
 
 /// EPSG:3857 auxiliary-sphere radius = WGS84 semi-major axis (see the `.prj`).
 const R: f64 = 6_378_137.0;
 
-/// Where the dataset is cached (`~/.cache/obcm/land`).
 const LAND_URL: &str = "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip";
 
 // --- Reprojection (closed-form spherical Web Mercator) ---------------------
@@ -59,7 +55,7 @@ fn reproject_ring(ring: &mut [(f64, f64)]) {
 }
 
 /// Reproject every vertex of a (possibly multi/nested) geometry from 3857 → deg,
-/// in place — applied to a clip result before it is split into polygons.
+/// in place.
 fn reproject_geom(g: &mut Geom) {
     match g {
         Geom::Line(c) => reproject_ring(c),
@@ -80,9 +76,8 @@ fn reproject_geom(g: &mut Geom) {
 
 // --- Public entry ----------------------------------------------------------
 
-/// Land polygons for `bbox_deg = (min_lon, min_lat, max_lon, max_lat)`, clipped to
-/// it and reprojected to degrees. One [`Geom::Polygon`] per face. Mirrors
-/// `land_ingest.get_land_polygons`.
+/// Land polygons for `bbox_deg = (min_lon, min_lat, max_lon, max_lat)`, clipped and
+/// reprojected to degrees. One [`Geom::Polygon`] per face.
 pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64)) -> Result<Vec<Geom>, String> {
     let shp = ensure_dataset()?;
     let (min_lon, min_lat, max_lon, max_lat) = bbox_deg;
@@ -91,7 +86,7 @@ pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64)) -> Result<Vec<Geom>, St
     let (qminx, qminy) = merc_forward(min_lon, min_lat);
     let (qmaxx, qmaxy) = merc_forward(max_lon, max_lat);
     let qbox = (qminx, qminy, qmaxx, qmaxy);
-    let box_geom = box_polygon(qbox)?;
+    let box_geom = box_polygon(qbox).map_err(|e| format!("clip box: {e}"))?;
 
     let mut out = Vec::new();
     read_shapefile(&shp, qbox, &box_geom, &mut out)?;
@@ -126,8 +121,7 @@ fn read_shapefile(
     out: &mut Vec<Geom>,
 ) -> Result<(), String> {
     let file = File::open(shp).map_err(|e| format!("open {}: {e}", shp.display()))?;
-    // A large buffer keeps the per-record header reads + body skips mostly in
-    // memory, so the scan is ~one sequential pass over the (~1.3 GB) file.
+    // Large buffer so the scan is ~one sequential pass over the (~1.3 GB) file.
     let mut r = BufReader::with_capacity(1 << 20, file);
 
     let mut header = [0u8; 100];
@@ -147,7 +141,12 @@ fn read_shapefile(
             }
             return Err(format!("read record header: {e}"));
         }
-        let content_len = (be_i32(&rh[4..8]) as i64) * 2; // bytes of record content
+        // Content length (16-bit words → bytes). Shorter than the shape-type field
+        // would make the skip seeks below go BACKWARDS and loop forever — reject.
+        let content_len = (be_i32(&rh[4..8]) as i64) * 2;
+        if content_len < 4 {
+            return Err(format!("{}: malformed record (content length {content_len})", shp.display()));
+        }
 
         // Shape type (little-endian) leads the content.
         let mut t = [0u8; 4];
@@ -160,6 +159,9 @@ fn read_shapefile(
         }
 
         // Record MBR (4 doubles) — the bounding-box skip filter.
+        if content_len < 4 + 32 {
+            return Err(format!("{}: polygon record too short ({content_len} bytes)", shp.display()));
+        }
         let mut bbuf = [0u8; 32];
         r.read_exact(&mut bbuf).map_err(|e| format!("read record bbox: {e}"))?;
         consumed += 32;
@@ -210,12 +212,11 @@ fn parse_polygon_rings(body: &[u8]) -> Result<Vec<Vec<(f64, f64)>>, String> {
     Ok(rings)
 }
 
-/// Clip one shapefile record's rings (in 3857) to the box, reproject, and append
-/// the resulting polygons. A record fully inside the box skips the GEOS clip — an
-/// `intersection` of a contained polygon would return it unchanged.
+/// Clip one record's rings (in 3857) to the box, reproject, and append the polygons.
+/// A record fully inside the box skips the GEOS clip (intersection would return it
+/// unchanged).
 fn process_record(rings: Vec<Vec<(f64, f64)>>, fully_inside: bool, box_geom: &Geometry, out: &mut Vec<Geom>) {
-    // Fast path: a single-ring polygon already inside the box needs no GEOS at
-    // all (the common case for inland extracts) — just reproject and emit.
+    // A single-ring polygon already inside the box needs no GEOS — reproject + emit.
     if fully_inside && rings.len() == 1 {
         let mut ext = rings.into_iter().next().unwrap();
         if ext.len() < 4 {
@@ -267,14 +268,6 @@ fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
     mls.build_area().ok()
 }
 
-/// The clip box as a GEOS polygon, in `box(minx,miny,maxx,maxy)` ring order (same
-/// as [`crate::geom::clip_to_box`]).
-fn box_polygon((minx, miny, maxx, maxy): (f64, f64, f64, f64)) -> Result<Geometry, String> {
-    let ring = [(maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny), (maxx, miny)];
-    let lr = Geometry::create_linear_ring(ring_to_coordseq(&ring)).map_err(|e| format!("clip box ring: {e}"))?;
-    Geometry::create_polygon(lr, vec![]).map_err(|e| format!("clip box polygon: {e}"))
-}
-
 // --- Dataset cache ---------------------------------------------------------
 
 fn cache_dir() -> Result<PathBuf, String> {
@@ -285,22 +278,38 @@ fn cache_dir() -> Result<PathBuf, String> {
 /// Return the cached `land_polygons.shp`, downloading + extracting the dataset on
 /// first use (~950 MB). There's no `Last-Modified` freshness check — delete the
 /// cache dir to force a refresh.
+///
+/// Concurrency-safe: download + extract go to pid-suffixed temp paths, then the
+/// extracted directory is renamed into place. Two cold-cache packers racing each
+/// other both succeed — the loser's rename fails against the winner's directory
+/// and its temp files are cleaned up.
 fn ensure_dataset() -> Result<PathBuf, String> {
     let dir = cache_dir()?;
-    let shp = dir.join("land-polygons-split-3857/land_polygons.shp");
+    let dataset = dir.join("land-polygons-split-3857");
+    let shp = dataset.join("land_polygons.shp");
     if shp.exists() {
         return Ok(shp);
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let zip = dir.join("land-polygons.zip");
+    let pid = std::process::id();
+    let zip = dir.join(format!("land-polygons.zip.part-{pid}"));
+    let extract_dir = dir.join(format!("extract-{pid}"));
     let zip_s = zip.to_string_lossy();
-    let dir_s = dir.to_string_lossy();
+    let extract_s = extract_dir.to_string_lossy();
     eprintln!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ...");
     run_tool("curl", &["-fL", "--retry", "3", "-o", &zip_s, LAND_URL])?;
     eprintln!("Extracting land polygons ...");
-    run_tool("unzip", &["-o", "-q", &zip_s, "-d", &dir_s])?;
+    run_tool("unzip", &["-o", "-q", &zip_s, "-d", &extract_s])?;
+    // Move the extracted dataset into place; a rename failure is fine iff a
+    // concurrent run installed the dataset first.
+    let installed = std::fs::rename(extract_dir.join("land-polygons-split-3857"), &dataset);
+    let _ = std::fs::remove_file(&zip);
+    let _ = std::fs::remove_dir_all(&extract_dir);
     if !shp.exists() {
-        return Err(format!("land dataset missing after download: {}", shp.display()));
+        return Err(match installed {
+            Err(e) => format!("install land dataset {}: {e}", dataset.display()),
+            Ok(()) => format!("land dataset missing after download: {}", shp.display()),
+        });
     }
     Ok(shp)
 }
@@ -357,5 +366,77 @@ mod tests {
         assert_eq!(rings.len(), 1);
         assert_eq!(rings[0].len(), 5);
         assert_eq!(rings[0][2], (10.0, 10.0));
+    }
+
+    // --- geos_polygon_from_rings + process_record ---------------------------
+
+    /// A square in 3857 metres, CCW, closed. `cx,cy` = lower-left corner, `s` = side.
+    fn box3857(cx: f64, cy: f64, s: f64) -> Vec<(f64, f64)> {
+        vec![(cx, cy), (cx + s, cy), (cx + s, cy + s), (cx, cy + s), (cx, cy)]
+    }
+
+    /// Single ring ⇒ a plain GEOS polygon, no holes.
+    #[test]
+    fn geos_polygon_from_one_ring_is_hole_free() {
+        let g = geos_polygon_from_rings(&[box3857(1_000_000.0, 2_000_000.0, 1000.0)]).expect("polygon");
+        assert_eq!(g.get_num_interior_rings().unwrap(), 0, "a lone outer ring has no holes");
+    }
+
+    /// Outer + concentric inner ring ⇒ `build_area`'s even-odd rule attaches the
+    /// inner as a hole (the real dataset's lakes-with-islands).
+    #[test]
+    fn geos_polygon_from_outer_and_inner_attaches_hole() {
+        let outer = box3857(0.0, 0.0, 10_000.0);
+        let inner = box3857(3_000.0, 3_000.0, 4_000.0); // fully inside the outer
+        let g = geos_polygon_from_rings(&[outer, inner]).expect("polygon");
+        assert_eq!(g.get_num_interior_rings().unwrap(), 1, "even-odd nesting makes the inner ring a hole");
+    }
+
+    /// `process_record` fully-inside single-ring fast path: no GEOS clip, just
+    /// reproject + emit, matching `merc_inverse` exactly. `box_geom` is unused here.
+    #[test]
+    fn process_record_fully_inside_single_ring_skips_clip() {
+        let s = 1000.0;
+        let (cx, cy) = (1_000_000.0, 2_000_000.0);
+        let ring3857 = box3857(cx, cy, s);
+        let dummy = box_polygon((0.0, 0.0, 1.0, 1.0)).unwrap();
+
+        let mut out = Vec::new();
+        process_record(vec![ring3857.clone()], /* fully_inside */ true, &dummy, &mut out);
+        assert_eq!(out.len(), 1, "one polygon emitted");
+        match &out[0] {
+            Geom::Polygon { exterior, interiors } => {
+                assert!(interiors.is_empty(), "single-ring fast path has no holes");
+                for (got, src) in exterior.iter().zip(ring3857.iter()) {
+                    let (elon, elat) = merc_inverse(src.0, src.1);
+                    assert!((got.0 - elon).abs() < 1e-12 && (got.1 - elat).abs() < 1e-12, "vertex reprojected exactly");
+                }
+            }
+            other => panic!("expected a Polygon, got {other:?}"),
+        }
+    }
+
+    /// `process_record` GEOS-clip path: a record straddling the query box is clipped,
+    /// reprojected, and stays within the box (in degrees).
+    #[test]
+    fn process_record_straddling_is_clipped_to_box() {
+        let qbox = (0.0, 0.0, 10_000.0, 10_000.0);
+        let box_geom = box_polygon(qbox).unwrap();
+        let record = box3857(-5_000.0, 2_000.0, 20_000.0); // overhangs left + right
+
+        let mut out = Vec::new();
+        process_record(vec![record], /* fully_inside */ false, &box_geom, &mut out);
+        assert_eq!(out.len(), 1, "the clipped record yields one polygon");
+
+        let (lon_min, lat_min) = merc_inverse(qbox.0, qbox.1);
+        let (lon_max, lat_max) = merc_inverse(qbox.2, qbox.3);
+        if let Geom::Polygon { exterior, .. } = &out[0] {
+            for &(lon, lat) in exterior {
+                assert!(lon >= lon_min - 1e-9 && lon <= lon_max + 1e-9, "clipped lon {lon} within box");
+                assert!(lat >= lat_min - 1e-9 && lat <= lat_max + 1e-9, "clipped lat {lat} within box");
+            }
+        } else {
+            panic!("expected a Polygon");
+        }
     }
 }

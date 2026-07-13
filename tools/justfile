@@ -1,0 +1,319 @@
+# OpenBikeComputer dev tasks — invoke with `obc <task>` (see `obc setup`), or
+# `just --justfile tools/justfile <task>`. This lives in tools/; OBC_ROOT is its parent
+# (the repo root). Personal defaults (map/gpx/preset/toolchain paths) live in a gitignored
+# `tools/obc.local` — copy tools/obc.local.example and edit. `OBC_DRY_RUN=1 obc …` prints
+# the underlying commands without running them.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+set positional-arguments := true
+
+export OBC_ROOT  := parent_directory(justfile_directory())   # the repo root
+export OBC_TOOLS := justfile_directory()                     # this tools/ dir
+lib := justfile_directory() / "obc-dev.sh"
+
+# List the available tasks.
+default:
+    @just --justfile '{{justfile()}}' --list --unsorted
+
+# ── Simulator ────────────────────────────────────────────────────────────────
+
+# Run the simulator (always --physical). Args: [MAP.obcm] [TRACK.gpx] [-- extra sim flags].
+# MAP defaults to $OBC_MAP or the newest .obcm in the repo root; TRACK to $OBC_GPX
+# or the bundled grimsel-climb.gpx. Pass `none` as the track to run without a GPS.
+# Run the simulator on a map + GPX, always at physical size. Args: [MAP] [TRACK.gpx] [-- sim flags]
+sim *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    split_args "$@"
+    mapf="$(resolve_map "${_POS[0]:-}")" || exit 1
+    gpxf="$(resolve_gpx "${_POS[1]:-}")"
+    cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
+    [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
+    (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
+    cd "$OBC_ROOT/firmware"; _run "${cmd[@]}"
+
+# ── Board firmware ───────────────────────────────────────────────────────────
+
+# Build & flash the board. Opts (space-separated): ble  debug-uart  synth  build.
+# e.g.  obc flash            (real sensors)   obc flash debug-uart
+#       obc flash ble        (companion link) obc flash ble debug-uart
+#       obc flash build      (compile only, no flash)
+# Build & flash the board. Opts: ble debug-uart synth build (e.g. obc flash ble debug-uart)
+flash *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_riscv || exit 1
+    ble=0 du=0 synth=0 action=run
+    for o in "$@"; do case "$o" in
+      ble)                ble=1 ;;
+      debug-uart|du)      du=1 ;;
+      synth)              synth=1 ;;
+      build|build-only)   action=build ;;
+      *) _err "unknown flash option: '$o'  (want: ble debug-uart synth build)"; exit 1 ;;
+    esac; done
+    [[ "$action" == run ]] && { ensure_probe || exit 1; }
+    a=(); feats=()
+    (( ble ))   && { a+=(--no-default-features); feats+=(ble); }
+    (( du ))    && feats+=(debug-uart)
+    (( synth )) && feats+=(synth)
+    (( ${#feats[@]} )) && a+=(--features "$(IFS=,; echo "${feats[*]}")")
+    cd "$OBC_ROOT/firmware/obc-fw-nrf54l"
+    _run cargo "$action" --release "${a[@]}"
+
+# Feed a recorded ride to a debug-uart board over VCOM (obc-usb-host).
+# Args: [TRACK.gpx] [-- --port TTY | --baud N | --list].
+# Feed a GPX to a debug-uart board over VCOM. Args: [TRACK.gpx] [-- --port TTY | --list]
+uart *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    split_args "$@"
+    cd "$OBC_ROOT/firmware"
+    # `--list` just enumerates serial ports; no GPX needed.
+    for e in "${_EXTRA[@]:-}"; do [[ "$e" == --list ]] && { _run cargo run --release -p obc-usb-host -- --list; exit 0; }; done
+    gpxf="$(resolve_gpx "${_POS[0]:-}")"
+    [[ -z "$gpxf" || "$gpxf" == none ]] && { _err "no GPX to feed. Pass one:  obc uart <track.gpx>"; exit 1; }
+    cmd=(cargo run --release -p obc-usb-host -- --gpx "$gpxf")
+    (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
+    _run "${cmd[@]}"
+
+# Indoor ride in one step: flash the debug-uart firmware, then feed it a GPX over
+# VCOM. Args: [ble] [TRACK.gpx]. Flashes with `probe-rs download` (returns cleanly,
+# no RTT), then runs the feeder TUI in the foreground. Want defmt logs too? Run
+# `obc flash debug-uart` in a second terminal instead.
+# One step: flash debug-uart firmware, then feed it a GPX. Args: [ble] [TRACK.gpx]
+debug *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_riscv || exit 1; ensure_probe || exit 1
+    ble=""; gpx=""
+    for a in "$@"; do case "$a" in ble) ble=ble ;; *) gpx="$a" ;; esac; done
+    feats="debug-uart"; nodef=()
+    [[ -n "$ble" ]] && { feats="ble,debug-uart"; nodef=(--no-default-features); }
+    elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
+    _say "building debug-uart firmware…"
+    ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release "${nodef[@]}" --features "$feats" )
+    _say "flashing over J-Link…"
+    _run probe-rs download --chip nRF54L15 --verify "$elf"
+    _run probe-rs reset --chip nRF54L15
+    _say "flashed — starting the feeder (Ctrl-C to stop)…"
+    just --justfile '{{justfile()}}' uart ${gpx:+"$gpx"}
+
+# Attach to a running board and stream defmt/RTT — no rebuild, no reflash. Bypasses
+# cargo entirely (so nothing recompiles) and uses `probe-rs attach` on the last-built
+# ELF (attach programs nothing). Flash first with `obc flash`.
+rtt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_probe || exit 1
+    elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
+    [[ -f "$elf" ]] || { _err "no board ELF yet — flash once first:  obc flash [ble] [debug-uart]"; exit 1; }
+    _say "attaching to nRF54L15 — no rebuild, no reflash (decoding $(basename "$elf"))"
+    _run probe-rs attach --chip nRF54L15 "$elf"
+
+# ── Map packing & the web builder ────────────────────────────────────────────
+
+# Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
+# [-- --chunk-size N | --no-land]. Preset defaults to packer/presets/default.json; the
+# output defaults to <region>.obcm in the repo root (so `obc sim` picks it up next).
+# Pack an OSM extract to a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
+pack *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    split_args "$@"
+    pbf="${_POS[0]:-}"
+    [[ -n "$pbf" ]] || { _err "usage: obc pack <region.osm.pbf> [preset.json] [out.obcm]"; exit 1; }
+    pbf="$(_abspath "$pbf")"
+    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/packer/presets/default.json}}"; preset="$(_abspath "$preset")"
+    out="${_POS[2]:-}"
+    if [[ -n "$out" ]]; then out="$(_abspath "$out")"
+    else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
+    ( cd "$OBC_ROOT/firmware" && _run cargo build --release -p obc-pack )
+    cmd=("$OBC_ROOT/firmware/target/release/obc-pack" "$pbf" "$preset" "$out")
+    (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
+    _run "${cmd[@]}"
+    _say "wrote $out"
+
+# Run the web map builder at http://localhost:8000 (bootstraps the venv, obc-pack,
+# and the frontend on first run). Extra args pass through (e.g. --no-browser).
+# Run the web map builder on :8000 (bootstraps venv/frontend on first run)
+web *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    cd "$OBC_ROOT"
+    export OBC_PACK_BIN="$OBC_ROOT/firmware/target/release/obc-pack"
+    if [[ ! -x .venv/bin/python ]]; then
+      _say "creating .venv + installing packer deps…"
+      _run python3 -m venv .venv
+      _run .venv/bin/pip install -q --upgrade pip
+      _run .venv/bin/pip install -q -r packer/requirements.txt
+    fi
+    [[ -x "$OBC_PACK_BIN" ]] || { _say "building obc-pack…"; ( cd firmware && _run cargo build --release -p obc-pack ); }
+    if [[ ! -d packer/web_builder/static/dist ]]; then
+      _say "building the frontend…"; ( cd packer/web_builder/frontend && _run npm ci && _run npm run build )
+    fi
+    _run .venv/bin/python -m packer.web_builder "$@"
+
+# ── Host workspace chores ────────────────────────────────────────────────────
+
+# Build the host workspace (simulator + shared crates + packer).
+build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    cd "$OBC_ROOT/firmware"; _run cargo build --release
+
+# Run the host test suite. Extra args pass through (e.g. -p obc-pack).
+test *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    cd "$OBC_ROOT/firmware"; _run cargo test "$@"
+
+# Format everything: the workspace AND the excluded board crate (the required two-step).
+fmt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT/firmware"
+    _run cargo fmt --all
+    _run cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml
+
+# Render benchmark + pixel-hash tripwire. Args: (none) | check | write.
+bench *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    cd "$OBC_ROOT/firmware"
+    case "${1:-}" in
+      check) _run cargo run -p obc-bench --release -- --check obc-bench/hashes.txt ;;
+      write) _run cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt ;;
+      *)     _run cargo run -p obc-bench --release ;;
+    esac
+
+# Confirm the shared stack still compiles for the device target (no board crate).
+check-device:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT/firmware"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
+
+# Run the CI rust gates locally — "will CI pass?" before you push. Mirrors the required
+# `ci` job (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
+# deny/wasm if cargo-deny/trunk are installed). Filter to a subset, e.g.:
+#   obc check fmt         obc check test         obc check board docs
+check *args:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    sel=("$@"); (( ${#sel[@]} )) || sel=(fmt clippy test device docs board deny wasm)
+    want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
+    FAILED=(); PASSED=(); SKIPPED=()
+    step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
+             if _run "$@"; then PASSED+=("$label"); else _err "$label FAILED"; FAILED+=("$label"); fi; }
+    cd "$OBC_ROOT/firmware"
+    if want fmt; then
+      step "fmt (workspace)"  cargo fmt --all --check
+      step "fmt (board crate)" cargo fmt --check --manifest-path obc-fw-nrf54l/Cargo.toml
+    fi
+    want clippy && step "clippy (workspace, all-targets/features)" \
+      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    if want test; then
+      step "test (workspace, all features)" cargo test --workspace --all-features --locked
+      step "bench pixel-hash tripwire" cargo run -p obc-bench --release --locked -- --check obc-bench/hashes.txt
+    fi
+    want device && step "device build (obc-app @ thumbv8m)" \
+      cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
+    if want board; then
+      if ensure_riscv 2>/dev/null; then
+        pushd "$OBC_ROOT/firmware/obc-fw-nrf54l" >/dev/null
+        step "board clippy (default)"        cargo clippy --locked -- -D warnings
+        step "board clippy (debug-uart)"     cargo clippy --locked --features debug-uart -- -D warnings
+        step "board build (default, release)" cargo build --release --locked
+        step "board clippy (ble)"            cargo clippy --locked --no-default-features --features ble -- -D warnings
+        step "board build (ble, release)"    cargo build --release --locked --no-default-features --features ble
+        popd >/dev/null
+      else _warn "skip board gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("board"); fi
+    fi
+    if want deny; then
+      if command -v cargo-deny >/dev/null 2>&1; then
+        step "deny (workspace)"   cargo deny --manifest-path "$OBC_ROOT/firmware/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (board crate)" cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+      else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
+    fi
+    if want wasm; then
+      if command -v trunk >/dev/null 2>&1; then step "wasm (obc-sim → wasm)" trunk build --config "$OBC_ROOT/docs/Trunk.toml"
+      else _warn "skip wasm — trunk not installed (cargo install trunk)"; SKIPPED+=("wasm"); fi
+    fi
+    want docs && step "docs link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
+    printf '\n'; _say "check summary"
+    (( ${#PASSED[@]} ))  && _ok   "passed:  ${PASSED[*]}"
+    (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"
+    if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
+    _ok "all run gates passed"
+
+# ── Meta ─────────────────────────────────────────────────────────────────────
+
+# Check your toolchain and report what's missing. Add --install to fix what it can
+# (rustup targets, just, probe-rs, the venv, and GEOS / RISC-V gcc via scripts/).
+doctor *args:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    source "{{lib}}"; obc_init
+    install=0; for a in "$@"; do [[ "$a" == --install ]] && install=1; done
+    _say "OpenBikeComputer toolchain check"
+    MISSING=()
+    ck() { # ck <key> <label> <test> [hint]
+      if eval "$3" >/dev/null 2>&1; then _ok "$2"; else _err "$2"; [[ -n "${4:-}" ]] && _hint "$4"; MISSING+=("$1"); fi
+    }
+    ck cargo    "rust / cargo"              'command -v cargo'  'install rustup: https://rustup.rs'
+    ck just     "just"                      'command -v just'   'obc doctor --install'
+    ck thumbv8m "device target (thumbv8m)"  'rustup target list --installed | grep -q thumbv8m.main-none-eabihf' 'obc doctor --install'
+    ck wasm     "wasm target (docs demo)"   'rustup target list --installed | grep -q wasm32-unknown-unknown'     'obc doctor --install'
+    ck geos     "GEOS (obc-pack)"           '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'obc doctor --install (builds GEOS ≥3.14 from source)'
+    ck riscv    "RISC-V gcc (board FLPR)"   'command -v riscv64-elf-gcc || command -v riscv-none-elf-gcc || command -v riscv64-unknown-elf-gcc || { [[ -n "${RISCV_GCC:-}" && -x "${RISCV_GCC:-/nonexistent}" ]]; }' 'obc doctor --install (fetches an xPack toolchain)'
+    ck probe    "probe-rs (flashing)"       'command -v probe-rs' 'obc doctor --install'
+    ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
+    ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
+    m="$(_all_maps | head -n1 || true)"
+    if [[ -n "$m" ]]; then _ok "default sim map → ${m##*/}"
+    elif [[ -f "$OBC_ROOT/firmware/obc-sim/assets/grimsel.obcm" ]]; then _ok "default sim map → bundled grimsel.obcm"
+    else _warn "no .obcm found — build one with 'obc pack' or 'obc web', or drop one in the repo root"; fi
+
+    if (( ! install )); then
+      (( ${#MISSING[@]} )) && { printf '\n'; _hint "re-run with --install to fix: ${MISSING[*]}"; }
+      exit 0
+    fi
+    (( ${#MISSING[@]} )) || { printf '\n'; _ok "nothing to install"; exit 0; }
+    printf '\n'; _say "installing: ${MISSING[*]}"
+    for k in "${MISSING[@]}"; do case "$k" in
+      thumbv8m) _run rustup target add thumbv8m.main-none-eabihf ;;
+      wasm)     _run rustup target add wasm32-unknown-unknown ;;
+      just)     _run cargo install just ;;
+      probe)    _run cargo install probe-rs-tools --locked ;;
+      riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
+      geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
+      venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/packer/requirements.txt" ;;
+      cargo)    _err "install Rust yourself: https://rustup.rs" ;;
+      node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
+    esac; done
+    printf '\n'; _say "done — re-run 'obc doctor' to confirm"
+
+# One-time: link `obc` into ~/.local/bin and enable bash completion.
+setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$OBC_TOOLS/obc" "$HOME/.local/bin/obc"
+    _ok "linked ~/.local/bin/obc → $OBC_TOOLS/obc"
+    comp="$OBC_TOOLS/obc.bash"; rc="$HOME/.bashrc"
+    # Strip any prior obc-completion lines first (so a relocated tools/ dir self-heals), then add.
+    if [[ -f "$rc" ]]; then grep -vE 'OpenBikeComputer `obc` completion|/obc\.bash"' "$rc" > "$rc.obc-tmp" || true; mv "$rc.obc-tmp" "$rc"; fi
+    printf '\n# OpenBikeComputer `obc` completion\n[ -f "%s" ] && source "%s"\n' "$comp" "$comp" >> "$rc"
+    _ok "completion wired into ~/.bashrc → $comp"
+    case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) _warn "~/.local/bin is not on PATH — add it in ~/.bashrc";; esac
+    _say "open a new shell (or: source ~/.bashrc) to pick up 'obc' + completion"

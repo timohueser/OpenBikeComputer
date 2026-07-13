@@ -1,4 +1,11 @@
-# Dashed & two-colour lines (railways, borders) — PLAN (STATUS: PLANNED)
+# Dashed & two-colour lines (railways, borders) — PLAN (STATUS: SHIPPED — superseded by epic #556)
+
+> **Shipped as sub-issue #558 of epic [#556](https://github.com/timohueser/OpenBikeComputer/issues/556)**
+> (OBCM **v10**, not the version this plan predates). Kept for design history; the `serialize.py` /
+> `static/app.js` references are stale (now `obc-pack/src/serialize.rs` + the Svelte frontend), and
+> the `lib.rs` line numbers below predate the refactor. **Trust the shipped code:** `Span.style_id`,
+> `stroke_dashed` and `walk_dashes` in `../obc-render/src/stroke.rs`; `draw_line`'s dashed / railway
+> dispatch there too. The readable tour is `../../docs/content/software/rendering.md` (§6 line styles).
 
 **Part 2 of 3** of the line-rendering roadmap ([route arrows](route_arrows_plan.md) → line styles →
 [road casing](road_casing_plan.md)). This part introduces the **secondary-colour + line-style style
@@ -14,10 +21,10 @@ once. Land [part 1](route_arrows_plan.md)'s timing harness first so cost is meas
 
 Render lines that aren't flat single-colour strokes:
 
-- **Dashed** single-colour lines — admin borders ([`admin_level.2`](../../config.json#L61), drawn solid
+- **Dashed** single-colour lines — admin borders ([`admin_level.2`](../../packer/presets/default.json#L72), drawn solid
   today).
 - **Two-colour dashed** lines — railways (dash/tie colour over a base), e.g.
-  [`railway.rail`](../../config.json#L31) (black, weight 2, solid today).
+  [`railway.rail`](../../packer/presets/default.json#L38) (black, weight 2, solid today).
 
 ## Context — what exists today (cited)
 
@@ -32,7 +39,7 @@ Render lines that aren't flat single-colour strokes:
 - `Style` struct: [reader.rs:28](../obc-reader/src/reader.rs#L28). The draw-time `Span`
   ([lib.rs:349](../obc-render/src/lib.rs#L349)) caches the resolved `color`/`weight` but **not**
   `style_id` — it's 13 bytes used, padded to 14.
-- Authoring: [`config.json`](../../config.json) is the source of truth; the webapp editor builds a
+- Authoring: [`packer/presets/default.json`](../../packer/presets/default.json) is the source of truth; the webapp editor builds a
   per-style row (colour `<input type=color>`, weight, z, priority `<select>`) at
   [`app.js` ~L530–674](../../packer/web_builder/static/app.js#L530).
 
@@ -74,9 +81,11 @@ version gate (decide: hard-cut to 6 like v4→v5, or accept 5 & 6).
 
 ## Authoring
 
-- **`config.json`**: `railway.rail` → `line_style: "railway"`, `color2: "0x…"` (a light tie colour on the
+- **`packer/presets/default.json`** (and the other presets): `railway.rail` → `line_style: "railway"`, `color2: "0x…"` (a light tie colour on the
   **RGB222 grid** — the panel is 64-colour, so the second colour must be a *visibly distinct* step, see
-  the `_palette_note`). `admin_level.2` → `line_style: "dashed"`.
+  `_meta.palette_note`). `admin_level.2` → `line_style: "dashed"`. **Also extend `obc-pack`'s
+  `schema/config.schema.json` + the `schema_*` pinning tests in `config.rs` — the web builder gates its
+  v6 editor columns on the schema served by the binary.**
 - **`serialize.py` `pack_style_dict`** ([L6](../../obcm/serialize.py#L6)): map `s.get("line_style")` →
   flag bits, append `s.get("color2", color)` to the `struct.pack` (now `"<BbHBBH"`).
 - **`packer/web_builder/static/app.js`** style row (~[L672](../../packer/web_builder/static/app.js#L672)): add a line-style

@@ -1,0 +1,14 @@
+{
+  "deviceInfo": {
+    "name": "Trailhead",
+    "firmwareVersion": "0.4.2",
+    "hardwareVersion": "nRF54LM20 rev B",
+    "serial": "OBC-24-000317",
+    "protocolVersion": 2
+  },
+  "config": { "name": "Trailhead", "units": "metric" },
+  "battery": 82,
+  "diagnostics": "OBC diagnostics\nfw 0.4.2  hw nRF54LM20 rev B\nuptime 0h 03m\nresets 0  hardfaults 0\nno routes, no rides\n",
+  "routes": [],
+  "rides": []
+}

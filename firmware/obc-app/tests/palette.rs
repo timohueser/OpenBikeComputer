@@ -25,8 +25,13 @@ fn palette_quantizes_to_documented_device64() {
         ("RULE", RULE, (170, 170, 85)),
         ("AMBER", AMBER, (255, 170, 0)),
         ("WARNING", WARNING, (255, 85, 0)),
+        ("ON", ON, (0, 170, 0)),
+        ("YELLOW", YELLOW, (255, 255, 0)),
+        ("RED", RED, (255, 0, 0)),
+        ("CLIMB_TILE", CLIMB_TILE, (255, 170, 85)),
         ("ROUTE", ROUTE, (255, 0, 255)),
         ("BREADCRUMB", BREADCRUMB, (0, 0, 170)),
+        ("CONTOUR", CONTOUR, (85, 85, 85)),
     ];
     for &(name, c, want) in cases {
         assert_eq!(rgb565_to_device64(c), want, "{name}: device-64 result drifted from the comment in screen/mod.rs");

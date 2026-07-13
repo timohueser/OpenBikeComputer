@@ -1,0 +1,197 @@
+{
+  "deviceInfo": {
+    "name": "Trailhead",
+    "firmwareVersion": "0.4.2",
+    "hardwareVersion": "nRF54LM20 rev B",
+    "serial": "OBC-24-000317",
+    "protocolVersion": 2
+  },
+  "config": { "name": "Trailhead", "units": "metric" },
+  "battery": 82,
+  "diagnostics": "OBC diagnostics\nfw 0.4.2  hw nRF54LM20 rev B\nuptime 4h 12m\nresets 0  hardfaults 0\nlast boot: clean\nSD: ok (14.2 GB free)\nGPS: 3D fix, 11 sats\nbaro: 992.4 hPa\n",
+  "routes": [
+    {
+      "id": "kettle-moraine-loop",
+      "deviceObjectID": 7,
+      "name": "Kettle Moraine Loop",
+      "distanceMeters": 62400,
+      "elevationGainMeters": 840,
+      "estimatedDuration": 12000,
+      "source": "gpx",
+      "maxGradePercent": 9,
+      "payloadBytes": 2300000,
+      "track": [
+        { "lat": 42.8672, "lon": -88.4471, "ele": 262 },
+        { "lat": 42.8801, "lon": -88.4402, "ele": 291 },
+        { "lat": 42.8955, "lon": -88.4231, "ele": 274 },
+        { "lat": 42.9038, "lon": -88.4025, "ele": 330 },
+        { "lat": 42.8977, "lon": -88.3811, "ele": 305 },
+        { "lat": 42.8744, "lon": -88.3752, "ele": 372 },
+        { "lat": 42.8521, "lon": -88.3908, "ele": 336 },
+        { "lat": 42.8409, "lon": -88.4187, "ele": 361 },
+        { "lat": 42.8483, "lon": -88.4436, "ele": 322 },
+        { "lat": 42.8672, "lon": -88.4471, "ele": 338 }
+      ],
+      "waypoints": [
+        { "name": "Ottawa Lake trailhead", "note": "Start · parking & water", "distanceAlongMeters": 0, "lat": 42.8672, "lon": -88.4471 },
+        { "name": "Emma Carlin junction", "note": "Water · trail crossing", "distanceAlongMeters": 14200, "lat": 42.9038, "lon": -88.4025 },
+        { "name": "Bald Bluff overlook", "note": "Summit · 12% pitch before", "distanceAlongMeters": 31600, "lat": 42.8521, "lon": -88.3908 },
+        { "name": "Ottawa Lake", "note": "Finish", "distanceAlongMeters": 62400, "lat": 42.8672, "lon": -88.4471 }
+      ]
+    },
+    {
+      "id": "sugar-river-trail",
+      "deviceObjectID": 12,
+      "name": "Sugar River Trail",
+      "distanceMeters": 38100,
+      "elevationGainMeters": 210,
+      "estimatedDuration": 6900,
+      "source": "gpx",
+      "maxGradePercent": 4,
+      "payloadBytes": 1180000,
+      "track": [
+        { "lat": 42.8139, "lon": -89.6318, "ele": 247 },
+        { "lat": 42.7842, "lon": -89.6001, "ele": 258 },
+        { "lat": 42.7503, "lon": -89.5688, "ele": 251 },
+        { "lat": 42.7181, "lon": -89.5372, "ele": 264 },
+        { "lat": 42.6894, "lon": -89.5019, "ele": 256 },
+        { "lat": 42.6612, "lon": -89.4623, "ele": 249 }
+      ]
+    },
+    {
+      "id": "blue-mounds-backroads",
+      "name": "Blue Mounds Backroads",
+      "distanceMeters": 84700,
+      "elevationGainMeters": 1240,
+      "estimatedDuration": 16800,
+      "source": "tcx",
+      "maxGradePercent": 13,
+      "payloadBytes": 3100000,
+      "track": [
+        { "lat": 43.0289, "lon": -89.8412, "ele": 259 },
+        { "lat": 43.0512, "lon": -89.8004, "ele": 296 },
+        { "lat": 43.0688, "lon": -89.7519, "ele": 271 },
+        { "lat": 43.0521, "lon": -89.7098, "ele": 356 },
+        { "lat": 43.0203, "lon": -89.6987, "ele": 322 },
+        { "lat": 42.9944, "lon": -89.7311, "ele": 401 },
+        { "lat": 42.9871, "lon": -89.7822, "ele": 344 },
+        { "lat": 43.0058, "lon": -89.8236, "ele": 389 },
+        { "lat": 43.0289, "lon": -89.8412, "ele": 351 }
+      ]
+    },
+    {
+      "id": "devils-lake-overnighter",
+      "name": "Devil's Lake Overnighter",
+      "distanceMeters": 118000,
+      "elevationGainMeters": 1910,
+      "estimatedDuration": 172800,
+      "source": "gpx",
+      "maxGradePercent": 11,
+      "payloadBytes": 4400000,
+      "track": [
+        { "lat": 43.4218, "lon": -89.7301, "ele": 261 },
+        { "lat": 43.4501, "lon": -89.6902, "ele": 322 },
+        { "lat": 43.4809, "lon": -89.6511, "ele": 288 },
+        { "lat": 43.5122, "lon": -89.6803, "ele": 384 },
+        { "lat": 43.5288, "lon": -89.7288, "ele": 341 },
+        { "lat": 43.5051, "lon": -89.7701, "ele": 296 },
+        { "lat": 43.4688, "lon": -89.7822, "ele": 372 },
+        { "lat": 43.4381, "lon": -89.7599, "ele": 418 },
+        { "lat": 43.4218, "lon": -89.7301, "ele": 355 }
+      ]
+    },
+    {
+      "id": "cross-plains-gravel",
+      "name": "Cross-Plains Gravel",
+      "distanceMeters": 47200,
+      "elevationGainMeters": 620,
+      "estimatedDuration": 9000,
+      "source": "gpx",
+      "maxGradePercent": 7,
+      "payloadBytes": 1450000,
+      "track": [
+        { "lat": 43.1142, "lon": -89.6487, "ele": 280 },
+        { "lat": 43.1358, "lon": -89.6102, "ele": 305 },
+        { "lat": 43.1521, "lon": -89.5688, "ele": 288 },
+        { "lat": 43.1304, "lon": -89.5372, "ele": 336 },
+        { "lat": 43.1007, "lon": -89.5519, "ele": 312 },
+        { "lat": 43.0921, "lon": -89.6019, "ele": 341 },
+        { "lat": 43.1142, "lon": -89.6487, "ele": 322 }
+      ]
+    }
+  ],
+  "rides": [
+    {
+      "id": "ride-kettle-moraine",
+      "name": "Kettle Moraine Loop",
+      "date": "2026-06-30T08:12:00Z",
+      "distanceMeters": 58200,
+      "movingTime": 10260,
+      "averageSpeedMps": 5.6667,
+      "climbMeters": 812,
+      "track": [
+        { "lat": 42.8672, "lon": -88.4471, "ele": 264 },
+        { "lat": 42.8801, "lon": -88.4402, "ele": 288 },
+        { "lat": 42.8955, "lon": -88.4231, "ele": 270 },
+        { "lat": 42.9038, "lon": -88.4025, "ele": 328 },
+        { "lat": 42.8977, "lon": -88.3811, "ele": 306 },
+        { "lat": 42.8744, "lon": -88.3752, "ele": 366 },
+        { "lat": 42.8521, "lon": -88.3908, "ele": 331 },
+        { "lat": 42.8483, "lon": -88.4436, "ele": 355 },
+        { "lat": 42.8672, "lon": -88.4471, "ele": 326 }
+      ]
+    },
+    {
+      "id": "ride-sunday-coffee-spin",
+      "name": "Sunday Coffee Spin",
+      "date": "2026-06-28T09:30:00Z",
+      "distanceMeters": 31600,
+      "movingTime": 4920,
+      "averageSpeedMps": 6.4167,
+      "climbMeters": 180,
+      "track": [
+        { "lat": 43.0731, "lon": -89.4012, "ele": 251 },
+        { "lat": 43.0902, "lon": -89.3688, "ele": 262 },
+        { "lat": 43.1044, "lon": -89.3301, "ele": 255 },
+        { "lat": 43.0871, "lon": -89.3019, "ele": 268 },
+        { "lat": 43.0688, "lon": -89.3502, "ele": 259 },
+        { "lat": 43.0731, "lon": -89.4012, "ele": 252 }
+      ]
+    },
+    {
+      "id": "ride-blue-mounds",
+      "name": "Blue Mounds Backroads",
+      "date": "2026-06-26T07:45:00Z",
+      "distanceMeters": 79000,
+      "movingTime": 15120,
+      "averageSpeedMps": 5.2222,
+      "climbMeters": 1180,
+      "track": [
+        { "lat": 43.0289, "lon": -89.8412, "ele": 260 },
+        { "lat": 43.0512, "lon": -89.8004, "ele": 301 },
+        { "lat": 43.0688, "lon": -89.7519, "ele": 276 },
+        { "lat": 43.0521, "lon": -89.7098, "ele": 358 },
+        { "lat": 43.0203, "lon": -89.6987, "ele": 320 },
+        { "lat": 42.9944, "lon": -89.7311, "ele": 396 },
+        { "lat": 43.0058, "lon": -89.8236, "ele": 348 },
+        { "lat": 43.0289, "lon": -89.8412, "ele": 371 }
+      ]
+    },
+    {
+      "id": "ride-evening-gravel",
+      "name": "Evening Gravel Loop",
+      "date": "2026-06-24T18:20:00Z",
+      "distanceMeters": 24800,
+      "movingTime": 3900,
+      "averageSpeedMps": 6.3611,
+      "climbMeters": 140,
+      "track": [
+        { "lat": 43.1142, "lon": -89.6487, "ele": 277 },
+        { "lat": 43.1358, "lon": -89.6102, "ele": 302 },
+        { "lat": 43.1304, "lon": -89.5372, "ele": 286 },
+        { "lat": 43.0921, "lon": -89.6019, "ele": 322 },
+        { "lat": 43.1142, "lon": -89.6487, "ele": 298 }
+      ]
+    }
+  ]
+}

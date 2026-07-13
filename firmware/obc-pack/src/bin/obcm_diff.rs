@@ -14,17 +14,16 @@
 use std::collections::HashMap;
 use std::process::ExitCode;
 
-use obc_reader::{BBox, Kind, MapCache, Reader, SliceSource, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{BBox, Kind, MapCache, MapTables, Reader, SliceSource, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// Canonical, hashable identity of a decoded feature (geometry in microdegrees).
 type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
 
 /// Canonical form of a closed ring, invariant to start vertex + winding: strip the
 /// closing duplicate, then take the lexicographically-smallest sequence over all
-/// rotations of the ring and its reversal. Used by `--canonical-polys` so that
-/// geometrically-identical closed-way polygons encoded with a different ring
-/// start/direction compare equal. Lines are never canonicalized (their vertex order
-/// is meaningful and matches both sides exactly).
+/// rotations of the ring and its reversal. Used by `--canonical-polys` so equal
+/// polygons with different ring start/direction compare equal. Lines are never
+/// canonicalized (vertex order is meaningful).
 fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut pts = ring.to_vec();
     if pts.len() >= 2 && pts.first() == pts.last() {
@@ -51,8 +50,7 @@ fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
 }
 
 fn collect_features(r: &Reader, lod: usize, canonical: bool) -> HashMap<FeatureKey, usize> {
-    // Gather every non-empty leaf (chunk_id + its node bbox) first, then decode —
-    // keeps the reader borrows simple.
+    // Gather every non-empty leaf first, then decode — keeps the reader borrows simple.
     let mut chunks: Vec<(u32, BBox)> = Vec::new();
     r.for_each_chunk(lod, &r.bbox, |cid, node| chunks.push((cid, node)));
 
@@ -79,6 +77,39 @@ fn collect_features(r: &Reader, lod: usize, canonical: bool) -> HashMap<FeatureK
 
 fn style_tuple(s: &Style) -> (u8, i8, u16, u8, u8) {
     (s.id, s.z_index, s.color, s.weight, s.priority)
+}
+
+/// One direction of the per-LOD multiset difference: every key whose count in
+/// `src` exceeds its count in `other` (the excess present only in `src`). Prints up
+/// to `max_examples` of them with `symbol`/`label` (e.g. `-`/`only-in-A`) and
+/// returns `(total_excess, poly_excess, line_excess)` — split by the key's
+/// poly-vs-line bit (`k.1`).
+fn directional_diff(
+    src: &HashMap<FeatureKey, usize>,
+    other: &HashMap<FeatureKey, usize>,
+    lod: usize,
+    symbol: char,
+    label: &str,
+    max_examples: usize,
+) -> (usize, usize, usize) {
+    let (mut only, mut poly, mut line, mut examples) = (0usize, 0usize, 0usize, 0usize);
+    for (k, &vs) in src {
+        let vo = other.get(k).copied().unwrap_or(0);
+        if vs > vo {
+            let excess = vs - vo;
+            only += excess;
+            if k.1 {
+                poly += excess;
+            } else {
+                line += excess;
+            }
+            if examples < max_examples {
+                println!("  {symbol} LOD{lod} {label} x{excess}: style={} poly={} ext_pts={}", k.0, k.1, k.2.len());
+                examples += 1;
+            }
+        }
+    }
+    (only, poly, line)
 }
 
 fn main() -> ExitCode {
@@ -114,20 +145,22 @@ fn main() -> ExitCode {
     let b_cache = MapCache::new();
     let a_src = SliceSource(&a_bytes);
     let b_src = SliceSource(&b_bytes);
-    let ra = match Reader::new(&a_src, &a_cache) {
-        Ok(r) => r,
+    let a_tables = match MapTables::parse(&a_src) {
+        Ok(t) => t,
         Err(e) => {
             eprintln!("parse {a_path}: {e:?}");
             return ExitCode::FAILURE;
         }
     };
-    let rb = match Reader::new(&b_src, &b_cache) {
-        Ok(r) => r,
+    let b_tables = match MapTables::parse(&b_src) {
+        Ok(t) => t,
         Err(e) => {
             eprintln!("parse {b_path}: {e:?}");
             return ExitCode::FAILURE;
         }
     };
+    let ra = Reader::new(&a_src, &a_tables, &a_cache);
+    let rb = Reader::new(&b_src, &b_tables, &b_cache);
 
     let mut ok = true;
     macro_rules! check {
@@ -184,43 +217,11 @@ fn main() -> ExitCode {
         let total_b: usize = cb.values().sum();
 
         // Multiset difference both ways, split by kind (poly vs line).
-        let mut only_a = 0usize;
-        let mut examples_a = 0usize;
-        let mut lod_poly = 0usize;
-        for (k, va) in &ca {
-            let vb = cb.get(k).copied().unwrap_or(0);
-            if *va > vb {
-                only_a += va - vb;
-                if k.1 {
-                    poly_diffs += va - vb;
-                    lod_poly += va - vb
-                } else {
-                    line_diffs += va - vb
-                }
-                if examples_a < max_examples {
-                    println!("  - LOD{i} only-in-A x{}: style={} poly={} ext_pts={}", va - vb, k.0, k.1, k.2.len());
-                    examples_a += 1;
-                }
-            }
-        }
-        let mut only_b = 0usize;
-        let mut examples_b = 0usize;
-        for (k, vb) in &cb {
-            let va = ca.get(k).copied().unwrap_or(0);
-            if *vb > va {
-                only_b += vb - va;
-                if k.1 {
-                    poly_diffs += vb - va;
-                    lod_poly += vb - va
-                } else {
-                    line_diffs += vb - va
-                }
-                if examples_b < max_examples {
-                    println!("  + LOD{i} only-in-B x{}: style={} poly={} ext_pts={}", vb - va, k.0, k.1, k.2.len());
-                    examples_b += 1;
-                }
-            }
-        }
+        let (only_a, poly_a, line_a) = directional_diff(&ca, &cb, i, '-', "only-in-A", max_examples);
+        let (only_b, poly_b, line_b) = directional_diff(&cb, &ca, i, '+', "only-in-B", max_examples);
+        poly_diffs += poly_a + poly_b;
+        line_diffs += line_a + line_b;
+        let lod_poly = poly_a + poly_b;
         let status = if only_a == 0 && only_b == 0 { "MATCH" } else { "DIFF " };
         println!("  {status} LOD{i}: a={total_a} b={total_b} feats; only-in-A={only_a} only-in-B={only_b}");
         lod_poly_diffs.push(lod_poly);

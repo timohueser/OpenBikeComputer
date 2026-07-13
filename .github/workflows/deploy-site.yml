@@ -1,8 +1,9 @@
 name: Deploy site
 
-# Builds the obc-sim web demo (the embedded live simulator) to wasm and publishes it
-# to GitHub Pages. Because the demo is the firmware's own render path compiled to wasm,
-# every push rebuilds it — the site can never show a stale screenshot.
+# Builds the obc-web-demo live demo (the thin wasm host around the shared firmware
+# crates) and publishes it to GitHub Pages. Because the demo is the firmware's own
+# render path compiled to wasm, every push rebuilds it — the site can never show a
+# stale screenshot.
 
 on:
   push:

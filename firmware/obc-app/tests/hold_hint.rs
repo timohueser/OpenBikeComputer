@@ -1,129 +1,15 @@
-//! Wiring test for the global long-press hint in [`App::render_frame`]: holding the
-//! encoder swells a black "frame bulge" into the right edge near the top, holding
-//! Back swells one near the bottom, and a quick tap swells neither. Renders against a
-//! tiny in-memory `DrawTarget` over a minimal `.obcm` whose map is a flat sea
-//! backdrop, then compares each held frame to the idle frame so any standing chrome
-//! cancels out and only the bulge's extra near-black pixels are measured.
+//! Wiring test for the global long-press hint in [`App::render_frame`]: holding the encoder swells a
+//! black "frame bulge" into the right edge near the top, holding Back one near the bottom, and a
+//! quick tap neither. Each held frame is compared to the idle frame so any standing chrome cancels
+//! out and only the bulge's extra near-black pixels are measured.
 
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
-use obc_app::{App, AppState, Button, ButtonEvent, InputClock, InputEvent, InputSource};
-use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
+use obc_app::{App, AppState, Button, InputClock};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
-/// A minimal valid file: one sea-backdrop style, one empty LOD leaf, no chunks — the
-/// map is a flat backdrop, so every non-sea pixel comes from the overlay.
-fn build_min_obcm() -> Vec<u8> {
-    let style_off: u32 = 32;
-    let mut styles = vec![1u8, 1, 0];
-    styles.extend_from_slice(&0x001Fu16.to_le_bytes());
-    styles.push(1);
-    styles.push(0);
-
-    let lod_tab_off = style_off as usize + styles.len();
-    let index_off = lod_tab_off + 18;
-
-    let mut table = Vec::new();
-    table.extend_from_slice(&f32::INFINITY.to_le_bytes());
-    table.extend_from_slice(&(index_off as u32).to_le_bytes());
-    table.extend_from_slice(&1u32.to_le_bytes());
-    table.extend_from_slice(&16u16.to_le_bytes());
-    table.extend_from_slice(&0u32.to_le_bytes());
-
-    let index = 0x7FFF_FFFFu32.to_le_bytes();
-
-    let mut f = Vec::new();
-    f.extend_from_slice(b"OBCM");
-    f.push(5);
-    for v in [-1000i32, -1000, 1000, 1000] {
-        f.extend_from_slice(&v.to_le_bytes());
-    }
-    f.extend_from_slice(&style_off.to_le_bytes());
-    f.push(1);
-    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
-    f.extend_from_slice(&0u16.to_le_bytes()); // marker color (unused here)
-    f.extend_from_slice(&styles);
-    f.extend_from_slice(&table);
-    f.extend_from_slice(&index);
-    f
-}
-
-/// A `w`×`h` Rgb888 buffer implementing `DrawTarget`, with clipped writes.
-struct Buf {
-    w: i32,
-    h: i32,
-    px: Vec<Rgb888>,
-}
-impl Buf {
-    fn new(w: i32, h: i32) -> Self {
-        Buf { w, h, px: vec![Rgb888::BLACK; (w * h) as usize] }
-    }
-    fn put(&mut self, x: i32, y: i32, c: Rgb888) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = c;
-        }
-    }
-    /// Count pixels of color `c` in the right-edge band, split by screen half:
-    /// returns `(top_half, bottom_half)`. The bulge pokes in from `x = w`, so it
-    /// always lands in `x >= w - 20`.
-    fn edge_halves(&self, c: Rgb888) -> (usize, usize) {
-        let (mut top, mut bot) = (0, 0);
-        for y in 0..self.h {
-            for x in (self.w - 20).max(0)..self.w {
-                if self.px[(y * self.w + x) as usize] == c {
-                    if y < self.h / 2 {
-                        top += 1;
-                    } else {
-                        bot += 1;
-                    }
-                }
-            }
-        }
-        (top, bot)
-    }
-}
-impl OriginDimensions for Buf {
-    fn size(&self) -> Size {
-        Size::new(self.w as u32, self.h as u32)
-    }
-}
-impl DrawTarget for Buf {
-    type Color = Rgb888;
-    type Error = core::convert::Infallible;
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(p, c) in pixels {
-            self.put(p.x, p.y, c);
-        }
-        Ok(())
-    }
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        let clip = area.intersection(&self.bounding_box());
-        if let Some(br) = clip.bottom_right() {
-            for y in clip.top_left.y..=br.y {
-                for x in clip.top_left.x..=br.x {
-                    self.put(x, y, color);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A scripted `InputSource` draining a queue of events.
-struct Keys(std::collections::VecDeque<InputEvent>);
-impl InputSource for Keys {
-    fn poll(&mut self) -> Option<InputEvent> {
-        self.0.pop_front()
-    }
-}
-fn keys(evs: &[InputEvent]) -> Keys {
-    Keys(evs.iter().copied().collect())
-}
-fn down(b: Button) -> InputEvent {
-    InputEvent::Button(ButtonEvent::Down(b))
-}
+mod common;
+use common::{build_min_obcm, down, keys, Buf};
 
 /// True-color palette color the host `color_fn` resolves a hint hue to.
 fn rgb(c: u16) -> Rgb888 {
@@ -137,7 +23,8 @@ fn rgb(c: u16) -> Rgb888 {
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
     app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
     buf
@@ -153,7 +40,7 @@ fn render_hold(bytes: &[u8], button: Button, at_ms: u32) -> Buf {
 
 #[test]
 fn holding_a_button_bulges_its_edge_a_tap_does_nothing() {
-    let bytes = build_min_obcm();
+    let bytes = build_min_obcm(0);
     let hud = rgb(palette::HUD); // the near-black bulge color
 
     // Idle baseline: any standing near-black chrome in the edge band (so the held
@@ -163,12 +50,9 @@ fn holding_a_button_bulges_its_edge_a_tap_does_nothing() {
     app.handle_input(InputClock(0), &mut keys(&[]));
     let (i_top, i_bot) = render(&mut app, &bytes).edge_halves(hud);
 
-    // Hold the encoder past the dead zone (300 ms of a 500 ms threshold): a bulge
-    // swells the *top* half of the right edge. The bulge is anchored in the top half,
-    // but its base spans `2 * base_half` px regardless of depth, so the quartic shoulders
-    // can graze a handful of px past the exact screen midline — that tail is not the bulge
-    // living in the bottom half, so require the top-half growth to dominate rather than the
-    // bottom-half count to be pixel-zero.
+    // Hold the encoder past the dead zone: a bulge swells the top half. Its base spans `2*base_half`
+    // px, so the quartic shoulders can graze a few px past the midline — hence require the top-half
+    // growth to dominate rather than the bottom count to be zero.
     let (e_top, e_bot) = render_hold(&bytes, Button::Encoder, 300).edge_halves(hud);
     assert!(e_top > i_top, "encoder hold ⇒ a bulge swells the top of the right edge");
     assert!(

@@ -1,0 +1,28 @@
+# Xcode / SwiftPM build artifacts. The .xcodeproj is XcodeGen-generated, NOT
+# committed — `xcodegen generate` is a required first step after cloning.
+# Policy rationale: companion-ios/CLAUDE.md.
+*.xcodeproj/
+
+## Build output
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## Xcode per-user state (would live inside a generated .xcodeproj)
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+## SwiftPM
+.build/
+Packages/*/.build/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+.swiftpm/xcode/xcuserdata/
+
+## Misc
+.DS_Store
+*.moved-aside
+*.hmap

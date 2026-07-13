@@ -1,119 +1,18 @@
-//! The map / overlay plane split ([`App::render_map`] + [`App::render_overlay`],
-//! issue #45). Two contracts are pinned here:
+//! The map / overlay plane split ([`App::render_map`] + [`App::render_overlay`], issue #45). Two
+//! contracts:
 //!
-//! 1. **Compositing isolation** — `render_overlay` over an already-rendered map must
-//!    touch *only* its own pixels (the hold bulge), never clear or repaint the map. We
-//!    render the map, snapshot it, draw the overlay over it, and assert every changed
-//!    pixel is in the right-edge overlay band and is the bulge colour — so the whole
-//!    map area is byte-identical with and without the overlay.
-//! 2. **Liveness** — `App::overlay_active()` is true exactly across a hold's
-//!    charge → pop (and across an early-release retract), and false otherwise, so a
-//!    host can repaint the overlay layer only when it would change a pixel.
+//! 1. **Compositing isolation** — `render_overlay` over an already-rendered map touches only its own
+//!    pixels (the hold bulge), never clearing or repainting the map.
+//! 2. **Liveness** — `App::overlay_active()` is true exactly across a hold's charge → pop (and an
+//!    early-release retract), so a host repaints the overlay layer only when it would change a pixel.
 
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
-use obc_app::{App, AppState, Button, ButtonEvent, InputClock, InputEvent, InputSource};
-use obc_reader::{rgb565_to_rgb888, MapCache, Reader, SliceSource};
+use obc_app::{App, AppState, Button, InputClock};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
-/// A minimal valid file: one sea-backdrop style, one empty LOD leaf, no chunks — the
-/// map is a flat backdrop, so every non-sea pixel the overlay adds is its own.
-fn build_min_obcm() -> Vec<u8> {
-    let style_off: u32 = 32;
-    let mut styles = vec![1u8, 1, 0];
-    styles.extend_from_slice(&0x001Fu16.to_le_bytes());
-    styles.push(1);
-    styles.push(0);
-
-    let lod_tab_off = style_off as usize + styles.len();
-    let index_off = lod_tab_off + 18;
-
-    let mut table = Vec::new();
-    table.extend_from_slice(&f32::INFINITY.to_le_bytes());
-    table.extend_from_slice(&(index_off as u32).to_le_bytes());
-    table.extend_from_slice(&1u32.to_le_bytes());
-    table.extend_from_slice(&16u16.to_le_bytes());
-    table.extend_from_slice(&0u32.to_le_bytes());
-
-    let index = 0x7FFF_FFFFu32.to_le_bytes();
-
-    let mut f = Vec::new();
-    f.extend_from_slice(b"OBCM");
-    f.push(5);
-    for v in [-1000i32, -1000, 1000, 1000] {
-        f.extend_from_slice(&v.to_le_bytes());
-    }
-    f.extend_from_slice(&style_off.to_le_bytes());
-    f.push(1);
-    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
-    f.extend_from_slice(&0u16.to_le_bytes()); // marker color (unused here)
-    f.extend_from_slice(&styles);
-    f.extend_from_slice(&table);
-    f.extend_from_slice(&index);
-    f
-}
-
-/// A `w`×`h` Rgb888 buffer implementing `DrawTarget`, with clipped writes.
-struct Buf {
-    w: i32,
-    h: i32,
-    px: Vec<Rgb888>,
-}
-impl Buf {
-    fn new(w: i32, h: i32) -> Self {
-        Buf { w, h, px: vec![Rgb888::BLACK; (w * h) as usize] }
-    }
-    fn put(&mut self, x: i32, y: i32, c: Rgb888) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = c;
-        }
-    }
-}
-impl OriginDimensions for Buf {
-    fn size(&self) -> Size {
-        Size::new(self.w as u32, self.h as u32)
-    }
-}
-impl DrawTarget for Buf {
-    type Color = Rgb888;
-    type Error = core::convert::Infallible;
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(p, c) in pixels {
-            self.put(p.x, p.y, c);
-        }
-        Ok(())
-    }
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        let clip = area.intersection(&self.bounding_box());
-        if let Some(br) = clip.bottom_right() {
-            for y in clip.top_left.y..=br.y {
-                for x in clip.top_left.x..=br.x {
-                    self.put(x, y, color);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A scripted `InputSource` draining a queue of events.
-struct Keys(std::collections::VecDeque<InputEvent>);
-impl InputSource for Keys {
-    fn poll(&mut self) -> Option<InputEvent> {
-        self.0.pop_front()
-    }
-}
-fn keys(evs: &[InputEvent]) -> Keys {
-    Keys(evs.iter().copied().collect())
-}
-fn down(b: Button) -> InputEvent {
-    InputEvent::Button(ButtonEvent::Down(b))
-}
-fn up(b: Button) -> InputEvent {
-    InputEvent::Button(ButtonEvent::Up(b))
-}
+mod common;
+use common::{build_min_obcm, down, keys, up, Buf};
 
 /// True-color palette color the host `color_fn` resolves a hint hue to.
 fn rgb(c: u16) -> Rgb888 {
@@ -123,10 +22,11 @@ fn rgb(c: u16) -> Rgb888 {
 
 #[test]
 fn render_overlay_touches_only_overlay_pixels() {
-    let bytes = build_min_obcm();
+    let bytes = build_min_obcm(0);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
     let hud = rgb(palette::HUD); // the near-black bulge color
 
@@ -142,9 +42,8 @@ fn render_overlay_touches_only_overlay_pixels() {
     let map_only = buf.px.clone();
     app.render_overlay(&mut buf, w as f32, h as f32, rgb);
 
-    // Everything left of the right-edge band must be byte-identical: the overlay never
-    // clears or repaints the map. Inside the band, the only changes are the bulge's own
-    // HUD-coloured pixels — and there must be some, or we proved nothing.
+    // Everything left of the right-edge band must be byte-identical; inside the band, the only
+    // changes are the bulge's own HUD-coloured pixels — and there must be some.
     let band_x = w - 20; // the bulge pokes in from x = w, at most pop_depth (12) px
     let mut changed_in_band = 0usize;
     for y in 0..h {
@@ -164,15 +63,15 @@ fn render_overlay_touches_only_overlay_pixels() {
 
 #[test]
 fn render_frame_equals_map_then_overlay() {
-    let bytes = build_min_obcm();
+    let bytes = build_min_obcm(0);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let reader = Reader::new(&src, &cache).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
+    let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
 
-    // Same app state rendered two ways: the thin `render_frame` convenience vs. the
-    // explicit `render_map` + `render_overlay` a dual-layer host would call. Draw order
-    // is preserved, so the single-target results must be byte-identical.
+    // The thin `render_frame` convenience vs. the explicit `render_map` + `render_overlay` a
+    // dual-layer host calls. Draw order is preserved, so the results must be byte-identical.
     let make_app = || {
         let mut app = App::new(AppState::new(0, 0, 0.05));
         app.handle_input(InputClock(0), &mut keys(&[down(Button::Encoder)]));

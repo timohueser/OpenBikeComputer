@@ -3,38 +3,38 @@ name = "obc-sim"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "Desktop simulator for OBCM maps using embedded-graphics (same rendering path as the nRF54L firmware)"
+description = "Desktop simulator for OBCM maps using embedded-graphics (same rendering path as the nRF54L firmware). Native-only — the landing page's wasm host is the sibling obc-web-demo crate; the host logic they share lives in obc-host-core."
 
 [dependencies]
 obc-reader = { path = "../obc-reader" }
-obc-route = { path = "../obc-route" }
+# `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
+# (the headless one-shot planner builds its own scratch; the stepped NavPlan lives in obc-host-core).
+obc-route = { path = "../obc-route", features = ["alloc"] }
 obc-render = { path = "../obc-render" }
 obc-app = { path = "../obc-app" }
+# The DFU byte formats (epic #615 S5, #620): the sim stages a synthetic OBCU `UPDATE.BIN` with
+# `obc-dfu`'s encoder and runs the *real* `armer::scan` over it, so the "Install update from card"
+# confirm/progress/error screens render off the same validation the board runs.
+obc-dfu = { path = "../obc-dfu" }
+# The host glue shared with the landing page's wasm host (obc-web-demo): replay stepping, the
+# frame-interleaved NavPlan + its commit tail, the in-memory byte sink.
+obc-host-core = { path = "../obc-host-core" }
+# The board-agnostic self-diffing present core (epic #199 / issue #200): `diff_rows` + `row_hash` +
+# the `spans_missed_changes` oracle. The sim drives the exact same row-diff the device present path
+# adopts in D2, under an exact full-frame diff oracle — so a systematic hash-diff bug fails here in
+# CI. Only the pure-math `rowdiff` module is used; the crate's embassy/SD glue is dead-stripped.
+obc-platform = { path = "../obc-platform" }
 # Shared host GPX replay (the GpxPlayer / BaroSensor the control panel drives) — the same
 # crate the USB feeder (obc-usb-host) uses, so a recorded ride plays back identically here.
 obc-replay = { path = "../obc-replay" }
 embedded-graphics = "0.8"
-# GUI host: the device-screen window + control panel. Pure-Rust window stack
-# (native) and a WebGL canvas (wasm) — the same eframe app drives both, so the
-# web demo is the firmware-identical render path, never a stale screenshot.
+# GUI host: the device-screen window + control panel (pure-Rust window stack, no SDL).
 eframe = "0.29"
 # PNG output for headless `--png` renders.
 image = { version = "0.25", default-features = false, features = ["png"] }
-# Monotonic clock that works on both native (re-exports std) and wasm (JS perf
-# clock) — std::time::Instant::now() panics in the browser.
-web-time = "1"
-
-# --- Native-only host concerns (file picker, etc.) ---
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Native "open file" dialog for selecting a GPX track to replay (the firmware /
-# web build obviously has no native file picker).
+# Minimal block-on to drive the `obc_platform::DisplayDriver` seam's async methods, which the sim
+# backend completes synchronously on the host. Already in the tree (eframe → wgpu pull it), so this
+# reuses the resolved 0.3 rather than adding a new executor dep.
+pollster = "0.3"
+# Native "open file" dialog for selecting a GPX track to replay.
 rfd = "0.14"
-
-# --- Web (wasm32) build: the embedded simulator that runs on the project site ---
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen-futures = "0.4"
-log = "0.4"
-console_error_panic_hook = "0.1"
-# egui/ahash pull getrandom; the wasm32-unknown-unknown target needs the `js`
-# backend explicitly or it fails to build.
-getrandom = { version = "0.2", features = ["js"] }

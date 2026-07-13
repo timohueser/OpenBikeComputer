@@ -1,0 +1,213 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "obc-pack config",
+    "description": "Configuration for the obc-pack map packer (.osm.pbf -> .obcm). Feature styling is an ordered map: style IDs are assigned 1-based in document order (at most 254 styles), and a way is styled by the first (tag_key, value) match in that order. The packer ignores unknown keys at the root and inside style objects, so tooling metadata (`_meta`, `disabled`) can ride along and any exported file doubles as a CLI config.",
+    "type": "object",
+    "properties": {
+        "features": {
+            "description": "OSM tag_key -> value -> style. Document order is load-bearing: it assigns style IDs and first-match wins. Within a tag_key, the value \"*\" is a catch-all: an exact value match wins, otherwise a \"*\" entry styles every other value that key carries (e.g. building -> \"*\" paints all buildings without listing each OSM type).",
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "additionalProperties": { "$ref": "#/$defs/style" }
+            },
+            "default": {}
+        },
+        "lods": {
+            "description": "LOD pyramid, coarsest tier first. Absent or empty means a single coarsest layer.",
+            "type": "array",
+            "maxItems": 16,
+            "items": { "$ref": "#/$defs/lod" },
+            "default": [{ "max_mpp": null, "simplify": 0 }]
+        },
+        "marker": {
+            "description": "User-position marker; the shape is fixed in firmware, only the color is configurable.",
+            "type": "object",
+            "properties": {
+                "color": { "$ref": "#/$defs/color", "default": "0xF800" }
+            },
+            "default": { "color": "0xF800" }
+        },
+        "chunk_size": {
+            "description": "Quadtree chunk payload target in bytes. The maximum is the reader's per-feature vertex cap; the minimum guards against chunks so small that features are dropped wholesale. Values outside the range are rejected at pack time. Governs the geometry sections (LODs) only; the nav graph's chunks are pinned to 512 bytes.",
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 4106,
+            "default": 4096
+        },
+        "merge_fills": {
+            "description": "Dissolve fill polygons that render pixel-identically - same z_index, color, and priority, with no color2 (an un-outlined fill next to an identical un-outlined fill) - into one union per LOD, deleting every shared interior boundary. A pure map-size/render-cost optimization with no intended visual change; false (the default) packs byte-identically to before.",
+            "type": "boolean",
+            "default": false
+        },
+        "merge_lines": {
+            "description": "Stitch same-styled connected line fragments - an OSM way split into many segments that agree on every rendered attribute (z_index, color, weight, priority, dashed, color2) - into maximal polylines per LOD, reclaiming a span and a ring per join (the budgets that saturate at mid zoom). No intended visual change for solid lines; a dashed or cased line's pattern runs continuously across a former join instead of restarting. false (the default) packs byte-identically to before.",
+            "type": "boolean",
+            "default": false
+        },
+        "routing": {
+            "description": "Nav-graph routing config (OBCM v9 §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).",
+            "type": "object",
+            "properties": {
+                "min_component_edges": {
+                    "description": "Drop each disconnected graph component with fewer than this many edges (the largest is always kept), so a rider can't snap onto an unroutable islet.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 50
+                },
+                "profiles": {
+                    "description": "1..=8 bike profiles selectable on the device by index. Each weights nav edges by highway + surface class; every multiplier is >= 1.0 (or the string \"forbidden\") so the great-circle A* heuristic stays admissible.",
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": { "$ref": "#/$defs/profile" }
+                }
+            },
+            "default": {
+                "min_component_edges": 50,
+                "profiles": [
+                    {
+                        "name": "Road",
+                        "default": 3.0,
+                        "highway": { "cycleway": 1.0, "living_street": 1.4, "residential": 1.4, "unclassified": 1.5, "tertiary": 1.3, "secondary": 1.5, "primary": 1.8, "service": 2.2, "trunk_cycl": 2.5, "track": 6.0, "path": 7.0, "footway": 5.0, "bridleway": 7.0, "steps": "forbidden" },
+                        "surface": { "paved": 1.0, "compacted": 2.5, "gravel": 5.0, "dirt": 7.0, "rough": 8.0, "cobbles": 3.0, "grass": 8.0, "unknown": 1.5 }
+                    },
+                    {
+                        "name": "Gravel",
+                        "default": 2.0,
+                        "highway": { "cycleway": 1.1, "track": 1.2, "path": 1.5, "unclassified": 1.2, "residential": 1.3, "living_street": 1.3, "tertiary": 1.3, "secondary": 1.6, "primary": 2.2, "service": 1.6, "footway": 3.0, "bridleway": 2.2, "trunk_cycl": 3.0, "steps": "forbidden" },
+                        "surface": { "paved": 1.1, "compacted": 1.0, "gravel": 1.1, "dirt": 1.6, "rough": 3.0, "cobbles": 2.0, "grass": 3.0, "unknown": 1.2 }
+                    },
+                    {
+                        "name": "MTB",
+                        "default": 2.0,
+                        "highway": { "path": 1.0, "track": 1.0, "bridleway": 1.1, "cycleway": 1.3, "footway": 1.8, "unclassified": 1.6, "residential": 1.6, "living_street": 1.5, "tertiary": 1.8, "secondary": 2.4, "primary": 3.5, "service": 1.6, "steps": 3.0, "trunk_cycl": 4.0 },
+                        "surface": { "dirt": 1.0, "gravel": 1.0, "compacted": 1.1, "rough": 1.3, "grass": 1.4, "cobbles": 1.5, "paved": 1.3, "unknown": 1.1 }
+                    },
+                    {
+                        "name": "Touring",
+                        "default": 2.0,
+                        "highway": { "cycleway": 1.0, "residential": 1.2, "living_street": 1.2, "unclassified": 1.2, "tertiary": 1.3, "track": 1.6, "path": 2.0, "secondary": 1.7, "primary": 2.6, "service": 1.5, "footway": 2.5, "bridleway": 2.5, "steps": 6.0, "trunk_cycl": 3.0 },
+                        "surface": { "paved": 1.0, "compacted": 1.2, "gravel": 2.0, "dirt": 3.0, "rough": 5.0, "cobbles": 2.0, "grass": 5.0, "unknown": 1.3 }
+                    }
+                ]
+            }
+        }
+    },
+    "$defs": {
+        "color": {
+            "description": "RGB565 as a `0x`-prefixed hex string (1-4 digits) or an integer 0..=65535. Pick values on the panel's RGB222 grid (4 levels per channel) so the editor and the glass agree.",
+            "oneOf": [
+                { "type": "string", "pattern": "^(0[xX])?[0-9A-Fa-f]{1,4}$" },
+                { "type": "integer", "minimum": 0, "maximum": 65535 }
+            ]
+        },
+        "lod": {
+            "type": "object",
+            "properties": {
+                "max_mpp": {
+                    "description": "Meters-per-pixel upper bound for this tier; null means the coarsest (overview) tier.",
+                    "type": ["number", "null"],
+                    "default": null
+                },
+                "simplify": {
+                    "description": "Topology-preserving simplify tolerance in meters; 0 means no simplification.",
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0
+                },
+                "min_area_px": {
+                    "description": "Drop area features (polygons) whose projected area is below this many square pixels at the tier's finest on-screen scale; 0 means no culling. Lines are never culled. Ignored on the finest tier (no coarser fallback).",
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0
+                }
+            }
+        },
+        "style": {
+            "description": "One feature style. `id` is never configured - it is assigned from document order.",
+            "type": "object",
+            "required": ["color"],
+            "properties": {
+                "color": { "$ref": "#/$defs/color" },
+                "z_index": {
+                    "description": "Painter's order; lower is drawn first.",
+                    "type": "integer",
+                    "minimum": -128,
+                    "maximum": 127,
+                    "default": 0
+                },
+                "weight": {
+                    "description": "Stroke width in pixels (lines only).",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255,
+                    "default": 1
+                },
+                "priority": {
+                    "description": "Chunk-overflow drop order: 1 is kept longest, 4 dropped first.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4,
+                    "default": 3
+                },
+                "min_lod": {
+                    "description": "Index of the coarsest LOD tier that includes this feature; it appears in every tier >= min_lod (0 = visible from the overview tier).",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255,
+                    "default": 0
+                },
+                "line_style": {
+                    "description": "Line stroke style (OBCM v10, epic #556): \"solid\" (a flat stroke, the default) or \"dashed\". Ignored for polygons.",
+                    "enum": ["solid", "dashed"],
+                    "default": "solid"
+                },
+                "color2": {
+                    "description": "Optional secondary color (RGB565), specified exactly like `color`. Its role depends on line_style and geometry (OBCM v10, epic #556): a casing under a solid line, the base stripe of a dashed railway, or a polygon ring outline. Absent means no secondary color.",
+                    "$ref": "#/$defs/color"
+                }
+            }
+        },
+        "multiplier": {
+            "description": "One routing edge-weight multiplier: a number >= 1.0 (quantized to 1/16 fixed-point on the wire, so 1.0 = neutral, capped ~16x) or the string \"forbidden\" (the class is not routable). Values below 1.0 are rejected at pack time - the great-circle A* heuristic must stay admissible.",
+            "oneOf": [
+                { "type": "number", "minimum": 1.0 },
+                { "type": "string", "const": "forbidden" }
+            ]
+        },
+        "profile": {
+            "description": "One bike profile: a display name plus per-class edge-weight multipliers. Classes not listed in `highway`/`surface` use `default`.",
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {
+                    "description": "Display name shown on the device (UTF-8, at most 12 bytes on the wire).",
+                    "type": "string",
+                    "maxLength": 12
+                },
+                "default": {
+                    "description": "Multiplier applied to any highway/surface class not listed below.",
+                    "$ref": "#/$defs/multiplier",
+                    "default": 2.0
+                },
+                "highway": {
+                    "description": "Per-highway-class multipliers, keyed by canonical class name.",
+                    "type": "object",
+                    "propertyNames": {
+                        "enum": ["cycleway", "path", "track", "footway", "steps", "bridleway", "living_street", "residential", "service", "unclassified", "tertiary", "secondary", "primary", "trunk_cycl"]
+                    },
+                    "additionalProperties": { "$ref": "#/$defs/multiplier" }
+                },
+                "surface": {
+                    "description": "Per-surface-class multipliers, keyed by canonical class name.",
+                    "type": "object",
+                    "propertyNames": {
+                        "enum": ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"]
+                    },
+                    "additionalProperties": { "$ref": "#/$defs/multiplier" }
+                }
+            }
+        }
+    }
+}

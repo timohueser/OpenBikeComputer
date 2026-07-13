@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="obc-sim vector-loop" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk><name>Vector Loop replay</name><trkseg>
+    <trkpt lat="48.0000" lon="7.8200"><ele>236.0</ele><time>2025-06-29T14:00:00Z</time></trkpt>
+    <trkpt lat="48.0005" lon="7.8230"><ele>241.0</ele><time>2025-06-29T14:00:38Z</time></trkpt>
+    <trkpt lat="48.0002" lon="7.8265"><ele>249.5</ele><time>2025-06-29T14:01:22Z</time></trkpt>
+    <trkpt lat="47.9996" lon="7.8300"><ele>262.0</ele><time>2025-06-29T14:02:07Z</time></trkpt>
+    <trkpt lat="47.9991" lon="7.8340"><ele>281.0</ele><time>2025-06-29T14:02:57Z</time></trkpt>
+    <trkpt lat="47.9989" lon="7.8385"><ele>301.5</ele><time>2025-06-29T14:03:53Z</time></trkpt>
+  </trkseg></trk>
+</gpx>

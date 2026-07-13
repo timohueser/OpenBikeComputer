@@ -1,39 +1,10 @@
 //! GPX → OBCR conversion tests: convert an in-memory GPX, read it back with the
 //! reader, and check the geometry round-trips and the stats are exact.
 
-use obc_route::{gpx_to_obcr, ByteSink, Error, RouteIndex, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
+use obc_route::{gpx_to_obcr, Error, RouteIndex, RoutePoint, RouteReader, SliceSource};
 
-/// A `ByteSink` over a growable `Vec` — the host's "write the whole file to RAM"
-/// backing (the device uses a FatFs-backed sink instead).
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
-
-fn convert(name: &str, gpx: &str) -> Vec<u8> {
-    let src = SliceSource(gpx.as_bytes());
-    let mut sink = VecSink::default();
-    gpx_to_obcr(&src, name, &mut sink).unwrap();
-    sink.buf
-}
-
-fn decode(r: &RouteReader, k: usize) -> Vec<RoutePoint> {
-    let mut out = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
-    r.decode_chunk(k, &mut out).unwrap();
-    out.to_vec()
-}
+mod common;
+use common::{convert, decode, VecSink};
 
 /// A straight, gently rolling eastward track. The four points are collinear, so the
 /// geometry decimates to its two endpoints — but the stats come from every raw point.
@@ -103,4 +74,177 @@ fn empty_gpx_is_an_error() {
     let src = SliceSource(b"<gpx></gpx>".as_slice());
     let mut sink = VecSink::default();
     assert_eq!(gpx_to_obcr(&src, "x", &mut sink), Err(Error::Empty));
+}
+
+/// Build GPX text from `(lat_deg, lon_deg, ele_m?)` track points; `None` omits `<ele>`
+/// entirely (a planner export with no elevation). The `const &str` fixtures above can't
+/// express either an omitted `<ele>` or computed coordinates, which the decimation /
+/// elevation tests below need.
+fn gpx(pts: &[(f64, f64, Option<f64>)]) -> String {
+    let mut s = String::from("<?xml version=\"1.0\"?><gpx><trk><trkseg>");
+    for &(lat, lon, ele) in pts {
+        match ele {
+            Some(e) => s.push_str(&format!("<trkpt lat=\"{lat:.6}\" lon=\"{lon:.6}\"><ele>{e}</ele></trkpt>")),
+            None => s.push_str(&format!("<trkpt lat=\"{lat:.6}\" lon=\"{lon:.6}\"/>")),
+        }
+    }
+    s.push_str("</trkseg></trk></gpx>");
+    s
+}
+
+/// A vertex just inside `EPSILON_M` (1 m) is dropped: the middle point bulges 0.8 m off the
+/// A→C chord, so the decimator must drop it, leaving the two endpoints.
+#[test]
+fn vertex_just_inside_epsilon_is_decimated() {
+    let dlat = 0.8 / 111_320.0; // ~0.8 m north — inside EPSILON_M = 1.0 m
+    let bytes = convert(
+        "Nearly Straight",
+        &gpx(&[(48.0, 7.800, Some(100.0)), (48.0 + dlat, 7.801, Some(100.0)), (48.0, 7.802, Some(100.0))]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 2, "a 0.8 m bulge is within tolerance → the middle vertex is dropped");
+    let pts = decode(&r, 0);
+    assert_eq!(
+        pts,
+        vec![
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_802_000, lat: 48_000_000, ele: 100 },
+        ]
+    );
+}
+
+/// A vertex just outside `EPSILON_M` (1.5 m off the chord) is kept, preserving the bend — the
+/// other side of the `perp > EPSILON_M` decision.
+#[test]
+fn vertex_just_outside_epsilon_is_kept() {
+    let dlat = 1.5 / 111_320.0; // ~1.5 m north — outside EPSILON_M = 1.0 m
+    let bytes = convert(
+        "Bent",
+        &gpx(&[(48.0, 7.800, Some(100.0)), (48.0 + dlat, 7.801, Some(100.0)), (48.0, 7.802, Some(100.0))]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 3, "a 1.5 m deviation exceeds tolerance → the bend vertex is kept");
+    let pts = decode(&r, 0);
+    // The kept middle vertex: lon 7_801_000, lat rounded from 48.0 + 1.5/111320 deg = 48_000_013.
+    assert_eq!(pts[1], RoutePoint { lon: 7_801_000, lat: 48_000_013, ele: 100 });
+}
+
+/// A long collinear run keeps an intermediate vertex (`MAX_SPAN_M`=1200), which also bounds the
+/// stored `(Δlon, Δlat)` to `int16`. Three collinear points 0.03° apart (~2234 m/segment) would,
+/// if the middle were dropped, leave a segment whose Δ overflows `int16`; the span rule keeps it.
+#[test]
+fn long_collinear_run_keeps_an_intermediate_vertex() {
+    let bytes = convert(
+        "Long Straight",
+        &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.83, Some(100.0)), (48.0, 7.86, Some(100.0))]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    // The middle point survives despite being collinear — kept by the MAX_SPAN_M rule.
+    assert_eq!(r.point_count, 3, "the span rule must keep the middle of a ~4.5 km collinear run");
+    let pts = decode(&r, 0);
+    // Decoded geometry round-trips exactly — no int16 wrap.
+    assert_eq!(
+        pts,
+        vec![
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_830_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_860_000, lat: 48_000_000, ele: 100 },
+        ]
+    );
+}
+
+/// A single oversized segment with no intermediate raw candidate is split so the stored Δ never
+/// wraps. `MAX_SPAN_M` only force-keeps a *pending* candidate; a 2-point GPX has none, so a
+/// 0.04° (40_000 µdeg) lon step would wrap `int16`. The converter densifies the span itself into
+/// ≤`MAX_SEGMENT_UDEG` (30_000) pieces, so the geometry round-trips exactly.
+#[test]
+fn single_oversized_segment_is_densified() {
+    let bytes = convert("Densified", &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))]));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    // 40_000 µdeg > 30_000 → one synthetic midpoint, so three stored vertices.
+    assert_eq!(r.point_count, 3, "the oversized span is split with one interpolated vertex");
+    let pts = decode(&r, 0);
+    assert_eq!(pts[0].lon, 7_800_000, "the anchor is stored absolutely and is correct");
+    assert_eq!(pts[1].lon, 7_820_000, "the interpolated midpoint sits halfway along the span");
+    assert_eq!(pts[2].lon, 7_840_000, "the endpoint round-trips exactly — no int16 wrap");
+    // The interpolated vertices stay on the flat, equator-parallel line.
+    assert!(pts.iter().all(|p| p.lat == 48_000_000 && p.ele == 100), "interpolated vertices stay on the line");
+}
+
+/// A span far past one `MAX_SEGMENT_UDEG` piece splits into several, interpolating both axes and
+/// elevation. A 0.09° (90_000 µdeg) diagonal needs 4 pieces (three synthetic vertices); every
+/// consecutive Δ stays inside `int16`, the endpoints round-trip, and elevation carries linearly.
+#[test]
+fn oversized_diagonal_span_splits_into_several() {
+    let bytes = convert("Diagonal", &gpx(&[(48.0, 7.80, Some(100.0)), (48.09, 7.89, Some(200.0))]));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 5, "anchor + three interpolated vertices + endpoint");
+    let pts = decode(&r, 0);
+    assert_eq!(
+        pts,
+        vec![
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_822_500, lat: 48_022_500, ele: 125 },
+            RoutePoint { lon: 7_845_000, lat: 48_045_000, ele: 150 },
+            RoutePoint { lon: 7_867_500, lat: 48_067_500, ele: 175 },
+            RoutePoint { lon: 7_890_000, lat: 48_090_000, ele: 200 },
+        ]
+    );
+    // No stored (Δlon, Δlat) can overflow the int16 the reader decodes them as.
+    for w in pts.windows(2) {
+        assert!((w[1].lon - w[0].lon).abs() <= i16::MAX as i32, "Δlon fits int16");
+        assert!((w[1].lat - w[0].lat).abs() <= i16::MAX as i32, "Δlat fits int16");
+    }
+}
+
+/// A point missing `<ele>` carries the last known height. Points 1–2 climb 200→250 m and point 3
+/// omits `<ele>`: it must inherit 250 m (not reset to 0), so geometry and ascent stay sane.
+#[test]
+fn missing_elevation_carries_last_known() {
+    let dlat = 5.0 / 111_320.0; // zigzag north so all three vertices survive decimation
+    let bytes = convert(
+        "Partial Ele",
+        &gpx(&[(48.0, 7.800, Some(200.0)), (48.0 + dlat, 7.801, Some(250.0)), (48.0, 7.802, None)]),
+    );
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!(r.point_count, 3, "the zigzag keeps all three vertices");
+    assert_eq!((r.min_ele_m, r.max_ele_m), (200, 250), "min/max ignore the carried (not measured) point");
+    assert_eq!(r.total_ascent_m, 50, "the 200→250 climb; the carried point adds no further ascent");
+    let pts = decode(&r, 0);
+    assert_eq!(pts[2].ele, 250, "the <ele>-less third point carries the last known 250 m, not 0");
+}
+
+/// A route with no `<ele>` anywhere (bare planner GPX): `min_ele > max_ele` after the sweep, so
+/// the converter falls back to a 0..0 range. Distance/geometry still come from the positions;
+/// only elevation is flat zero.
+#[test]
+fn no_elevation_anywhere_yields_zero_range() {
+    let bytes = convert("No Ele", &gpx(&[(48.0, 7.80, None), (48.005, 7.80, None), (48.01, 7.80, None)]));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    assert_eq!((r.min_ele_m, r.max_ele_m), (0, 0), "no <ele> → the converter's 0..0 fallback");
+    assert_eq!((r.total_ascent_m, r.total_descent_m), (0, 0));
+    assert!(r.total_distance_m > 1000, "distance is still measured from positions, got {}", r.total_distance_m);
+    let pts = decode(&r, 0);
+    assert!(pts.iter().all(|p| p.ele == 0), "every stored elevation is 0");
 }

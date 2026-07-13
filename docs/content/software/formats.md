@@ -68,10 +68,10 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ### The file, front to back
 
-An OBCM file (current version **5**) opens with a fixed 32-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks.
+An OBCM file (current version **10**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
 
 <figure class="fig">
-<svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 32-byte header, a global style table, an LOD table, then LOD layer 0 (coarsest) through LOD layer N minus 1 (finest). Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
+<svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 40-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section and a navigation-graph section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
   <defs>
     <marker id="aF2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
@@ -79,32 +79,38 @@ An OBCM file (current version **5**) opens with a fixed 32-byte header, then a g
 
   <!-- ribbon -->
   <g stroke="#3c6b39" stroke-width="1.4">
-    <rect x="24"  y="56" width="64"  height="44" class="d-forest" />
-    <rect x="88"  y="56" width="92"  height="44" class="d-amber" />
-    <rect x="180" y="56" width="92"  height="44" class="d-water" />
-    <rect x="272" y="56" width="132" height="44" class="d-muted" />
-    <rect x="404" y="56" width="116" height="44" class="d-muted" />
-    <rect x="520" y="56" width="176" height="44" class="d-muted" />
+    <rect x="24"  y="56" width="60"  height="44" class="d-forest" />
+    <rect x="84"  y="56" width="82"  height="44" class="d-amber" />
+    <rect x="166" y="56" width="80"  height="44" class="d-water" />
+    <rect x="246" y="56" width="112" height="44" class="d-muted" />
+    <rect x="358" y="56" width="100" height="44" class="d-muted" />
+    <rect x="458" y="56" width="130" height="44" class="d-muted" />
+    <rect x="588" y="56" width="54"  height="44" class="d-hot-fill" />
+    <rect x="642" y="56" width="54"  height="44" class="d-water" />
   </g>
-  <text class="d-label" x="56"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
-  <text class="d-sub"   x="56"  y="94" text-anchor="middle" style="fill:#e7ead8">32 B</text>
-  <text class="d-label" x="134" y="80" text-anchor="middle">Style table</text>
-  <text class="d-sub"   x="134" y="94" text-anchor="middle">global</text>
-  <text class="d-label" x="226" y="80" text-anchor="middle" style="fill:#fff">LOD table</text>
-  <text class="d-sub"   x="226" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 18 B</text>
-  <text class="d-label" x="338" y="80" text-anchor="middle">LOD 0</text>
-  <text class="d-sub"   x="338" y="94" text-anchor="middle">coarsest</text>
-  <text class="d-label" x="462" y="80" text-anchor="middle">LOD 1</text>
-  <text class="d-label" x="608" y="80" text-anchor="middle">LOD N−1</text>
-  <text class="d-sub"   x="608" y="94" text-anchor="middle">finest</text>
+  <text class="d-label" x="54"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
+  <text class="d-sub"   x="54"  y="94" text-anchor="middle" style="fill:#e7ead8">40 B</text>
+  <text class="d-label" x="125" y="80" text-anchor="middle">Style table</text>
+  <text class="d-sub"   x="125" y="94" text-anchor="middle">global</text>
+  <text class="d-label" x="206" y="80" text-anchor="middle" style="fill:#fff">LOD table</text>
+  <text class="d-sub"   x="206" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 18 B</text>
+  <text class="d-label" x="302" y="80" text-anchor="middle">LOD 0</text>
+  <text class="d-sub"   x="302" y="94" text-anchor="middle">coarsest</text>
+  <text class="d-label" x="408" y="80" text-anchor="middle">LOD 1</text>
+  <text class="d-label" x="523" y="80" text-anchor="middle">LOD N−1</text>
+  <text class="d-sub"   x="523" y="94" text-anchor="middle">finest</text>
+  <text class="d-label" x="615" y="78" text-anchor="middle" style="fill:#fff;font-size:11px">POIs</text>
+  <text class="d-sub"   x="615" y="92" text-anchor="middle" style="fill:#f6e6d8;font-size:8.5px">§7</text>
+  <text class="d-label" x="669" y="78" text-anchor="middle" style="fill:#fff;font-size:11px">Nav</text>
+  <text class="d-sub"   x="669" y="92" text-anchor="middle" style="fill:#e7ead8;font-size:8.5px">§8 · tail</text>
 
   <!-- detail arrow -->
-  <line x1="276" y1="114" x2="692" y2="114" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aF2)" />
-  <text class="d-sub" x="484" y="128" text-anchor="middle" style="fill:#a9501c">detail increases →</text>
+  <line x1="250" y1="114" x2="576" y2="114" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aF2)" />
+  <text class="d-sub" x="413" y="128" text-anchor="middle" style="fill:#a9501c">detail increases →</text>
 
   <!-- explode LOD 0 -->
-  <line x1="272" y1="100" x2="232" y2="152" stroke="#9aa884" stroke-width="1.2" />
-  <line x1="404" y1="100" x2="544" y2="152" stroke="#9aa884" stroke-width="1.2" />
+  <line x1="246" y1="100" x2="232" y2="152" stroke="#9aa884" stroke-width="1.2" />
+  <line x1="358" y1="100" x2="544" y2="152" stroke="#9aa884" stroke-width="1.2" />
   <rect class="d-panel-2" x="232" y="152" width="160" height="40" rx="7" />
   <text class="d-label" x="312" y="170" text-anchor="middle">quadtree index</text>
   <text class="d-sub"   x="312" y="184" text-anchor="middle">flat u32 nodes</text>
@@ -112,7 +118,7 @@ An OBCM file (current version **5**) opens with a fixed 32-byte header, then a g
   <text class="d-label" x="468" y="170" text-anchor="middle">data chunks</text>
   <text class="d-sub"   x="468" y="184" text-anchor="middle">fixed-size blocks</text>
 </svg>
-<figcaption>The header, style table and LOD table are read once when the file opens — they're tiny. Everything after is the LOD pyramid: each layer its own <b>(index + chunks)</b> pair, simplified to that zoom. Reaching any section is an explicit offset, so there is no scanning to "find" where a layer begins.</figcaption>
+<figcaption>The header, style table and LOD table are read once when the file opens — they're tiny. The bulk of the file is the LOD pyramid: each layer its own <b>(index + chunks)</b> pair, simplified to that zoom. Two tail sections are different beasts — not map layers: the <b>POI section</b> (coral), a nearest-list index covered <a href="#pois-a-nearest-list-not-a-map-layer">below</a>, and the <b>navigation graph</b> (teal), a routable network the device runs A\* over, covered <a href="#the-navigation-graph-a-routable-network">last</a>. Reaching any section is an explicit offset, so there is no scanning to "find" where a layer begins.</figcaption>
 </figure>
 
 Why a pyramid, rather than one detailed tree with a min-zoom tag on every feature? Because the latter forces the device to *decode* fine geometry just to discover it should be skipped when zoomed out. With independent layers, zooming out reads a small coarse layer and touches nothing else. The renderer's job of [picking the right layer](../rendering/#2-level-of-detail-pick-the-right-layer) for the current zoom is covered on the rendering page; here we only care that the layers exist side by side in the file.
@@ -131,66 +137,81 @@ Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Because the in
 
 ### The header
 
-The 32-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
+The 40-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 32-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version, bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, and bytes 30 to 31 are the marker colour.">
-  <text class="d-tag" x="20" y="24">The 32-byte header, byte by byte</text>
+<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (9), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
+  <text class="d-tag" x="20" y="24">The 40-byte header, byte by byte</text>
 
   <!-- field names -->
-  <text class="d-sub" x="88"  y="56" text-anchor="middle">Magic</text>
-  <text class="d-sub" x="138" y="56" text-anchor="middle" style="font-size:9px">ver</text>
-  <text class="d-sub" x="308" y="50" text-anchor="middle">global bbox</text>
-  <text class="d-sub" x="308" y="62" text-anchor="middle" style="font-size:9px">4 × i32 · µdeg</text>
-  <text class="d-sub" x="508" y="56" text-anchor="middle">style off</text>
-  <text class="d-sub" x="558" y="56" text-anchor="middle" style="font-size:9px">n</text>
-  <text class="d-sub" x="608" y="56" text-anchor="middle">LOD-tbl off</text>
-  <text class="d-sub" x="668" y="56" text-anchor="middle">marker</text>
+  <text class="d-sub" x="74"  y="56" text-anchor="middle">Magic</text>
+  <text class="d-sub" x="112" y="56" text-anchor="middle" style="font-size:9px">ver</text>
+  <text class="d-sub" x="247" y="50" text-anchor="middle">global bbox</text>
+  <text class="d-sub" x="247" y="62" text-anchor="middle" style="font-size:9px">4 × i32 · µdeg</text>
+  <text class="d-sub" x="404" y="56" text-anchor="middle">style off</text>
+  <text class="d-sub" x="446" y="56" text-anchor="middle" style="font-size:9px">n</text>
+  <text class="d-sub" x="490" y="56" text-anchor="middle">LOD-tbl off</text>
+  <text class="d-sub" x="541" y="56" text-anchor="middle">mkr</text>
+  <text class="d-sub" x="597" y="50" text-anchor="middle" style="fill:#a9501c">POI off</text>
+  <text class="d-sub" x="597" y="62" text-anchor="middle" style="fill:#a9501c;font-size:9px">→ §7</text>
+  <text class="d-sub" x="657" y="50" text-anchor="middle" style="fill:#2c5230">Nav off</text>
+  <text class="d-sub" x="657" y="62" text-anchor="middle" style="fill:#2c5230;font-size:9px">→ §8 nav</text>
 
-  <!-- ruler fields -->
+  <!-- ruler fields (15 px / byte) -->
   <g stroke="#20301d" stroke-width="1">
-    <rect x="48"  y="72" width="80" height="32" class="d-forest" />
-    <rect x="128" y="72" width="20" height="32" class="d-amber" />
-    <rect x="148" y="72" width="320" height="32" class="d-water" />
-    <rect x="468" y="72" width="80" height="32" class="d-muted" />
-    <rect x="548" y="72" width="20" height="32" class="d-amber" />
-    <rect x="568" y="72" width="80" height="32" class="d-muted" />
-    <rect x="648" y="72" width="40" height="32" class="d-hot-fill" />
+    <rect x="44"  y="72" width="60"  height="32" class="d-forest" />
+    <rect x="104" y="72" width="15"  height="32" class="d-amber" />
+    <rect x="119" y="72" width="240" height="32" class="d-water" />
+    <rect x="359" y="72" width="60"  height="32" class="d-muted" />
+    <rect x="419" y="72" width="15"  height="32" class="d-amber" />
+    <rect x="434" y="72" width="60"  height="32" class="d-muted" />
+    <rect x="494" y="72" width="30"  height="32" style="fill:#e3ad33" />
+    <rect x="524" y="72" width="60"  height="32" class="d-hot-fill" />
+    <rect x="584" y="72" width="60"  height="32" class="d-water" />
   </g>
   <!-- per-byte ticks -->
   <g stroke="#20301d" stroke-opacity="0.18" stroke-width="1">
-    <line x1="68" y1="72" x2="68" y2="104"/><line x1="88" y1="72" x2="88" y2="104"/><line x1="108" y1="72" x2="108" y2="104"/>
-    <line x1="168" y1="72" x2="168" y2="104"/><line x1="188" y1="72" x2="188" y2="104"/><line x1="208" y1="72" x2="208" y2="104"/><line x1="228" y1="72" x2="228" y2="104"/><line x1="248" y1="72" x2="248" y2="104"/><line x1="268" y1="72" x2="268" y2="104"/><line x1="288" y1="72" x2="288" y2="104"/><line x1="308" y1="72" x2="308" y2="104"/><line x1="328" y1="72" x2="328" y2="104"/><line x1="348" y1="72" x2="348" y2="104"/><line x1="368" y1="72" x2="368" y2="104"/><line x1="388" y1="72" x2="388" y2="104"/><line x1="408" y1="72" x2="408" y2="104"/><line x1="428" y1="72" x2="428" y2="104"/><line x1="448" y1="72" x2="448" y2="104"/>
-    <line x1="488" y1="72" x2="488" y2="104"/><line x1="508" y1="72" x2="508" y2="104"/><line x1="528" y1="72" x2="528" y2="104"/>
-    <line x1="588" y1="72" x2="588" y2="104"/><line x1="608" y1="72" x2="608" y2="104"/><line x1="628" y1="72" x2="628" y2="104"/>
-    <line x1="668" y1="72" x2="668" y2="104"/>
+    <line x1="59" y1="72" x2="59" y2="104"/><line x1="74" y1="72" x2="74" y2="104"/><line x1="89" y1="72" x2="89" y2="104"/>
+    <line x1="134" y1="72" x2="134" y2="104"/><line x1="149" y1="72" x2="149" y2="104"/><line x1="164" y1="72" x2="164" y2="104"/><line x1="179" y1="72" x2="179" y2="104"/><line x1="194" y1="72" x2="194" y2="104"/><line x1="209" y1="72" x2="209" y2="104"/><line x1="224" y1="72" x2="224" y2="104"/><line x1="239" y1="72" x2="239" y2="104"/><line x1="254" y1="72" x2="254" y2="104"/><line x1="269" y1="72" x2="269" y2="104"/><line x1="284" y1="72" x2="284" y2="104"/><line x1="299" y1="72" x2="299" y2="104"/><line x1="314" y1="72" x2="314" y2="104"/><line x1="329" y1="72" x2="329" y2="104"/><line x1="344" y1="72" x2="344" y2="104"/>
+    <line x1="374" y1="72" x2="374" y2="104"/><line x1="389" y1="72" x2="389" y2="104"/><line x1="404" y1="72" x2="404" y2="104"/>
+    <line x1="449" y1="72" x2="449" y2="104"/><line x1="464" y1="72" x2="464" y2="104"/><line x1="479" y1="72" x2="479" y2="104"/>
+    <line x1="509" y1="72" x2="509" y2="104"/>
+    <line x1="539" y1="72" x2="539" y2="104"/><line x1="554" y1="72" x2="554" y2="104"/><line x1="569" y1="72" x2="569" y2="104"/>
+    <line x1="599" y1="72" x2="599" y2="104"/><line x1="614" y1="72" x2="614" y2="104"/><line x1="629" y1="72" x2="629" y2="104"/>
   </g>
   <!-- value + byte ranges -->
-  <text class="d-label" x="88" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-sub" x="88"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
-  <text class="d-sub" x="138" y="122" text-anchor="middle" style="font-size:9px">4</text>
-  <text class="d-sub" x="308" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
-  <text class="d-sub" x="508" y="122" text-anchor="middle" style="font-size:9px">21–24</text>
-  <text class="d-sub" x="558" y="122" text-anchor="middle" style="font-size:9px">25</text>
-  <text class="d-sub" x="608" y="122" text-anchor="middle" style="font-size:9px">26–29</text>
-  <text class="d-sub" x="668" y="122" text-anchor="middle" style="font-size:9px">30–31</text>
+  <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
+  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">9</text>
+  <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
+  <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
+  <text class="d-sub" x="389" y="122" text-anchor="middle" style="font-size:9px">21–24</text>
+  <text class="d-sub" x="426" y="122" text-anchor="middle" style="font-size:9px">25</text>
+  <text class="d-sub" x="464" y="122" text-anchor="middle" style="font-size:9px">26–29</text>
+  <text class="d-sub" x="509" y="122" text-anchor="middle" style="font-size:9px">30–31</text>
+  <text class="d-sub" x="554" y="122" text-anchor="middle" style="fill:#a9501c;font-size:9px">32–35</text>
+  <text class="d-sub" x="614" y="122" text-anchor="middle" style="fill:#2c5230;font-size:9px">36–39</text>
 
-  <text class="d-sub" x="48" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
+  <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. Two small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk), and the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature. It's RGB565 like every style colour and is quantised to the panel the same way.</figcaption>
+<figcaption>Fixed offsets, no surprises. A few small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; a <b>POI-section offset</b> (coral) and, appended by <b>v8</b>, a <b>navigation-graph offset</b> (teal) sit at the tail — the growth that carried the header from 32 → 36 → 40 bytes. Neither tail offset is ever zero — both sections are always present, empty or not. <b>v8's only header change</b> was appending that last offset; the earlier fields never move, so a v7 reader that stops at byte 36 still parses everything it knew. <b>v9</b> reworked the nav section's internals (below) and <b>v10</b> grew the style record (next) — both left the header untouched, only ticking the version byte (now <code>10</code>).</figcaption>
 </figure>
 
-The **style table** that follows maps small numeric ids to how a feature looks. Each record is six bytes:
+The **style table** that follows maps small numeric ids to how a feature looks. Each record is eight bytes (v10 grew it from six):
 
 ```rust
 pub struct Style {
-    pub id: u8,        // referenced by feature headers
-    pub z_index: i8,   // painter's order: lower draws first
-    pub color: u16,    // RGB565 — device-independent
-    pub weight: u8,    // stroke width in pixels (lines)
-    pub priority: u8,  // 1 = keep first … 4 = drop first (from a flags byte)
+    pub id: u8,             // referenced by feature headers
+    pub z_index: i8,        // painter's order: lower draws first
+    pub color: u16,         // RGB565 — device-independent
+    pub weight: u8,         // nominal line width (px at a reference zoom; the renderer ramps it — see rendering)
+    pub priority: u8,       // 1 = keep first … 4 = drop first (flags bits 0–1)
+    pub dashed: bool,       // flags bit 2 — a dashed line (v10)
+    pub color2: Option<u16>,// flags bit 3 + a trailing RGB565 (v10)
 }
 ```
+
+The last two fields are packed into the record's **flags byte** (dashed = bit 2, "color2 present" = bit 3) plus a trailing `u16`. `color2` is a **secondary** colour: **v10** carries it so a later render pass can draw road casings, dashed admin borders, railway stripes and building outlines at the finest zoom — the [line-styles work](https://github.com/timohueser/OpenBikeComputer/issues/556). It's written `0x0000` with the bit clear when unused, and readers ignore it then — black is a real colour (rails), not a "none" sentinel — so a map that uses no line styles is byte-for-byte the old record padded to eight, and renders identically.
 
 Two things worth knowing about style ids. First, they're **assigned by the packer, not authored** — the reader never depends on a specific value, only that ids are unique within the file, so the format can't be broken by an id collision. Second, `0xFF` is reserved as the "end of features" sentinel inside a chunk (more below), which caps a file at 254 distinct styles. The colour is stored once, device-independently, and resolved to the panel's palette at render time — the same RGB565 looks right on a true-colour desktop window and on the device's 64-colour panel.
 
@@ -369,6 +390,282 @@ A feature is introduced by a 12-byte header, and a flags byte in it says how to 
 
 There's a quiet payoff to the holes layout: a polygon's holes are just extra rings appended after the exterior. The [scanline fill](../rendering/#polygons-even-odd-scanline-fill) treats them as additional edges in the same crossing list, so holes "fall out" of the even-odd rule with no special case — the format and the rasteriser were designed to meet in the middle.
 
+### POIs: a nearest-list, not a map layer
+
+Everything so far serves one question — *what's on screen right now?* — and the quadtree answers it by viewport: give me the chunks a rectangle touches. Version **6** added a section that answers a different question — *where's the nearest water / campsite / bakery?* — and that changes the shape of the index. The [points of interest](../packer-routing/#extracting-pois) the packer harvests from OpenStreetMap aren't drawn on the map at all; the device surfaces them as a category → nearest-list [browser](../ui/#the-pois-browser). So they're indexed for a **nearest-N** query, not a viewport walk. Version **7** widened each record to carry the POI's opening hours, pooled into a [shared section](#opening-hours-a-pooled-weekly-schedule) at the file tail.
+
+The section is a small **directory** followed by, per category, a familiar pair: a quadtree index and its data chunks. There are six categories — Water, Campsite, Accommodation, Resupply, Pharmacy, Bike shop — and each gets *its own* quadtree, so "nearest bakery" scans only bakeries.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POI section. On the left, the directory: a category count of 6, a shared chunk size, then one entry per category holding a category id, index offset, node count and chunk count, plus the trailing hours-pool offset and count. An arrow leads to one category's quadtree index followed by its data chunks — the same index-then-chunks shape as an LOD layer. On the right, one POI record drawn as a 36-byte ruler: four bytes latitude, four bytes longitude, one byte subtype, one byte name length, twenty-four bytes name, and a two-byte HoursRef index into the hours pool.">
+  <defs>
+    <marker id="aF5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">The POI section — a quadtree per category over 36-byte records</text>
+
+  <!-- directory -->
+  <rect class="d-panel-2" x="24" y="44" width="150" height="88" rx="9" />
+  <text class="d-label" x="40" y="62" style="font-size:11px">directory</text>
+  <text class="d-sub" x="40" y="78"  style="font-size:9.5px">count = 6 · chunk size</text>
+  <text class="d-sub" x="40" y="92"  style="font-size:9.5px">per cat: id · index off</text>
+  <text class="d-sub" x="40" y="104" style="font-size:9.5px">node count · chunk count</text>
+  <text class="d-sub" x="40" y="122" style="font-size:9.5px;fill:#a9501c">+ hours-pool off · count</text>
+
+  <!-- one category's index + chunks (LOD-shaped) -->
+  <line class="d-flow" x1="176" y1="80" x2="214" y2="80" marker-end="url(#aF5)" />
+  <g stroke="#3c6b39" stroke-width="1.2">
+    <rect x="220" y="56" width="96"  height="44" class="d-muted" />
+    <rect x="316" y="56" width="112" height="44" class="d-water" />
+  </g>
+  <text class="d-label" x="268" y="76" text-anchor="middle" style="font-size:10.5px">quadtree</text>
+  <text class="d-sub"   x="268" y="90" text-anchor="middle" style="font-size:9px">flat u32 · §4</text>
+  <text class="d-label" x="372" y="76" text-anchor="middle" style="fill:#fff;font-size:10.5px">POI chunks</text>
+  <text class="d-sub"   x="372" y="90" text-anchor="middle" style="fill:#dfe6e0;font-size:9px">512 B · 14 recs</text>
+  <text class="d-sub" x="324" y="118" text-anchor="middle" style="font-size:9px;fill:#a9501c">same index-then-chunks shape as a LOD</text>
+
+  <!-- one record: 36-byte ruler -->
+  <text class="d-tag" x="20" y="152">one record — a fixed 36 bytes <tspan style="fill:#a9501c">(v7)</tspan></text>
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="24"  y="164" width="74"  height="34" class="d-water" />
+    <rect x="98"  y="164" width="74"  height="34" class="d-water" />
+    <rect x="172" y="164" width="19"  height="34" class="d-hot-fill" />
+    <rect x="191" y="164" width="19"  height="34" class="d-amber" />
+    <rect x="210" y="164" width="408" height="34" class="d-forest" />
+    <rect x="618" y="164" width="74"  height="34" style="fill:#cf6a2a" />
+  </g>
+  <text class="d-sub" x="61"  y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lat (i32)</text>
+  <text class="d-sub" x="135" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lon (i32)</text>
+  <text class="d-sub" x="181" y="180" text-anchor="middle" style="fill:#fff;font-size:8px">sub</text>
+  <text class="d-sub" x="181" y="192" text-anchor="middle" style="fill:#fff;font-size:7.5px">type</text>
+  <text class="d-sub" x="200" y="184" text-anchor="middle" style="font-size:8px">len</text>
+  <text class="d-sub" x="414" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Name — 24 B printable ASCII</text>
+  <text class="d-sub" x="655" y="180" text-anchor="middle" style="fill:#fff;font-size:8px">Hours</text>
+  <text class="d-sub" x="655" y="192" text-anchor="middle" style="fill:#fff;font-size:7.5px">Ref u16</text>
+  <text class="d-sub" x="61"  y="214" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="135" y="214" text-anchor="middle" style="font-size:9px">4–7</text>
+  <text class="d-sub" x="181" y="214" text-anchor="middle" style="font-size:9px">8</text>
+  <text class="d-sub" x="200" y="214" text-anchor="middle" style="font-size:9px">9</text>
+  <text class="d-sub" x="414" y="214" text-anchor="middle" style="font-size:9px">10–33</text>
+  <text class="d-sub" x="655" y="214" text-anchor="middle" style="font-size:9px">34–35</text>
+</svg>
+<figcaption>Each category's index and chunks are laid out <b>exactly</b> like a LOD layer — a flat <code>u32</code> quadtree (the same branch-bit / empty-leaf / chunk-id encoding) built over the <b>same global bbox from the header</b>, its chunks packed straight after. So the reader walks a POI category with the very same leaf-walk it uses for geometry. The record differs in one telling way: coordinates are stored <b>absolute</b>, not anchored-and-deltated. At a fixed 36 bytes the delta saving isn't worth breaking symmetry with geometry, and fixed-size records make chunk packing trivial — exactly <code>512 / 36 = 14</code> per chunk, no length bookkeeping. The final two bytes are a <b>HoursRef</b> (coral) — a <code>u16</code> index into the hours pool below, or <code>0xFFFF</code> when the POI has no listed hours.</figcaption>
+</figure>
+
+Two design notes are worth pulling out. First, the **category is never stored in the record** — it's implied by *which* category's quadtree the record came from, and each subtype maps to exactly one category anyway. Second, **names are folded to printable ASCII at pack time** and capped at 24 bytes, because the `Name` field is a fixed-width, one-byte-per-character slot (the [packer](../packer-routing/#extracting-pois) transliterates umlauts and accents — `ä → ae` — rather than store variable-width UTF-8); an unnamed POI (name length `0`) shows its subtype's fallback label on-device. A `0xFF` subtype byte ends a chunk, mirroring geometry's `0xFF`-style-id sentinel.
+
+The full directory bytes, the canonical category/subtype id table, and the record fields are in [`OBCM_Spec.md` §7](src:OBCM_Spec.md). What the packer harvests and how, and how the device browses the result, are the [extraction stage](../packer-routing/#extracting-pois) and the [POIs browser](../ui/#the-pois-browser).
+
+### Opening hours: a pooled weekly schedule
+
+That `HoursRef` at the end of every record points into a pooled section written near the **file tail** (the [navigation graph](#the-navigation-graph-a-routable-network) is the only thing after it): a single **hours pool**. OSM tags opening hours as a terse little grammar — `Mo-Fr 08:00-18:00; Sa 09:00-13:00; PH off` — that a microcontroller has no business parsing. So the packer [parses it once, at pack time](../packer-routing/#extracting-pois), into a fixed **29-byte weekly schedule** the device can read with a single array lookup. No `opening_hours` string ever reaches the device.
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="The hours pool. A single 29-byte schedule blob is drawn as a ruler: one flags byte, then seven days from Monday to Sunday, each day two interval slots, each slot an open-quarter and a close-quarter byte. Below, the dedup pool: many POI records with a HoursRef index point into a small list of unique blobs, so shops that share hours share one entry.">
+  <defs>
+    <marker id="aH7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">One 29-byte schedule blob — flags + 7 days × 2 slots</text>
+
+  <!-- blob ruler: flags + Mon..Sun (each 2 slots of open_q/close_q) -->
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="24" y="44" width="34" height="34" class="d-amber" />
+    <rect x="58" y="44" width="88" height="34" class="d-water" />
+    <rect x="146" y="44" width="88" height="34" class="d-forest" />
+    <rect x="234" y="44" width="88" height="34" class="d-water" />
+    <rect x="322" y="44" width="88" height="34" class="d-forest" />
+    <rect x="410" y="44" width="88" height="34" class="d-water" />
+    <rect x="498" y="44" width="88" height="34" class="d-forest" />
+    <rect x="586" y="44" width="88" height="34" class="d-water" />
+  </g>
+  <text class="d-sub" x="41"  y="65" text-anchor="middle" style="fill:#000;font-size:9px">flags</text>
+  <text class="d-sub" x="102" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Mon</text>
+  <text class="d-sub" x="190" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Tue</text>
+  <text class="d-sub" x="278" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Wed</text>
+  <text class="d-sub" x="366" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Thu</text>
+  <text class="d-sub" x="454" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Fri</text>
+  <text class="d-sub" x="542" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Sat</text>
+  <text class="d-sub" x="630" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Sun</text>
+  <text class="d-sub" x="41"  y="92" text-anchor="middle" style="font-size:9px">0</text>
+  <text class="d-sub" x="102" y="92" text-anchor="middle" style="font-size:9px">1–4</text>
+  <text class="d-sub" x="630" y="92" text-anchor="middle" style="font-size:9px">25–28</text>
+
+  <!-- one day exploded into 2 slots × (open_q, close_q) -->
+  <line x1="58"  y1="78" x2="120" y2="110" stroke="#9aa884" stroke-width="1.1" />
+  <line x1="146" y1="78" x2="420" y2="110" stroke="#9aa884" stroke-width="1.1" />
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="120" y="112" width="76" height="30" class="d-panel" />
+    <rect x="196" y="112" width="76" height="30" class="d-panel" />
+    <rect x="272" y="112" width="76" height="30" class="d-panel-2" />
+    <rect x="348" y="112" width="76" height="30" class="d-panel-2" />
+  </g>
+  <text class="d-sub" x="158" y="131" text-anchor="middle" style="font-size:9.5px">open q</text>
+  <text class="d-sub" x="234" y="131" text-anchor="middle" style="font-size:9.5px">close q</text>
+  <text class="d-sub" x="310" y="131" text-anchor="middle" style="font-size:9.5px">open q</text>
+  <text class="d-sub" x="386" y="131" text-anchor="middle" style="font-size:9.5px">close q</text>
+  <text class="d-sub" x="196" y="156" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">slot 0</text>
+  <text class="d-sub" x="348" y="156" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">slot 1</text>
+  <text class="d-sub" x="470" y="126" style="font-size:9.5px">each byte = quarter-hours</text>
+  <text class="d-sub" x="470" y="140" style="font-size:9.5px">from midnight, 0…96 (96 = 24:00)</text>
+
+  <!-- dedup pool -->
+  <text class="d-tag" x="20" y="192">the pool — identical schedules collapse to one blob</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="30" y="216" style="font-size:9.5px">POI · HoursRef 0</text>
+    <text class="d-sub" x="30" y="234" style="font-size:9.5px">POI · HoursRef 0</text>
+    <text class="d-sub" x="30" y="252" style="font-size:9.5px">POI · HoursRef 2</text>
+    <text class="d-sub" x="30" y="270" style="font-size:9.5px">POI · HoursRef 0xFFFF</text>
+  </g>
+  <line class="d-flow" x1="180" y1="212" x2="300" y2="221" marker-end="url(#aH7)" />
+  <line class="d-flow" x1="180" y1="230" x2="300" y2="223" marker-end="url(#aH7)" />
+  <line class="d-flow" x1="180" y1="248" x2="300" y2="279" marker-end="url(#aH7)" />
+  <text class="d-sub" x="150" y="286" style="font-size:8.5px;fill:#a9501c">0xFFFF = no hours (no arrow)</text>
+
+  <!-- pool blobs -->
+  <g stroke="#3c6b39" stroke-width="1.1">
+    <rect x="306" y="210" width="180" height="26" class="d-water" />
+    <rect x="306" y="238" width="180" height="26" class="d-muted" />
+    <rect x="306" y="266" width="180" height="26" class="d-water" />
+  </g>
+  <text class="d-sub" x="316" y="227" style="fill:#fff;font-size:9.5px">blob 0 — 29 B</text>
+  <text class="d-sub" x="316" y="255" style="fill:#fff;font-size:9.5px">blob 1 — 29 B</text>
+  <text class="d-sub" x="316" y="283" style="fill:#fff;font-size:9.5px">blob 2 — 29 B</text>
+  <text class="d-sub" x="504" y="227" style="font-size:9px">count u16, then</text>
+  <text class="d-sub" x="504" y="241" style="font-size:9px">count × 29-byte blobs;</text>
+  <text class="d-sub" x="504" y="255" style="font-size:9px">blob i at</text>
+  <text class="d-sub" x="504" y="269" style="font-size:9px" font-family="var(--mono)">pool_off + 2 + i·29</text>
+</svg>
+<figcaption>A schedule is a <b>flags byte</b> then seven days (Mon…Sun), each holding up to two open intervals. An interval is two bytes — an <b>open</b> and a <b>close</b> quarter-hour from midnight (<code>0…96</code>, so <code>96</code> = 24:00, a 15-minute resolution). A closed day is <code>(0, 0)</code>; a 24-hour day is <code>(0, 96)</code>; an <b>overnight</b> interval (say 22:00–02:00) stores <code>close ≤ open</code> and wraps past midnight in place, never split across two days. Two <b>flag bits</b> record what the packer couldn't keep verbatim: <b>seasonal</b> (a month/date rule was flattened to a representative in-season week) and <b>truncated</b> (a public-holiday rule, a <code>sunrise/sunset</code> time, or a third interval on a day was dropped). Both are baked but ignored by the v1 UI. Because a whole region's shops share the same handful of schedules, the pool is <b>deduplicated</b>: identical 29-byte blobs collapse to one, and a record's <code>HoursRef</code> is just its index — <code>0xFFFF</code> meaning "no hours listed."</figcaption>
+</figure>
+
+The pool's exact layout — the leading `count`, the blob byte order, the flag bits, and the overnight/24-hour conventions — is [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The pack-time parser that fills it is the [`opening_hours` stage](../packer-routing/#parsing-opening-hours); the device-side lookup that turns a blob into *today's hours* and an *open-now* answer drives the [POI detail view](../ui/#the-poi-detail-view).
+
+### The navigation graph: a routable network
+
+Everything so far is geometry you *look at*. Version **8** added a section for geometry you *travel* — a **routable graph** the device runs A\* over, so a rider can [pick a POI and get a route to it](../architecture/#on-device-routing-the-router-seam) with no phone and no pre-planning. Highways in the map are drawn but carry no *topology* — a road is just a styled polyline, with no notion of what connects to what. The [packer builds the graph](../packer-routing/#building-the-navigation-graph) from the OSM node ids highways *share*: junction **nodes** joined by **edges** whose interiors hold no junctions. This section is that graph on disk, at the very tail of the file. Version **9** kept that shape but made routing *bike-type-aware* — each edge now carries a **way-kind** byte and the section opens with a small **profile table** — and slimmed the records so a chunk holds more of the graph (details below).
+
+Its shape is set by one hard fact: the device has **no room for a node-id → offset table**. A real region has millions of graph elements; an index over all of them can't stay resident. So the section is arranged for the only access pattern that fits RAM — **spatial re-fetch**. A node lives in a leaf of a quadtree over the same global bbox, and each junction record carries its neighbours' coordinates *inline*.
+
+<figure class="fig">
+<svg viewBox="0 0 720 256" role="img" aria-label="The version 9 navigation-graph section, five parts in file order. A 28-byte nav directory — the graph's resident footprint — is followed by a profile table of one to eight 52-byte bike profiles, then a node quadtree (the same flat u32 encoding as an LOD, over the header bbox), then variable-length junction records bin-packed into 512-byte chunks so distinct leaves may share a chunk, and separately a deduplicated edge pool addressed by byte offset. One junction record is exploded to show it stores its own coordinate and dense id, then a list of 15-byte neighbour entries, each carrying the neighbour's id, its coordinate inline, the connecting edge id, the edge cost in metres, and the edge's way-kind byte.">
+  <defs>
+    <marker id="aN1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="22">§8 (v9) — directory · profile table · node quadtree · junction records · edge pool</text>
+
+  <!-- directory -->
+  <rect class="d-panel-2" x="24" y="42" width="140" height="64" rx="9" />
+  <text class="d-label" x="38" y="60" style="font-size:11px">nav directory</text>
+  <text class="d-sub" x="38" y="76"  style="font-size:9px">28 B — resident</text>
+  <text class="d-sub" x="38" y="89"  style="font-size:9px">offsets · counts</text>
+  <text class="d-sub" x="38" y="102" style="font-size:9px">chunk size · profiles</text>
+
+  <!-- profile table (v9) -->
+  <line class="d-flow" x1="166" y1="74" x2="196" y2="74" marker-end="url(#aN1)" />
+  <rect class="d-water" x="200" y="48" width="128" height="52" rx="9" stroke="#3c6b39" stroke-width="1.2" />
+  <text class="d-label" x="264" y="70" text-anchor="middle" style="fill:#fff;font-size:10.5px">profile table</text>
+  <text class="d-sub" x="264" y="86" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">1..8 × 52 B · always present</text>
+
+  <!-- quadtree -->
+  <line class="d-flow" x1="330" y1="74" x2="360" y2="74" marker-end="url(#aN1)" />
+  <rect class="d-panel" x="364" y="50" width="118" height="48" rx="9" />
+  <text class="d-label" x="423" y="70" text-anchor="middle" style="font-size:10px">node quadtree</text>
+  <text class="d-sub" x="423" y="86" text-anchor="middle" style="font-size:8.5px">flat u32 · §4 · header bbox</text>
+
+  <!-- junction chunks -->
+  <line class="d-flow" x1="484" y1="74" x2="514" y2="74" marker-end="url(#aN1)" />
+  <rect class="d-water" x="518" y="50" width="178" height="48" rx="9" stroke="#3c6b39" stroke-width="1.2" />
+  <text class="d-label" x="607" y="68" text-anchor="middle" style="fill:#fff;font-size:10px">junction records</text>
+  <text class="d-sub" x="607" y="84" text-anchor="middle" style="fill:#dfe6e0;font-size:8px">variable · bin-packed in 512 B chunks</text>
+  <text class="d-sub" x="607" y="114" text-anchor="middle" style="font-size:8px;fill:#a9501c">bin-packed — leaves may share a chunk</text>
+
+  <!-- edge pool (separate offset) -->
+  <line class="d-flow" x1="94" y1="106" x2="94" y2="140" marker-end="url(#aN1)" />
+  <rect class="d-muted" x="24" y="142" width="150" height="46" rx="9" stroke="#3c6b39" stroke-width="1.2" />
+  <text class="d-label" x="38" y="162" style="font-size:10.5px">edge pool</text>
+  <text class="d-sub" x="38" y="178" style="font-size:9px">polylines · own offset · fetched at emit</text>
+  <text class="d-sub" x="184" y="166" style="font-size:8.5px;fill:#a9501c">edge id = pool-relative byte offset</text>
+  <text class="d-sub" x="184" y="179" style="font-size:8.5px">(chunk = id / 512) — zero index bytes</text>
+
+  <!-- explode one junction record -->
+  <line x1="518" y1="98" x2="410" y2="150" stroke="#9aa884" stroke-width="1.1" />
+  <line x1="696" y1="98" x2="700" y2="150" stroke="#9aa884" stroke-width="1.1" />
+  <rect class="d-hot" x="392" y="150" width="308" height="96" rx="10" style="fill:#f8efe4" />
+  <text class="d-tag" x="408" y="168" style="fill:#a9501c">one junction record — 13 + 15 × degree B</text>
+  <text class="d-sub" x="408" y="186" style="font-size:9.5px">lat · lon · dense id · degree</text>
+  <text class="d-sub" x="408" y="202" style="font-size:9.5px">then <b>degree</b> × neighbour (15 B each):</text>
+  <text class="d-sub" x="420" y="218" style="font-size:8.5px" font-family="var(--mono)">nbr id · nbr lat,lon · edge id · cost m · way-kind</text>
+  <text class="d-sub" x="420" y="234" style="font-size:8px;fill:#a9501c">coord INLINE (no fetch for h) · way-kind drives the profile weight</text>
+</svg>
+<figcaption>The whole section's resident cost is a <b>28-byte directory</b>: two data offsets, three counts, the pinned <b>512 B</b> chunk size, and the profile table's offset and count. Right behind it sits the <b>profile table</b> — 1–8 bike profiles, always present, [covered on the packer page](../packer-routing/#weighting-the-graph-bike-profiles). The <b>node quadtree</b> is byte-for-byte the same flat-<code>u32</code> encoding as an <a href="#the-quadtree-index">LOD index</a> — same branch-bit, same empty-leaf sentinel, built over the <b>same global bbox from the header</b> — so the reader walks it with the identical leaf-walk. Its leaves point at <b>junction records</b>, packed into 512-byte chunks (variable-length here, so <code>0xFF</code>-padding is the end-of-chunk sentinel). v9 <b>bin-packs</b> those leaves first-fit, so a half-full leaf no longer wastes a whole chunk — one consequence is that <b>distinct leaves may share a chunk</b>, and a walk decodes a shared chunk once per leaf, so the reader is written to be <b>idempotent</b>. Each record stores its own coordinate and dense id, then its adjacency: one <b>15-byte</b> entry per neighbour holding the neighbour's <b>coordinate inline</b>, the connecting edge's id, its cost in metres, and the edge's <b>way-kind</b> byte — the class the router weights by. The <b>edge pool</b> — the actual polylines — sits behind its own offset and is touched <i>only when a route is emitted</i>; an edge is addressed by a <b>byte offset into the pool</b>, so there's no edge-id table to keep resident either.</figcaption>
+</figure>
+
+Why store the neighbour's coordinate twice — once in its own record, once in every record that points at it? Because that redundancy is exactly what makes the router cheap. A\* settling a node needs, for each neighbour, the straight-line distance to the goal (the heuristic `h`). With the coordinate inline, that number falls straight out of the record already in hand — no chase to the neighbour's own record just to read where it is. **One quadtree descent, one chunk read, then relax every neighbour from bytes already decoded.**
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="One A-star settle over the nav graph. On the left, the router descends the node quadtree to the leaf containing the settled node's coordinate — a single point query, not a viewport. That leaf resolves to one chunk id, and one chunk read brings the settled junction's record into RAM. On the right, that record's neighbour entries are relaxed in place: each entry already carries the neighbour's coordinate, so the great-circle distance to the goal is computed with no further read. Only when the final route is emitted is the edge pool touched, to stitch the came-from chain into a polyline.">
+  <defs>
+    <marker id="aN2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+    <marker id="aN3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">One A* settle — descend, read one chunk, relax inline</text>
+
+  <!-- 1 descend quadtree to leaf -->
+  <text class="d-sub" x="30" y="52" style="font-size:9px;fill:#6b7758">① descend to the settled node's leaf</text>
+  <!-- quadtree box -->
+  <rect x="34" y="60" width="150" height="150" fill="none" stroke="#9aa884" stroke-width="1.3" />
+  <line x1="109" y1="60" x2="109" y2="210" stroke="#9aa884" stroke-width="0.9" />
+  <line x1="34" y1="135" x2="184" y2="135" stroke="#9aa884" stroke-width="0.9" />
+  <!-- descend into SE quadrant, subdivide again -->
+  <line x1="146" y1="135" x2="146" y2="210" stroke="#c9bfa0" stroke-width="0.8" />
+  <line x1="109" y1="172" x2="184" y2="172" stroke="#c9bfa0" stroke-width="0.8" />
+  <!-- the leaf highlighted -->
+  <rect x="146" y="172" width="38" height="38" fill="#cf6a2a" fill-opacity="0.16" stroke="#cf6a2a" stroke-width="1.4" />
+  <!-- settled node point -->
+  <circle cx="165" cy="191" r="4" class="d-hot-fill" />
+  <text class="d-sub" x="150" y="228" style="font-size:8.5px;fill:#a9501c">settled node</text>
+  <text class="d-sub" x="40" y="245" style="font-size:8.5px">a point query — one leaf, not a viewport</text>
+
+  <!-- arrow: one chunk read -->
+  <line x1="196" y1="150" x2="252" y2="150" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aN2)" />
+  <text x="224" y="142" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">1 chunk read</text>
+
+  <!-- 2 the record in RAM -->
+  <text class="d-sub" x="264" y="52" style="font-size:9px;fill:#6b7758">② its record — one 512 B chunk in RAM</text>
+  <rect class="d-panel" x="264" y="60" width="180" height="150" rx="10" />
+  <text class="d-tag" x="280" y="80">junction record</text>
+  <text class="d-sub" x="280" y="100" style="font-size:9px">lat · lon · id · degree = 3</text>
+  <g stroke="#3c6b39" stroke-width="1">
+    <rect x="280" y="112" width="148" height="26" rx="4" class="d-water" />
+    <rect x="280" y="142" width="148" height="26" rx="4" class="d-water" />
+    <rect x="280" y="172" width="148" height="26" rx="4" class="d-water" />
+  </g>
+  <text class="d-sub" x="288" y="129" style="fill:#fff;font-size:8.5px">nbr A · coord · edge · cost</text>
+  <text class="d-sub" x="288" y="159" style="fill:#fff;font-size:8.5px">nbr B · coord · edge · cost</text>
+  <text class="d-sub" x="288" y="189" style="fill:#fff;font-size:8.5px">nbr C · coord · edge · cost</text>
+
+  <!-- 3 relax each neighbour -->
+  <line x1="452" y1="150" x2="508" y2="150" stroke="#3c6b39" stroke-width="2" marker-end="url(#aN3)" />
+  <text x="480" y="142" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#3c6b39">relax</text>
+  <text class="d-sub" x="520" y="52" style="font-size:9px;fill:#6b7758">③ relax — no further read</text>
+  <rect class="d-hot" x="520" y="60" width="180" height="150" rx="10" style="fill:#f8efe4" />
+  <text class="d-sub" x="536" y="84" style="font-size:9.5px">for each neighbour, from bytes</text>
+  <text class="d-sub" x="536" y="98" style="font-size:9.5px">already in hand:</text>
+  <text class="d-sub" x="536" y="118" style="font-family:var(--mono);font-size:9px">g' = g + cost_m · w</text>
+  <text class="d-sub" x="536" y="134" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">w  = profile(way_kind)</text>
+  <text class="d-sub" x="536" y="150" style="font-family:var(--mono);font-size:9px">h  = gc_dist(nbr, goal)</text>
+  <text class="d-sub" x="536" y="166" style="font-family:var(--mono);font-size:9px;fill:#a9501c">f  = g' + ε·h</text>
+  <text class="d-sub" x="536" y="186" style="font-size:8px">coord inline → <b>h</b> needs zero fetches;</text>
+  <text class="d-sub" x="536" y="197" style="font-size:8px">way-kind inline → <b>w</b> needs none either</text>
+
+  <!-- edge-pool footnote -->
+  <rect class="d-panel-2" x="34" y="258" width="666" height="30" rx="8" />
+  <text class="d-sub" x="366" y="277" text-anchor="middle" style="font-size:9.5px">the <b>edge pool</b> is untouched until the route is <b>emitted</b> — then the came-from chain's edge ids stitch into one output polyline</text>
+</svg>
+<figcaption>A settle is <b>one descent + one read + a straight relax</b>. The quadtree walk is a <i>point</i> query — the leaf holding the node's coordinate, not a viewport rectangle — resolving to a single chunk. That chunk read brings the whole junction record into RAM, and every neighbour is relaxed straight off it: the cost step <code>g</code> is the edge's stored metres <b>scaled by the chosen bike profile's weight for that edge's way-kind</b> (both the metres and the way-kind byte are right there in the neighbour entry), and the heuristic <code>h</code> is the great-circle distance from the neighbour's <b>inline</b> coordinate to the goal — no chase to the neighbour's own record. Because the A\* frontier keeps a handful of quadtree leaves simultaneously active, a small eight-slot tile cache holds them resident and turns most of those per-settle chunk reads into hits (the device is SD-bound, so that cache is the whole performance story — see <a href="../architecture/#on-device-routing-the-router-seam">the router seam</a>). The <b>edge pool</b> — the heavy polyline geometry — is read only at the end, once, to turn the winning chain of nodes into the route's line.</figcaption>
+</figure>
+
+The full byte layout — the 28-byte directory fields, the 52-byte profile records and their `1/16` fixed-point multipliers, the 15-byte neighbour entry, the `0xFF` degree sentinel and degree-24 cap, the edge record with its densified `int16` deltas, and how an over-long edge is split at synthetic junctions so no record ever straddles a chunk — is [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the packer does to *build* this graph from raw highways, and how a profile weights it, is the [extraction stage](../packer-routing/#building-the-navigation-graph); how the device turns it into a route the rest of the system can't tell from a GPX is [the router seam](../architecture/#on-device-routing-the-router-seam).
+
 ## OBCR — the route
 
 A route is a single ordered polyline with elevation, plus precomputed ride statistics. It borrows every OBCM convention — little-endian, microdegrees, anchor + delta — but where the map is 2-D and indexed by a quadtree, a route is a *path*, so its index is a flat list scanned in order.
@@ -376,34 +673,38 @@ A route is a single ordered polyline with elevation, plus precomputed ride stati
 ### The file
 
 <figure class="fig">
-<svg viewBox="0 0 720 215" role="img" aria-label="The OBCR file as a horizontal ribbon: a 112-byte header, then each chunk's data back to back, then the chunk index last. One chunk is exploded below into fixed 6-byte records of delta-longitude, delta-latitude, and absolute elevation.">
+<svg viewBox="0 0 720 215" role="img" aria-label="The OBCR file as a horizontal ribbon: a 128-byte header, then each chunk's data back to back, then the chunk index, then an optional waypoint table last. One chunk is exploded below into fixed 6-byte records of delta-longitude, delta-latitude, and absolute elevation.">
   <text class="d-tag" x="20" y="24">OBCR — the route, front to back</text>
 
   <!-- ribbon -->
   <g stroke="#3c6b39" stroke-width="1.4">
-    <rect x="24"  y="56" width="96"  height="44" class="d-forest" />
-    <rect x="120" y="56" width="116" height="44" class="d-muted" />
-    <rect x="236" y="56" width="116" height="44" class="d-muted" />
-    <rect x="352" y="56" width="92"  height="44" class="d-muted" />
-    <rect x="444" y="56" width="116" height="44" class="d-muted" />
-    <rect x="560" y="56" width="136" height="44" class="d-water" />
+    <rect x="24"  y="56" width="88"  height="44" class="d-forest" />
+    <rect x="112" y="56" width="104" height="44" class="d-muted" />
+    <rect x="216" y="56" width="104" height="44" class="d-muted" />
+    <rect x="320" y="56" width="76"  height="44" class="d-muted" />
+    <rect x="396" y="56" width="104" height="44" class="d-muted" />
+    <rect x="500" y="56" width="108" height="44" class="d-water" />
+    <rect x="608" y="56" width="88"  height="44" class="d-amber" />
   </g>
-  <text class="d-label" x="72"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
-  <text class="d-sub"   x="72"  y="94" text-anchor="middle" style="fill:#e7ead8">112 B</text>
-  <text class="d-label" x="178" y="82" text-anchor="middle">Chunk 0</text>
-  <text class="d-label" x="294" y="82" text-anchor="middle">Chunk 1</text>
-  <text class="d-label" x="398" y="82" text-anchor="middle">···</text>
-  <text class="d-label" x="502" y="82" text-anchor="middle">Chunk N−1</text>
-  <text class="d-label" x="628" y="80" text-anchor="middle" style="fill:#fff">Chunk index</text>
-  <text class="d-sub"   x="628" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 44 B · last</text>
+  <text class="d-label" x="68"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
+  <text class="d-sub"   x="68"  y="94" text-anchor="middle" style="fill:#e7ead8">128 B</text>
+  <text class="d-label" x="164" y="82" text-anchor="middle">Chunk 0</text>
+  <text class="d-label" x="268" y="82" text-anchor="middle">Chunk 1</text>
+  <text class="d-label" x="358" y="82" text-anchor="middle">···</text>
+  <text class="d-label" x="448" y="82" text-anchor="middle">Chunk N−1</text>
+  <text class="d-label" x="554" y="80" text-anchor="middle" style="fill:#fff">Chunk index</text>
+  <text class="d-sub"   x="554" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 44 B</text>
+  <text class="d-label" x="652" y="80" text-anchor="middle">Waypoints</text>
+  <text class="d-sub"   x="652" y="94" text-anchor="middle">W × 40 B</text>
 
   <!-- offsets -->
-  <text class="d-sub" x="178" y="120" text-anchor="middle" style="font-size:9px">↑ Data Offset = 112</text>
-  <text class="d-sub" x="628" y="120" text-anchor="middle" style="font-size:9px">↑ Index Offset</text>
+  <text class="d-sub" x="164" y="120" text-anchor="middle" style="font-size:9px">↑ Data Offset = 128</text>
+  <text class="d-sub" x="554" y="120" text-anchor="middle" style="font-size:9px">↑ Index Offset</text>
+  <text class="d-sub" x="668" y="120" text-anchor="middle" style="font-size:9px">↑ Waypoint Offset</text>
 
   <!-- explode a chunk -->
-  <line x1="236" y1="100" x2="232" y2="150" stroke="#9aa884" stroke-width="1.2" />
-  <line x1="352" y1="100" x2="540" y2="150" stroke="#9aa884" stroke-width="1.2" />
+  <line x1="216" y1="100" x2="232" y2="150" stroke="#9aa884" stroke-width="1.2" />
+  <line x1="320" y1="100" x2="540" y2="150" stroke="#9aa884" stroke-width="1.2" />
   <rect class="d-panel-2" x="232" y="150" width="308" height="44" rx="8" />
   <text class="d-sub" x="250" y="168" style="font-size:10px">data = (point count − 1) × 6 B records:</text>
   <g stroke="#3c6b39" stroke-width="1">
@@ -415,10 +716,10 @@ A route is a single ordered polyline with elevation, plus precomputed ride stati
   <text class="d-sub" x="458" y="184" text-anchor="middle" style="font-size:8.5px">dLat</text>
   <text class="d-sub" x="502" y="184" text-anchor="middle" style="fill:#fff;font-size:8.5px">ele</text>
 </svg>
-<figcaption>The index is written <b>last</b>: a streaming converter doesn't know how many chunks a route needs until it has emitted them all, so it patches the header's offsets at the end. Because every section is reached by an explicit offset, the physical order isn't load-bearing — the reader would accept the index first just as happily.</figcaption>
+<figcaption>The index and waypoint table are written <b>last</b>: a streaming converter doesn't know how many chunks a route needs until it has emitted them all, so it patches the header's offsets at the end. Because every section is reached by an explicit offset, the physical order isn't load-bearing — the reader would accept the index first just as happily.</figcaption>
 </figure>
 
-The 112-byte header carries the route's bounding box, its start point (for centering the camera), and the **precomputed totals** — distance, ascent, descent, elevation range — plus the route name. A 44-byte index entry per chunk holds that chunk's bounding box (for the viewport query), its anchor, its point count, the **cumulative distance and ascent at its first point**, and where its bytes live.
+The header carries the route's bounding box, its start point (for centering the camera), and the **precomputed totals** — distance, ascent, descent, elevation range — plus the route name; format v2 appends a small extension pointing at the **waypoint table**: fixed 40-byte records (position along the route, coordinate, category, short name) for the points of interest a planner attaches to a route. The device has stored waypoints from day one and now surfaces them while riding — diamonds on the map, an approach chip, progress-bar ticks and two opt-in stat fields (see [Waypoints on the route](../ui/#waypoints-on-the-route)); a reader that ignores them still skips the section in O(1) by construction, which is also why v2 routes ride through unchanged v1 code. A 44-byte index entry per chunk holds that chunk's bounding box (for the viewport query), its anchor, its point count, the **cumulative distance and ascent at its first point**, and where its bytes live.
 
 Those cumulative stats are the trick that makes "42 km / 600 m to go" an O(1) subtraction once you know which segment you're on, rather than a walk over the whole route every frame.
 
@@ -476,11 +777,86 @@ for record in records {            // each record: (dLon: i16, dLat: i16, ele: i
 
 ### Exact stats, decimated geometry
 
-A route you draw doesn't need every GPS sample — a thinned polyline looks identical at the device's pixel pitch. But a route you *plan with* does need exact numbers. OBCR keeps both honest by separating them at conversion time: the stored geometry is **decimated** (drop a vertex within a metre of the line it sits on, but force-keep one at least every ~1.2 km), while the header totals are computed from **every raw GPX point**. So the line is cheap to draw and the "total climb" you read is real.
+A route you draw doesn't need every GPS sample — a thinned polyline looks identical at the device's pixel pitch. But a route you *plan with* does need exact numbers. OBCR keeps both honest by separating them at conversion time: the stored geometry is **decimated** (drop a vertex within a metre of the line it sits on, but force-keep one at least every ~1.2 km), while the header totals are computed from **every raw GPX point**. So the line is cheap to draw and the "total climb" you read is real. One last guard runs the other way: a leg longer than 30 000 µdeg is **densified** with interpolated vertices, so the `i16` deltas above can't overflow even when a sparse two-point upload has no intermediate vertex to keep — the same split the [packer applies](#features-an-anchor-then-deltas) to map geometry.
 
-> **Convert where it lands.** There is no offline route step. The GPX→OBCR converter is one portable `no_std` routine: the device runs it on a USB or BLE upload, the simulator runs it on import, and both produce the same bytes. It streams the GPX in a single pass — O(1) RAM regardless of route length — emitting each finished chunk while keeping only a bounded index in memory.
+> **Convert where it lands.** There is no offline route step. The GPX→OBCR converter is one portable `no_std` routine: the device runs it on a USB upload, the simulator runs it on import, and both produce the same bytes. It streams the GPX in a single pass — O(1) RAM regardless of route length — emitting each finished chunk while keeping only a bounded index in memory. (BLE uploads arrive **already converted**: the companion app encodes imported GPX/TCX to OBCR on the phone, per the [BLE interface spec](src:obc-ble-interface-spec.md), so the device just writes the bytes to storage.)
 
-One thing the file *doesn't* store is the elevation **profile** the Statistics screen draws. That's rebuilt once when a route loads — a multi-resolution min/max pyramid over distance, the same coarse-to-fine idea as the map's LODs, so the profile can be zoomed and panned without ever re-reading geometry. It's a runtime structure rather than a format concern; the [UI page](../ui/) covers how it's drawn.
+One thing the file *doesn't* store is the elevation **profile** the Statistics screen draws. That's rebuilt once when a route loads — a multi-resolution min/max pyramid over distance, the same coarse-to-fine idea as the map's LODs, so the profile can be zoomed and panned without ever re-reading geometry. It's a runtime structure rather than a format concern; the [UI page](../ui/) covers how it's drawn. The route's **climbs** are the same kind of runtime derivation — segmented from that profile when the route loads, never stored in the file or sent over the link (the [Climb panel](../ui/) draws them).
+
+## Recorded rides — the track log and the ride object
+
+[`obc-route`](src:firmware/obc-route) owns one more pair of formats beyond the route you *load*: the two the device *writes* when it records a ride. They share the family's DNA — little-endian, integer coordinates — but they're **logs, not decimated drawings**, so they keep every accepted fix at full fidelity. This is also where a ride's **BLE-sensor** data lives ([epic #707](https://github.com/timohueser/OpenBikeComputer/issues/707)): heart rate, cadence, and power ride along inside both records.
+
+<figure class="fig">
+<svg viewBox="0 0 720 258" role="img" aria-label="The 20-byte recorded-track record drawn as a byte ruler: bytes 0 to 3 longitude i32, 4 to 7 latitude i32, 8 to 9 elevation i16, 10 to 11 a flags word whose bit 0 marks a segment start, 12 to 15 a millisecond timestamp, then the version-2 sensor tail — byte 16 heart rate, byte 17 cadence, bytes 18 to 19 power — each with a sentinel meaning absent. Below, the Finish-time fan-out: the headerless .obct log is converted in one streaming pass into a GPX file with heart-rate, cadence and power extensions and into a ride object v2 file, the exact bytes the phone downloads.">
+  <defs>
+    <marker id="rr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">The 20-byte track record — 16 bytes of fix, then a 4-byte sensor tail (v2)</text>
+
+  <!-- field names -->
+  <text class="d-sub" x="106" y="56" text-anchor="middle" style="font-size:9.5px">lon (i32)</text>
+  <text class="d-sub" x="210" y="56" text-anchor="middle" style="font-size:9.5px">lat (i32)</text>
+  <text class="d-sub" x="288" y="56" text-anchor="middle" style="font-size:9.5px">ele</text>
+  <text class="d-sub" x="340" y="56" text-anchor="middle" style="font-size:9px">flags</text>
+  <text class="d-sub" x="418" y="56" text-anchor="middle" style="font-size:9.5px">t_ms (u32)</text>
+  <text class="d-sub" x="483" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">hr</text>
+  <text class="d-sub" x="509" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">cad</text>
+  <text class="d-sub" x="548" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">pwr</text>
+
+  <!-- ruler rects (26 px / byte, origin x=54) -->
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="54"  y="64" width="104" height="34" class="d-water" />
+    <rect x="158" y="64" width="104" height="34" class="d-water" />
+    <rect x="262" y="64" width="52"  height="34" class="d-muted" />
+    <rect x="314" y="64" width="52"  height="34" class="d-amber" />
+    <rect x="366" y="64" width="104" height="34" class="d-forest" />
+    <rect x="470" y="64" width="26"  height="34" class="d-hot-fill" />
+    <rect x="496" y="64" width="26"  height="34" class="d-hot-fill" />
+    <rect x="522" y="64" width="52"  height="34" class="d-hot-fill" />
+  </g>
+  <!-- field values -->
+  <text class="d-sub" x="340" y="85" text-anchor="middle" style="font-size:8px">bit0 = seg</text>
+  <text class="d-sub" x="418" y="85" text-anchor="middle" style="fill:#e7ead8;font-size:8px">millis</text>
+
+  <!-- byte ranges -->
+  <text class="d-sub" x="106" y="112" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="210" y="112" text-anchor="middle" style="font-size:9px">4–7</text>
+  <text class="d-sub" x="288" y="112" text-anchor="middle" style="font-size:9px">8–9</text>
+  <text class="d-sub" x="340" y="112" text-anchor="middle" style="font-size:9px">10–11</text>
+  <text class="d-sub" x="418" y="112" text-anchor="middle" style="font-size:9px">12–15</text>
+  <text class="d-sub" x="483" y="112" text-anchor="middle" style="font-size:9px">16</text>
+  <text class="d-sub" x="509" y="112" text-anchor="middle" style="font-size:9px">17</text>
+  <text class="d-sub" x="548" y="112" text-anchor="middle" style="font-size:9px">18–19</text>
+  <text class="d-sub" x="590" y="86" style="fill:#a9501c;font-size:8.5px">sensor tail</text>
+  <text class="d-sub" x="590" y="98" style="fill:#a9501c;font-size:8px">0xFF/0xFFFF = absent</text>
+
+  <!-- Finish fan-out -->
+  <rect class="d-panel-2" x="40" y="168" width="158" height="64" rx="10" />
+  <text class="d-label" x="119" y="192" text-anchor="middle" style="font-size:10.5px">recorded log</text>
+  <text class="d-sub" x="119" y="208" text-anchor="middle" style="font-size:9px">.obct · N × 20 B</text>
+  <text class="d-sub" x="119" y="222" text-anchor="middle" style="font-size:9px;fill:#a9501c">headerless</text>
+
+  <line class="d-flow" x1="198" y1="200" x2="302" y2="200" marker-end="url(#rr1)" />
+  <text class="d-sub" x="250" y="190" text-anchor="middle" style="font-size:9px">Finish —</text>
+  <text class="d-sub" x="250" y="216" text-anchor="middle" style="font-size:8.5px">one streaming pass</text>
+
+  <rect class="d-panel" x="308" y="164" width="384" height="34" rx="8" />
+  <text class="d-sub" x="320" y="185" style="font-size:9.5px"><tspan class="d-label">GPX</tspan> — gpxtpx:hr / gpxtpx:cad + a bare &lt;power&gt;</text>
+
+  <rect class="d-hot" x="308" y="206" width="384" height="34" rx="8" style="fill:#f8efe4" />
+  <text class="d-sub" x="320" y="227" style="font-size:9.5px"><tspan class="d-label" style="fill:#a9501c">ride object v2</tspan> — RD{id}.ORD, the phone's download</text>
+</svg>
+<figcaption>One record is a fixed <b>20 bytes</b>: the original 16 (position, elevation, a segment-start flag, a millisecond timestamp) plus a <b>4-byte sensor tail</b> — <code>hr u8 · cad u8 · pwr u16</code>, each written as a sentinel (<code>0xFF</code> / <code>0xFF</code> / <code>0xFFFF</code>) when the value was absent or stale. At <b>Finish</b> the headerless log is converted in one streaming pass into a <b>GPX</b> (with <code>gpxtpx</code> heart-rate/cadence extensions and a bare <code>&lt;power&gt;</code>) and a <b>ride object v2</b> — the durable per-ride file that <i>is</i> the BLE wire object, so a ride download is a verbatim copy.</figcaption>
+</figure>
+
+**The track log (`.obct`) — a headerless record array.** While you ride, the device appends one fixed 20-byte record per accepted GPS fix. There is **no header**: the file is just the array, so truncating it to any 20-byte boundary is always valid, and the worst a power-loss can cost is the one in-flight record. That headerlessness is exactly why there's no in-band version byte to tell a 20-byte (v2) log from an old 16-byte one — so the upgrade guard is *structural* instead. The log is only ever converted through an in-RAM handle set by **this boot's** Finish; that handle can't survive a reboot, and the next ride's start opens the temp file truncating — so an orphaned 16-byte log left by older firmware can never reach the converter to be misparsed as 20-byte records. Boot provably discards it, so no versioned temp filename is needed.
+
+**The ride object (`RD{id}.ORD`) — what the phone downloads.** At Finish the log is converted into the durable per-ride file that *is* the BLE wire object, so a ride download is a verbatim byte copy with no re-encode. It is **not** OBCR: coordinates are stored as **degrees × 1e7** in `lat, lon` order (the layout the companion app pins — the extra digit over OBCR's microdegrees buys a ~1 cm grid for nothing), and the header carries precomputed totals — distance, moving time, average speed, climb — plus a UTF-8 name.
+
+**v1 and v2 coexist.** Version 2 is a pure **additive** widening for sensor data: the header grows an 8-byte summary — `avg_hr` / `max_hr` / `avg_cad` (+ a reserved pad) / `avg_pwr` / `max_pwr`, each sentinel-marked — and each point record grows the same `hr u8 · cad u8 · pwr u16` tail as the track log. The byte length stays **fully determined per version** — v1 is `23 + name_len + 14 × points`, v2 is `31 + name_len + 18 × points` — so a reader takes the version byte, then rejects any payload whose length disagrees for that version. That length check is also the torn-write guard: an interrupted save leaves a short file, and the version byte is written **last** as the commit point, so a half-written object is rejected rather than mistaken for a ride. A device that has never seen a sensor keeps writing v1, and **both firmware and app accept either** — old v1 rides on the card still list, download, and delete. Because it's an additive object version, there's **no `protocolVersion` bump**.
+
+The exhaustive byte tables — every header and point field in both versions — are the normative [BLE interface spec §7.2](src:obc-ble-interface-spec.md); this is the readable tour. The ride object crosses to a phone as [an object on the companion link](../companion-link/#objects-are-files-the-device-already-speaks), where the [Sensors section](../companion-link/#sensors-the-device-as-ble-central) covers how those sensor values were captured in the first place.
 
 ## Streaming: resident vs on-demand
 
@@ -530,7 +906,7 @@ On the host that's a slice of memory; on the device it's a file on the SD card. 
   <text class="d-sub" x="340" y="218" style="font-size:10px"><tspan style="fill:#a9501c">OBCR:</tspan> header + the whole (small, flat) index resident;</text>
   <text class="d-sub" x="340" y="232" style="font-size:10px">only geometry chunks stream. The list is cheap to keep.</text>
 </svg>
-<figcaption>A map never has to fit in RAM — the device has 256 KB and no spare SDRAM for the whole file. Even the quadtree index streams, through a small block cache that coalesces the 4-byte node reads; geometry chunks ride a slot cache so the renderer's four priority passes re-read nothing. The route's index is a short flat list, so it's read whole at open; its geometry streams chunk-by-chunk through a small resident cache of its own, so a redraw of the same route re-reads nothing either.</figcaption>
+<figcaption>A map never has to fit in RAM — the device has 512 KB and no external memory to hold the whole file. Even the quadtree index streams, through a small block cache that coalesces the 4-byte node reads; geometry chunks stream through a slot cache too, and the renderer touches each visible chunk at most twice a frame (once to pick features, once to draw the survivors) so the SD reads stay bounded. The route's index is a short flat list, so it's read whole at open; its geometry streams chunk-by-chunk through a small resident cache of its own, so a redraw of the same route re-reads nothing either.</figcaption>
 </figure>
 
 The map's caches matter because the [priority multi-pass](../rendering/#4-decode-by-priority-the-clever-bit) walks the same visible chunks four times per frame; without a cache that would be four times the SD reads. With it, passes two through four are hits. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
@@ -539,9 +915,11 @@ The map's caches matter because the [priority multi-pass](../rendering/#4-decode
 
 ## Where this lives
 
-- Map reader, quadtree walk, and chunk decode: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
+- Map reader, quadtree walk, chunk decode, the POI nearest-16 query, and the nav directory / node-leaf walk / edge fetch: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
+- The canonical POI category/subtype table (shared by reader + packer): [`obc-reader/src/poi_table.rs`](src:firmware/obc-reader/src/poi_table.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs)
+- The recorded-track log + its GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec + the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
 - The shared byte seam: [`obc-reader/src/byte_io.rs`](src:firmware/obc-reader/src/byte_io.rs)
-- The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md)
+- The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 
-Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/).
+Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).
