@@ -3,14 +3,10 @@
 //! A single value row cycling the four languages by their **endonyms**, so it reads to a speaker who
 //! can't yet read the current UI language — press (or a turn) walks it in place, no field sub-mode.
 
-use embedded_graphics::prelude::Point;
-use obc_render::{
-    text::{Font, TextAlign},
-    Surface,
-};
+use obc_render::Surface;
 
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::{title_frame, Ctx, Render, Transition, LIST_TOP};
 use crate::Msg;
 
 /// The Language screen. Stateless — the value lives in [`Settings`](crate::Settings); the one row is
@@ -41,22 +37,13 @@ impl LanguageScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        use palette::*;
         let (w, h) = (rx.w, rx.h);
         let language = rx.settings.language;
         title_frame(cv, w, h, rx.t(Msg::LanguageTitle), "");
 
         // The single value row — the current language's endonym centred, flanked by left/right arrows
-        // to read as "rotate to switch".
-        let area = super::row_rect(LIST_TOP + 8, w, 50);
-        super::row_cursor(cv, area, true, false);
-        let midy = area.top_left.y + area.size.height as i32 / 2;
-        cv.text_vcentered(language.name(), w / 2, (area.top_left.y, 50), Font::Body, TextAlign::Center, INK);
-        // ◄ and ► as filled triangles, inset from the row edges.
-        let ax = area.top_left.x + 18;
-        cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), INK);
-        let bx = area.top_left.x + area.size.width as i32 - 18;
-        cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), INK);
+        // to read as "rotate to switch". Shared with the Units picker (`value_row_with_arrows`).
+        super::value_row_with_arrows(cv, LIST_TOP + 8, w, language.name());
     }
 }
 

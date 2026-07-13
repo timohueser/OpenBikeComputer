@@ -345,9 +345,9 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # Per-language sweep (epic #602, L5). The i18n catalog (obc-app/i18n/*.toml -> Msg/TABLE) renders
 # every screen in the runtime Language setting; `--lang de|fr|es` seeds it into the headless
 # Settings (English is the default the sweep above already captures, so it isn't re-shot). Re-render
-# the text-heaviest representative slice — Menu, the Settings list + a couple of value screens
-# (Units, Stats), Statistics, Climb, the off-route Map (warning chip + scale bar), and the Route
-# overview — in each of de/fr/es. These are the shots to eyeball for a stray `?` (a char outside the
+# the text-heaviest representative slice — Menu, the Settings list + a few value screens
+# (Units, Stats, Date & Time), Statistics, Climb, the off-route Map (warning chip + scale bar), and
+# the Route overview — in each of de/fr/es. These are the shots to eyeball for a stray `?` (a char outside the
 # Latin font's #601 repertoire, caught deterministically by `obc-app`'s i18n repertoire test) and for
 # clipped / overflowing rows now that the copy is longer. Scripts mirror the English lines above.
 for lang in de fr es; do
@@ -355,6 +355,10 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p w"       --png "$OUT/settings-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r p"     --png "$OUT/units-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r p" --png "$OUT/stats-settings-$lang.png"
+    # Date & Time is the tightest screen per-language: the localized month name fills the fixed
+    # month stepper cell (#614 widened it to 70 px for the four-char French months). Eyeball the
+    # month glyphs against the active cell's amber border.
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p p"       --png "$OUT/datetime-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p b"    --png "$OUT/statistics-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$CLIMBROUTES" --gpx "$GPX" --at 1500 --open-climb \

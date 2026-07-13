@@ -2,7 +2,6 @@
 //! hold" rule, the stack discipline ([`apply`]), and a render snapshot proving pausing swaps the
 //! map view for the full-screen Paused page.
 
-use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_app::activity::Activity;
 use obc_app::screen::{
@@ -10,13 +9,13 @@ use obc_app::screen::{
     RouteSwapScreen, Screen, ScreenTick, Stack, Transition,
 };
 use obc_app::{
-    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RideClock,
-    RouteSummary, Sensors, Settings, TrackAction, MAX_ROUTES,
+    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RouteSummary,
+    Settings, TrackAction, MAX_ROUTES,
 };
-use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
+use obc_reader::{BBox, MapTables, SliceSource};
 
 mod common;
-use common::{build_min_obcm, build_min_obcm_profiles, keys, Buf, NoFix, ReplayFix};
+use common::{build_min_obcm, build_min_obcm_profiles, keys, render_120, ReplayFix};
 
 /// A throwaway default [`Settings`] satisfying [`Ctx`]'s `&mut` borrow. The non-settings screens
 /// under test never touch it, so each call leaks a fresh (non-aliasing) block — fine in a short-lived
@@ -748,7 +747,7 @@ fn pausing_swaps_the_map_for_the_paused_page() {
     // Riding: sample the (blue sea) backdrop at a point clear of the map chrome — the clock digits
     // end ~y28, the bottom-centre "No GPS Fix" chip band starts ~y74 on the 120px test frame, and
     // the scale bar + label own the bottom-left, so mid-right between them is bare map.
-    let map = render(&mut app, &bytes);
+    let map = render_120(&mut app, &bytes);
     let backdrop = map.get(95, 45);
 
     // A press (Down+Up within the threshold) pauses into the Paused page.
@@ -760,39 +759,10 @@ fn pausing_swaps_the_map_for_the_paused_page() {
     assert_eq!(app.mode(), Mode::Paused, "press paused the ride");
 
     // Now the same point carries the parchment Paused page, not the map.
-    let paused = render(&mut app, &bytes);
+    let paused = render_120(&mut app, &bytes);
     let page = paused.get(95, 45);
     assert_ne!(page, backdrop, "pausing replaced the view");
     assert!(page.r() > backdrop.r(), "the parchment page is lighter than the sea backdrop");
-}
-
-fn render(app: &mut App, bytes: &[u8]) -> Buf {
-    app.tick(
-        RideClock(0),
-        Sensors {
-            loc: &mut NoFix,
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: None,
-            hr: None,
-            power: None,
-            cadence: None,
-        },
-        None,
-    );
-    let cache = MapCache::new();
-    let src = SliceSource(bytes);
-    let tables = MapTables::parse(&src).expect("valid v7 file");
-    let reader = Reader::new(&src, &tables, &cache);
-    let mut buf = Buf::new(120, 120);
-    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
-        let (r, g, b) = rgb565_to_rgb888(c);
-        Rgb888::new(r, g, b)
-    });
-    buf
 }
 
 // Pan mode (a Map sub-mode driven by the shared `AppState::pan`): enter/exit, the axis + orientation
