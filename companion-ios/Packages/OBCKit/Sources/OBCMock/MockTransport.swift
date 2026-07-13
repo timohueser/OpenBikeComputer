@@ -111,7 +111,32 @@ public struct MockTransport: DeviceTransport {
 
     public func deleteRoute(_ id: DeviceObjectID) async throws {
         try await preludeThrowing()
+        control.recordRouteObjectDelete(id)
         control.removeRoute(id)
+    }
+
+    // MARK: Trips (TR8)
+
+    public func listTrips() async throws -> [TripCatalogEntry] {
+        // The device's trip catalog (`tripList`) — reconcile input for the trip
+        // card badge, never list rows. Mirrors the real `tripList` download.
+        try await preludeThrowing()
+        return control.deviceTripCatalog()
+    }
+
+    public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
+        try await preludeThrowing()
+        guard let decoded = control.deviceTripDecoded(id) else { throw DeviceError.readFailed }
+        return decoded
+    }
+
+    public func uploadTrip(_ trip: TripBlob) -> TransferHandle {
+        control.beginTripUpload(trip)
+    }
+
+    public func deleteTrip(_ id: DeviceObjectID) async throws {
+        try await preludeThrowing()
+        control.removeTrip(id)
     }
 
     public func listRides() async throws -> RideCatalog {
