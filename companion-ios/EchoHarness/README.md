@@ -77,6 +77,16 @@ swift run echo-harness concurrency route.obcr
 # it as both stages, or two for distinct stages.
 swift run echo-harness trip-soak route.obcr route-2.obcr
 
+# ── Session churn (the 2026-07-13 instability report) ──
+# What the companion app does across a testing session, on ONE connection, with numbers: each cycle
+# uploads a route (commit + timed storeChanged), verifies by routeList read, reads the rideList (the
+# sync path's read), and deletes the route (command ack + timed storeChanged — the edge the app's
+# badge-clear rides on). Every --abort-every cycles an extra upload is aborted mid-bytes (op 3) first,
+# proving the transfer engine recycles with no disconnect to clean up behind it. Every wait is bounded,
+# so a lost notify fails the run loudly with its cycle number; the report prints min/avg/max latency
+# per edge. Crank --iterations for an overnight number-gathering run.
+swift run echo-harness churn route.obcr --iterations 30 --abort-every 5
+
 # ── Read the device diagnostics blob directly ──
 swift run echo-harness diagnostics --verbose
 ```
