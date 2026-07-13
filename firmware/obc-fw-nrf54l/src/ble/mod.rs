@@ -470,7 +470,9 @@ pub async fn run(
         sensors::run(stack, server),
         join5(
             host_task(runner),
-            route_delete_task(stack, server, store, shared),
+            // The trip cascade rides the route-delete slot (`join5` is embassy's ceiling): both are
+            // rare, signal-driven arms, so sharing a slot costs nothing.
+            join(route_delete_task(stack, server, store, shared), trip_cascade_task(stack, server, store, shared)),
             ride_delete_task(stack, server, store, shared),
             ride_saved_task(stack, server, store, shared),
             async {
@@ -704,6 +706,37 @@ async fn route_delete_task(
             data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
         } else {
             warn!("ble: [delete] on-device delete of route object {} found nothing", id);
+        }
+    }
+}
+
+/// Drain on-device trip **cascade**-delete requests (epic #526, TR3/TR4) for the whole `ble::run`
+/// lifetime — the trip sibling of [`route_delete_task`]. The Route menu's long-press → confirm posts
+/// the trip's durable id ([`request_trip_cascade`](crate::object_store::request_trip_cascade)); this
+/// executes [`ObjectStore::delete_trip_cascade`] — each member route through `delete_route`, then the
+/// trip object — and notifies **both** `storeChanged` edges (§4.3): the member deletes moved the
+/// route store, the trip delete its own store. The same borrow discipline as the route arm: the
+/// `RefCell` borrow ends before any `await`.
+async fn trip_cascade_task(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &core::cell::RefCell<ObjectStore>,
+    shared: &'static SharedStoreMutex,
+) -> ! {
+    loop {
+        let id = crate::object_store::wait_trip_cascade().await;
+        let deleted = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().delete_trip_cascade(&mut guard, id)
+        };
+        if deleted {
+            info!("ble: [delete] on-device cascade delete of trip object {}", id);
+            // Both edges (§4.3): member routes moved the route store, the trip its own. Harmless
+            // no-ops when disconnected; the revision bumps carry the change to the next connect.
+            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
+            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Trip).await;
+        } else {
+            warn!("ble: [delete] on-device cascade delete of trip object {} found nothing", id);
         }
     }
 }
