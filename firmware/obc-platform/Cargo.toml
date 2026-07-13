@@ -99,3 +99,7 @@ embassy-time = { version = "0.5.1", features = ["std"] }
 # The reader's RGB565→device-64 quantizer, so the framebuffer test can pin the panel-plane pack
 # against it exhaustively (the two implement the same quantization and must never drift).
 obc-reader = { path = "../obc-reader" }
+
+# Drives the async display-contract presents in host tests (they complete synchronously on the
+# host) — the same minimal block_on the simulator already uses, so no new lockfile entry.
+pollster = "0.3"
