@@ -72,8 +72,12 @@ pub enum HostCommand {
     /// Compat adapter: [`take_store_changed`](crate::App::take_store_changed).
     RescanStore { commits: u32 },
     /// Abort the in-flight route plan and discard the partial nav file (#499). Answers nothing —
-    /// the planning screen is already gone. One-shot; drained before [`PlanRoute`] so a cancel and
-    /// a fresh request posted in the same input batch resolve in order.
+    /// the planning screen is already gone. One-shot, drained before [`PlanRoute`]; the two slots
+    /// interact by **post-time annihilation**: posting a cancel clears a still-undrained plan
+    /// request (a confirm→Back inside one input batch nets "no plan" — the host must never
+    /// execute a plan whose spinner the rider already dismissed and commit a ghost route), so a
+    /// drained cancel always refers to a plan the host already holds, and any `PlanRoute` behind
+    /// it in the mailbox was posted **after** the cancel.
     /// Compat adapter: [`take_nav_cancel`](crate::App::take_nav_cancel).
     ///
     /// [`PlanRoute`]: HostCommand::PlanRoute
@@ -102,7 +106,10 @@ pub enum HostCommand {
     FinishTrack(TrackAction),
     /// Run the on-device router from `from` to `to` (epic #116, R4): write the emitted OBCR to the
     /// reserved nav route, rescan, and answer with [`HostEvent::NavPlanned`]. One-shot; the
-    /// confirm-screen flow guarantees at most one plan is posted per drain.
+    /// confirm-screen flow guarantees at most one plan is posted per drain, and a
+    /// [`CancelRoutePlan`](HostCommand::CancelRoutePlan) posted while this request is still
+    /// undrained **annihilates it** (see that variant) — a request the host receives was never
+    /// cancelled before it left the app.
     /// Compat adapter: [`take_nav_request`](crate::App::take_nav_request).
     PlanRoute(NavRequest),
     /// Run a DFU phase (epic #615): validate `UPDATE.BIN` ([`DfuAction::Scan`], answered by
@@ -173,7 +180,11 @@ impl HostCommand {
     /// destructive/persistence one-shots, then new work, then idempotent refreshes, then the
     /// derived fill cues. Within one input batch this order — not gesture arrival — is what a
     /// typed host observes; the per-class latches never encoded a cross-class arrival order to
-    /// begin with (every legacy host imposed its own).
+    /// begin with (every legacy host imposed its own). The one arrival-order fact that *does*
+    /// matter — a plan confirmed and cancelled inside the same batch must net "no plan" — is
+    /// enforced at **post time**, not here: the cancel annihilates the undrained request (see
+    /// [`HostCommand::CancelRoutePlan`]), so this order alone never hands the host a
+    /// dead-on-arrival plan.
     pub(crate) const DRAIN_ORDER: [HostCommandClass; 13] = [
         HostCommandClass::RescanStore,
         HostCommandClass::CancelRoutePlan,
@@ -299,7 +310,8 @@ impl<const N: usize> HostMailbox<N> {
         self.q.pop_front()
     }
 
-    /// How many commands are queued.
+    /// How many commands are queued (clippy pairs it with [`is_empty`](Self::is_empty); the
+    /// protocol tests assert exact batch sizes through it).
     pub fn len(&self) -> usize {
         self.q.len()
     }
@@ -312,11 +324,6 @@ impl<const N: usize> HostMailbox<N> {
     /// Whether the mailbox is full — the drain's backpressure signal.
     pub fn is_full(&self) -> bool {
         self.q.is_full()
-    }
-
-    /// Iterate the queued commands in drain order without consuming them.
-    pub fn iter(&self) -> impl Iterator<Item = &HostCommand> {
-        self.q.iter()
     }
 
     /// Push with the documented per-class coalescing. Returns `false` — leaving the command with

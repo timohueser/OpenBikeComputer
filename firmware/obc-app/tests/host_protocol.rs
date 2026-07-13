@@ -54,9 +54,25 @@ fn a_host_defers_the_answer_without_borrowing_the_app() {
     assert_eq!(app.activity.active_route, Some(0), "…and activates the committed route");
 }
 
-/// Back mid-plan pops the spinner and posts the cancel; the typed drain then yields
-/// `CancelRoutePlan` **before** any newly-posted `PlanRoute` (the canonical order), and a
-/// defensive post-cancel answer through the typed door is dropped exactly like the legacy seam.
+/// A confirm and its Back applied in one batch **before any drain** (reachable during a long
+/// render pass) net "no plan": the cancel annihilates the undrained request through the real
+/// screen path, so the host never executes a dismissed plan and no ghost route can commit.
+#[test]
+fn same_batch_confirm_and_back_net_no_plan() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    app.debug_start_nav((0, 0), (1000, 1000), "Dismissed before drained");
+    app.apply_gesture(Gesture::Back); // Back on the spinner, same batch — no drain in between
+
+    let mut mailbox = drain(&mut app);
+    assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan), "only the (no-op) cancel drains");
+    assert!(mailbox.pop().is_none(), "the dismissed plan never reaches the host");
+    assert!(app.take_nav_request().is_none() && !app.take_nav_cancel(), "…and nothing is left behind");
+}
+
+/// Back mid-plan pops the spinner and posts the cancel; a plan posted **after** the cancel
+/// survives it (annihilation only kills a request the cancel's Back was aimed at), the typed
+/// drain yields `CancelRoutePlan` before that `PlanRoute` (the canonical order), and a defensive
+/// post-cancel answer through the typed door is dropped exactly like the legacy seam.
 #[test]
 fn cancel_drains_before_a_new_plan_and_a_late_answer_is_dropped() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));

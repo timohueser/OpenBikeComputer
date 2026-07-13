@@ -5561,8 +5561,8 @@ mod tests {
         app.activity.request_track(TrackAction::Save);
         app.notify_store_changed();
         app.notify_store_changed();
+        app.activity.request_nav_cancel(); // posted before the plan — a later cancel annihilates it
         app.activity.request_nav(NavRequest::new((0, 0), (500, 500), "To the col"));
-        app.activity.request_nav_cancel();
         app.activity.request_dfu(DfuAction::Scan);
         app.activity.request_route_delete(1);
         app.activity.request_trip_delete(42);
@@ -5725,5 +5725,45 @@ mod tests {
         let _ = app.drain_host_commands(&mut mailbox);
         assert_eq!(mailbox.len(), 1);
         assert!(app.take_nav_request().is_none(), "the typed drain consumed the compat slot");
+    }
+
+    /// Same-batch confirm→Back (review F1): a cancel posted while the plan request is still
+    /// undrained **annihilates** it — the rider's net intent is "no plan", matching what both
+    /// legacy host drain orders net, so the host can never execute a dismissed plan and commit a
+    /// ghost route with a dropped answer. The cancel still latches (a no-op with nothing in
+    /// flight), and the three-gesture batch (cancel A, confirm B, Back on B) also nets exactly
+    /// one cancel — the host aborts the in-flight A and B never runs.
+    #[test]
+    fn a_cancel_annihilates_an_undrained_plan_request() {
+        use crate::activity::NavRequest;
+        use crate::host::{HostCommand, HostMailbox};
+
+        // Confirm + Back in one batch → drain yields exactly [CancelRoutePlan].
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
+        app.activity.request_nav_cancel();
+        let mut mailbox: HostMailbox = HostMailbox::new();
+        let _ = app.drain_host_commands(&mut mailbox);
+        assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan));
+        assert!(mailbox.is_empty(), "the cancelled plan never reaches the mailbox");
+
+        // The compat doors agree — same single pending state.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
+        app.activity.request_nav_cancel();
+        assert_eq!(app.take_nav_request(), None, "annihilated before any host saw it");
+        assert!(app.take_nav_cancel(), "the cancel still latches (a stale cancel is a host no-op)");
+
+        // Three gestures in one batch: Back on in-flight A's spinner, confirm B, Back on B's.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
+        assert!(app.take_nav_request().is_some(), "the host already holds plan A");
+        app.activity.request_nav_cancel(); // Back on A's spinner — nothing undrained to annihilate
+        app.activity.request_nav(NavRequest::new((0, 0), (2, 2), "B")); // confirm B
+        app.activity.request_nav_cancel(); // Back on B's spinner — annihilates the undrained B
+        let mut mailbox: HostMailbox = HostMailbox::new();
+        let _ = app.drain_host_commands(&mut mailbox);
+        assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan), "one cancel: aborts the in-flight A");
+        assert!(mailbox.is_empty(), "B never runs");
     }
 }

@@ -574,7 +574,16 @@ impl Activity {
 
     /// Record a one-shot plan-cancel (#499) — set by the planning screen's Back, drained by
     /// [`App::take_nav_cancel`](crate::App::take_nav_cancel).
+    ///
+    /// **Annihilates** a still-undrained [`request_nav`](Self::request_nav): Back always comes
+    /// from the planning screen of the *latest* request, so a request still latched at
+    /// cancel-post time was confirmed and cancelled inside one input batch — the net intent is
+    /// "no plan", and executing it anyway would commit a ghost route whose answer nobody is
+    /// showing (both legacy host drain orders net no plan here). The cancel itself still
+    /// latches: with nothing in flight it is a harmless host-side no-op, and a plan the host
+    /// already drained is still aborted.
     pub(crate) fn request_nav_cancel(&mut self) {
+        self.nav_request = None;
         self.nav_cancel = true;
     }
 
