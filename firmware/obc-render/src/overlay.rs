@@ -35,7 +35,7 @@ const ARROW_HALF: f32 = 4.5;
 
 /// What the route overlay needs to know about one route chunk.
 pub struct OverlayChunk {
-    pub bbox: obc_reader::BBox,
+    pub bbox: obc_map_scene::BBox,
     /// Cumulative route distance (m) at this chunk's first point.
     pub cum_distance_m: u32,
 }
@@ -232,7 +232,7 @@ where
     let mut s = s0;
     for seg in pts.windows(2) {
         let (a, b) = (seg[0], seg[1]);
-        let dl = obc_reader::ground_dist_m_cl(a, b, cl);
+        let dl = obc_map_scene::ground_dist_m_cl(a, b, cl);
         if dl > 1e-3 {
             // Grid multiples of spacing_m that fall on this segment and in the window.
             let lo_seg = s.max(lo);
@@ -280,7 +280,7 @@ mod tests {
     use super::walk_route_arrows;
     use crate::viewport::aspect_for_lat;
     use heapless::Vec;
-    use obc_reader::ground_dist_m;
+    use obc_map_scene::ground_dist_m;
 
     /// Fixed spacing (m) to pin the grid maths; the app derives it per-frame from the zoom.
     const SPACING: f32 = 33.0;

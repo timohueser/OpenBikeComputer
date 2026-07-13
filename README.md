@@ -40,6 +40,7 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `firmware/` | Rust workspace — the device app, the desktop simulator, the shared reader/renderer, and the map packer. See [`firmware/README.md`](firmware/README.md). |
 | `firmware/obc-formats/` | Dependency-free `no_std` persistent-format authority — versions, fixed layouts, flags, sentinels, primitive codecs, and the shared byte-I/O seam. |
 | `firmware/obc-ports/` | Dependency-free `no_std` semantic ports — fixes, sensor/input/settings traits, clocks, and recorded-track points shared without depending upward on app, platform, or host policy. |
+| `firmware/obc-map-scene/` | Dependency-light `no_std` streamed map-scene seam — neutral bounds/styles plus allocation-free candidate/decode visitors shared by map sources and the renderer. |
 | `firmware/obc-reader/` | `no_std + alloc` — pure OBCM **v5** parsing (header, style table, LOD table, per-LOD quadtree query + chunk decode). Dependency-light. |
 | `firmware/obc-route/` | `no_std` — the OBCR route reader **and** the GPX → OBCR converter. |
 | `firmware/obc-render/` | `no_std` — the **shared rendering path**: `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering, even-odd scanline polygon fill, weighted polylines, text. Generic over an `embedded-graphics` `DrawTarget` so host and MCU run identical drawing code. |
@@ -60,9 +61,10 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route / firmware-update-image format specifications and the BLE wire contract. |
 | `firmware/docs/`, `packer/docs/` | Design notes and handover docs (UI spec, rendering pipeline, line-style plans, packer port stages…). |
 
-The crate dependency direction includes `obc-sim → obc-app → obc-render → obc-reader`,
-with the dependency-free `obc-formats` byte-contract and `obc-ports` semantic foundations
-beneath the reader/route and app/route layers respectively.
+The crate dependency direction includes `obc-sim → obc-app → obc-render → obc-map-scene`,
+with `obc-reader → obc-map-scene` independently adapting streamed OBCM data. The
+dependency-light `obc-formats`, `obc-map-scene`, and `obc-ports` foundations sit beneath the
+reader/route, renderer, and app/route layers respectively.
 The nRF54L firmware and the website's
 `obc-web-demo` are *sibling hosts* beside `obc-sim`, reusing
 `obc-app` / `obc-render` / `obc-reader` / `obc-route` unchanged.
@@ -318,7 +320,7 @@ The `obc-pack` tests use fixtures under `packer/tests/corpus/` — the committed
 ## Status & roadmap
 
 The full app runs on the desktop simulator **and on the nRF54L15-DK** today: the
-shared stack (`obc-reader`, `obc-route`, `obc-render`, `obc-app`) runs `no_std`
+shared stack (`obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`) runs `no_std`
 on the device, streaming maps/routes from a microSD card and driving the panel
 over SPI.
 
