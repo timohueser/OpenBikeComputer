@@ -1031,25 +1031,33 @@ pub(crate) async fn run_app(
         // this frame is untouched. Board-crate flag, drained once per BLE write; a no-op otherwise.
         #[cfg(feature = "ble")]
         if crate::object_store::take_ble_config_written() {
-            let mut settings = *app.settings();
-            settings.adopt_ble_fields(&settings_store.load().unwrap_or_default());
-            app.set_settings(settings);
+            // Merge only the BLE-owned fields; `merge_ble_settings` preserves any pending device-edit
+            // save (its revision is untouched) so neither the phone's write nor the rider's edit is
+            // lost (#456 + #810).
+            app.merge_ble_settings(&settings_store.load().unwrap_or_default());
         }
 
-        // Persist settings the moment a settings screen changes one: one in-place 16-byte RRAM line,
-        // skipped when nothing changed.
-        if app.take_settings_dirty() {
-            settings_store.save(app.settings());
-            // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
-            // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before its
-            // next Config read / advertised-name read. One relaxed store; a no-op on non-BLE builds.
-            #[cfg(feature = "ble")]
-            crate::object_store::mark_device_settings_changed();
-            // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
-            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-            if app.settings().fix_interval_s != prev_interval {
-                prev_interval = app.settings().fix_interval_s;
-                sensor_link::set_rate(prev_interval);
+        // Persist settings the moment an edited value leaves the settings subtree: one in-place
+        // 16-byte RRAM line, skipped when nothing is owed. The write is acknowledged back to the app
+        // by revision (#810) — a durable write clears the dirty state; a failed one keeps it retryable
+        // (the app re-arms a bounded backoff) and surfaces the advisory warning card.
+        if let Some(revision) = app.take_settings_persist() {
+            match settings_store.save(app.settings()) {
+                Ok(()) => {
+                    app.apply_event(obc_app::HostEvent::SettingsPersisted { revision });
+                    // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
+                    // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before
+                    // its next Config read / advertised-name read. One relaxed store; no-op non-BLE.
+                    #[cfg(feature = "ble")]
+                    crate::object_store::mark_device_settings_changed();
+                    // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
+                    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+                    if app.settings().fix_interval_s != prev_interval {
+                        prev_interval = app.settings().fix_interval_s;
+                        sensor_link::set_rate(prev_interval);
+                    }
+                }
+                Err(error) => app.apply_event(obc_app::HostEvent::SettingsPersistFailed { revision, error }),
             }
         }
 

@@ -191,11 +191,22 @@ impl DateTime {
     }
 }
 
-/// Best-effort persistence for an owner-defined settings value.
+/// Why a [`SettingsStore::save`] failed — a bounded, `Copy` reason a host can carry back to the app
+/// in a [`HostEvent::SettingsPersistFailed`](../obc_app/enum.HostEvent.html) without borrowing a
+/// backend error. The variants are intentionally coarse: the app retries the same revision on any of
+/// them, so a rider-visible advisory is all the detail the protocol needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsSaveError {
+    /// The backing store rejected or failed the write (RRAM line-write error, a file I/O failure, a
+    /// full or absent medium). The live value stays authoritative in RAM; the app re-arms a retry.
+    Backend,
+}
+
+/// Persistence for an owner-defined settings value.
 ///
-/// `None` means no valid persisted value is available. [`save`](SettingsStore::save) deliberately
-/// has no acknowledgement or retry contract: the live value remains authoritative if a host
-/// cannot persist it.
+/// `None` from [`load`](SettingsStore::load) means no valid persisted value is available.
+/// [`save`](SettingsStore::save) returns a typed result so the app can acknowledge a durable write
+/// and keep a failed one retryable (#810) — the live value remains authoritative in RAM regardless.
 pub trait SettingsStore {
     /// The settings model owned by the consumer of this port.
     type Value;
@@ -203,8 +214,10 @@ pub trait SettingsStore {
     /// Load the persisted value, or `None` when storage is blank, invalid, or unavailable.
     fn load(&mut self) -> Option<Self::Value>;
 
-    /// Persist `value` best-effort.
-    fn save(&mut self, value: &Self::Value);
+    /// Persist `value`, reporting whether the write reached durable storage. A returned
+    /// [`SettingsSaveError`] leaves the revision retryable; `Ok(())` is the app's cue to mark it
+    /// acknowledged.
+    fn save(&mut self, value: &Self::Value) -> Result<(), SettingsSaveError>;
 }
 
 /// A resolved GPS UTC timestamp. Seconds remain separate because [`DateTime`] is minute-resolution.
