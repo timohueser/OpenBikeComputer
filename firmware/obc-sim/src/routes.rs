@@ -189,13 +189,15 @@ impl RouteStore {
     }
 
     /// Make the active route match `want`, (re)reading its bytes from disk only on a change.
-    /// Cheap to call every frame.
-    pub fn sync_active(&mut self, want: Option<usize>) {
+    /// Returns whether the active bytes were (re)read this call — the reparse signal the resident
+    /// [`ActiveRouteSession`](obc_host_core::ActiveRouteSession) gates on. Cheap to call every frame.
+    pub fn sync_active(&mut self, want: Option<usize>) -> bool {
         if want == self.active && (want.is_none() == self.active_bytes.is_none()) {
-            return;
+            return false;
         }
         self.active = want;
         self.active_bytes = want.and_then(|i| self.paths.get(i)).and_then(|p| std::fs::read(p).ok());
+        true
     }
 
     /// Force the active route's bytes to re-read from disk on the next [`sync_active`] even if the
@@ -214,19 +216,66 @@ impl RouteStore {
     }
 }
 
-/// The shared nav-plan commit path ([`obc_host_core::finish_nav_plan`]) drives the store through
-/// this trait, so the exact write→rescan→invalidate order lives in one place for both hosts.
-impl obc_host_core::NavRouteStore for RouteStore {
-    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
-        self.write_nav_route(bytes)
-    }
+/// The shared dispatcher ([`obc_host_core::HostLoop`]) and nav-commit path drive the folder store
+/// through this trait, so the exact delete → rescan → re-feed and write → rescan → invalidate orders
+/// live in one place for every host.
+impl obc_host_core::RouteRepository for RouteStore {
     fn catalog(&self) -> &[RouteSummary] {
         self.catalog()
     }
     fn ids(&self) -> &[u16] {
         self.ids()
     }
+    fn delete_by_id(&mut self, id: u16) -> bool {
+        self.delete_by_id(id)
+    }
+    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
+        self.write_nav_route(bytes)
+    }
+    fn sync_active(&mut self, want: Option<usize>) -> bool {
+        self.sync_active(want)
+    }
+    fn active_source(&self) -> Option<SliceSource<'_>> {
+        self.active_source()
+    }
     fn invalidate_active(&mut self) {
         self.invalidate_active()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed sample OBCR the folder store seeds from (twice, for a ≥2-route catalog).
+    const ROUTE: &[u8] = include_bytes!("../assets/grimsel-climb.obcr");
+
+    fn temp_route_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("obc-route-conf-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.obcr"), ROUTE).unwrap();
+        std::fs::write(dir.join("b.obcr"), ROUTE).unwrap();
+        dir
+    }
+
+    /// The **folder-backed** route store passes the same `obc-host-core` conformance suite the
+    /// in-memory store does — active-replacement/reparse signal, delete + id retirement, and the
+    /// reserved nav commit.
+    #[test]
+    fn folder_route_store_passes_the_conformance_suite() {
+        let dir = temp_route_dir("suite");
+        let mut store = RouteStore::open(&dir);
+        obc_host_core::conformance::route_repository_suite(&mut store, ROUTE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// …and the app-driven identity remap (the active route stays on its durable id across a delete).
+    #[test]
+    fn folder_route_store_passes_identity_remap() {
+        let dir = temp_route_dir("remap");
+        let mut store = RouteStore::open(&dir);
+        obc_host_core::conformance::route_identity_remap(&mut store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

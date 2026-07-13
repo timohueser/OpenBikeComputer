@@ -34,7 +34,7 @@ mod sim_sensors;
 mod track;
 mod trips;
 use framebuffer::Framebuffer;
-use obc_host_core::{finish_nav_plan, initial_camera, replay_step, NavPlan, ReplaySensors, VecSink};
+use obc_host_core::{finish_nav_plan, initial_camera, replay_step, ReplaySensors, VecSink};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::{RouteIndex, RouteReader};
 use rides::RideStore;

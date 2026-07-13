@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_app::TripInput;
+use obc_app::{App, TripInput};
 use obc_route::{SliceSource, TripMeta};
 
 /// The scanned trips folder: each trip's session id + its decoded [`TripMeta`], parallel to its file
@@ -128,6 +128,23 @@ impl TripStore {
         }
         self.rescan();
         true
+    }
+}
+
+/// The shared dispatcher ([`obc_host_core::HostLoop`]) drives the trip cascade delete + re-feed
+/// through this trait (the web demo plugs in the trip-less `()` instead).
+impl obc_host_core::TripCatalog for TripStore {
+    fn member_route_ids(&self, id: u16) -> Vec<u16> {
+        self.member_route_ids(id)
+    }
+    fn delete_by_id(&mut self, id: u16) -> bool {
+        self.delete_by_id(id)
+    }
+    fn rescan(&mut self) {
+        self.rescan()
+    }
+    fn refeed(&self, app: &mut App) {
+        app.set_trips(&self.inputs());
     }
 }
 

@@ -130,6 +130,30 @@ impl RideStore {
     }
 }
 
+/// The shared dispatcher ([`obc_host_core::HostLoop`]) drives the ride catalog + per-ride track
+/// reads through this trait — the same delete/re-feed/track-fill sequencing the board runs.
+impl obc_host_core::RideRepository for RideStore {
+    fn catalog(&self) -> &[RideSummary] {
+        self.catalog()
+    }
+    fn ids(&self) -> &[u16] {
+        self.ids()
+    }
+    fn delete_by_id(&mut self, id: u16) -> bool {
+        self.delete_by_id(id)
+    }
+    fn profile_by_id(&self, id: u16) -> Option<Profile> {
+        self.profile_by_id(id)
+    }
+    fn preview_by_id(&self, id: u16) -> Vec<(i32, i32)> {
+        self.preview_by_id(id)
+    }
+    /// A `Save` just wrote a fresh `RD{id}.ORD`; re-scan so it appears in the Rides menu live.
+    fn refresh(&mut self) {
+        self.rescan();
+    }
+}
+
 /// The durable object id in an `RD{id}.ORD` path, or `None` for any other file.
 fn ride_id_in(p: &Path) -> Option<u16> {
     p.file_name()
@@ -137,4 +161,67 @@ fn ride_id_in(p: &Path) -> Option<u16> {
         .and_then(|n| n.strip_prefix("RD"))
         .and_then(|n| n.strip_suffix(".ORD"))
         .and_then(|n| n.parse::<u16>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::track::TrackStore;
+    use obc_app::TrackAction;
+    use obc_ports::TrackPoint;
+    use obc_route::RideStats;
+
+    /// Record and save one short ride into `dir` (session `id`), producing a real `RD{id}.ORD` with
+    /// elevation + geometry — the folder ride store's conformance fixture, built through the same
+    /// public `TrackStore` path the app drives.
+    fn record_ride(dir: &Path, session: u32, name: &str) {
+        let mut ts = TrackStore::open(dir);
+        ts.reconcile(None, Some(session), Some(name), None);
+        if let Some(sink) = ts.sink() {
+            for k in 0..6u32 {
+                sink.record(TrackPoint {
+                    lon: 8_000_000 + k as i32 * 200,
+                    lat: 46_000_000 + k as i32 * 200,
+                    ele: 1000 + k as i16 * 10,
+                    t_ms: k * 1000,
+                    segment_start: k == 0,
+                    hr: None,
+                    cadence: None,
+                    power: None,
+                })
+                .unwrap();
+            }
+        }
+        let stats = RideStats {
+            distance_m: 500,
+            moving_time_s: 300,
+            avg_speed_cms: 166,
+            climb_m: 50,
+            unix_at_anchor: 1_700_000_000,
+            anchor_ms: 0,
+            avg_hr: None,
+            max_hr: None,
+            avg_cadence: None,
+            avg_power: None,
+            max_power: None,
+        };
+        ts.reconcile(Some(TrackAction::Save), None, Some(name), Some(stats));
+    }
+
+    /// The **folder-backed** ride store passes the shared `obc-host-core` conformance suite: unknown
+    /// ids never read, a *known* ride yields its recorded profile + preview (`expects_track = true`,
+    /// unlike the trackless memory store), and delete retires the id.
+    #[test]
+    fn folder_ride_store_passes_the_conformance_suite() {
+        let dir = std::env::temp_dir().join(format!("obc-ride-conf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record_ride(&dir, 1, "Ride One");
+        record_ride(&dir, 2, "Ride Two");
+
+        let mut store = RideStore::open(&dir);
+        assert_eq!(store.catalog().len(), 2, "two saved rides scanned");
+        obc_host_core::conformance::ride_repository_suite(&mut store, true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
