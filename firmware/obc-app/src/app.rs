@@ -349,6 +349,45 @@ const GESTURE_BUF: usize = 16;
 ///     app.render_frame(&mut display, &reader, route.as_ref(), w, h, color_policy);
 /// }
 /// ```
+/// Bounded backoff before a failed settings persist may re-emit its [`HostCommand::PersistSettings`]
+/// (map-plane millis, #810). Fixed and coarse: a persist failure is rare (an RRAM/file write error),
+/// the value stays live in RAM meanwhile, and the retry only re-emits on a frame that runs for
+/// another reason — so this paces retries without ever scheduling an idle wake.
+const SETTINGS_RETRY_BACKOFF_MS: u32 = 2_000;
+
+/// The settings-persistence handshake (#810, FAR-17). Editing is live in RAM the instant it happens;
+/// *persisting* it is an acknowledged, retryable cross-boundary conversation keyed by the monotonic
+/// [`settings_rev`](App::settings_rev). This replaces the old fire-and-forget `settings_dirty` bool,
+/// whose drain cleared the flag **before** the host wrote — so a failed RRAM/file write silently lost
+/// the retry signal.
+///
+/// States and transitions (all gated on leaving the settings subtree before anything is emitted):
+/// - **Clean** — the live settings are persisted. An edit → **Dirty** (and bumps the revision).
+/// - **Dirty** — a save is owed. Once outside the subtree, the drain emits
+///   `PersistSettings { revision }` and moves to **Awaiting**.
+/// - **Awaiting** — emitted and waiting for the ack; **not re-emitted** (no RRAM spam under a slow
+///   host). A matching [`HostEvent::SettingsPersisted`] → **Clean**; a matching
+///   [`HostEvent::SettingsPersistFailed`] → **Backoff**. An edit here → **Dirty** (supersede: the new
+///   revision will re-emit; the old in-flight ack, when it lands, no longer matches and is ignored).
+/// - **Backoff** — the last write failed; re-emits (→ Awaiting) only once `now_ms` reaches
+///   `retry_at_ms`. An edit → **Dirty** (a fresh revision skips the wait).
+///
+/// The revision is the guard for superseding: an ack is honoured only when it equals the current
+/// [`settings_rev`](App::settings_rev). `u32` monotonic (wrapping); a wrap needs ~4 billion edits
+/// between an emit and its ack, and there is only ever one revision Awaiting at a time, so equality
+/// is exact regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistState {
+    /// The live settings are persisted at [`settings_rev`](App::settings_rev).
+    Clean,
+    /// An edit changed the live settings; a save is owed once the rider leaves the settings subtree.
+    Dirty,
+    /// A `PersistSettings { revision }` was emitted for the current revision and awaits its ack.
+    Awaiting,
+    /// The last persist failed; no retry re-emits before `retry_at_ms` (map-plane millis).
+    Backoff { retry_at_ms: u32 },
+}
+
 pub struct App {
     /// The camera / orientation / last-fix state — public so the host's mouse pan/zoom and control
     /// panel can read and adjust it directly.
@@ -535,14 +574,15 @@ pub struct App {
     /// the set-point changes in [`set_settings`](App::set_settings) /
     /// [`apply_gesture`](App::apply_gesture). See [`WallClock`].
     wall_clock: WallClock,
-    /// Whether a [`settings`](App::settings) edit is **pending persistence**; set by
-    /// [`apply_gesture`](App::apply_gesture)'s before/after compare, drained by
-    /// [`take_settings_dirty`] once the user leaves the settings subtree (the save is debounced to
-    /// screen exit, not fired per detent). Starts `false` — the boot value came from the store or
-    /// the default.
-    ///
-    /// [`take_settings_dirty`]: App::take_settings_dirty
-    settings_dirty: bool,
+    /// The revision of the live [`settings`](App::settings) — bumped by every
+    /// [`apply_gesture`](App::apply_gesture) whose before/after compare finds a change. Monotonic
+    /// (wrapping `u32`); the persistence handshake keys its acks by it (see [`PersistState`]). Starts
+    /// `0`, re-zeroed by [`set_settings`](App::set_settings) when the boot value is seeded.
+    settings_rev: u32,
+    /// The settings-persistence handshake state (#810) — replaces the old fire-and-forget
+    /// `settings_dirty` bool so a failed write stays retryable and a stale ack can't clear a newer
+    /// edit. Starts [`Clean`](PersistState::Clean): the boot value came from the store or the default.
+    settings_persist: PersistState,
     /// Host-supplied encoder hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
     /// Reset bar; [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
     /// single-loop hosts (the render reads `App`'s own [`InputPlane`]); the **two-plane firmware**
@@ -833,7 +873,8 @@ impl App {
             // The wall clock starts from the same default set-point at the boot origin; the host's
             // `set_settings` re-stamps it from the persisted clock a moment later.
             wall_clock: WallClock::new(Settings::default().local_clock()),
-            settings_dirty: false,
+            settings_rev: 0,
+            settings_persist: PersistState::Clean,
             hold_progress_override: None,
             hold_cancel_pending: false,
             last_battery_poll_ms: None,
@@ -935,7 +976,8 @@ impl App {
             addr_of_mut!((*slot).last_input_ms).write(0);
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
-            addr_of_mut!((*slot).settings_dirty).write(false);
+            addr_of_mut!((*slot).settings_rev).write(0);
+            addr_of_mut!((*slot).settings_persist).write(PersistState::Clean);
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).hold_cancel_pending).write(false);
             addr_of_mut!((*slot).last_battery_poll_ms).write(None);
@@ -1010,7 +1052,8 @@ impl App {
                 last_input_ms: _,
                 settings: _,
                 wall_clock: _,
-                settings_dirty: _,
+                settings_rev: _,
+                settings_persist: _,
                 hold_progress_override: _,
                 hold_cancel_pending: _,
                 last_battery_poll_ms: _,
@@ -2772,7 +2815,28 @@ impl App {
         // resumes from the stored time. `local_clock` folds in the UTC offset in GPS mode, so the
         // Home clock shows local time, not the raw UTC anchor.
         self.wall_clock.set(self.settings.local_clock(), self.now_ms);
-        self.settings_dirty = false;
+        // The value came from the store (or the default), so it is already persisted: reset the
+        // revision handshake to Clean. Any pending edit is discarded — seeding is a boot/reload
+        // operation, not a rider edit (the BLE-merge path uses `merge_ble_settings`, which preserves
+        // a pending device-edit save).
+        self.settings_rev = 0;
+        self.settings_persist = PersistState::Clean;
+    }
+
+    /// Merge the BLE-owned fields (units + device name) of a phone Config write into the live
+    /// settings, **preserving** any pending device-edit persistence (#456 + #810). The phone's write
+    /// is persisted to the same store by the BLE plane directly (`ObjectStore::apply_config`), so this
+    /// only reconciles the live RAM copy; it deliberately does **not** touch the revision handshake:
+    ///
+    /// - If a device edit was already pending, its revision is untouched, so its save still fires and
+    ///   writes the merged blob — neither the phone's nor the rider's change is lost.
+    /// - If nothing was pending, the live copy now matches what the BLE plane already persisted, so
+    ///   staying Clean is correct (no redundant re-write).
+    ///
+    /// Only [`adopt_ble_fields`](crate::settings::Settings::adopt_ble_fields)'s narrow set is pulled
+    /// across, so a device-only edit is never clobbered.
+    pub fn merge_ble_settings(&mut self, other: &Settings) {
+        self.settings.adopt_ble_fields(other);
     }
 
     /// The live device settings — read by the host to persist them, and by anything that needs
@@ -2844,10 +2908,50 @@ impl App {
     /// mutate [`settings`](App::settings)**; the trade-off is that an edit left un-exited when power
     /// is cut is lost (which the single-slot store already tolerates).
     ///
-    /// Compatibility adapter over [`HostCommand::PersistSettings`] (#800); removal owned by #812
-    /// (the acknowledged/retryable revision protocol is #810's).
+    /// Emit-only compatibility peek over [`HostCommand::PersistSettings`]: `true` iff this call
+    /// emitted a persist request (dirty, outside the settings subtree, not already Awaiting/backing
+    /// off). It does **not** acknowledge the write — a host that actually persists must use
+    /// [`take_settings_persist`](App::take_settings_persist) and answer with the ack event, or the
+    /// revision stays Awaiting forever. Kept for the debounce/gating tests; removal owned by #812.
     pub fn take_settings_dirty(&mut self) -> bool {
         self.drain_host_command(HostCommandClass::PersistSettings).is_some()
+    }
+
+    /// Revision-aware compatibility drain for a host that persists settings **synchronously** in its
+    /// loop (the board ride loop): emit the pending [`HostCommand::PersistSettings`] and return its
+    /// `revision`, which the host must feed back via [`HostEvent::SettingsPersisted`] on a durable
+    /// write or [`HostEvent::SettingsPersistFailed`] on failure (#810). `None` when nothing is owed.
+    /// Reads [`settings`](App::settings) in the same pass under the snapshot-at-drain rule. Removal
+    /// owned by #812 (a fully typed host drains the command itself).
+    pub fn take_settings_persist(&mut self) -> Option<u32> {
+        match self.drain_host_command(HostCommandClass::PersistSettings) {
+            Some(HostCommand::PersistSettings { revision }) => Some(revision),
+            _ => None,
+        }
+    }
+
+    /// Whether a settings persist is owed **and** may be emitted this pass: the live value is dirty,
+    /// the rider has left the settings subtree, and we are neither already Awaiting an ack nor inside
+    /// a failed-write backoff window. The shared predicate behind the `PersistSettings` peek/drain.
+    fn settings_persist_ready(&self) -> bool {
+        if self.top_is_settings() {
+            return false;
+        }
+        match self.settings_persist {
+            PersistState::Dirty => true,
+            // Wrap-safe "deadline reached": the difference stays in the low half while `now_ms` is at
+            // or past `retry_at_ms` (map-plane millis wrap only after ~49 days).
+            PersistState::Backoff { retry_at_ms } => self.now_ms.wrapping_sub(retry_at_ms) < 0x8000_0000,
+            PersistState::Clean | PersistState::Awaiting => false,
+        }
+    }
+
+    /// Test hook: arm a pending settings save without driving a real edit (bumps the revision and
+    /// marks Dirty), standing in for a settings-screen edit the drain/gating tests don't replay.
+    #[cfg(test)]
+    fn arm_settings_save(&mut self) {
+        self.settings_rev = self.settings_rev.wrapping_add(1);
+        self.settings_persist = PersistState::Dirty;
     }
 
     /// Whether the top (input-receiving) screen is one of the settings screens — the gate
@@ -3004,7 +3108,11 @@ impl App {
             self.hold_cancel_pending = true;
         }
         if self.settings != settings_before {
-            self.settings_dirty = true;
+            // A rider edit: bump the revision and (re-)arm the save. Setting Dirty from *any* prior
+            // state supersedes an in-flight/backoff older revision — the new content re-emits, and the
+            // older ack, when it lands, no longer matches `settings_rev` and is ignored (#810).
+            self.settings_rev = self.settings_rev.wrapping_add(1);
+            self.settings_persist = PersistState::Dirty;
             // A change to the *local* set-point re-stamps the wall clock: the manual clock edit, but
             // also — in GPS mode — a UTC-offset turn or GPS-clock toggle, both of which shift local
             // time. Flipping units or the GPS interval leaves the local clock alone.
@@ -3555,7 +3663,30 @@ impl App {
             HostEvent::DfuInstallBegan => self.on_dfu_install_began(),
             HostEvent::UpdateConfirmed(version) => self.update_confirmed = Some(version),
             HostEvent::UpdateFailed { why, staged } => self.update_failed = Some((why, staged)),
+            HostEvent::SettingsPersisted { revision } => self.on_settings_persisted(revision),
+            HostEvent::SettingsPersistFailed { revision, error } => self.on_settings_persist_failed(revision, error),
         }
+    }
+
+    /// [`HostEvent::SettingsPersisted`]: the host durably wrote `revision`. Clear to Clean **only**
+    /// when it is still the latest — a stale ack (a newer edit already moved us back to Dirty) is
+    /// ignored, so the newer content stays pending. Revision equality is the supersede guard (#810).
+    fn on_settings_persisted(&mut self, revision: u32) {
+        if self.settings_persist == PersistState::Awaiting && revision == self.settings_rev {
+            self.settings_persist = PersistState::Clean;
+        }
+    }
+
+    /// [`HostEvent::SettingsPersistFailed`]: the write for `revision` failed. Keep the revision dirty
+    /// and re-arm a bounded backoff (retried on a later frame that runs anyway — no idle wake), but
+    /// only when it is still the in-flight latest; a stale failure is ignored. Surface the failure on
+    /// the shared advisory warning card so it is more than a log line (#810).
+    fn on_settings_persist_failed(&mut self, revision: u32, _error: obc_ports::SettingsSaveError) {
+        if self.settings_persist == PersistState::Awaiting && revision == self.settings_rev {
+            self.settings_persist =
+                PersistState::Backoff { retry_at_ms: self.now_ms.wrapping_add(SETTINGS_RETRY_BACKOFF_MS) };
+        }
+        self.on_warning(WarningFlags::SETTINGS_ERROR);
     }
 
     /// Non-consuming per-class pendency — the shared predicate behind the `has_*` compatibility
@@ -3573,7 +3704,7 @@ impl App {
             HostCommandClass::PlanRoute => self.activity.has_nav_request(),
             HostCommandClass::Dfu => self.activity.has_dfu_request(),
             HostCommandClass::ForgetBond => self.state.ble_forget_pending,
-            HostCommandClass::PersistSettings => self.settings_dirty && !self.top_is_settings(),
+            HostCommandClass::PersistSettings => self.settings_persist_ready(),
             HostCommandClass::ScanCardFree => self.activity.card_scan_pending(),
             HostCommandClass::LoadRideTrack => self.ride_track_request().is_some(),
             HostCommandClass::RefreshNavPreview => self.nav_preview_missing(),
@@ -3612,9 +3743,12 @@ impl App {
                 core::mem::take(&mut self.state.ble_forget_pending).then_some(HostCommand::ForgetBond)
             }
             HostCommandClass::PersistSettings => {
-                if self.settings_dirty && !self.top_is_settings() {
-                    self.settings_dirty = false;
-                    Some(HostCommand::PersistSettings)
+                if self.settings_persist_ready() {
+                    // Emit the current revision and await its ack — the flag is *not* cleared here
+                    // (the #810 fix): a failed write must keep the revision retryable, so Clean is
+                    // reached only by a matching `SettingsPersisted` ack in `apply_event`.
+                    self.settings_persist = PersistState::Awaiting;
+                    Some(HostCommand::PersistSettings { revision: self.settings_rev })
                 } else {
                     None
                 }
@@ -4505,7 +4639,7 @@ mod tests {
                 app.apply_gesture(g);
             }
             if edits.is_empty() {
-                app.settings_dirty = true;
+                app.arm_settings_save();
             } else {
                 assert_ne!(*app.settings(), before, "{name}: the edit script changed a setting");
             }
@@ -5583,7 +5717,7 @@ mod tests {
         app.activity.request_route_delete(1);
         app.activity.request_trip_delete(42);
         app.activity.request_ride_delete(0);
-        app.settings_dirty = true; // Home is on top — the settings subtree was left
+        app.arm_settings_save(); // Home is on top — the settings subtree was left
         app.activity.viewed_ride = Some(0); // derives LoadRideTrack { id: 7 }
         app.activity.active_route = Some(0); // + an overview with no preview derives RefreshNavPreview
         let _ = app.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
@@ -5608,7 +5742,7 @@ mod tests {
                     HostCommand::PlanRoute(_),
                     HostCommand::Dfu(DfuAction::Scan),
                     HostCommand::ForgetBond,
-                    HostCommand::PersistSettings,
+                    HostCommand::PersistSettings { .. },
                     HostCommand::ScanCardFree,
                     HostCommand::LoadRideTrack { id: 7 },
                     HostCommand::RefreshNavPreview,
@@ -5709,15 +5843,147 @@ mod tests {
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
-        app.settings_dirty = true;
+        app.arm_settings_save(); // rev → 1
         assert!(!app.has_pending_host_command(), "still editing — no command yet");
         assert!(!app.take_settings_dirty(), "the compat adapter agrees");
 
         app.stack.pop(); // leave the subtree
         let mut mailbox: HostMailbox = HostMailbox::new();
         let _ = app.drain_host_commands(&mut mailbox);
-        assert_eq!(mailbox.pop(), Some(HostCommand::PersistSettings));
-        assert!(!app.take_settings_dirty(), "one flag, one drain — no second pending state");
+        assert_eq!(mailbox.pop(), Some(HostCommand::PersistSettings { revision: 1 }));
+        assert!(!app.take_settings_dirty(), "one emit, then Awaiting — no second pending state");
+    }
+
+    // ==================== #810: acknowledged, retryable settings persistence ====================
+    //
+    // These drive the revision handshake through the App's typed protocol (`take_settings_persist`
+    // emits, `apply_event` acks) — the board and sim wire the same two calls to their stores.
+
+    /// A settings save on a settings-screen edit stays held until the rider leaves the subtree, then
+    /// emits exactly once per sweep regardless of how many detents changed the value — no per-detent
+    /// RRAM write, and none while any settings screen is on top (the mandatory "no writes during a
+    /// stepper sweep / inside the subtree" case).
+    #[test]
+    fn no_persist_during_a_stepper_sweep_inside_the_subtree() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
+        // A sweep of edits while inside the subtree: several revisions, but never an emit.
+        for _ in 0..5 {
+            app.arm_settings_save();
+            assert_eq!(app.take_settings_persist(), None, "held while a settings screen is on top");
+        }
+        app.stack.pop(); // leave the subtree
+        assert_eq!(app.take_settings_persist(), Some(5), "one coalesced emit for the latest revision");
+        assert_eq!(app.take_settings_persist(), None, "and only once — now Awaiting the ack");
+    }
+
+    /// Success: the emitted revision's ack clears the dirty state, and nothing re-emits afterward.
+    #[test]
+    fn persist_success_clears_the_dirty_state() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.arm_settings_save();
+        assert_eq!(app.take_settings_persist(), Some(1));
+        app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
+        assert_eq!(app.take_settings_persist(), None, "acked → Clean, nothing owed");
+        assert!(!app.has_pending_host_command());
+    }
+
+    /// A failed write does **not** lose the dirty state (the exact #810 bug): it re-arms a bounded
+    /// backoff, holds off within the window, then re-emits the *same* revision once the window passes.
+    #[test]
+    fn transient_failure_then_retry_keeps_the_revision() {
+        use crate::screen::WarningFlags;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.now_ms = 10_000;
+        app.arm_settings_save();
+        assert_eq!(app.take_settings_persist(), Some(1));
+        app.apply_event(HostEvent::SettingsPersistFailed { revision: 1, error: obc_ports::SettingsSaveError::Backend });
+        // Failure is observable on the advisory card, not just logged.
+        assert!(
+            app.stack
+                .iter()
+                .any(|s| matches!(s, Screen::Warning(w) if w.flags().contains(WarningFlags::SETTINGS_ERROR))),
+            "a failed persist raises the settings advisory",
+        );
+        assert_eq!(app.take_settings_persist(), None, "inside the backoff window — no retry yet");
+        app.now_ms += SETTINGS_RETRY_BACKOFF_MS; // window elapsed
+        assert_eq!(app.take_settings_persist(), Some(1), "the same revision is retried, not lost");
+        app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
+        assert_eq!(app.take_settings_persist(), None, "the retry's ack finally clears it");
+    }
+
+    /// Repeated failure paces retries: exactly one emit per backoff window, never a per-pass storm of
+    /// RRAM writes while the store keeps rejecting.
+    #[test]
+    fn repeated_failure_is_paced_by_the_backoff_window() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.now_ms = 1_000;
+        app.arm_settings_save();
+        for round in 0..3 {
+            assert_eq!(app.take_settings_persist(), Some(1), "one emit at the start of round {round}");
+            app.apply_event(HostEvent::SettingsPersistFailed {
+                revision: 1,
+                error: obc_ports::SettingsSaveError::Backend,
+            });
+            // Several passes inside the window yield nothing — the pacing guard.
+            for _ in 0..4 {
+                app.now_ms += 100;
+                assert_eq!(app.take_settings_persist(), None, "no re-emit inside the backoff window");
+            }
+            app.now_ms += SETTINGS_RETRY_BACKOFF_MS; // cross into the next window
+        }
+    }
+
+    /// An edit while a save is pending bumps the revision and supersedes it: the stale ack for the old
+    /// revision must NOT clear the newer dirty state; the newer revision then persists.
+    #[test]
+    fn newer_edit_supersedes_and_a_stale_ack_is_ignored() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.arm_settings_save(); // rev 1
+        assert_eq!(app.take_settings_persist(), Some(1)); // Awaiting(1)
+        app.arm_settings_save(); // a fresh edit while pending → rev 2, Dirty
+                                 // The old save's ack lands late — it is for a superseded revision and must be ignored.
+        app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
+        assert_eq!(app.take_settings_persist(), Some(2), "the newer revision still needs persisting");
+        app.apply_event(HostEvent::SettingsPersisted { revision: 2 });
+        assert_eq!(app.take_settings_persist(), None, "only the latest ack clears it");
+    }
+
+    /// BLE merge under a pending device edit: `merge_ble_settings` adopts the phone's owned fields
+    /// without dropping the pending save, so neither the phone's write nor the rider's edit is lost.
+    #[test]
+    fn ble_merge_under_a_pending_save_loses_neither_side() {
+        use crate::settings::Units;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::default()); // seeded Clean
+
+        // A device-only edit is pending (a fix-interval change), not yet persisted.
+        app.settings.fix_interval_s = 9;
+        app.arm_settings_save(); // rev 1, Dirty
+
+        // The phone writes units=Imperial (persisted to the store by the BLE plane already); the ride
+        // loop merges the BLE-owned fields into the live copy.
+        app.merge_ble_settings(&Settings { units: Units::Imperial, ..Settings::default() });
+
+        assert_eq!(app.settings().units, Units::Imperial, "the phone's units are adopted");
+        assert_eq!(app.settings().fix_interval_s, 9, "the pending device edit is untouched");
+        // The save still fires and writes the merged blob — neither side lost.
+        assert_eq!(app.take_settings_persist(), Some(1), "the pending save survives the BLE merge");
+
+        // The clean-case twin: a BLE merge with nothing pending adds no redundant write.
+        app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
+        app.merge_ble_settings(&Settings { units: Units::Metric, ..Settings::default() });
+        assert_eq!(app.take_settings_persist(), None, "BLE fields are already persisted — no re-write owed");
+    }
+
+    /// Reboot-load fallback: seeding the boot value from the store (or the default when the store is
+    /// blank/corrupt) resets the handshake to Clean — a fresh boot never spuriously re-persists.
+    #[test]
+    fn reboot_load_seeds_clean() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.arm_settings_save(); // pretend a stale dirty state survived somehow
+        app.set_settings(Settings::default()); // boot seed (store load or default)
+        assert_eq!(app.take_settings_persist(), None, "a seeded boot value is already persisted");
     }
 
     /// Compat adapters and the typed drain consume the **same** pending slot, in both directions:

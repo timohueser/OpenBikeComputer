@@ -45,6 +45,11 @@ impl WarningFlags {
     /// now incomplete. Raised by the app the first time [`TrackSink::record`](crate::TrackSink::record)
     /// returns an error (a card pull, a write error, a full medium) — issue #11.
     pub const REC_ERROR: WarningFlags = WarningFlags(1 << 4);
+    /// A settings write to the persistent store failed, so an edit did not reach RRAM/the file. The
+    /// value stays live in RAM and the app keeps retrying (bounded backoff); this is the advisory that
+    /// the persist is not yet durable (#810). Raised by the app on a
+    /// [`HostEvent::SettingsPersistFailed`](crate::HostEvent::SettingsPersistFailed).
+    pub const SETTINGS_ERROR: WarningFlags = WarningFlags(1 << 5);
 
     /// No bits set.
     pub const fn is_empty(self) -> bool {
@@ -183,6 +188,16 @@ impl WarningScreen {
             cv.text("Recording error", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
             y += line + 2;
             cv.text("Log incomplete", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
+            y += line + line / 2; // advance past this block (+ gap) in case the settings error follows
+        }
+
+        // Settings-write advisory (#810): a persist to the store failed, so a settings edit is not yet
+        // durable. The value is still live and the app keeps retrying — this only tells the rider the
+        // write hasn't landed. WARNING colour: it's a (recoverable) data-persistence issue.
+        if self.flags.contains(WarningFlags::SETTINGS_ERROR) {
+            cv.text("Settings not saved", Point::new(w / 2, y), Font::Body, TextAlign::Center, WARNING);
+            y += line + 2;
+            cv.text("Retrying write", Point::new(w / 2, y), Font::Label, TextAlign::Center, SUBTEXT);
         }
     }
 }
