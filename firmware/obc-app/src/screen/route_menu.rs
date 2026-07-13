@@ -4,7 +4,7 @@
 //! decides what the rows are:
 //!
 //! - [`TopLevel`](RouteMenuScope::TopLevel): **trip folder rows first, then the unfiled routes**,
-//!   each group in the catalog's order. A folder row is visually distinct (see [`FolderRowStyle`]);
+//!   each group in the catalog's order. A folder row is visually distinct (see [`draw_folder_row`]);
 //!   pressing it pushes a second [`RouteMenuScreen`] scoped to that trip, long-pressing it opens the
 //!   [`TripDeleteScreen`] cascade-delete confirm. A route row behaves exactly as it always has.
 //! - [`Trip`](RouteMenuScope::Trip): that trip's **member routes as completely standard route rows**
@@ -53,31 +53,12 @@ const SIDE_INSET: i32 = 12;
 /// inner width, so the climb figures line up across every row regardless of distance width (T3).
 const CLIMB_COL_PCT: i32 = 55;
 
-/// Which of the folder-row visual variants the top-level menu draws (epic #526, TR3). The full trip
-/// machinery is identical across all three — only [`draw_folder_row`] branches on this — so the
-/// owner can pick the look by flipping this const (the two other variants are rendered to
-/// `tr3-variants/` for the decision). **Variant A is active**; the pick will collapse this to one.
-///
-/// - [`A`](FolderRowStyle::A): a small folder glyph before the name + the summed distance right-
-///   aligned on line 1; the count on the left of line 2, the summed climb at the route-row climb
-///   column. Shows all four figures (name truncates when long).
-/// - [`B`](FolderRowStyle::B): no glyph; the **full name** gets line 1 (never crowded), a single
-///   `N routes · km` caption on line 2 — the legible, name-first look (drops the summed climb).
-/// - [`C`](FolderRowStyle::C): a drawn folder-tab icon + a rounded count badge on the name line, with
-///   the summed `km` / climb on line 2 in the **same two columns as a route row**, so the stats align
-///   down the list and the folderness is carried by the icon + badge (uniform-chrome / field-map).
-const FOLDER_ROW_STYLE: FolderRowStyle = FolderRowStyle::A;
-
-/// The switchable folder-row look — see [`FOLDER_ROW_STYLE`]. The two variants the active const
-/// doesn't select are dead until the owner flips it (that's the whole point of the knob), so the
-/// unused-variant lint is expected here.
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum FolderRowStyle {
-    A,
-    B,
-    C,
-}
+/// The count badge's box height (px) — also its minimum width, so a single digit sits in a
+/// near-square pill and a double digit widens it symmetrically. Sized to wrap the Label cap height
+/// (18 px) with even margins, optically centred on the name line.
+const BADGE_H: i32 = 24;
+/// Horizontal padding inside the count badge (both sides together).
+const BADGE_PAD: i32 = 14;
 
 /// The upper bound on rows the merged top-level list can hold: every trip folder plus every route
 /// (when nothing is filed). A stage list is a subset of the routes, so this bounds both scopes.
@@ -323,7 +304,7 @@ impl RouteMenuScreen {
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
             let accent = if row.selected { INK } else { SUBTEXT };
             match rows[row.index] {
-                Row::Folder(ti) => draw_folder_row(cv, &row.area, &trips[ti], w, accent, rx),
+                Row::Folder(ti) => draw_folder_row(cv, &row.area, &trips[ti], w, accent),
                 Row::Route(ri) => draw_route_row(cv, &row.area, &routes[ri], w, accent),
             }
         });
@@ -365,98 +346,39 @@ fn climb_group(cv: &mut impl Surface, x: i32, sy: i32, climb_m: u32, accent: u16
     x + 16 + text_width(&climb, Font::Label) as i32
 }
 
-/// A trip **folder** row, drawn in the active [`FOLDER_ROW_STYLE`]. `t` is the resolved trip
-/// (member count = `stage_indices.len()`, summed `distance_km` / `climb_m` over the resolvable
-/// stages). An empty folder (all refs dangled) reads `0 routes`.
-fn draw_folder_row(cv: &mut impl Surface, area: &Rectangle, t: &TripSummary, w: i32, accent: u16, rx: &Render) {
+/// A trip **folder** row (epic #526, TR3 — final look picked by the owner from rendered variants):
+/// **no folder pictogram** — the trip indication is the rounded **count badge** alone, right-aligned
+/// on the name line, which buys the name the full remaining width. Line 2 carries the summed
+/// `km` / climb in the **same two columns as a route row**, so the stats align down the list.
+/// An empty folder (all refs dangled) wears a `0` badge and zeroed stats.
+fn draw_folder_row(cv: &mut impl Surface, area: &Rectangle, t: &TripSummary, w: i32, accent: u16) {
     use palette::*;
     let y = area.top_left.y;
     let n = t.stage_indices.len();
-    // "1 route" vs "N routes" — the singular/plural word from the i18n catalog.
-    let word = if n == 1 { rx.t(Msg::RouteMenuFolderRoute) } else { rx.t(Msg::RouteMenuFolderRoutes) };
+    let name_x = area.top_left.x + NAME_INSET;
 
-    match FOLDER_ROW_STYLE {
-        FolderRowStyle::A => {
-            // Leading folder glyph; the name shifts right of it, with the summed distance right-
-            // aligned on line 1. Line 2: the count on the left, the climb group at the route-row
-            // climb column so it lines up down the list.
-            let gx = area.top_left.x + NAME_INSET;
-            folder_glyph(cv, gx, y + 16, accent);
-            let name_x = gx + FOLDER_GLYPH_W + 6;
+    // The count badge: a rounded wood pill with the member count in parchment. Its box is centred
+    // on the number (TextAlign::Center at the pill's midpoint; height wraps the Label cap with even
+    // margins) and widens with the digit count, so a 10-stage trip wears "10" as comfortably as "2".
+    let mut nbuf: heapless::String<8> = heapless::String::new();
+    let _ = write!(nbuf, "{n}");
+    let badge_w = (text_width(&nbuf, Font::Label) as i32 + BADGE_PAD).max(BADGE_H);
+    let badge_x = w - 20 - badge_w;
+    let badge_y = y + 8; // box y+8..y+32; Label cap (18 px) at y+11 → 3 px margin above and below
+    cv.round(rect(badge_x, badge_y, badge_w, BADGE_H), 6, WOOD);
+    cv.text(&nbuf, Point::new(badge_x + badge_w / 2, badge_y + 3), Font::Label, TextAlign::Center, PARCHMENT);
 
-            let mut dist: heapless::String<12> = heapless::String::new();
-            let _ = write!(dist, "{} km", t.distance_km);
-            let dist_w = text_width(&dist, Font::Label) as i32;
-            cv.text(&dist, Point::new(w - 20, y + 12), Font::Label, TextAlign::Right, accent);
+    // The name owns line 1 up to the badge (the whole point of dropping the pictogram).
+    let name_max = (((badge_x - 8) - name_x) / Font::Body.char_width() as i32).max(4) as usize;
+    let name = fit_name(&t.name, name_max);
+    cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
 
-            let name_max = (((w - 26 - dist_w) - name_x) / Font::Body.char_width() as i32).max(4) as usize;
-            let name = fit_name(&t.name, name_max);
-            cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
-
-            let sy = y + 35;
-            let mut count: heapless::String<16> = heapless::String::new();
-            let _ = write!(count, "{n} {word}");
-            cv.text(&count, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
-            climb_group(cv, climb_col_x(area.top_left.x, w), sy, t.climb_m, accent);
-        }
-        FolderRowStyle::B => {
-            // No glyph; the **full name** gets line 1 (the priority — never crowded by a right-hand
-            // stat). Line 2 is layout-distinct from a route row: the count · distance on the left,
-            // the climb group right-aligned — a folder's headline is how many routes + how far, so
-            // this variant leads with those and drops the two-column route grammar.
-            let name_x = area.top_left.x + NAME_INSET;
-            let name_max = (((w - 20) - name_x) / Font::Body.char_width() as i32).max(6) as usize;
-            let name = fit_name(&t.name, name_max);
-            cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
-
-            let sy = y + 35;
-            let mut meta: heapless::String<32> = heapless::String::new();
-            let _ = write!(meta, "{n} {word} \u{00b7} {} km", t.distance_km);
-            cv.text(&meta, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
-        }
-        FolderRowStyle::C => {
-            // A drawn folder-tab icon + a rounded count badge on the name line; line 2 carries the
-            // summed km / ↑m in the SAME two columns as a route row, so the stats align down the list.
-            let gx = area.top_left.x + NAME_INSET;
-            folder_glyph(cv, gx, y + 16, accent);
-            let name_x = gx + FOLDER_GLYPH_W + 6;
-
-            // The count badge, right-aligned on line 1: a rounded wood pill with the number in
-            // parchment, so a folder wears its size like a chip.
-            let mut nbuf: heapless::String<8> = heapless::String::new();
-            let _ = write!(nbuf, "{n}");
-            let badge_w = (nbuf.len() as i32) * Font::Label.char_width() as i32 + 14;
-            let badge_x = w - 20 - badge_w;
-            cv.round(rect(badge_x, y + 8, badge_w, 20), 5, WOOD);
-            cv.text(&nbuf, Point::new(badge_x + badge_w / 2, y + 11), Font::Label, TextAlign::Center, PARCHMENT);
-
-            let name_max = (((badge_x - 6) - name_x) / Font::Body.char_width() as i32).max(4) as usize;
-            let name = fit_name(&t.name, name_max);
-            cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
-
-            // Line 2: distance in col 1, climb group in col 2 — the route-row layout.
-            let sy = y + 35;
-            let mut dist: heapless::String<12> = heapless::String::new();
-            let _ = write!(dist, "{} km", t.distance_km);
-            cv.text(&dist, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
-            climb_group(cv, climb_col_x(area.top_left.x, w), sy, t.climb_m, accent);
-        }
-    }
-}
-
-/// Total width (px) the [`folder_glyph`] occupies, so callers can inset the name past it.
-const FOLDER_GLYPH_W: i32 = 18;
-
-/// Draw a small **folder** pictogram — a rounded body with a tab on its top-left — centred vertically
-/// on `cy`, its left edge at `x`, in `color`. Hand-plotted in the panel's own glyph idiom (like the
-/// climb triangles / BLE rune) so it quantizes at the device's pixel scale.
-fn folder_glyph(cv: &mut impl Surface, x: i32, cy: i32, color: u16) {
-    // The tab: a short rounded nub sitting on top of the body's back edge.
-    cv.round(rect(x + 1, cy - 8, 8, 4), 1, color);
-    // The body: a rounded rectangle, with a thin parchment "lid" line so it reads as a folder, not a
-    // plain box, at 18×12.
-    cv.round(rect(x, cy - 5, FOLDER_GLYPH_W, 12), 2, color);
-    cv.hline(x + 2, cy - 2, FOLDER_GLYPH_W - 4, palette::PARCHMENT);
+    // Line 2: distance in col 1, climb group in col 2 — the route-row layout, aligned down the list.
+    let sy = y + 35;
+    let mut dist: heapless::String<12> = heapless::String::new();
+    let _ = write!(dist, "{} km", t.distance_km);
+    cv.text(&dist, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
+    climb_group(cv, climb_col_x(area.top_left.x, w), sy, t.climb_m, accent);
 }
 
 /// Fit a route name into `max_chars`, appending ".." when truncated (no ellipsis glyph).

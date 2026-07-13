@@ -304,8 +304,6 @@ delete_ride = "Supprimer"
 title = "PARCOURS"
 no_routes = "Aucun parcours"
 no_routes_sub = "Importez un GPX"
-folder_route = "parcours"
-folder_routes = "parcours"
 folder_empty_sub = "Ce voyage n'a aucun parcours"
 
 # --- Trip cascade-delete confirm (epic #526, TR3) ---
