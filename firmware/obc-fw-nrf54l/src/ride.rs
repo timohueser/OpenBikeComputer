@@ -1220,7 +1220,6 @@ pub(crate) async fn run_app(
         // walk off SD) only when the route changes, or retry if a prior build failed on a flaky link.
         // Not gated on rendering — the matcher in `tick` needs the index on every fresh fix.
         if index_route != active {
-            route_cache.clear(); // a route switch: drop stale slots (the cache keys by chunk index only)
             route_index_valid = false;
             match active {
                 Some(_) => {
