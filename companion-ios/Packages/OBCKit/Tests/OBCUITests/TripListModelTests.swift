@@ -115,6 +115,28 @@ struct TripListModelTests {
         #expect(ids.contains("route:cross-plains-gravel"))
     }
 
+    // MARK: Reorder stages
+
+    @Test
+    func reorderPersistsTheNewRideOrder() {
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        control.loadFixtures("trips")
+        let library = InMemoryLibraryStore()
+        control.seedLibrary(into: library)
+        let model = MainScreenModel(transport: MockTransport(control: control), library: library)
+        model.start()
+
+        // Move stage B (index 1) before stage A — SwiftUI onMove semantics.
+        model.reorderTripStages(tripID, from: IndexSet(integer: 1), to: 0)
+
+        // The model's live order…
+        #expect(model.trip(tripID)?.stageIDs == [stageB, stageA])
+        #expect(model.tripStages(tripID).map(\.id) == [stageB, stageA])
+        // …and the store's persisted order (a fresh read, not the mirror).
+        #expect(library.trips().first { $0.id == tripID }?.stageIDs == [stageB, stageA])
+    }
+
     // MARK: Delete-dialog composition
 
     @Test
