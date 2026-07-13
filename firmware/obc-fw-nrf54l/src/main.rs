@@ -1131,13 +1131,34 @@ async fn main(_spawner: Spawner) {
                 };
                 match obc_app::settings::store_epoch_mint(card_epoch, marks, fresh) {
                     Some((new_epoch, new_marks)) => {
-                        guard.storage.as_mut().unwrap().save_card_epoch(new_epoch);
-                        guard.settings.save_id_marks(&new_marks);
-                        defmt::info!(
-                            "store-epoch: minted id-era nonce {=u32:#010x} to card (+ id-marks re-seeded)",
-                            new_epoch
-                        );
-                        Some(new_epoch)
+                        // ORDERING: card epoch FIRST, id-marks only on its success. The epoch persist
+                        // is a FAT write — categorically more tearable than the RRAM line it replaced —
+                        // and writing the marks under a failed epoch write would be fatal in the
+                        // clause-2 case: the card keeps the OLD valid epoch, the fresh floor reads
+                        // valid, and the next boot sees steady state — the era reset goes permanently
+                        // undetected (the exact aliasing this mechanism exists to catch). By skipping
+                        // the marks write on failure, clause 2 re-fires and the mint retries next boot;
+                        // serving `None` (the 2-byte version-only read) keeps this session honest too —
+                        // the store has no *proven* era name, and the app's fail-closed ack gate
+                        // handles it exactly as designed. Residual double-fault window, named honestly:
+                        // if the epoch write fails here but a LATER ride-finish marks write succeeds,
+                        // the next boot is steady under the compromised old epoch. Contrived — both are
+                        // FAT writes to the same card, so a card that can't persist EPOCH.OBE likely
+                        // can't save rides either — but it is the one path this ordering can't close.
+                        if guard.storage.as_mut().unwrap().save_card_epoch(new_epoch) {
+                            guard.settings.save_id_marks(&new_marks);
+                            defmt::info!(
+                                "store-epoch: minted id-era nonce {=u32:#010x} to card (+ id-marks re-seeded)",
+                                new_epoch
+                            );
+                            Some(new_epoch)
+                        } else {
+                            defmt::error!(
+                                "store-epoch: card epoch persist FAILED — id-marks left untouched so the \
+                                 mint retries next boot; serving no epoch this session (app acks fail-closed)"
+                            );
+                            None
+                        }
                     }
                     None => {
                         // Kept: mint returns `None` only when the card epoch was `Some`, so unwrap is safe.
