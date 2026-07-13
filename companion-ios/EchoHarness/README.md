@@ -53,9 +53,10 @@ swift run echo-harness soak route.obcr route-waypoints.obcr --count 50
 # drop recovers by whole re-request. Reconciles: the device saw exactly the drops induced, never rebooted.
 swift run echo-harness drop-matrix route.obcr --iterations 20
 
-# ── CRC / corruption / offset injection ──
-# Flipped-byte echo → crcMismatch; flipped-byte upload → crcMismatch (nothing committed); non-zero upload
-# offset → error (transfers restart, never resume); malformed descriptor → error. Store clean after each.
+# ── CRC / corruption injection ──
+# Flipped-byte echo → crcMismatch; flipped-byte upload → crcMismatch (nothing committed); malformed
+# descriptor → error. Store clean after each. (v2 dropped the descriptor's offset field — transfers
+# restart, never resume — so the old non-zero-offset fault class no longer has a wire field to carry.)
 swift run echo-harness corruption route.obcr
 
 # ── Connect / disconnect storm (bonding active) ──
@@ -66,6 +67,15 @@ swift run echo-harness storm --iterations 50
 # A second transfer opened while one is active → busy; a command answered while a transfer is parked
 # (control plane stays responsive); 5 back-to-back reconnects with no settle time.
 swift run echo-harness concurrency route.obcr
+
+# ── Trip object lifecycle (TR4, #653) ──
+# The whole type-9 trip lifecycle over the real byte layer: upload 2 routes + a trip that references them,
+# read the tripList (type 10) back, replace the trip reordered by id (its content fingerprint moves), delete
+# one member route (the device tolerates the dangling stage and never rewrites the stored trip — stageCount
+# holds, the live totals shrink to the resolvable stage, the stored-bytes crc is unchanged), then delete the
+# trip → storeChanged(type = trip), the surviving member becoming a top-level route. Pass one file to cycle
+# it as both stages, or two for distinct stages.
+swift run echo-harness trip-soak route.obcr route-2.obcr
 
 # ── Read the device diagnostics blob directly ──
 swift run echo-harness diagnostics --verbose

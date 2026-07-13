@@ -27,6 +27,7 @@ import OBCTransport
 /// swift run echo-harness corruption route.obcr             # CRC / offset / malformed → typed rejects
 /// swift run echo-harness storm --iterations 50             # connect/disconnect churn
 /// swift run echo-harness concurrency route.obcr            # busy gate + back-to-back reconnects
+/// swift run echo-harness trip-soak a.obcr b.obcr           # trip (type 9) lifecycle: list/reorder/delete
 /// ```
 @main
 struct EchoHarness {
@@ -71,6 +72,10 @@ struct EchoHarness {
                 try await runStorm(iterations: intOption("--iterations", default: 20, in: args))
             case "concurrency":
                 try await runConcurrency(path: try requirePath(fileArgs(after: subcommand, in: args, valueFlags: []).first, "concurrency <file.obcr>"))
+            case "trip-soak":
+                let files = fileArgs(after: subcommand, in: args, valueFlags: [])
+                guard !files.isEmpty else { throw CLIError.usage("trip-soak <file.obcr> [second.obcr]") }
+                try await runTripSoak(paths: files)
             case "diagnostics":
                 try await runDiagnostics(verbose: hasFlag("--verbose", in: args))
             default:
@@ -84,14 +89,15 @@ struct EchoHarness {
 
     // MARK: - A6 route object plane (#274)
 
-    /// Upload an OBCR file to the device (S0 §4.2 op 1), assert it commits, and confirm the store
-    /// digest moved (a route was added).
+    /// Upload an OBCR file to the device (S0 §4.2 op 1), assert it commits, and confirm the catalog
+    /// grew by one (a route was added) — the v2 change signal is the `storeChanged` the commit emits,
+    /// not a digest read.
     static func runUpload(path: String) async throws {
         let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
         let crc = CRC32.checksum(bytes)
         let central = EchoCentral()
         let link = try await central.connect()
-        let before = try await central.readDigest()
+        let before = try await routeCount(link: link, central: central)
         print("echo-harness: uploading \(bytes.count) B (crc \(hex(crc)))…")
 
         let start = TransferControl(
@@ -104,14 +110,15 @@ struct EchoHarness {
             return await central.nextTransferResult()
         }
         guard result.status == .committed else { throw HarnessError.unexpectedStatus(result.status) }
+        let changed = try await withTimeout(20) { await central.nextStoreChanged() }  // the commit's route storeChanged
 
-        let after = try await central.readDigest()
-        guard after.revision != before.revision, after.routeCount == before.routeCount + 1 else {
-            throw HarnessError.digestUnchanged
+        let after = try await routeCount(link: link, central: central)
+        guard after == before + 1 else {
+            throw HarnessError.assertion("upload committed but routeCount \(before)→\(after) (expected +1)")
         }
         print(
             "echo-harness: committed as object id \(result.objectID.map(String.init) ?? "?") ✓ "
-                + "(routes \(before.routeCount)→\(after.routeCount), revision \(before.revision)→\(after.revision))"
+                + "(routes \(before)→\(after), route store revision \(changed.revision))"
         )
     }
 
@@ -151,8 +158,8 @@ struct EchoHarness {
     /// the store signals the change.
     static func runDelete(id: UInt16) async throws {
         let central = EchoCentral()
-        _ = try await central.connect()
-        let before = try await central.readDigest()
+        let link = try await central.connect()
+        let before = try await routeCount(link: link, central: central)
         var command = Data([1, ObjectType.route.rawValue])  // cmd 1 = deleteObject · type 1 = route
         command.append(UInt8(id & 0xFF))
         command.append(UInt8(id >> 8))
@@ -164,10 +171,10 @@ struct EchoHarness {
             return (result, changed)
         }
         guard result.status == .ok else { throw HarnessError.unexpectedCommandStatus(result.status) }
-        let after = try await central.readDigest()
+        let after = try await routeCount(link: link, central: central)
         print(
-            "echo-harness: deleted id \(id) ✓ (command ok, storeChanged revision \(changed.revision), "
-                + "routes \(before.routeCount)→\(after.routeCount))"
+            "echo-harness: deleted id \(id) ✓ (command ok, route store revision \(changed.revision), "
+                + "routes \(before)→\(after))"
         )
     }
 
@@ -182,7 +189,7 @@ struct EchoHarness {
         let crc = CRC32.checksum(bytes)
         let central = EchoCentral()
         let link = try await central.connect()
-        let before = try await central.readDigest()
+        let before = try await routeCount(link: link, central: central)
 
         // 1. Announce the upload, stream only a prefix, then abort it (op=3).
         let start = TransferControl(
@@ -195,9 +202,9 @@ struct EchoHarness {
         central.writeControl(abort.encode(), to: link.transferControl)
         let aborted = await central.nextTransferResult()
         guard aborted.status == .aborted else { throw HarnessError.unexpectedStatus(aborted.status) }
-        let afterAbort = try await central.readDigest()
-        guard afterAbort.routeCount == before.routeCount else { throw HarnessError.unexpectedStatus(.error) }
-        print("echo-harness: aborted mid-upload → device discarded the partial (routes still \(afterAbort.routeCount)) ✓")
+        let afterAbort = try await routeCount(link: link, central: central)
+        guard afterAbort == before else { throw HarnessError.unexpectedStatus(.error) }
+        print("echo-harness: aborted mid-upload → device discarded the partial (routes still \(afterAbort)) ✓")
 
         // 2. Re-upload the whole object from the start — must commit.
         central.writeControl(start.encode(), to: link.transferControl)
@@ -382,9 +389,10 @@ struct EchoHarness {
         A9 SOAK + FAULT INJECTION (#277) — each asserts the device counters agree with the harness
           soak <file.obcr>... [--count N] [--no-cleanup]  N golden-path uploads, verify-by-list each
           drop-matrix <file.obcr> [--iterations K]        kill the link mid up/download → restart + verify
-          corruption <file.obcr>                          CRC / offset / malformed → typed rejects, clean state
+          corruption <file.obcr>                          CRC / malformed-descriptor → typed rejects, clean state
           storm [--iterations K]                          N connect/disconnect cycles; counters must track
           concurrency <file.obcr>                         busy gate, command-during-transfer, back-to-back reconnects
+          trip-soak <file.obcr> [second.obcr]             trip (type 9) lifecycle: upload+list+reorder+delete
 
           --help                                          this message
 
