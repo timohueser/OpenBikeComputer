@@ -15,10 +15,26 @@ The numbers below were captured from source commit
 LM20/simulator capacities, but there is no LM20 board ELF yet, so this document
 does not invent an LM20 linked baseline.
 
+The board ELF was built on an arm64 MacBookPro18,3 running macOS 26.5.1
+(25F80), with `riscv64-elf-gcc (GCC) 16.1.0` producing the FLPR blob. Record a
+new compiler/host whenever the ELF baseline is deliberately refreshed.
+
 ## Reproduce the automated baseline
 
-Install the pinned Rust toolchain/target, `llvm-tools`, and the RISC-V compiler
-required by the board crate's FLPR build. From `firmware/`:
+The repository intentionally tracks floating `stable` in `rust-toolchain.toml`.
+For exact reproduction of these numbers, explicitly select the captured 1.96.0
+toolchain rather than relying on the checkout default:
+
+```sh
+rustup toolchain install 1.96.0 --profile minimal \
+  --component rustfmt,clippy,llvm-tools \
+  --target thumbv8m.main-none-eabihf
+export RUSTUP_TOOLCHAIN=1.96.0
+rustc --version --verbose
+```
+
+Also install a RISC-V compiler compatible with the recorded GCC 16.1.0; it
+builds the board crate's FLPR blob. Then, from `firmware/`:
 
 ```sh
 # Host correctness, deterministic pixels, and repeatable timing sample.
@@ -30,7 +46,7 @@ cargo run -p obc-bench --release --locked -- --repeat 9
 python3 tools/check_dependencies.py
 python3 -m unittest discover -s tools/tests -v
 
-# Prove the pinned ARM backend actually honors the strict-alignment flag.
+# Prove the selected ARM backend actually honors the strict-alignment flag.
 python3 tools/resource_guard.py strict-align
 ```
 
@@ -149,10 +165,15 @@ built/linted in CI and are intentionally outside this workspace-layer graph.
 
 The ARM strict-alignment probe is also behavior-based: with
 `+strict-align`, an align-1 four-byte decoder must lower to four byte loads and
-no word load, while the no-flag control must contain a word load. The pinned
-rustc currently prints an “unknown and unstable feature” diagnostic but its LLVM
+no word load, while the no-flag control must contain a word load. Rustc 1.96.0
+prints an “unknown and unstable feature” diagnostic but its LLVM
 backend honors the feature; CI checks emitted assembly so a future toolchain
 change cannot silently alter that assumption.
+
+CI intentionally uses the floating stable toolchain declared by the repository.
+If stable changes linked sizes or code generation, the resource gate must fail;
+the resulting drift needs an explicit, measured re-baseline rather than a silent
+toolchain assumption.
 
 ## On-device capture (required before merge)
 

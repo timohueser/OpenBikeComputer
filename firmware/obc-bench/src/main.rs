@@ -18,6 +18,7 @@
 //! <path> --mpp <f> --heading <deg>` — a manual escape hatch to run one scene against a real local
 //! `.obcm` (never in CI: real maps aren't byte-stable fixtures).
 
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -306,24 +307,67 @@ fn print_repeat_table(repeats: usize) {
     }
 }
 
-/// Compare the run's hashes to the golden file (`name=0x<hex>` lines). Any mismatch, missing, or
-/// unknown scene prints both sides and fails the check.
+fn parse_golden_hashes(golden: &str) -> Result<BTreeMap<&str, u64>, String> {
+    let mut expected = BTreeMap::new();
+    for (index, raw) in golden.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) =
+            line.split_once('=').ok_or_else(|| format!("line {} is not `name=0x<16 hex digits>`", index + 1))?;
+        let digits = value
+            .strip_prefix("0x")
+            .filter(|digits| digits.len() == 16 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| format!("line {} has invalid hash `{value}`", index + 1))?;
+        if name.is_empty() || name.trim() != name {
+            return Err(format!("line {} has invalid scene name `{name}`", index + 1));
+        }
+        let hash = u64::from_str_radix(digits, 16)
+            .map_err(|error| format!("line {} has invalid hash `{value}`: {error}", index + 1))?;
+        if expected.insert(name, hash).is_some() {
+            return Err(format!("line {} duplicates scene `{name}`", index + 1));
+        }
+    }
+    Ok(expected)
+}
+
+/// Compare the run's hashes to the golden file (`name=0x<16 hex digits>` lines). Malformed or
+/// duplicate lines, changed hashes, and any difference between the golden/current scene-name sets
+/// print a focused diagnostic and fail the check.
 fn check_hashes(results: &[SceneResult], golden: &str) -> bool {
+    let expected = match parse_golden_hashes(golden) {
+        Ok(expected) => expected,
+        Err(error) => {
+            eprintln!("GOLDEN INVALID: {error}");
+            return false;
+        }
+    };
+    let mut current = BTreeMap::new();
     let mut ok = true;
-    let expected: std::collections::HashMap<&str, &str> =
-        golden.lines().filter_map(|l| l.trim().split_once('=')).collect();
-    for r in results {
-        let got = format!("0x{:016x}", r.hash);
-        match expected.get(r.name.as_str()) {
-            Some(&want) if want == got => {}
-            Some(&want) => {
-                eprintln!("HASH MISMATCH {}: golden {} != run {}", r.name, want, got);
+    for result in results {
+        if current.insert(result.name.as_str(), result.hash).is_some() {
+            eprintln!("CURRENT INVALID: duplicate scene `{}`", result.name);
+            ok = false;
+        }
+    }
+    for (&name, &want) in &expected {
+        match current.get(name) {
+            Some(&got) if want == got => {}
+            Some(&got) => {
+                eprintln!("HASH MISMATCH {name}: golden 0x{want:016x} != run 0x{got:016x}");
                 ok = false;
             }
             None => {
-                eprintln!("HASH MISSING {}: no golden entry (run {})", r.name, got);
+                eprintln!("HASH STALE {name}: golden entry has no current scene");
                 ok = false;
             }
+        }
+    }
+    for (&name, &got) in &current {
+        if !expected.contains_key(name) {
+            eprintln!("HASH MISSING {name}: no golden entry (run 0x{got:016x})");
+            ok = false;
         }
     }
     ok
@@ -512,5 +556,32 @@ mod tests {
         let a = run_scene(&map, "mid-rot", 4.0, 35.0, &clock);
         let b = run_scene(&map, "mid-rot", 4.0, 35.0, &clock);
         assert_eq!(a.hash, b.hash);
+    }
+
+    fn hash_result(name: &str, hash: u64) -> SceneResult {
+        SceneResult {
+            name: name.into(),
+            collect_us: 0,
+            sort_us: 0,
+            draw_us: 0,
+            total_us: 0,
+            stats: RenderStats::default(),
+            hash,
+        }
+    }
+
+    #[test]
+    fn golden_hash_parser_rejects_malformed_and_duplicate_lines() {
+        assert!(parse_golden_hashes("riding=not-a-hash\n").unwrap_err().contains("invalid hash"));
+        assert!(parse_golden_hashes("riding=0x0000000000000001\nriding=0x0000000000000001\n")
+            .unwrap_err()
+            .contains("duplicates scene"));
+    }
+
+    #[test]
+    fn hash_check_rejects_both_missing_and_stale_scene_names() {
+        let results = [hash_result("riding", 1), hash_result("route", 2)];
+        assert!(!check_hashes(&results, "riding=0x0000000000000001\noverview=0x0000000000000003\n"));
+        assert!(check_hashes(&results, "riding=0x0000000000000001\nroute=0x0000000000000002\n"));
     }
 }
