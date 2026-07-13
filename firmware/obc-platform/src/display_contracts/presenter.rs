@@ -54,8 +54,10 @@ pub trait Presenter<F: NativeFrame> {
     type Error: Debug;
 
     /// Damage meaning "push every unit" — a forced full repaint (panel re-init, transport
-    /// recovery). Must also resynchronize whatever damage state the presenter keeps, so the next
-    /// [`damage_unknown`](Self::damage_unknown) present is diffed against what is actually on glass.
+    /// recovery). The constructor is a plain value; the contract is on the [`present`](Self::present)
+    /// driven with it, which must also resynchronize whatever damage state the presenter keeps, so
+    /// the next [`damage_unknown`](Self::damage_unknown) present is diffed against what is actually
+    /// on glass.
     fn damage_full() -> Self::Damage;
     /// Damage meaning "the frame may have changed anywhere" — the immediate-mode redraw case. A
     /// presenter with its own damage strategy refines this (the LS021 pairing's row-hash self-diff);
