@@ -191,6 +191,15 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
    `storageFull` covers whichever catalog the upload targeted (routes: cap 64,
    trips: cap 16).
 
+   That close is also the ownership boundary: the device clears its active gate
+   before notifying it, and the app holds its one transfer slot until the result
+   matches the exchange's object id and committed byte count. A timeout,
+   cancellation, crossed answer, or descriptor-open upload reject closes and
+   reopens the unframed CoC before the slot is handed on; this discards any raw
+   upload bytes queued before an asynchronous reject arrived. A channel drop is
+   an implicit abort, so the device discards the partial without emitting a late
+   result for the abandoned exchange.
+
 - **CRC once, end-to-end.** One whole-object CRC verified at commit — a mismatch
   **rejects** the object (`DeviceError.crcMismatch`), never commits it. This is the
   *end-to-end* check the link CRC can't give (encode bugs, storage errors); it is
@@ -199,12 +208,15 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
   whole (spec §1 principle 4); the device discards partial uploads. Multi-object
   flows (the B7 ride sync) resume at whole-object granularity: rides that fully
   landed are kept, the rest are re-requested from byte 0.
-- **Cancelable** — abort over `TransferControl` + channel teardown; clean both ends.
+- **Cancelable** — explicit abort answers `aborted`; channel teardown is the
+  implicit reset form and produces no late answer. Both discard the partial.
 - **Storage-full reject (descriptor-open).** A **new**-route upload (`op=1`, route
   type, `object_id = 0xFFFF` or a route id the device doesn't hold) that would grow
   the catalog past its cap (64 routes) is rejected at the `TransferControl` write,
-  **before any bytes stream**, with `transferResult` status `storageFull` (6) — no
-  channel opens, no partial file. **Replace-by-id uploads of an existing route are
+  **before the device consumes any bytes**, with `transferResult` status
+  `storageFull` (6) — no partial file. v2 has no upload-accepted handshake, so the
+  sender may already have queued bytes and resets the CoC on this reject.
+  **Replace-by-id uploads of an existing route are
   exempt** (they reuse a slot). The app surfaces this as "delete routes on the
   device".
 - **Fresh-upload dedup (idempotent retry, spec §4.2).** A new-object upload

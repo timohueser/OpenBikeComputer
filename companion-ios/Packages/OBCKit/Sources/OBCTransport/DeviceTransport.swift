@@ -61,7 +61,9 @@ public protocol DeviceTransport: Sendable {
     /// an object committed or deleted **on the device** while connected (the
     /// on-device route delete, epic #447 P6). **Live edges only, no replay**:
     /// a movement is an event, not a state — late subscribers reconcile via
-    /// their own connect-time reload, never against a stale edge.
+    /// their own connect-time reload, never against a stale edge. Consumers
+    /// also audit catalogs at low cadence while connected because a BLE notify
+    /// can be dropped without replay.
     var storeChanges: AsyncStream<StoreChanged> { get }
     /// Read the device config blob.
     func readConfig() async throws -> DeviceConfig

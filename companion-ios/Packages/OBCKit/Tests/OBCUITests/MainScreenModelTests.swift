@@ -577,6 +577,30 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertTrue(model.routes.contains { $0.id == RouteID("kettle-moraine-loop") })
     }
 
+    /// A store change that lands while the catalog is already in flight queues
+    /// one follow-up pass. It must not cancel the opened read — on BLE that
+    /// leaves its closing result available to be mistaken for the next upload.
+    func testStoreChangeBurstDoesNotCancelAnInFlightCatalogRead() async {
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .milliseconds(200)
+        let library = InMemoryLibraryStore()
+        control.seedLibrary(into: library)
+        let model = MainScreenModel(transport: MockTransport(control: control), library: library)
+
+        model.start()
+        try? await Task.sleep(for: .milliseconds(50))
+        control.deviceDeletesRoute(DeviceObjectID(7))
+        control.deviceDeletesRoute(DeviceObjectID(8))
+
+        await waitFor("coalesced delete reconcile") {
+            model.loadState == .loaded
+                && !model.isUploaded(RouteID("kettle-moraine-loop"))
+        }
+        // Let the dirty follow-up pass drain as well; neither pass is cancelled.
+        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(control.cancelledRouteListReadCount, 0)
+    }
+
     /// The update lifecycle: an uploaded route is **up to date** (nothing to
     /// push) until its content moves — a rename out-dates it (the name rides
     /// in the payload), and the next committed upload brings it current again
