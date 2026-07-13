@@ -188,8 +188,24 @@ jobs:
           key: thumbv8m-nrf
       # The FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an rv32emc GNU gcc; the
       # apt package ships `riscv64-unknown-elf-gcc` (+ matching objcopy), which build.rs auto-detects.
+      #
+      # The runner's azure.archive.ubuntu.com mirror intermittently stalls mid-fetch on the ~51 MB
+      # toolchain, which used to wedge the job until the 6 h default timeout. Three layers of guard:
+      # short per-request apt timeouts (a stalled connection dies in 30 s instead of hanging), a
+      # 3-attempt retry loop (a fresh attempt lands on a healthy mirror), and a step timeout as the
+      # backstop so the worst case is a fast visible failure, never a stuck run.
       - name: Install RISC-V GCC for the FLPR blob
-        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
+        timeout-minutes: 10
+        run: |
+          apt_flags=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          for attempt in 1 2 3; do
+            sudo apt-get "${apt_flags[@]}" update &&
+              sudo apt-get "${apt_flags[@]}" install -y gcc-riscv64-unknown-elf && exit 0
+            echo "::warning::apt attempt ${attempt} failed or stalled — retrying"
+            sleep 10
+          done
+          echo "::error::could not install gcc-riscv64-unknown-elf after 3 attempts"
+          exit 1
       - name: "obc-fw-nrf54l: ${{ matrix.name }}"
         working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}
