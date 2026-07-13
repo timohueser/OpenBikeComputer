@@ -31,10 +31,11 @@ impl SettingsStore for FileSettingsStore {
         obc_app::settings::decode(&bytes)
     }
 
-    fn save(&mut self, s: &Settings) {
+    fn save(&mut self, s: &Settings) -> Result<(), obc_ports::SettingsSaveError> {
         let bytes = obc_app::settings::encode(s);
-        if let Err(e) = std::fs::write(&self.path, bytes) {
+        std::fs::write(&self.path, bytes).map_err(|e| {
             eprintln!("settings: cannot write {}: {e}", self.path.display());
-        }
+            obc_ports::SettingsSaveError::Backend
+        })
     }
 }
