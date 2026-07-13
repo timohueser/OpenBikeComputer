@@ -55,9 +55,10 @@ pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
 pub use settings::{
-    decode_route_crcs, decode_synced_rides, encode_route_crcs, encode_synced_rides, route_crcs_len, synced_rides_len,
-    ClimbMode, DateTime, IdleReturn, RouteCrcs, SavedSensor, Settings, SyncedRides, Units, WaypointMode,
-    ROUTE_CRCS_MAX_LEN, SENSOR_SLOTS, SYNCED_RIDES_MAX_LEN,
+    decode_route_crcs, decode_store_epoch, decode_synced_rides, encode_route_crcs, encode_store_epoch,
+    encode_synced_rides, route_crcs_len, synced_rides_len, ClimbMode, DateTime, IdleReturn, RouteCrcs, SavedSensor,
+    Settings, SyncedRides, Units, WaypointMode, ROUTE_CRCS_MAX_LEN, SENSOR_SLOTS, STORE_EPOCH_LEN,
+    SYNCED_RIDES_MAX_LEN,
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use wall_clock::{MinuteTicker, WallClock};

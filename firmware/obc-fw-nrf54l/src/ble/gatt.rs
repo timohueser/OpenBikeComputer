@@ -93,10 +93,13 @@ pub(crate) struct ObcControlService {
     pub psm: u16,
     /// `protocol_version` — read **without** encryption (the connect-time version check happens before
     /// pairing). Protocol v2 widens it to the 6-byte [`VersionRead`](obc_ble::VersionRead): `version
-    /// u16 · store_epoch u32`. Seeded once at BLE init from the RRAM store epoch (the `value = ` here
-    /// is a placeholder the boot seed overwrites).
-    #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read, value = [0u8; 6])]
-    pub protocol_version: [u8; 6],
+    /// u16 · store_epoch u32`. **Variable-length** (a `Vec`, like `status`/`config`): with a mounted
+    /// store the boot seed sets the full 6 bytes; with **no store** (card-resident epoch #776 — no
+    /// card ⇒ no epoch) it sets the 2-byte **version-only** form, which the app decodes as
+    /// `storeEpoch = nil` → ack fail-closed. Empty until the seed runs (before advertising). See
+    /// [`version_read_blob`].
+    #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read)]
+    pub protocol_version: heapless09::Vec<u8, { obc_ble::VersionRead::ENCODED_LEN }>,
 }
 
 // ============================ Identity ============================
@@ -206,5 +209,27 @@ pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
     let len = cfg.encode(&mut buf).unwrap_or(0); // both name sources are ≤ 48 by construction
     let mut v = heapless09::Vec::new();
     let _ = v.extend_from_slice(&buf[..len]);
+    v
+}
+
+/// The `protocolVersion` read blob for the boot seed (V2 / #632; card-resident epoch #776). With a
+/// store epoch (`Some`) it is the full 6-byte [`VersionRead`](obc_ble::VersionRead) — `version u16 ·
+/// store_epoch u32`. With **no store** (`None` — a no-card boot has no epoch, and 0 is a *legal*
+/// epoch we must never fabricate) it is the 2-byte **version-only** form (`PROTOCOL_VERSION` LE): the
+/// app reads a short attribute, decodes `storeEpoch = nil`, and fail-closes the ack. The attribute is
+/// a variable-length `Vec`, so the read serves whichever length was seeded.
+pub(crate) fn version_read_blob(
+    store_epoch: Option<u32>,
+) -> heapless09::Vec<u8, { obc_ble::VersionRead::ENCODED_LEN }> {
+    let mut v = heapless09::Vec::new();
+    match store_epoch {
+        Some(epoch) => {
+            let vr = obc_ble::VersionRead { version: obc_ble::PROTOCOL_VERSION, store_epoch: epoch };
+            let _ = v.extend_from_slice(&vr.encode());
+        }
+        None => {
+            let _ = v.extend_from_slice(&obc_ble::PROTOCOL_VERSION.to_le_bytes());
+        }
+    }
     v
 }

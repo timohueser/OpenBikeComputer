@@ -45,8 +45,9 @@ use embedded_sdmmc::{
 };
 use heapless::{String, Vec};
 use obc_app::{
-    decode_route_crcs, decode_synced_rides, encode_route_crcs, encode_synced_rides, RouteCrcs, SyncedRides, MAX_RIDES,
-    MAX_ROUTES, ROUTE_CRCS_MAX_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
+    decode_route_crcs, decode_store_epoch, decode_synced_rides, encode_route_crcs, encode_store_epoch,
+    encode_synced_rides, RouteCrcs, SyncedRides, MAX_RIDES, MAX_ROUTES, ROUTE_CRCS_MAX_LEN, STORE_EPOCH_LEN,
+    SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_platform::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
@@ -86,6 +87,17 @@ const SYNCED_SET: &str = "SYNCED.SET";
 /// pre-v2 route fills lazily at first list build. A missing/torn file = the empty map (every route
 /// serves `0 = unknown`). Codec + torn-line semantics live in `obc-app::settings` (host-tested).
 const ROUTE_CRCS: &str = "ROUTES.CRC";
+
+/// The store-epoch nonce file in the **card root** (protocol v2 #632 item 5; card-resident #776):
+/// the `u32` id-era name the phone reads over the pre-pairing `protocolVersion` read. Kept in the
+/// card **root** (not `/routes` or `/tracks`) because the epoch names the *whole* store, not the
+/// routes or rides specifically — so the SD card is the sole home of the id-era name: a card swap
+/// transplants the store's identity (swap back restores the old era, a card written by a *different*
+/// device presents *its* epoch — its own scope, closing the foreign-card hole the retired RRAM line
+/// left open). Minted/rewritten only at boot by the mint pass; a missing/torn file reads as "no
+/// epoch" → the mint rule draws a fresh one. Codec + torn-line semantics live in `obc-app::settings`
+/// (host-tested), the direct analogue of the `SYNCED.SET` / `ROUTES.CRC` sidecars.
+const EPOCH_FILE: &str = "EPOCH.OBE";
 
 /// The in-flight BLE route upload, inside `/routes`. Its extension never matches the catalog scan,
 /// so a partial upload — a drop, a power cut — is invisible until [`Storage::upload_commit`]
@@ -702,6 +714,57 @@ impl Storage {
             }
             Err(e) => defmt::warn!("SD: cannot open route-crc sidecar: {}", defmt::Debug2Format(&e)),
         }
+    }
+
+    /// Read the card-resident store-epoch nonce (`/EPOCH.OBE`, protocol v2 #632 item 5 / #776), or
+    /// `None` when the file is **absent** (a fresh/foreign-formatted card) or torn/foreign — "no
+    /// epoch", which the boot mint rule ([`obc_app::settings::store_epoch_mint`]) treats as clause 1
+    /// (draw a fresh nonce). Never panics on malformed input (the codec is host-tested). One file
+    /// read; the card **root** is always open on a mounted card.
+    pub fn load_card_epoch(&self) -> Option<u32> {
+        let Ok(file) = self.vmgr.open_file_in_dir(self.root, EPOCH_FILE, Mode::ReadOnly) else {
+            return None; // absent = no epoch (the mint pass draws a fresh one)
+        };
+        let mut buf = [0u8; STORE_EPOCH_LEN];
+        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
+        let _ = self.vmgr.close_file(file);
+        decode_store_epoch(&buf[..n])
+    }
+
+    /// Overwrite the store-epoch file (truncating) with `epoch`. Called once, from the boot mint
+    /// pass, when the mint rule fires — so the write rate is negligible. Returns `true` only when
+    /// **every** step — open, write, flush, close — succeeded: a discarded flush/close error is a
+    /// torn persist, and the mint pass gates the id-marks write and the served epoch on this result
+    /// (unlike the other sidecar writers, whose failure direction is safe by design, a swallowed
+    /// epoch-write failure would let a clause-2 mint go permanently undetected: old valid epoch on
+    /// card + freshly-written valid floor = steady state next boot — the exact aliasing the epoch
+    /// exists to catch). Whole persist within the call (open, write truncating, flush, close), so it
+    /// never counts against the open-file budget across an `await`.
+    #[must_use]
+    pub fn save_card_epoch(&mut self, epoch: u32) -> bool {
+        let bytes = encode_store_epoch(epoch);
+        let file = match self.vmgr.open_file_in_dir(self.root, EPOCH_FILE, Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => file,
+            Err(e) => {
+                defmt::warn!("SD: cannot open store-epoch file: {}", defmt::Debug2Format(&e));
+                return false;
+            }
+        };
+        let wrote = self.vmgr.write(file, &bytes).is_ok();
+        let flushed = self.vmgr.flush_file(file).is_ok();
+        let closed = self.vmgr.close_file(file).is_ok();
+        let ok = wrote && flushed && closed;
+        if !ok {
+            // The consequence log lives at the mint site (which knows whether this was a clause-2
+            // mint); here just name which step tore.
+            defmt::warn!(
+                "SD: store-epoch persist failed (write {=bool} flush {=bool} close {=bool})",
+                wrote,
+                flushed,
+                closed
+            );
+        }
+        ok
     }
 
     /// Overwrite the synced-ride sidecar (truncating). A write failure is warned, not fatal — the
