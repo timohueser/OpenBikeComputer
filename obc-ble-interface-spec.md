@@ -390,15 +390,18 @@ msg = 1  transferResult (8 bytes total):
                          3 = error         storage / internal failure
                          4 = notFound      unknown object type/id
                          5 = busy          a transfer is already active
-                         6 = storageFull   the route catalog is full — a NEW-route
-                                           upload was rejected at descriptor-open
-                                           time (§4.2), before any bytes streamed
+                         6 = storageFull   the named catalog is full — a NEW-object
+                                           upload (route past its 64-route cap, trip
+                                           past its 16-trip cap) was rejected at
+                                           descriptor-open time (§4.2), before any
+                                           bytes streamed
   committed_offset  u32       durable byte count: total_len on `committed`, else 0
                               (a download's explicit close reports its total_len)
 
 msg = 2  storeChanged (6 bytes total):
   msg       u8   = 2
-  type      u8   which store changed: route (1) or ride (2)
+  type      u8   which store changed: route (1), ride (2), or trip (9) — the values
+                 mirror the object-type numbers (§4.1)
   revision  u32  a monotonic-per-boot counter bumped on any change to that store —
                  the cheap "refetch the list" signal (it is the sole change signal
                  in v2; the v1 objectStore digest is gone)
@@ -420,6 +423,13 @@ The **`downloadAnnounce`** (v2) is the device's answer to a download request
 device → app control traffic shares one notify characteristic and one ordering
 domain. Unknown `msg` values must be ignored by the app (forward compatibility).
 
+Each `storeChanged` store keeps **its own** monotonic-per-boot revision: a trip
+upload or delete bumps the **trip** store, never the route store. A UI-composed
+cascade ("delete trip & routes", §7.7 — individual route deletes plus the trip
+delete) therefore emits **both** a route and a trip `storeChanged`. Unknown
+`storeChanged.type` values must be ignored by the app (forward compatibility,
+the same posture as unknown `msg` values).
+
 ### 4.4 `command` — small imperatives
 
 A write of `cmd u8` + fixed args. Every command is answered with a
@@ -427,7 +437,7 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 
 | `cmd` | Command | Args | Effect |
 |---|---|---|---|
-| `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`); bumps the store revision. Ride (`2`) deletion over the link is **reserved** — the reference firmware answers `notFound`: rides are deleted only on the device itself (its Rides screen), and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
+| `1` | `deleteObject` | `type u8 · object_id u16` | delete a stored route (`1`) or trip (`9`); bumps that store's revision. A trip delete is **non-cascading** (§7.7): it removes only the stored trip object — its member routes become top-level routes — and an unknown trip id answers `notFound`. Ride (`2`) deletion over the link is **reserved** — the reference firmware answers `notFound`: rides are deleted only on the device itself (its Rides screen), and the app hides synced rides locally (tombstones) so a re-sync can't resurrect them |
 | `2` | `ackRides` | `count u8 · count × object_id u16` | the app's **ride-possession ack**: the device marks every listed ride id it still stores as synced ("downloaded at least once"). `commandResult.detail` = the newly-flagged count (saturating at 255); a flag change bumps the **ride** store revision. See below |
 | `3` | `installFw` | none (`cmd` byte only) | ask the device to install the staged `UPDATE.BIN` — runs the on-device scan + **on-glass confirm** flow (see below). The command only *requests*; it never waits for the human and never installs on its own |
 | `4` | `forgetBond` | none (`cmd` byte only) | ask the device to dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged. The device answers `commandResult(ok)` **first**, then clears the bond + drops the link and returns to open-pairing advertising. **Honoured only on the bonded, authenticated link** (see below) |
@@ -814,8 +824,10 @@ The object length is fully determined by its header: `56 + 2·stage_count` bytes
   is exactly one level deep — a route lives in at most one trip, or standalone.
 - **Dangling refs are tolerated on read.** A member route deleted individually
   (over the link or on the device) does **not** invalidate the trip: the device
-  serves the trip verbatim, dangling ids and all, and **compacts them out on the
-  next trip write** (a rename, reorder, or re-upload). The `tripList` totals (§7.4)
+  serves the trip verbatim, dangling ids and all. **The device never rewrites a
+  stored trip** — dangling refs persist until the next trip **upload** replaces
+  the object by id, and that upload arrives compacted because the **app** (which
+  owns validation) builds it from resolvable stages. The `tripList` totals (§7.4)
   sum only resolvable stages, while its `stage_count` counts every stored stage.
 - **Uploads commit verbatim.** A trip upload referencing unknown route ids is
   stored as sent — validation is the app's job, not the device's.
