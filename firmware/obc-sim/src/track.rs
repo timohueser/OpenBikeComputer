@@ -178,6 +178,23 @@ impl TrackStore {
     }
 }
 
+/// The shared dispatcher ([`obc_host_core::HostLoop`]) reconciles the ride log through this trait,
+/// so the finalise/abandon/begin lifecycle order lives in one place for every host.
+impl obc_host_core::TrackRepository for TrackStore {
+    fn reconcile(
+        &mut self,
+        action: Option<TrackAction>,
+        session: Option<u32>,
+        name: Option<&str>,
+        stats: Option<RideStats>,
+    ) {
+        self.reconcile(action, session, name, stats)
+    }
+    fn sink(&mut self) -> Option<&mut dyn TrackSink> {
+        self.sink()
+    }
+}
+
 /// Replace path separators / control chars so a route name is a safe filename stem.
 fn sanitize(name: &str) -> String {
     let s: String = name.chars().map(|c| if c.is_control() || matches!(c, '/' | '\\') { '_' } else { c }).collect();
@@ -186,5 +203,22 @@ fn sanitize(name: &str) -> String {
         "ride".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The **folder-backed** track store passes the shared `obc-host-core` track-lifecycle
+    /// conformance (a session opens a log, Save/Discard closes it, a live session wins over a
+    /// drained action) — it exposes a real recording sink, so `has_sink = true`.
+    #[test]
+    fn folder_track_store_passes_the_lifecycle_suite() {
+        let dir = std::env::temp_dir().join(format!("obc-track-conf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = TrackStore::open(&dir);
+        obc_host_core::conformance::track_lifecycle(&mut store, true);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,0 +1,89 @@
+//! Board ↔ dispatcher protocol-ordering parity (#801).
+//!
+//! The board keeps its **async** ride loop and its per-latch `take_*` drains (#801 non-goal; #809
+//! owns the board loop), while the frame-stepped hosts run the shared [`HostLoop`] dispatcher. Both
+//! consume the *same* typed `HostCommand` protocol, so the orderings the board hand-codes must hold
+//! through the dispatcher too. The class-order / annihilation / counted-rescan mechanics are pinned
+//! crate-internally in `obc-app` (`tests/host_protocol.rs`); this file pins that the **dispatcher**
+//! reproduces the board's two load-bearing sequences:
+//!
+//! - `RescanStore` re-feeds the catalog before subsequent work (the board's
+//!   `take_store_changed → refeed`), so an upload/delete id resolves against the rescanned catalog.
+//! - `PlanRoute` is consumed into the resumable planner (the board's `take_nav_request → plan step`),
+//!   and a `CancelRoutePlan` posted in the same input batch **annihilates** it, so the dispatcher
+//!   never starts a plan the rider already dismissed.
+
+use obc_app::{App, AppState};
+use obc_host_core::{HostLoop, MemRideStore, MemRouteStore, MemTrackStore};
+use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+
+const MAP: &[u8] = include_bytes!("../../obc-sim/assets/grimsel.obcm");
+const ROUTE: &[u8] = include_bytes!("../../obc-sim/assets/grimsel-climb.obcr");
+
+/// Run one dispatcher pass against a fresh map reader (the frame loop's `reconcile`, minus the tick).
+fn reconcile(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore) {
+    let src = SliceSource(MAP);
+    let tables = MapTables::parse(&src).expect("grimsel map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut rides = MemRideStore::new(Vec::new());
+    let mut tracks = MemTrackStore::new();
+    let mut no_trips = ();
+    host.reconcile(app, routes, &mut rides, &mut tracks, &mut no_trips, &reader, |_app, _cmd| {});
+}
+
+/// The board rescans the object store on a store-changed edge and re-feeds the catalog; the
+/// dispatcher's `RescanStore` must do the same, so a subsequent id resolves against the rescanned
+/// (not the stale) catalog.
+#[test]
+fn rescan_refeeds_the_catalog_like_the_board() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let mut routes = MemRouteStore::new(&[ROUTE, ROUTE]);
+    app.set_routes_with_ids(routes.catalog(), routes.ids());
+    assert_eq!(app.routes().len(), 2, "the app sees both seeded routes");
+
+    // An external store mutation (a delete committed elsewhere) plus the store-changed signal — the
+    // board's `notify_store_changed` edge.
+    let gone = routes.ids()[0];
+    assert!(routes.delete_by_id(gone));
+    app.notify_store_changed();
+
+    let mut host = HostLoop::new();
+    reconcile(&mut host, &mut app, &mut routes);
+
+    assert_eq!(app.routes().len(), 1, "the dispatcher's RescanStore re-fed the rescanned catalog");
+    assert!(!app.route_ids().contains(&gone), "the deleted id is gone from the app catalog too");
+}
+
+/// The board consumes `take_nav_request` into its one-step-per-pass planner; the dispatcher consumes
+/// `PlanRoute` into the resumable [`NavPlan`] the same way (`is_planning` after the pass).
+#[test]
+fn plan_route_enters_the_resumable_planner_like_the_board() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let mut routes = MemRouteStore::new(&[ROUTE]);
+    app.set_routes_with_ids(routes.catalog(), routes.ids());
+    app.debug_start_nav((8_330_000, 46_570_000), (8_340_000, 46_575_000), "Parity Plan");
+
+    let mut host = HostLoop::new();
+    assert!(!host.is_planning(), "nothing planning before the pass");
+    reconcile(&mut host, &mut app, &mut routes);
+    assert!(host.is_planning(), "the dispatcher consumed PlanRoute into the resumable planner");
+}
+
+/// A `debug_start_nav` immediately dismissed (the confirm→Back annihilation, #837) leaves the
+/// dispatcher with **no** plan: the cancel clears the undrained request at post time, exactly as it
+/// does for the board's `take_nav_cancel` before `take_nav_request`.
+#[test]
+fn cancel_before_the_pass_starts_no_plan() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    let mut routes = MemRouteStore::new(&[ROUTE]);
+    app.set_routes_with_ids(routes.catalog(), routes.ids());
+    app.debug_start_nav((8_330_000, 46_570_000), (8_340_000, 46_575_000), "Dismissed Plan");
+    // The rider dismisses the planning screen in the same batch (Back on NavPlanning), annihilating
+    // the undrained request through the real screen path.
+    app.apply_gesture(obc_app::Gesture::Back);
+
+    let mut host = HostLoop::new();
+    reconcile(&mut host, &mut app, &mut routes);
+    assert!(!host.is_planning(), "an annihilated request never starts a plan in the dispatcher");
+}
