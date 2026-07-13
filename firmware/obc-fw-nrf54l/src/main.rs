@@ -257,13 +257,13 @@ bind_interrupts!(struct SensorIrqs {
 // is the true on-device size.
 //
 // The binding moment is a full redraw with everything resident at once:
-//   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, ~30 KB nrf-mem)
+//   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, 8,352 B nrf-mem)
 //                  plus the resident elevation `Profile` (~2.3 KB at PROFILE_COLS=256) and
-//                  `Breadcrumb` (~3 KB at SPINE_CAP=256); ~45 KB total. (The #270 cull: these
+//                  `Breadcrumb` (~3 KB at SPINE_CAP=256); 34,944 B total. (The #270 cull: these
 //                  caps were roughly halved again so the map plane leaves room for the BLE
 //                  stack in one image — the LM20 re-decides them generously.)
 //   - framebuffer  the single RGB222 frame: 240×320 × 1 B/px = 75 KB — the `FB` static below.
-//   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, ~20 KB).
+//   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, 14,444 B).
 //   - `RouteCache` the decoded-route-chunk cache (2 slots on nrf-mem, ~6 KB).
 //   - `RouteIndex` the active route's resident chunk index — the ride loop holds it across frames in
 //                  the map plane's task future to stream geometry without re-walking it (128 chunks on
@@ -337,6 +337,98 @@ const _: () = assert!(
     "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
 );
 
+// A report-only table of exact target-side allocation sizes. Keeping the table in this crate gives
+// it access to the board-private BLE arena types while `cfg(feature = "resource-report")` ensures
+// it is absent from every shipping ELF. `resource_guard.py report` extracts this section without
+// executing the firmware; the fixed-width names make the table self-describing and stale-parser
+// failures loud. Do not use these entries for linked resident RAM: `.bss + .data` from the shipping
+// ELF is the authority for that separate gate.
+#[cfg(feature = "resource-report")]
+mod resource_report {
+    use super::*;
+
+    const NAME_BYTES: usize = 32;
+
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    pub struct Entry {
+        name: [u8; NAME_BYTES],
+        bytes: u32,
+    }
+
+    const fn entry(name: &str, bytes: usize) -> Entry {
+        let src = name.as_bytes();
+        assert!(src.len() < NAME_BYTES);
+        assert!(bytes <= u32::MAX as usize);
+        let mut dst = [0; NAME_BYTES];
+        let mut i = 0;
+        while i < src.len() {
+            dst[i] = src[i];
+            i += 1;
+        }
+        Entry { name: dst, bytes: bytes as u32 }
+    }
+
+    #[cfg(feature = "ble")]
+    const BLE_ENTRIES: [Entry; 10] = [
+        entry("ble_total", ble::RESIDENT_BYTES),
+        entry("ble_mpsl", ble::MPSL_BYTES),
+        entry("ble_sdc_memory", ble::SDC_MEM_SIZE),
+        entry("ble_host_resources", ble::HOST_RESOURCES_BYTES),
+        entry("ble_packet_pool", ble::PACKET_POOL_BYTES),
+        entry("ble_cracen", ble::CRACEN_BYTES),
+        entry("ble_object_store", ble::OBJECT_STORE_BYTES),
+        entry("ble_server", ble::SERVER_BYTES),
+        entry("ble_gap_name", ble::GAP_NAME_BYTES),
+        entry("ble_sensor_manager", ble::SENSOR_MANAGER_BYTES),
+    ];
+
+    #[cfg(not(feature = "ble"))]
+    const BLE_ENTRIES: [Entry; 10] = [
+        entry("ble_total", 0),
+        entry("ble_mpsl", 0),
+        entry("ble_sdc_memory", 0),
+        entry("ble_host_resources", 0),
+        entry("ble_packet_pool", 0),
+        entry("ble_cracen", 0),
+        entry("ble_object_store", 0),
+        entry("ble_server", 0),
+        entry("ble_gap_name", 0),
+        entry("ble_sensor_manager", 0),
+    ];
+
+    const ENTRIES: usize = 23;
+
+    #[used]
+    #[no_mangle]
+    #[link_section = ".obc_resources"]
+    pub static OBC_RESOURCE_TABLE: [Entry; ENTRIES] = [
+        entry("format_version", 1),
+        entry("framebuffer", FB_BYTES),
+        entry("row_diff", core::mem::size_of::<RowDiff<FRAME_H>>()),
+        entry("app", core::mem::size_of::<App>()),
+        entry("map_cache", core::mem::size_of::<MapCache>()),
+        entry("map_tables", core::mem::size_of::<MapTables>()),
+        entry("route_cache", core::mem::size_of::<RouteCache>()),
+        entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
+        entry("renderer", core::mem::size_of::<obc_render::MapRenderer>()),
+        entry("nav_scratch", core::mem::size_of::<obc_route::NavScratch>()),
+        entry("nav_tile_cache", core::mem::size_of::<obc_reader::NavTileCache>()),
+        entry("nav_planner", core::mem::size_of::<obc_route::NavPlanner>()),
+        entry("stack_reserve", STACK_RESERVE),
+        BLE_ENTRIES[0],
+        BLE_ENTRIES[1],
+        BLE_ENTRIES[2],
+        BLE_ENTRIES[3],
+        BLE_ENTRIES[4],
+        BLE_ENTRIES[5],
+        BLE_ENTRIES[6],
+        BLE_ENTRIES[7],
+        BLE_ENTRIES[8],
+        BLE_ENTRIES[9],
+    ];
+}
+
 /// The resident device-native RGB222 framebuffer: one byte per pixel over the 240×320 panel
 /// (`FB_BYTES` = 75 KB), in `.bss`. [`App::render_map`](obc_app::App::render_map) quantizes into it on
 /// store ([`FbDevice64`]). It is owned by the `Ls021Flpr` panel — the map plane renders into it and
@@ -351,8 +443,8 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 static mut ROW_DIFF: RowDiff<FRAME_H> = RowDiff::new();
 
 /// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place** (a
-/// `ptr::write` into the reserved region): the ~45 KB `App` (incl. the ~30 KB renderer scratch) and the
-/// ~20 KB cache must never form on the 256 KB part's small stack. [`MapCache::new`](obc_reader::MapCache)
+/// `ptr::write` into the reserved region): the 34,944 B `App` (including 8,352 B renderer scratch) and
+/// 14,444 B cache must never form on the 256 KB part's small stack. [`MapCache::new`](obc_reader::MapCache)
 /// is an all-zero `MaybeUninit::zeroed`, so writing it is a `.bss` memset.
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// The immutable map tables (header scalars + style table + LOD pyramid), parsed **once at boot** into
@@ -968,7 +1060,7 @@ async fn main(_spawner: Spawner) {
         };
 
         // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. Built **in place**
-        // in `.bss` (`init_idle` writes each field where it sits; the ~30 KB renderer scratch is zeroed
+        // in `.bss` (`init_idle` writes each field where it sits; the 8,352 B renderer scratch is zeroed
         // in place), never on the stack. The Route menu is filled from the card's catalog scanned above;
         // selecting an entry opens the Map at that route's start and streams its geometry into the render
         // + the map-matcher.

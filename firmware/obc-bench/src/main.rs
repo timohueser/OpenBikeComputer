@@ -1,6 +1,6 @@
 //! Host render benchmark harness + pixel-hash tripwire (issue #327, epic #326).
 //!
-//! Renders a fixed 6-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
+//! Renders a fixed 7-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
 //! fixture → `SliceSource` → `MapTables`/`MapCache`/`Reader` → `MapRenderer::render_timed` → the
 //! device-resolution [`Framebuffer565`] — and prints per-stage timings (min of 10 after a warm-up),
 //! the [`RenderStats`] counters, and an FNV-1a 64 hash of the frame's pixels.
@@ -13,10 +13,12 @@
 //!   pure-motion refactor must not touch them; an intentional rendering change updates the golden
 //!   file in the same PR — that is the review signal.
 //!
-//! Modes: default (print the table), `--write-hashes <file>`, `--check <file>` (exit 1 on
-//! mismatch), and `--map <path> --mpp <f> --heading <deg>` — a manual escape hatch to run one scene
-//! against a real local `.obcm` (never in CI: real maps aren't byte-stable fixtures).
+//! Modes: default (print the table), `--repeat <N>` (repeat the whole matrix and report
+//! min/median/max), `--write-hashes <file>`, `--check <file>` (exit 1 on mismatch), and `--map
+//! <path> --mpp <f> --heading <deg>` — a manual escape hatch to run one scene against a real local
+//! `.obcm` (never in CI: real maps aren't byte-stable fixtures).
 
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -282,24 +284,90 @@ fn print_table(results: &[SceneResult]) {
     }
 }
 
-/// Compare the run's hashes to the golden file (`name=0x<hex>` lines). Any mismatch, missing, or
-/// unknown scene prints both sides and fails the check.
+/// Repeat the complete matrix and summarize each scene's end-to-end time. Each matrix result is
+/// already the min of [`ITERS`] warmed renders; the outer median rejects process/scheduler noise,
+/// while min/max expose the observed envelope used to set a review tolerance. Hashes must agree on
+/// every repeat, keeping this timing mode covered by the same deterministic-pixel contract.
+fn print_repeat_table(repeats: usize) {
+    let runs: Vec<Vec<SceneResult>> = (0..repeats).map(|_| run_matrix()).collect();
+    println!("{:13} {:>8} {:>8} {:>8} {:>8}  hash", "scene", "min", "median", "max", "spread");
+    for scene in 0..runs[0].len() {
+        let name = &runs[0][scene].name;
+        let hash = runs[0][scene].hash;
+        let mut totals: Vec<u64> = runs.iter().map(|run| run[scene].total_us).collect();
+        assert!(
+            runs.iter().all(|run| run[scene].name == *name && run[scene].hash == hash),
+            "scene order or pixel hash changed between benchmark repeats"
+        );
+        totals.sort_unstable();
+        let min = totals[0];
+        let median = totals[totals.len() / 2];
+        let max = totals[totals.len() - 1];
+        println!("{name:13} {min:>6}us {median:>6}us {max:>6}us {spread:>6}us  0x{hash:016x}", spread = max - min);
+    }
+}
+
+fn parse_golden_hashes(golden: &str) -> Result<BTreeMap<&str, u64>, String> {
+    let mut expected = BTreeMap::new();
+    for (index, raw) in golden.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) =
+            line.split_once('=').ok_or_else(|| format!("line {} is not `name=0x<16 hex digits>`", index + 1))?;
+        let digits = value
+            .strip_prefix("0x")
+            .filter(|digits| digits.len() == 16 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| format!("line {} has invalid hash `{value}`", index + 1))?;
+        if name.is_empty() || name.trim() != name {
+            return Err(format!("line {} has invalid scene name `{name}`", index + 1));
+        }
+        let hash = u64::from_str_radix(digits, 16)
+            .map_err(|error| format!("line {} has invalid hash `{value}`: {error}", index + 1))?;
+        if expected.insert(name, hash).is_some() {
+            return Err(format!("line {} duplicates scene `{name}`", index + 1));
+        }
+    }
+    Ok(expected)
+}
+
+/// Compare the run's hashes to the golden file (`name=0x<16 hex digits>` lines). Malformed or
+/// duplicate lines, changed hashes, and any difference between the golden/current scene-name sets
+/// print a focused diagnostic and fail the check.
 fn check_hashes(results: &[SceneResult], golden: &str) -> bool {
+    let expected = match parse_golden_hashes(golden) {
+        Ok(expected) => expected,
+        Err(error) => {
+            eprintln!("GOLDEN INVALID: {error}");
+            return false;
+        }
+    };
+    let mut current = BTreeMap::new();
     let mut ok = true;
-    let expected: std::collections::HashMap<&str, &str> =
-        golden.lines().filter_map(|l| l.trim().split_once('=')).collect();
-    for r in results {
-        let got = format!("0x{:016x}", r.hash);
-        match expected.get(r.name.as_str()) {
-            Some(&want) if want == got => {}
-            Some(&want) => {
-                eprintln!("HASH MISMATCH {}: golden {} != run {}", r.name, want, got);
+    for result in results {
+        if current.insert(result.name.as_str(), result.hash).is_some() {
+            eprintln!("CURRENT INVALID: duplicate scene `{}`", result.name);
+            ok = false;
+        }
+    }
+    for (&name, &want) in &expected {
+        match current.get(name) {
+            Some(&got) if want == got => {}
+            Some(&got) => {
+                eprintln!("HASH MISMATCH {name}: golden 0x{want:016x} != run 0x{got:016x}");
                 ok = false;
             }
             None => {
-                eprintln!("HASH MISSING {}: no golden entry (run {})", r.name, got);
+                eprintln!("HASH STALE {name}: golden entry has no current scene");
                 ok = false;
             }
+        }
+    }
+    for (&name, &got) in &current {
+        if !expected.contains_key(name) {
+            eprintln!("HASH MISSING {name}: no golden entry (run 0x{got:016x})");
+            ok = false;
         }
     }
     ok
@@ -312,6 +380,7 @@ fn hash_lines(results: &[SceneResult]) -> String {
 /// What the hand-parsed CLI asked for. No CLI framework — five flags, parsed by hand.
 enum Mode {
     Table,
+    Repeat(usize),
     WriteHashes(String),
     Check(String),
     Custom { map: String, mpp: f32, heading: f32 },
@@ -319,7 +388,7 @@ enum Mode {
 
 fn parse_args() -> Result<Mode, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut write, mut check, mut map) = (None, None, None);
+    let (mut write, mut check, mut map, mut repeat) = (None, None, None, None);
     let (mut mpp, mut heading) = (4.0f32, 0.0f32);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -327,18 +396,26 @@ fn parse_args() -> Result<Mode, String> {
         match a.as_str() {
             "--write-hashes" => write = Some(val("--write-hashes")?),
             "--check" => check = Some(val("--check")?),
+            "--repeat" => {
+                let n: usize = val("--repeat")?.parse().map_err(|e| format!("--repeat: {e}"))?;
+                if n == 0 || n.is_multiple_of(2) {
+                    return Err("--repeat must be a positive odd number (so the median is unambiguous)".into());
+                }
+                repeat = Some(n);
+            }
             "--map" => map = Some(val("--map")?),
             "--mpp" => mpp = val("--mpp")?.parse().map_err(|e| format!("--mpp: {e}"))?,
             "--heading" => heading = val("--heading")?.parse().map_err(|e| format!("--heading: {e}"))?,
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
-    Ok(match (write, check, map) {
-        (Some(f), None, None) => Mode::WriteHashes(f),
-        (None, Some(f), None) => Mode::Check(f),
-        (None, None, Some(map)) => Mode::Custom { map, mpp, heading },
-        (None, None, None) => Mode::Table,
-        _ => return Err("pick one of --write-hashes / --check / --map".into()),
+    Ok(match (write, check, map, repeat) {
+        (Some(f), None, None, None) => Mode::WriteHashes(f),
+        (None, Some(f), None, None) => Mode::Check(f),
+        (None, None, Some(map), None) => Mode::Custom { map, mpp, heading },
+        (None, None, None, Some(n)) => Mode::Repeat(n),
+        (None, None, None, None) => Mode::Table,
+        _ => return Err("pick one of --repeat / --write-hashes / --check / --map".into()),
     })
 }
 
@@ -348,7 +425,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("obc-bench: {e}");
             eprintln!(
-                "usage: obc-bench [--write-hashes <file> | --check <file> | --map <path> [--mpp <f>] [--heading <deg>]]"
+                "usage: obc-bench [--repeat <odd-N> | --write-hashes <file> | --check <file> | --map <path> [--mpp <f>] [--heading <deg>]]"
             );
             return ExitCode::FAILURE;
         }
@@ -356,6 +433,7 @@ fn main() -> ExitCode {
 
     match mode {
         Mode::Table => print_table(&run_matrix()),
+        Mode::Repeat(n) => print_repeat_table(n),
         Mode::WriteHashes(path) => {
             let results = run_matrix();
             print_table(&results);
@@ -478,5 +556,32 @@ mod tests {
         let a = run_scene(&map, "mid-rot", 4.0, 35.0, &clock);
         let b = run_scene(&map, "mid-rot", 4.0, 35.0, &clock);
         assert_eq!(a.hash, b.hash);
+    }
+
+    fn hash_result(name: &str, hash: u64) -> SceneResult {
+        SceneResult {
+            name: name.into(),
+            collect_us: 0,
+            sort_us: 0,
+            draw_us: 0,
+            total_us: 0,
+            stats: RenderStats::default(),
+            hash,
+        }
+    }
+
+    #[test]
+    fn golden_hash_parser_rejects_malformed_and_duplicate_lines() {
+        assert!(parse_golden_hashes("riding=not-a-hash\n").unwrap_err().contains("invalid hash"));
+        assert!(parse_golden_hashes("riding=0x0000000000000001\nriding=0x0000000000000001\n")
+            .unwrap_err()
+            .contains("duplicates scene"));
+    }
+
+    #[test]
+    fn hash_check_rejects_both_missing_and_stale_scene_names() {
+        let results = [hash_result("riding", 1), hash_result("route", 2)];
+        assert!(!check_hashes(&results, "riding=0x0000000000000001\noverview=0x0000000000000003\n"));
+        assert!(check_hashes(&results, "riding=0x0000000000000001\nroute=0x0000000000000002\n"));
     }
 }

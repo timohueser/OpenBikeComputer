@@ -66,6 +66,12 @@ debug-uart = ["obc-platform/debug-link"]
 # board — which routes COM onto P1/P3 — turns on. See `src/com_hw.rs` + the crate README pin map.
 com-hw = []
 
+# Developer/CI-only compile-time allocation report. This adds a self-describing
+# `.obc_resources` table to the ELF so `firmware/tools/resource_guard.py` can read exact
+# target-side `size_of` values without running on a board. Shipping builds never enable it, so the
+# table costs them no flash or RAM. See `firmware/ARCHITECTURE_RESOURCE_BASELINE.md`.
+resource-report = []
+
 # The BLE build (issue #270, epic #267): fold the nrf-sdc/MPSL/TrouBLE stack into `main.rs`
 # behind one feature (the A1 spike bin is retired). Build with
 #   cargo run --release --no-default-features --features ble
