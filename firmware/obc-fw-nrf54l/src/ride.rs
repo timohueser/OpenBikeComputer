@@ -876,6 +876,30 @@ pub(crate) async fn run_app(
             }
         }
 
+        // ── On-device trip cascade delete (epic #526, TR3/TR4), from the folder long-press confirm ──
+        // The Route menu's long-press → confirm recorded the trip's durable object id; the cascade
+        // deletes the trip AND every member route (locked: post-trip cleanup). Same seam shape as the
+        // route delete above: `ble` builds post to the BLE plane (`request_trip_cascade` →
+        // `ObjectStore::delete_trip_cascade`, so both store revisions + both `storeChanged` edges move
+        // coherently and the rescan returns on the STORE_CHANGED edge); map-only builds sweep the
+        // files directly and re-feed both catalogs locally. A member route may be the actively-open
+        // one, so the map-only arm resets the active-route reconcile exactly like a route delete.
+        if app.has_trip_delete() {
+            if let Some(_id) = app.take_trip_delete() {
+                #[cfg(feature = "ble")]
+                crate::object_store::request_trip_cascade(_id);
+                #[cfg(not(feature = "ble"))]
+                if let Some(s) = storage.as_mut() {
+                    if s.delete_trip_cascade_by_id(_id) {
+                        load_routes(s, app);
+                        load_trips(s, app);
+                    }
+                    prev_active = None; // a deleted member may have been the active route
+                    index_route = None;
+                }
+            }
+        }
+
         // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
         // one bounded FAT free-cluster read off the card and answers through `set_card_free` (or a
         // `None` → the screen keeps `--` when there's no card / no FSInfo free count).
