@@ -3,10 +3,9 @@
 //! answer *open now* — a trivial weekday lookup, the `opening_hours` grammar having
 //! already run at pack time (`obc-pack`'s `hours.rs`).
 //!
-//! This is the **read** counterpart to the packer's blob encoder. The two crates
-//! must not depend on each other (obc-pack depends on obc-reader, never the
-//! reverse), so the [`Interval`]/[`WeeklySchedule`] types are defined fresh here —
-//! the shared contract is the byte layout, pinned in §7.5 and the format tests.
+//! This is the **read** counterpart to the packer's blob encoder. The
+//! [`Interval`]/[`WeeklySchedule`] algorithm types remain reader-side; both sides import the
+//! normative blob width/dimensions/flags from `obc-formats`.
 //!
 //! ## Blob layout (29 bytes, spec §7.5)
 //! `flags u8` + 7 days (`Mon` index 0 .. `Sun` index 6) × 2 slots × `(open_q u8,
@@ -19,6 +18,13 @@
 //! Everything here is a small **stack** value — no heap, no static. The whole
 //! decoded schedule is `1 + 7*2*2 = 29` bytes plus the flags byte, sitting on the
 //! caller's stack for the lifetime of the detail screen.
+
+use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_DAYS, POI_HOURS_SLOTS_PER_DAY};
+
+// Compatibility names retained until the #812 final audit.
+pub use obc_formats::obcm::{
+    POI_HOURS_FLAG_SEASONAL as HOURS_FLAG_SEASONAL, POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED,
+};
 
 /// One open interval, quarter-hours from midnight (`0..=96`, `96` = 24:00). Mirrors
 /// the packer's `hours::Interval`; `close_q <= open_q` (both nonzero) is an overnight
@@ -49,18 +55,11 @@ impl Interval {
 pub struct WeeklySchedule {
     /// `days[0]` = Monday .. `days[6]` = Sunday; each up to two intervals (unused
     /// slots are `(0, 0)`).
-    days: [[Interval; 2]; 7],
+    days: [[Interval; POI_HOURS_SLOTS_PER_DAY]; POI_HOURS_DAYS],
     /// `flags` bit 0 = seasonal, bit 1 = truncated (spec §7.5). Baked but ignored by
     /// the v1 UI; exposed via [`WeeklySchedule::flags`] for a future season-aware pass.
     flags: u8,
 }
-
-/// `flags` bit 0 — a representative in-season week was baked (the source rule carried
-/// a month/date/season selector). Ignored by the v1 UI.
-pub const HOURS_FLAG_SEASONAL: u8 = 0b0000_0001;
-/// `flags` bit 1 — the packer dropped something it can't model (a `PH`/`SH` non-`off`
-/// rule, `sunrise`/`sunset`, or a 3rd+ interval on a day). Ignored by the v1 UI.
-pub const HOURS_FLAG_TRUNCATED: u8 = 0b0000_0010;
 
 /// Minutes in a day. `minute_of_day` passed to [`WeeklySchedule::is_open`] is
 /// `0..=1439`; `24:00` (a `96`-quarter close) maps to this value.
@@ -73,11 +72,11 @@ impl WeeklySchedule {
     /// quarter-hour byte is taken as-is — the packer guarantees `0..=96`, and the eval
     /// helpers stay total for any byte value regardless.
     pub fn decode(blob: &[u8]) -> Option<WeeklySchedule> {
-        if blob.len() < crate::POI_HOURS_BLOB_LEN {
+        if blob.len() < POI_HOURS_BLOB_LEN {
             return None;
         }
         let flags = blob[0];
-        let mut days = [[Interval::default(); 2]; 7];
+        let mut days = [[Interval::default(); POI_HOURS_SLOTS_PER_DAY]; POI_HOURS_DAYS];
         // Day d, slot s occupies bytes [1 + (d*2 + s)*2 .. +2]; the fixed 29-byte
         // layout means every index below is in-bounds for a >= 29-byte slice.
         let mut i = 1;
@@ -206,7 +205,6 @@ pub fn weekday_from_ymd(year: u16, month: u8, day: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::POI_HOURS_BLOB_LEN;
 
     /// Build a 29-byte blob from flags + per-day `(open_q, close_q)` slot pairs (Mon..Sun).
     fn blob(flags: u8, days: [[(u8, u8); 2]; 7]) -> [u8; POI_HOURS_BLOB_LEN] {

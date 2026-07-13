@@ -2,10 +2,9 @@
 //! the converter's `<wpt>` emission, and the storage-only guarantee — a waypoint-bearing route
 //! loads and rides **identically** to the same route without waypoints.
 
-use obc_route::{
-    for_each_waypoint, gpx_to_obcr, RouteIndex, RouteReader, SliceSource, Waypoint, Waypoints, HEADER_V2_LEN,
-    MAX_WAYPOINTS, WAYPOINT_ELE_NONE, WAYPOINT_LEN,
-};
+use obc_formats::io::SliceSource;
+use obc_formats::obcr::{HEADER_V2_LEN, WAYPOINT_ELE_NONE, WAYPOINT_LEN};
+use obc_route::{for_each_waypoint, gpx_to_obcr, RouteIndex, RouteReader, Waypoint, Waypoints, MAX_WAYPOINTS};
 
 mod common;
 use common::{convert, decode, VecSink};

@@ -12,7 +12,8 @@
 
 use std::path::PathBuf;
 
-use obc_route::{gpx_to_obcr, ByteSink, Error, SliceSource};
+use obc_formats::io::{ByteSink, Error, SliceSource};
+use obc_route::gpx_to_obcr;
 
 /// The `protocol-vectors/` directory at the repo root.
 pub fn dir() -> PathBuf {

@@ -12,7 +12,9 @@ use serde_json::Value;
 use crate::nav::{
     highway_class_index, surface_class_index, DEFAULT_MIN_COMPONENT_EDGES, HIGHWAY_CLASS_NAMES, SURFACE_CLASS_NAMES,
 };
-use crate::serialize::{NavProfile, Style, NAV_MAX_PROFILES, NAV_PROFILE_NAME_LEN};
+use obc_formats::obcm::{NAV_MAX_PROFILES, NAV_PROFILE_NAME_LEN, VERSION as OBCM_VERSION};
+
+use crate::serialize::{NavProfile, Style};
 
 /// 0xFF is the end-of-features sentinel in chunk payloads, so style IDs occupy
 /// 1..=254 (ID 0 left unused).
@@ -34,7 +36,7 @@ pub fn schema_envelope() -> String {
     let schema: Value = serde_json::from_str(CONFIG_SCHEMA_JSON).expect("embedded schema is valid JSON");
     let envelope = serde_json::json!({
         "schema_version": CONFIG_SCHEMA_VERSION,
-        "format_version": crate::serialize::OBCM_VERSION,
+        "format_version": OBCM_VERSION,
         "schema": schema,
     });
     serde_json::to_string_pretty(&envelope).expect("envelope serializes")
@@ -814,7 +816,7 @@ mod tests {
     fn schema_envelope_shape() {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
-        assert_eq!(env["format_version"].as_u64(), Some(crate::serialize::OBCM_VERSION as u64));
+        assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(10), "#557 bumps the OBCM format to v10");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }

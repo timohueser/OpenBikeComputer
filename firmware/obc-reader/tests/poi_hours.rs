@@ -7,10 +7,8 @@
 //! (today/open-now, overnight/24h/closed) are unit-tested in `obc_reader::hours`; here we pin the
 //! read + decode path end to end through the real file layout.
 
-use obc_reader::{
-    Interval, MapCache, MapTables, PoiCategory, Reader, SliceSource, WeeklySchedule, HOURS_FLAG_TRUNCATED,
-    POI_HOURS_BLOB_LEN,
-};
+use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED};
+use obc_reader::{Interval, MapCache, MapTables, PoiCategory, Reader, SliceSource, WeeklySchedule};
 use obcm_testkit::{
     build_file, empty_nav_directory, hours_pool, pack_poi_chunk, pack_poi_record, pad, poi_dir_len, poi_directory,
     LodSpec, PoiCat, Style,

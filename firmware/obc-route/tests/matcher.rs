@@ -5,7 +5,8 @@
 //! vertices survived decimation.
 
 use heapless::Vec as HVec;
-use obc_route::{RouteIndex, RouteMatch, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
+use obc_formats::io::SliceSource;
+use obc_route::{RouteIndex, RouteMatch, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 
 mod common;
 use common::convert;

@@ -13,14 +13,15 @@
 
 use std::collections::HashMap;
 
-use obc_reader::{category_of, label_of, M_PER_DEG};
+use obc_formats::obcm::{poi_category_of, poi_label_of};
+use obc_reader::M_PER_DEG;
 
 use crate::hours::Schedule;
 
 /// One row of the canonical table: the OSM `key=value` classification and the
 /// subtype id it maps to. The subtype's **category** and **fallback label** are
-/// *not* stored here — they live once in `obc-reader`'s `poi_table` (the firmware
-/// source of truth mirrored in `OBCM_Spec.md` §7.4), and this row derives them via
+/// *not* stored here — they live once in `obc-formats` (the firmware source of truth beneath
+/// `OBCM_Spec.md` §7.4), and this row derives them via
 /// [`PoiKind::category`] / [`PoiKind::label`], so the category/label mapping is never
 /// maintained in two places. Only the OSM tag classification (which the device never
 /// needs) stays packer-side.
@@ -31,17 +32,17 @@ pub struct PoiKind {
 }
 
 impl PoiKind {
-    /// The category id (spec §7.4) this subtype belongs to, derived from `obc-reader`'s canonical
+    /// The category id (spec §7.4) this subtype belongs to, derived from `obc-formats`' canonical
     /// table. Every `POI_TABLE` subtype is valid there, so the unwrap never trips (the pinning test
     /// guarantees it for every row).
     pub fn category(&self) -> u8 {
-        category_of(self.subtype).expect("POI_TABLE subtype is in obc-reader's canonical table").id()
+        poi_category_of(self.subtype).expect("POI_TABLE subtype is in obc-formats' canonical table").id()
     }
 
-    /// The device fallback label for this subtype, from `obc-reader`'s canonical table (shown when
+    /// The device fallback label for this subtype, from `obc-formats`' canonical table (shown when
     /// OSM has no usable name). Valid for every `POI_TABLE` subtype (see the pinning test).
     pub fn label(&self) -> &'static str {
-        label_of(self.subtype).expect("POI_TABLE subtype is in obc-reader's canonical table")
+        poi_label_of(self.subtype).expect("POI_TABLE subtype is in obc-formats' canonical table")
     }
 }
 
@@ -51,7 +52,7 @@ const fn kind(subtype: u8, key: &'static str, value: &'static str) -> PoiKind {
 
 /// The canonical OSM-tag → subtype classification (normative subtype ids —
 /// append-only, never renumber). The subtype→category/label half of the table lives
-/// in `obc-reader`'s `poi_table` (spec §7.4); this half is the OSM tag mapping the
+/// in `obc-formats` (spec §7.4); this half is the OSM tag mapping the
 /// packer owns. First match in table order wins (see [`classify`]).
 pub const POI_TABLE: [PoiKind; 18] = [
     kind(1, "amenity", "drinking_water"),
@@ -377,13 +378,13 @@ mod tests {
 
     /// Pin the packer's OSM-tag classification — subtype ids are normative and
     /// append-only, so any edit to an existing row must fail a test, not slip through
-    /// review. The category/label half of each row lives in `obc-reader`'s canonical
+    /// review. The category/label half of each row lives in `obc-formats`' canonical
     /// table; this test also asserts every subtype maps back to the **expected**
     /// category + label there, so the two crates can't drift.
     #[test]
     fn table_is_pinned() {
         // (subtype, key, value, expected category id, expected fallback label). The category + label
-        // columns are what `obc-reader`'s table must return for this subtype — the cross-crate guard.
+        // columns are what `obc-formats` must return for this subtype — the cross-crate guard.
         let expect: [(u8, &str, &str, u8, &str); 18] = [
             (1, "amenity", "drinking_water", 1, "Drinking water"),
             (2, "natural", "spring", 1, "Spring"),
@@ -406,8 +407,8 @@ mod tests {
         ];
         for (row, &(sub, k, v, cat, label)) in POI_TABLE.iter().zip(expect.iter()) {
             assert_eq!((row.subtype, row.key, row.value), (sub, k, v), "packer classification pinned");
-            // The derived (obc-reader) category + label match the pinned expectation → no drift.
-            assert_eq!((row.category(), row.label()), (cat, label), "obc-reader table agrees for subtype {sub}");
+            // The derived shared category + label match the pinned expectation → no drift.
+            assert_eq!((row.category(), row.label()), (cat, label), "obc-formats table agrees for subtype {sub}");
         }
         // Subtype ids are dense and 1-based (table_row indexes on that).
         for (i, row) in POI_TABLE.iter().enumerate() {

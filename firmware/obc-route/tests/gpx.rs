@@ -6,7 +6,8 @@
 //! [`scanner_skips_a_missing_coordinate`] for the divergence from `obc-replay`'s stricter
 //! `Track::parse`.
 
-use obc_route::{GpxScanner, RawPoint, SliceSource};
+use obc_formats::io::SliceSource;
+use obc_route::{GpxScanner, RawPoint};
 
 /// Collect every point the scanner yields from `gpx` (panicking on a read error, which an
 /// in-memory `SliceSource` never returns).

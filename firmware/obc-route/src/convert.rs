@@ -17,15 +17,14 @@
 
 use heapless::Vec;
 
-use crate::byte_io::{ByteSink, ByteSource, Error};
 use crate::deadband::DeadBand;
 use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::{GpxScanner, RawWaypoint, WptScanner};
-use crate::reader::{
-    ChunkMeta, CHUNK_META_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS, NAME_CAP,
-    WAYPOINT_ELE_NONE, WAYPOINT_LEN,
+use crate::reader::{ChunkMeta, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS};
+use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, ByteSource, Error};
+use obc_formats::obcr::{
+    CHUNK_META_LEN, HEADER_V2_LEN, MAGIC, NAME_CAP, POINT_RECORD_LEN, VERSION, WAYPOINT_ELE_NONE, WAYPOINT_LEN,
 };
-use obc_reader::codec::{put_i16, put_i32, put_u16, put_u32};
 use obc_reader::BBox;
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
@@ -41,7 +40,7 @@ const MAX_SPAN_M: f32 = 1200.0;
 const MAX_SEGMENT_UDEG: i64 = 30_000;
 
 /// Max bytes of one chunk's record body (`(points-1) × 6`).
-const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * 6;
+const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN;
 
 /// Stats computed during conversion (also written into the header).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,9 +472,9 @@ fn build_header(
     s: &RouteStats,
 ) -> [u8; HEADER_V2_LEN] {
     let mut h = [0u8; HEADER_V2_LEN];
-    h[0..4].copy_from_slice(b"OBCR");
-    h[4] = 2; // version
-              // h[5] flags = 0, h[7] reserved = 0
+    h[0..4].copy_from_slice(MAGIC);
+    h[4] = VERSION;
+    // h[5] flags = 0, h[7] reserved = 0
 
     // Name truncated to NAME_CAP on a char boundary.
     let mut nlen = 0;

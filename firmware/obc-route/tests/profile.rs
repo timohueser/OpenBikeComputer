@@ -2,7 +2,8 @@
 //! reader, and check it captures the route's shape — the peak, the y-range, and a
 //! gap-free band — independent of how sparsely the route samples the columns.
 
-use obc_route::{RouteIndex, RouteReader, SliceSource, PROFILE_COLS};
+use obc_formats::io::SliceSource;
+use obc_route::{RouteIndex, RouteReader, PROFILE_COLS};
 
 mod common;
 use common::convert;
