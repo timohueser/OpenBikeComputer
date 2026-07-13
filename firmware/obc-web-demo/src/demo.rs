@@ -14,11 +14,12 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::{
-    finish_nav_plan, initial_camera, replay_step, MemRideStore, MemRouteStore, MemTrackStore, NavPlan, ReplaySensors,
+    fill_nav_preview, initial_camera, replay_step, HostLoop, MemRideStore, MemRouteStore, MemTrackStore, ReplaySensors,
+    TrackRepository,
 };
 use obc_reader::{rgb565_to_device64, MapCache, MapTables, Reader, SliceSource};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
-use obc_route::{RouteIndex, RouteReader};
+use obc_route::RouteReader;
 
 use crate::frame::RgbaFrame;
 
@@ -132,9 +133,10 @@ pub struct Demo {
     tracks: MemTrackStore,
     player: GpxPlayer,
     baro: BaroSensor,
-    /// An in-flight route plan (#499), stepped **once per tick** so the page stays live while a
-    /// route computes. `None` when nothing is planning.
-    nav_plan: Option<NavPlan>,
+    /// The shared host loop: the command/event dispatcher, the in-flight route plan (stepped once
+    /// per tick), and the resident active-route session (so the map opens without a per-frame
+    /// `RouteIndex` reparse). Every sequencing decision lives in `obc-host-core`, not here.
+    host: HostLoop,
     frame: RgbaFrame,
     /// Page commands queued since the last [`tick`](Demo::tick), drained **in full, in order,
     /// once per tick** (not one-per-tick — a guided-tour step deliberately pushes several cmds in
@@ -189,7 +191,7 @@ impl Demo {
             tracks: MemTrackStore::new(),
             player,
             baro: BaroSensor::new(),
-            nav_plan: None,
+            host: HostLoop::new(),
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
             queue: Vec::new(),
             last_now_ms: None,
@@ -244,67 +246,38 @@ impl Demo {
             self.apply(cmd);
         }
 
-        // Host reconciliation, in the exact order the desktop sim runs it:
-        // hold-to-delete drains (route, then ride) …
-        if let Some(id) = self.app.take_route_delete() {
-            if self.routes.delete_by_id(id) {
-                self.app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
-            }
-        }
-        if let Some(id) = self.app.take_ride_delete() {
-            if self.rides.delete_by_id(id) {
-                self.app.set_rides(self.rides.catalog(), self.rides.ids());
-            }
-        }
-
-        // … then the resumable planner (#499): a drained create-route request starts a plan, a
-        // drained cancel drops it, otherwise the in-flight plan runs one bounded step. A terminal
-        // outcome commits + answers *before* `sync_active` below, so a successful plan's activated
-        // route streams open this same frame.
-        if let Some(req) = self.app.take_nav_request() {
-            self.nav_plan = Some(NavPlan::start(&req, self.app.settings().bike_profile_idx));
-        }
-        if self.app.take_nav_cancel() {
-            self.nav_plan = None;
-        }
-        let step = self.nav_plan.as_mut().map(|plan| {
+        // Host reconciliation through the shared dispatcher (`obc-host-core`): drain the typed
+        // command protocol in canonical order — deletes + catalog re-feeds, the resumable planner's
+        // lifecycle (one bounded step per tick, the board's one-step-per-pass shape), the ride-track
+        // fill, and the memory ride log's session reconcile. The web demo has no trips (`&mut ()`)
+        // and none of the host-specific commands (`|_, _| {}` — no card scan, bond, settings, or DFU
+        // on the page), so the whole loop is repository sequencing that lives once, not here.
+        {
             let src = SliceSource(self.bytes);
             let reader = Reader::new(&src, &self.tables, &self.cache);
-            plan.step(&reader)
-        });
-        match step {
-            None | Some(obc_route::Step::Running) => {}
-            Some(obc_route::Step::Done(stats)) => {
-                let plan = self.nav_plan.take().expect("just stepped it");
-                finish_nav_plan(&mut self.app, &mut self.routes, Ok(stats), plan.bytes(), plan.tile_stats());
-            }
-            Some(obc_route::Step::Failed(e)) => {
-                let plan = self.nav_plan.take().expect("just stepped it");
-                finish_nav_plan(&mut self.app, &mut self.routes, Err(e), plan.bytes(), plan.tile_stats());
-            }
+            let mut no_trips = ();
+            self.host.reconcile(
+                &mut self.app,
+                &mut self.routes,
+                &mut self.rides,
+                &mut self.tracks,
+                &mut no_trips,
+                &reader,
+                |_app, _cmd| {},
+            );
         }
 
-        // Open the active route's geometry before ticking so the map-matcher gets it.
-        self.routes.sync_active(self.app.activity.active_route);
+        // Open the active route's geometry from the resident session — no per-frame `RouteIndex`
+        // reparse (the acceptance-criterion fix): the index is kept until the active bytes change.
+        let changed = self.routes.sync_active(self.app.active_route_index());
+        self.host.session.reparse(changed, &self.routes);
         let route_src = self.routes.active_source();
-        let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
-        let route = match (route_index.as_ref(), route_src.as_ref()) {
+        let route = match (self.host.session.index(), route_src.as_ref()) {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
-        // An open Route overview wants the route's decimated shape preview (#678 rework 3's
-        // track/elevation pager) — the same once-per-entry fill the sim + board hosts run.
-        if self.app.nav_preview_missing() {
-            if let Some(r) = route.as_ref() {
-                let pts = r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
-                self.app.set_nav_preview(&pts);
-            }
-        }
-
-        // Reconcile the (memory-only) ride log to the app's tracking intent — this *drains* the
-        // one-shot TrackAction, the host contract.
-        let action = self.app.activity.take_track_action();
-        self.tracks.reconcile(action, self.app.activity.session);
+        // The open Route overview's decimated shape preview — the shared once-per-entry fill.
+        fill_nav_preview(&mut self.app, route.as_ref());
 
         // Advance the ride and tick the app on the playback clock (no compass on the web — the
         // replay's GPS course orients the heading-up map).
@@ -326,10 +299,6 @@ impl Demo {
             self.player.play();
             self.app.activity.start_session();
         }
-
-        // The Bluetooth screen's Forget-phone drain: there is no bond on the web, so the request
-        // just needs consuming (an undrained one-shot would linger).
-        let _ = self.app.take_ble_forget();
 
         // Render on demand — the same dirty signal the firmware gates its repaints on. The first
         // frame always renders (`ready` doubles as the page's poster-swap signal).
@@ -395,9 +364,10 @@ impl Demo {
         // Manual climb mode for *both* baselines — see [`Baseline`]: the whole demo ride is a
         // climb, so Auto would swap the opening Map for the Climb profile within the first frames.
         app.set_settings(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() });
-        // Select the embedded demo route and open a session so its line + ride stats show.
+        // Select the embedded demo route and open a session so its line + ride stats show
+        // (through the invariant-preserving `activate_route`, never a direct field poke).
         if !self.routes.catalog().is_empty() {
-            app.activity.active_route = Some(0);
+            app.activate_route(0);
             app.activity.start_session();
         }
         // Overwrite in the existing heap slot (no fresh allocation, no lingering old app).

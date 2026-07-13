@@ -17,11 +17,12 @@ use std::path::Path;
 
 use eframe::egui;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-use obc_app::{App, AppState, CameraMode, Dirty};
+use obc_app::{App, AppState, CameraMode, Dirty, HostCommand, HostEvent};
+use obc_host_core::{fill_nav_preview, HostLoop};
 use obc_platform::{DisplayDriver, FbDevice64};
 use obc_ports::{Button, Fix, InputClock, RideClock, Sensors, SettingsStore};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
-use obc_route::{RouteIndex, RouteReader};
+use obc_route::RouteReader;
 
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
@@ -180,12 +181,11 @@ struct SimGui {
     /// signal the firmware gates its renders on. (Mouse pan/zoom bypasses the app's input path, so
     /// it isn't reflected; on the device every camera change goes through a gesture or a fix.)
     last_dirty: Dirty,
-    /// An in-flight route plan (#499): the resumable planner, stepped **once per frame** in
-    /// [`render_to_texture`] so the GUI stays interactive while a route computes — exactly the
-    /// board's one-step-per-pass shape. `None` when nothing is planning; a drained cancel
-    /// (Back on the planning screen) simply drops it — the sim's sink is in-memory, so there is
-    /// no partial file to delete.
-    nav_plan: Option<crate::NavPlan>,
+    /// The shared host loop (`obc-host-core`): the command/event dispatcher, the in-flight
+    /// resumable planner (#499, stepped once per frame — the board's one-step-per-pass shape), and
+    /// the resident active-route session (so the Map opens without a per-frame `RouteIndex` reparse).
+    /// Every delete/rescan/nav/track sequencing decision lives in the dispatcher, not here.
+    host: HostLoop,
     /// The device body color drawn by the housing chrome. Switchable in the control panel.
     colorway: Colorway,
     /// This frame's device-control keyboard state, read at the top of `update` (before a widget
@@ -299,7 +299,7 @@ impl SimGui {
             map_cache: MapCache::new(),
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
-            nav_plan: None,
+            host: HostLoop::new(),
             colorway,
             kbd_turn: 0,
             kbd_enc: false,
@@ -369,119 +369,53 @@ impl SimGui {
         }
         self.app.set_sensor_status(&sensor_status);
 
-        // Drain a hold-to-delete request from the Route menu (epic #447 P6) *before* the store is
-        // borrowed for geometry: delete the route file and re-feed the id-carrying catalog — the
-        // same rescan sequence the panel's "Store changed" button runs, so the app's P3 remap keeps
-        // `active_route` + the menu highlight on the right routes. (The device routes this through
-        // `ObjectStore`; the sim deletes the file directly.)
-        if let Some(id) = self.app.take_route_delete() {
-            if self.store.delete_by_id(id) {
-                self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
-            }
-        }
-
-        // Drain a hold-to-delete request from the Ride detail (#680): delete the `RD{id}.ORD` +
-        // sidecar flag and re-feed the ride catalog, mirroring the route delete above (the device
-        // routes this through `ObjectStore`; the sim deletes the file directly).
-        if let Some(id) = self.app.take_ride_delete() {
-            if self.ride_store.delete_by_id(id) {
-                self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
-            }
-        }
-
-        // Drain a trip **cascade**-delete request from the Route menu (epic #526, TR3): the confirmed
-        // long-press deletes the trip **and every member route** (locked: post-trip cleanup). Resolve
-        // the members from the trip store first, delete each route file + the `TP{id}.OBT`, then
-        // re-feed both catalogs (routes first so the trip's stage ids resolve). The device wires this
-        // to `ObjectStore` in TR4; the sim deletes the files directly.
-        if let Some(trip_id) = self.app.take_trip_delete() {
-            for rid in self.trip_store.member_route_ids(trip_id) {
-                self.store.delete_by_id(rid);
-            }
-            self.trip_store.delete_by_id(trip_id);
-            self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
-            self.app.set_trips(&self.trip_store.inputs());
-        }
-
-        // Fill an open Ride detail's track request (#680): stream the ride's `RD{id}.ORD` once
-        // into the app's resident ride profile — the detail's elevation band source, exactly the
-        // board's per-pass drain. A failed read parks `None` so a dead file isn't re-read per frame.
-        if let Some(id) = self.app.take_ride_track_request() {
-            self.app.set_ride_profile(self.ride_store.profile_by_id(id));
-            self.app.set_ride_preview(&self.ride_store.preview_by_id(id));
-        }
-
-        // Answer the System screen's card-free scan (T8 item 6). The board runs a FAT free-cluster
-        // scan; the sim has no card, so a fixed ~1.2 GB built-in stands in — through the real
-        // `set_card_free` seam once the screen's on-entry request is drained.
-        if self.app.take_card_scan_request() {
-            self.app.set_card_free(Some(1_288_490_188));
-        }
-
-        // The resumable route planner (#499). A drained create-route request starts a plan; a
-        // drained cancel (Back on the planning screen) drops it (in-memory sink — nothing to
-        // delete); otherwise the in-flight plan runs **one bounded step this frame**, keeping
-        // the GUI fully interactive (the spinner animates, input works) while the route
-        // computes — the board's one-step-per-pass shape. A terminal outcome commits + answers
-        // before `sync_active` below, so a successful plan's activated route streams open this
-        // same frame.
-        if let Some(req) = self.app.take_nav_request() {
-            // Plan under the rider's bike-type setting (N5 §8.6); the router falls back to profile 0
-            // for an index past the map's profile count.
-            self.nav_plan = Some(crate::NavPlan::start(&req, self.app.settings().bike_profile_idx));
-        }
-        if self.app.take_nav_cancel() {
-            self.nav_plan = None;
-        }
-        let step = self.nav_plan.as_mut().map(|plan| {
+        // Host reconciliation through the shared dispatcher (`obc-host-core`): drain the typed
+        // command protocol in canonical order and apply it against the sim's folder-backed stores —
+        // the route/ride/trip deletes + catalog re-feeds, the resumable planner's lifecycle (one
+        // bounded step per frame), the ride-track fill, and the ride log's session reconcile
+        // (finalising a `Save` writes `RD{id}.ORD` and re-feeds the Rides menu). The handful of
+        // genuinely host-specific commands go to the closure: the card-free scan (a fixed ~1.2 GB
+        // stand-in — the sim has no FAT to scan), the Bluetooth Forget (the "bond" is the injected
+        // panel flag), settings persistence (the RRAM stand-in file), and DFU (no real flash in the
+        // desktop sim, so a no-op). Everything else — the sequencing — lives in the dispatcher.
+        {
             let map_src = SliceSource(&self.bytes);
-            let nav_reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
-            plan.step(&nav_reader)
-        });
-        match step {
-            None | Some(obc_route::Step::Running) => {}
-            Some(obc_route::Step::Done(stats)) => {
-                let plan = self.nav_plan.take().expect("just stepped it");
-                crate::finish_nav_plan(&mut self.app, &mut self.store, Ok(stats), plan.bytes(), plan.tile_stats());
-            }
-            Some(obc_route::Step::Failed(e)) => {
-                let plan = self.nav_plan.take().expect("just stepped it");
-                crate::finish_nav_plan(&mut self.app, &mut self.store, Err(e), plan.bytes(), plan.tile_stats());
-            }
+            let reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
+            let settings_store = &mut self.settings_store;
+            let panel = &mut self.panel;
+            self.host.reconcile(
+                &mut self.app,
+                &mut self.store,
+                &mut self.ride_store,
+                &mut self.tracks,
+                &mut self.trip_store,
+                &reader,
+                |app, cmd| match cmd {
+                    HostCommand::ScanCardFree => {
+                        app.apply_event(HostEvent::CardScanned { free_bytes: Some(1_288_490_188) });
+                    }
+                    HostCommand::ForgetBond => panel.ble.paired = false,
+                    HostCommand::PersistSettings => settings_store.save(app.settings()),
+                    // No real firmware to flash in the desktop sim; the headless `--png` path stages
+                    // synthetic DFU answers directly, so the interactive loop just drops the request.
+                    HostCommand::Dfu(_) => {}
+                    _ => {}
+                },
+            );
         }
 
-        // A ride finishing this frame writes a fresh `RD{id}.ORD` — rescan the tracks folder and
-        // re-feed the Rides menu so it appears without a relaunch (the device's store-changed rescan).
-        let ride_saved = self.app.activity.has_track_action();
-
-        // Open the active route's geometry *before* ticking so the map-matcher gets it (reloads
-        // only on selection change). It stays borrowed through `tick` + `render_frame` below.
-        self.store.sync_active(self.app.activity.active_route);
+        // Open the active route's geometry from the resident session — no per-frame `RouteIndex`
+        // reparse (reloads only when the active bytes change). It stays borrowed through `tick` +
+        // `render_frame` below so the map-matcher gets it.
+        let changed = self.store.sync_active(self.app.active_route_index());
+        self.host.session.reparse(changed, &self.store);
         let route_src = self.store.active_source();
-        let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
-        let route = match (route_index.as_ref(), route_src.as_ref()) {
+        let route = match (self.host.session.index(), route_src.as_ref()) {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
-        // An open Route overview wants the route's decimated shape preview (#678 rework 3's
-        // track/elevation pager): decimate the just-opened geometry once per overview entry —
-        // `nav_preview_missing` is false again the moment the copy is in, so this is a per-frame
-        // no-op otherwise (the board's ride loop runs the identical fill).
-        if self.app.nav_preview_missing() {
-            if let Some(r) = route.as_ref() {
-                let pts = r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
-                self.app.set_nav_preview(&pts);
-            }
-        }
-
-        // Reconcile the ride log to the app's tracking session before ticking.
-        crate::reconcile_tracks(&mut self.app, &mut self.tracks);
-        // If that reconcile just finalised a ride, rescan the tracks folder and re-feed the Rides
-        // menu so the new `RD{id}.ORD` shows up live (#454).
-        if ride_saved {
-            self.ride_store.rescan();
-            self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
-        }
+        // The open Route overview's decimated shape preview — the shared once-per-entry fill.
+        fill_nav_preview(&mut self.app, route.as_ref());
 
         // Drive the app from whichever location source is active. A loaded GPX replay takes over
         // from the manual panel fix (as the device's GPS would).
@@ -543,13 +477,6 @@ impl SimGui {
                 cadence: Some(&mut self.sim_sensors.cadence),
             };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
-        }
-
-        // Drain the Bluetooth screen's Forget-phone request (epic #447, P8): the sim's "bond" is
-        // the injected panel flag, so forgetting just clears it — the next seam feed shows
-        // Paired: no, exactly as the board's RRAM clear + status publish would.
-        if self.app.take_ble_forget() {
-            self.panel.ble.paired = false;
         }
 
         // Time the whole frame draw into `render_us` (`obc-render` is clockless, so the host
@@ -709,10 +636,9 @@ impl SimGui {
         self.input.set_button(Button::Back, hit.back_down);
         let now = self.input.now_ms();
         self.app.handle_input(InputClock(now), &mut self.input);
-        // Persist on the settings-dirty edge (the device's save-on-dirty path).
-        if self.app.take_settings_dirty() {
-            self.settings_store.save(self.app.settings());
-        }
+        // Settings persistence rides the shared dispatcher now (the `PersistSettings` command, gated
+        // on leaving the settings subtree), so `render_to_texture` picks up the dirty edge next frame
+        // — the same debounced save-on-subtree-exit the device runs, one seam instead of two.
     }
 
     /// The 1:1 calibration screen: draw a reference bar of a known point-width; the user
