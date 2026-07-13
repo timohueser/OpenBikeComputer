@@ -255,6 +255,13 @@ pub fn version_read(version: u16, store_epoch: u32) -> Vec<u8> {
     v
 }
 
+/// The **version-only** `protocolVersion` read (spec §1, card-resident epoch #776): a device with
+/// **no mounted store** has no epoch, so it serves just `version u16` — 2 bytes. The app decodes the
+/// short read as `storeEpoch = nil` and fail-closes the ack. Never a fabricated epoch (0 is legal).
+pub fn version_read_nostore(version: u16) -> Vec<u8> {
+    le16(version).to_vec()
+}
+
 /// `status` message `storeChanged` (spec §4.3): 6 bytes.
 pub fn status_store_changed(ty: u8, revision: u32) -> Vec<u8> {
     let mut v = vec![2u8, ty];
@@ -336,6 +343,9 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("config-v1.bin", config_v1()),
         // The widened protocolVersion read (spec §1): version 2 + a store epoch nonce.
         ("version-read.bin", version_read(2, 0xA1B2_C3D4)),
+        // The version-only protocolVersion read (spec §1, #776): a device with no mounted store
+        // serves just the 2-byte version — the app treats the absent epoch as a failed identity read.
+        ("version-read-nostore.bin", version_read_nostore(2)),
         // op=1 upload, type=1 route, id 0xFFFF (new) — 12 bytes (no offset in v2).
         ("transfer-upload-start.bin", transfer_control(1, 1, 0xFFFF, len, crc)),
         // op=2 download request: type=7 rideList, id 0, len/crc unknown.

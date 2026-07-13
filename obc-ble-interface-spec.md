@@ -85,36 +85,44 @@ protocolVersion read (6 bytes, little-endian):
 - Additive, compatible changes (a new object type id, a new command, a new
   waypoint type) do **not** bump the version; changing an existing layout does.
 
-**Store epoch.** `store_epoch` is a `u32` TRNG nonce the device mints once per
-id-era and persists in its own RRAM line; it changes only on an **id-era reset**.
-Its purpose and the app-side keying are epic #632 item 5; the mint rule lives with
-the device implementation (V3). The essentials the wire depends on:
+**Store epoch.** `store_epoch` is a `u32` TRNG nonce that names a store's **id
+era**. It is **card-resident** — persisted in a small file on the SD card, so the
+card carries its own era name — and changes only on an **id-era reset**. Its
+purpose and the app-side keying are epic #632 item 5; the mint rule lives with the
+device implementation (V3, card-resident move #776). The essentials the wire
+depends on:
 
 - **Every durable app↔device link keys on bare `u16` object ids** (the ride
   synced-set + delete tombstones, the route `deviceObjectID` links). Ids mint at
   `max(card-scan max + 1, RRAM floor)`: **SD filenames guard stored ids, the RRAM
   floor guards deleted ids.** The **era events** — the only ways the device can
-  re-issue an id it minted to a *different* object — are exactly the **RRAM
-  losses**: a full-chip reflash, a factory reset, or a torn id-marks write. Each
-  mints a fresh epoch. **The card is not consulted by the mint rule** — a card
-  swap with intact RRAM mints nothing, and correctly so: the floor is the
-  high-water of every id the device ever issued, so even against a fresh card
-  nothing can reuse. What the card *does* determine is **how much of the id space
-  actually reopens when the floor is lost**: with the old card still in, only the
-  deleted-id band (filenames still guard stored ids); with a fresh or reformatted
-  card, all of it.
+  re-issue an id it minted to a *different* object under the *same* epoch — are a
+  lost RRAM floor (a full-chip reflash, a factory reset, or a torn id-marks write:
+  each mints a fresh epoch onto the card) **or** an absent/torn card epoch file
+  (mints a fresh one). Because the epoch lives on the card, a **card swap is a
+  store transplant**: the served epoch is the *new* card's (swap back and the old
+  era returns), so the same device never conflates two cards' id spaces. A lost
+  floor still reopens only the deleted-id band on the card that was in (filenames
+  guard stored ids); a fresh/reformatted card reopens all of it and, having no
+  epoch file, mints a fresh era anyway.
 - The **never-reuse guarantee** is therefore *within an epoch, for objects the
   device itself minted*: while the epoch holds, the device never re-assigns such
   an id to a different object. Across an epoch change the id space legitimately
   reopens, and the new nonce makes that visible so the app can scope its state to
-  `(device serial, store epoch)` and never silently alias months-old ids. One
-  residual hole is out of the epoch's reach: a card written by a **different
-  device** can present foreign ids under the current epoch — tracked as #776
-  (device-side only, no wire change).
+  `(device serial, store epoch)` and never silently alias months-old ids. The
+  card-resident epoch **closes** the former residual hole (#776): a card written by
+  a **different device** presents *its own* epoch, so on this device it reads as a
+  distinct `(serial, epoch)` scope — no foreign ids alias under a shared era.
+- **No mounted store ⇒ no epoch.** A device with no card has nothing to name and
+  nothing to prove, so it serves only the **2-byte version** (`version` alone, no
+  `store_epoch`). The app treats the absent epoch as a **failed identity read** —
+  ack fail-closed (below) — never as epoch `0` (a legal value). The full 6-byte
+  shape is served whenever a store is mounted.
 - **Ack fail-closed contract.** The version+epoch read **gates** `ackRides` and
-  every reconcile write: a connection whose identity read failed sends no ack and
-  reconciles nothing (library browsing is unaffected). V5 implements it; it exists
-  so a failed read can never stamp synced-flags or badges under an unknown era.
+  every reconcile write: a connection whose identity read failed — including the
+  short version-only read above — sends no ack and reconciles nothing (library
+  browsing is unaffected). V5 implements it; it exists so a failed read can never
+  stamp synced-flags or badges under an unknown era.
 
 A random nonce leaks nothing beyond what the open DIS (§3.1) already exposes.
 
@@ -250,12 +258,13 @@ reference firmware encodes the id in the stored filename (routes `RT{id}.OBR`,
 rides `RD{id}.ORD`) — **SD filenames guard stored ids** — and an RRAM floor
 guards **deleted** ids. **Within a store epoch, an id the device minted is never
 re-issued to a different object.** The era events that legitimately reopen the id
-space are the RRAM losses (reflash / factory reset / torn id-marks write); each
-mints a fresh `store_epoch` (§1) — the card is not consulted by the mint rule, it
-only determines how much of the space reopens when the floor is lost — so the app
-scopes id-keyed state per epoch and an era change never silently aliases a stale
-id. (A card written by a *different* device can present foreign ids under the
-current epoch — the §1 residual hole, #776.) Conventions:
+space are a lost RRAM floor (reflash / factory reset / torn id-marks write) or an
+absent/torn **card-resident** epoch file; each mints a fresh `store_epoch` (§1) —
+so the app scopes id-keyed state per epoch and an era change never silently aliases
+a stale id. Because the epoch rides the card, a card swap transplants the era, and
+a card written by a *different* device presents *its own* epoch — a distinct
+`(serial, epoch)` scope on this device, which is what **closes** the former
+foreign-card hole (#776). Conventions:
 
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
