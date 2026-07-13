@@ -5,6 +5,13 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "OBC device application + hardware-abstraction traits (no_std) — shared by the desktop simulator and the nRF54L firmware"
 
+[features]
+# Constrained on-device memory profile (issue #124). Forwards to the renderer + reader + route
+# crates so the board firmware enables just `obc-app/nrf-mem` to trim every resident buffer
+# `App` embeds (renderer scratch) and the caches it pairs with. See `obc-reader`'s `nrf-mem`.
+# Off by default (full sizes on host/sim/tests).
+nrf-mem = ["obc-render/nrf-mem", "obc-reader/nrf-mem", "obc-route/nrf-mem"]
+
 [dependencies]
 # default-features = false keeps `std` OUT of the shared app layer, so this crate
 # (and everything it pulls) compiles for the nRF54L's bare-metal target. The host
@@ -19,3 +26,11 @@ obc-route = { path = "../obc-route" }
 embedded-graphics = "0.8"
 # Fixed-capacity screen stack (no_std, zero-alloc) — same crate the renderer uses.
 heapless = "0.8"
+# sin/cos for the Menu compass needle at arbitrary sweep angles — the same no_std math
+# shim the renderer and route crates use.
+libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
+
+[dev-dependencies]
+# The hand-written OBCM v6 byte builder shared by the reader/renderer tests — the POIs-browser
+# integration tests (#425) use `build_poi_map` to synthesise a v6 map with real POIs to snapshot.
+obcm-testkit = { path = "../obcm-testkit" }

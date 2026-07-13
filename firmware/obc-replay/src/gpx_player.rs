@@ -1,10 +1,8 @@
 //! GPX replay as a simulated GPS sensor.
 //!
 //! [`GpxPlayer`] is the host's stand-in for the device's GPS chip when replaying a recorded
-//! [`Track`]: it implements [`LocationSource`] exactly like a real receiver's driver would, so
-//! the shared [`App`](obc_app::App) can't tell a replay from a live fix. This is why the whole
-//! feature stays host-side — `obc-render`/`obc-app` never learn what a GPX file is; they just
-//! consume [`Fix`]es.
+//! [`Track`]: it implements [`LocationSource`] like a real receiver's driver would, so the
+//! shared [`App`](obc_app::App) can't tell a replay from a live fix.
 //!
 //! ## Fidelity
 //! GPX stores only position + time, never course or speed, so they're derived the
@@ -151,31 +149,39 @@ impl GpxPlayer {
         Some(Fix { lat: lat.round() as i32, lon: lon.round() as i32, course, speed_mps: Some(speed) })
     }
 
+    /// The bracketing track points and interpolation factor for time `t`: the indices
+    /// `(lo, hi)` whose segment contains `t` and the fraction `f ∈ [0, 1]` from `lo`
+    /// toward `hi`. Before the first / after the last point both indices collapse to that
+    /// endpoint (so any interpolation reproduces it), and a zero-span segment uses `f = 0`.
+    /// `None` only for an empty track. `t` is assumed already clamped to `[0, duration]`.
+    /// Uses `partition_point`, so it relies on points being sorted ascending by `t`.
+    fn bracket(&self, t: f64) -> Option<(usize, usize, f64)> {
+        let pts = &self.track.points;
+        let idx = pts.partition_point(|p| p.t <= t);
+        if idx == 0 {
+            return (!pts.is_empty()).then_some((0, 0, 0.0));
+        }
+        if idx >= pts.len() {
+            let last = pts.len() - 1;
+            return Some((last, last, 0.0));
+        }
+        let (a, b) = (&pts[idx - 1], &pts[idx]);
+        let span = b.t - a.t;
+        let f = if span > 0.0 { (t - a.t) / span } else { 0.0 };
+        Some((idx - 1, idx, f))
+    }
+
     /// The barometric elevation (m) at playback time `t`, linearly interpolated from the
     /// track's `<ele>` values — the simulator's stand-in for a pressure-altimeter reading,
     /// fed into the [`BaroSensor`](crate::baro::BaroSensor). `None` where the track carries
     /// no elevation around `t`. Deliberately separate from [`poll`](Self::poll): the baro
     /// and the GPS fix are independent sensors, sampled on their own cadences.
     pub fn elevation_at(&self, t: f64) -> Option<f32> {
-        let pts = &self.track.points;
-        if pts.is_empty() {
-            return None;
-        }
         let t = t.clamp(0.0, self.duration());
-        let idx = pts.partition_point(|p| p.t <= t);
-        if idx == 0 {
-            return pts[0].ele;
-        }
-        if idx >= pts.len() {
-            return pts.last().unwrap().ele;
-        }
-        let (a, b) = (&pts[idx - 1], &pts[idx]);
-        match (a.ele, b.ele) {
-            (Some(ea), Some(eb)) => {
-                let span = b.t - a.t;
-                let f = if span > 0.0 { (t - a.t) / span } else { 0.0 };
-                Some(ea + (eb - ea) * f as f32)
-            }
+        let (lo, hi, f) = self.bracket(t)?;
+        let pts = &self.track.points;
+        match (pts[lo].ele, pts[hi].ele) {
+            (Some(ea), Some(eb)) => Some(ea + (eb - ea) * f as f32),
             // A lone elevation on one side still gives a reading; none on either → None.
             (Some(e), None) | (None, Some(e)) => Some(e),
             (None, None) => None,
@@ -186,21 +192,10 @@ impl GpxPlayer {
     /// `t` is assumed already clamped to `[0, duration]`.
     fn interp_pos(&self, t: f64) -> (f64, f64) {
         let pts = &self.track.points;
-        // `partition_point` gives the count of points at or before `t`; the
-        // bracketing segment is therefore `[idx-1, idx]`. Times are sorted
-        // ascending, so the predicate is monotone as required.
-        let idx = pts.partition_point(|p| p.t <= t);
-        if idx == 0 {
-            return (pts[0].lat as f64, pts[0].lon as f64);
-        }
-        if idx >= pts.len() {
-            let last = pts.last().unwrap();
-            return (last.lat as f64, last.lon as f64);
-        }
-        let a = &pts[idx - 1];
-        let b = &pts[idx];
-        let span = b.t - a.t;
-        let f = if span > 0.0 { (t - a.t) / span } else { 0.0 };
+        let Some((lo, hi, f)) = self.bracket(t) else {
+            return (0.0, 0.0); // empty track — callers guard this via `fix_at`
+        };
+        let (a, b) = (&pts[lo], &pts[hi]);
         (a.lat as f64 + (b.lat - a.lat) as f64 * f, a.lon as f64 + (b.lon - a.lon) as f64 * f)
     }
 
@@ -415,5 +410,63 @@ mod tests {
         p.play();
         assert_eq!(p.time(), 0.0);
         assert!(p.is_playing());
+    }
+
+    /// A single-point track has zero duration: `fix_at` must return the lone point and park at
+    /// `t=0` without dividing by a zero span or panicking.
+    #[test]
+    fn single_point_track_has_zero_duration() {
+        let p = GpxPlayer::new(track(&[(1_000, 2_000, 0.0)]));
+        assert_eq!(p.duration(), 0.0, "one point → zero-length track");
+        let f = p.fix_at(0.0).expect("a one-point track still yields its single fix");
+        assert_eq!((f.lat, f.lon), (1_000, 2_000));
+        // A zero-duration track can't move, so there's no derived course.
+        assert_eq!(f.course, None, "no span to derive a heading from");
+    }
+
+    /// `interp_pos` / `elevation_at` assume `points` are sorted ascending by `t` (both use
+    /// `partition_point`, correct only on a monotone predicate). With out-of-order times the
+    /// result is unspecified; we assert only that the player stays memory-safe, not sensible.
+    #[test]
+    fn non_monotonic_times_are_a_documented_precondition() {
+        // Times descend then jump — violating the sorted-`t` precondition on purpose.
+        let p = GpxPlayer::new(track(&[(0, 0, 10.0), (10_000, 0, 5.0), (20_000, 0, 20.0)]));
+        // We make NO claim about which segment is chosen — only that it doesn't panic and
+        // returns a real, in-range coordinate (the points span lat 0..20_000).
+        let f = p.fix_at(7.0).expect("non-empty track yields a fix");
+        assert!((0..=20_000).contains(&f.lat), "stays within the track's points, got lat {}", f.lat);
+    }
+
+    /// `elevation_at` with elevation missing on one or both bracketing points: a lone elevation
+    /// on either side still reads (last good value), but a gap with none on either side returns
+    /// `None` so the baro reports "no reading", not 0.
+    #[test]
+    fn elevation_at_handles_missing_endpoints() {
+        let ele = |a: Option<f32>, b: Option<f32>| {
+            let pts = vec![
+                TrackPoint { lat: 0, lon: 0, ele: a, t: 0.0 },
+                TrackPoint { lat: 10_000, lon: 0, ele: b, t: 10.0 },
+            ];
+            GpxPlayer::new(Track { points: pts }).elevation_at(5.0)
+        };
+        // Both present → interpolated (covered elsewhere, included for contrast).
+        assert_eq!(ele(Some(200.0), Some(300.0)), Some(250.0));
+        // One side missing → the present side's reading carries (no interpolation).
+        assert_eq!(ele(Some(200.0), None), Some(200.0), "a lone leading elevation still reads");
+        assert_eq!(ele(None, Some(300.0)), Some(300.0), "a lone trailing elevation still reads");
+        // Neither side has elevation → no reading at all.
+        assert_eq!(ele(None, None), None, "a gap with no elevation either side returns None");
+    }
+
+    /// Within `LOOK_AHEAD_S` of the end there's no forward window, so `course_speed` looks
+    /// *behind* and reverses the endpoints so the bearing still points forward. On a due-east
+    /// track the course at the last fix must read ~90°, not ~270° (a sign-flip).
+    #[test]
+    fn course_at_track_end_still_points_forward() {
+        // Due east, three points over 10 s; sample the final fix (look-behind territory).
+        let p = GpxPlayer::new(track(&[(45_000_000, 0, 0.0), (45_000_000, 5_000, 5.0), (45_000_000, 10_000, 10.0)]));
+        let end = p.fix_at(p.duration()).unwrap();
+        let c = end.course.expect("moving east → has a course at the end");
+        assert!((c - 90.0).abs() < 1.0, "look-behind must keep east ~90° at the finish, got {c} (a flip → ~270°)");
     }
 }

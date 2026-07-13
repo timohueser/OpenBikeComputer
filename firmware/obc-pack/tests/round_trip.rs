@@ -1,23 +1,18 @@
-//! End-to-end round-trip: pack with the real `obc-pack` serializer, read back
-//! with the real `obc-reader`.
+//! End-to-end round-trip: pack with the real `obc-pack` serializer, read back with
+//! the real `obc-reader`.
 //!
-//! The sibling suites pin each half against *separately* hand-coded bytes —
-//! `obc-pack/tests/serialize.rs` asserts raw byte offsets, `obc-reader/tests/
-//! format.rs` builds its own buffers by hand. That leaves a gap: a writer/reader
-//! disagreement on the *shared* format (LOD-table field order, header bbox
-//! lat/lon ordering, priority-flag encoding, the 8-/16-bit delta and hole
-//! encodings) keeps both suites green while every real map is corrupt. This test
-//! closes the loop — `serialize_lods()` → `Reader::new()` → decode — and asserts
-//! the styles, marker, LOD table, and per-feature geometry survive intact.
+//! The sibling suites pin each half against separately hand-coded bytes, so a
+//! writer/reader disagreement on the shared format (LOD-table field order, header
+//! bbox lat/lon ordering, priority flags, the delta/hole encodings) keeps both
+//! green while every real map is corrupt. This test closes that loop and asserts
+//! styles, marker, LOD table, and per-feature geometry survive intact.
 //!
-//! To make decoded microdegrees comparable to the inputs, every coordinate here
-//! is an exact integer microdegree fed in as `udeg / 1e6` (so banker's-rounded
+//! Every coordinate is an exact integer microdegree fed in as `udeg / 1e6` (so
 //! `to_udeg` recovers it exactly) and every segment stays under the 30 000-µdeg
-//! densify threshold, so no synthetic midpoints are inserted and point counts
-//! are preserved.
+//! densify threshold, so no midpoints are inserted and point counts are preserved.
 
 use obc_pack::{serialize_lods, Feature, Kind as PackKind, LodLayer, Node, Style};
-use obc_reader::{BBox, Kind as ReadKind, MapCache, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{BBox, Kind as ReadKind, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// Global bbox (min_lon, min_lat, max_lon, max_lat) in microdegrees. min corner
 /// is (0,0) so each single-leaf node's anchor base is the origin and decoded
@@ -39,11 +34,12 @@ const LINE16: &[(i32, i32)] = &[(300_000, 300_000), (300_500, 300_500), (301_000
 fn styles() -> Vec<Style> {
     vec![
         // Lowest z_index → the backdrop. Negative z and priority 1 (flags 0).
-        Style { id: 1, z_index: -2, color: 0x07E0, weight: 1, priority: 1 },
-        // Priority 4 (flags 3, the top of the clamped range).
-        Style { id: 5, z_index: 3, color: 0xF800, weight: 2, priority: 4 },
+        Style { id: 1, z_index: -2, color: 0x07E0, weight: 1, priority: 1, dashed: false, color2: None },
+        // Priority 4 (flags 3, the top of the clamped range). Dashed + a secondary color exercises
+        // the v10 flag bits (2 and 3) and the trailing color2 u16 through the whole pack→read path.
+        Style { id: 5, z_index: 3, color: 0xF800, weight: 2, priority: 4, dashed: true, color2: Some(0x8410) },
         // Mid priority; non-contiguous id exercises the sparse style lookup.
-        Style { id: 12, z_index: 0, color: 0x001F, weight: 3, priority: 2 },
+        Style { id: 12, z_index: 0, color: 0x001F, weight: 3, priority: 2, dashed: false, color2: None },
     ]
 }
 
@@ -85,7 +81,17 @@ fn packed() -> Vec<u8> {
         chunk_size: 8192, // must hold the ~4 KiB MAX_FEAT_PTS line
         root: Node::Leaf { bbox: GLOBAL, features: vec![line(1, LINE16), line(5, &big_line_points())] },
     };
-    serialize_lods(&[lod0, lod1], &styles(), MARKER, GLOBAL)
+    let (bytes, dropped) = serialize_lods(
+        &[lod0, lod1],
+        &styles(),
+        MARKER,
+        GLOBAL,
+        &[],
+        &Default::default(),
+        &obc_pack::config::default_profiles(),
+    );
+    assert_eq!(dropped, 0, "every fixture feature fits its chunk");
+    bytes
 }
 
 /// A decoded feature in a comparable, owned form.
@@ -132,13 +138,22 @@ fn decode_lod(r: &Reader, lod: usize) -> Vec<Decoded> {
     out
 }
 
+/// Collect every leaf `for_each_chunk` yields — the uncapped replacement for the
+/// removed `Reader::query` test convenience.
+fn query_all(r: &Reader, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
+    let mut out = Vec::new();
+    r.for_each_chunk(lod, view, |cid, node| out.push((cid, node)));
+    out
+}
+
 #[test]
 fn header_round_trips() {
     let bytes = packed();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
-    assert_eq!(r.version, 5);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    assert_eq!(r.version, 10);
     assert_eq!(r.marker_color, MARKER);
     // bbox stored lat,lon,lat,lon in the header; the reader must hand it back
     // with lon and lat in the right fields (max_lon=2°, max_lat=1°).
@@ -150,16 +165,23 @@ fn styles_round_trip() {
     let bytes = packed();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let s1 = r.style(1).expect("style 1");
     assert_eq!((s1.z_index, s1.color, s1.weight, s1.priority), (-2, 0x07E0, 1, 1));
+    assert!(!s1.dashed);
+    assert_eq!(s1.color2, None);
 
     let s5 = r.style(5).expect("style 5");
     assert_eq!((s5.z_index, s5.color, s5.weight, s5.priority), (3, 0xF800, 2, 4));
+    assert!(s5.dashed, "line_style survives the pack → read round trip");
+    assert_eq!(s5.color2, Some(0x8410), "color2 survives the pack → read round trip");
 
     let s12 = r.style(12).expect("style 12");
     assert_eq!((s12.z_index, s12.color, s12.weight, s12.priority), (0, 0x001F, 3, 2));
+    assert!(!s12.dashed);
+    assert_eq!(s12.color2, None);
 
     // Unused ids are absent.
     assert!(r.style(2).is_none());
@@ -173,7 +195,8 @@ fn lod_table_and_selection() {
     let bytes = packed();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     let lods = r.lods();
     assert_eq!(lods.len(), 2);
@@ -198,7 +221,8 @@ fn features_round_trip() {
     let bytes = packed();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
 
     // LOD0: an 8-bit line and a 16-bit polygon-with-hole.
     assert_eq!(decode_lod(&r, 0), vec![expect_line(5, LINE5), expect_poly(12, POLY12_EXT, &[POLY12_HOLE])],);
@@ -213,7 +237,8 @@ fn max_feat_pts_boundary_survives() {
     let bytes = packed();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     let d1 = decode_lod(&r, 1);
     // The big line filled the reader's per-feature buffer to exactly its cap and
     // was decoded without truncation.
@@ -226,15 +251,16 @@ fn query_finds_the_leaf() {
     let bytes = packed();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let r = Reader::new(&src, &cache).unwrap();
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
     // A view overlapping the global bbox hits the single populated leaf; the
     // returned node bbox is the global bbox.
     let inside = BBox { min_lon: 90_000, min_lat: 90_000, max_lon: 130_000, max_lat: 130_000 };
-    let hits = r.query::<8>(0, &inside);
+    let hits = query_all(&r, 0, &inside);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].1, r.bbox);
 
     // A view fully outside the bbox hits nothing.
     let outside = BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
-    assert!(r.query::<8>(0, &outside).is_empty());
+    assert!(query_all(&r, 0, &outside).is_empty());
 }

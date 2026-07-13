@@ -1,16 +1,14 @@
-//! OBC USB feeder — the bench stand-in for real GPS / altimeter / compass hardware (issue #38).
+//! OBC USB feeder — the bench stand-in for real GPS / altimeter / compass hardware.
 //!
-//! The prototype has no sensors (and never a good fix indoors), so this desktop app replays a
-//! recorded `.gpx` over the device's USB-CDC debug link as fake fixes. It drives the same
-//! [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from motion, throttled
-//! to ~1 Hz), so a recorded ride moves the rider on-device as it does in the sim. A compass slider
-//! sets the heading the device shows when stopped, a button row injects encoder/Back input (taps +
-//! holds) so the UI is drivable without touching the hardware, and a readout shows the device's
-//! render-stats telemetry. The host twin of the sim's control panel, pointed at real glass.
+//! Replays a recorded `.gpx` over the device's USB-CDC debug link as fake fixes, driving the same
+//! [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from motion, throttled to
+//! ~1 Hz). A compass slider sets the stopped heading, a button row injects encoder/Back input (taps
+//! + holds) so the UI is drivable without the hardware, and a readout shows render-stats telemetry.
 //!
-//! Wire format (see `obc-platform::debug_usb`): host→device `F <lat> <lon> <course|-> <speed|->`,
-//! `A <m>`, `C <deg>`, `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark
-//! hook), and input injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
+//! Wire format (see `obc-platform::debug_link`): host→device `F <lat> <lon> <course|-> <speed|->`,
+//! `A <m>`, `C <deg>`, `H <bpm>` / `P <watts>` / `R <rpm>` (fake BLE sensor injection, epic #707
+//! SE8), `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark hook), and input
+//! injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
 //! `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped> <chunks> <hits> <misses> <reads>
 //! <bytes> <collect_us> <read_us> <sort_us> <draw_us> <overlay_us> <mpp_milli>` — the last six are
 //! the per-stage render breakdown + the frame's camera scale. ASCII, newline-terminated.
@@ -26,17 +24,47 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use obc_app::{AltimeterSource, LocationSource};
-// The canonical USB-CDC codec, authored once on the device side (issue #71): the device→host
-// `Telemetry` + its `parse_telemetry`, and the host→device `format_fix` `F`-line encoder. Reusing
-// these is the whole point — the two halves of the protocol can no longer drift (the old local
-// copies had already diverged: `lod` was `u32` here vs. `u8` on the device). DEFAULT features only,
-// so the pure codec is pulled without embassy-sync.
-use obc_platform::debug_usb::{format_fix, parse_telemetry, Telemetry};
-use obc_replay::{BaroSensor, GpxPlayer, Track};
+// The canonical USB-CDC codec, authored once on the device side, so the two halves of the protocol
+// can't drift: device→host `Telemetry`/`parse_telemetry` + host→device `format_fix` `F`-line
+// encoder. DEFAULT features only, so the pure codec is pulled without embassy-sync.
+use obc_platform::debug_link::{format_cadence, format_fix, format_hr, format_power, parse_telemetry, Telemetry};
+use obc_replay::{effort_from_speed, BaroSensor, GpxPlayer, Track};
 
-/// How long a "hold" button keeps the edge down before releasing — past the device's ~500 ms
-/// long-press threshold, so the recogniser fires Hold / BackHold.
-const HOLD_MS: u64 = 700;
+/// How long a "hold" button keeps the edge down before releasing — comfortably past the device's
+/// long-press threshold, so the recogniser fires Hold / BackHold. Derived from the app's own
+/// [`obc_app::DEFAULT_HOLD_MS`] so it can't drift if that threshold is ever retuned.
+const HOLD_MS: u64 = obc_app::DEFAULT_HOLD_MS as u64 + 200;
+
+/// How often to emit a synthetic `H`/`P`/`R` sensor sample while enabled — the ~1 Hz cadence a real
+/// BLE sensor notifies at, comfortably inside the device's 5 s staleness window.
+const SENSOR_PERIOD: Duration = Duration::from_millis(1000);
+
+/// The synthetic-sensor control state (mirrors `obc-sim`'s `SensorConfig`): per-quantity enable +
+/// fixed-value slider, plus the *effort follows speed* switch (when set, all three are synthesized
+/// from the replayed speed and the individual toggles/sliders are ignored).
+struct SensorPanel {
+    hr_enabled: bool,
+    power_enabled: bool,
+    cadence_enabled: bool,
+    hr_bpm: u16,
+    power_w: u16,
+    cadence_rpm: u8,
+    effort_follows_speed: bool,
+}
+
+impl Default for SensorPanel {
+    fn default() -> Self {
+        SensorPanel {
+            hr_enabled: false,
+            power_enabled: false,
+            cadence_enabled: false,
+            hr_bpm: 140,
+            power_w: 200,
+            cadence_rpm: 85,
+            effort_follows_speed: false,
+        }
+    }
+}
 
 /// What the serial reader thread sends up to the UI.
 enum HostEvent {
@@ -177,6 +205,15 @@ struct FeederApp {
     // compass slider (heading the device shows when stopped); `last_sent` throttles `C` lines
     compass_deg: f32,
     last_compass_sent: Option<f32>,
+    // Synthetic BLE sensors (epic #707 SE8): mirror the sim panel — per-quantity enable + slider,
+    // plus one "effort follows speed" switch synthesizing all three from the replayed speed. Sent as
+    // `H`/`P`/`R` at ~1 Hz while enabled, using the canonical `debug_link` encoders so the two halves
+    // can't drift. `last_sensor_sent` throttles to the emit cadence; `last_speed_mps` is the most
+    // recent (multiplier-scaled) fix speed the effort synth reads; `sensor_phase` walks the wobble.
+    sensors: SensorPanel,
+    last_sensor_sent: Option<Instant>,
+    last_speed_mps: f32,
+    sensor_phase: u32,
     // telemetry + log
     telemetry: Option<Telemetry>,
     log: std::collections::VecDeque<String>,
@@ -200,6 +237,10 @@ impl FeederApp {
             baro: BaroSensor::new(),
             compass_deg: 0.0,
             last_compass_sent: None,
+            sensors: SensorPanel::default(),
+            last_sensor_sent: None,
+            last_speed_mps: 0.0,
+            sensor_phase: 0,
             telemetry: None,
             log: std::collections::VecDeque::new(),
             pending: Vec::new(),
@@ -282,21 +323,61 @@ impl FeederApp {
         }
         player.advance(dt);
         if let Some(mut fix) = player.poll() {
-            // GpxPlayer derives speed in *playback* time (the track's real speed), but at >1× the
-            // device sees the positions arrive faster and derives a higher average — so scale the
-            // reported instantaneous speed by the multiplier too. Then the device's KPH and AVG KPH
-            // move together, as on a real GPS where the reported speed agrees with the motion.
+            // GpxPlayer derives speed in *playback* time, but at >1× the device sees positions
+            // arrive faster and derives a higher average — so scale the reported instantaneous speed
+            // by the multiplier too, keeping the device's KPH and AVG KPH in agreement.
             if let Some(s) = fix.speed_mps {
-                fix.speed_mps = Some(s * player.speed());
+                let scaled = s * player.speed();
+                fix.speed_mps = Some(scaled);
+                // Stash the scaled speed the device sees, so the effort synth's HR/power/cadence
+                // agree with the KPH the device displays.
+                self.last_speed_mps = scaled;
             }
-            // `format_fix` is the device's `F`-line encoder (a heapless String); copy it into the
-            // owned `pending` queue, so device and host share one encoder.
             self.pending.push(format_fix(&fix).to_string());
         }
         self.baro.feed(player.elevation_at(player.time()), player.time());
         if let Some(alt) = self.baro.poll() {
             self.pending.push(format!("A {alt:.2}\n"));
         }
+    }
+
+    /// Emit synthetic `H`/`P`/`R` sensor lines at ~1 Hz while connected and something is enabled.
+    /// Uses the canonical `debug_link` encoders (so the wire format can't drift from the device
+    /// parser). *Effort follows speed* synthesizes all three from the last fix speed with light
+    /// noise; otherwise each quantity is sent from its slider while its toggle is on. Emitting stops
+    /// the moment a toggle goes off, so the device's tile goes stale → `--` (its 5 s gate).
+    fn step_sensors(&mut self) {
+        if self.conn.is_none() {
+            return;
+        }
+        let s = &self.sensors;
+        let any = s.effort_follows_speed || s.hr_enabled || s.power_enabled || s.cadence_enabled;
+        if !any {
+            return;
+        }
+        let now = Instant::now();
+        if self.last_sensor_sent.is_some_and(|last| now.duration_since(last) < SENSOR_PERIOD) {
+            return;
+        }
+        self.last_sensor_sent = Some(now);
+
+        if s.effort_follows_speed {
+            let e = effort_from_speed(self.last_speed_mps, self.sensor_phase);
+            self.pending.push(format_hr(e.hr_bpm).to_string());
+            self.pending.push(format_power(e.power_w).to_string());
+            self.pending.push(format_cadence(e.cadence_rpm).to_string());
+        } else {
+            if s.hr_enabled {
+                self.pending.push(format_hr(s.hr_bpm).to_string());
+            }
+            if s.power_enabled {
+                self.pending.push(format_power(s.power_w).to_string());
+            }
+            if s.cadence_enabled {
+                self.pending.push(format_cadence(s.cadence_rpm).to_string());
+            }
+        }
+        self.sensor_phase = self.sensor_phase.wrapping_add(1);
     }
 
     fn queue_compass(&mut self) {
@@ -455,6 +536,33 @@ impl eframe::App for FeederApp {
             });
             ui.add_space(6.0);
 
+            // --- Synthetic BLE sensors (HR / power / cadence, epic #707 SE8) ---
+            full_group(ui, |ui| {
+                ui.label(egui::RichText::new("Sensors (HR / Power / Cadence)").strong());
+                let s = &mut self.sensors;
+                ui.checkbox(&mut s.effort_follows_speed, "Effort follows speed");
+                ui.label(
+                    egui::RichText::new("synthesize all three from the replayed GPX speed (with light noise)")
+                        .weak()
+                        .size(10.0),
+                );
+                ui.add_enabled_ui(!s.effort_follows_speed, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut s.hr_enabled, "HR");
+                        ui.add(egui::Slider::new(&mut s.hr_bpm, 40..=220).suffix(" bpm"));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut s.power_enabled, "Power");
+                        ui.add(egui::Slider::new(&mut s.power_w, 0..=1000).suffix(" W"));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut s.cadence_enabled, "Cadence");
+                        ui.add(egui::Slider::new(&mut s.cadence_rpm, 0..=130).suffix(" rpm"));
+                    });
+                });
+            });
+            ui.add_space(6.0);
+
             // --- Input injection (drive the device's encoder + Back remotely) ---
             full_group(ui, |ui| {
                 ui.label(egui::RichText::new("Input (encoder + Back)").strong());
@@ -541,10 +649,11 @@ impl eframe::App for FeederApp {
             });
         });
 
-        // After the UI: queue compass-on-change, advance the replay, release any due holds, flush.
+        // After the UI: queue compass-on-change, advance the replay, emit sensors, release holds, flush.
         self.queue_compass();
         let dt = ctx.input(|i| i.stable_dt) as f64;
         self.step_playback(dt);
+        self.step_sensors();
         self.flush_due_ups();
         self.flush_pending();
 

@@ -1,0 +1,106 @@
+{
+    "_meta": {
+        "id": "default",
+        "name": "Bikepacking",
+        "description": "The full touring map: roads by class, trails and cycleways, rail, water, forests and landuse, buildings up close.",
+        "version": 3,
+        "swatch": ["#FF5500", "#FFAA00", "#5500FF", "#55AAFF", "#55AA55", "#AAAAAA"],
+        "palette_note": "Colors are RGB565 but the LS021B7DD02 panel only shows 64 (RGB222: 4 levels/channel = 0,85,170,255). Every value below is chosen to land exactly on that grid, so the web builder picker and the device agree. OSM/Komoot conventions on a near-white 'paper' base: warm = through-roads, grey = local roads, brown = trails, indigo = cycleways (a cycling computer's key feature, lifted out of the brown trail group), green = vegetation, azure = water, cream = built-up landuse fill (residential / commercial / industrial / retail — the only near-white tint the gamut offers, so towns read as a faint warm blush without colliding with the grey buildings on top). Verify the gamut with `obc-sim --palette`."
+    },
+    "lods": [
+        {"max_mpp": null, "simplify": 120},
+        {"max_mpp": 120, "simplify": 18},
+        {"max_mpp": 18, "simplify": 2}
+    ],
+    "features": {
+        "highway": {
+            "motorway": {"z_index": 60, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAAA0"},
+            "motorway_link": {"z_index": 58, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAAA0"},
+            "trunk": {"z_index": 55, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAAA0"},
+            "trunk_link": {"z_index": 53, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAAA0"},
+            "primary": {"z_index": 50, "color": "0xFD40", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAD40"},
+            "primary_link": {"z_index": 48, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"},
+            "secondary": {"z_index": 44, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"},
+            "secondary_link": {"z_index": 43, "color": "0xFD40", "weight": 1, "min_lod": 1, "priority": 2, "color2": "0xAD40"},
+            "tertiary": {"z_index": 34, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"},
+            "tertiary_link": {"z_index": 33, "color": "0xFD40", "weight": 1, "min_lod": 2, "priority": 2, "color2": "0xAD40"},
+            "unclassified": {"z_index": 30, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3, "color2": "0x0000"},
+            "residential": {"z_index": 30, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3, "color2": "0x0000"},
+            "living_street": {"z_index": 29, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3, "color2": "0x0000"},
+            "service": {"z_index": 28, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3, "color2": "0x0000"},
+            "pedestrian": {"z_index": 28, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3, "color2": "0x0000"},
+            "track": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
+            "path": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
+            "footway": {"z_index": 24, "color": "0xAAA0", "weight": 1, "min_lod": 2, "priority": 3},
+            "cycleway": {"z_index": 26, "color": "0x501F", "weight": 2, "min_lod": 2, "priority": 3}
+        },
+        "railway": {
+            "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2, "line_style": "dashed", "color2": "0xFFFF"},
+            "light_rail": {"z_index": 36, "color": "0x0000", "weight": 1, "min_lod": 2, "priority": 3, "line_style": "dashed", "color2": "0xFFFF"},
+            "subway": {"z_index": 35, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3},
+            "tram": {"z_index": 31, "color": "0x52AA", "weight": 1, "min_lod": 2, "priority": 3}
+        },
+        "waterway": {
+            "river": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 0, "priority": 2},
+            "canal": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 1, "priority": 3},
+            "stream": {"z_index": 15, "color": "0x555F", "weight": 1, "min_lod": 2, "priority": 3},
+            "drain": {"z_index": 12, "color": "0x555F", "weight": 1, "min_lod": 2, "priority": 3},
+            "ditch": {"z_index": 12, "color": "0x555F", "weight": 1, "min_lod": 2, "priority": 3}
+        },
+        "building": {
+            "*": {"z_index": 20, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "color2": "0x52AA"}
+        },
+        "natural": {
+            "sea": {"z_index": 0, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 1},
+            "land": {"z_index": 1, "color": "0xFFFF", "weight": 1, "min_lod": 0, "priority": 1},
+            "water": {"z_index": 14, "color": "0x555F", "weight": 1, "min_lod": 1, "priority": 2},
+            "wood": {"z_index": 4, "color": "0x554A", "weight": 1, "min_lod": 1, "priority": 3},
+            "scrub": {"z_index": 5, "color": "0xAFF5", "weight": 1, "min_lod": 2, "priority": 3}
+        },
+        "landuse": {
+            "residential": {"z_index": 2, "color": "0xFFF5", "weight": 1, "min_lod": 1, "priority": 4},
+            "commercial": {"z_index": 2, "color": "0xFFF5", "weight": 1, "min_lod": 1, "priority": 4},
+            "industrial": {"z_index": 2, "color": "0xFFF5", "weight": 1, "min_lod": 1, "priority": 4},
+            "retail": {"z_index": 2, "color": "0xFFF5", "weight": 1, "min_lod": 1, "priority": 4},
+            "forest": {"z_index": 4, "color": "0x554A", "weight": 1, "min_lod": 1, "priority": 3},
+            "grass": {"z_index": 6, "color": "0xAFF5", "weight": 1, "min_lod": 2, "priority": 3}
+        },
+        "leisure": {
+            "park": {"z_index": 6, "color": "0xAFF5", "weight": 1, "min_lod": 2, "priority": 3}
+        },
+        "admin_level": {
+            "2": {"z_index": 100, "color": "0xAAB5", "weight": 2, "min_lod": 0, "priority": 3, "line_style": "dashed"}
+        }
+    },
+    "marker": {"color": "0xF800"},
+    "merge_fills": true,
+    "routing": {
+        "min_component_edges": 50,
+        "profiles": [
+            {
+                "name": "Road",
+                "default": 3.0,
+                "highway": {"cycleway": 1.0, "living_street": 1.4, "residential": 1.4, "unclassified": 1.5, "tertiary": 1.3, "secondary": 1.5, "primary": 1.8, "service": 2.2, "trunk_cycl": 2.5, "track": 6.0, "path": 7.0, "footway": 5.0, "bridleway": 7.0, "steps": "forbidden"},
+                "surface": {"paved": 1.0, "compacted": 2.5, "gravel": 5.0, "dirt": 7.0, "rough": 8.0, "cobbles": 3.0, "grass": 8.0, "unknown": 1.5}
+            },
+            {
+                "name": "Gravel",
+                "default": 2.0,
+                "highway": {"cycleway": 1.1, "track": 1.2, "path": 1.5, "unclassified": 1.2, "residential": 1.3, "living_street": 1.3, "tertiary": 1.3, "secondary": 1.6, "primary": 2.2, "service": 1.6, "footway": 3.0, "bridleway": 2.2, "trunk_cycl": 3.0, "steps": "forbidden"},
+                "surface": {"paved": 1.1, "compacted": 1.0, "gravel": 1.1, "dirt": 1.6, "rough": 3.0, "cobbles": 2.0, "grass": 3.0, "unknown": 1.2}
+            },
+            {
+                "name": "MTB",
+                "default": 2.0,
+                "highway": {"path": 1.0, "track": 1.0, "bridleway": 1.1, "cycleway": 1.3, "footway": 1.8, "unclassified": 1.6, "residential": 1.6, "living_street": 1.5, "tertiary": 1.8, "secondary": 2.4, "primary": 3.5, "service": 1.6, "steps": 3.0, "trunk_cycl": 4.0},
+                "surface": {"dirt": 1.0, "gravel": 1.0, "compacted": 1.1, "rough": 1.3, "grass": 1.4, "cobbles": 1.5, "paved": 1.3, "unknown": 1.1}
+            },
+            {
+                "name": "Touring",
+                "default": 2.0,
+                "highway": {"cycleway": 1.0, "residential": 1.2, "living_street": 1.2, "unclassified": 1.2, "tertiary": 1.3, "track": 1.6, "path": 2.0, "secondary": 1.7, "primary": 2.6, "service": 1.5, "footway": 2.5, "bridleway": 2.5, "steps": 6.0, "trunk_cycl": 3.0},
+                "surface": {"paved": 1.0, "compacted": 1.2, "gravel": 2.0, "dirt": 3.0, "rough": 5.0, "cobbles": 2.0, "grass": 5.0, "unknown": 1.3}
+            }
+        ]
+    }
+}

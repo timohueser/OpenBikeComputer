@@ -1,18 +1,14 @@
 //! Recorded-track format: the fixed-record ride log + its GPX export (`no_std`).
 //!
 //! While riding, the device appends one [`TrackPoint`] per accepted GPS fix to an SD-card
-//! file as a **fixed 16-byte record** — *no header*, so the file is just a record array
-//! and truncating to a 16-byte boundary is always valid (the worst a power-loss can cost
+//! file as a **fixed 20-byte record** — *no header*, so the file is just a record array
+//! and truncating to a 20-byte boundary is always valid (the worst a power-loss can cost
 //! is the in-flight record). On **Finish** the log is converted to a `.gpx`
 //! ([`track_to_gpx`]) in one streaming pass and the temp log is dropped.
 //!
 //! This is deliberately *not* the [`OBCR`](crate) route format: a route is decimated for
 //! compact drawing, whereas a recorded track wants full GPS fidelity. The log keeps every
 //! accepted point verbatim; only the on-screen breadcrumb (host-side, in RAM) is decimated.
-//!
-//! The format + the GPX writer live here in the format crate so the firmware and the
-//! simulator share one implementation, exactly like the GPX→OBCR [`convert`](crate::convert)
-//! path. The byte I/O goes through the same [`ByteSource`]/[`ByteSink`] seam.
 
 use core::fmt::Write;
 
@@ -21,7 +17,9 @@ use heapless::String;
 use crate::byte_io::{ByteSink, ByteSource, Error};
 
 /// One recorded fix: position (microdegrees), barometric elevation (m), a millisecond
-/// timestamp, and whether it begins a new track segment (after a pause or a GPS gap).
+/// timestamp, whether it begins a new track segment (after a pause or a GPS gap), and the
+/// BLE-sensor values stamped onto it (heart rate / cadence / power — `None` when the sensor
+/// was absent or its last sample was stale, epic #707).
 ///
 /// `t_ms` is stored for a future wall-clock but **not yet emitted** into the GPX `<time>` —
 /// the device has no date/time source, so writing one now would be a fabricated timestamp.
@@ -34,16 +32,42 @@ pub struct TrackPoint {
     /// `true` on the first point of a new `<trkseg>` (start of ride, or first fix after a
     /// pause / dropout). Drives segment splitting in [`track_to_gpx`].
     pub segment_start: bool,
+    /// Heart rate (bpm) at this fix, or `None` when no strap was reporting fresh data. Encodes
+    /// as [`TRACK_HR_NONE`].
+    pub hr: Option<u8>,
+    /// Crank cadence (rpm) at this fix, or `None` when absent/stale. Encodes as [`TRACK_CAD_NONE`].
+    pub cadence: Option<u8>,
+    /// Power (W) at this fix, or `None` when absent/stale. Encodes as [`TRACK_PWR_NONE`].
+    pub power: Option<u16>,
 }
 
 /// On-disk size of one record. The whole log is `N × TRACK_RECORD_LEN` bytes, no header.
-pub const TRACK_RECORD_LEN: usize = 16;
+///
+/// **Format v2 (20 bytes, epic #707):** the original 16 bytes plus a `hr u8 · cad u8 · pwr u16`
+/// (LE) sensor tail. The log is headerless and **never crosses a firmware upgrade**, so there is
+/// no in-band version to distinguish a 16-byte (pre-sensor) log from this 20-byte one — the
+/// upgrade guard is structural instead: the temp `TRACK.OBT` (board `sd.rs`) / `.track-{id}.obct`
+/// (sim `track.rs`) is only ever converted through an **in-RAM** handle (`Storage::pending_save`
+/// / `TrackStore::open`) set by *this* boot's Finish, and the next ride's `begin_track` opens it
+/// truncating. That RAM handle cannot survive a reboot, so an orphaned open log left by older
+/// firmware can never reach [`track_to_ride`](crate::track_to_ride) after an upgrade — it is
+/// silently truncated by the next session, never misparsed as 20-byte records. Boot provably
+/// discards orphans, so no versioned temp filename is needed (SE3, #710).
+pub const TRACK_RECORD_LEN: usize = 20;
 
-/// Layout: `lon`(i32) `lat`(i32) `ele`(i16) `flags`(u16, bit0 = segment_start) `t_ms`(u32).
+/// Layout: `lon`(i32) `lat`(i32) `ele`(i16) `flags`(u16, bit0 = segment_start) `t_ms`(u32)
+/// `hr`(u8) `cad`(u8) `pwr`(u16).
 const FLAG_SEGMENT_START: u16 = 0x0001;
 
-/// Encode a point to its fixed 16-byte record (little-endian, matching the readers in
-/// `reader.rs` / `convert.rs`).
+/// The `hr` sentinel for "no heart-rate sample on this fix" (255 bpm is not a real reading).
+pub const TRACK_HR_NONE: u8 = 0xFF;
+/// The `cad` sentinel for "no cadence sample on this fix".
+pub const TRACK_CAD_NONE: u8 = 0xFF;
+/// The `pwr` sentinel for "no power sample on this fix".
+pub const TRACK_PWR_NONE: u16 = 0xFFFF;
+
+/// Encode a point to its fixed 20-byte record (little-endian). Absent sensor values encode as
+/// their sentinels ([`TRACK_HR_NONE`] / [`TRACK_CAD_NONE`] / [`TRACK_PWR_NONE`]).
 pub fn encode_record(p: &TrackPoint) -> [u8; TRACK_RECORD_LEN] {
     let mut b = [0u8; TRACK_RECORD_LEN];
     b[0..4].copy_from_slice(&p.lon.to_le_bytes());
@@ -52,17 +76,24 @@ pub fn encode_record(p: &TrackPoint) -> [u8; TRACK_RECORD_LEN] {
     let flags = if p.segment_start { FLAG_SEGMENT_START } else { 0 };
     b[10..12].copy_from_slice(&flags.to_le_bytes());
     b[12..16].copy_from_slice(&p.t_ms.to_le_bytes());
+    b[16] = p.hr.unwrap_or(TRACK_HR_NONE);
+    b[17] = p.cadence.unwrap_or(TRACK_CAD_NONE);
+    b[18..20].copy_from_slice(&p.power.unwrap_or(TRACK_PWR_NONE).to_le_bytes());
     b
 }
 
-/// Decode one fixed 16-byte record.
+/// Decode one fixed 20-byte record. A sentinel sensor field decodes back to `None`.
 pub fn decode_record(b: &[u8; TRACK_RECORD_LEN]) -> TrackPoint {
     let lon = i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
     let lat = i32::from_le_bytes([b[4], b[5], b[6], b[7]]);
     let ele = i16::from_le_bytes([b[8], b[9]]);
     let flags = u16::from_le_bytes([b[10], b[11]]);
     let t_ms = u32::from_le_bytes([b[12], b[13], b[14], b[15]]);
-    TrackPoint { lon, lat, ele, t_ms, segment_start: flags & FLAG_SEGMENT_START != 0 }
+    let hr = (b[16] != TRACK_HR_NONE).then_some(b[16]);
+    let cadence = (b[17] != TRACK_CAD_NONE).then_some(b[17]);
+    let pwr = u16::from_le_bytes([b[18], b[19]]);
+    let power = (pwr != TRACK_PWR_NONE).then_some(pwr);
+    TrackPoint { lon, lat, ele, t_ms, segment_start: flags & FLAG_SEGMENT_START != 0, hr, cadence, power }
 }
 
 /// Records read per [`ByteSource`] call — one SD read fills a block rather than a record,
@@ -75,12 +106,19 @@ const BLOCK_RECORDS: usize = 64;
 /// One streaming pass: a fresh `<trkseg>` opens on each [`segment_start`](TrackPoint::segment_start)
 /// (and on the first point), so pauses/gaps become honest segment breaks. `<time>` is
 /// intentionally omitted until the device has a real clock. A trailing partial record (a
-/// power-loss mid-write) is ignored — the log stays valid at any 16-byte boundary.
+/// power-loss mid-write) is ignored — the log stays valid at any 20-byte boundary.
 pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<(), Error> {
-    let mut line: String<160> = String::new();
+    // Widest point line = `<trkpt>` + negative lat/lon + `<ele>-32768</ele>` + the full sensor
+    // extensions block (`gpxtpx:TrackPointExtension` hr+cad, a bare `<power>`) ≈ 224 chars. Sized
+    // to 320 so that line — and a future `<time>` element — can never truncate (a clipped GPX line
+    // is silent corruption).
+    let mut line: String<320> = String::new();
 
     put(sink, b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;
-    put(sink, b"<gpx version=\"1.1\" creator=\"OpenBikeComputer\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")?;
+    put(
+        sink,
+        b"<gpx version=\"1.1\" creator=\"OpenBikeComputer\" xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:gpxtpx=\"http://www.garmin.com/xmlschemas/TrackPointExtension/v1\">\n",
+    )?;
     put(sink, b"<trk><name>")?;
     write_escaped(sink, name)?;
     put(sink, b"</name>\n")?;
@@ -112,7 +150,28 @@ pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -
             write_deg(&mut line, p.lat);
             let _ = line.push_str("\" lon=\"");
             write_deg(&mut line, p.lon);
-            let _ = writeln!(line, "\"><ele>{}</ele></trkpt>", p.ele);
+            let _ = write!(line, "\"><ele>{}</ele>", p.ele);
+            // Sensor extensions (epic #707): `gpxtpx:hr`/`gpxtpx:cad` inside a TrackPointExtension
+            // wrapper, plus a bare `<power>` (the de-facto Strava form). Each element is omitted
+            // when its field is absent; the whole `<extensions>` block when all three are.
+            if p.hr.is_some() || p.cadence.is_some() || p.power.is_some() {
+                let _ = line.push_str("<extensions>");
+                if p.hr.is_some() || p.cadence.is_some() {
+                    let _ = line.push_str("<gpxtpx:TrackPointExtension>");
+                    if let Some(hr) = p.hr {
+                        let _ = write!(line, "<gpxtpx:hr>{hr}</gpxtpx:hr>");
+                    }
+                    if let Some(cad) = p.cadence {
+                        let _ = write!(line, "<gpxtpx:cad>{cad}</gpxtpx:cad>");
+                    }
+                    let _ = line.push_str("</gpxtpx:TrackPointExtension>");
+                }
+                if let Some(power) = p.power {
+                    let _ = write!(line, "<power>{power}</power>");
+                }
+                let _ = line.push_str("</extensions>");
+            }
+            let _ = line.push_str("</trkpt>\n");
             put(sink, line.as_bytes())?;
         }
         done += n;
@@ -125,7 +184,6 @@ pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -
     Ok(())
 }
 
-/// Append raw bytes to the sink.
 fn put(sink: &mut dyn ByteSink, b: &[u8]) -> Result<(), Error> {
     sink.write(b)
 }

@@ -1,0 +1,72 @@
+{
+    "_meta": {
+        "id": "minimal",
+        "name": "Minimal",
+        "description": "The big picture: major roads, rail, rivers and lakes on the land/sea base. Small files, fast builds.",
+        "version": 2,
+        "swatch": ["#FF5500", "#FFAA00", "#000000", "#55AAFF"]
+    },
+    "lods": [
+        {"max_mpp": null, "simplify": 120},
+        {"max_mpp": 120, "simplify": 18},
+        {"max_mpp": 18, "simplify": 2}
+    ],
+    "features": {
+        "highway": {
+            "motorway": {"z_index": 60, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAAA0"},
+            "motorway_link": {"z_index": 58, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAAA0"},
+            "trunk": {"z_index": 55, "color": "0xFAA0", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAAA0"},
+            "trunk_link": {"z_index": 53, "color": "0xFAA0", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAAA0"},
+            "primary": {"z_index": 50, "color": "0xFD40", "weight": 3, "min_lod": 0, "priority": 2, "color2": "0xAD40"},
+            "primary_link": {"z_index": 48, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"},
+            "secondary": {"z_index": 44, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"},
+            "tertiary": {"z_index": 34, "color": "0xFD40", "weight": 2, "min_lod": 1, "priority": 2, "color2": "0xAD40"}
+        },
+        "railway": {
+            "rail": {"z_index": 40, "color": "0x0000", "weight": 2, "min_lod": 1, "priority": 2, "line_style": "dashed", "color2": "0xFFFF"}
+        },
+        "waterway": {
+            "river": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 0, "priority": 2},
+            "canal": {"z_index": 16, "color": "0x555F", "weight": 2, "min_lod": 1, "priority": 3}
+        },
+        "natural": {
+            "sea": {"z_index": 0, "color": "0x555F", "weight": 1, "min_lod": 0, "priority": 1},
+            "land": {"z_index": 1, "color": "0xFFFF", "weight": 1, "min_lod": 0, "priority": 1},
+            "water": {"z_index": 14, "color": "0x555F", "weight": 1, "min_lod": 1, "priority": 2}
+        },
+        "admin_level": {
+            "2": {"z_index": 100, "color": "0xAAB5", "weight": 2, "min_lod": 0, "priority": 3}
+        }
+    },
+    "marker": {"color": "0xF800"},
+    "merge_fills": true,
+    "routing": {
+        "min_component_edges": 50,
+        "profiles": [
+            {
+                "name": "Road",
+                "default": 3.0,
+                "highway": {"cycleway": 1.0, "living_street": 1.4, "residential": 1.4, "unclassified": 1.5, "tertiary": 1.3, "secondary": 1.5, "primary": 1.8, "service": 2.2, "trunk_cycl": 2.5, "track": 6.0, "path": 7.0, "footway": 5.0, "bridleway": 7.0, "steps": "forbidden"},
+                "surface": {"paved": 1.0, "compacted": 2.5, "gravel": 5.0, "dirt": 7.0, "rough": 8.0, "cobbles": 3.0, "grass": 8.0, "unknown": 1.5}
+            },
+            {
+                "name": "Gravel",
+                "default": 2.0,
+                "highway": {"cycleway": 1.1, "track": 1.2, "path": 1.5, "unclassified": 1.2, "residential": 1.3, "living_street": 1.3, "tertiary": 1.3, "secondary": 1.6, "primary": 2.2, "service": 1.6, "footway": 3.0, "bridleway": 2.2, "trunk_cycl": 3.0, "steps": "forbidden"},
+                "surface": {"paved": 1.1, "compacted": 1.0, "gravel": 1.1, "dirt": 1.6, "rough": 3.0, "cobbles": 2.0, "grass": 3.0, "unknown": 1.2}
+            },
+            {
+                "name": "MTB",
+                "default": 2.0,
+                "highway": {"path": 1.0, "track": 1.0, "bridleway": 1.1, "cycleway": 1.3, "footway": 1.8, "unclassified": 1.6, "residential": 1.6, "living_street": 1.5, "tertiary": 1.8, "secondary": 2.4, "primary": 3.5, "service": 1.6, "steps": 3.0, "trunk_cycl": 4.0},
+                "surface": {"dirt": 1.0, "gravel": 1.0, "compacted": 1.1, "rough": 1.3, "grass": 1.4, "cobbles": 1.5, "paved": 1.3, "unknown": 1.1}
+            },
+            {
+                "name": "Touring",
+                "default": 2.0,
+                "highway": {"cycleway": 1.0, "residential": 1.2, "living_street": 1.2, "unclassified": 1.2, "tertiary": 1.3, "track": 1.6, "path": 2.0, "secondary": 1.7, "primary": 2.6, "service": 1.5, "footway": 2.5, "bridleway": 2.5, "steps": 6.0, "trunk_cycl": 3.0},
+                "surface": {"paved": 1.0, "compacted": 1.2, "gravel": 2.0, "dirt": 3.0, "rough": 5.0, "cobbles": 2.0, "grass": 5.0, "unknown": 1.3}
+            }
+        ]
+    }
+}

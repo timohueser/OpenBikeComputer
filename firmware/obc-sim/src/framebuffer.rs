@@ -1,9 +1,8 @@
 //! A plain in-memory `DrawTarget` — a packed RGB888 pixel buffer the host owns.
 //!
-//! The shared [`obc_render::MapRenderer`] runs the exact same rendering code as the
-//! firmware, but draws into this buffer; the host then uploads it to a GPU texture
-//! (the eframe screen window) or encodes it to a PNG (`--png`). The device firmware
-//! draws into its real LS021B7DD02 driver instead; only this host-side target differs.
+//! The shared [`obc_render::MapRenderer`] runs the firmware-identical rendering code but
+//! draws into this buffer; the host then uploads it to a GPU texture or encodes it to a PNG.
+//! The firmware draws into its real LS021B7DD02 driver instead — only this target differs.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 
@@ -68,8 +67,7 @@ impl DrawTarget for Framebuffer {
         Ok(())
     }
 
-    /// Fast path for the renderer's rectangle fills (per polygon-fill scanline row,
-    /// and HUD strips): fill a clipped rectangle directly instead of per-pixel.
+    /// Fast path for the renderer's rectangle fills: fill a clipped rectangle directly.
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let clipped = area.intersection(&self.bounding_box());
         if let Some(br) = clipped.bottom_right() {
@@ -142,5 +140,32 @@ mod tests {
         .unwrap();
         assert_eq!(pixel(&fb, 0, 1), (0, 255, 0));
         assert_eq!(pixel(&fb, 0, 0), (0, 0, 0));
+    }
+
+    /// Existing tests only write column 0, so a stride bug (forgetting `* 3`, or
+    /// `x * 3 + y * width`) wouldn't show. Write a non-leading column on a non-power-of-two
+    /// width and assert the exact byte offset.
+    #[test]
+    fn put_uses_the_row_major_rgb_stride() {
+        let mut fb = Framebuffer::new(5, 4);
+        fb.draw_iter([Pixel(Point::new(3, 2), Rgb888::new(10, 20, 30))]).unwrap();
+        assert_eq!(pixel(&fb, 3, 2), (10, 20, 30), "lands at (3,2)");
+        // Exact byte offset proves the stride, not just the helper.
+        let i = (2 * 5 + 3) * 3;
+        assert_eq!(&fb.as_rgb888()[i..i + 3], &[10, 20, 30]);
+        // The neighbouring pixels (one before, one after) stay black — no smear.
+        assert_eq!(pixel(&fb, 2, 2), (0, 0, 0));
+        assert_eq!(pixel(&fb, 4, 2), (0, 0, 0));
+    }
+
+    /// A negative top-left must clip to the origin, never indexing with a negative coordinate.
+    /// The other fill_solid test only overruns the bottom-right; this covers the negative half.
+    #[test]
+    fn fill_solid_clips_a_negative_top_left() {
+        let mut fb = Framebuffer::new(4, 4);
+        fb.fill_solid(&Rectangle::new(Point::new(-2, -2), Size::new(4, 4)), Rgb888::new(0, 0, 255)).unwrap();
+        assert_eq!(pixel(&fb, 0, 0), (0, 0, 255)); // clipped origin fills
+        assert_eq!(pixel(&fb, 1, 1), (0, 0, 255)); // last covered pixel (rect reaches 1,1)
+        assert_eq!(pixel(&fb, 2, 2), (0, 0, 0)); // beyond the clipped rect: untouched
     }
 }

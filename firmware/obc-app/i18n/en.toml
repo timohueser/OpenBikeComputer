@@ -1,0 +1,440 @@
+# OpenBikeComputer UI translation catalog — ENGLISH (canonical key set).
+#
+# This file defines the *universe* of message keys (epic #602). Every key present
+# here MUST be present in de.toml / fr.toml / es.toml too, or the build fails
+# (see obc-app/build.rs — the completeness check). de/fr/es may still be English
+# stubs at this stage; real translations land in L4 (#606).
+#
+# Naming convention (key -> `Msg` variant):
+#   * Keys are grouped in `[section]` tables (a section is a screen or domain).
+#   * The generated `Msg` variant is PascalCase(section) + PascalCase(key), e.g.
+#         [menu] routes = "Routes"   ->   Msg::MenuRoutes
+#     Underscores in a key are word breaks:  `off_route = "..."` -> `Msg::…OffRoute`.
+#   * A bare top-level key (no section, discouraged) maps to PascalCase(key) alone.
+#   * Values are TOML basic strings (double-quoted). Keep them within the #601 font
+#     repertoire (Latin-1 + Latin Extended-A); no curly quotes / em-dash / ellipsis.
+#
+# Sections are grouped by screen/domain and kept in the SAME order across en/de/fr/es
+# so L4's translation diff stays legible. Unit symbols (KPH/MI/m/ft/%/km) and the
+# language endonyms (English/Deutsch/…) are deliberately NOT catalogued — they are
+# language-independent (see the epic's locked decisions).
+
+# --- The Menu overlay ---
+[menu]
+title = "MENU"
+routes = "Routes"
+rides = "Rides"
+pois = "POIs"
+map = "Map"
+settings = "Settings"
+
+# --- Units: the `Units` enum name + the Units settings screen ---
+[units]
+metric = "Metric"
+imperial = "Imperial"
+title = "UNITS"
+distance = "Distance"
+speed = "Speed"
+elevation = "Elevation"
+
+# --- ClimbMode enum labels (Stats settings row) ---
+[climb_mode]
+off = "Off"
+manual = "Manual"
+auto = "Auto"
+
+# --- WaypointMode enum labels (Stats settings row) ---
+[waypoint_mode]
+off = "Off"
+approach = "Approach"
+always = "Always"
+
+# --- IdleReturn enum labels (Power settings picker) ---
+[idle]
+s15 = "15 s"
+s30 = "30 s"
+m1 = "1 min"
+m5 = "5 min"
+never = "Never"
+
+# --- Month abbreviations (Date & Time local-time row) ---
+[month]
+jan = "Jan"
+feb = "Feb"
+mar = "Mar"
+apr = "Apr"
+may = "May"
+jun = "Jun"
+jul = "Jul"
+aug = "Aug"
+sep = "Sep"
+oct = "Oct"
+nov = "Nov"
+dec = "Dec"
+
+# --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
+# line (T5, #683: abbreviated weekday + day + month, day-first in every language). Months are
+# generic; the seven weekday abbreviations (Monday-first) were added for the Home line ---
+[date]
+jan = "JAN"
+feb = "FEB"
+mar = "MAR"
+apr = "APR"
+may = "MAY"
+jun = "JUN"
+jul = "JUL"
+aug = "AUG"
+sep = "SEP"
+oct = "OCT"
+nov = "NOV"
+dec = "DEC"
+mon = "MON"
+tue = "TUE"
+wed = "WED"
+thu = "THU"
+fri = "FRI"
+sat = "SAT"
+sun = "SUN"
+
+# --- StatField names (the Add-field picker / Fields list) ---
+[statfield]
+speed = "Speed"
+avg_speed = "Avg speed"
+dist_done = "Dist. done"
+dist_to_go = "Dist. to go"
+climbed = "Climbed"
+to_climb = "To climb"
+grade = "Grade"
+elevation = "Elevation"
+ride_time = "Ride time"
+clock = "Clock"
+next_waypoint = "Next waypoint"
+waypoint_list = "Waypoint list"
+heart_rate = "Heart rate"
+power = "Power"
+cadence = "Cadence"
+
+# --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
+[tile]
+avg = "AVG "
+done = " DONE"
+to_go = " TO GO"
+climbed = "CLIMBED"
+to_climb = "TO CLIMB"
+grade = "GRADE"
+elev = "ELEV "
+ride = "RIDE"
+time = "TIME"
+next_wpt = "NEXT WPT"
+waypoints = "WAYPOINTS"
+hr = "HR"
+pwr = "PWR"
+rpm = "RPM"
+
+# --- The Climb (ClimbPro) riding screen ---
+[climb]
+title = "CLIMB"
+no_climb = "No climb"
+not_on_climb = "Not on a climb"
+to_climb = "TO CLIMB"
+to_go = " TO GO"
+grade = "GRADE"
+avg_grad = "AVG GRAD"
+
+# --- The riding Map ---
+[map]
+no_gps_fix = "No GPS Fix"
+off_route = "off route "
+# The route-less browse map's one-shot start hint chip (auto-hides after a few seconds).
+press_to_start = "Press to start a ride"
+
+# --- The Statistics riding screen ---
+[stats]
+title = "STATS"
+no_gps = "no GPS"
+no_route = "No route loaded"
+off = "off "
+grade = "grade "
+
+# --- The Settings list ---
+[settings]
+title = "SETTINGS"
+datetime = "Date & Time"
+units = "Units"
+bike_type = "Bike type"
+stats = "Stats"
+display = "Display"
+power = "Power"
+bluetooth = "Bluetooth"
+sensors = "Sensors"
+language = "Language"
+system = "System"
+reset = "Reset"
+
+# --- Date & Time settings screen ---
+[datetime]
+title = "DATE & TIME"
+gps_clock = "GPS clock"
+gps_fix = "GPS fix"
+searching = "Searching for fix"
+local_time = "Local time"
+offset = "Offset"
+date = "DATE"
+time = "TIME"
+utc = "UTC "
+
+# --- Stats settings screen ---
+[set_stats]
+title = "STATS"
+pages = "Pages"
+pages_sub = "auto-flip"
+fields = "Fields"
+fields_sub = "panels & order"
+climb = "Climb"
+# "panel", not "climb panel": the mode value + its ◄ cue share this sub-caption line (owner
+# review round 1), and the longer caption can't clear the 7-char "Manuell"/"Desact." values
+# at 240 px - de/fr/es already say just "panel".
+climb_sub = "panel"
+waypoints = "Waypoints"
+waypoints_sub = "chip"
+
+# --- Display settings screen ---
+[display]
+title = "DISPLAY"
+clock = "Clock"
+clock_sub = "on map"
+scale_bar = "Scale bar"
+scale_bar_sub = "on map"
+idle = "Idle"
+idle_sub = "timeout"
+
+# --- Power settings screen ---
+[power]
+title = "POWER"
+gps_fix = "GPS Fix"
+gps_fix_sub = "interval"
+power_save = "Power save"
+power_save_sub = "low power"
+
+# --- Bluetooth settings screen ---
+[bluetooth]
+title = "BLUETOOTH"
+radio = "Bluetooth"
+radio_sub = "radio"
+status = "Status"
+paired = "Paired"
+yes = "yes"
+no = "no"
+forget = "Forget phone"
+off = "Off"
+connected = "Connected"
+advertising = "Advertising"
+
+# --- Sensors settings screen (BLE sensors epic #707) ---
+[sensors]
+title = "SENSORS"
+heart_rate = "Heart rate"
+power = "Power"
+cadence = "Cadence"
+not_set = "Not set"
+searching = "Searching"
+connecting = "Connecting"
+connected = "Connected"
+scanning = "Searching..."
+forget = "Forget sensor"
+
+# --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
+[language]
+title = "LANGUAGE"
+
+# --- Stat Fields editor screen ---
+[fields]
+title = "FIELDS"
+add = "ADD"
+
+# --- Add-field picker screen ---
+[add_field]
+title = "ADD FIELD"
+all_added = "All fields added"
+all_added_sub = "Remove one to swap"
+
+# --- Factory-reset settings screen ---
+[reset]
+title = "RESET"
+complete = "Reset complete"
+restarting = "Restarting"
+factory = "Factory reset"
+erases = "Erases all settings"
+saved_time = "& saved time."
+confirm = "Confirm"
+keep_holding = "Keep holding"
+hold_to_erase = "Hold to erase"
+
+# --- Bike-type settings screen ---
+[bike_type]
+title = "BIKE TYPE"
+routing_uses = "Routing uses this profile"
+no_profiles = "No map profiles"
+no_profiles_sub = "Load a map to pick a bike type"
+
+# --- POI category menu ---
+[poi_menu]
+title = "POIS"
+
+# --- POI list screen ---
+[poi_list]
+no_position = "No position"
+no_position_sub = "No GPS fix yet"
+no_pois = "No POIs nearby"
+no_pois_sub = "None in this map"
+
+# --- POI detail screen ---
+[poi_detail]
+title = "POI"
+hours_not_listed = "Hours not listed"
+closed_today = "Closed today"
+today = "Today"
+open = "OPEN"
+closed = "CLOSED"
+route_here = "Route here"
+
+# --- BLE pairing passkey card ---
+[passkey]
+title = "PAIRING"
+enter_code = "Enter this code"
+on_phone = "on your phone"
+
+# --- Rides list screen ---
+[rides]
+title = "RIDES"
+no_rides = "No rides yet"
+no_rides_sub = "Record a ride to see it here"
+not_synced = "not synced"
+
+# --- Ride detail screen ---
+[ride_detail]
+synced = "synced"
+delete_ride = "Delete ride"
+
+# --- Route menu screen ---
+[route_menu]
+title = "ROUTES"
+no_routes = "No routes yet"
+no_routes_sub = "Import a GPX file"
+
+# --- Route overview screen ---
+[route_overview]
+title = "ROUTE"
+no_route = "No route"
+no_route_sub = "Back to the list"
+distance = "DISTANCE"
+climb = "CLIMB"
+descent = "DESCENT"
+bike_type = "BIKE TYPE"
+start_ride = "START RIDE"
+loading_profile = "loading profile"
+delete = "Delete route"
+new_route = "NEW ROUTE"
+
+# --- Route-received / route-updated popups ---
+[route_received]
+title = "ROUTE RECEIVED"
+view_route = "View route"
+dismiss = "Dismiss"
+route_removed = "Route removed"
+updated_title = "ROUTE UPDATED"
+active_route = "Active route"
+nav_follows = "Navigation follows"
+new_version = "the new version"
+
+# --- Route swap / active-route prompt ---
+[route_swap]
+received_title = "ROUTE RECEIVED"
+active_title = "ROUTE ACTIVE"
+swap = "Swap route"
+finish_new = "Finish & new"
+cancel = "Cancel"
+route_removed = "Route removed"
+recording = "Recording a ride"
+
+# --- Create-route (nav) confirm / planning / fail cards ---
+[nav_route]
+create_route = "Create route"
+cancel = "Cancel"
+away = "away"
+title = "CREATE ROUTE"
+finding = "Finding a route..."
+too_far = "Too far to route here."
+too_far_hint = "Try a closer destination."
+not_found = "Couldn't find a route."
+not_found_hint = "No rideable way nearby - try from a road."
+
+# --- Ride-control (pause) page ---
+[ride_control]
+title = "PAUSED"
+resume = "Resume"
+finish = "Finish"
+discard = "Discard"
+ride_time = "RIDE TIME"
+distance = "DISTANCE"
+climb = "CLIMB"
+
+# --- Route-less ride start card ---
+[ride_start]
+title = "RIDE"
+start_ride = "Start ride"
+back = "Back"
+# Pre-ride checklist rows (label + value): GPS fix / battery.
+gps = "GPS"
+fix = "fix"
+searching = "searching.."
+battery = "Battery"
+
+# --- System settings screen (epic #615 S5, #620) ---
+[system]
+title = "SYSTEM"
+install_update = "Install update from card"
+recording = "Recording"
+firmware = "Firmware"
+map = "Map"
+card_free = "Card free"
+
+# --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
+[dfu]
+checking = "Checking card..."
+installed = "Installed"
+staged = "Update"
+confirm_title = "INSTALL UPDATE"
+same_version = "This version is already installed."
+no_undo = "There is no automatic undo."
+install = "Install"
+cancel = "Cancel"
+preparing = "Preparing update..."
+installing = "Installing update"
+installing_body = "The LED blinks while the update installs. The device restarts when it is done."
+installing_power = "Keep power on."
+updated_title = "UPDATED"
+updated = "Updated to"
+failed_title = "UPDATE FAILED"
+failed_not_started = "The update was never started."
+failed_reverted = "The previous firmware is still installed."
+title = "UPDATE"
+not_found = "No UPDATE.BIN on the card."
+unreadable = "Could not read the update file."
+damaged = "The update file is damaged."
+too_large = "The update file is too large for this device."
+fragmented = "The update file is too fragmented. Delete UPDATE.BIN and copy it to the card again."
+install_recording = "Finish and save your ride before installing an update."
+install_pending_save = "A ride is still being saved. Try again in a moment."
+install_no_card = "No card found. Insert the card and try again."
+install_snapshot_failed = "Could not save a rollback copy to the card. Update not installed."
+install_state_write = "Could not prepare the update. Nothing was changed."
+# --- Boot-fault cards (fault.rs; drawn pre-app, so the device renders the English
+# column in every build — catalogued so the repertoire test pins the copy) ---
+[fault]
+nocard_what = "No card found"
+nocard_fix = "Insert a card with a map file"
+nomap_what = "Card has no map"
+nomap_fix = "Add a map file"
+badmap_what = "Bad map file"
+badmap_fix = "Re-copy it to the card"

@@ -1,0 +1,58 @@
+name: Feature idea
+description: Propose a new feature or enhancement for OpenBikeComputer.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature. Keep it concrete enough that someone
+        could pick it up later without re-deriving the intent. Also add the
+        relevant `area:*` label after filing.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve, or what does it enable? Why is it worth doing?
+      placeholder: Today the rider has to … which means …
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior
+      description: What should it actually do, from the user's / system's point of view?
+      placeholder: When …, the device should …
+    validations:
+      required: true
+
+  - type: textarea
+    id: affected
+    attributes:
+      label: Affected crates / areas
+      description: Which crates or areas does this touch (obc-reader, obc-route, obc-render, obc-app, obc-pack, obc-sim, docs, formats)?
+      placeholder: obc-render (new draw stage), obc-app (UI hook), OBCM v6 format bump
+    validations:
+      required: false
+
+  - type: textarea
+    id: open-questions
+    attributes:
+      label: Open questions
+      description: Decisions that still need making, or things you're unsure about.
+      placeholder: |
+        - Should this be configurable per-route or global?
+        - Does it fit the MCU render budget?
+    validations:
+      required: false
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: Explicitly what this feature does NOT include, to keep it bounded.
+      placeholder: Not handling … in this iteration.
+    validations:
+      required: false

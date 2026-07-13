@@ -13,13 +13,16 @@
         { "path": "software/formats", "title": "Data formats" },
         { "path": "software/rendering", "title": "Rendering pipeline" },
         { "path": "software/ui", "title": "The UI system" },
-        { "path": "software/packer-routing", "title": "Packer & routing" }
+        { "path": "software/packer-routing", "title": "Packer & routing" },
+        { "path": "software/companion-link", "title": "The companion link" },
+        { "path": "software/firmware-updates", "title": "Firmware updates" }
       ]
     },
     {
       "title": "Hardware",
       "pages": [
-        { "path": "hardware/index", "title": "Hardware", "soon": true }
+        { "path": "hardware/index", "title": "Hardware", "soon": true },
+        { "path": "hardware/display-protocol", "title": "The display protocol" }
       ]
     },
     {

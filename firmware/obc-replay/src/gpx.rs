@@ -224,6 +224,37 @@ mod tests {
         assert!(Track::parse("<gpx></gpx>").is_err());
     }
 
+    /// `Track::parse` is strict: a `<trkpt>` missing `lat`/`lon` errors with the exact message
+    /// (a UI surfaces it) rather than dropping the point. Divergence: `obc-route`'s `GpxScanner`
+    /// *skips* the same point (see its `scanner_skips_a_missing_coordinate`).
+    #[test]
+    fn missing_coordinate_is_an_error() {
+        // Missing lon → Err, and specifically the "missing lon" message.
+        let err = Track::parse(r#"<gpx><trkpt lat="48.0"/></gpx>"#).unwrap_err();
+        assert_eq!(err, "trkpt missing lon", "a lon-less point errors (obc-route skips it instead)");
+
+        // Missing lat → the matching "missing lat" error.
+        let err = Track::parse(r#"<gpx><trkpt lon="7.8"/></gpx>"#).unwrap_err();
+        assert_eq!(err, "trkpt missing lat");
+
+        // One bad point aborts the whole parse, even with a valid point alongside it.
+        assert!(Track::parse(r#"<gpx><trkpt lat="48.0" lon="7.8"/><trkpt lat="48.1"/></gpx>"#).is_err());
+    }
+
+    /// A truncated opening tag (no `>`) and an opening tag with no matching `</trkpt>` each error
+    /// with their distinct message, so a half-written GPX fails loudly rather than replaying a
+    /// partial track.
+    #[test]
+    fn unterminated_tag_is_an_error() {
+        // No '>' closing the opening tag at end of input.
+        let err = Track::parse(r#"<gpx><trkpt lat="48.0" lon="7.8""#).unwrap_err();
+        assert_eq!(err, "unterminated <trkpt> tag");
+
+        // Opening tag closes, but there's no </trkpt> for the (non-self-closing) element.
+        let err = Track::parse(r#"<gpx><trkpt lat="48.0" lon="7.8"><ele>5</ele>"#).unwrap_err();
+        assert_eq!(err, "unterminated <trkpt> element");
+    }
+
     #[test]
     fn iso8601_epoch_matches_known_value() {
         // 2026-05-28T05:36:45Z == 1779946605 s since epoch (Python datetime).

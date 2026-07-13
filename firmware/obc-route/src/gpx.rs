@@ -1,19 +1,26 @@
-//! Streaming GPX track-point scanner (`no_std`).
+//! Streaming GPX scanners (`no_std`): track points and waypoints.
 //!
-//! Pulls `<trkpt lat=".." lon="..">…<ele>…</ele></trkpt>` points out of a
-//! [`ByteSource`] one at a time, reading the file in fixed blocks with compaction so a
-//! point that straddles a block boundary is handled transparently. RAM is O(1) (one
-//! [`SCAN_BUF`]-sized buffer) regardless of route length, so converting a hundreds-of-km
-//! GPX on-device is feasible.
+//! [`GpxScanner`] pulls `<trkpt lat=".." lon="..">…<ele>…</ele></trkpt>` points out of
+//! a [`ByteSource`] one at a time; [`WptScanner`] does the same for top-level
+//! `<wpt>` waypoints (name + optional elevation). Both read the file in fixed blocks
+//! with compaction so an element that straddles a block boundary is handled
+//! transparently. RAM is O(1) (one [`SCAN_BUF`]-sized buffer per scanner) regardless
+//! of route length, so converting a hundreds-of-km GPX on-device is feasible.
 //!
-//! A deliberately small hand-rolled scan, not a full XML stack: GPX track points are a
-//! regular shape and that is all the converter needs. Elevation is optional; timestamps
-//! are ignored (a route has no time).
+//! A deliberately small hand-rolled scan, not a full XML stack: GPX elements are a
+//! regular shape and that is all the converter needs. Elevation is optional;
+//! timestamps are ignored (a route has no time). Waypoint names are taken verbatim
+//! (no entity unescaping — the phone-side importer runs a real XML parser; this path
+//! only backs the on-device GPX upload).
+
+use heapless::String;
 
 use crate::byte_io::{ByteSource, Error};
+use crate::reader::WAYPOINT_NAME_CAP;
 
-/// Scan buffer size. Must comfortably exceed one `<trkpt>…</trkpt>` element (a few
-/// hundred bytes) so at least one whole point is always resident after a refill.
+/// Scan buffer size. Must comfortably exceed one `<trkpt>…</trkpt>` / `<wpt>…</wpt>`
+/// element (a few hundred bytes) so at least one whole element is always resident
+/// after a refill.
 const SCAN_BUF: usize = 4096;
 
 /// One raw track point straight from the GPX: microdegree position + optional
@@ -25,9 +32,20 @@ pub struct RawPoint {
     pub ele: Option<f32>,
 }
 
-/// A forward-only scanner over a GPX byte source. Call [`next_point`](GpxScanner::next_point)
-/// until it returns `Ok(None)`.
-pub struct GpxScanner<'a> {
+/// One raw `<wpt>` waypoint straight from the GPX: position, optional elevation, and
+/// its `<name>` truncated to [`WAYPOINT_NAME_CAP`] bytes (on a char boundary).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawWaypoint {
+    pub lon: i32,
+    pub lat: i32,
+    pub ele: Option<f32>,
+    pub name: String<WAYPOINT_NAME_CAP>,
+}
+
+/// The shared block-buffered scan state: a window over the source that refills with
+/// compaction and locates whole `<tag …>[body</tag>]` elements. Both scanners are
+/// thin element-parsers over this core.
+struct ScanCore<'a> {
     src: &'a dyn ByteSource,
     buf: [u8; SCAN_BUF],
     filled: usize,
@@ -36,10 +54,18 @@ pub struct GpxScanner<'a> {
     src_len: u32,
 }
 
-impl<'a> GpxScanner<'a> {
-    pub fn new(src: &'a dyn ByteSource) -> Self {
+/// A located element, as index ranges into the core's buffer (valid until the next
+/// [`ScanCore::next_element`] call): the opening tag `<tag …` (attributes), and the
+/// body for a non-self-closing element.
+struct Element {
+    attr: core::ops::Range<usize>,
+    body: Option<core::ops::Range<usize>>,
+}
+
+impl<'a> ScanCore<'a> {
+    fn new(src: &'a dyn ByteSource) -> Self {
         let src_len = src.len();
-        GpxScanner { src, buf: [0; SCAN_BUF], filled: 0, pos: 0, next_read: 0, src_len }
+        ScanCore { src, buf: [0; SCAN_BUF], filled: 0, pos: 0, next_read: 0, src_len }
     }
 
     /// Drop the consumed prefix `buf[..pos]` and read more from the source into the
@@ -67,17 +93,19 @@ impl<'a> GpxScanner<'a> {
         self.next_read >= self.src_len
     }
 
-    /// The next track point, or `None` once the source is exhausted. Malformed points
-    /// (missing lat/lon) are skipped rather than erroring.
-    pub fn next_point(&mut self) -> Result<Option<RawPoint>, Error> {
+    /// Locate the next whole `open`-tag element (e.g. `open = b"<trkpt"`,
+    /// `close = b"</trkpt>"`), refilling as needed, and advance past it. Returns
+    /// `None` once the source is exhausted (a trailing truncated element is dropped,
+    /// matching a truncated file's other losses).
+    fn next_element(&mut self, open: &[u8], close: &[u8]) -> Result<Option<Element>, Error> {
         loop {
             let window = &self.buf[self.pos..self.filled];
-            let Some(rel) = find(window, b"<trkpt") else {
-                // No start tag here. Keep a short tail (a split "<trkpt") across the refill.
+            let Some(rel) = find(window, open) else {
+                // No start tag here. Keep a short tail (a split `open`) across the refill.
                 if self.at_source_end() {
                     return Ok(None);
                 }
-                let keep = 5.min(self.filled - self.pos);
+                let keep = (open.len() - 1).min(self.filled - self.pos);
                 self.pos = self.filled - keep;
                 if self.refill()? == 0 {
                     return Ok(None);
@@ -85,6 +113,23 @@ impl<'a> GpxScanner<'a> {
                 continue;
             };
             let start = self.pos + rel;
+
+            // Tag-name boundary: `<wpt` must not match a longer tag name.
+            if start + open.len() >= self.filled {
+                if self.at_source_end() {
+                    return Ok(None);
+                }
+                self.pos = start;
+                if self.refill()? == 0 {
+                    return Ok(None);
+                }
+                continue;
+            }
+            let after = self.buf[start + open.len()];
+            if !(after.is_ascii_whitespace() || after == b'/' || after == b'>') {
+                self.pos = start + open.len();
+                continue;
+            }
 
             // Need the opening tag's '>' in the buffer.
             let Some(gt) = find(&self.buf[start..self.filled], b">") else {
@@ -98,19 +143,13 @@ impl<'a> GpxScanner<'a> {
                 continue;
             };
             let tag_end = start + gt; // index of '>'
-            let self_closing = self.buf[tag_end - 1] == b'/';
-            let (lat, lon) = parse_latlon(&self.buf[start..tag_end]);
-
-            if self_closing {
+            if self.buf[tag_end - 1] == b'/' {
                 self.pos = tag_end + 1;
-                if let (Some(lat), Some(lon)) = (lat, lon) {
-                    return Ok(Some(RawPoint { lon: micro(lon), lat: micro(lat), ele: None }));
-                }
-                continue;
+                return Ok(Some(Element { attr: start..tag_end, body: None }));
             }
 
-            // Need the matching "</trkpt>" so we can read the body's <ele>.
-            let Some(close) = find(&self.buf[tag_end..self.filled], b"</trkpt>") else {
+            // Need the matching close tag so the caller can read the body.
+            let Some(rel_close) = find(&self.buf[tag_end..self.filled], close) else {
                 if self.at_source_end() {
                     return Ok(None);
                 }
@@ -120,10 +159,71 @@ impl<'a> GpxScanner<'a> {
                 }
                 continue;
             };
-            let ele = parse_ele(&self.buf[tag_end + 1..tag_end + close]);
-            self.pos = tag_end + close + "</trkpt>".len();
+            self.pos = tag_end + rel_close + close.len();
+            return Ok(Some(Element { attr: start..tag_end, body: Some(tag_end + 1..tag_end + rel_close) }));
+        }
+    }
+}
+
+/// A forward-only scanner over a GPX byte source's track points. Call
+/// [`next_point`](GpxScanner::next_point) until it returns `Ok(None)`.
+pub struct GpxScanner<'a> {
+    core: ScanCore<'a>,
+}
+
+impl<'a> GpxScanner<'a> {
+    pub fn new(src: &'a dyn ByteSource) -> Self {
+        GpxScanner { core: ScanCore::new(src) }
+    }
+
+    /// The next track point, or `None` once the source is exhausted. Malformed points
+    /// (missing lat/lon) are skipped rather than erroring.
+    pub fn next_point(&mut self) -> Result<Option<RawPoint>, Error> {
+        loop {
+            let Some(el) = self.core.next_element(b"<trkpt", b"</trkpt>")? else {
+                return Ok(None);
+            };
+            let (lat, lon) = parse_latlon(&self.core.buf[el.attr]);
+            let ele = el.body.and_then(|b| parse_ele(&self.core.buf[b]));
             if let (Some(lat), Some(lon)) = (lat, lon) {
                 return Ok(Some(RawPoint { lon: micro(lon), lat: micro(lat), ele }));
+            }
+        }
+    }
+}
+
+/// A forward-only scanner over a GPX byte source's `<wpt>` waypoints. Call
+/// [`next_waypoint`](WptScanner::next_waypoint) until it returns `Ok(None)`.
+///
+/// A separate scanner (not a mode of [`GpxScanner`]) because GPX carries waypoints
+/// file-level *before* the track: the converter runs this pass to completion first,
+/// then streams the track — two sequential O(1)-RAM passes, never two live buffers.
+pub struct WptScanner<'a> {
+    core: ScanCore<'a>,
+}
+
+impl<'a> WptScanner<'a> {
+    pub fn new(src: &'a dyn ByteSource) -> Self {
+        WptScanner { core: ScanCore::new(src) }
+    }
+
+    /// The next waypoint, or `None` once the source is exhausted. Malformed waypoints
+    /// (missing lat/lon) are skipped; a missing `<name>` yields an empty name.
+    pub fn next_waypoint(&mut self) -> Result<Option<RawWaypoint>, Error> {
+        loop {
+            let Some(el) = self.core.next_element(b"<wpt", b"</wpt>")? else {
+                return Ok(None);
+            };
+            let (lat, lon) = parse_latlon(&self.core.buf[el.attr]);
+            let (ele, name) = match el.body {
+                Some(b) => {
+                    let body = &self.core.buf[b];
+                    (parse_ele(body), parse_name(body))
+                }
+                None => (None, String::new()),
+            };
+            if let (Some(lat), Some(lon)) = (lat, lon) {
+                return Ok(Some(RawWaypoint { lon: micro(lon), lat: micro(lat), ele, name }));
             }
         }
     }
@@ -142,7 +242,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Parse `lat`/`lon` from an opening `<trkpt …>` tag (order-independent).
+/// Parse `lat`/`lon` from an opening `<trkpt …>` / `<wpt …>` tag (order-independent).
 fn parse_latlon(tag: &[u8]) -> (Option<f64>, Option<f64>) {
     let Ok(s) = core::str::from_utf8(tag) else {
         return (None, None);
@@ -150,8 +250,8 @@ fn parse_latlon(tag: &[u8]) -> (Option<f64>, Option<f64>) {
     (attr_f64(s, "lat"), attr_f64(s, "lon"))
 }
 
-/// Read a quoted attribute (`name="…"` / `name='…'`) as `f64`, matching `name` only as
-/// a whole token. Ported from the simulator's GPX parser.
+/// Read a quoted attribute (`name="…"` / `name='…'`) as `f64`, matching `name` only as a
+/// whole token.
 fn attr_f64(tag: &str, name: &str) -> Option<f64> {
     let mut search = tag;
     loop {
@@ -172,10 +272,31 @@ fn attr_f64(tag: &str, name: &str) -> Option<f64> {
     }
 }
 
-/// Pull `<ele>…</ele>` from a trkpt body as `f32`, if present.
+/// Pull `<ele>…</ele>` from an element body as `f32`, if present.
 fn parse_ele(body: &[u8]) -> Option<f32> {
     let s = core::str::from_utf8(body).ok()?;
     let start = s.find("<ele>")? + "<ele>".len();
     let end = s[start..].find("</ele>")? + start;
     s[start..end].trim().parse().ok()
+}
+
+/// Pull `<name>…</name>` from a `<wpt>` body, trimmed and truncated to
+/// [`WAYPOINT_NAME_CAP`] bytes on a char boundary. Missing name → empty string.
+fn parse_name(body: &[u8]) -> String<WAYPOINT_NAME_CAP> {
+    let mut out = String::new();
+    let Ok(s) = core::str::from_utf8(body) else {
+        return out;
+    };
+    let Some(start) = s.find("<name>").map(|i| i + "<name>".len()) else {
+        return out;
+    };
+    let Some(end) = s[start..].find("</name>").map(|i| i + start) else {
+        return out;
+    };
+    for ch in s[start..end].trim().chars() {
+        if out.push(ch).is_err() {
+            break;
+        }
+    }
+    out
 }

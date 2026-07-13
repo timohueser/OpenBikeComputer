@@ -1,33 +1,26 @@
 //! The on-screen **breadcrumb** — a bounded, two-tier record of where the rider has been.
 //!
-//! The durable ride log lives on the SD card ([`obc_route::track`]); this is the *picture*,
-//! held in RAM so the map can draw the travelled path without ever re-reading storage. Its
-//! two constraints are opposite, so it has two tiers:
+//! The durable ride log lives on the SD card ([`obc_route::track`]); this is the *picture*, held in
+//! RAM so the map can draw the travelled path without re-reading storage. Two tiers:
 //!
-//! - [`recent`](Breadcrumb::recent) — a full-resolution sliding tail (the last ~2 km). The
-//!   riding view is zoomed in, so the visible trail is here, and it's **never decimated** —
-//!   just a fixed-length ring.
+//! - [`recent`](Breadcrumb::recent) — a full-resolution sliding tail (the last ~2 km), where the
+//!   zoomed-in riding view draws from. **Never decimated** — just a fixed-length ring.
 //! - [`spine`](Breadcrumb::spine) — the whole rest of the ride, held to a fixed point budget by
-//!   **Visvalingam–Whyatt** simplification: when the budget is full, drop the single *least
-//!   significant* vertex — the one whose [effective area](obc_route::tri_area_m2) (the triangle
-//!   it makes with its two neighbours) is smallest, i.e. whose removal bends the line least.
-//!   A straight run collapses toward its endpoints; a sharp bend is kept.
+//!   **Visvalingam–Whyatt**: when full, drop the single least-significant vertex — smallest
+//!   [effective area](obc_route::tri_area_m2) (the triangle with its two neighbours), i.e. whose
+//!   removal bends the line least. A straight run collapses toward its endpoints; a bend is kept.
 //!
-//! Not a distance/perpendicular *tolerance* (issue #22): a global tolerance on a *growing*
-//! track behaves badly under a fixed budget — once any section forces the tolerance up it
-//! sticks, and every later point is then judged against it, so a long gently-curving stretch
-//! gets drawn as one straight chord while stale early detail survives. Visvalingam has **no**
-//! global tolerance — it always keeps exactly the budget and drops the globally-least-useful
-//! point, so the budget **redistributes** to wherever the shape is. Removing a vertex widens its
-//! neighbours' triangles, which protects them next time, so the points self-spread along the
-//! ride instead of clustering. On a ride longer than the budget can hold at the route's fidelity
-//! the spine simply coarsens — evenly, never collapsing one stretch to a line.
+//! Not a distance/perpendicular *tolerance*: a global tolerance on a *growing* track sticks once
+//! any section forces it up, then draws later gently-curving stretches as one chord while stale
+//! early detail survives. Visvalingam has no global tolerance — it always keeps exactly the budget
+//! and drops the globally-least-useful point, so the budget **redistributes** to wherever the shape
+//! is. Removing a vertex widens its neighbours' triangles, protecting them next time, so points
+//! self-spread instead of clustering. A ride past budget simply coarsens evenly.
 //!
-//! The tiers are **disjoint**: a point lives in `recent` until it ages out of the ring, and
-//! only *then* is it handed to the spine. So the two never cover the same ground, and the whole
-//! trail draws as **one** chained polyline ([`points`](Breadcrumb::points)) — coarse for the old
-//! part, full-resolution for the recent tail, with no doubled-up overlap. Both are
-//! fixed-capacity `heapless` containers, so the renderer's polyline scratch can never overrun.
+//! The tiers are **disjoint**: a point lives in `recent` until it ages out of the ring, and only
+//! *then* is handed to the spine — so the two never overlap and the whole trail draws as **one**
+//! chained polyline ([`points`](Breadcrumb::points)). Both are fixed-capacity `heapless`
+//! containers, so the renderer's polyline scratch can never overrun.
 
 use heapless::{Deque, Vec};
 use obc_route::{cos_lat, ground_dist_m, tri_area_m2_cl};
@@ -42,14 +35,18 @@ const RECENT_CAP: usize = 256;
 /// stationary rider) so the ring spans real distance, not GPS jitter.
 const RECENT_MIN_M: f32 = 4.0;
 
-/// Whole-ride spine capacity (points). The spine holds exactly this many once warmed, so it
-/// stays resident at ~6 KB regardless of ride length; the only lever for long-ride fidelity is
-/// this number, at a linear RAM cost.
+/// Whole-ride spine capacity (points). The spine holds exactly this many once warmed (~6 KB
+/// regardless of ride length); the only lever for long-ride fidelity is this number, at linear RAM
+/// cost. The constrained `nrf-mem` profile quarters it to 256 (~1.5 KB — issue #270's cull: the
+/// map path must leave room for the BLE stack on the 256 KB DK); the `recent` tail is untouched.
+#[cfg(not(feature = "nrf-mem"))]
 const SPINE_CAP: usize = 1024;
+#[cfg(feature = "nrf-mem")]
+const SPINE_CAP: usize = 256;
 
 /// The travelled path drawn on the map: a full-res recent tail over a coarse whole-ride spine.
-/// Owned by [`App`](crate::App) (it's kilobytes, so *not* the `Copy` [`Activity`](crate::Activity));
-/// fed one accepted fix at a time from `App::tick`, cleared when a tracking session restarts.
+/// Owned by [`App`](crate::App) (kilobytes, so *not* the `Copy` [`Activity`](crate::Activity));
+/// fed one accepted fix at a time, cleared when a tracking session restarts.
 pub struct Breadcrumb {
     recent: Deque<P, RECENT_CAP>,
     spine: Vec<P, SPINE_CAP>,

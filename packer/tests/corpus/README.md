@@ -1,14 +1,18 @@
 # obc-pack test fixtures
 
-Fixtures for the `firmware/obc-pack` packer tests. The one the automated tests
-need is **`tiny`** — a hand-authored OSM extract that exercises every ingest
-branch by construction.
+Fixtures for the `firmware/obc-pack` packer tests: hand-authored OSM extracts
+whose ingest outcome is known by construction.
 
-- [`tiny/tiny.osm`](tiny/tiny.osm) — the committed XML source of truth. Its header
-  comment documents the expected per-element ingest result.
-- [`build_corpus.sh`](build_corpus.sh) — converts it to `data/tiny.osm.pbf` with
-  `osmium cat` (the `.pbf` is git-ignored). The Rust
-  `ingest::tests::tiny_truth_table` test reads that file (and skips if absent).
+- [`tiny/tiny.osm`](tiny/tiny.osm) — exercises every way/area ingest branch. Its
+  header comment documents the expected per-element result
+  (`ingest::tests::tiny_truth_table`).
+- [`poi/poi.osm`](poi/poi.osm) — exercises POI extraction (#422): node + closed-way
+  classification, name folding, and the dedup pair
+  (`ingest::tests::poi_fixture_end_to_end`).
+- [`build_corpus.sh`](build_corpus.sh) — converts each to `data/*.osm.pbf` with
+  `osmium cat`. The derived `.pbf`s are **also committed** (the tests hard-fail
+  without them), so re-run the script and commit the regenerated `.pbf` whenever
+  a source `.osm` changes.
 
 > Historically this directory held a larger validation corpus (monaco, malta,
 > Freiburg extracts) used to validate the Rust port against a Python oracle. That

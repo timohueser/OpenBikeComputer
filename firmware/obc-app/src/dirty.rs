@@ -1,26 +1,23 @@
 //! [`Dirty`] — the per-frame repaint signal the render-on-demand host drains.
 
+use embedded_graphics::primitives::Rectangle;
+
 /// Which display planes changed this frame and so must be repainted.
 ///
-/// The dual-layer display composites two planes independently (issue #46): the
-/// expensive **map** (LTDC Layer 1 — the base-map render, 24–51 ms on the prototype) and
-/// the cheap transient **overlay** chrome (Layer 2 — the hold bulge / confirm ring, a
-/// couple of ms). Tracking the two separately is what lets an animating ring repaint over
-/// an unchanged map without re-rendering the map.
+/// The display composites two planes independently: the expensive **map** (base-map render, tens
+/// of ms) and the cheap transient **overlay** chrome (hold bulge / confirm ring, a couple of ms).
+/// Tracking them separately lets an animating ring repaint over an unchanged map without
+/// re-rendering the map.
 ///
-/// [`App`](crate::App) accumulates this as state mutates, and the host drains it once per
-/// frame with [`App::take_dirty`](crate::App::take_dirty) — rendering
-/// [`render_map`](crate::App::render_map) only when [`map`](Dirty::map) and
-/// [`render_overlay`](crate::App::render_overlay) only when [`overlay`](Dirty::overlay).
-/// A static screen with no input, no fresh fix and no pending animation drains
-/// [`Dirty::CLEAN`] and renders nothing — the render-on-demand model issue #47 calls for,
-/// replacing the blind 1 s full-map heartbeat (a 24–51 ms map render purely to keep
-/// time-based screens live, wasteful on a MIP / battery target).
+/// [`App`](crate::App) accumulates this as state mutates; the host drains it once per frame with
+/// [`App::take_dirty`](crate::App::take_dirty), rendering each plane only when its flag is set. A
+/// static screen with no input, no fresh fix and no pending animation drains [`Dirty::CLEAN`] and
+/// renders nothing (the render-on-demand model, replacing a blind full-map heartbeat wasteful on a
+/// MIP / battery target).
 ///
-/// The guiding rule is **over-redraw is safe, under-redraw is a bug**: a spuriously set
-/// flag merely costs one extra frame, whereas a missed one leaves stale pixels on the
-/// panel. So every state mutation that *might* affect a plane sets it — the flags are
-/// deliberately conservative, not minimal.
+/// Guiding rule: **over-redraw is safe, under-redraw is a bug** — a spurious flag costs one extra
+/// frame, a missed one leaves stale pixels. So every mutation that *might* affect a plane sets it;
+/// the flags are deliberately conservative, not minimal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Dirty {
     /// The map plane (Layer 1) must be re-rendered: the camera moved, the zoom or pan
@@ -31,11 +28,19 @@ pub struct Dirty {
     /// or retracting — or it just went quiet and the last frame must be cleared off the
     /// layer.
     pub overlay: bool,
+    /// Where this frame's [`map`](Dirty::map) demand is contained, in panel pixels — `None` means
+    /// anywhere (the full repaint every dirt source implies by default). `Some(r)` only when
+    /// *every* accumulated map demand came from a screen tick that promised its change lies inside
+    /// `r` ([`ScreenTick::region`](crate::screen::ScreenTick::region) — today the nav-planning
+    /// spinner's needle disc); any other source folds the region away. A host may then clip the
+    /// repaint (render + push) to `r`; ignoring it and repainting fully is always correct — the
+    /// region is an optimization bound, never a requirement (over-redraw stays safe).
+    pub region: Option<Rectangle>,
 }
 
 impl Dirty {
     /// Nothing changed — render neither plane.
-    pub const CLEAN: Dirty = Dirty { map: false, overlay: false };
+    pub const CLEAN: Dirty = Dirty { map: false, overlay: false, region: None };
 
     /// Whether either plane needs a repaint this frame.
     pub fn any(self) -> bool {

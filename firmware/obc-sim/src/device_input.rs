@@ -1,20 +1,15 @@
-//! Host-side device-input emulation — the on-housing encoder / Back controls and
-//! the keyboard, turned into raw [`InputEvent`]s for the app.
+//! Host-side device-input emulation — the on-housing encoder / Back controls and the
+//! keyboard, turned into raw [`InputEvent`]s for the app.
 //!
-//! [`crate::gui`] pushes raw events here each frame (mouse-wheel over the scroll-wheel
-//! → [`InputEvent::Turn`] detents; clicking the encoder / Back and the Enter/Backspace
-//! keys → button edges). [`DeviceInput`] implements [`InputSource`], so it drops
-//! straight into [`obc_app::App::handle_input`], which runs the *shared* gesture
-//! recognizer and dispatches the gestures to the screen stack — the exact path the
-//! firmware uses with real GPIO. It also owns the millis clock (since construction)
-//! and the visual knob angle for drawing the wheel.
+//! [`crate::gui`] pushes raw events here each frame. [`DeviceInput`] implements
+//! [`InputSource`], so it drops straight into [`obc_app::App::handle_input`] and its
+//! *shared* gesture recognizer — the exact path the firmware uses with real GPIO. It also
+//! owns the millis clock and the visual knob angle for drawing the wheel.
 
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
 
-// web_time::Instant is std's on native and a JS-clock shim on wasm (std's panics
-// in the browser), so the device millis clock works in the web build unchanged.
-use web_time::Instant;
+use std::time::Instant;
 
 use obc_app::{Button, ButtonEvent, InputEvent, InputSource};
 
@@ -161,6 +156,52 @@ mod tests {
         d.set_button(Button::Encoder, false);
         assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Encoder))));
         assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Encoder))));
+        assert_eq!(d.poll(), None);
+    }
+
+    /// A zero-detent turn must queue nothing and leave the knob angle untouched — a frame with
+    /// no rotation mustn't emit a spurious `Turn(0)` (which would still wake the app / redraw).
+    #[test]
+    fn turn_zero_is_a_no_op() {
+        let mut d = DeviceInput::new();
+        let before = d.knob_angle();
+        d.turn(0);
+        assert_eq!(d.poll(), None, "zero detents queues no event");
+        assert_eq!(d.knob_angle(), before, "knob angle unchanged by a zero turn");
+    }
+
+    /// The accumulator must carry its *negative* remainder across `scroll` calls, as the
+    /// positive path does — else partial scrolls down a list silently lose motion.
+    #[test]
+    fn negative_scroll_carries_the_remainder() {
+        let mut d = DeviceInput::new();
+        d.scroll(-SCROLL_PER_DETENT * 1.5); // -1.5 detents → one -1 now, -0.5 carried
+        assert_eq!(d.poll(), Some(InputEvent::Turn(-1)));
+        assert_eq!(d.poll(), None, "only one whole detent so far");
+        d.scroll(-SCROLL_PER_DETENT * 0.6); // -0.5 + -0.6 = -1.1 → one more -1
+        assert_eq!(d.poll(), Some(InputEvent::Turn(-1)), "carried remainder completes the next detent");
+        assert_eq!(d.poll(), None);
+    }
+
+    /// Driving *only* Back must toggle the Back field and emit Back edges, leaving Encoder
+    /// untouched — a swapped-field bug (Back writing `enc_down`) would surface as a wrong or
+    /// missing edge.
+    #[test]
+    fn back_button_is_independent_of_encoder() {
+        let mut d = DeviceInput::new();
+
+        // Back down then up — emits Back edges, never Encoder.
+        d.set_button(Button::Back, true);
+        d.set_button(Button::Back, true); // no transition
+        d.set_button(Button::Back, false);
+        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Back))));
+        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Back))));
+        assert_eq!(d.poll(), None, "Back edges only — Encoder field never touched");
+
+        // Encoder still starts from 'up': its first set is a fresh Down edge, proving the
+        // earlier Back activity did not flip enc_down.
+        d.set_button(Button::Encoder, true);
+        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Encoder))));
         assert_eq!(d.poll(), None);
     }
 }

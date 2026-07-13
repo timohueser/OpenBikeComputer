@@ -823,9 +823,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1052,6 +1052,12 @@ name = "embassy-executor-timer-queue"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fc328bf943af66b80b98755db9106bf7e7471b0cf47dc8559cd9a6be504cc9c"
+
+[[package]]
+name = "embassy-futures"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc2d050bdc5c21e0862a89256ed8029ae6c290a93aecefc73084b3002cdebb01"
 
 [[package]]
 name = "embassy-sync"
@@ -1480,10 +1486,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "wasi",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -2344,9 +2348,51 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
+ "libm",
  "obc-reader",
  "obc-render",
  "obc-route",
+ "obcm-testkit",
+]
+
+[[package]]
+name = "obc-bench"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "obc-app",
+ "obc-platform",
+ "obc-reader",
+ "obc-render",
+ "obcm-testkit",
+]
+
+[[package]]
+name = "obc-ble"
+version = "0.1.0"
+dependencies = [
+ "obc-vectors",
+]
+
+[[package]]
+name = "obc-dfu"
+version = "0.1.0"
+
+[[package]]
+name = "obc-host-core"
+version = "0.1.0"
+dependencies = [
+ "obc-app",
+ "obc-reader",
+ "obc-replay",
+ "obc-route",
+]
+
+[[package]]
+name = "obc-mkimage"
+version = "0.1.0"
+dependencies = [
+ "obc-dfu",
 ]
 
 [[package]]
@@ -2366,13 +2412,17 @@ name = "obc-platform"
 version = "0.1.0"
 dependencies = [
  "critical-section",
+ "embassy-futures",
  "embassy-sync",
  "embassy-time",
  "embedded-graphics",
  "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "embedded-sdmmc",
  "heapless 0.8.0",
+ "libm",
  "obc-app",
+ "obc-reader",
  "obc-route",
 ]
 
@@ -2381,6 +2431,8 @@ name = "obc-reader"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "libm",
+ "obcm-testkit",
 ]
 
 [[package]]
@@ -2391,7 +2443,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "obc-reader",
- "obc-route",
+ "obcm-testkit",
 ]
 
 [[package]]
@@ -2407,6 +2459,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-pack",
  "obc-reader",
 ]
 
@@ -2414,20 +2467,19 @@ dependencies = [
 name = "obc-sim"
 version = "0.1.0"
 dependencies = [
- "console_error_panic_hook",
  "eframe",
  "embedded-graphics",
- "getrandom 0.2.17",
  "image",
- "log",
  "obc-app",
+ "obc-dfu",
+ "obc-host-core",
+ "obc-platform",
  "obc-reader",
  "obc-render",
  "obc-replay",
  "obc-route",
+ "pollster",
  "rfd",
- "wasm-bindgen-futures",
- "web-time",
 ]
 
 [[package]]
@@ -2440,6 +2492,39 @@ dependencies = [
  "obc-replay",
  "rfd",
  "serialport",
+]
+
+[[package]]
+name = "obc-vectors"
+version = "0.1.0"
+dependencies = [
+ "heapless 0.8.0",
+ "obc-route",
+]
+
+[[package]]
+name = "obc-web-demo"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "embedded-graphics",
+ "heapless 0.8.0",
+ "js-sys",
+ "obc-app",
+ "obc-host-core",
+ "obc-platform",
+ "obc-reader",
+ "obc-render",
+ "obc-replay",
+ "obc-route",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "obcm-testkit"
+version = "0.1.0"
+dependencies = [
+ "obc-reader",
 ]
 
 [[package]]

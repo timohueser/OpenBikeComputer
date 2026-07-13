@@ -2,7 +2,10 @@
 //! reader, and check it captures the route's shape — the peak, the y-range, and a
 //! gap-free band — independent of how sparsely the route samples the columns.
 
-use obc_route::{gpx_to_obcr, ByteSink, Error, RouteIndex, RouteReader, SliceSource, PROFILE_COLS};
+use obc_route::{RouteIndex, RouteReader, SliceSource, PROFILE_COLS};
+
+mod common;
+use common::convert;
 
 /// Densely scan one pyramid `level` across `[lo, hi]` and return its `(min, max)`
 /// elevation envelope — for asserting the downsample keeps extremes (it's min/max, not
@@ -16,31 +19,6 @@ fn level_envelope(p: &obc_route::Profile, level: usize, lo: f32, hi: f32) -> (i1
         mx = mx.max(b);
     }
     (mn, mx)
-}
-
-/// A `ByteSink` over a growable `Vec` (the host's in-RAM file backing).
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
-
-fn convert(name: &str, gpx: &str) -> Vec<u8> {
-    let src = SliceSource(gpx.as_bytes());
-    let mut sink = VecSink::default();
-    gpx_to_obcr(&src, name, &mut sink).unwrap();
-    sink.buf
 }
 
 /// A zigzag (so no point decimates away) that climbs 200→300 m then falls back to
@@ -153,22 +131,26 @@ fn flat_route_has_flat_gap_free_band() {
     }
 }
 
+/// Pyramid depth (length of the profile's per-level column table) — a structural constant across
+/// profiles; only the base width (`PROFILE_COLS`) varies with `nrf-mem`, not the number of levels.
+const PYRAMID_LEVELS: usize = 4;
+
 #[test]
 fn pyramid_downsample_keeps_extremes() {
-    // The coarse levels are min/max merges, not averages — so a coarser level still spans
-    // the route's full 200..300 m envelope, with the peak's max and the valley's min intact.
+    // The coarse levels are min/max merges, not averages — so *every* level, however coarse, still
+    // spans the route's full 200..300 m envelope, with the peak's max and the valley's min intact.
+    // (Which level a full-route `window` reads is profile-dependent — on `nrf-mem` the 256-col base
+    // already covers the panel, so it needn't be a *coarse* level — but this property holds at every
+    // level regardless; see `window_full_route_spans_everything` for the window mechanics.)
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
     let p = r.elevation_profile();
 
-    // The full-route window lands on a coarse level; its envelope must still be 200..300.
-    let full = p.window(0.5, 1.0, 216);
-    assert!(full.level > 0, "full route should read a coarse level, got {}", full.level);
-    assert_eq!(level_envelope(&p, full.level, 0.0, 1.0), (200, 300));
-    // The base level too, naturally.
-    assert_eq!(level_envelope(&p, 0, 0.0, 1.0), (200, 300));
+    for level in 0..PYRAMID_LEVELS {
+        assert_eq!(level_envelope(&p, level, 0.0, 1.0), (200, 300), "level {level} lost the envelope");
+    }
 }
 
 #[test]
@@ -208,6 +190,36 @@ fn window_zoom_narrows_span_and_chooses_finer_levels() {
     assert_eq!(p.window(0.5, 8.0, 216).level, 0);
 }
 
+/// A route with **no `<ele>` anywhere** (planner GPX). The converter stores flat 0 m elevation
+/// and a 0..0 header range, so the profile's `(min, max)` is `(0, 0)` and the band must still be
+/// gap-free via `fill_gaps`'s header fallback — the only path that exercises the fallback.
+const NO_ELE: &str = r#"<?xml version="1.0"?>
+<gpx><trk><trkseg>
+  <trkpt lat="48.0000" lon="7.8000"/>
+  <trkpt lat="48.0050" lon="7.8000"/>
+  <trkpt lat="48.0100" lon="7.8000"/>
+</trkseg></trk></gpx>"#;
+
+#[test]
+fn no_elevation_route_has_flat_zero_gap_free_band() {
+    let bytes = convert("Unmeasured", NO_ELE);
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    assert_eq!((r.min_ele_m, r.max_ele_m), (0, 0), "no <ele> → 0..0 header range");
+    let p = r.elevation_profile();
+
+    // The whole band is the flat 0 m fallback, with no sentinel (min > max) holes.
+    assert_eq!((p.min_ele_m, p.max_ele_m), (0, 0));
+    assert_eq!(p.peak_ele_m(), 0);
+    for (i, &(mn, mx)) in p.cols().iter().enumerate() {
+        assert_eq!((mn, mx), (0, 0), "column {i} should be the flat 0 m fallback");
+    }
+    // No climb anywhere, so "to climb" is 0 across the whole route.
+    assert_eq!(p.ascent_to(0.0), 0);
+    assert_eq!(p.ascent_to(1.0), 0);
+}
+
 #[test]
 fn window_clamps_to_route_ends() {
     let bytes = convert("Peaked Ridge", PEAKED);
@@ -224,4 +236,33 @@ fn window_clamps_to_route_ends() {
     let end = p.window(1.0, 4.0, 216);
     assert_eq!(end.hi_frac, 1.0);
     assert!((end.lo_frac - 0.75).abs() < 1e-4);
+}
+
+/// The received-route card's mini sparkline (#682): a min–max-normalized `u8` band whose peak
+/// pins to 255 at the route's high point (~mid on the zigzag) and whose ends read low.
+#[test]
+fn sparkline_normalizes_and_peaks_mid() {
+    use obc_route::{elevation_sparkline, SPARKLINE_BUCKETS};
+    let bytes = convert("Peaked Ridge", PEAKED);
+    let spark = elevation_sparkline(&SliceSource(&bytes)).expect("a route with elevation has a band");
+    assert_eq!(spark.len(), SPARKLINE_BUCKETS);
+    // The 300 m peak normalizes to the ceiling; the 200 m ends normalize to the floor.
+    assert_eq!(*spark.iter().max().unwrap(), 255, "the peak pins to 255");
+    assert_eq!(spark[0], 0, "the start sits at the min");
+    assert_eq!(spark[SPARKLINE_BUCKETS - 1], 0, "the end sits at the min");
+    // The peak lands near the middle bucket, not at an edge.
+    let peak_b = spark.iter().position(|&v| v == 255).unwrap();
+    assert!(
+        (SPARKLINE_BUCKETS * 3 / 8..=SPARKLINE_BUCKETS * 5 / 8).contains(&peak_b),
+        "peak bucket {peak_b} not near the middle"
+    );
+}
+
+/// A flat route (a real but constant elevation) and an unmeasured one (no `<ele>`) both carry no
+/// usable range, so the card omits the band rather than drawing a fake flat line.
+#[test]
+fn sparkline_is_none_without_a_range() {
+    use obc_route::elevation_sparkline;
+    assert!(elevation_sparkline(&SliceSource(&convert("Towpath", FLAT))).is_none(), "flat → no band");
+    assert!(elevation_sparkline(&SliceSource(&convert("Unmeasured", NO_ELE))).is_none(), "no <ele> → no band");
 }

@@ -1,4 +1,4 @@
-//! Joints, caps and body of thick lines. The span stroke (`stroke_overlay`/`flush_run`) lays each
+//! Joints, caps and body of thick lines. The span stroke (`Stroker::stroke`/`flush_run`) lays each
 //! segment as a scanline-filled **rectangle** with butt ends, then fills a disc (⌀ = stroke width)
 //! at each **run end** and at every interior vertex that bends sharply, so joints and ends read as
 //! smooth round arcs rather than butt notches. We probe the disc where it's unambiguous — a
@@ -6,58 +6,15 @@
 //! body for the per-row gaps a rotated-rectangle scanline is most prone to. Driven through the
 //! public `stroke_path`.
 
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use embedded_graphics::pixelcolor::Rgb888;
 use obc_render::{MapRenderer, Viewport};
 
-const LINE: Rgb888 = Rgb888::new(255, 0, 255);
+mod common;
+// These tests only probe pixel coverage (painted or not), so the 1-bit `BitBuf` is the
+// right recording target; aliased to `Buf` to keep the test bodies unchanged.
+use common::BitBuf as Buf;
 
-struct Buf {
-    w: i32,
-    h: i32,
-    px: Vec<bool>,
-}
-impl Buf {
-    fn new(w: i32, h: i32) -> Self {
-        Buf { w, h, px: vec![false; (w * h) as usize] }
-    }
-    fn put(&mut self, x: i32, y: i32) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = true;
-        }
-    }
-    fn on(&self, x: i32, y: i32) -> bool {
-        x >= 0 && y >= 0 && x < self.w && y < self.h && self.px[(y * self.w + x) as usize]
-    }
-}
-impl OriginDimensions for Buf {
-    fn size(&self) -> Size {
-        Size::new(self.w as u32, self.h as u32)
-    }
-}
-impl DrawTarget for Buf {
-    type Color = Rgb888;
-    type Error = core::convert::Infallible;
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(p, _) in pixels {
-            self.put(p.x, p.y);
-        }
-        Ok(())
-    }
-    fn fill_solid(&mut self, area: &Rectangle, _c: Self::Color) -> Result<(), Self::Error> {
-        let clip = area.intersection(&self.bounding_box());
-        if let Some(br) = clip.bottom_right() {
-            for y in clip.top_left.y..=br.y {
-                for x in clip.top_left.x..=br.x {
-                    self.put(x, y);
-                }
-            }
-        }
-        Ok(())
-    }
-}
+const LINE: Rgb888 = Rgb888::new(255, 0, 255);
 
 #[test]
 fn thick_line_end_gets_a_round_cap() {

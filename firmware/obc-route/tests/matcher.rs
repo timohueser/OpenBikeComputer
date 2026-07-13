@@ -5,33 +5,10 @@
 //! vertices survived decimation.
 
 use heapless::Vec as HVec;
-use obc_route::{
-    gpx_to_obcr, ByteSink, Error, RouteIndex, RouteMatch, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK,
-};
+use obc_route::{RouteIndex, RouteMatch, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
 
-/// A `ByteSink` over a growable `Vec` (mirrors the profile test's backing).
-#[derive(Default)]
-struct VecSink {
-    buf: Vec<u8>,
-}
-impl ByteSink for VecSink {
-    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-        self.buf.extend_from_slice(b);
-        Ok(())
-    }
-    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-        let o = off as usize;
-        self.buf[o..o + b.len()].copy_from_slice(b);
-        Ok(())
-    }
-}
-
-fn convert(name: &str, gpx: &str) -> Vec<u8> {
-    let src = SliceSource(gpx.as_bytes());
-    let mut sink = VecSink::default();
-    gpx_to_obcr(&src, name, &mut sink).unwrap();
-    sink.buf
-}
+mod common;
+use common::convert;
 
 /// Build GPX text from `(lat_deg, lon_deg, ele_m)` track points.
 fn gpx_from(pts: &[(f64, f64, f64)]) -> String {
@@ -149,10 +126,6 @@ fn off_route_freezes_progress_then_resumes_on_rejoin() {
     assert!(back.progress_m.abs_diff(want) <= 6, "resumed progress {} ~ {want}", back.progress_m);
 }
 
-/// A closed ~800 m-radius loop (meter-corrected so it's round on the ground) sampled at 20
-/// vertices — enough curvature that every vertex survives decimation, giving ~20 segments.
-/// The loop returns to its start, so spatial nearest-point is ambiguous there; only the
-/// forward bias keeps progress from snapping back.
 /// A high-frequency eastward sawtooth of `n` points. Every interior vertex is a
 /// peak/valley deviating ~4 m from its neighbours' chord — well past the 1 m
 /// decimation tolerance — so all survive and a few hundred span more than one
@@ -195,6 +168,10 @@ fn multi_chunk_route_matches_across_chunk_boundaries() {
     assert!(last as f64 > 0.9 * total as f64, "final progress {last} m should reach near the {total} m total");
 }
 
+/// A closed ~800 m-radius loop (meter-corrected so it's round on the ground) sampled at 20
+/// vertices — enough curvature that every vertex survives decimation, giving ~20 segments.
+/// The loop returns to its start, so spatial nearest-point is ambiguous there; only the
+/// forward bias keeps progress from snapping back.
 fn loop_gpx() -> String {
     let (clat, clon) = (48.0_f64, 7.8_f64);
     let r_deg = 800.0 / 111_320.0; // ~800 m in latitude degrees
@@ -243,12 +220,10 @@ fn forward_bias_does_not_snap_back_on_a_loop() {
 }
 
 /// An out-and-back: out along a north-bowing arc A→M→B, back straight B→A′, where A′ ends
-/// ~2 m north of the A start (a real GPS retrace never lands exactly on its start). Start
-/// and finish sit nearly on top of each other, so a small north offset at the start makes
-/// the *finish* segment marginally the nearest — which latched the cursor onto progress ≈
-/// total before the first-lock earliest-bias fix, tripping spurious off-route. The bowed
-/// outbound keeps the mid-route unambiguous (the legs are tens of metres apart there), so
-/// the test isolates the genuine failure: the first lock.
+/// ~2 m north of the A start. Start and finish sit nearly on top of each other, so a small
+/// north offset at the start makes the *finish* segment marginally the nearest — the case the
+/// first-lock earliest-bias must resolve. The bowed outbound keeps the mid-route unambiguous,
+/// isolating the first-lock behaviour.
 fn out_and_back_gpx() -> String {
     gpx_from(&[
         (48.0000, 7.8000, 200.0),  // A  — start
@@ -289,5 +264,277 @@ fn out_and_back_first_lock_biases_to_the_start() {
     assert!(
         (last as f64) < 0.75 * total as f64,
         "outbound progress {last} m should be on the first half, not near the {total} m finish"
+    );
+}
+
+/// A short eastward zigzag of `n` segments, ~30 m each, every vertex kept (the ±5 m zig is
+/// well past the 1 m decimation tolerance). Used by the going-backwards / `BACK_SEGS` tests:
+/// they need a route with *many distinct segments* so a fix can move onto an earlier one,
+/// which the single-segment `EAST` route can't express.
+fn zigzag_gpx(n: usize) -> String {
+    let (lat0, lon0) = (48.0_f64, 7.8_f64);
+    let cl = (lat0 * std::f64::consts::PI / 180.0).cos();
+    let dlon = 30.0 / (111_320.0 * cl); // ~30 m east per step
+    let dlat = 5.0 / 111_320.0; // ±5 m north zig — survives decimation
+    let pts: Vec<(f64, f64, f64)> = (0..=n)
+        .map(|i| {
+            let lat = lat0 + if i % 2 == 0 { 0.0 } else { dlat };
+            (lat, lon0 + dlon * i as f64, 100.0)
+        })
+        .collect();
+    gpx_from(&pts)
+}
+
+/// Powering on off-route: the first fix scans the whole route and always locks onto a segment,
+/// so only the off-route flag + frozen progress keep a rider 500 m away from reading "on route
+/// at 0 %". A far first fix must read `off_route` with progress pinned at 0.
+#[test]
+fn first_fix_far_off_route_reports_off_and_frozen() {
+    let bytes = convert("East", &gpx_from(EAST));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let pts = decode_all(&r);
+    let (p0, p1) = (pts[0], *pts.last().unwrap());
+
+    let mut m = RouteMatch::new();
+    // Power on 500 m north of the route's midpoint.
+    let (lon, lat) = east_fix(p0, p1, 0.5, 500.0);
+    let res = m.update(lon, lat, &r);
+    assert!(res.off_route, "a first fix 500 m off the route must read off-route");
+    assert_eq!(res.progress_m, 0, "an off-route first fix must not advance progress past 0");
+    assert!((res.dist_m as i32 - 500).abs() <= 5, "live cross-track {} m ~ 500", res.dist_m);
+}
+
+/// The hysteresis-hold band (`ON_M`=15..`OFF_M`=25 m): a fix inside it must keep whichever
+/// state the rider was already in, so the "off route" banner doesn't flap as GPS noise hovers
+/// around the boundary.
+#[test]
+fn hysteresis_band_holds_previous_state() {
+    let bytes = convert("East", &gpx_from(EAST));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let pts = decode_all(&r);
+    let (p0, p1) = (pts[0], *pts.last().unwrap());
+
+    // Coming from on-route, a 20 m fix (inside the 15–25 m band) HOLDS on-route — and, being
+    // on-route, progress keeps advancing.
+    let mut on = RouteMatch::new();
+    let (lon, lat) = east_fix(p0, p1, 0.5, 0.0);
+    let locked = on.update(lon, lat, &r);
+    assert!(!locked.off_route);
+    let (lon, lat) = east_fix(p0, p1, 0.55, 20.0);
+    let held_on = on.update(lon, lat, &r);
+    assert!(!held_on.off_route, "20 m in the band, coming from on-route, must stay on-route");
+    assert!(held_on.progress_m > locked.progress_m, "an on-route band fix still advances progress");
+    assert!((held_on.dist_m as i32 - 20).abs() <= 3, "live cross-track {} m ~ 20", held_on.dist_m);
+
+    // Coming from off-route, the same 20 m band fix HOLDS off-route — progress stays frozen.
+    let mut off = RouteMatch::new();
+    let (lon, lat) = east_fix(p0, p1, 0.5, 0.0);
+    let frozen = off.update(lon, lat, &r).progress_m;
+    let (lon, lat) = east_fix(p0, p1, 0.6, 60.0);
+    assert!(off.update(lon, lat, &r).off_route, "60 m must trip off-route first");
+    let (lon, lat) = east_fix(p0, p1, 0.62, 20.0);
+    let held_off = off.update(lon, lat, &r);
+    assert!(held_off.off_route, "20 m in the band, coming from off-route, must stay off-route");
+    assert_eq!(held_off.progress_m, frozen, "an off-route band fix keeps progress frozen");
+}
+
+/// A single GPS teleport / jitter spike: a lone wild outlier between two good fixes must not
+/// lurch the route position — the off-route freeze holds progress at the last good value while
+/// the spike reads off-route, and the next good fix resumes cleanly.
+#[test]
+fn single_teleport_spike_does_not_lurch_progress() {
+    let bytes = convert("East", &gpx_from(EAST));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let pts = decode_all(&r);
+    let (p0, p1) = (pts[0], *pts.last().unwrap());
+    let total = r.total_distance_m;
+
+    let mut m = RouteMatch::new();
+    let (lon, lat) = east_fix(p0, p1, 0.4, 0.0);
+    let good = m.update(lon, lat, &r);
+    assert!(!good.off_route);
+    let before = good.progress_m;
+
+    // A single fix teleported 2 km north: off-route, progress frozen at the last good value.
+    let (lon, lat) = east_fix(p0, p1, 0.45, 2000.0);
+    let spike = m.update(lon, lat, &r);
+    assert!(spike.off_route, "a 2 km outlier must read off-route");
+    assert_eq!(spike.progress_m, before, "the spike must not move progress");
+    assert!(spike.dist_m > 1000, "live cross-track {} m should report the spike's distance", spike.dist_m);
+
+    // The very next on-line fix recovers — back on-route, progress at ~50 %.
+    let (lon, lat) = east_fix(p0, p1, 0.5, 0.0);
+    let after = m.update(lon, lat, &r);
+    assert!(!after.off_route, "the fix after the spike recovers on-route");
+    let want = (0.5 * total as f64) as u32;
+    assert!(after.progress_m.abs_diff(want) <= 5, "recovered progress {} ~ {want}", after.progress_m);
+}
+
+/// Going backwards within the `BACK_SEGS`=3 slack: a small backward step must follow onto the
+/// earlier segment with progress *descending* (not frozen, not snapped forward), so "distance
+/// ridden" tracks a rider who briefly reverses.
+#[test]
+fn small_backward_step_descends_progress() {
+    let bytes = convert("Zig", &zigzag_gpx(6));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let pts = decode_all(&r);
+    assert!(pts.len() >= 6, "zigzag should keep its vertices, got {}", pts.len());
+
+    let mut m = RouteMatch::new();
+    // Advance forward through every vertex.
+    let mut fwd = Vec::new();
+    for p in &pts {
+        fwd.push(m.update(p.lon, p.lat, &r).progress_m);
+    }
+    assert!(fwd.windows(2).all(|w| w[1] >= w[0]), "forward walk must be monotonic: {fwd:?}");
+
+    // Now step back one vertex at a time: each fix stays on-route and progress strictly
+    // descends, landing back at 0 — the BACK_SEGS slack keeps the lock the whole way.
+    let mut prev = *fwd.last().unwrap();
+    for i in (0..pts.len() - 1).rev() {
+        let res = m.update(pts[i].lon, pts[i].lat, &r);
+        assert!(!res.off_route, "a one-segment backward step stays on-route at vertex {i}");
+        assert!(
+            res.progress_m < prev,
+            "progress must descend stepping back to vertex {i}: {} !< {prev}",
+            res.progress_m
+        );
+        prev = res.progress_m;
+    }
+    assert_eq!(prev, 0, "walking all the way back reaches the route start (0 m)");
+}
+
+/// A backward jump *past* `BACK_SEGS` falls outside the backward window, so the nearest
+/// in-window segment is far away → the matcher reports off-route and **freezes** progress
+/// rather than teleporting the cursor backwards.
+#[test]
+fn backward_jump_beyond_back_segs_freezes() {
+    let bytes = convert("Zig", &zigzag_gpx(12));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let pts = decode_all(&r);
+    assert!(pts.len() >= 12, "need a long zigzag, got {}", pts.len());
+
+    let mut m = RouteMatch::new();
+    for p in &pts[..=8] {
+        m.update(p.lon, p.lat, &r);
+    }
+    let at8 = m.update(pts[8].lon, pts[8].lat, &r);
+    assert!(!at8.off_route);
+    let frozen = at8.progress_m;
+
+    // Jump back to vertex 2 — 6 segments behind, well past BACK_SEGS=3.
+    let jumped = m.update(pts[2].lon, pts[2].lat, &r);
+    assert!(jumped.off_route, "a 6-segment backward jump is outside the slack → off-route");
+    assert_eq!(jumped.progress_m, frozen, "progress freezes; the cursor must not snap backwards");
+}
+
+/// A hairpin whose out and back legs are metres apart, so at the apex two segments are almost
+/// equidistant. Walking through the turn, the forward bias must keep progress monotonic — not
+/// snap from the inbound leg back onto the just-as-near outbound leg.
+#[test]
+fn hairpin_close_legs_progress_stays_monotonic() {
+    // Out east along lat 48.0000, hairpin at the far end, back west along lat 48.00005 (~5.5 m
+    // north — the two legs run nearly on top of each other, unlike the bowed out-and-back).
+    let mut pts: Vec<(f64, f64, f64)> = Vec::new();
+    let cl = (48.0_f64 * std::f64::consts::PI / 180.0).cos();
+    let dlon = 30.0 / (111_320.0 * cl);
+    let n = 8;
+    for i in 0..=n {
+        pts.push((48.0, 7.8 + dlon * i as f64, 100.0)); // outbound
+    }
+    for i in (0..n).rev() {
+        pts.push((48.000_05, 7.8 + dlon * i as f64, 100.0)); // inbound, ~5.5 m north
+    }
+    let bytes = convert("Hairpin", &gpx_from(&pts));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let decoded = decode_all(&r);
+    let total = r.total_distance_m;
+
+    let mut m = RouteMatch::new();
+    let mut last = 0u32;
+    let mut saw_apex = false;
+    for (i, p) in decoded.iter().enumerate() {
+        let res = m.update(p.lon, p.lat, &r);
+        assert!(!res.off_route, "hairpin vertex {i} sits on the route");
+        // Monotonic across the apex — the inbound leg never snaps back onto the close outbound.
+        assert!(res.progress_m + 1 >= last, "progress snapped back at vertex {i}: {} < {last}", res.progress_m);
+        if (0.45..0.55).contains(&(res.progress_m as f64 / total as f64)) {
+            saw_apex = true;
+        }
+        last = res.progress_m;
+    }
+    assert!(saw_apex, "progress should pass through the hairpin apex (~50 %)");
+    assert!(last as f64 > 0.9 * total as f64, "the inbound leg should finish near the {total} m total, got {last}");
+}
+
+/// The 1-point / segment-less route branch: with no segment to project onto, `best` stays
+/// `None`, so every fix — even one right on the point — must read off-route, frozen at 0, and
+/// `u32::MAX` far. The rider is told "off route", never falsely "arrived".
+#[test]
+fn one_point_route_reports_off_and_far() {
+    let bytes = convert("One", &gpx_from(&[(48.0, 7.8, 100.0)]));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    assert_eq!(r.point_count, 1);
+    assert_eq!(r.chunks().len(), 1);
+    assert_eq!(r.chunks()[0].point_count, 1);
+
+    let mut m = RouteMatch::new();
+    let on_point = m.update(7_800_000, 48_000_000, &r);
+    assert!(on_point.off_route, "a 1-point route can't be 'on route'");
+    assert_eq!(on_point.progress_m, 0);
+    assert_eq!(on_point.dist_m, u32::MAX, "no segment → reported maximally far");
+
+    let far = m.update(7_900_000, 48_100_000, &r);
+    assert!(far.off_route);
+    assert_eq!(far.progress_m, 0, "progress stays frozen on a segment-less route");
+    assert_eq!(far.dist_m, u32::MAX);
+}
+
+/// A fix sitting exactly on chunk 1's anchor must report progress == `chunks[1].cum_distance_m`
+/// — the O(1) remaining-distance join the Statistics "to go" readout depends on. Catches
+/// per-chunk cumulative-bookkeeping drift mid-route, not just at the ends.
+#[test]
+fn progress_at_a_chunk_seam_equals_cum_distance() {
+    let bytes = convert("Sawtooth", &sawtooth_gpx(400));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    assert!(r.chunks().len() >= 2, "need a multi-chunk route, got {}", r.chunks().len());
+    let seam = r.chunks()[1];
+    let seam_dist = seam.cum_distance_m;
+    let (lon, lat) = (seam.anchor_lon, seam.anchor_lat);
+
+    // Walk up to the seam so the cursor is tracking when it arrives there, then land on it.
+    let pts = decode_all(&r);
+    let mut m = RouteMatch::new();
+    for p in &pts {
+        if p.lon >= lon {
+            break;
+        }
+        m.update(p.lon, p.lat, &r);
+    }
+    let at_seam = m.update(lon, lat, &r);
+    assert!(!at_seam.off_route, "the seam point sits on the route");
+    // Progress at the seam is exactly the stored chunk-1 cumulative distance (±1 m rounding
+    // from the f32 segment metric).
+    assert!(
+        at_seam.progress_m.abs_diff(seam_dist) <= 1,
+        "progress at the seam {} m must equal chunks[1].cum_distance_m {} m",
+        at_seam.progress_m,
+        seam_dist
     );
 }

@@ -1,0 +1,38 @@
+[package]
+name = "obc-web-demo"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
+description = "The landing page's thin wasm host (epic #624, S6): the shared firmware crates + a JS-driven frame loop behind a small obc_demo_* wasm-bindgen surface. No egui/winit/wgpu — JS owns the rAF loop and the canvas, Rust owns the truth."
+
+[dependencies]
+# `alloc` gives us `MapCache::new_boxed` — a zeroed heap allocation with no giant stack temporary
+# (the ≈277 KB cache overflowed the default 1 MiB wasm stack via a plain `Box::new` in debug
+# builds, which was the whole reason the repo-root `-zstack-size` cargo config existed; #661).
+obc-reader = { path = "../obc-reader", features = ["alloc"] }
+# `alloc` gives us `NavScratch::new_boxed` — same story for the ~39 KB A* table.
+obc-route = { path = "../obc-route", features = ["alloc"] }
+obc-render = { path = "../obc-render" }
+obc-app = { path = "../obc-app" }
+# The shared host glue (replay stepping, the frame-interleaved NavPlan, the in-memory stores) —
+# the same code obc-sim drives, so the two hosts can't drift.
+obc-host-core = { path = "../obc-host-core" }
+# GPX replay: the embedded demo ride plays back through the same player the desktop sim and the
+# USB feeder use.
+obc-replay = { path = "../obc-replay" }
+# The device-resolution frame authority (FRAME_W/FRAME_H) — no re-declared 240×320 literals.
+# Only the pure constants/rowdiff surface is used; the crate's embassy/SD glue is dead-stripped.
+obc-platform = { path = "../obc-platform" }
+embedded-graphics = "0.8"
+# The fixed-cap string type `RideSummary.name` carries (same 0.8 the shared crates pin) — the
+# demo's seeded ride catalog constructs summaries directly.
+heapless = "0.8"
+
+# --- Web (wasm32) surface — the only target this host actually ships on. The demo core above
+# stays target-independent so `cargo test` exercises it natively in the workspace.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+# `Uint8ClampedArray::view` — the zero-copy RGBA frame handle `obc_demo_frame` returns.
+js-sys = "0.3"
+# Surface Rust panics in the browser console instead of an opaque trap.
+console_error_panic_hook = "0.1"

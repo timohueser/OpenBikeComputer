@@ -1,0 +1,12 @@
+[package]
+name = "obcm-testkit"
+version = "0.1.0"
+edition = "2021"
+publish = false # test-only helper crate — never shipped or published
+description = "Hand-written OBCM v5 byte builder shared by obc-reader and obc-render integration tests, so a future format bump edits one place"
+
+[dependencies]
+# The OBCM flag/sentinel bit constants live once in obc-reader (issue #12); the byte
+# builder consumes them so a layout change edits that one module, testkit included.
+# (obc-reader dev-depends on this crate — a dev-dependency cycle, which Cargo allows.)
+obc-reader = { path = "../obc-reader" }

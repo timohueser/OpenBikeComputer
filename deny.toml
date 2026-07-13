@@ -1,12 +1,12 @@
 # cargo-deny: supply-chain gate for both cargo roots (the firmware workspace and the
-# standalone obc-fw-stm32f429 board crate). Run from the repo root against each lockfile:
+# standalone obc-fw-nrf54l board crate). Run from the repo root against each lockfile:
 #   cargo deny --manifest-path firmware/Cargo.toml --all-features check
-#   cargo deny --manifest-path firmware/obc-fw-stm32f429/Cargo.toml --all-features check
+#   cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features check
 # Checks advisories (RustSec), licenses, banned crates, and dependency sources.
 
 [graph]
-# Resolve every feature so feature-gated deps (debug-usb, baked-tile, the sim's eframe
-# stack...) are in scope for the license/advisory scan, not just the default set.
+# Resolve every feature so feature-gated deps (debug-link, the sim's eframe stack...) are
+# in scope for the license/advisory scan, not just the default set.
 all-features = true
 
 [advisories]
@@ -14,7 +14,16 @@ all-features = true
 # lockfile-drift class of bug this whole pipeline guards against). `ignore` stays empty:
 # add a specific RustSec id here, with a comment, only when one is triaged as not affecting us.
 yanked = "deny"
-ignore = []
+ignore = [
+    # quick-xml 0.30 DoS-class issues (quadratic duplicate-attribute check; unbounded
+    # namespace allocations). Reached only through the desktop sim's Linux accessibility
+    # stack (eframe -> accesskit -> atspi -> zbus), which parses D-Bus introspection XML
+    # from the local session bus — never untrusted input — and never ships on the device.
+    # atspi pins quick-xml ^0.30, so the fixed release isn't reachable without an eframe
+    # major bump; drop these when the eframe stack next moves.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
 # Only fail on *unmaintained* crates we depend on directly — the sim's GUI stack (eframe ->
 # egui -> accesskit) drags in deep transitive crates like `paste` (RUSTSEC-2024-0436) we can't
 # upgrade. Security *vulnerabilities* are still denied everywhere regardless of this setting.
@@ -58,7 +67,11 @@ wildcards = "deny"
 allow-wildcard-paths = true
 
 [sources]
-# Every dependency must come from crates.io — there are no git/path deps today, and an
+# Every dependency must come from crates.io, with one reviewed exception below — an
 # unexpected git or unknown-registry source should fail rather than slip in unreviewed.
 unknown-registry = "deny"
 unknown-git = "deny"
+# nrf-sdc/nrf-mpsl (BLE controller, issue #269): the crates.io releases predate nRF54L support
+# and pin embassy-nrf 0.7, so the board crate rev-pins git main (the same rev TrouBLE's nrf54
+# example pins — see the crate README's BLE section). Drop when a ≥0.4 release ships.
+allow-git = ["https://github.com/alexmoon/nrf-sdc"]

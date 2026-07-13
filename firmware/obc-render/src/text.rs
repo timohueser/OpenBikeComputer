@@ -1,18 +1,12 @@
 //! On-screen text — the shared text primitive for the device UI.
 //!
-//! The map renderer draws only geometry; every non-map screen (menus, the
-//! elevation stats, Ride control) needs text. This wires the converted **Terminus**
-//! pixel font (a bold monospace bitmap face in the misc-fixed lineage of the old
-//! embedded-graphics built-ins; see [`font_data`](crate::font_data)) in three size
-//! tiers. Routing every screen's text through this one module means the font is a
-//! single edit here — [`Font::mono`] — not a sweep across call sites.
+//! Wires the converted **Terminus** pixel font (a bold monospace bitmap face; see
+//! [`font_data`](crate::font_data)) in size tiers. Routing every screen's text through this module
+//! makes the font a single edit here ([`Font::mono`]).
 //!
-//! Like [`MapRenderer::draw_marker`](crate::MapRenderer::draw_marker), the color
-//! is already resolved to the target's pixel type: the caller maps a style/palette
-//! RGB565 through the host's `color_fn`, so text quantizes to the 64-color panel
-//! exactly like the map does and stays true-color in the simulator. The
-//! slice-1 check (`obc-render/tests/text.rs`, the `--text-demo` preview) confirms
-//! a palette color drawn this way survives the device-64 quantization intact.
+//! The color is already resolved to the target's pixel type: the caller maps a palette RGB565
+//! through the host's `color_fn`, so text quantizes to the 64-color panel exactly like the map does
+//! and stays true-color in the simulator.
 
 use embedded_graphics::{
     mono_font::{MonoFont, MonoTextStyle},
@@ -33,6 +27,9 @@ pub enum Font {
     Body,
     /// Terminus 16×32 (cap ≈ 2.71 mm) — glanceable numbers (speed, the big stat tiles).
     Display,
+    /// Terminus 32×64 (cap ≈ 5.4 mm) — the one oversized readout: the Home-screen clock.
+    /// Pixel-doubled from `Display` (see [`font_data::TER_U64B`](crate::font_data)).
+    Huge,
 }
 
 impl Font {
@@ -43,6 +40,7 @@ impl Font {
             Font::Label => &font_data::TER_U24B,
             Font::Body => &font_data::TER_U28B,
             Font::Display => &font_data::TER_U32B,
+            Font::Huge => &font_data::TER_U64B,
         }
     }
 
@@ -57,16 +55,28 @@ impl Font {
     pub fn line_height(self) -> u32 {
         self.mono().character_size.height
     }
+
+    /// Cap height in pixels — the vertical span the glyphs actually occupy (≤ the cell
+    /// [`line_height`](Self::line_height)), for centring text in a cell. Approximate but stable.
+    #[inline]
+    pub fn cap_height(self) -> u32 {
+        match self {
+            Font::Label => 18,
+            Font::Body => 22,
+            Font::Display => 26,
+            Font::Huge => 52, // 2× Display; the Home clock only
+        }
+    }
 }
 
 /// Horizontal placement of a string relative to its anchor's x.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAlign {
-    /// Anchor is the left edge — labels and list rows.
+    /// Anchor is the left edge.
     Left,
-    /// Anchor is the horizontal center — screen/section headers.
+    /// Anchor is the horizontal center.
     Center,
-    /// Anchor is the right edge — right-justified counters and values.
+    /// Anchor is the right edge.
     Right,
 }
 
@@ -81,20 +91,34 @@ impl TextAlign {
     }
 }
 
-/// Pixel width `s` occupies in `font`. Exact for the monospace stand-ins, and a
-/// good layout estimate once a proportional pixel font lands — for sizing a
-/// selection highlight behind a row, or hand-justifying a value.
+/// Pixel width `s` occupies in `font`. Exact for the monospace face.
 #[inline]
 pub fn text_width(s: &str, font: Font) -> u32 {
     font.char_width() * s.chars().count() as u32
 }
 
-/// Draw `s` anchored at `anchor`, in `font`, aligned `align` about `anchor.x`,
-/// in the already-resolved `color`. The text's **top** sits at `anchor.y` (top
-/// baseline), so screen layout reads as "y = row top" rather than a font
-/// baseline. Returns the position just past the string (next glyph's origin) for
-/// chaining runs; a draw error — possible only on a real display, never on the
-/// host's infallible targets — falls back to `anchor`.
+/// Whether the text tiers can render `c` as a real glyph rather than the silent `?` fallback.
+///
+/// The `Label` / `Body` / `Display` tiers share the one `LATIN` glyph strip added in #489/#601
+/// (ASCII `0x20..=0x7f` + Latin-1 Supplement `0xa0..=0xff` + Latin Extended-A `0x100..=0x17f`);
+/// any other char maps to `?`'s slot and paints as `?`. This reads that mapping off the **actual
+/// font**, so callers (e.g. the i18n repertoire test) are pinned to the real coverage, not a
+/// hand-copied range that could drift from the strip. The ASCII-only `Huge` clock tier is not
+/// consulted — it carries no user-facing copy.
+#[inline]
+pub fn glyph_supported(c: char) -> bool {
+    // Any text tier shares the `LATIN` mapping; the Body cut stands in for all three. An
+    // unmapped char resolves to `?`'s fallback slot — so `c` is covered iff it lands on a
+    // different slot, except `?` itself, which legitimately owns that slot. (`index` resolves
+    // on the `&dyn GlyphMapping` field, so its trait needs no import here.)
+    let mapping = Font::Body.mono().glyph_mapping;
+    c == '?' || mapping.index(c) != mapping.index('?')
+}
+
+/// Draw `s` anchored at `anchor`, in `font`, aligned `align` about `anchor.x`, in the
+/// already-resolved `color`. The text's **top** sits at `anchor.y` (top baseline), so layout reads
+/// as "y = row top". Returns the position just past the string for chaining runs; a draw error
+/// falls back to `anchor`.
 pub fn draw_text<D>(target: &mut D, s: &str, anchor: Point, font: Font, align: TextAlign, color: D::Color) -> Point
 where
     D: DrawTarget,

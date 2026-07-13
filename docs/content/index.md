@@ -10,7 +10,7 @@ A from-scratch bikepacking computer: offline vector maps in a custom binary form
 These pages are a **conceptual companion to the code**, not an API reference. The source is already documented in depth; what's hard to reconstruct by reading files one at a time is the *shape* of the thing — the pipelines, the boundaries, the why. That's what lives here.
 
 <figure class="fig">
-<svg viewBox="0 0 840 430" role="img" aria-label="System map: OSM data and GPX routes are packed into the OBCM and OBCR binary formats, which feed one shared app and render path that runs on both the desktop simulator and the device firmware.">
+<svg viewBox="0 0 840 430" role="img" aria-label="System map: OSM data and GPX routes are packed into the OBCM and OBCR binary formats, which feed one shared app and render path that runs on both the desktop simulator and the device firmware. On the device, live sensors — GPS, barometer and compass — also feed the app.">
   <defs>
     <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" />
@@ -71,19 +71,26 @@ These pages are a **conceptual companion to the code**, not an API reference. Th
 
   <!-- HOSTS -->
   <rect class="d-panel" x="690" y="126" width="138" height="60" rx="9" />
-  <text class="d-label" x="759" y="150" text-anchor="middle">obc-sim</text>
-  <text class="d-sub" x="759" y="168" text-anchor="middle">desktop + browser</text>
+  <text class="d-label" x="759" y="150" text-anchor="middle" style="font-size:10.5px">obc-sim · web demo</text>
+  <text class="d-sub" x="759" y="168" text-anchor="middle">desktop · browser</text>
   <rect x="793" y="110" width="35" height="17" rx="8" fill="#3c6b39" />
   <text x="810" y="122" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#fff;letter-spacing:0.06em">LIVE</text>
 
-  <rect class="d-panel" x="690" y="244" width="138" height="60" rx="9" style="stroke-dasharray:5 4" />
+  <rect class="d-panel" x="690" y="244" width="138" height="60" rx="9" />
   <text class="d-label" x="759" y="268" text-anchor="middle">device firmware</text>
-  <text class="d-sub" x="759" y="286" text-anchor="middle">nRF54L · planned</text>
+  <text class="d-sub" x="759" y="286" text-anchor="middle">nRF54LM20 · hardware</text>
 
   <path class="d-flow" d="M650 200 C 672 196, 668 158, 688 156" marker-end="url(#ah)" />
   <path class="d-flow" d="M650 232 C 672 236, 668 274, 688 276" marker-end="url(#ah)" />
+
+  <!-- device-only: live sensors feed the app (the sim replays a GPX instead) -->
+  <rect class="d-panel-2" x="690" y="336" width="138" height="58" rx="9" />
+  <text class="d-label" x="759" y="360" text-anchor="middle">live sensors</text>
+  <text class="d-sub" x="759" y="378" text-anchor="middle">GPS · baro · compass</text>
+  <line class="d-flow" x1="759" y1="335" x2="759" y2="309" marker-end="url(#ah)" />
+  <text class="d-sub" x="767" y="326" style="font-size:8px;fill:#6b7758">to the app</text>
 </svg>
-<figcaption>Two ingest lanes — <b>maps</b> and <b>routes</b> — are baked into compact binary formats, then fed to <b>one</b> shared application and render path. That same code runs on the desktop simulator (live in your browser today) and on the device.</figcaption>
+<figcaption>Two ingest lanes — <b>maps</b> and <b>routes</b> — are baked into compact binary formats, then fed to <b>one</b> shared application and render path. That same code runs on the desktop simulator, on this site's landing page (the <code>obc-web-demo</code> wasm host — live in your browser today), and on the device, where live sensors — GPS, barometer, compass — feed the same app the other hosts get from a GPX replay.</figcaption>
 </figure>
 
 The whole project is built around two ideas: **compact binary formats a microcontroller can read directly off flash** (no JSON, no reparsing, no heap churn), and **a single rendering path** the simulator and the firmware both run, so the desktop and the device can never drift apart.
@@ -132,7 +139,8 @@ The whole project is built around two ideas: **compact binary formats a microcon
 | Route reader | [`obc-route`](src:firmware/obc-route) | OBCR reading, GPX → OBCR conversion, map-matching, elevation profile |
 | Renderer | [`obc-render`](src:firmware/obc-render) | The shared draw path — projection, culling, rasterising. `no_std`, zero-alloc |
 | Application | [`obc-app`](src:firmware/obc-app) | Camera, screen stack, input model, ride tracking — one per-frame entry point |
-| Simulator host | [`obc-sim`](src:firmware/obc-sim) | Desktop + wasm shell: window, framebuffer, colour policy, GPX replay |
+| Simulator host | [`obc-sim`](src:firmware/obc-sim) | Desktop shell: window, control panel, colour policy, GPX replay, headless capture |
+| Web demo host | [`obc-web-demo`](src:firmware/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:firmware/obc-host-core)) |
 
 > **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then dive into the **[Rendering pipeline](software/rendering/)** — it's the most interesting machinery in the project. The **[data formats](software/formats/)** page is the reference the other two lean on.
 

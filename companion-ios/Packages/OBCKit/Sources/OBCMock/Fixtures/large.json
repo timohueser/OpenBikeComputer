@@ -1,0 +1,1481 @@
+{
+  "deviceInfo": {
+    "name": "Trailhead",
+    "firmwareVersion": "0.4.2",
+    "hardwareVersion": "nRF54LM20 rev B",
+    "serial": "OBC-24-000317",
+    "protocolVersion": 2
+  },
+  "config": {
+    "name": "Trailhead",
+    "units": "metric"
+  },
+  "battery": 82,
+  "diagnostics": "OBC diagnostics\nfw 0.4.2  hw nRF54LM20 rev B\nlarge library fixture\n",
+  "routes": [
+    {
+      "id": "lib-00-kettle-moraine-loop",
+      "deviceObjectID": 100,
+      "name": "Kettle Moraine Loop",
+      "distanceMeters": 119000,
+      "elevationGainMeters": 840,
+      "estimatedDuration": 21250,
+      "source": "gpx",
+      "payloadBytes": 4760000,
+      "track": [
+        {
+          "lat": 43.0643,
+          "lon": -88.9648
+        },
+        {
+          "lat": 43.051,
+          "lon": -88.9635
+        },
+        {
+          "lat": 43.0537,
+          "lon": -88.9818
+        },
+        {
+          "lat": 43.0404,
+          "lon": -88.9901
+        },
+        {
+          "lat": 43.0212,
+          "lon": -88.9936
+        },
+        {
+          "lat": 43.0383,
+          "lon": -89.0032
+        }
+      ]
+    },
+    {
+      "id": "lib-01-sugar-river-trail",
+      "name": "Sugar River Trail",
+      "distanceMeters": 36000,
+      "elevationGainMeters": 1868,
+      "estimatedDuration": 6428,
+      "source": "gpx",
+      "payloadBytes": 1440000,
+      "track": [
+        {
+          "lat": 43.0756,
+          "lon": -89.607
+        },
+        {
+          "lat": 43.0823,
+          "lon": -89.5931
+        },
+        {
+          "lat": 43.101,
+          "lon": -89.5794
+        },
+        {
+          "lat": 43.1091,
+          "lon": -89.5958
+        },
+        {
+          "lat": 43.1033,
+          "lon": -89.6109
+        },
+        {
+          "lat": 43.0979,
+          "lon": -89.6068
+        }
+      ]
+    },
+    {
+      "id": "lib-02-blue-mounds-backroads",
+      "name": "Blue Mounds Backroads",
+      "distanceMeters": 50000,
+      "elevationGainMeters": 863,
+      "estimatedDuration": 8928,
+      "source": "tcx",
+      "payloadBytes": 2000000,
+      "track": [
+        {
+          "lat": 43.6429,
+          "lon": -89.5493
+        },
+        {
+          "lat": 43.6283,
+          "lon": -89.5502
+        },
+        {
+          "lat": 43.6379,
+          "lon": -89.568
+        },
+        {
+          "lat": 43.6519,
+          "lon": -89.5765
+        },
+        {
+          "lat": 43.6366,
+          "lon": -89.5965
+        },
+        {
+          "lat": 43.6475,
+          "lon": -89.603
+        },
+        {
+          "lat": 43.6342,
+          "lon": -89.5892
+        },
+        {
+          "lat": 43.6345,
+          "lon": -89.5988
+        },
+        {
+          "lat": 43.6389,
+          "lon": -89.6029
+        },
+        {
+          "lat": 43.6553,
+          "lon": -89.6104
+        },
+        {
+          "lat": 43.6725,
+          "lon": -89.6185
+        },
+        {
+          "lat": 43.6907,
+          "lon": -89.6226
+        }
+      ]
+    },
+    {
+      "id": "lib-03-devils-lake-overnighter",
+      "deviceObjectID": 101,
+      "name": "Devil's Lake Overnighter",
+      "distanceMeters": 59000,
+      "elevationGainMeters": 949,
+      "estimatedDuration": 10535,
+      "source": "gpx",
+      "payloadBytes": 2360000,
+      "track": [
+        {
+          "lat": 43.2002,
+          "lon": -89.5747
+        },
+        {
+          "lat": 43.2108,
+          "lon": -89.556
+        },
+        {
+          "lat": 43.2289,
+          "lon": -89.5708
+        },
+        {
+          "lat": 43.2443,
+          "lon": -89.5572
+        },
+        {
+          "lat": 43.239,
+          "lon": -89.5679
+        },
+        {
+          "lat": 43.2228,
+          "lon": -89.5734
+        },
+        {
+          "lat": 43.2088,
+          "lon": -89.5627
+        },
+        {
+          "lat": 43.1901,
+          "lon": -89.5668
+        },
+        {
+          "lat": 43.2014,
+          "lon": -89.5645
+        },
+        {
+          "lat": 43.1829,
+          "lon": -89.5648
+        },
+        {
+          "lat": 43.1653,
+          "lon": -89.5514
+        },
+        {
+          "lat": 43.1848,
+          "lon": -89.5402
+        }
+      ]
+    },
+    {
+      "id": "lib-04-cross-plains-gravel",
+      "name": "Cross-Plains Gravel",
+      "distanceMeters": 45000,
+      "elevationGainMeters": 875,
+      "estimatedDuration": 8035,
+      "source": "gpx",
+      "payloadBytes": 1800000,
+      "track": [
+        {
+          "lat": 43.0748,
+          "lon": -89.1764
+        },
+        {
+          "lat": 43.0831,
+          "lon": -89.1913
+        },
+        {
+          "lat": 43.0849,
+          "lon": -89.1769
+        },
+        {
+          "lat": 43.095,
+          "lon": -89.159
+        },
+        {
+          "lat": 43.0793,
+          "lon": -89.1409
+        },
+        {
+          "lat": 43.0726,
+          "lon": -89.1362
+        },
+        {
+          "lat": 43.0872,
+          "lon": -89.1224
+        },
+        {
+          "lat": 43.0709,
+          "lon": -89.1048
+        },
+        {
+          "lat": 43.0531,
+          "lon": -89.122
+        },
+        {
+          "lat": 43.0696,
+          "lon": -89.1146
+        },
+        {
+          "lat": 43.0502,
+          "lon": -89.1311
+        },
+        {
+          "lat": 43.0699,
+          "lon": -89.1364
+        }
+      ]
+    },
+    {
+      "id": "lib-05-military-ridge-rail-trail",
+      "name": "Military Ridge Rail-Trail",
+      "distanceMeters": 99000,
+      "elevationGainMeters": 1962,
+      "estimatedDuration": 17678,
+      "source": "gpx",
+      "payloadBytes": 3960000,
+      "track": [
+        {
+          "lat": 43.073,
+          "lon": -89.3753
+        },
+        {
+          "lat": 43.0692,
+          "lon": -89.3621
+        },
+        {
+          "lat": 43.0883,
+          "lon": -89.3751
+        },
+        {
+          "lat": 43.0809,
+          "lon": -89.3579
+        },
+        {
+          "lat": 43.0897,
+          "lon": -89.3715
+        },
+        {
+          "lat": 43.0726,
+          "lon": -89.3734
+        },
+        {
+          "lat": 43.0549,
+          "lon": -89.3664
+        },
+        {
+          "lat": 43.0555,
+          "lon": -89.355
+        },
+        {
+          "lat": 43.0592,
+          "lon": -89.3711
+        },
+        {
+          "lat": 43.043,
+          "lon": -89.3571
+        },
+        {
+          "lat": 43.0317,
+          "lon": -89.3385
+        },
+        {
+          "lat": 43.0357,
+          "lon": -89.3458
+        }
+      ]
+    },
+    {
+      "id": "lib-06-ice-age-trail-sampler",
+      "deviceObjectID": 102,
+      "name": "Ice Age Trail Sampler",
+      "distanceMeters": 106000,
+      "elevationGainMeters": 681,
+      "estimatedDuration": 18928,
+      "source": "tcx",
+      "payloadBytes": 4240000,
+      "track": [
+        {
+          "lat": 43.3019,
+          "lon": -88.6338
+        },
+        {
+          "lat": 43.3014,
+          "lon": -88.6437
+        },
+        {
+          "lat": 43.2957,
+          "lon": -88.6288
+        },
+        {
+          "lat": 43.2762,
+          "lon": -88.624
+        },
+        {
+          "lat": 43.2742,
+          "lon": -88.6232
+        },
+        {
+          "lat": 43.2801,
+          "lon": -88.6196
+        },
+        {
+          "lat": 43.2846,
+          "lon": -88.602
+        },
+        {
+          "lat": 43.2892,
+          "lon": -88.6114
+        },
+        {
+          "lat": 43.2726,
+          "lon": -88.6163
+        },
+        {
+          "lat": 43.2632,
+          "lon": -88.6003
+        },
+        {
+          "lat": 43.2546,
+          "lon": -88.6053
+        }
+      ]
+    },
+    {
+      "id": "lib-07-governor-dodge-circuit",
+      "name": "Governor Dodge Circuit",
+      "distanceMeters": 66000,
+      "elevationGainMeters": 1160,
+      "estimatedDuration": 11785,
+      "source": "gpx",
+      "payloadBytes": 2640000,
+      "track": [
+        {
+          "lat": 43.4172,
+          "lon": -88.3926
+        },
+        {
+          "lat": 43.418,
+          "lon": -88.3897
+        },
+        {
+          "lat": 43.4245,
+          "lon": -88.3824
+        },
+        {
+          "lat": 43.4158,
+          "lon": -88.4002
+        },
+        {
+          "lat": 43.4218,
+          "lon": -88.3826
+        },
+        {
+          "lat": 43.4194,
+          "lon": -88.4021
+        },
+        {
+          "lat": 43.4325,
+          "lon": -88.4211
+        }
+      ]
+    },
+    {
+      "id": "lib-08-wildcat-mountain-climb",
+      "name": "Wildcat Mountain Climb",
+      "distanceMeters": 109000,
+      "elevationGainMeters": 213,
+      "estimatedDuration": 19464,
+      "source": "tcx",
+      "payloadBytes": 4360000,
+      "track": [
+        {
+          "lat": 43.5169,
+          "lon": -88.7634
+        },
+        {
+          "lat": 43.5039,
+          "lon": -88.7773
+        },
+        {
+          "lat": 43.4847,
+          "lon": -88.7745
+        },
+        {
+          "lat": 43.4963,
+          "lon": -88.7828
+        },
+        {
+          "lat": 43.4825,
+          "lon": -88.7737
+        },
+        {
+          "lat": 43.4663,
+          "lon": -88.7651
+        },
+        {
+          "lat": 43.4575,
+          "lon": -88.7456
+        },
+        {
+          "lat": 43.4652,
+          "lon": -88.7564
+        },
+        {
+          "lat": 43.4492,
+          "lon": -88.7367
+        },
+        {
+          "lat": 43.4651,
+          "lon": -88.7309
+        },
+        {
+          "lat": 43.4504,
+          "lon": -88.7184
+        }
+      ]
+    },
+    {
+      "id": "lib-09-elroy-sparta-tunnels",
+      "deviceObjectID": 103,
+      "name": "Elroy-Sparta Tunnels",
+      "distanceMeters": 82000,
+      "elevationGainMeters": 765,
+      "estimatedDuration": 14642,
+      "source": "tcx",
+      "payloadBytes": 3280000,
+      "track": [
+        {
+          "lat": 42.7528,
+          "lon": -88.7862
+        },
+        {
+          "lat": 42.7727,
+          "lon": -88.7947
+        },
+        {
+          "lat": 42.7771,
+          "lon": -88.8038
+        },
+        {
+          "lat": 42.7783,
+          "lon": -88.808
+        },
+        {
+          "lat": 42.7759,
+          "lon": -88.8138
+        },
+        {
+          "lat": 42.7887,
+          "lon": -88.8269
+        },
+        {
+          "lat": 42.7772,
+          "lon": -88.8221
+        },
+        {
+          "lat": 42.7941,
+          "lon": -88.8415
+        },
+        {
+          "lat": 42.8077,
+          "lon": -88.8465
+        },
+        {
+          "lat": 42.8234,
+          "lon": -88.8445
+        },
+        {
+          "lat": 42.8222,
+          "lon": -88.8621
+        },
+        {
+          "lat": 42.8194,
+          "lon": -88.8522
+        }
+      ]
+    },
+    {
+      "id": "lib-10-horicon-marsh-flats",
+      "name": "Horicon Marsh Flats",
+      "distanceMeters": 52000,
+      "elevationGainMeters": 201,
+      "estimatedDuration": 9285,
+      "source": "gpx",
+      "payloadBytes": 2080000,
+      "track": [
+        {
+          "lat": 42.9502,
+          "lon": -88.5067
+        },
+        {
+          "lat": 42.9504,
+          "lon": -88.4948
+        },
+        {
+          "lat": 42.9483,
+          "lon": -88.4902
+        },
+        {
+          "lat": 42.9304,
+          "lon": -88.4718
+        },
+        {
+          "lat": 42.9306,
+          "lon": -88.4607
+        },
+        {
+          "lat": 42.9367,
+          "lon": -88.4533
+        },
+        {
+          "lat": 42.941,
+          "lon": -88.4712
+        },
+        {
+          "lat": 42.9338,
+          "lon": -88.4841
+        }
+      ]
+    },
+    {
+      "id": "lib-11-mirror-lake-spin",
+      "name": "Mirror Lake Spin",
+      "distanceMeters": 63000,
+      "elevationGainMeters": 704,
+      "estimatedDuration": 11250,
+      "source": "tcx",
+      "payloadBytes": 2520000,
+      "track": [
+        {
+          "lat": 43.1477,
+          "lon": -88.407
+        },
+        {
+          "lat": 43.1339,
+          "lon": -88.3929
+        },
+        {
+          "lat": 43.1313,
+          "lon": -88.3941
+        },
+        {
+          "lat": 43.1132,
+          "lon": -88.3775
+        },
+        {
+          "lat": 43.1327,
+          "lon": -88.3806
+        },
+        {
+          "lat": 43.1336,
+          "lon": -88.3638
+        },
+        {
+          "lat": 43.1268,
+          "lon": -88.3476
+        },
+        {
+          "lat": 43.111,
+          "lon": -88.3491
+        }
+      ]
+    },
+    {
+      "id": "lib-12-yellowstone-lake-loop",
+      "deviceObjectID": 104,
+      "name": "Yellowstone Lake Loop",
+      "distanceMeters": 78000,
+      "elevationGainMeters": 1604,
+      "estimatedDuration": 13928,
+      "source": "gpx",
+      "payloadBytes": 3120000,
+      "track": [
+        {
+          "lat": 42.6942,
+          "lon": -88.5611
+        },
+        {
+          "lat": 42.6964,
+          "lon": -88.575
+        },
+        {
+          "lat": 42.695,
+          "lon": -88.5948
+        },
+        {
+          "lat": 42.6872,
+          "lon": -88.5938
+        },
+        {
+          "lat": 42.703,
+          "lon": -88.5887
+        },
+        {
+          "lat": 42.6885,
+          "lon": -88.5946
+        },
+        {
+          "lat": 42.6934,
+          "lon": -88.5914
+        },
+        {
+          "lat": 42.6841,
+          "lon": -88.5848
+        },
+        {
+          "lat": 42.6883,
+          "lon": -88.5771
+        }
+      ]
+    },
+    {
+      "id": "lib-13-cadiz-springs-gravel",
+      "name": "Cadiz Springs Gravel",
+      "distanceMeters": 34000,
+      "elevationGainMeters": 1025,
+      "estimatedDuration": 6071,
+      "source": "gpx",
+      "payloadBytes": 1360000,
+      "track": [
+        {
+          "lat": 43.1225,
+          "lon": -88.5069
+        },
+        {
+          "lat": 43.1034,
+          "lon": -88.4873
+        },
+        {
+          "lat": 43.1019,
+          "lon": -88.4931
+        },
+        {
+          "lat": 43.1069,
+          "lon": -88.4872
+        },
+        {
+          "lat": 43.1185,
+          "lon": -88.4769
+        },
+        {
+          "lat": 43.131,
+          "lon": -88.4763
+        },
+        {
+          "lat": 43.1395,
+          "lon": -88.4624
+        },
+        {
+          "lat": 43.1525,
+          "lon": -88.4758
+        },
+        {
+          "lat": 43.1362,
+          "lon": -88.4584
+        },
+        {
+          "lat": 43.1376,
+          "lon": -88.472
+        },
+        {
+          "lat": 43.1497,
+          "lon": -88.4781
+        },
+        {
+          "lat": 43.1497,
+          "lon": -88.4601
+        }
+      ]
+    },
+    {
+      "id": "lib-14-new-glarus-woods-ramble",
+      "name": "New Glarus Woods Ramble",
+      "distanceMeters": 55000,
+      "elevationGainMeters": 1266,
+      "estimatedDuration": 9821,
+      "source": "tcx",
+      "payloadBytes": 2200000,
+      "track": [
+        {
+          "lat": 43.4546,
+          "lon": -88.8879
+        },
+        {
+          "lat": 43.4443,
+          "lon": -88.8799
+        },
+        {
+          "lat": 43.456,
+          "lon": -88.8836
+        },
+        {
+          "lat": 43.4527,
+          "lon": -88.8961
+        },
+        {
+          "lat": 43.4669,
+          "lon": -88.8995
+        },
+        {
+          "lat": 43.4474,
+          "lon": -88.9164
+        },
+        {
+          "lat": 43.4587,
+          "lon": -88.901
+        },
+        {
+          "lat": 43.4712,
+          "lon": -88.9099
+        }
+      ]
+    },
+    {
+      "id": "lib-15-mount-horeb-meander",
+      "deviceObjectID": 105,
+      "name": "Mount Horeb Meander",
+      "distanceMeters": 70000,
+      "elevationGainMeters": 760,
+      "estimatedDuration": 12500,
+      "source": "gpx",
+      "payloadBytes": 2800000,
+      "track": [
+        {
+          "lat": 43.3551,
+          "lon": -89.8518
+        },
+        {
+          "lat": 43.3402,
+          "lon": -89.8591
+        },
+        {
+          "lat": 43.3586,
+          "lon": -89.8777
+        },
+        {
+          "lat": 43.3646,
+          "lon": -89.8823
+        },
+        {
+          "lat": 43.3597,
+          "lon": -89.8662
+        },
+        {
+          "lat": 43.3679,
+          "lon": -89.8763
+        },
+        {
+          "lat": 43.3744,
+          "lon": -89.885
+        }
+      ]
+    },
+    {
+      "id": "lib-16-baraboo-range-traverse",
+      "name": "Baraboo Range Traverse",
+      "distanceMeters": 130000,
+      "elevationGainMeters": 1793,
+      "estimatedDuration": 23214,
+      "source": "tcx",
+      "payloadBytes": 5200000,
+      "track": [
+        {
+          "lat": 42.6809,
+          "lon": -89.5872
+        },
+        {
+          "lat": 42.6708,
+          "lon": -89.5931
+        },
+        {
+          "lat": 42.6579,
+          "lon": -89.577
+        },
+        {
+          "lat": 42.6744,
+          "lon": -89.5583
+        },
+        {
+          "lat": 42.663,
+          "lon": -89.5745
+        },
+        {
+          "lat": 42.6785,
+          "lon": -89.5721
+        },
+        {
+          "lat": 42.6682,
+          "lon": -89.5719
+        }
+      ]
+    },
+    {
+      "id": "lib-17-wisconsin-river-run",
+      "name": "Wisconsin River Run",
+      "distanceMeters": 78000,
+      "elevationGainMeters": 2000,
+      "estimatedDuration": 13928,
+      "source": "tcx",
+      "payloadBytes": 3120000,
+      "track": [
+        {
+          "lat": 43.3499,
+          "lon": -89.3902
+        },
+        {
+          "lat": 43.3401,
+          "lon": -89.3709
+        },
+        {
+          "lat": 43.3238,
+          "lon": -89.3778
+        },
+        {
+          "lat": 43.3202,
+          "lon": -89.3772
+        },
+        {
+          "lat": 43.3398,
+          "lon": -89.3664
+        },
+        {
+          "lat": 43.3206,
+          "lon": -89.3668
+        },
+        {
+          "lat": 43.3006,
+          "lon": -89.3515
+        },
+        {
+          "lat": 43.3069,
+          "lon": -89.3445
+        },
+        {
+          "lat": 43.2895,
+          "lon": -89.3452
+        },
+        {
+          "lat": 43.2735,
+          "lon": -89.3502
+        },
+        {
+          "lat": 43.2872,
+          "lon": -89.3548
+        }
+      ]
+    },
+    {
+      "id": "lib-18-badger-state-trail",
+      "deviceObjectID": 106,
+      "name": "Badger State Trail",
+      "distanceMeters": 75000,
+      "elevationGainMeters": 1160,
+      "estimatedDuration": 13392,
+      "source": "tcx",
+      "payloadBytes": 3000000,
+      "track": [
+        {
+          "lat": 42.834,
+          "lon": -88.905
+        },
+        {
+          "lat": 42.8262,
+          "lon": -88.9044
+        },
+        {
+          "lat": 42.8296,
+          "lon": -88.8938
+        },
+        {
+          "lat": 42.8351,
+          "lon": -88.8814
+        },
+        {
+          "lat": 42.8345,
+          "lon": -88.8921
+        },
+        {
+          "lat": 42.8523,
+          "lon": -88.8781
+        },
+        {
+          "lat": 42.857,
+          "lon": -88.8616
+        },
+        {
+          "lat": 42.8441,
+          "lon": -88.8562
+        },
+        {
+          "lat": 42.8605,
+          "lon": -88.8521
+        },
+        {
+          "lat": 42.8505,
+          "lon": -88.8484
+        },
+        {
+          "lat": 42.8434,
+          "lon": -88.8557
+        },
+        {
+          "lat": 42.8295,
+          "lon": -88.8364
+        }
+      ]
+    },
+    {
+      "id": "lib-19-sauk-prairie-sunrise",
+      "name": "Sauk Prairie Sunrise",
+      "distanceMeters": 38000,
+      "elevationGainMeters": 692,
+      "estimatedDuration": 6785,
+      "source": "tcx",
+      "payloadBytes": 1520000,
+      "track": [
+        {
+          "lat": 42.7537,
+          "lon": -89.9194
+        },
+        {
+          "lat": 42.7524,
+          "lon": -89.9328
+        },
+        {
+          "lat": 42.7404,
+          "lon": -89.9523
+        },
+        {
+          "lat": 42.7278,
+          "lon": -89.9684
+        },
+        {
+          "lat": 42.7472,
+          "lon": -89.9881
+        },
+        {
+          "lat": 42.7302,
+          "lon": -89.9981
+        },
+        {
+          "lat": 42.7341,
+          "lon": -89.9863
+        },
+        {
+          "lat": 42.7208,
+          "lon": -89.9753
+        }
+      ]
+    },
+    {
+      "id": "lib-20-coulee-region-grinder",
+      "name": "Coulee Region Grinder",
+      "distanceMeters": 136000,
+      "elevationGainMeters": 503,
+      "estimatedDuration": 24285,
+      "source": "gpx",
+      "payloadBytes": 5440000,
+      "track": [
+        {
+          "lat": 43.3277,
+          "lon": -89.1541
+        },
+        {
+          "lat": 43.315,
+          "lon": -89.1375
+        },
+        {
+          "lat": 43.3316,
+          "lon": -89.1569
+        },
+        {
+          "lat": 43.3321,
+          "lon": -89.1404
+        },
+        {
+          "lat": 43.3249,
+          "lon": -89.1284
+        },
+        {
+          "lat": 43.3344,
+          "lon": -89.1482
+        },
+        {
+          "lat": 43.3484,
+          "lon": -89.1461
+        },
+        {
+          "lat": 43.3455,
+          "lon": -89.1427
+        },
+        {
+          "lat": 43.3442,
+          "lon": -89.1346
+        }
+      ]
+    },
+    {
+      "id": "lib-21-driftless-dawn-patrol",
+      "deviceObjectID": 107,
+      "name": "Driftless Dawn Patrol",
+      "distanceMeters": 86000,
+      "elevationGainMeters": 390,
+      "estimatedDuration": 15357,
+      "source": "tcx",
+      "payloadBytes": 3440000,
+      "track": [
+        {
+          "lat": 43.0183,
+          "lon": -89.8545
+        },
+        {
+          "lat": 43.005,
+          "lon": -89.838
+        },
+        {
+          "lat": 42.9946,
+          "lon": -89.8383
+        },
+        {
+          "lat": 42.9946,
+          "lon": -89.8544
+        },
+        {
+          "lat": 42.9846,
+          "lon": -89.8494
+        },
+        {
+          "lat": 43.0011,
+          "lon": -89.8532
+        },
+        {
+          "lat": 43.0153,
+          "lon": -89.8466
+        },
+        {
+          "lat": 43.0151,
+          "lon": -89.8544
+        },
+        {
+          "lat": 43.0035,
+          "lon": -89.8449
+        },
+        {
+          "lat": 43.011,
+          "lon": -89.8452
+        }
+      ]
+    }
+  ],
+  "rides": [
+    {
+      "id": "libride-00",
+      "name": "Wildcat Mountain Climb",
+      "date": "2026-06-28T07:30:00Z",
+      "distanceMeters": 71000,
+      "movingTime": 12239,
+      "averageSpeedMps": 5.8011,
+      "climbMeters": 990,
+      "track": [
+        {
+          "lat": 42.981,
+          "lon": -89.4356
+        },
+        {
+          "lat": 42.9782,
+          "lon": -89.4465
+        },
+        {
+          "lat": 42.9872,
+          "lon": -89.4613
+        },
+        {
+          "lat": 43.0021,
+          "lon": -89.4752
+        },
+        {
+          "lat": 42.9848,
+          "lon": -89.4816
+        },
+        {
+          "lat": 42.9879,
+          "lon": -89.4721
+        },
+        {
+          "lat": 42.9919,
+          "lon": -89.4604
+        }
+      ]
+    },
+    {
+      "id": "libride-01",
+      "name": "Badger State Trail",
+      "date": "2026-06-26T07:30:00Z",
+      "distanceMeters": 37000,
+      "movingTime": 5938,
+      "averageSpeedMps": 6.2311,
+      "climbMeters": 901,
+      "track": [
+        {
+          "lat": 43.5413,
+          "lon": -89.3092
+        },
+        {
+          "lat": 43.5412,
+          "lon": -89.306
+        },
+        {
+          "lat": 43.5333,
+          "lon": -89.3229
+        },
+        {
+          "lat": 43.522,
+          "lon": -89.3173
+        },
+        {
+          "lat": 43.5326,
+          "lon": -89.3008
+        },
+        {
+          "lat": 43.55,
+          "lon": -89.3059
+        },
+        {
+          "lat": 43.5546,
+          "lon": -89.308
+        },
+        {
+          "lat": 43.5424,
+          "lon": -89.2914
+        },
+        {
+          "lat": 43.5234,
+          "lon": -89.2806
+        }
+      ]
+    },
+    {
+      "id": "libride-02",
+      "name": "Mount Horeb Meander",
+      "date": "2026-06-24T07:30:00Z",
+      "distanceMeters": 54000,
+      "movingTime": 8847,
+      "averageSpeedMps": 6.1038,
+      "climbMeters": 703,
+      "track": [
+        {
+          "lat": 42.951,
+          "lon": -88.8598
+        },
+        {
+          "lat": 42.9545,
+          "lon": -88.8666
+        },
+        {
+          "lat": 42.9413,
+          "lon": -88.8467
+        },
+        {
+          "lat": 42.9448,
+          "lon": -88.8488
+        },
+        {
+          "lat": 42.9498,
+          "lon": -88.8425
+        },
+        {
+          "lat": 42.9531,
+          "lon": -88.839
+        },
+        {
+          "lat": 42.9571,
+          "lon": -88.8554
+        },
+        {
+          "lat": 42.9549,
+          "lon": -88.8513
+        },
+        {
+          "lat": 42.9387,
+          "lon": -88.8521
+        }
+      ]
+    },
+    {
+      "id": "libride-03",
+      "name": "Cadiz Springs Gravel",
+      "date": "2026-06-22T07:30:00Z",
+      "distanceMeters": 67000,
+      "movingTime": 11896,
+      "averageSpeedMps": 5.6321,
+      "climbMeters": 1070,
+      "track": [
+        {
+          "lat": 42.9889,
+          "lon": -89.7212
+        },
+        {
+          "lat": 43.0075,
+          "lon": -89.7254
+        },
+        {
+          "lat": 43.0164,
+          "lon": -89.7144
+        },
+        {
+          "lat": 43.0253,
+          "lon": -89.7276
+        },
+        {
+          "lat": 43.0085,
+          "lon": -89.728
+        },
+        {
+          "lat": 42.9902,
+          "lon": -89.7091
+        },
+        {
+          "lat": 42.9886,
+          "lon": -89.7081
+        },
+        {
+          "lat": 42.9914,
+          "lon": -89.7047
+        },
+        {
+          "lat": 42.9888,
+          "lon": -89.7029
+        },
+        {
+          "lat": 42.9693,
+          "lon": -89.701
+        }
+      ]
+    },
+    {
+      "id": "libride-04",
+      "name": "Military Ridge Rail-Trail",
+      "date": "2026-06-20T07:30:00Z",
+      "distanceMeters": 75000,
+      "movingTime": 11783,
+      "averageSpeedMps": 6.3651,
+      "climbMeters": 692,
+      "track": [
+        {
+          "lat": 43.2009,
+          "lon": -89.235
+        },
+        {
+          "lat": 43.1838,
+          "lon": -89.2221
+        },
+        {
+          "lat": 43.1724,
+          "lon": -89.2251
+        },
+        {
+          "lat": 43.1594,
+          "lon": -89.2171
+        },
+        {
+          "lat": 43.1413,
+          "lon": -89.1983
+        },
+        {
+          "lat": 43.1426,
+          "lon": -89.2109
+        },
+        {
+          "lat": 43.1281,
+          "lon": -89.2045
+        },
+        {
+          "lat": 43.1294,
+          "lon": -89.2174
+        },
+        {
+          "lat": 43.1423,
+          "lon": -89.2329
+        },
+        {
+          "lat": 43.144,
+          "lon": -89.2406
+        }
+      ]
+    },
+    {
+      "id": "libride-05",
+      "name": "Ice Age Trail Sampler",
+      "date": "2026-06-18T07:30:00Z",
+      "distanceMeters": 49000,
+      "movingTime": 8581,
+      "averageSpeedMps": 5.7103,
+      "climbMeters": 859,
+      "track": [
+        {
+          "lat": 43.3783,
+          "lon": -89.7558
+        },
+        {
+          "lat": 43.3913,
+          "lon": -89.7656
+        },
+        {
+          "lat": 43.3992,
+          "lon": -89.7765
+        },
+        {
+          "lat": 43.3887,
+          "lon": -89.7791
+        },
+        {
+          "lat": 43.3918,
+          "lon": -89.7951
+        },
+        {
+          "lat": 43.3962,
+          "lon": -89.7923
+        },
+        {
+          "lat": 43.397,
+          "lon": -89.7972
+        },
+        {
+          "lat": 43.3891,
+          "lon": -89.7962
+        },
+        {
+          "lat": 43.3825,
+          "lon": -89.8139
+        }
+      ]
+    },
+    {
+      "id": "libride-06",
+      "name": "Cross-Plains Gravel",
+      "date": "2026-06-16T07:30:00Z",
+      "distanceMeters": 36000,
+      "movingTime": 6576,
+      "averageSpeedMps": 5.4745,
+      "climbMeters": 457,
+      "track": [
+        {
+          "lat": 43.602,
+          "lon": -88.7121
+        },
+        {
+          "lat": 43.6203,
+          "lon": -88.7018
+        },
+        {
+          "lat": 43.6043,
+          "lon": -88.6861
+        },
+        {
+          "lat": 43.5848,
+          "lon": -88.6689
+        },
+        {
+          "lat": 43.5757,
+          "lon": -88.6582
+        },
+        {
+          "lat": 43.5758,
+          "lon": -88.656
+        },
+        {
+          "lat": 43.56,
+          "lon": -88.6381
+        },
+        {
+          "lat": 43.5667,
+          "lon": -88.6505
+        },
+        {
+          "lat": 43.5479,
+          "lon": -88.6639
+        }
+      ]
+    },
+    {
+      "id": "libride-07",
+      "name": "Coulee Region Grinder",
+      "date": "2026-06-14T07:30:00Z",
+      "distanceMeters": 21000,
+      "movingTime": 3892,
+      "averageSpeedMps": 5.3957,
+      "climbMeters": 772,
+      "track": [
+        {
+          "lat": 42.8076,
+          "lon": -89.2008
+        },
+        {
+          "lat": 42.7885,
+          "lon": -89.203
+        },
+        {
+          "lat": 42.7859,
+          "lon": -89.2156
+        },
+        {
+          "lat": 42.7842,
+          "lon": -89.2108
+        },
+        {
+          "lat": 42.7743,
+          "lon": -89.2194
+        },
+        {
+          "lat": 42.79,
+          "lon": -89.2184
+        },
+        {
+          "lat": 42.7748,
+          "lon": -89.2088
+        },
+        {
+          "lat": 42.7841,
+          "lon": -89.2261
+        }
+      ]
+    }
+  ]
+}

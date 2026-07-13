@@ -125,7 +125,7 @@ The orange waypoints matter for a reason worth stating up front: the cheap stage
 
 ## 1 · Projection: ground to screen
 
-The camera is a [`Viewport`](src:firmware/obc-render/src/lib.rs) — a centre point in microdegrees, a zoom, an aspect correction for the latitude, and a rotation. Its hot path is `to_screen`, called once per vertex, so it's written to keep full precision while staying fast:
+The camera is a [`Viewport`](src:firmware/obc-render/src/viewport.rs) — a centre point in microdegrees, a zoom, an aspect correction for the latitude, and a rotation. Its hot path is `to_screen`, called once per vertex, so it's written to keep full precision while staying fast:
 
 ```rust
 let delta_lon = lon.wrapping_sub(self.cam_lon);   // i32 µdeg, relative to camera
@@ -136,7 +136,8 @@ let rx = self.cos_c * ex - self.sin_c * ny;       // rotate to heading-up
 let ry = -self.sin_c * ex - self.cos_c * ny;
 let x = rx * self.zoom + self.w / 2.0;            // scale, centre
 let y = ry * self.zoom + self.h / 2.0;
-(roundf(x) as i32, roundf(y) as i32)              // round to nearest
+(round_coord(x), round_coord(y))                  // round to nearest — a branch + add,
+                                                  // no soft-float roundf on the hot path
 ```
 
 <figure class="fig">
@@ -360,38 +361,44 @@ Here is the central problem. A dense view holds far more geometry than the fixed
 
 Two mechanisms work together to solve this within the memory and time budget.
 
-**Skip, don't decode.** Each feature's style carries a 2-bit **priority** (1 = keep first … 4 = drop first). When the reader walks a chunk, it checks a feature's priority *before* touching its coordinates. If this isn't the feature we want right now, it advances past the bytes with pure offset arithmetic — no coordinate math, no buffer writes.
+**Priority, and cheap skipping.** Each feature's style carries a 2-bit **priority** (1 = keep first … 4 = drop first) — the axis the drop decision turns on. And a feature is cheap to *step over*: its header is a fixed 12 bytes, so the reader can advance past a feature it doesn't want with pure offset arithmetic — no coordinate math, no buffer writes. That skip primitive is what lets the collector touch a chunk's bytes selectively: past features whose style isn't drawn at all, and — the payoff below — straight to the handful of *winners* it must re-decode.
 
 <figure class="fig">
-<svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells tagged by priority. During the pass for priority 1, only priority-1 features are decoded; the rest are skipped by advancing the read pointer.">
-  <text class="d-tag" x="20" y="24">Pass for priority 1 — decode P1, skip the rest</text>
+<svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells. Pass B seeks straight to the winning features by their stored byte offsets, skipping everything in between by advancing the read pointer.">
+  <text class="d-tag" x="20" y="24">Pass B — seek straight to each winner by its stored offset</text>
   <!-- byte stream cells -->
   <g font-family="var(--mono)">
     <!-- cell template: x width 78, y 52 h 46 -->
-    <rect x="24"  y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="63" y="84" text-anchor="middle">P1</text>
-    <rect x="110" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="149" y="84" text-anchor="middle">P3 skip</text>
-    <rect x="196" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="235" y="84" text-anchor="middle">P4 skip</text>
-    <rect x="282" y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="321" y="84" text-anchor="middle">P1</text>
-    <rect x="368" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="407" y="84" text-anchor="middle">P2 skip</text>
-    <rect x="454" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="493" y="84" text-anchor="middle">P3 skip</text>
-    <rect x="540" y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="579" y="84" text-anchor="middle">P1</text>
+    <rect x="24"  y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="63" y="84" text-anchor="middle">win</text>
+    <rect x="110" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="149" y="84" text-anchor="middle">skip</text>
+    <rect x="196" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="235" y="84" text-anchor="middle">skip</text>
+    <rect x="282" y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="321" y="84" text-anchor="middle">win</text>
+    <rect x="368" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="407" y="84" text-anchor="middle">skip</text>
+    <rect x="454" y="56" width="78" height="46" rx="6" class="d-muted" /><text class="d-sub" x="493" y="84" text-anchor="middle">skip</text>
+    <rect x="540" y="56" width="78" height="46" rx="6" class="d-hot-fill" /><text class="d-num" x="579" y="84" text-anchor="middle">win</text>
     <rect x="626" y="56" width="70" height="46" rx="6" class="d-muted" /><text class="d-sub" x="661" y="84" text-anchor="middle">end</text>
   </g>
   <!-- read head -->
-  <text class="d-sub" x="24" y="126">read head advances →</text>
+  <text class="d-sub" x="24" y="126">read head jumps offset → offset →</text>
   <line class="d-stroke" x1="24" y1="118" x2="696" y2="118" style="stroke:#cf6a2a;stroke-dasharray:2 5" />
-  <text class="d-sub" x="24" y="150" style="font-size:11px">decoded features (coral) cost coordinate math; skipped ones cost only a pointer add.</text>
+  <text class="d-sub" x="24" y="150" style="font-size:11px">re-decoded winners (coral) cost coordinate math; the features between them cost only a pointer add.</text>
 </svg>
-<figcaption>A feature header is 12 bytes; skipping is pure offset arithmetic. So scanning a chunk four times — once per priority level — is cheap, because each scan only <i>decodes</i> the quarter of features it's responsible for.</figcaption>
+<figcaption>A feature header is 12 bytes, so skipping is pure offset arithmetic. Pass A saved each winner's byte offset in its stub, so pass B seeks straight to it — re-decoding only the survivors, never re-scanning the whole chunk.</figcaption>
 </figure>
 
-**The multi-pass.** The renderer makes four passes over the visible chunks, priority 1 first. Each pass fills the buffers with every visible feature *at that level, across all chunks*, before the next pass begins. So when the buffers saturate, whatever is left undrawn is — by construction — the lowest priority, wherever it lived.
+**Stub-select.** The global-priority drop is easy to state and hard to do cheaply, because the device streams chunks off the SD card through a cache that holds **one** at a time. An earlier design made four passes over the visible chunks — one per priority level — filling the buffers level by level. That kept the guarantee, but it re-read every visible chunk *four times*; the one-slot cache absorbed none of it, so a wide view cost `4 × N` chunk reads off SPI SD and the frame crawled. The fix (issue #564) splits **selection** from **geometry**:
 
 ```rust
-for level in 1..=4u8 {
-    self.collect_level(reader, lod, level, view, stats);
-}
+let candidates = self.collect_stubs(reader, lod, view, &vis_mask, stats); // pass A
+let winners    = self.select(reader);                                     // RAM only
+self.decode_winners(reader, lod, view, winners, stats);                   // pass B
 ```
+
+- **Pass A** walks each visible chunk **once**, decoding every drawn feature just far enough to get its bounding box, and records a fixed-size *stub* — style, chunk, byte offset, vertex count — but keeps **no geometry**. When the stub buffer fills, the lowest-priority stub is evicted, so it always holds the best candidates.
+- **Select** is pure RAM: sort the stubs by priority and admit them greedily against the exact point/span budget. Drops are strictly lowest-priority-first, *globally* — the same guarantee as before, now with the exact vertex cost of every candidate known before a single coordinate is copied.
+- **Pass B** walks the chunks once more and re-decodes only the **winners**, seeking straight to each by the byte offset its stub saved, and writes their geometry into the frame buffers. Only chunks that own a winner are re-read.
+
+A feature that survives is decoded twice (cheap, in RAM); a chunk is fetched at most twice instead of four times, so the SD traffic that dominates a wide frame roughly halves. The stubs live in the same buffer the spans end up in — a stub is sized to fit a span slot — so the split costs no extra RAM.
 
 <figure class="fig">
 <svg viewBox="0 0 720 330" role="img" aria-label="Four priority lanes feed a fixed frame buffer in order. Priority 1, 2 and 3 fit; the buffer saturates partway through priority 4, so the remaining priority-4 features are dropped.">
@@ -439,16 +446,17 @@ for level in 1..=4u8 {
   <text class="d-sub" x="540" y="256" style="font-size:11px">priority 4 fit — exactly</text>
   <text class="d-sub" x="540" y="272" style="font-size:11px">the right things to lose</text>
 </svg>
-<figcaption>Because passes run low-number-first and each fills the buffers before the next starts, saturation drops strictly by priority across <i>all</i> chunks. Each feature matches exactly one level, so its coordinates are decoded only once per frame even though the chunks are walked four times.</figcaption>
+<figcaption>Select admits stubs priority-1 first, so when the budget saturates the undrawn remainder is strictly the lowest priority, across <i>all</i> chunks. Only the survivors' geometry is ever built — a dropped feature cost only its stub, never a copied vertex.</figcaption>
 </figure>
 
-Every kept feature becomes a 14-byte **span** — a compact draw record that says *what* and *where* without copying the geometry again ([`Span`](src:firmware/obc-render/src/lib.rs)):
+Every kept feature becomes a 14-byte **span** — a compact draw record that says *what* and *where* without copying the geometry again ([`Span`](src:firmware/obc-render/src/collect.rs)):
 
 ```rust
 struct Span {
     kind: Kind,      // polygon or line
     z: i8,           // paint order
-    weight: u8,      // line width
+    weight: u8,      // nominal line width — ramped by zoom at draw (see §6)
+    style_id: u8,    // → the full Style (dashed / color2) at draw time (a spare byte)
     color: u16,      // RGB565
     pt_start: u16,   // where its points sit in the frame buffer
     ring_start: u16,
@@ -457,14 +465,14 @@ struct Span {
 }
 ```
 
-Thousands of spans can be buffered at coarse zoom, so they're kept small (`u16` offsets, not `usize`). The "walk the tree four times" cost is paid only on the cheap index data; the expensive decode is still strictly once-per-feature.
+Thousands of spans can be buffered at coarse zoom, so they're kept small (`u16` offsets, not `usize`). The two chunk walks cost little on their own — the leaf walk reads only the cheap index — and the expensive part, copying vertices into the frame buffers, happens once, for the winners alone.
 
 ## 5 · Painter's order
 
 With the visible features collected, the renderer sorts the spans — not the geometry, just the little records — into back-to-front draw order:
 
 ```rust
-self.frame.spans.sort_unstable_by_key(|s| (s.z, s.seq));
+self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
 ```
 
 Each style carries a `z_index`; sea draws under land draws under forest draws under roads. Ties break on `seq`, the order the feature was collected in — a stable, allocation-free tiebreak so the result is deterministic. Note that **priority and z-index are different axes**: priority decides *whether* a feature survives the memory budget; z-index decides *where in the stack* the survivors are painted.
@@ -551,6 +559,138 @@ A **1 px** line is stroked by embedded-graphics directly — a thin Bresenham li
 
 Two filled rectangles butt-joined at a vertex leave a small notch on the outside of a bend and don't round the line's ends, so a disc the width of the stroke is filled (also as spans) to smooth each joint and cap. The disc is the overlay's biggest remaining cost, so it's spent only where it shows: at the two **run ends** (which round the cap and close the gap to the next feature at a chunk seam) and at interior vertices where the line **bends sharply**. The uncovered notch at a turn of `θ` off straight is only about `r·sin(θ/2)` deep (`r` = half the stroke width), so a gentle bend leaves a sub-pixel notch and needs no disc at all.
 
+The half-width `r` above is **not** the style's stored `weight` directly — a line's on-screen thickness **ramps with zoom**. A style's `weight` is its width at a *reference* ground scale (mid-riding zoom); each frame the renderer multiplies it by `(ref_mpp / mpp)^0.6` — one factor for the whole frame — so a road thickens as you zoom in and thins as you zoom out, the way a physical thing looks closer or farther. The exponent is deliberately **sub-linear**: true physical scaling (`^1`) would make every road sub-pixel at continent zoom and let one motorway swallow the panel up close, so the ramp is clamped to `1…12 px` and rounded to whole pixels (the map zooms in fixed ×1.2 detents, so the width steps cleanly with no shimmer). This also rights the cost curve — a wide overview, where hundreds of roads are on screen and the frame budget is tightest, now strokes each at 1–2 px instead of its full authored weight; the fat strokes happen only zoomed in, where a handful of features are visible. Dashed lines (admin borders, railway stripes) ride the same ramped width, so their dash rhythm tracks the line's thickness rather than fighting it.
+
+### A second colour and a dash: line styles
+
+Everything above strokes a line in one flat colour. But a railway isn't flat, an admin border is dashed, a road at riding zoom wants a darker *casing* down each side so it reads as a road and not a scratch, and a building at the finest zoom wants a crisp wall instead of a grey slab. Version 10 of the map format gives every style two extra knobs — a **`line_style`** (solid or dashed) and an optional **secondary colour `color2`** — and the renderer fans those two bits, crossed with whether the feature is a line or a polygon, into five distinct looks:
+
+| Feature | `line_style` | `color2` | Renders as |
+| :-- | :-- | :-- | :-- |
+| Line | solid | — | a flat stroke — the unchanged path |
+| Line | solid | set | **road casing** — a wider `color2` base under the fill (finest LOD only) |
+| Line | dashed | — | **dashes** in `color`, gaps transparent (admin borders) |
+| Line | dashed | set | **railway stripe** — a solid `color2` base with `color` dashes on top |
+| Polygon | *(ignored)* | set | fill in `color`, plus a `color2` **ring outline** (finest LOD only) |
+
+Each span already carries its one-byte `style_id`, so the draw loop re-resolves the full style from the reader's `O(1)` style table at draw time — no extra per-span RAM. Two of the five (casing, outline) are *extra passes* that cost real time, so they're gated to the finest LOD; the other three ride the existing stroke path. A config that uses **none** of them renders byte-for-byte what it did before — the whole feature is built to be free when unused, and each renderer sub-issue proved it with a before/after PNG md5 diff on a fixed camera.
+
+**Dashes, for free.** A dashed line reuses the entire clip-then-stroke pipeline unchanged and diverges only at the very end: instead of filling the whole visible run, it walks that run in **screen-space arc length** and emits only the "on" intervals. Because the clip happens *first*, the walker only ever sees on-screen geometry — so a dashed line is actually *cheaper* than the solid one, not dearer: it clips away the same off-screen majority, then paints only half of what survives. The phase resets at each clipped run (each time the line re-enters the view), which lets a dash straddle a bend seamlessly but also means the pattern can "crawl" a pixel or two as you pan — every slippy map does this, and it isn't worth carrying feature-space arc length to avoid. A **railway stripe** is just this composed with a base: stroke the whole line once in `color2`, then stroke `color` dashes on top, so the gaps between the dark dashes show the light base through — alternating stripes, no perpendicular crossties.
+
+### Road casing, and the z-boundary that makes junctions work
+
+A casing is a `weight + 2 px` stroke in `color2` painted **under** a road's fill, giving the road a darker edge down each side — the OSM-carto / Komoot "roads have borders" look. The subtlety isn't the stroke; it's *when* to paint it. Paint all the casings first, before the map, and the low-z fills that blanket a town (landuse, forest, water) paint straight over them — the casings vanish. Paint each casing right before its own road, and where two roads cross, one road's casing slices across the other's fill and the junction reads as cut.
+
+The spans are already sorted by `(z, seq)`, so the cased road lines form one contiguous z-band. The casing pass is inserted at exactly the **z boundary where that band begins** — a split index into the sorted array, not a re-sort — so the casings land *above* the low-z fills that would erase them yet *under* every road fill.
+
+<figure class="fig">
+<svg viewBox="0 0 800 320" role="img" aria-label="Left: the frame's spans, sorted by z-index and drawn bottom-up — water, landuse and building fills at the bottom, then a dashed split line marking the first cased road line, then the road casings, then the road fills on top. The casing pass is inserted at that split: after the low-z fills, so they cannot paint over it, but under every road fill. Right: a junction where two roads cross — the road fills stay continuous through the crossing and the darker casing hugs only the outside of each road, with no casing line slicing across the junction.">
+  <text class="d-tag" x="20" y="24">The casing pass goes at the z boundary — not before the frame</text>
+
+  <!-- LEFT: the sorted span stack -->
+  <text class="d-sub" x="150" y="52" text-anchor="middle">spans · sorted (z, seq) · drawn bottom-up</text>
+  <text class="d-sub" x="42" y="186" text-anchor="middle" transform="rotate(-90 42 186)" style="font-size:9px">z ↑ · paint order ↑</text>
+
+  <!-- bands: bottom (low z) drawn first -->
+  <rect x="90" y="248" width="110" height="26" rx="4" class="d-water" />
+  <text class="d-num" x="145" y="265" text-anchor="middle">water</text>
+  <rect x="90" y="220" width="110" height="26" rx="4" class="d-forest" />
+  <text class="d-num" x="145" y="237" text-anchor="middle">landuse</text>
+  <rect x="90" y="192" width="110" height="26" rx="4" style="fill:#d6cda8;stroke:#3c6b39;stroke-width:0.8" />
+  <text class="d-sub" x="145" y="209" text-anchor="middle">buildings</text>
+
+  <!-- split line -->
+  <line x1="72" y1="186" x2="214" y2="186" stroke="#cf6a2a" stroke-width="2" stroke-dasharray="5 4" />
+
+  <!-- casing pass -->
+  <rect x="90" y="152" width="110" height="26" rx="4" style="fill:#5a4326" />
+  <text class="d-num" x="145" y="169" text-anchor="middle">casings</text>
+  <!-- road fills -->
+  <rect x="90" y="124" width="110" height="26" rx="4" style="fill:#cdb894;stroke:#5a4326;stroke-width:0.8" />
+  <text class="d-sub" x="145" y="141" text-anchor="middle">road fills</text>
+
+  <!-- step annotations -->
+  <text class="d-sub" x="216" y="140" style="fill:#a9501c;font-size:9.5px">③ spans[split..) — road band, on top</text>
+  <text class="d-sub" x="216" y="168" style="fill:#a9501c;font-size:9.5px">② casing pass — wide color2, finest LOD</text>
+  <text class="d-sub" x="216" y="184" style="font-size:9px">split — first cased road line</text>
+  <text class="d-sub" x="216" y="230" style="fill:#a9501c;font-size:9.5px">① spans[0..split) — the base pass</text>
+
+  <!-- RIGHT: a junction -->
+  <text class="d-sub" x="620" y="52" text-anchor="middle">at a crossing</text>
+  <!-- casing (dark), drawn first -->
+  <rect x="520" y="162" width="200" height="36" style="fill:#5a4326" />
+  <rect x="602" y="100" width="36" height="160" style="fill:#5a4326" />
+  <!-- fills (tan), on top — cover the casing where the roads cross -->
+  <rect x="520" y="166" width="200" height="28" style="fill:#cdb894" />
+  <rect x="606" y="100" width="28" height="160" style="fill:#cdb894" />
+  <!-- callouts -->
+  <line class="d-stroke" x1="620" y1="180" x2="620" y2="180" />
+  <text class="d-sub" x="620" y="284" text-anchor="middle" style="font-size:9.5px">fills continuous through the junction</text>
+  <text class="d-sub" x="620" y="298" text-anchor="middle" style="font-size:9.5px">casing hugs the outside of each road only</text>
+</svg>
+<figcaption>Because the spans are already <code>(z, seq)</code>-sorted, the cased road lines are a contiguous band; the draw phase draws <b>①</b> everything below that band, then runs the <b>②</b> casing pass, then draws <b>③</b> the road band on top. So a casing survives the landuse/water fills below it, yet sits under all the road fills above it — at a junction (right) the fills stay continuous and no casing slices across the crossing. With no cased style the split is the whole array, the casing pass is empty, and ①+③ collapse to today's single pass; coarser LODs skip the pass outright.</figcaption>
+</figure>
+
+### Building outlines: all the fills, then all the walls
+
+A polygon whose style carries a `color2` gets **every ring — its exterior and any courtyard holes — stroked closed** in that colour at the finest LOD, so a building stops reading as a flat grey slab when you zoom in. Here too the interesting part is ordering. Touching row-house buildings share a wall, so if you outline each building right after its own fill, the *next* building's fill paints over the wall the previous one just drew — the terrace merges into one blob.
+
+The fix reuses the same `(z, seq)` sort. Within each contiguous **equal-z group** the draw loop runs two passes: **all the fills first**, then **all the outlines**. Nothing paints a fill after an outline within the group, so a neighbour can no longer erase a shared wall — both buildings stroke that edge, and it survives. The group closes before the next z begins, so a road at a higher z still paints over a building outline where it crosses.
+
+<figure class="fig">
+<svg viewBox="0 0 760 300" role="img" aria-label="Top row, per-feature order (wrong): building A is filled and outlined, then building B's fill lands over the shared edge and erases A's wall there, then B is outlined — the two touching buildings merge into one block with no divider. Bottom row, per-z-group order (right): both buildings are filled first, then both are outlined — the shared middle wall is drawn last, after every fill, so it survives and the two buildings read as distinct.">
+  <text class="d-tag" x="20" y="24">Outline after every fill in the z-group, so shared walls survive</text>
+
+  <!-- TOP ROW: per-feature (wrong) -->
+  <text class="d-label" x="30" y="70" style="fill:#a9501c">per feature</text>
+  <text class="d-sub" x="30" y="84" style="font-size:9px">outline right after each fill</text>
+
+  <!-- frame 1: A filled + outlined -->
+  <rect x="182" y="52" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <text class="d-sub" x="204" y="112" text-anchor="middle" style="font-size:9px">① fill + outline A</text>
+
+  <!-- frame 2: B's fill lands over the shared edge -->
+  <rect x="352" y="52" width="44" height="44" style="fill:#d6cda8" />
+  <rect x="396" y="52" width="44" height="44" style="fill:#d6cda8" />
+  <!-- A's surviving outer edges (coral), but the shared edge is covered by B's fill -->
+  <path d="M352 52 h44 M352 96 h44 M352 52 v44" fill="none" stroke="#cf6a2a" stroke-width="2.5" />
+  <line x1="399" y1="50" x2="399" y2="98" stroke="#c0492e" stroke-width="2" stroke-dasharray="3 3" />
+  <text x="446" y="70" style="font-family:var(--mono);font-size:9px;fill:#c0492e">B's fill erased</text>
+  <text x="446" y="82" style="font-family:var(--mono);font-size:9px;fill:#c0492e">A's shared wall</text>
+  <text class="d-sub" x="374" y="112" text-anchor="middle" style="font-size:9px">② B's fill lands</text>
+
+  <!-- frame 3: B outlined -> blob -->
+  <rect x="600" y="52" width="88" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <text class="d-sub" x="644" y="112" text-anchor="middle" style="font-size:9px">③ one merged blob ✗</text>
+
+  <!-- divider -->
+  <line class="d-stroke" x1="30" y1="150" x2="730" y2="150" style="stroke:#9aa884;stroke-width:1" />
+
+  <!-- BOTTOM ROW: per-z-group (right) -->
+  <text class="d-label" x="30" y="192" style="fill:#3c6b39">per z-group</text>
+  <text class="d-sub" x="30" y="206" style="font-size:9px">all fills, then all outlines</text>
+
+  <!-- frame 1: both fills, no outlines -->
+  <rect x="182" y="176" width="44" height="44" style="fill:#d6cda8" />
+  <rect x="226" y="176" width="44" height="44" style="fill:#d6cda8" />
+  <text class="d-sub" x="226" y="236" text-anchor="middle" style="font-size:9px">① all fills first</text>
+
+  <!-- frame 2: both outlined -> wall kept -->
+  <rect x="374" y="176" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <rect x="418" y="176" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <line x1="418" y1="174" x2="418" y2="222" stroke="#cf6a2a" stroke-width="2.5" />
+  <text class="d-sub" x="418" y="236" text-anchor="middle" style="font-size:9px">② all outlines</text>
+
+  <!-- result -->
+  <text x="560" y="196" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">the shared wall is</text>
+  <text x="560" y="210" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">drawn after every fill</text>
+  <text x="560" y="224" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">→ two crisp buildings ✓</text>
+</svg>
+<figcaption>Both shared-wall neighbours sit in the same z-group (buildings share a z), so drawing every fill before any outline is what keeps the wall. The outline is a <b>fixed 1-px hairline</b>, not the zoom-ramped stroke width: ramped, a closed ring hits 3–4 px at the sub-metre finest-LOD scale and its round joins flood a small footprint until the fill drowns and the building reads as a dark slab — the opposite of the goal. With no outlined polygon the group takes the single-loop path, byte-identical to before.</figcaption>
+</figure>
+
+**What the finest-LOD passes cost.** Both casing and outlines run **only at the finest LOD**, so every coarser zoom — where the frame budget is already tightest — pays exactly nothing. Where they do run, the numbers (measured `draw_us`, dense street scenes) are modest: casing adds **~20–25%** to the draw (at 4 m/px on a dense grid, ~170–179 µs climbs to ~206–250 µs for 152 cased roads; ~+55–80 µs at a busier zoom), because a casing is one extra wide stroke — wider than the fill it underlies, so its cost is the raster, not the re-projection. Building outlines are far cheaper still — **~7–9% of the casing pass** (about +10 µs at 2 m/px, +25 µs at 4 m/px) — because a hairline ring is the thin Bresenham line path, a fraction of a filled stroke.
+
 ## 7 · The overlays
 
 The map underneath is the base; everything that moves with *you* is drawn on top, after the map, in a fixed order:
@@ -561,6 +701,160 @@ The map underneath is the base; everything that moves with *you* is drawn on top
 4. **HUD chrome** — the off-route readout and pan-mode indicators.
 
 Each is just another polyline through the stroker or a triangle through the polygon fill — and since a thick stroke is itself rectangles and discs filled as spans, nearly everything on screen comes down to the one scanline span fill, reused.
+
+## To the panel: the banded push
+
+Everything above is shared — byte-for-byte identical on the simulator and the device. This last step is where the *transport* parts, because the device has neither the memory nor the display hardware a desktop takes for granted. The device has **512 KB of RAM and no external memory**, and **no scan-out engine** that would stream a framebuffer to the panel on its own. So it does two things a PC never has to: it draws into a *device-native* RGB222 framebuffer, and then it ships that framebuffer to the panel itself, a strip at a time. The **simulator's interactive window is the second backend of the very same [`DisplayDriver`](src:firmware/obc-platform/src/display.rs) seam**: it renders into the identical RGB222 framebuffer and runs the identical self-diffing present, differing only in the final hop — it uploads the changed rows to an `egui` texture instead of scanning them to a panel. (The headless `--png` dump is the one path that still writes a full true-colour framebuffer in one blit — the un-quantized reference.)
+
+### The RGB222 framebuffer
+
+The renderer draws into a single resident **RGB222** plane: one byte per pixel over the 240×320 panel — 75 KB, the whole frame held in `.bss`. Each byte is `0b00_RR_GG_BB`, the top two bits of each channel: the 64-colour gamut the [style table is tuned to](src:firmware/obc-reader/src/color.rs). The renderer's `color_fn` is the identity (styles are already RGB565) and the framebuffer quantises to those 64 colours *on store* — so the expensive geometry code from sections 1–7 is exactly the simulator's, and only the pixel sink differs. This is the [`DrawTarget` seam](../architecture/#two-hosts-one-core-and-the-seams-between-them) from the top of the page, realised for the device.
+
+### A band at a time (the bring-up path)
+
+A finished frame now sits in RAM, but nothing is putting it on glass. During bring-up the firmware did it in software over SPI: walk the framebuffer top to bottom and DMA it to a stand-in panel a **band** of a few rows at a time. That band push *was* the visible refresh — a top-to-bottom wipe you could watch sweep down the panel. The shipping device hands that same job to the **FLPR** coprocessor (below), which scans the framebuffer itself; the banding picture still frames the shape of the problem — get a resident frame onto a panel with no host-side scan-out engine, a strip at a time — so it's worth seeing first.
+
+<figure class="fig">
+<svg viewBox="0 0 720 290" role="img" aria-label="The resident RGB222 framebuffer on the left is sliced into horizontal bands. One band is read out, packed to the panel's wire format in a small reused scratch buffer, and DMA'd over SPI into a matching CASET/RASET window on the panel to the right. The band scratch is only a few rows and is reused for every band, so there is never a second full-frame copy.">
+  <defs>
+    <marker id="aG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">One finished frame → the panel, a band at a time</text>
+
+  <!-- framebuffer (left) -->
+  <rect class="d-panel-2" x="44" y="52" width="116" height="196" rx="8" />
+  <g stroke="#9aa884" stroke-opacity="0.5" stroke-width="1">
+    <line x1="44" y1="76" x2="160" y2="76"/><line x1="44" y1="100" x2="160" y2="100"/><line x1="44" y1="124" x2="160" y2="124"/><line x1="44" y1="148" x2="160" y2="148"/><line x1="44" y1="172" x2="160" y2="172"/><line x1="44" y1="196" x2="160" y2="196"/><line x1="44" y1="220" x2="160" y2="220"/>
+  </g>
+  <!-- the band being pushed -->
+  <rect x="44" y="100" width="116" height="24" class="d-hot-fill" />
+  <text class="d-label" x="102" y="40" text-anchor="middle" style="font-size:11px">RGB222 framebuffer</text>
+  <text class="d-sub" x="102" y="266" text-anchor="middle">240×320 · 75 KB · .bss</text>
+
+  <!-- pack box (middle) -->
+  <line class="d-flow" x1="160" y1="112" x2="300" y2="112" marker-end="url(#aG)" />
+  <rect class="d-hot" x="300" y="88" width="132" height="48" rx="10" style="fill:#f8efe4" />
+  <text class="d-label" x="366" y="108" text-anchor="middle" style="fill:#a9501c;font-size:11px">pack → RGB444</text>
+  <text class="d-sub" x="366" y="124" text-anchor="middle">2 px → 3 bytes</text>
+  <text class="d-sub" x="366" y="158" text-anchor="middle" style="font-size:10px">band scratch ≈ 7 KB · reused ×23</text>
+
+  <!-- arrow to panel -->
+  <line class="d-flow" x1="432" y1="112" x2="556" y2="112" marker-end="url(#aG)" />
+  <text class="d-sub" x="494" y="104" text-anchor="middle" style="font-size:10px">SPI · DMA</text>
+  <text class="d-sub" x="494" y="128" text-anchor="middle" style="font-size:10px">CASET/RASET</text>
+
+  <!-- panel (right) -->
+  <rect class="d-panel" x="560" y="52" width="116" height="196" rx="8" style="fill:#e7ead8" />
+  <rect x="560" y="100" width="116" height="24" class="d-hot-fill" style="fill-opacity:0.55" />
+  <text class="d-label" x="618" y="40" text-anchor="middle" style="font-size:11px">ST7789 · bring-up</text>
+  <text class="d-sub" x="618" y="266" text-anchor="middle">addressed window</text>
+  <!-- scanline progression -->
+  <line x1="690" y1="60" x2="690" y2="240" stroke="#cf6a2a" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#aG)" />
+  <text class="d-sub" x="700" y="154" style="font-size:9px" transform="rotate(90 700 154)">top → bottom</text>
+</svg>
+<figcaption>The seam that hides the panel's wire format is the shared <code>DisplayDriver</code> (in <b>obc-platform</b>): the renderer draws each band through a frame-absolute <code>Band</code> view, and the backend reformats + transports it. The band scratch is only a few rows, <b>reused for every band</b>, so the frame lives once in the RGB222 plane and never as a second full RGB565 copy.</figcaption>
+</figure>
+
+The wire format lives behind the board-agnostic [`DisplayDriver`](src:firmware/obc-platform/src/display.rs) seam (in **obc-platform**), so the render stack never couples to it — and the seam has **two live implementations** keeping it honest: the LS021/FLPR panel on-device and the simulator on the host, the latter compiled and tested in the workspace on every CI run. The original bring-up stand-in was an **ST7789** over SPI: each band was packed to the panel's **12-bit RGB444** format — two pixels into three bytes, ~25% fewer bytes than RGB565, and the RGB222 gamut survives 4-bit channels losslessly — then a `CASET`/`RASET` window addressed and the bytes streamed by DMA. Because the scratch was just a few rows (~7 KB), the 320-row frame tiled through it in ~23 pushes; the frame itself never got a second full-frame buffer. The shipping panel drops the band scratch entirely — the FLPR packs each line straight from the resident frame.
+
+The panel the device ships on is a reflective **memory-LCD (LS021B7DD02-class MIP)**, driven by the nRF's **FLPR** coprocessor — the only display path. The FLPR scans the frame top-to-bottom in one pass, so the M33 renders into the RGB222 plane and then **presents** it — and since [issue #347](https://github.com/timohueser/OpenBikeComputer/issues/347) that present costs the M33 almost nothing: the FLPR reads the framebuffer **directly** out of shared SRAM and packs each line to the panel wire itself, while the M33 just publishes the dirty-row list, rings a doorbell, and *awaits* the coprocessor's end-of-frame interrupt (free to run storage or sensor work for the whole scan). Worth saying plainly: the FLPR is **not** a free scan-out engine, and a *full* MIP frame is ~44 ms after the [issue #348](https://github.com/timohueser/OpenBikeComputer/issues/348) timing pass. So the present doesn't rewrite the whole frame when it needn't. It keeps a **per-row hash of the last-pushed frame**, and on each present re-hashes the rows and drives a **span-masked scan** ([issue #163](https://github.com/timohueser/OpenBikeComputer/issues/163)) over only the spans whose hash changed — the FLPR fast-forwarding its gate over the unchanged rows and early-stopping after the last, so frame cost scales with *changed rows*, not a flat 320.
+
+The screens never say *where* they changed — they stay immediate-mode, clearing and redrawing the whole frame — so the present detects the changed region **automatically** ([issue #201](https://github.com/timohueser/OpenBikeComputer/issues/201)): a Home clock ticking a minute re-hashes to find just its clock band and repaints that (~44 ms → a few ms), the contour backdrop behind it untouched, with zero per-screen code. A collision — a changed row hashing equal, so skipped — is ~2⁻³² per row-change and self-heals the next time the row changes; the simulator runs an exact full-frame diff as a CI oracle, so only random, self-healing misses ever reach glass. The hash earns that rate the hard way: it folds four bytes per multiply for speed, and plain word-FNV mixed that way turns out to have a structural blind spot — a change confined to the top byte of its words (pixel columns 3, 7, 11…) kept 8 bits of discrimination instead of 32, a *~2⁻⁸* miss the oracle caught the moment a demo parked on a static screen ([issue #626](https://github.com/timohueser/OpenBikeComputer/issues/626)). Each word is now avalanche-mixed before it meets the accumulator, restoring the ~2⁻³² figure for structured changes too. That's render-on-demand carried onto the glass; the overlay below rides the very same masked scan.
+
+<figure class="fig">
+<svg viewBox="0 0 800 366" role="img" aria-label="The self-diffing present. Left: the framebuffer, drawn as 16 stacked rows; an immediate-mode screen redraws all 320 rows every frame, but only a band in the middle — the clock — actually changed. Middle: a per-row 32-bit hash (a 1.28 KB store of one hash per row) is compared to last frame; rows whose hash equals the stored one are skipped, the contiguous run of changed rows coalesces into one span. Right: the FLPR runs one masked scan of the panel — it fast-forwards its gate over the unchanged rows, writes only the changed span, and stops early, so only those rows reach the glass and the rest of the image is retained. A one-minute clock tick costs a few rows instead of a full ~44 ms frame.">
+  <defs>
+    <marker id="rdA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Redraw the whole frame — push only the rows that changed</text>
+  <text class="d-sub" x="103" y="46" text-anchor="middle" style="font-size:9px;fill:#6b7758">① the frame</text>
+  <rect class="d-panel-2" x="52" y="58" width="102" height="208" rx="4" />
+  <g stroke="#9aa884" stroke-opacity="0.45" stroke-width="1">
+    <line x1="52" y1="71" x2="154" y2="71" />
+    <line x1="52" y1="84" x2="154" y2="84" />
+    <line x1="52" y1="97" x2="154" y2="97" />
+    <line x1="52" y1="110" x2="154" y2="110" />
+    <line x1="52" y1="123" x2="154" y2="123" />
+    <line x1="52" y1="136" x2="154" y2="136" />
+    <line x1="52" y1="149" x2="154" y2="149" />
+    <line x1="52" y1="162" x2="154" y2="162" />
+    <line x1="52" y1="175" x2="154" y2="175" />
+    <line x1="52" y1="188" x2="154" y2="188" />
+    <line x1="52" y1="201" x2="154" y2="201" />
+    <line x1="52" y1="214" x2="154" y2="214" />
+    <line x1="52" y1="227" x2="154" y2="227" />
+    <line x1="52" y1="240" x2="154" y2="240" />
+    <line x1="52" y1="253" x2="154" y2="253" />
+  </g>
+  <rect x="52" y="149" width="102" height="39" fill="#cf6a2a" fill-opacity="0.5" />
+  <text x="103" y="171" text-anchor="middle" style="font-family:var(--mono);font-size:9px;fill:#7a3b16">clock</text>
+  <text class="d-label" x="103" y="288" text-anchor="middle" style="font-size:10.5px">framebuffer</text>
+  <text class="d-sub" x="103" y="302" text-anchor="middle" style="font-size:9.5px">screen redrew all 320 rows</text>
+  <line class="d-flow" x1="158" y1="162" x2="204" y2="162" marker-end="url(#rdA)" />
+  <text class="d-sub" x="181" y="154" text-anchor="middle" style="font-size:9px">hash each</text>
+  <text class="d-sub" x="232" y="46" text-anchor="middle" style="font-size:9px;fill:#6b7758">② the diff</text>
+  <rect x="216" y="60" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="73" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="86" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="99" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="112" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="125" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="138" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="151" width="32" height="9" rx="1.5" fill="#cf6a2a" fill-opacity="1" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="164" width="32" height="9" rx="1.5" fill="#cf6a2a" fill-opacity="1" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="177" width="32" height="9" rx="1.5" fill="#cf6a2a" fill-opacity="1" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="190" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="203" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="216" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="229" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="242" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <rect x="216" y="255" width="32" height="9" rx="1.5" fill="#c7cdb6" fill-opacity="0.85" stroke="#9aa884" stroke-opacity="0.5" stroke-width="0.6" />
+  <line class="d-stroke" x1="248" y1="90" x2="262" y2="90" style="stroke-width:1;stroke:#9aa884" />
+  <text class="d-sub" x="266" y="93" style="font-size:9px">hash = stored → skip</text>
+  <path d="M254 151 h6 v35 h-6" fill="none" stroke="#cf6a2a" stroke-width="1.6" />
+  <text x="266" y="167" style="font-family:var(--mono);font-size:9px;fill:#a9501c">hash ≠ stored</text>
+  <text x="266" y="180" style="font-family:var(--mono);font-size:9.5px;fill:#a9501c">→ span (y₀, 3)</text>
+  <text class="d-sub" x="246" y="288" text-anchor="middle" style="font-size:9.5px">32-bit hash per row</text>
+  <text class="d-sub" x="246" y="302" text-anchor="middle" style="font-size:9.5px">320×u32 = 1.28 KB store</text>
+  <line class="d-flow" x1="398" y1="162" x2="484" y2="162" marker-end="url(#rdA)" />
+  <text class="d-sub" x="441" y="148" text-anchor="middle" style="font-size:9px">span list</text>
+  <text class="d-sub" x="441" y="159" text-anchor="middle" style="font-size:9px">(start, count)</text>
+  <text class="d-sub" x="556" y="46" text-anchor="middle" style="font-size:9px;fill:#6b7758">③ the push</text>
+  <line x1="491" y1="58" x2="491" y2="149" stroke="#3c6b39" stroke-opacity="0.4" stroke-width="1.5" stroke-dasharray="2 3" />
+  <line x1="491" y1="149" x2="491" y2="188" stroke="#cf6a2a" stroke-width="4" />
+  <line x1="491" y1="188" x2="491" y2="266" stroke="#9aa884" stroke-opacity="0.3" stroke-width="1.2" stroke-dasharray="1 4" />
+  <line x1="485" y1="192" x2="497" y2="192" stroke="#a9501c" stroke-width="1.6" />
+  <rect x="496" y="58" width="108" height="208" rx="4" style="fill:#e7ead8;stroke:#3c6b39;stroke-width:1.2" />
+  <rect x="500" y="59.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="72.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="85.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="98.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="111.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="124.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="137.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="150.5" width="100" height="11" fill="#cf6a2a" fill-opacity="0.55" />
+  <rect x="500" y="163.5" width="100" height="11" fill="#cf6a2a" fill-opacity="0.55" />
+  <rect x="500" y="176.5" width="100" height="11" fill="#cf6a2a" fill-opacity="0.55" />
+  <rect x="500" y="189.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="202.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="215.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="228.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="241.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <rect x="500" y="254.5" width="100" height="11" fill="none" stroke="#9aa884" stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="2 3" />
+  <text class="d-label" x="550" y="288" text-anchor="middle" style="font-size:10.5px">to glass</text>
+  <text class="d-sub" x="550" y="302" text-anchor="middle" style="font-size:9.5px">3 rows pushed, rest retained</text>
+  <text class="d-sub" x="614" y="101" style="font-size:9.5px;fill:#6b7758">fast-forward the gate</text>
+  <text x="614" y="171" style="font-family:var(--mono);font-size:9.5px;fill:#a9501c">write the span</text>
+  <text class="d-sub" x="614" y="204" style="font-size:9.5px;fill:#6b7758">stop early — rest not scanned</text>
+  <rect x="250" y="324" width="360" height="28" rx="9" style="fill:#f8efe4;stroke:#cf6a2a;stroke-width:1.3" />
+  <text x="430" y="342" text-anchor="middle" style="font-family:var(--sans);font-size:11.5px;fill:#a9501c">one-minute clock tick: <tspan font-weight="700">~44 ms full frame → a few ms</tspan></text>
+</svg>
+<figcaption>Screens stay <b>immediate-mode</b> — they clear and redraw the whole frame, so they never declare <i>where</i> they changed. The present works it out: one <b>32-bit hash per row</b> (320×u32 = 1.28 KB, word-folded FNV over avalanche-mixed words) compared against last frame, the changed rows coalesced into a single <b>span</b>, and one masked FLPR scan that fast-forwards its gate over the unchanged rows and <b>stops early</b>. A minute's clock tick then repaints a few rows, not a full ~44 ms frame — the rest of the picture is simply retained on the glass. A hash collision (a changed row skipped) is ~2⁻³² per change and self-heals; the simulator runs an exact full-frame diff as a CI oracle.</figcaption>
+</figure>
+
+### The overlay composites on the push
+
+The hold-progress bulge — the little arc that swells as you hold a button — is never baked into the framebuffer. If it were, dismissing it would force a full map re-render just to paint it back out. Instead it **composites on the push**: over a static map the [input plane](../architecture/#staying-responsive-the-two-planes) re-presents *only* the region the bulge occupies, reading the clean framebuffer back as the backdrop and drawing the bulge over it — the resident frame stays the untouched map. The MIP/FLPR addresses that region in its native grain: the bulge's **rows**, through the span-masked scan above (fast-forward the gate to them, write just those, early-stop). And when the map *does* redraw mid-animation, the present goes *around* the bulge's rows so it never flashes off — the display seam's present takes the live bulge span as an exclude and clips its push with the same shared span logic (issues [#163](https://github.com/timohueser/OpenBikeComputer/issues/163), [#345](https://github.com/timohueser/OpenBikeComputer/issues/345)). Either way the map underneath is never touched and the expensive `render_map` stays asleep — [render-on-demand](../architecture/#the-per-frame-loop) taken to its limit: repaint the region that changed, and nothing else.
 
 ## Zero allocation, by budget
 
@@ -581,7 +875,7 @@ A compile-time assertion fails the build if the renderer's total buffer footprin
 
 ## Where this lives
 
-- The renderer and all its rasterisers: [`obc-render/src/lib.rs`](src:firmware/obc-render/src/lib.rs)
+- The renderer and all its rasterisers: [`obc-render/src/`](src:firmware/obc-render/src) — the frame loop and buffers in `lib.rs`; projection, collection, stroking, polygon fill and the overlays in `viewport.rs` / `collect.rs` / `stroke.rs` / `fill.rs` / `overlay.rs`
 - The map parsing, quadtree walk, and skip-don't-decode: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
 - A from-scratch reference walkthrough with `file:line` anchors: [`firmware/docs/rendering_pipeline.md`](src:firmware/docs/rendering_pipeline.md)
 

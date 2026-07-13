@@ -1,87 +1,16 @@
-//! Smoke tests for the shared text primitive ([`obc_render::text`]). Mirrors
-//! `marker.rs`: draws into a tiny in-memory `DrawTarget` and asserts the glyphs
-//! land where they should, in the color the caller resolved — including the
-//! slice-1 check that a palette color quantized through the device-64 `color_fn`
-//! reaches the panel intact (the same path the map styles take).
+//! Smoke tests for the shared text primitive ([`obc_render::text`]). Draws into an in-memory
+//! `DrawTarget` and asserts the glyphs land where they should, in the color the caller resolved —
+//! including that a palette color quantized through the device-64 `color_fn` reaches the panel
+//! intact (the same path the map styles take).
 
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888};
 use obc_render::text::{draw_text, text_width, Font, TextAlign};
 
+mod common;
+use common::Buf;
+
 const RED: Rgb888 = Rgb888::new(255, 0, 0);
-
-/// A `w`×`h` Rgb888 buffer implementing `DrawTarget`, with clipped writes.
-struct Buf {
-    w: i32,
-    h: i32,
-    px: Vec<Rgb888>,
-}
-
-impl Buf {
-    fn new(w: i32, h: i32) -> Self {
-        Buf { w, h, px: vec![Rgb888::BLACK; (w * h) as usize] }
-    }
-    fn get(&self, x: i32, y: i32) -> Rgb888 {
-        self.px[(y * self.w + x) as usize]
-    }
-    fn count(&self, c: Rgb888) -> usize {
-        self.px.iter().filter(|&&p| p == c).count()
-    }
-    fn put(&mut self, x: i32, y: i32, c: Rgb888) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = c;
-        }
-    }
-    /// Inclusive `(min_x, min_y, max_x, max_y)` bounding box of pixels of color
-    /// `c`, or `None` if the color is absent.
-    fn bbox(&self, c: Rgb888) -> Option<(i32, i32, i32, i32)> {
-        let (mut minx, mut miny, mut maxx, mut maxy) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-        for y in 0..self.h {
-            for x in 0..self.w {
-                if self.get(x, y) == c {
-                    minx = minx.min(x);
-                    miny = miny.min(y);
-                    maxx = maxx.max(x);
-                    maxy = maxy.max(y);
-                }
-            }
-        }
-        (maxx >= minx).then_some((minx, miny, maxx, maxy))
-    }
-}
-
-impl OriginDimensions for Buf {
-    fn size(&self) -> Size {
-        Size::new(self.w as u32, self.h as u32)
-    }
-}
-
-impl DrawTarget for Buf {
-    type Color = Rgb888;
-    type Error = core::convert::Infallible;
-
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(p, c) in pixels {
-            self.put(p.x, p.y, c);
-        }
-        Ok(())
-    }
-
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        let clip = area.intersection(&self.bounding_box());
-        if let Some(br) = clip.bottom_right() {
-            for y in clip.top_left.y..=br.y {
-                for x in clip.top_left.x..=br.x {
-                    self.put(x, y, color);
-                }
-            }
-        }
-        Ok(())
-    }
-}
 
 #[test]
 fn draws_glyphs_inside_the_font_cell() {
@@ -120,9 +49,8 @@ fn drawn_extent_fits_text_width() {
 
 #[test]
 fn quantized_palette_color_reaches_the_panel() {
-    // The brief's slice-1 check: text drawn in a palette color resolved through the
-    // device-64 `color_fn` shows up in *that quantized* color — not the true-color
-    // one — so on-screen text honors the 64-color gamut exactly like map styles.
+    // Text drawn in a palette color resolved through the device-64 `color_fn` shows up in *that
+    // quantized* color, not the true-color one — so text honors the 64-color gamut like map styles.
     let amber_565 = rgb565(0xE3, 0xA5, 0x2B); // accent amber #E3A52B
     let q = rgb565_to_device64(amber_565);
     let t = rgb565_to_rgb888(amber_565);
@@ -151,8 +79,69 @@ fn center_and_right_align_about_the_anchor() {
     assert!(rmaxx <= 40, "right-aligned text ends at x<=40 (got {rmaxx})");
 }
 
-/// Pack 8-bit RGB into RGB565 (the style/format color space the renderer
-/// quantizes from), so the test names its palette color the way the spec does.
+/// Latin-1 / Latin Extended-A coverage — European route, ride and POI names (issue #489).
+/// The three text tiers ship the extended glyph set; only the digits-only `Huge` clock tier stays
+/// ASCII. We assert on *glyph identity*: the set of painted pixels for a char, captured relative to
+/// the cell, so "renders as a real glyph, not the `?` fallback" is a concrete pixel comparison.
+mod latin {
+    use super::*;
+
+    /// Painted (`RED`) pixels of a single-char string in `font`, as sorted cell-relative coords.
+    fn glyph(s: &str, font: Font) -> Vec<(i32, i32)> {
+        let mut b = Buf::new(40, 72); // fits the tallest text cell (Display 16×32) with margin
+        draw_text(&mut b, s, Point::new(2, 2), font, TextAlign::Left, RED);
+        let mut px: Vec<(i32, i32)> =
+            (0..b.h).flat_map(|y| (0..b.w).map(move |x| (x, y))).filter(|&(x, y)| b.get(x, y) == RED).collect();
+        px.sort_unstable();
+        px
+    }
+
+    #[test]
+    fn umlauts_and_accents_render_as_their_own_glyphs() {
+        // Every umlaut/accent named in the issue draws a glyph distinct from the `?` fallback and
+        // from its bare ASCII base — i.e. the diacritic is really there, in every text tier.
+        let fallback = glyph("?", Font::Body);
+        for font in [Font::Label, Font::Body, Font::Display] {
+            for (accented, base) in [("ä", "a"), ("ö", "o"), ("ü", "u"), ("é", "e"), ("è", "e"), ("à", "a")] {
+                let g = glyph(accented, font);
+                assert!(!g.is_empty(), "{accented} in {font:?} drew nothing");
+                assert_ne!(g, glyph("?", font), "{accented} in {font:?} rendered as the '?' fallback");
+                assert_ne!(g, glyph(base, font), "{accented} in {font:?} looks identical to '{base}'");
+            }
+        }
+        // ß has no ASCII base but must still be its own glyph, not '?'.
+        assert_ne!(glyph("ß", Font::Body), fallback, "ß rendered as '?'");
+    }
+
+    #[test]
+    fn latin_extended_a_is_covered() {
+        // Beyond Latin-1: Czech/Polish/Hungarian diacritics common in Central-European place names.
+        for c in ["č", "š", "ž", "ł", "ő", "ű"] {
+            assert_ne!(glyph(c, Font::Body), glyph("?", Font::Body), "{c} rendered as the '?' fallback");
+        }
+    }
+
+    #[test]
+    fn hoehenweg_ride_name_is_not_mangled() {
+        // The #489 repro: the pinned ride fixture "Höhenweg" used to render "H?he..". The ö now
+        // carries pixels the '?' fallback never would.
+        let good = glyph("Höhenweg", Font::Body);
+        let mangled = glyph("H?henweg", Font::Body);
+        assert_ne!(good, mangled, "Höhenweg still renders like the old H?henweg");
+    }
+
+    #[test]
+    fn unmapped_chars_still_fall_back_to_question_mark() {
+        // The mapping only reaches Latin Extended-A; anything past it (€, an emoji, CJK) must still
+        // land on the '?' replacement glyph rather than a wrong slot or a panic.
+        let fallback = glyph("?", Font::Body);
+        for c in ["€", "→", "中", "🚲"] {
+            assert_eq!(glyph(c, Font::Body), fallback, "{c} should fall back to '?'");
+        }
+    }
+}
+
+/// Pack 8-bit RGB into RGB565 (the style/format color space the renderer quantizes from).
 fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
 }
