@@ -144,8 +144,10 @@ final class MainScreenModelTests: XCTestCase {
 
         XCTAssertEqual(model.routes.count, 5)
         XCTAssertEqual(model.routes.first?.name, "Kettle Moraine Loop")
-        // The badge reconcile: fixtures the device holds a copy of light up.
-        XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))
+        // The identity-verified badge (#770): a fixture the device holds proves
+        // up once the scope settles (proof needs the connected (serial, epoch) +
+        // a matching catalog CRC), so poll rather than assert on the bare load.
+        await waitFor("kettle badge proves") { model.isUploaded(RouteID("kettle-moraine-loop")) }
         XCTAssertFalse(model.isUploaded(RouteID("blue-mounds-backroads")))
         // Tracked is library-first (#296): the device's rides aren't rows until
         // they're synced — a plain load leaves the list empty.
@@ -543,6 +545,7 @@ final class MainScreenModelTests: XCTestCase {
     func testUploadCompletionLightsTheOnDeviceBadge() async {
         let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
+        await waitFor("the identity scope") { model.connectedScope != nil }
         let record = importedRecord()
         model.addImportedRoute(record)
         XCTAssertFalse(model.isUploaded(record.id), "a fresh import isn't on the device")
@@ -566,7 +569,7 @@ final class MainScreenModelTests: XCTestCase {
     func testOnDeviceDeleteClearsTheBadgeLive() async {
         let (model, control) = makeModel(.happyPath)
         await startLoaded(model)
-        XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")), "the fixture starts on-device")
+        await waitFor("the fixture proves on-device") { model.isUploaded(RouteID("kettle-moraine-loop")) }
 
         control.deviceDeletesRoute(DeviceObjectID(7)) // kettle-moraine-loop's device copy
         await waitFor("badge clears on storeChanged") { !model.isUploaded(RouteID("kettle-moraine-loop")) }
@@ -581,6 +584,7 @@ final class MainScreenModelTests: XCTestCase {
     func testRenameOutdatesTheDeviceCopyAndReuploadHeals() async {
         let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
+        await waitFor("the identity scope") { model.connectedScope != nil }
         let record = importedRecord()
         model.addImportedRoute(record)
         model.markRouteUploaded(record.id, objectID: DeviceObjectID(7), crc32: RouteObjectCodec.payloadCRC(for: record))
@@ -597,20 +601,23 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
     }
 
-    /// A device copy with an unknown fingerprint (a pre-fingerprint library)
-    /// reads as **out of date** — Update stays offered and the next upload
-    /// self-heals the record; calling it up to date would dead-end the route
-    /// on a disabled button.
-    func testUnknownFingerprintReadsAsOutdated() async {
+    /// V6 (#770): a link with **no committed fingerprint** (a pre-fingerprint
+    /// library entry) is unproven — the app can't verify what the linked id
+    /// points at, so it shows **no badge**, never a checkmark on presence alone.
+    /// The route still offers Upload (not a disabled "up to date"), so the next
+    /// push self-heals it with a real fingerprint. (Was `…ReadsAsOutdated` under
+    /// v1's presence-lit badge.)
+    func testUnknownFingerprintShowsNoBadge() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
-        record.deviceLink = mockLink(7)
+        record.deviceLink = mockLink(7)   // linked, but `uploadedCRC32` stays nil
         library.savePlannedRoute(record)
 
         let (model, _) = makeModel(.happyPath, library: library)
         await startLoaded(model)
-        XCTAssertEqual(model.onDeviceState(record.id), .outdated)
-        XCTAssertTrue(model.isUploaded(record.id), "the badge still shows — the copy exists")
+        await waitFor("the identity scope") { model.connectedScope != nil }
+        XCTAssertEqual(model.onDeviceState(record.id), .notOnDevice)
+        XCTAssertFalse(model.isUploaded(record.id), "no fingerprint proves nothing — no badge")
     }
 
     /// The mock-seeded fixtures carry real fingerprints, so a device-held
@@ -618,22 +625,23 @@ final class MainScreenModelTests: XCTestCase {
     func testSeededDeviceCopiesBootUpToDate() async {
         let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
-        XCTAssertEqual(model.onDeviceState(RouteID("kettle-moraine-loop")), .upToDate)
+        await waitFor("the proven up-to-date badge") {
+            model.onDeviceState(RouteID("kettle-moraine-loop")) == .upToDate
+        }
     }
 
-    func testSeededUploadedRouteKeepsItsBadgeWhenTheDeviceStillHoldsIt() async {
-        let library = InMemoryLibraryStore()
-        var record = importedRecord()
-        record.deviceLink = mockLink(7)   // the default fixture device holds object 7
-        library.savePlannedRoute(record)
-
-        let (model, _) = makeModel(.happyPath, library: library)
+    /// A fixture the device holds is seeded with a scoped link + committed
+    /// fingerprint (exactly what an upload would mint). A fresh model re-proves
+    /// the badge against the catalog CRC — never on link presence alone (#770) —
+    /// and threads the object id for replace-by-id, once the identity read
+    /// settles on the matching (serial, epoch) (#769).
+    func testSeededDeviceCopyKeepsItsProvenBadgeAndReplaceTarget() async {
+        let (model, _) = makeModel(.happyPath)
         await startLoaded(model)
-        XCTAssertTrue(model.isUploaded(record.id), "a route on the device keeps its badge across a relaunch")
-        // Replace-by-id is scope-gated (#769): the object id answers only once
-        // the identity read has settled on the matching (serial, epoch).
+        await waitFor("the badge proves") { model.isUploaded(RouteID("kettle-moraine-loop")) }
+        XCTAssertEqual(model.onDeviceState(RouteID("kettle-moraine-loop")), .upToDate)
         await waitFor("the identity scope") { model.connectedScope != nil }
-        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), DeviceObjectID(7))
+        XCTAssertEqual(model.plannedDeviceObjectID(for: RouteID("kettle-moraine-loop")), DeviceObjectID(7))
     }
 
     /// #289's reconcile: a copy deleted out from under us (another phone, the
@@ -682,7 +690,7 @@ final class MainScreenModelTests: XCTestCase {
     func testReconnectReloadsAndReconcilesTheBadge() async {
         let (model, control) = makeModel(.happyPath)
         await startLoaded(model)
-        XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))
+        await waitFor("the fixture proves on-device") { model.isUploaded(RouteID("kettle-moraine-loop")) }
 
         // The device loses the copy (another phone / the EchoHarness deleted
         // object 7); nothing tells the model — the badge stays lit for now.
@@ -693,6 +701,137 @@ final class MainScreenModelTests: XCTestCase {
         await waitFor("S4 banner") { model.showsDisconnectedBanner }
         control.connection = .connected
         await waitFor("reconnect reconcile") { !model.isUploaded(RouteID("kettle-moraine-loop")) }
+    }
+
+    // MARK: V6 — identity-verified badges + adopt-by-content (#770)
+
+    /// CRC-mismatch drops the link: a link that survived scoping but points at an
+    /// object the device has since **replaced** (era aliasing, or another phone's
+    /// upload) — the catalog CRC disagrees with our committed fingerprint — is
+    /// dropped, never shown "up to date" on presence (#770).
+    func testCRCMismatchDropsTheLinkNeverACheckmark() async {
+        let library = InMemoryLibraryStore()
+        var record = importedRecord(id: "lib-mismatch")
+        record.deviceLink = mockLink(7)        // object 7 exists (the kettle copy)…
+        record.uploadedCRC32 = 0xDEAD_BEEF     // …but the device doesn't hold this
+        library.savePlannedRoute(record)
+
+        let (model, _) = makeModel(.happyPath, library: library)
+        await startLoaded(model)
+        await waitFor("the mismatched link drops") {
+            library.plannedRoutes().first { $0.id == record.id }?.deviceLink == nil
+        }
+        XCTAssertEqual(model.onDeviceState(record.id), .notOnDevice)
+        XCTAssertNil(model.plannedDeviceObjectID(for: record.id),
+                     "a mismatched link must not thread a replace target (the wrong-route-overwrite bug)")
+    }
+
+    /// Adopt-by-content heals an app reinstall: the library kept the route but
+    /// lost its device link; the device still holds an identical copy → adoption
+    /// re-links it (badge lights, no re-upload), and a later push replaces that
+    /// object by id instead of duplicating (#770).
+    func testAdoptByContentHealsAnAppReinstall() async {
+        let library = InMemoryLibraryStore()
+        let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
+        // The device holds this content under object 900; the phone kept the
+        // route but (post-reinstall) has no link to it.
+        let template = importedRecord(id: "lib-adopt", name: "Reinstalled Ridge")
+        var fixtures = control.fixtures
+        fixtures.routes.append(RouteEntry(
+            summary: template.summary, points: template.route.points,
+            waypoints: template.route.waypoints, payloadByteCount: 100,
+            deviceObjectID: DeviceObjectID(900)))
+        control.fixtures = fixtures
+        library.savePlannedRoute(template)   // no deviceLink
+
+        await startLoaded(model)
+        await waitFor("adoption re-links the identical copy") {
+            library.plannedRoutes().first { $0.id == template.id }?.deviceLink != nil
+        }
+        await waitFor("the identity scope") { model.connectedScope != nil }
+        XCTAssertEqual(model.plannedDeviceObjectID(for: template.id), DeviceObjectID(900),
+                       "the adopted id threads replace-by-id")
+        XCTAssertEqual(model.onDeviceState(template.id), .upToDate,
+                       "adopted content is byte-identical → up to date, no upload needed")
+    }
+
+    /// Adopted-upload-replaces: after adoption an edit re-uploads to the adopted
+    /// object id (replace-by-id), so the device gains no duplicate (#770).
+    func testAdoptedRouteUploadsAsReplaceNotDuplicate() async {
+        let library = InMemoryLibraryStore()
+        let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
+        let template = importedRecord(id: "lib-adopt-upload", name: "Adopt Then Edit")
+        var fixtures = control.fixtures
+        fixtures.routes.append(RouteEntry(
+            summary: template.summary, points: template.route.points,
+            waypoints: template.route.waypoints, payloadByteCount: 100,
+            deviceObjectID: DeviceObjectID(901)))
+        control.fixtures = fixtures
+        library.savePlannedRoute(template)
+
+        await startLoaded(model)
+        await waitFor("adoption") { model.plannedDeviceObjectID(for: template.id) == DeviceObjectID(901) }
+        let deviceRouteCountBefore = control.fixtures.routes.filter { $0.deviceObjectID != nil }.count
+
+        // The upload the app would send (targeting the adopted id) replaces in
+        // place — no 0xFFFF-new duplicate.
+        let blob = RouteBlob(
+            summary: template.summary, waypoints: template.route.waypoints,
+            payload: Data([9, 9, 9]), targetObjectID: model.plannedDeviceObjectID(for: template.id))
+        let handle = MockTransport(control: control).uploadRoute(blob)
+        _ = await handle.outcome
+        XCTAssertEqual(
+            control.fixtures.routes.filter { $0.deviceObjectID != nil }.count,
+            deviceRouteCountBefore, "an adopted upload replaces by id — never a duplicate")
+    }
+
+    /// Unknown-CRC conservatism: a device whose route sidecar hasn't filled yet
+    /// reports `crc32 = 0`. `0` proves nothing → no badge; but it's not a
+    /// *disproof* either, so the link is kept, not dropped (#770).
+    func testUnknownCatalogCRCProvesNothingButKeepsTheLink() async {
+        let library = InMemoryLibraryStore()
+        let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
+        var fixtures = control.fixtures
+        fixtures.routes.append(RouteEntry(
+            summary: RouteSummary(id: RouteID("dev-unknown"), name: "Sidecar Pending",
+                                  distanceMeters: 1_000, elevationGainMeters: 10),
+            points: importedRecord().route.points, payloadByteCount: 100,
+            deviceObjectID: DeviceObjectID(902), crc32: 0))   // explicit unknown
+        control.fixtures = fixtures
+        var record = importedRecord(id: "lib-unknown")
+        record.deviceLink = mockLink(902)
+        record.uploadedCRC32 = 0x1234_5678
+        library.savePlannedRoute(record)
+
+        await startLoaded(model)
+        await waitFor("the identity scope") { model.connectedScope != nil }
+        XCTAssertEqual(model.onDeviceState(record.id), .notOnDevice, "crc32 = 0 proves nothing — no badge")
+        try? await Task.sleep(for: .milliseconds(50))   // let any reconcile write land
+        XCTAssertNotNil(library.plannedRoutes().first { $0.id == record.id }?.deviceLink,
+                        "an unknown CRC is not a disproof — the link is kept")
+    }
+
+    /// Per-serial isolation: a link minted on another device (serial B) is
+    /// invisible and untouchable while connected to device A — no badge, and A's
+    /// catalog can't clear it (V5's predicate makes this structural; pin it).
+    func testDeviceBCatalogNeverTouchesDeviceALinks() async {
+        let library = InMemoryLibraryStore()
+        let foreignLink = DeviceRouteLink(
+            serial: "OBC-OTHER-DEVICE", epoch: FixtureSet.defaultStoreEpoch, objectID: DeviceObjectID(7))
+        var record = importedRecord(id: "lib-deviceB")
+        record.deviceLink = foreignLink
+        record.uploadedCRC32 = 0xAAAA_BBBB
+        library.savePlannedRoute(record)
+
+        let (model, _) = makeModel(.happyPath, library: library)   // connects to device A
+        await startLoaded(model)
+        await waitFor("the identity scope") { model.connectedScope != nil }
+        XCTAssertEqual(model.onDeviceState(record.id), .notOnDevice, "device B's link never badges on device A")
+        XCTAssertNil(model.plannedDeviceObjectID(for: record.id), "…and never threads a replace target")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(
+            library.plannedRoutes().first { $0.id == record.id }?.deviceLink, foreignLink,
+            "device A's reconcile must not clear device B's link")
     }
 
     func testPlannedRouteNamedFindsACollisionCaseInsensitively() async {

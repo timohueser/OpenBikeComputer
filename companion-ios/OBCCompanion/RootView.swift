@@ -214,6 +214,9 @@ struct RootView: View {
             replacingDeviceObjectID: pending.replacing.flatMap {
                 mainModel.plannedDeviceObjectID(for: $0.id)
             },
+            replacingProvenCRC: pending.replacing.flatMap {
+                mainModel.plannedProvenCommittedCRC(for: $0.id)
+            },
             onSave: { detail in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 importModel.closeImport()
@@ -284,7 +287,7 @@ struct RootView: View {
                     // so a re-upload replaces in place and the button knows
                     // whether the copy is current.
                     deviceObjectID: mainModel.plannedDeviceObjectID(for: id),
-                    uploadedCRC32: mainModel.plannedUploadedCRC32(for: id),
+                    provenCommittedCRC: mainModel.plannedProvenCommittedCRC(for: id),
                     deviceName: mainModel.deviceName,
                     onDelete: {
                         mainModel.deleteRoute(id)
