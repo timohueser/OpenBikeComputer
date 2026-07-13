@@ -2,10 +2,10 @@
 //! tests). Each mirrors the surface of `obc-sim`'s folder-backed twin, so host code drives either
 //! shape identically; nothing above the store (`obc-app`, `obc-render`) knows the difference.
 
-use crate::NavRouteStore;
+use crate::{RideRepository, RouteRepository, TrackRepository};
 use obc_app::{RideSummary, TrackAction};
 use obc_ports::TrackSink;
-use obc_route::{RouteSummary, SliceSource};
+use obc_route::{Profile, RideStats, RouteSummary, SliceSource};
 
 /// The in-memory route store's reserved id for the computed nav route (out of the small
 /// positional band the seeded catalog uses), so a re-plan replaces the previous computed route
@@ -48,9 +48,13 @@ impl MemRouteStore {
     }
 
     /// Make the active route match `want` — the in-memory twin serves bytes by index, so this is
-    /// just a bounds-checked assignment. Cheap to call every frame.
-    pub fn sync_active(&mut self, want: Option<usize>) {
-        self.active = want.filter(|&i| i < self.bytes.len());
+    /// just a bounds-checked assignment. Returns whether the active binding changed (the reparse
+    /// signal). Cheap to call every frame.
+    pub fn sync_active(&mut self, want: Option<usize>) -> bool {
+        let next = want.filter(|&i| i < self.bytes.len());
+        let changed = next != self.active;
+        self.active = next;
+        changed
     }
 
     /// See the folder-backed twin: force a re-read after the nav bytes are replaced under an
@@ -83,7 +87,19 @@ impl MemRouteStore {
     }
 }
 
-impl NavRouteStore for MemRouteStore {
+impl RouteRepository for MemRouteStore {
+    fn catalog(&self) -> &[RouteSummary] {
+        self.catalog()
+    }
+
+    fn ids(&self) -> &[u16] {
+        self.ids()
+    }
+
+    fn delete_by_id(&mut self, id: u16) -> bool {
+        self.delete_by_id(id)
+    }
+
     /// The in-memory twin of the folder store's reserved `_nav.obcr` write: replace (or append)
     /// the computed route under the fixed [`MEM_NAV_ID`] and return it.
     fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
@@ -102,12 +118,12 @@ impl NavRouteStore for MemRouteStore {
         Some(MEM_NAV_ID)
     }
 
-    fn catalog(&self) -> &[RouteSummary] {
-        self.catalog()
+    fn sync_active(&mut self, want: Option<usize>) -> bool {
+        self.sync_active(want)
     }
 
-    fn ids(&self) -> &[u16] {
-        self.ids()
+    fn active_source(&self) -> Option<SliceSource<'_>> {
+        self.active_source()
     }
 
     fn invalidate_active(&mut self) {
@@ -149,6 +165,30 @@ impl MemRideStore {
     }
 }
 
+impl RideRepository for MemRideStore {
+    fn catalog(&self) -> &[RideSummary] {
+        self.catalog()
+    }
+
+    fn ids(&self) -> &[u16] {
+        self.ids()
+    }
+
+    fn delete_by_id(&mut self, id: u16) -> bool {
+        self.delete_by_id(id)
+    }
+
+    /// No on-disk track behind a memory ride — the Ride detail's band parks empty (an answered
+    /// `None`, so the fill cue stops re-emitting rather than grinding a missing file every frame).
+    fn profile_by_id(&self, _id: u16) -> Option<Profile> {
+        None
+    }
+
+    fn preview_by_id(&self, _id: u16) -> Vec<(i32, i32)> {
+        Vec::new()
+    }
+}
+
 /// An in-memory track store: no filesystem, so no on-disk ride log — the breadcrumb + ride stats
 /// come from the shared app state, not a sink. It only mirrors whether a ride is active so
 /// `is_recording()` stays honest, while `reconcile` still **drains** the app's one-shot
@@ -163,9 +203,22 @@ impl MemTrackStore {
         MemTrackStore::default()
     }
 
+    pub fn is_recording(&self) -> bool {
+        self.recording
+    }
+}
+
+impl TrackRepository for MemTrackStore {
     /// Mirror the folder-backed reconcile's recording flag without touching a filesystem: a
-    /// drained Save/Discard ends the ride, then a live session id (re)starts it.
-    pub fn reconcile(&mut self, action: Option<TrackAction>, session: Option<u32>) {
+    /// drained Save/Discard ends the ride, then a live session id (re)starts it. `name`/`stats`
+    /// are irrelevant with no on-disk log.
+    fn reconcile(
+        &mut self,
+        action: Option<TrackAction>,
+        session: Option<u32>,
+        _name: Option<&str>,
+        _stats: Option<RideStats>,
+    ) {
         if matches!(action, Some(TrackAction::Save) | Some(TrackAction::Discard)) {
             self.recording = false;
         }
@@ -173,18 +226,15 @@ impl MemTrackStore {
     }
 
     /// No persistent sink in memory — the app still draws the live breadcrumb itself.
-    pub fn sink(&mut self) -> Option<&mut dyn TrackSink> {
+    fn sink(&mut self) -> Option<&mut dyn TrackSink> {
         None
-    }
-
-    pub fn is_recording(&self) -> bool {
-        self.recording
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TrackRepository;
 
     /// A junk seed is skipped (not a crash, not a phantom row), and the store stays usable.
     #[test]
@@ -228,11 +278,11 @@ mod tests {
     fn track_reconcile_mirrors_the_session() {
         let mut t = MemTrackStore::new();
         assert!(!t.is_recording());
-        t.reconcile(None, Some(1));
+        t.reconcile(None, Some(1), None, None);
         assert!(t.is_recording());
-        t.reconcile(Some(TrackAction::Save), None);
+        t.reconcile(Some(TrackAction::Save), None, None, None);
         assert!(!t.is_recording());
-        t.reconcile(Some(TrackAction::Discard), Some(2));
+        t.reconcile(Some(TrackAction::Discard), Some(2), None, None);
         assert!(t.is_recording(), "a live session id wins over the drained action");
     }
 }
