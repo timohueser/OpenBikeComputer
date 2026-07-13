@@ -1694,6 +1694,22 @@ impl App {
         &self.catalog_ids
     }
 
+    /// The active route's catalog index, or `None` when no route is loaded — the read a host uses to
+    /// sync its route store's active bytes each pass (the write twin is the menu selection / a
+    /// finished plan, never a host poke of the field).
+    pub fn active_route_index(&self) -> Option<usize> {
+        self.activity.active_route
+    }
+
+    /// Activate the route at catalog index `idx` (a host baseline / demo-reset seam) — the
+    /// invariant-preserving twin of the menu's own selection, bounds-checked against the resident
+    /// catalog, so hosts never write `activity.active_route` directly to stage a route. An
+    /// out-of-range index clears the active route. Dirties the map so an open Map repaints the line.
+    pub fn activate_route(&mut self, idx: usize) {
+        self.activity.active_route = (idx < self.catalog.len()).then_some(idx);
+        self.map_dirty = true;
+    }
+
     /// Replace the resident **trip** catalog from the host's store (epic #526, TR2). Each
     /// [`TripInput`](crate::trip::TripInput) carries the trip's durable id, name, and stage route ids;
     /// the app resolves the ids against the current route catalog (`catalog_ids`) into a
