@@ -33,6 +33,10 @@ public struct TripDetailView: View {
     /// A pending "remove the last stage" — dissolving the trip needs an inline
     /// confirm (the trip is created with ≥ 1 route; emptying it removes it).
     @State private var dissolveConfirmStage: RouteID?
+    /// The full-screen interactive trip map (the route detail's hero idiom).
+    @State private var mapShown = false
+
+    @Environment(\.obcIsOnline) private var isOnline
 
     public init(
         model: MainScreenModel,
@@ -138,13 +142,77 @@ public struct TripDetailView: View {
         .sheet(item: $tripUploadModel) { model in
             TripUploadSheetView(model: model)
         }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $mapShown) { tripMapCover }
+        #else
+        .sheet(isPresented: $mapShown) { tripMapCover }
+        #endif
     }
 
     // MARK: Header
 
+    /// The stages as colored preview tracks — the hero map's and the full-screen
+    /// map's shared input (palette color by stage index, the stage rows' rule).
+    private var previewStages: [MultiTrackPreviewView.Stage] {
+        stages.enumerated().map { index, summary in
+            MultiTrackPreviewView.Stage(
+                coordinates: summary.trackPreview?.coordinates ?? [],
+                color: OBCTheme.stageColor(index: index)
+            )
+        }
+    }
+
+    /// The hero can expand to the interactive map when there's real geometry
+    /// and a network path — the route detail's #294 rule, verbatim.
+    private var canExpandMap: Bool {
+        isOnline && previewStages.contains { !$0.coordinates.isEmpty }
+    }
+
+    /// The whole-trip hero map: every stage in its palette color, above the
+    /// stat strip. Tapping it (online, with geometry) opens the full-screen
+    /// interactive map — the same affordance as the route detail's hero.
+    @ViewBuilder
+    private var heroMap: some View {
+        let preview = MultiTrackPreviewView(stages: previewStages)
+            .frame(height: 190)
+
+        if canExpandMap {
+            Button { mapShown = true } label: {
+                // The preview ignores hits (the tap is ours) — make the whole
+                // hero the tap target.
+                preview.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("trip.expandMap")
+            .accessibilityLabel("Open full trip map")
+        } else {
+            preview
+        }
+    }
+
+    private var tripMapCover: some View {
+        // The interactive map draws each stage's FULL tracklog (the #294
+        // follow-up rule: never the downsampled preview when zooming is on
+        // offer), falling back to the preview's coordinates for a record whose
+        // geometry didn't survive.
+        TrackMapView(
+            stages: stages.enumerated().map { index, summary in
+                MultiTrackPreviewView.Stage(
+                    coordinates: model.plannedGeometry(for: summary.id)?.points.map(\.coordinate)
+                        ?? summary.trackPreview?.coordinates ?? [],
+                    color: OBCTheme.stageColor(index: index)
+                )
+            },
+            title: trip?.name ?? "Trip",
+            onClose: { mapShown = false }
+        )
+    }
+
     private var header: some View {
         let stats = model.tripStats(tripID)
         return VStack(alignment: .leading, spacing: 14) {
+            heroMap
+
             OBCStatStrip([
                 OBCStat(
                     value: OBCFormat.distanceValue(meters: stats.distanceMeters), unit: "km",

@@ -472,6 +472,16 @@ public struct MainScreenView: View {
                         .obcSwipeToDelete {
                             model.deleteRoute(route.id)
                         }
+                        // Clip the long-press lift preview to the card's own
+                        // rounded shape — without this the system snapshots the
+                        // whole rectangular row and the card floats on a stark
+                        // white slab. (iOS-only kind; macOS is the test host.)
+                        #if os(iOS)
+                        .contentShape(
+                            .contextMenuPreview,
+                            RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
+                        )
+                        #endif
                         .contextMenu {
                             Button {
                                 pickerRequest = RouteTripPickerRequest(id: route.id)
