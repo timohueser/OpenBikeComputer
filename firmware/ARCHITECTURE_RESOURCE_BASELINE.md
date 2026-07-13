@@ -124,7 +124,7 @@ These are exact 32-bit target `size_of` values from the report-only ELF:
 | `App` | 34,944 B | 34,944 B |
 | map cache | 14,444 B | 14,444 B |
 | map tables | 4,060 B | 4,060 B |
-| route cache | 6,192 B | 6,192 B |
+| route cache | 6,180 B | 6,180 B |
 | route index | 6,252 B | 6,252 B |
 | renderer (embedded in `App`) | 8,352 B | 8,352 B |
 | navigation scratch / tile cache / planner | 19,976 / 4,140 / 9,024 B | 19,976 / 4,140 / 9,024 B |

@@ -33,6 +33,29 @@ impl ByteSource for CountingSource<'_> {
     }
 }
 
+/// A source that runs one callback from inside its first geometry read. This models a safe
+/// reentrant source implementation using another reader that shares the cache.
+struct ReentrantSource<'a> {
+    inner: SliceSource<'a>,
+    reads: Cell<u32>,
+    triggered: Cell<bool>,
+    on_first_read: &'a dyn Fn(),
+}
+
+impl ByteSource for ReentrantSource<'_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+        self.reads.set(self.reads.get() + 1);
+        let result = self.inner.read_at(offset, buf);
+        if !self.triggered.replace(true) {
+            (self.on_first_read)();
+        }
+        result
+    }
+    fn len(&self) -> u32 {
+        self.inner.len()
+    }
+}
+
 /// A chunk to encode: its absolute points (lon, lat, ele) plus the cumulative stats
 /// at its first point.
 struct ChunkIn {
@@ -147,6 +170,16 @@ fn two_chunk_route() -> Vec<u8> {
     )
 }
 
+fn one_chunk_route(name: &str, end: (i32, i32, i16)) -> Vec<u8> {
+    build_route(
+        name,
+        (10, 10),
+        (1000, 20, 10),
+        (100, end.2),
+        &[ChunkIn { points: vec![(10, 10, 100), end], cum_distance_m: 0, cum_ascent_m: 0 }],
+    )
+}
+
 #[test]
 fn header_and_summary() {
     let bytes = two_chunk_route();
@@ -231,25 +264,129 @@ fn route_cache_serves_repeats_without_re_reading() {
     assert_eq!(src.reads.get(), 2);
     assert_eq!(cache.stats(), (0, 2));
 
-    // Re-decoding the same chunks is served from the cache — no further source reads.
-    let b0 = decode(&r, 0);
-    let b1 = decode(&r, 1);
+    // Moving the parsed index preserves its session identity. A fresh reader over that same
+    // resident parse adopts the same identity and retains hits — no further source reads. This is
+    // both the by-value host path and the board's per-frame reader lifecycle.
+    let moved_ridx = ridx;
+    let repeated = RouteReader::new_cached(&moved_ridx, &src, &cache);
+    let b0 = decode(&repeated, 0);
+    let b1 = decode(&repeated, 1);
     assert_eq!(src.reads.get(), 2, "a cache hit must not touch the source");
     assert_eq!(cache.stats(), (2, 2));
     assert_eq!(a0, b0);
     assert_eq!(a1, b1);
 
     // The cached bytes are exactly what the uncached decoder produces.
-    let plain = RouteReader::new(&ridx, &idx_src);
+    let plain = RouteReader::new(&moved_ridx, &idx_src);
     assert_eq!(decode(&plain, 0), a0);
     assert_eq!(decode(&plain, 1), a1);
 
-    // After a clear (a route switch), the chunk misses and is re-read.
+    // An explicit diagnostic clear remains available; the chunk misses and is re-read.
     cache.clear();
     assert_eq!(cache.stats(), (0, 0));
-    let _ = decode(&r, 0);
+    let cold = RouteReader::new_cached(&moved_ridx, &src, &cache);
+    let _ = decode(&cold, 0);
     assert_eq!(src.reads.get(), 3, "after clear the chunk is re-read");
     assert_eq!(cache.stats(), (0, 1));
+}
+
+/// Two routes may use identical chunk indices and byte offsets while containing different points.
+/// Constructing a cached reader for the second parsed index must automatically invalidate the
+/// first route's slot — no caller-ordered `clear()` — and then keep hits for repeated readers over
+/// that second resident session.
+#[test]
+fn route_switch_without_clear_cannot_cross_serve() {
+    let a = one_chunk_route("A", (20, 20, 110));
+    let b = one_chunk_route("B", (30, 40, 120));
+    let src_a = CountingSource { inner: SliceSource(&a), reads: Cell::new(0) };
+    let src_b = CountingSource { inner: SliceSource(&b), reads: Cell::new(0) };
+    let cache = RouteCache::new();
+    let mut resident_idx = RouteIndex::empty();
+    resident_idx.read_into(&SliceSource(&a)).unwrap();
+
+    let reader_a = RouteReader::new_cached(&resident_idx, &src_a, &cache);
+    assert_eq!(decode(&reader_a, 0).last(), Some(&RoutePoint { lon: 20, lat: 20, ele: 110 }));
+    assert_eq!(src_a.reads.get(), 1);
+    assert_eq!(cache.stats(), (0, 1));
+
+    // Refill the *same* resident slot, exactly like board reconciliation. Same chunk key (0), no
+    // explicit clear: its new parse identity must force a miss against route B's source.
+    resident_idx.read_into(&SliceSource(&b)).unwrap();
+    let reader_b = RouteReader::new_cached(&resident_idx, &src_b, &cache);
+    let points_b = decode(&reader_b, 0);
+    assert_eq!(points_b.last(), Some(&RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(src_b.reads.get(), 1, "a route switch must read B rather than hit A's slot");
+    assert_eq!(cache.stats(), (0, 1), "adoption resets diagnostics and starts B cold");
+
+    // Reconstructing a reader over the same parsed index is a hit, not a new session.
+    let reader_b_again = RouteReader::new_cached(&resident_idx, &src_b, &cache);
+    assert_eq!(decode(&reader_b_again, 0), points_b);
+    assert_eq!(src_b.reads.get(), 1, "the same resident index must retain cache hits");
+    assert_eq!(cache.stats(), (1, 1));
+}
+
+/// Long-lived safe readers can be interleaved against one cache. Every A/B ownership transition
+/// must miss and return that reader's geometry; a same-route repeat must still hit without I/O.
+#[test]
+fn interleaved_readers_revalidate_identity_on_every_hit_lookup() {
+    let a = one_chunk_route("A", (20, 20, 110));
+    let b = one_chunk_route("B", (30, 40, 120));
+    let idx_a = RouteIndex::read(&SliceSource(&a)).unwrap();
+    let idx_b = RouteIndex::read(&SliceSource(&b)).unwrap();
+    let src_a = CountingSource { inner: SliceSource(&a), reads: Cell::new(0) };
+    let src_b = CountingSource { inner: SliceSource(&b), reads: Cell::new(0) };
+    let cache = RouteCache::new();
+
+    let reader_a = RouteReader::new_cached(&idx_a, &src_a, &cache);
+    let points_a = decode(&reader_a, 0);
+    let reader_b = RouteReader::new_cached(&idx_b, &src_b, &cache);
+    let points_b = decode(&reader_b, 0);
+    assert_ne!(points_a, points_b);
+
+    assert_eq!(decode(&reader_a, 0), points_a, "A must not hit B's same-tag slot");
+    assert_eq!(src_a.reads.get(), 2, "returning to A must start cold");
+    assert_eq!(decode(&reader_b, 0), points_b, "B must not hit A's same-tag slot");
+    assert_eq!(src_b.reads.get(), 2, "returning to B must start cold");
+
+    assert_eq!(decode(&reader_b, 0), points_b);
+    assert_eq!(src_b.reads.get(), 2, "a same-route repeat must remain a warm hit");
+    assert_eq!(cache.stats(), (1, 1));
+}
+
+/// A miss releases the cache borrow before source I/O. If that source reentrantly fills the cache
+/// for B, A's eventual put must re-adopt A; otherwise the cache claims to own B while holding A's
+/// same-tag points and B's next lookup cross-serves poisoned geometry.
+#[test]
+fn reentrant_read_revalidates_identity_before_miss_put() {
+    let a = one_chunk_route("A", (20, 20, 110));
+    let b = one_chunk_route("B", (30, 40, 120));
+    let idx_a = RouteIndex::read(&SliceSource(&a)).unwrap();
+    let idx_b = RouteIndex::read(&SliceSource(&b)).unwrap();
+    let src_b = CountingSource { inner: SliceSource(&b), reads: Cell::new(0) };
+    let cache = RouteCache::new();
+    let reader_b = RouteReader::new_cached(&idx_b, &src_b, &cache);
+    let reentrant_b_last = Cell::new(None);
+    let decode_b = || reentrant_b_last.set(decode(&reader_b, 0).last().copied());
+    let src_a = ReentrantSource {
+        inner: SliceSource(&a),
+        reads: Cell::new(0),
+        triggered: Cell::new(false),
+        on_first_read: &decode_b,
+    };
+    let reader_a = RouteReader::new_cached(&idx_a, &src_a, &cache);
+
+    let points_a = decode(&reader_a, 0);
+    assert_eq!(points_a.last(), Some(&RoutePoint { lon: 20, lat: 20, ele: 110 }));
+    assert_eq!(reentrant_b_last.get(), Some(RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(src_a.reads.get(), 1);
+    assert_eq!(src_b.reads.get(), 1);
+
+    let points_b = decode(&reader_b, 0);
+    assert_eq!(points_b.last(), Some(&RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(src_b.reads.get(), 2, "B must miss rather than consume A's in-flight fill");
+    assert_eq!(decode(&reader_b, 0), points_b);
+    assert_eq!(src_b.reads.get(), 2, "B's refill must be warm on the same identity");
+    assert_eq!(cache.stats(), (1, 1));
 }
 
 #[test]
