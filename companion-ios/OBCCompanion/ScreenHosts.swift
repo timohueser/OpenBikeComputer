@@ -181,6 +181,11 @@ struct ImportLandingHost: View {
         // that route in place instead of adding a duplicate (the old fingerprint
         // makes Upload read "Update on …").
         replacing: PlannedRouteRecord? = nil,
+        // The replace-by-id target for an upload from this landing — the
+        // caller derives it through the scope-gated helper (#769:
+        // `MainScreenModel.plannedDeviceObjectID(for:)`), so a link minted on
+        // another device / era can never aim the upload at the wrong object.
+        replacingDeviceObjectID: DeviceObjectID? = nil,
         onSave: @escaping (RouteDetail) -> Void,
         onUploaded: @escaping (RouteDetail, DeviceObjectID?, UInt32) -> Void,
         onPair: @escaping (RouteDetail) -> Void,
@@ -189,7 +194,7 @@ struct ImportLandingHost: View {
         _model = State(initialValue: RouteDetailModel(
             transport: transport,
             dressing: .imported(route, fileName: fileName),
-            deviceObjectID: replacing?.deviceObjectID,
+            deviceObjectID: replacingDeviceObjectID,
             uploadedCRC32: replacing?.uploadedCRC32,
             importedRouteID: replacing?.id
         ))
