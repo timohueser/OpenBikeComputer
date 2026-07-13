@@ -144,6 +144,6 @@ fn independent_fake_implements_settings_port() {
     assert_eq!(store.load(), None);
 
     let settings = FakeSettings { brightness: 73 };
-    store.save(&settings);
+    store.save(&settings).expect("the in-memory fake's save is infallible");
     assert_eq!(store.load(), Some(settings));
 }

@@ -135,6 +135,9 @@ pub enum HostCommand {
     /// answers with [`HostEvent::SettingsPersisted`] or [`HostEvent::SettingsPersistFailed`] carrying
     /// the same `revision`. A failed write keeps the revision dirty and retryable; a newer edit bumps
     /// the revision and supersedes an older pending one (a stale ack cannot clear the newer state).
+    /// A host that drains this command but never acks it (the web demo has no persistent store)
+    /// leaves the app parked in Awaiting terminally — by design: harmless (edits stay live in RAM
+    /// and keep superseding), honest (nothing pretends the write landed), no re-emission.
     /// Compat adapters: [`take_settings_persist`](crate::App::take_settings_persist) (revision-aware)
     /// and [`take_settings_dirty`](crate::App::take_settings_dirty) (emit-only bool).
     PersistSettings { revision: u32 },
