@@ -518,13 +518,19 @@ impl SettingsStore for RramSettingsStore {
         }
     }
 
-    fn save(&mut self, s: &Settings) {
+    fn save(&mut self, s: &Settings) -> Result<(), obc_ports::SettingsSaveError> {
         let off = region_offset();
         let bytes: [u8; SLOT_LEN] = obc_app::settings::encode(s);
         // No erase: RRAM overwrites in place. One aligned 16-byte line, so this is a single write.
         match self.rram.write(off, &bytes) {
-            Ok(()) => defmt::info!("settings: wrote {=usize} B to RRAM @ {=u32:#010x}", SLOT_LEN, off),
-            Err(e) => defmt::warn!("settings: RRAM write failed: {}", e),
+            Ok(()) => {
+                defmt::info!("settings: wrote {=usize} B to RRAM @ {=u32:#010x}", SLOT_LEN, off);
+                Ok(())
+            }
+            Err(e) => {
+                defmt::warn!("settings: RRAM write failed: {}", e);
+                Err(obc_ports::SettingsSaveError::Backend)
+            }
         }
     }
 }
