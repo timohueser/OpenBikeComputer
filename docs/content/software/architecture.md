@@ -14,7 +14,7 @@ That's what lets the live demo you can [run in your browser](../../) — the lan
 The crates form a stack with dependencies pointing **one way — downward**. The foundation fixes byte contracts and semantic boundaries; each layer up adds capability; the *hosts* sit on top. Nothing in the shared core ever depends on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 480" role="img" aria-label="The crate dependency stack. At the top, the hosts — obc-sim and obc-web-demo (the desktop simulator and the browser demo, sharing host glue in obc-host-core) and obc-fw-nrf54l plus obc-platform (device) — all depend on obc-app. obc-app depends on obc-render and also directly on obc-reader, obc-route, and the dependency-free obc-ports semantic foundation. obc-render depends only on obc-reader — routes reach it through a narrow overlay seam the app implements. obc-route depends on obc-reader, obc-formats, and obc-ports; both reader crates point down to the dependency-free obc-formats byte-contract authority. Every arrow points downward, so the shared core never depends on a host.">
+<svg viewBox="0 0 720 480" role="img" aria-label="The crate dependency stack. At the top, the hosts — obc-sim and obc-web-demo (the desktop simulator and the browser demo, sharing host glue in obc-host-core) and obc-fw-nrf54l plus obc-platform (device) — all depend on obc-app. obc-app depends on obc-render and also directly on obc-reader, obc-route, and the dependency-free obc-ports semantic foundation. obc-render depends only on obc-reader — routes reach it through a narrow overlay seam the app implements. obc-route depends on obc-reader, obc-formats, and obc-ports; the algorithm crates point down to the dependency-free obc-formats byte-contract authority. The offline obc-pack tool imports persistent format facts directly from obc-formats and uses obc-reader only for higher-level algorithms. Every arrow points downward, so the shared core never depends on a host.">
   <defs>
     <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -42,7 +42,7 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <!-- foundation -->
   <rect class="d-panel" x="150" y="332" width="200" height="54" rx="10" />
   <text class="d-label" x="250" y="358" text-anchor="middle">obc-reader</text>
-  <text class="d-sub" x="250" y="374" text-anchor="middle">OBCM · quadtree · ByteSource</text>
+  <text class="d-sub" x="250" y="374" text-anchor="middle">OBCM · quadtree · chunk decode</text>
   <rect class="d-panel" x="390" y="332" width="200" height="54" rx="10" />
   <text class="d-label" x="490" y="358" text-anchor="middle">obc-route</text>
   <text class="d-sub" x="490" y="374" text-anchor="middle">OBCR · GPX · map-match</text>
@@ -70,14 +70,14 @@ The crates form a stack with dependencies pointing **one way — downward**. The
 
   <text class="d-sub" x="610" y="360" style="font-size:11px">offline:</text>
   <text class="d-sub" x="610" y="374" style="font-size:11px">obc-pack</text>
-  <text class="d-sub" x="610" y="386" style="font-size:11px">→ obc-reader</text>
+  <text class="d-sub" x="610" y="386" style="font-size:11px">→ formats + reader</text>
 </svg>
-<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well; render on reader <i>only</i> — the app hands the active route to the renderer through a narrow overlay seam (a trait of chunked polylines), so the renderer never learns the route format; route on reader. Beneath them, <b>obc-formats</b> owns fixed persistent-format facts and the primitive byte seam, while <b>obc-ports</b> owns semantic samples and narrow sensor/input/track/settings traits; app, reader, and route re-export established paths during migration. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, shares the reader's format code but isn't part of the runtime stack.)</figcaption>
+<figcaption>Hosts depend on <b>obc-app</b>; app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b> as well; render on reader <i>only</i> — the app hands the active route to the renderer through a narrow overlay seam (a trait of chunked polylines), so the renderer never learns the route format; route on reader. Beneath them, <b>obc-formats</b> owns fixed persistent-format facts and the primitive byte seam, while <b>obc-ports</b> owns semantic samples and narrow sensor/input/track/settings traits; app, reader, and route re-export established paths during migration. Because every arrow points down, the shared core compiles and runs without <i>any</i> host — which is exactly how it's developed on the desktop today. (<b>obc-pack</b>, the offline map packer, imports format facts directly from <b>obc-formats</b> and uses <b>obc-reader</b> only for higher-level geometry and round-trip algorithms; it isn't part of the runtime stack.)</figcaption>
 </figure>
 
 The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-metal target (`thumbv8m.main-none-eabihf`) with no host present; the simulator and the firmware are just two different things that link *against* it. Swap the host, keep the core.
 
-At the bottom, [`obc-formats`](src:firmware/obc-formats) is deliberately smaller than a reader: it has no allocator, storage adapter, cache, converter, executor, or rendering policy. The root format specifications remain the normative byte contracts; this crate is their code authority for versions, fixed lengths, flags, sentinels, endian primitives, and the neutral byte-source/sink traits. `obc-reader` and `obc-route` keep the parsing and streaming algorithms, while their established public paths re-export the same foundation definitions for compatibility.
+At the bottom, [`obc-formats`](src:firmware/obc-formats) is deliberately smaller than a reader: it has no allocator, storage adapter, cache, converter, executor, or rendering policy. The root format specifications remain the normative byte contracts; this crate is their code authority for versions, fixed lengths, flags, sentinels, endian primitives, and the neutral byte-source/sink traits. Every persistent-format producer and consumer imports those facts directly — including `obc-pack` and the deliberately independent `obcm-testkit` byte builder. `obc-reader` and `obc-route` keep the parsing and streaming algorithms, while their established public paths temporarily re-export the same foundation definitions for source compatibility.
 
 Beside it, [`obc-ports`](src:firmware/obc-ports) owns dependency-free values and traits that cross the app/host boundary. Calendar arithmetic is semantic here, while the app keeps its own editor/storage year policy; `SettingsStore` uses an associated value so the foundation never depends upward on the app's `Settings` model.
 

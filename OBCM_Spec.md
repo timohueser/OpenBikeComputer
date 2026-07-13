@@ -6,6 +6,10 @@ for efficient rendering on memory-constrained devices such as microcontrollers
 Rust crate (`firmware/obc-reader`, shared by the desktop simulator and the nRF54L
 firmware).
 
+This document is the normative byte contract. Its code authority for version numbers,
+fixed lengths, flags, sentinels, the canonical POI id table, and endian primitives is
+`firmware/obc-formats/src/obcm.rs`; producers and consumers import those facts directly.
+
 **Version 3** introduced a **level-of-detail (LOD) pyramid**: a file holds N
 self-contained detail levels, each its own quadtree + chunk set with geometry
 simplified to that level's resolution. The renderer reads only the level that
@@ -425,8 +429,10 @@ can share a single `HoursRef`.
 
 ### 7.4 Canonical category / subtype table (normative)
 
-This is the **normative home** of the id table; `obc-pack`'s `poi.rs` mirrors it
-exactly and the device firmware mirrors it. **Ids are append-only** — an existing
+This is the **normative home** of the id table; `obc-formats/src/obcm.rs` is its code
+authority for subtype ids, categories, and fallback labels. `obc-pack`'s `poi.rs`
+adds only the OSM `key=value` classification that produces each subtype, while the
+device reads the shared table directly. **Ids are append-only** — an existing
 row's category or subtype id must never be renumbered (an old map's records would
 then decode as the wrong POI). Subtype `0` is reserved; `0xFF` is the
 end-of-chunk sentinel and can never be a subtype id.
@@ -805,11 +811,15 @@ legality) is the profile's job.
 
 ## Reference implementations
 
+- **Format authority (Rust, no_std):** `firmware/obc-formats/src/obcm.rs`
+  (version, fixed record lengths, flags, sentinels, POI ids/categories/labels) and
+  `firmware/obc-formats/src/io.rs` (checked little-endian primitives + the neutral
+  byte-source/sink seam). It contains no reader, packer, cache, or rendering policy.
 - **Writer (Rust, std host):** `firmware/obc-pack/src/serialize.rs` (`serialize_lods`,
   `serialize_tree`, `serialize_poi_section`, `serialize_nav_section`,
   `flatten_nav_tree` (§8.2 bin-packing), `pack_nav_record`, `pack_edge_record`,
   `pack_profile_table`, `pack_feature`, `pack_chunk`, `pack_style_dict`),
-  `firmware/obc-pack/src/poi.rs` (the category/subtype table mirrored in §7.4),
+  `firmware/obc-pack/src/poi.rs` (the OSM-tag classifier for the shared §7.4 ids),
   `firmware/obc-pack/src/hours.rs` (the `opening_hours` parser + 29-byte blob
   encoder + dedup pool for §7.5), `firmware/obc-pack/src/nav.rs` (the routable-graph
   builder + the canonical way-kind table behind §8.6), and
