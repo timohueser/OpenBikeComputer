@@ -14,11 +14,11 @@ This page walks one frame from map bytes to lit pixels. It's the deepest corner 
 The whole renderer is a single `no_std`, zero-allocation crate. The only things that differ between the desktop and the device are **where the pixels go** and **what colour they end up** — and both are injected as parameters, so the drawing code never knows which machine it's on.
 
 ```rust
-MapRenderer::render(target, reader, vp, bg, color_fn)
+MapRenderer::render(target, scene, vp, bg, color_fn)
 //                  │       │       │   │   └ RGB565 → this panel's pixel
 //                  │       │       │   └ the backdrop colour
 //                  │       │       └ the camera (Viewport)
-//                  │       └ the parsed map (Reader)
+//                  │       └ a streamed map scene
 //                  └ where pixels land (a DrawTarget)
 ```
 
@@ -35,7 +35,7 @@ MapRenderer::render(target, reader, vp, bg, color_fn)
   <text class="d-sub" x="360" y="168" text-anchor="middle">one no_std code path · zero-alloc</text>
 
   <!-- inputs left -->
-  <text class="d-sub" x="232" y="100" text-anchor="end">reader · viewport · bg →</text>
+  <text class="d-sub" x="232" y="100" text-anchor="end">scene · viewport · bg →</text>
 
   <!-- seam 1: DrawTarget -->
   <rect class="d-panel-2" x="300" y="36" width="120" height="40" rx="9" />
@@ -63,10 +63,12 @@ MapRenderer::render(target, reader, vp, bg, color_fn)
   <text class="d-sub" x="605" y="178" text-anchor="middle">64 colours (RGB222)</text>
   <line class="d-flow" x1="476" y1="153" x2="528" y2="153" marker-end="url(#aS)" />
 </svg>
-<figcaption>The renderer is generic over a <b>DrawTarget</b> (the pixel sink) and takes a <b>colour function</b> (RGB565 → the panel's native pixel). The simulator plugs in a true-colour framebuffer; the device plugs in its 64-colour panel. Identical geometry code runs between them.</figcaption>
+<figcaption>The renderer is generic over a streamed <b>map scene</b> as well as a <b>DrawTarget</b> (the pixel sink), and takes a <b>colour function</b> (RGB565 → the panel's native pixel). The normal scene is the OBCM reader's thin adapter; tests can supply static geometry. The concrete source and pixel target are monomorphised, so identical geometry code runs between hosts without per-feature dispatch.</figcaption>
 </figure>
 
-Styles in the map store **device-independent RGB565**; the host's `color_fn` resolves each to a concrete pixel — true colour in the simulator, [64-colour RGB222 quantisation](src:firmware/obc-reader/src/color.rs) on the device. Because of this seam, the simulator you can [run in your browser](../../) is not a mock-up: it is the device's exact rendering code, so the two can never drift apart.
+The base-map input is the allocation-free [`obc-map-scene`](src:firmware/obc-map-scene/src/lib.rs) seam: LOD and style metadata, a visible-candidate visit, complete selected-feature decode into caller-owned scratch, and optional source counters. It exposes no OBCM offsets, quadtree records, cache slots, or retained scene graph. The production [`Reader` adapter](src:firmware/obc-reader/src/scene.rs) keeps streaming the same chunks through the same cache; its opaque six-byte candidate token replaces the same six bytes the renderer's stub formerly devoted to chunk and offset, so neither the 14-byte slot nor resident RAM grows.
+
+Styles in the map store **device-independent RGB565**; the host's `color_fn` resolves each to a concrete pixel — true colour in the simulator, [64-colour RGB222 quantisation](src:firmware/obc-reader/src/color.rs) on the device. Because of these seams, the simulator you can [run in your browser](../../) is not a mock-up: it is the device's exact rendering code, so the two can never drift apart.
 
 ## The frame, end to end
 
@@ -247,7 +249,7 @@ Because `meters_per_pixel` depends only on zoom and latitude, not on the display
 
 ## 3 · The quadtree cull: only the chunks you can see
 
-Within a chosen LOD, geometry is bucketed into fixed-size **chunks**, indexed by a **quadtree** over the map's bounding box. To find the visible chunks, the renderer walks the tree from the root, descending only into children whose box intersects the view, and visits every non-empty leaf it reaches.
+Within an OBCM source's chosen LOD, geometry is bucketed into fixed-size **chunks**, indexed by a **quadtree** over the map's bounding box. The reader adapter walks that tree from the root, descending only into children whose box intersects the view, and streams every non-empty leaf's candidates through the scene seam. The renderer sees candidates, not the tree or chunks that produced them.
 
 <figure class="fig">
 <svg viewBox="0 0 720 320" role="img" aria-label="A region split into four quadrants. The viewport straddles the boundary between the north-east and south-east quadrants, so the walk descends into both and prunes the north-west and south-west quadrants whole. Within north-east only the two lower sub-cells meet the view; within south-east only the two upper sub-cells do — four visited leaves in all. The tree on the right mirrors this: the root descends into the NE and SE branches, each with two visited and two pruned leaves, while NW and SW are pruned.">
@@ -364,8 +366,8 @@ Two mechanisms work together to solve this within the memory and time budget.
 **Priority, and cheap skipping.** Each feature's style carries a 2-bit **priority** (1 = keep first … 4 = drop first) — the axis the drop decision turns on. And a feature is cheap to *step over*: its header is a fixed 12 bytes, so the reader can advance past a feature it doesn't want with pure offset arithmetic — no coordinate math, no buffer writes. That skip primitive is what lets the collector touch a chunk's bytes selectively: past features whose style isn't drawn at all, and — the payoff below — straight to the handful of *winners* it must re-decode.
 
 <figure class="fig">
-<svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells. Pass B seeks straight to the winning features by their stored byte offsets, skipping everything in between by advancing the read pointer.">
-  <text class="d-tag" x="20" y="24">Pass B — seek straight to each winner by its stored offset</text>
+<svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells. The OBCM adapter resolves each winning opaque token to its source position and seeks straight to that feature, skipping everything in between by advancing the read pointer.">
+  <text class="d-tag" x="20" y="24">Pass B — the source resolves each opaque winner token</text>
   <!-- byte stream cells -->
   <g font-family="var(--mono)">
     <!-- cell template: x width 78, y 52 h 46 -->
@@ -383,20 +385,20 @@ Two mechanisms work together to solve this within the memory and time budget.
   <line class="d-stroke" x1="24" y1="118" x2="696" y2="118" style="stroke:#cf6a2a;stroke-dasharray:2 5" />
   <text class="d-sub" x="24" y="150" style="font-size:11px">re-decoded winners (coral) cost coordinate math; the features between them cost only a pointer add.</text>
 </svg>
-<figcaption>A feature header is 12 bytes, so skipping is pure offset arithmetic. Pass A saved each winner's byte offset in its stub, so pass B seeks straight to it — re-decoding only the survivors, never re-scanning the whole chunk.</figcaption>
+<figcaption>A feature header is 12 bytes, so skipping is pure offset arithmetic inside the OBCM adapter. Pass A saves an <b>opaque source token</b> in each winner's stub; pass B gives it back to the source, which seeks straight to the feature — re-decoding only survivors without exposing byte offsets to the renderer.</figcaption>
 </figure>
 
 **Stub-select.** The global-priority drop is easy to state and hard to do cheaply, because the device streams chunks off the SD card through a cache that holds **one** at a time. An earlier design made four passes over the visible chunks — one per priority level — filling the buffers level by level. That kept the guarantee, but it re-read every visible chunk *four times*; the one-slot cache absorbed none of it, so a wide view cost `4 × N` chunk reads off SPI SD and the frame crawled. The fix (issue #564) splits **selection** from **geometry**:
 
 ```rust
-let candidates = self.collect_stubs(reader, lod, view, &vis_mask, stats); // pass A
-let winners    = self.select(reader);                                     // RAM only
-self.decode_winners(reader, lod, view, winners, stats);                   // pass B
+let candidates = self.collect_stubs(scene, lod, view, &vis_mask, stats); // pass A
+let winners    = self.select(scene);                                     // RAM only
+self.decode_winners(scene, lod, view, winners, stats);                   // pass B
 ```
 
-- **Pass A** walks each visible chunk **once**, decoding every drawn feature just far enough to get its bounding box, and records a fixed-size *stub* — style, chunk, byte offset, vertex count — but keeps **no geometry**. When the stub buffer fills, the lowest-priority stub is evicted, so it always holds the best candidates.
+- **Pass A** asks the scene source to visit visible candidates once, decoding every drawn feature just far enough to get its bounding box, and records a fixed-size *stub* — style, opaque token, vertex/ring counts — but keeps **no geometry**. When the stub buffer fills, the lowest-priority stub is evicted, so it always holds the best candidates.
 - **Select** is pure RAM: sort the stubs by priority and admit them greedily against the exact point/span budget. Drops are strictly lowest-priority-first, *globally* — the same guarantee as before, now with the exact vertex cost of every candidate known before a single coordinate is copied.
-- **Pass B** walks the chunks once more and re-decodes only the **winners**, seeking straight to each by the byte offset its stub saved, and writes their geometry into the frame buffers. Only chunks that own a winner are re-read.
+- **Pass B** returns the winning tokens to the scene source, which preserves its natural chunk-major walk and re-decodes only those **winners** directly into caller-owned scratch. In the OBCM adapter, only chunks that own a winner are re-read.
 
 There are two deliberately separate kinds of degradation here. A **frame-budget drop** happens only after a complete feature produced a stub; it follows the deterministic priority policy above and increments `features_dropped`. A **decode failure** never produces partial geometry: an over-capacity feature is consumed and dropped whole, malformed feature bytes are rejected, structural map/index corruption is distinguished from them, and medium/cache failures remain typed. The renderer counts these separately as capacity drops, malformed features, structural-map failures, read failures, and cache contentions. Pass A simply omits a failed feature's stub and continues when its byte extent is known. If a winner refetch or the second index walk fails in pass B, the collector rolls back any point/ring prefix and compacts only successfully decoded spans; failed placeholders and untouched stubs never reach the painter.
 
@@ -575,7 +577,7 @@ Everything above strokes a line in one flat colour. But a railway isn't flat, an
 | Line | dashed | set | **railway stripe** — a solid `color2` base with `color` dashes on top |
 | Polygon | *(ignored)* | set | fill in `color`, plus a `color2` **ring outline** (finest LOD only) |
 
-Each span already carries its one-byte `style_id`, so the draw loop re-resolves the full style from the reader's `O(1)` style table at draw time — no extra per-span RAM. Two of the five (casing, outline) are *extra passes* that cost real time, so they're gated to the finest LOD; the other three ride the existing stroke path. A config that uses **none** of them renders byte-for-byte what it did before — the whole feature is built to be free when unused, and each renderer sub-issue proved it with a before/after PNG md5 diff on a fixed camera.
+Each span already carries its one-byte `style_id`, so the draw loop re-resolves the full style from the scene source's `O(1)` style table at draw time — no extra per-span RAM. Two of the five (casing, outline) are *extra passes* that cost real time, so they're gated to the finest LOD; the other three ride the existing stroke path. A config that uses **none** of them renders byte-for-byte what it did before — the whole feature is built to be free when unused, and each renderer sub-issue proved it with a before/after PNG md5 diff on a fixed camera.
 
 **Dashes, for free.** A dashed line reuses the entire clip-then-stroke pipeline unchanged and diverges only at the very end: instead of filling the whole visible run, it walks that run in **screen-space arc length** and emits only the "on" intervals. Because the clip happens *first*, the walker only ever sees on-screen geometry — so a dashed line is actually *cheaper* than the solid one, not dearer: it clips away the same off-screen majority, then paints only half of what survives. The phase resets at each clipped run (each time the line re-enters the view), which lets a dash straddle a bend seamlessly but also means the pattern can "crawl" a pixel or two as you pan — every slippy map does this, and it isn't worth carrying feature-space arc length to avoid. A **railway stripe** is just this composed with a base: stroke the whole line once in `color2`, then stroke `color` dashes on top, so the gaps between the dark dashes show the light base through — alternating stripes, no perpendicular crossties.
 
@@ -878,6 +880,7 @@ A compile-time assertion fails the build if the renderer's total buffer footprin
 ## Where this lives
 
 - The renderer and all its rasterisers: [`obc-render/src/`](src:firmware/obc-render/src) — the frame loop and buffers in `lib.rs`; projection, collection, stroking, polygon fill and the overlays in `viewport.rs` / `collect.rs` / `stroke.rs` / `fill.rs` / `overlay.rs`
+- The streamed scene contract: [`obc-map-scene/src/lib.rs`](src:firmware/obc-map-scene/src/lib.rs); the production OBCM adapter: [`obc-reader/src/scene.rs`](src:firmware/obc-reader/src/scene.rs)
 - The map parsing, quadtree walk, and skip-don't-decode: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
 - A from-scratch reference walkthrough with `file:line` anchors: [`firmware/docs/rendering_pipeline.md`](src:firmware/docs/rendering_pipeline.md)
 
