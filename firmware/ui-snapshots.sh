@@ -203,6 +203,10 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r r p p" --dfu-scan same   --png "$OUT/dfu-confirm-same.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r r p p" --dfu-scan first  --png "$OUT/dfu-confirm-first.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r r p p" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress.png"
+# The terminal "Installing update" card — the static pre-reset frame the MIP panel holds through
+# the whole bootloader install (no spinner by design: the frame freezes at the reset, and the LED
+# is named as the liveness signal). --dfu-installing runs the board drain's show_dfu_installing swap.
+"$SIM" "$MAP" --boot --script "B l p r r r r r r r r r p p" --dfu-scan normal --dfu-progress --dfu-installing --png "$OUT/dfu-installing.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r r p p" --dfu-error notfound   --png "$OUT/dfu-error-notfound.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r r p p" --dfu-error unreadable --png "$OUT/dfu-error-unreadable.png"
 "$SIM" "$MAP" --boot --script "B l p r r r r r r r r r p p" --dfu-error damaged    --png "$OUT/dfu-error-damaged.png"
@@ -382,8 +386,11 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r r p" --png "$OUT/system-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r r p p" --dfu-scan first --png "$OUT/dfu-confirm-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r r p p" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress-$lang.png"
+    # The terminal installing card per-language — the wrapped Body headline (two lines in French)
+    # + the Label body + the warning line, to eyeball for clipped copy.
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r r p p" --dfu-scan normal --dfu-progress --dfu-installing --png "$OUT/dfu-installing-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B l p r r r r r r r r r p p" --dfu-error fragmented --png "$OUT/dfu-error-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 146 screens rendered into $OUT/"
+echo "ui-snapshots: 150 screens rendered into $OUT/"
