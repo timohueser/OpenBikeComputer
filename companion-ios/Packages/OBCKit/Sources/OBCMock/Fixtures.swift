@@ -46,6 +46,12 @@ public struct RouteEntry: Sendable {
     /// The device object id this route is stored under on the (mock) device, or
     /// `nil` when it lives only in the phone's library.
     public var deviceObjectID: DeviceObjectID?
+    /// The whole-object CRC-32 the (mock) device reports for this copy in its
+    /// v2 `routeList` (spec §7.4) — the proof half of the app's identity-verified
+    /// badge (#770). `nil` = "derive it from the fixture geometry" (what a seeded
+    /// copy's committed CRC is); a real upload pins the committed payload's CRC
+    /// here so a re-listed copy proves against the same fingerprint.
+    public var crc32: UInt32?
 
     public init(
         summary: RouteSummary,
@@ -54,7 +60,8 @@ public struct RouteEntry: Sendable {
         elevationProfile: [Double] = [],
         maxGradePercent: Double? = nil,
         payloadByteCount: Int,
-        deviceObjectID: DeviceObjectID? = nil
+        deviceObjectID: DeviceObjectID? = nil,
+        crc32: UInt32? = nil
     ) {
         self.summary = summary
         self.points = points
@@ -63,6 +70,7 @@ public struct RouteEntry: Sendable {
         self.maxGradePercent = maxGradePercent
         self.payloadByteCount = payloadByteCount
         self.deviceObjectID = deviceObjectID
+        self.crc32 = crc32
     }
 
     /// The full uploadable route, with a deterministic synthesized payload.

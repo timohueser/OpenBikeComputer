@@ -143,6 +143,15 @@ public final class MainScreenModel {
     /// links under an unknown scope would be a reconcile write the fail-closed
     /// rule forbids.
     @ObservationIgnored private var lastRouteCatalog: [RouteCatalogEntry]?
+    /// The connected device's per-object content CRCs — the v2 `routeList`
+    /// `crc32` (spec §7.4), keyed by device object id. The **proof half** of the
+    /// identity-verified badge (#770): a link is only a checkmark when this map
+    /// holds a non-zero CRC for its object that equals the record's committed
+    /// fingerprint. Rebuilt wholesale from every `listRoutes()` read; a
+    /// just-committed upload pokes the one object it landed under (the transfer
+    /// verified that CRC) so a fresh badge lights before the next catalog read.
+    /// `0` (or an absent key) = unknown → proves nothing.
+    @ObservationIgnored private var deviceRouteCRCs: [DeviceObjectID: UInt32] = [:]
     /// The in-flight identity read (`runIdentityCheck`) for the current
     /// connection — what the coordinator's `identitySettled` seam awaits.
     /// Replaced (never cancelled) on a reconnect: a superseded read settles the
@@ -418,47 +427,120 @@ public final class MainScreenModel {
     }
 
     /// True-up every record's `deviceLink` against the device's live catalog
-    /// (device object ids): a copy deleted out from under us (another phone,
-    /// the EchoHarness) clears the badge; a record whose id is still listed keeps
-    /// it. Ids are durable across device reboots (spec §4.1), so absence really
-    /// means "gone", not "renumbered".
+    /// (device object ids **and** content CRCs — #770), then adopt-by-content.
+    /// Absence, or a catalog CRC that disagrees with what we committed, drops
+    /// the link (a copy deleted out from under us, era aliasing that survived
+    /// scoping, or an on-device replacement by another phone); an *unlinked*
+    /// catalog entry whose CRC matches a record's current encoding re-links it.
     ///
-    /// Scope-gated both ways (#769): with the identity **unknown** nothing is
+    /// Scope-gated both ways (#769): with the identity **unknown** no link is
     /// written at all (fail-closed — a catalog can't be attributed to a scope
     /// that hasn't been proven), and with it known only links that **match the
     /// connected scope** are eligible to clear — device B's catalog says
     /// nothing about the copies device A legitimately holds (the v1
-    /// link-clearing bug this issue retires).
+    /// link-clearing bug this issue retires). The catalog CRCs are cached either
+    /// way so a later identity settle can prove the badge against them.
     private func reconcileOnDevice(with deviceRoutes: [RouteCatalogEntry]) {
+        // The proof half of the badge (#770) — refreshed wholesale from device
+        // truth on every read, replacing any optimistic post-upload pokes.
+        deviceRouteCRCs = Dictionary(
+            deviceRoutes.map { ($0.id, $0.crc32) }, uniquingKeysWith: { first, _ in first })
         guard let scope = connectedScope else {
             refreshOnDeviceStates()
             return
         }
         let listed = Set(deviceRoutes.map(\.id))
+        // 1) Drop links the catalog *disproves*. Absent object → gone. Present
+        //    object whose non-zero CRC differs from our committed fingerprint →
+        //    it holds different content than we think (aliasing / foreign
+        //    replacement) — never a checkmark on presence. A `crc32 = 0`
+        //    (unknown) entry proves nothing, so the link is kept conservatively.
         for (id, var record) in plannedRecords {
-            guard let link = record.deviceLink, link.matches(scope),
-                !listed.contains(link.objectID)
-            else { continue }
+            guard let link = record.deviceLink, link.matches(scope) else { continue }
+            let present = listed.contains(link.objectID)
+            let catalogCRC = deviceRouteCRCs[link.objectID] ?? 0
+            let crcMismatch = present && catalogCRC != 0
+                && record.uploadedCRC32 != nil && catalogCRC != record.uploadedCRC32
+            guard !present || crcMismatch else { continue }
             record.deviceLink = nil
             record.uploadedCRC32 = nil
             plannedRecords[id] = record
             library.savePlannedRoute(record)
         }
+        // 2) Adopt-by-content — heal identical unlinked copies (app reinstall,
+        //    device switch-back) without a re-upload.
+        adoptByContent(scope: scope, catalog: deviceRoutes)
         refreshOnDeviceStates()
+    }
+
+    /// Adopt-by-content (#770): an **unlinked** catalog entry whose non-zero
+    /// `crc32` equals a record's *current* OBCR encoding re-links to it (the
+    /// badge lights, no upload needed), and a subsequent upload replaces that
+    /// object by id instead of creating a duplicate. Heals the app-reinstall
+    /// (link lost, device kept) and device-switch-back cases silently.
+    ///
+    /// Ambiguity is resolved first-come, each side claimed at most once: two
+    /// catalog entries with the same CRC → the first (device order) is adopted,
+    /// the rest left; two records with the same current CRC → the first (stable
+    /// id order) adopts the entry, the rest stay unlinked. A later delete on
+    /// either side reconciles normally.
+    private func adoptByContent(scope: LibraryScope, catalog: [RouteCatalogEntry]) {
+        // Object ids already spoken for by a valid link — never adopt over them.
+        var claimed = Set(plannedRecords.values.compactMap { record -> DeviceObjectID? in
+            guard let link = record.deviceLink, link.matches(scope) else { return nil }
+            return link.objectID
+        })
+        // Adoptable = listed entries with a known (non-zero) CRC not already
+        // claimed. Device order is preserved, so the "adopt the first" tie-break
+        // falls out of the scan below.
+        let adoptable = catalog.filter { $0.crc32 != 0 && !claimed.contains($0.id) }
+        guard !adoptable.isEmpty else { return }
+        // Records with no *valid* link, in a deterministic (stable id) order so
+        // an adoption is reproducible run to run.
+        let candidates = plannedRecords.values
+            .filter { record in
+                guard let link = record.deviceLink else { return true }
+                return !link.matches(scope)
+            }
+            .sorted { $0.id.rawValue < $1.id.rawValue }
+        for record in candidates {
+            let currentCRC = RouteObjectCodec.payloadCRC(for: record)
+            guard let entry = adoptable.first(where: {
+                $0.crc32 == currentCRC && !claimed.contains($0.id)
+            }) else { continue }
+            var adopted = record
+            adopted.deviceLink = DeviceRouteLink(
+                serial: scope.serial, epoch: scope.epoch, objectID: entry.id)
+            adopted.uploadedCRC32 = currentCRC
+            plannedRecords[record.id] = adopted
+            library.savePlannedRoute(adopted)
+            claimed.insert(entry.id)
+        }
+    }
+
+    /// The CRC the connected device is **proven** to currently hold for this
+    /// record, or `nil` when unproven (#770). Proof = a link valid for the
+    /// connected scope + a non-zero catalog CRC for that object that equals the
+    /// record's committed fingerprint. An unknown catalog CRC (`0`), a missing
+    /// fingerprint, or a mismatch all read as unproven — no badge.
+    private func provenCommittedCRC(for record: PlannedRouteRecord) -> UInt32? {
+        guard let scope = connectedScope, let link = record.deviceLink,
+            link.matches(scope), let uploaded = record.uploadedCRC32,
+            let catalogCRC = deviceRouteCRCs[link.objectID], catalogCRC != 0,
+            catalogCRC == uploaded
+        else { return nil }
+        return uploaded
     }
 
     /// Recompute every record's proven device-copy state — called whenever a
     /// record's content or its device link moves (load, reconcile, upload,
     /// rename, re-import, delete). The payload encode behind the CRC only runs
-    /// for records the device actually holds with a known fingerprint.
-    /// (V6 owns making the badge itself scope-honest — presence + CRC proof
-    /// against the *connected* device; here the link's mere existence still
-    /// lights it, exactly as v1 did.)
+    /// for records the device is *proven* to hold (an unproven record short-
+    /// circuits to `.notOnDevice` before the encode).
     private func refreshOnDeviceStates() {
         onDevice = plannedRecords.mapValues { record in
             OnDeviceState.determine(
-                deviceObjectID: record.deviceLink?.objectID,
-                uploadedCRC32: record.uploadedCRC32,
+                provenCommittedCRC: provenCommittedCRC(for: record),
                 currentCRC: { RouteObjectCodec.payloadCRC(for: record) }
             )
         }
@@ -629,10 +711,14 @@ public final class MainScreenModel {
         return link.objectID
     }
 
-    /// The committed upload fingerprint behind that link — threaded into the
-    /// detail so its button can tell "up to date" from "out of date".
-    public func plannedUploadedCRC32(for id: RouteID) -> UInt32? {
-        plannedRecords[id]?.uploadedCRC32
+    /// The CRC the connected device is **proven** to hold for this route (#770)
+    /// — threaded into the detail so its button reads "up to date" only on the
+    /// same proof the list badge uses (a scoped link + a matching non-zero
+    /// catalog CRC), never on link presence alone. `nil` when unproven → the
+    /// detail offers Upload, not a disabled "up to date".
+    public func plannedProvenCommittedCRC(for id: RouteID) -> UInt32? {
+        guard let record = plannedRecords[id] else { return nil }
+        return provenCommittedCRC(for: record)
     }
 
     /// H3 write-through from Settings (B8) — the top bar shows the new device
@@ -655,6 +741,11 @@ public final class MainScreenModel {
             record.deviceLink = DeviceRouteLink(
                 serial: scope.serial, epoch: scope.epoch, objectID: objectID)
             record.uploadedCRC32 = crc32
+            // The transfer verified this whole-object CRC for this object, so
+            // record it as device truth (#770): the badge proves immediately,
+            // before the next `listRoutes()` catches up. A later catalog read
+            // overwrites this with what the device actually reports.
+            deviceRouteCRCs[objectID] = crc32
         } else {
             record.deviceLink = nil
             record.uploadedCRC32 = nil

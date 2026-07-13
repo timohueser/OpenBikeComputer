@@ -1,11 +1,14 @@
 import Foundation
 
-/// The device's copy of a planned route, as the phone can prove it: drives the
-/// C1 badge (check / out-of-date) and the detail's Upload ↔ Update ↔ disabled
+/// The device's copy of a planned route, as the phone can **prove** it: drives
+/// the C1 badge (check / out-of-date) and the detail's Upload ↔ Update ↔ disabled
 /// button. "Up to date" means the current upload payload's CRC-32 equals the
 /// one the device committed — the same whole-object CRC the transfer verified.
 public enum OnDeviceState: Equatable, Sendable {
-    /// The device holds no copy (never uploaded, or deleted device-side).
+    /// The device holds no *provable* copy — never uploaded, deleted
+    /// device-side, or unproven (no scoped link, an unknown catalog CRC, or a
+    /// CRC that disagrees with what we committed). V6 (#770): no badge without
+    /// proof.
     case notOnDevice
     /// The device's copy is byte-identical to what an upload would send now.
     case upToDate
@@ -14,19 +17,20 @@ public enum OnDeviceState: Equatable, Sendable {
     case outdated
 
     /// The one place the rule lives (the list model and the detail model both
-    /// call it). `currentCRC` is a closure so the payload is only encoded when
-    /// the comparison actually needs it. A device copy with an *unknown*
-    /// fingerprint (a pre-fingerprint library) reads as outdated — offering an
-    /// update self-heals it; calling it up-to-date would disable Upload with
-    /// no way out.
+    /// call it). `provenCommittedCRC` is the CRC the device is **proven** to
+    /// currently hold for this record — a valid scoped link plus a catalog
+    /// entry whose non-zero CRC equals the record's committed fingerprint (or a
+    /// just-completed upload's verified CRC). `nil` means unproven → **no
+    /// badge** (V6 #770: presence alone is never a checkmark; a `crc32 = 0`
+    /// entry proves nothing, and a mismatch drops the link before it reaches
+    /// here). `currentCRC` is a closure so the payload is only encoded when the
+    /// up-to-date/outdated split actually needs it.
     public static func determine(
-        deviceObjectID: DeviceObjectID?,
-        uploadedCRC32: UInt32?,
+        provenCommittedCRC: UInt32?,
         currentCRC: () -> UInt32
     ) -> OnDeviceState {
-        guard deviceObjectID != nil else { return .notOnDevice }
-        guard let uploadedCRC32 else { return .outdated }
-        return currentCRC() == uploadedCRC32 ? .upToDate : .outdated
+        guard let provenCommittedCRC else { return .notOnDevice }
+        return currentCRC() == provenCommittedCRC ? .upToDate : .outdated
     }
 }
 
