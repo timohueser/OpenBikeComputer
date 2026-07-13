@@ -173,6 +173,15 @@ snapshot or the boot record failing to write) the same way. In every one of thes
 cases nothing was armed, so the rider dismisses the card and the old firmware keeps
 running.
 
+The moment the guards pass, the spinner is swapped for a static **"Installing
+update"** card — the last frame the app ever paints before the reboot. A
+memory-in-pixel panel holds its image without being scanned, so that card stays
+readable on the glass through the entire bootloader install (the bootloader never
+draws — it only keeps the panel's COM lines alternating, see below). The card is
+deliberately static: a spinner would freeze mid-sweep at the reset and read as a
+hang, so the copy names the blinking LED as the "still working" signal and warns to
+keep power on. The next thing the rider sees is the new image booting.
+
 The reboot's outcome is never silent either. Before rebooting into the
 bootloader, the armer leaves a small breadcrumb (the staged version + the arm's
 generation) in the settings page. The bootloader, in turn, records *what happened*
@@ -237,12 +246,21 @@ is "flash `obc-boot` once, then iterate on the app exactly as before".
 <figcaption>The bootloader lives in its own 32 KB slot below the app and is flashed once; the app never moves it. <code>BOOT_STATE</code> is the single 4 KB handoff page — the armer writes an <code>Armed</code> record there and the bootloader reads it, both through the shared codec, and any unclean read is <code>Idle</code>. The staged <code>UPDATE.BIN</code> and the <code>ROLLBACK.BIN</code> snapshot live on the card, not in RRAM: the app resolves them to raw SD block runs so the FAT-free bootloader can read them with plain SPI block reads.</figcaption>
 </figure>
 
-The bootloader is deliberately tiny and dumb — no FAT, no BLE, no display, no
-async executor, just blocking GPIO + SPI + RRAMC. All the logic that could be
+The bootloader is deliberately tiny and dumb — no FAT, no BLE, no display driver,
+no async executor, just blocking GPIO + SPI + RRAMC. All the logic that could be
 *wrong* (the decode, the boot decision, the install sequencing) lives upstream in
 `obc-dfu` and is host-tested with mock IO; the bootloader is a thin driver that
 maps the engine's outcome onto an LED code. That split is what lets the safety
 invariants be *tested* rather than trusted.
+
+The one panel courtesy it performs needs no drawing at all: on every install path
+it parks the display's scan pins driven-low (so nothing floats into the glass while
+the app slot is rewritten) and keeps the panel's anti-DC-bias **COM wave**
+alternating in software, paced off the CPU cycle counter from the same chokepoints
+that pet the watchdog. That is what lets the app's pre-painted "Installing update"
+frame survive on the glass for the whole flash — and it removes a real electrical
+stress: memory-in-pixel cells must never sit under a DC bias, which is exactly what
+a frozen COM line would apply for the multi-ten-second install.
 
 ---
 
