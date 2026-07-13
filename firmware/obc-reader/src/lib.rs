@@ -48,6 +48,7 @@ pub mod geo;
 pub mod hours;
 pub mod poi_table;
 pub mod reader;
+mod scene;
 
 // The byte-I/O traits are re-exported at the crate root for convenience; its `Error` is **not**
 // (it would shadow the map-parse [`Error`] below) — reach it via `byte_io::Error`, as `obc-route`
@@ -55,24 +56,22 @@ pub mod reader;
 pub use byte_io::{ByteSink, ByteSource, SliceSource};
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
-pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
+pub use geo::{cos_lat, delta_m, ground_dist_m, ground_dist_m_cl, seg_dist_m, seg_dist_m_cl};
 pub use hours::{
     weekday_from_ymd, Interval, WeeklySchedule, HOURS_FLAG_SEASONAL, HOURS_FLAG_TRUNCATED, MINUTES_PER_DAY,
 };
 pub use poi_table::{category_of, label_of, subtype_row, PoiCategory, PoiSubtype, SUBTYPES};
 pub use reader::{
     read_header, CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef,
-    Kind, Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavNeighbor,
-    NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, Style, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS,
+    Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavNeighbor,
+    NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, HEADER_LEN, MAX_CHUNK_BYTES, MAX_FEAT_PTS,
     MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_CHUNK_BYTES, NAV_MAX_PROFILES,
     NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, NAV_TILE_SLOTS, POI_HOURS_BLOB_LEN,
     POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES, POI_NAME_MAX,
 };
 
-/// Meters of ground per degree of latitude (and of longitude at the equator) — the
-/// local-equirectangular Earth model. Every crate that turns microdegrees into ground distance or
-/// screen scale derives from this one number, so an Earth-model refinement lands everywhere at once.
-pub const M_PER_DEG: f64 = 111_320.0;
+// Compatibility paths: neutral scene/geometry primitives now live below the concrete OBCM reader.
+pub use obc_map_scene::{BBox, Kind, Style, M_PER_DEG};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -84,20 +83,4 @@ pub enum Error {
     Source(obc_formats::io::Error),
     /// A safe cache-backed call was re-entered while the cache was already borrowed.
     CacheBusy,
-}
-
-/// Axis-aligned bounding box in microdegrees.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BBox {
-    pub min_lon: i32,
-    pub min_lat: i32,
-    pub max_lon: i32,
-    pub max_lat: i32,
-}
-
-impl BBox {
-    #[inline]
-    pub fn intersects(&self, o: &BBox) -> bool {
-        !(self.max_lon < o.min_lon || self.min_lon > o.max_lon || self.max_lat < o.min_lat || self.min_lat > o.max_lat)
-    }
 }

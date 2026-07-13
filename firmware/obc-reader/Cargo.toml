@@ -21,6 +21,7 @@ alloc = []
 [dependencies]
 heapless = "0.8"
 obc-formats = { path = "../obc-formats" }
+obc-map-scene = { path = "../obc-map-scene" }
 # `no_std` float math for the `geo` distance core (`cosf`/`sqrtf` on the M33's f32 FPU).
 libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
 

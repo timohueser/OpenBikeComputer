@@ -7,18 +7,21 @@ description = "OBCM map rendering path using embedded-graphics"
 
 [features]
 # Constrained on-device memory profile (issue #124) — shrinks the per-frame renderer scratch
-# (`MAX_SPANS` / `MAX_FRAME_POINTS` / `MAX_FRAME_RINGS` / `MAX_SCREEN_POINTS`). Forwards to the
-# reader so the whole shared path trims from one board-crate switch. See `obc-reader`'s
-# `nrf-mem`. Off by default (full preview fidelity on host/sim/tests).
-nrf-mem = ["obc-reader/nrf-mem"]
+# (`MAX_SPANS` / `MAX_FRAME_POINTS` / `MAX_FRAME_RINGS` / `MAX_SCREEN_POINTS`). The app/board
+# feature also enables the concrete reader's independent cache trim. Off by default (full preview
+# fidelity on host/sim/tests).
+nrf-mem = []
 
 [dependencies]
-obc-reader = { path = "../obc-reader" }
+obc-map-scene = { path = "../obc-map-scene" }
 embedded-graphics = "0.8"
 heapless = "0.8"
 libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
 
 [dev-dependencies]
+# Real OBCM fixtures exercise the production adapter, while the seam test below uses only a static
+# `obc-map-scene` implementation.
+obc-reader = { path = "../obc-reader" }
 # Shared OBCM byte builder for the priority-saturation test (same source the reader's
 # format tests use, so a format bump edits one place).
 obcm-testkit = { path = "../obcm-testkit" }
