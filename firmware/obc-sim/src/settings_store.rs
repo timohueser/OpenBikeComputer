@@ -1,12 +1,13 @@
 //! Host-side persistent settings — the simulator's stand-in for the device's RRAM.
 //!
-//! Implements [`obc_app::SettingsStore`] over a single file holding the shared
+//! Implements [`obc_ports::SettingsStore`] over a single file holding the shared
 //! [`obc_app::settings`] blob — the *same* versioned, CRC'd byte layout the firmware writes to
 //! RRAM, so the codec is exercised identically on both sides.
 
 use std::path::PathBuf;
 
-use obc_app::{Settings, SettingsStore};
+use obc_app::Settings;
+use obc_ports::SettingsStore;
 
 /// A file-backed settings store.
 pub struct FileSettingsStore {

@@ -2,17 +2,17 @@
 //!
 //! The shared format code in [`obc_route`] never touches a filesystem: it reads through a
 //! [`ByteSource`], writes through a [`ByteSink`], and logs the ride through an
-//! [`obc_app::TrackSink`]. On the host those seams are backed by `std::fs`; here by an
+//! [`obc_ports::TrackSink`]. On the host those seams are backed by `std::fs`; here by an
 //! [`embedded_sdmmc`] FatFs file. Only these thin adapters are platform-specific.
 //!
 //! All three are generic over [`BlockDevice`] + [`TimeSource`], so they pull in no bus types. They
 //! borrow the [`VolumeManager`] shared (`&'a`) and hold a [`RawFile`]: the manager has interior
 //! mutability (every method takes `&self`), so a board can hold an [`SdByteSource`] over the route
-//! and an [`SdTrackSink`] over the track log at once and feed both to one [`obc_app::App::tick`].
+//! and an [`SdTrackSink`] over the track log at once and feed both to one app tick.
 
 use embedded_sdmmc::{BlockDevice, RawFile, TimeSource, VolumeManager};
-use obc_app::{TrackError, TrackSink};
-use obc_route::{encode_record, ByteSink, ByteSource, Error, TrackPoint};
+use obc_ports::{TrackError, TrackPoint, TrackSink};
+use obc_route::{encode_record, ByteSink, ByteSource, Error};
 
 /// A random-access [`ByteSource`] over an open FatFs file — the device backing for
 /// [`RouteReader`](obc_route::RouteReader) / [`RouteSummary::read`]. Each
@@ -112,7 +112,7 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
     }
 }
 
-/// An [`obc_app::TrackSink`] writing each accepted fix to the open `.obct` ride log. The app encodes
+/// An [`obc_ports::TrackSink`] writing each accepted fix to the open `.obct` ride log. The app encodes
 /// a [`TrackPoint`] and hands it here; this appends its fixed 20-byte record ([`encode_record`]).
 ///
 /// A failed SD write is reported straight back through [`record`](TrackSink::record)'s

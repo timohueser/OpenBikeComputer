@@ -40,11 +40,12 @@ use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
 use obc_app::settings::DeviceName;
-use obc_app::{Settings, SettingsStore, MAX_ROUTES, MAX_TRIPS};
+use obc_app::{Settings, MAX_ROUTES, MAX_TRIPS};
 use obc_ble::{
     Crc32, ListHeader, ObjectType, Receiver, RideListEntry, RouteListEntry, StreamSender, TransferControl,
     TransferStatus, TripListEntry,
 };
+use obc_ports::SettingsStore;
 
 use crate::sd::Storage;
 use crate::SharedStore;

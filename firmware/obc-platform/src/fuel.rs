@@ -7,7 +7,7 @@
 //! whole [`FuelGauge`] seam. To wire the real gauge, add an `Npm1300FuelGauge` here and swap the
 //! board's `StubFuelGauge::new(..)` for it — nothing else changes, since the app only sees the trait.
 
-use obc_app::FuelGauge;
+use obc_ports::FuelGauge;
 
 /// A fixed-reading [`FuelGauge`] stand-in reporting a constant state of charge. `App::tick` polls it
 /// on a slow battery cadence (~30 s) and repaints only when the level changes, so a constant value

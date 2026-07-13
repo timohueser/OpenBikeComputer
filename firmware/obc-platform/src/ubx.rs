@@ -14,7 +14,7 @@
 //! [`parse_stream`] returns the **freshest** NAV-PVT in a buffer plus the bytes to drain, leaving
 //! any trailing partial frame for the next read.
 
-use obc_app::{DateTime, Fix, GpsTime};
+use obc_ports::{DateTime, Fix, GpsTime};
 
 /// UBX sync chars — every frame starts `0xB5 0x62`.
 const SYNC1: u8 = 0xB5;

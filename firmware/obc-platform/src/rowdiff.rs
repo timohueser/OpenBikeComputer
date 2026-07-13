@@ -1,7 +1,7 @@
 //! [`RowDiff`] — the **self-diffing present** core (epic #199): a per-row hash of the last-presented
 //! framebuffer, so the present path pushes only the rows that actually changed.
 //!
-//! The map plane is render-on-demand at the *frame* granularity ([`Dirty`](obc_app::Dirty)): a
+//! The map plane is render-on-demand at the *frame* granularity (the app's dirty signal): a
 //! coarse per-screen timer poll (`tick_timers`) decides *whether* to present, but not *where* it
 //! changed. Screens stay
 //! immediate-mode (`clear()` + redraw), so tracking writes would mark everything dirty. Instead the

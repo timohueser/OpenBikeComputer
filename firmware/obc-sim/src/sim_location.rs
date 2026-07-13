@@ -2,7 +2,7 @@
 //! host-side mirror of the device's GPS UART driver (same trait, same `Fix`, so
 //! [`obc_app::App`] can't tell them apart).
 
-use obc_app::{Fix, LocationSource};
+use obc_ports::{Fix, LocationSource};
 
 /// A location source backed by a single overridable fix, written via the setters.
 pub struct SimLocationSource {

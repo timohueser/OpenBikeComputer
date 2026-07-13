@@ -3,7 +3,8 @@
 //! shape identically; nothing above the store (`obc-app`, `obc-render`) knows the difference.
 
 use crate::NavRouteStore;
-use obc_app::{RideSummary, TrackAction, TrackSink};
+use obc_app::{RideSummary, TrackAction};
+use obc_ports::TrackSink;
 use obc_route::{RouteSummary, SliceSource};
 
 /// The in-memory route store's reserved id for the computed nav route (out of the small

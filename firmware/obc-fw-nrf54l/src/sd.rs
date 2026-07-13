@@ -211,7 +211,7 @@ impl ByteSource for MapSource<'_> {
     }
 }
 
-/// FAT timestamps need a clock; the device has none yet (see [`obc_route::TrackPoint::t_ms`]),
+/// FAT timestamps need a clock; the device has none yet (see [`obc_ports::TrackPoint::t_ms`]),
 /// so every file gets the epoch. Real dates wait on a clock source.
 /// `pub(crate)` only because it surfaces in the adapter return types the loop names.
 pub(crate) struct NullTime;
@@ -1302,7 +1302,7 @@ impl Storage {
         }
     }
 
-    /// The [`TrackSink`](obc_app::TrackSink) for the open log, or `None` when not recording.
+    /// The [`TrackSink`](obc_ports::TrackSink) for the open log, or `None` when not recording.
     pub fn track_sink(&self) -> Option<TrackSinkT<'_>> {
         self.open_track.as_ref().map(|o| SdTrackSink::new(&self.vmgr, o.file))
     }

@@ -1,5 +1,5 @@
 //! Chip-agnostic **electronic-compass** maths — a 3-axis magnetometer sample → a heading in degrees
-//! clockwise from north, for the [`CompassSource`](obc_app::CompassSource) seam (the heading when
+//! clockwise from north, for the [`CompassSource`](obc_ports::CompassSource) seam (the heading when
 //! stopped).
 //!
 //! Chip-agnostic on purpose: the current bring-up reads the AK09916 inside an ICM-20948
@@ -10,7 +10,7 @@
 //! ## Scope: flat heading only
 //! Uses **only** the magnetometer's three axes (no accelerometer/gyro), so the heading is computed
 //! *flat* (device roughly level). Enough for its one job: standing in for
-//! [`Fix::course`](obc_app::Fix::course) on a heading-up map while the rider is stopped. Tilt
+//! [`Fix::course`](obc_ports::Fix::course) on a heading-up map while the rider is stopped. Tilt
 //! compensation is a deliberate non-goal; adding it later is a new function taking an accel vector,
 //! not a change to this signature.
 //!
@@ -44,7 +44,7 @@ impl MagSample {
 }
 
 /// The **flat** magnetic heading of a [`MagSample`], in degrees clockwise from north (`0` = north,
-/// `90` = east) — matching [`Fix::course`](obc_app::Fix::course) so the app can use either
+/// `90` = east) — matching [`Fix::course`](obc_ports::Fix::course) so the app can use either
 /// interchangeably to orient a heading-up map.
 ///
 /// With the device-frame convention (X forward, Y right, Z down) the heading of the forward axis is

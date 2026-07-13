@@ -4,7 +4,7 @@
 //! It is `Copy + PartialEq`, so [`App::apply_gesture`](crate::App::apply_gesture) detects a change
 //! with a single comparison and flags a save. The byte codec ([`encode`]/[`decode`]) is a
 //! versioned, CRC-checked, fixed-length blob shared by **both** stores (sim file, firmware RRAM
-//! region — see [`SettingsStore`](crate::hal::SettingsStore)), so a blank or corrupt read falls
+//! region — see [`SettingsStore`](obc_ports::SettingsStore)), so a blank or corrupt read falls
 //! back to [`Settings::default`] rather than loading garbage.
 
 use crate::i18n::{t, Msg};
