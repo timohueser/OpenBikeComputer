@@ -63,8 +63,9 @@ impl TripDeleteScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Turn(n) => list::on_turn(&mut self.selected, n, GUARDS.len()),
-            // Cancel is a plain press; Delete is guarded (a press does nothing — it takes a hold).
-            Gesture::Press if self.selected == CANCEL => Transition::Pop,
+            // Cancel answers a plain press *and* a hold (never dead air); Delete is guarded — a
+            // press on it does nothing, it takes the completed hold.
+            Gesture::Press | Gesture::Hold if self.selected == CANCEL => Transition::Pop,
             Gesture::Hold if self.selected == DELETE => {
                 // Record the cascade-delete against the trip's durable id and pop back to the top
                 // level. The host drains it, deletes the `TP{id}.OBT` + member routes, rescans, and
@@ -148,14 +149,15 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Entry lands on Cancel (never armed on the destructive row); a hold there does nothing.
+    /// Entry lands on Cancel (never armed on the destructive row); a hold there pops — Cancel
+    /// answers both gestures, so no input is dead air.
     #[test]
     fn entry_is_not_armed_on_delete() {
         let mut scr = TripDeleteScreen::new(7, "Alpen Traverse");
         assert!(!scr.selection_is_guarded(), "entry selects Cancel — nothing armed");
         let mut act = Activity::new(Mode::Idle);
         let t = run(&mut scr, &mut act, Gesture::Hold);
-        assert!(matches!(t, Transition::None), "a hold on Cancel does nothing");
+        assert!(matches!(t, Transition::Pop), "a hold on Cancel cancels (pops)");
         assert_eq!(act.take_trip_delete(), None);
     }
 
