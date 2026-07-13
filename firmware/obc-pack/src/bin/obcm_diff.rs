@@ -52,7 +52,7 @@ fn canon_ring(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
 fn collect_features(r: &Reader, lod: usize, canonical: bool) -> HashMap<FeatureKey, usize> {
     // Gather every non-empty leaf first, then decode — keeps the reader borrows simple.
     let mut chunks: Vec<(u32, BBox)> = Vec::new();
-    r.for_each_chunk(lod, &r.bbox, |cid, node| chunks.push((cid, node)));
+    r.for_each_chunk(lod, &r.bbox, |cid, node| chunks.push((cid, node))).unwrap();
 
     let mut counts: HashMap<FeatureKey, usize> = HashMap::new();
     let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
@@ -70,7 +70,8 @@ fn collect_features(r: &Reader, lod: usize, canonical: bool) -> HashMap<FeatureK
             }
             let key = (f.style_id, is_poly, exterior, interiors);
             *counts.entry(key).or_insert(0) += 1;
-        });
+        })
+        .unwrap();
     }
     counts
 }

@@ -14,7 +14,7 @@ use heapless::Vec;
 
 use embedded_graphics::prelude::*;
 
-use obc_reader::{Kind, Reader};
+use obc_reader::{CacheError, Kind, Reader};
 
 pub mod canvas;
 mod collect;
@@ -52,7 +52,7 @@ use stroke::{draw_line, Stroker};
 //     assert is the binding check. The cost: features drop at busier coarse zooms than on the
 //     LM20 (see [`render`]); the shipping 512 KB LM20 profile is untouched.
 // On `nrf-mem` even the single-feature decode buffers (`MAX_DECODE_*`) are trimmed below the
-// format's per-feature bound — see the truncation note at [`MAX_DECODE_POINTS`].
+// format's per-feature bound; such a feature is dropped whole and counted explicitly.
 
 /// Maximum visible features per frame (each is a [`Span`] — 14 bytes). Saturates first at coarse
 /// zoom (many small features).
@@ -86,9 +86,8 @@ pub const MAX_FRAME_RINGS: usize = 48;
 
 /// Maximum vertices for a single feature during decode (reused per feature). On the host this
 /// equals `obc_reader::MAX_FEAT_PTS` (asserted below) — full format fidelity. On `nrf-mem` it is
-/// trimmed **below the format's per-feature bound**: the reader's `read_ring` saturates its
-/// output `Vec`, so a feature past the cap draws with silently truncated geometry (a visibly
-/// degraded large polygon) instead of failing. A deliberate 256 KB-DK compromise (issue #270 —
+/// trimmed **below the format's per-feature bound**: a feature past the cap is consumed but dropped
+/// whole and reported in [`RenderStats::feature_decode_capacity_drops`]. A deliberate 256 KB-DK compromise (issue #270 —
 /// the map path must coexist with the BLE stack); the 512 KB LM20 restores the format bound.
 #[cfg(not(feature = "nrf-mem"))]
 pub const MAX_DECODE_POINTS: usize = 2048;
@@ -123,12 +122,10 @@ const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
 // (`screen[base..base + len]`), so it must hold at least a full decode buffer or it indexes
 // past the points and panics.
 const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
-// The decode scratch pairs with the reader's format bounds across the crate seam: the reader's
-// `read_ring` pushes with `let _ = out.push(..)`, so a smaller render-side buffer *silently
-// truncates geometry* rather than failing. On the host that must never happen — equality is
-// pinned so neither crate's constant can drift alone. On `nrf-mem` the trim below the format
-// bound is deliberate (see [`MAX_DECODE_POINTS`]); only the direction is pinned so the caps
-// can't accidentally *exceed* what the reader hands out.
+// The decode scratch pairs with the reader's format bounds across the crate seam. On the host it
+// holds every valid feature; on `nrf-mem` the deliberate trim below the format bound causes an
+// explicit whole-feature drop. The direction stays pinned so the renderer never invents a looser
+// format limit than the reader.
 #[cfg(not(feature = "nrf-mem"))]
 const _: () =
     assert!(MAX_DECODE_POINTS == obc_reader::MAX_FEAT_PTS, "decode scratch must hold the format's max feature");
@@ -221,7 +218,18 @@ pub struct RenderStats {
     pub chunks_visited: usize,
     pub features_tried: usize,
     pub features_drawn: usize,
+    /// Complete features rejected by the fixed span/point/ring frame budgets.
     pub features_dropped: usize,
+    /// Features consumed whole but rejected because decode scratch could not hold every point/ring.
+    pub feature_decode_capacity_drops: u32,
+    /// Structurally invalid feature records consumed without publishing partial geometry.
+    pub malformed_features: u32,
+    /// Structural map/index/chunk-reference corruption outside an individual feature record.
+    pub map_structure_failures: u32,
+    /// Backing-medium failures while walking indexes or loading geometry chunks.
+    pub map_read_failures: u32,
+    /// Legal cache re-entry/contention outcomes; these never panic through the safe API.
+    pub map_cache_contentions: u32,
     pub points_tried: usize,
     pub points_drawn: usize,
     /// Stub-select accounting (issue #564). `stub_evictions`: pass-A stub-buffer overflows where a
@@ -359,9 +367,21 @@ impl MapRenderer {
         // z-index. Snapshot the streamed-map cache counters across `collect` (the only phase that
         // reads the map source) and record the per-frame delta — robust whether the caller hands us
         // a fresh `Reader` each frame or a reused one.
-        let before = reader.chunk_cache_stats();
+        let before = match reader.try_chunk_cache_stats() {
+            Ok(stats) => stats,
+            Err(CacheError::Busy) => {
+                stats.map_cache_contentions += 1;
+                Default::default()
+            }
+        };
         self.frame.collect(reader, lod, &view, &mut stats);
-        let after = reader.chunk_cache_stats();
+        let after = match reader.try_chunk_cache_stats() {
+            Ok(cache) => cache,
+            Err(CacheError::Busy) => {
+                stats.map_cache_contentions += 1;
+                before
+            }
+        };
         stats.map_chunk_hits = after.chunk_hits.wrapping_sub(before.chunk_hits);
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);
         stats.map_sd_reads = after.sd_reads.wrapping_sub(before.sd_reads);

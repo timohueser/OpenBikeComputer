@@ -71,6 +71,10 @@ fn priority_one_survives_saturation_across_chunks() {
     // The setup must actually saturate, or the test proves nothing.
     assert_eq!(stats.features_tried, NUM_LOW + 1, "all features visited");
     assert!(stats.features_dropped > 0, "buffers must saturate for this test to mean anything");
+    assert_eq!(stats.feature_decode_capacity_drops, 0);
+    assert_eq!(stats.malformed_features, 0);
+    assert_eq!(stats.map_structure_failures, 0);
+    assert_eq!(stats.map_read_failures, 0);
     assert_eq!(
         stats.features_drawn + stats.features_dropped,
         stats.features_tried,
@@ -133,6 +137,7 @@ fn priority_one_survives_point_budget_saturation() {
     // It must be the *point* buffer that saturates, not the span buffer — else this proves nothing
     // the span-count test didn't.
     assert!(stats.features_dropped > 0, "point buffer must saturate");
+    assert_eq!(stats.feature_decode_capacity_drops, 0);
     assert!(stats.span_utilization < 1.0, "spans must not be the limiting buffer");
     assert!(stats.point_utilization > 0.9, "the point buffer is the one that saturates");
 

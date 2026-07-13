@@ -35,7 +35,8 @@ fn decode_chunk(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Featu
             exterior: f.exterior().to_vec(),
             interiors: f.interiors().map(|h| h.to_vec()).collect(),
         });
-    });
+    })
+    .unwrap();
     out
 }
 
@@ -52,7 +53,8 @@ fn decode_filtered(r: &Reader, lod: usize, chunk_id: u32, node: &BBox, keep: imp
             exterior: f.exterior().to_vec(),
             interiors: f.interiors().map(|h| h.to_vec()).collect(),
         });
-    });
+    })
+    .unwrap();
     out
 }
 
@@ -60,7 +62,7 @@ fn decode_filtered(r: &Reader, lod: usize, chunk_id: u32, node: &BBox, keep: imp
 /// removed `Reader::query` test convenience.
 fn query_all(r: &Reader, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
     let mut out = Vec::new();
-    r.for_each_chunk(lod, view, |cid, node| out.push((cid, node)));
+    r.for_each_chunk(lod, view, |cid, node| out.push((cid, node))).unwrap();
     out
 }
 
@@ -327,7 +329,8 @@ fn visitor_matches_owned_decode() {
             assert_eq!(*h, oh.as_slice());
         }
         seen += 1;
-    });
+    })
+    .unwrap();
     assert_eq!(seen, owned.len());
 }
 
@@ -423,20 +426,32 @@ fn rejects_bad_input() {
 }
 
 #[test]
-fn out_of_range_chunk_id_decodes_nothing() {
+fn out_of_range_chunk_id_is_reported_as_malformed() {
     // `chunk_id` from a quadtree leaf is never constrained to `chunk_count`. LOD0 holds one chunk,
     // so id 1 points one past it (into LOD1's bytes); the reader must decode nothing rather than the
-    // adjacent layer, or wrap+panic on the 32-bit device. `u32::MAX` is the overflow edge.
+    // adjacent layer, or wrap+panic on the 32-bit device. The explicit malformed result lets the
+    // renderer count the corrupt feature source. `u32::MAX` is the overflow edge.
     let bytes = two_lod_file();
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
     let node = r.bbox;
-    assert!(decode_chunk(&r, 0, 1, &node).is_empty());
-    assert!(decode_chunk(&r, 0, u32::MAX, &node).is_empty());
-    // Filtered path shares the same guard.
-    assert!(decode_filtered(&r, 0, 1, &node, |_| true).is_empty());
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    assert_eq!(
+        r.for_each_feature(0, 1, &node, &mut points, &mut ring_lens, |_| {}),
+        Err(obc_reader::MapReadError::Malformed)
+    );
+    assert_eq!(
+        r.for_each_feature(0, u32::MAX, &node, &mut points, &mut ring_lens, |_| {}),
+        Err(obc_reader::MapReadError::Malformed)
+    );
+    // Filtered path shares the same guard and result.
+    assert_eq!(
+        r.for_each_feature_filtered(0, 1, &node, &mut points, &mut ring_lens, |_| true, |_| {}),
+        Err(obc_reader::MapReadError::Malformed)
+    );
     // The in-range chunk still decodes, so the guard isn't over-broad.
     assert_eq!(decode_chunk(&r, 0, 0, &node).len(), 1);
 }
@@ -543,7 +558,7 @@ fn for_each_chunk_has_no_cap() {
 
     // A view over the whole bbox overlaps all four leaves.
     let mut seen = 0;
-    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
+    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1).unwrap();
     assert_eq!(seen, 4);
 }
 
@@ -574,7 +589,7 @@ fn walk_terminates_on_back_referencing_branch() {
     // The node bbox would shrink toward the NW corner and then stay put, so `intersects(view)`
     // never goes false — with no guard the walk recurses forever and stack-overflows (a HardFault
     // on the MCU, which has no MMU guard page). The `child > idx` guard rejects the back-edge, so
-    // the walk must simply return, reporting no chunks.
+    // the walk must stop and explicitly report the malformed index.
     let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
     let bytes = build_file(
         GLOBAL,
@@ -594,10 +609,8 @@ fn walk_terminates_on_back_referencing_branch() {
     // A viewport over the whole bbox keeps intersecting the (degenerate) node every level — the
     // condition under which the unguarded walk would never terminate.
     let mut seen = 0;
-    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
+    assert_eq!(r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1), Err(obc_reader::MapReadError::Malformed));
     assert_eq!(seen, 0);
-    // Collecting over the same walk must likewise return empty rather than overflow.
-    assert!(query_all(&r, 0, &r.bbox).is_empty());
 }
 
 #[test]
@@ -621,7 +634,7 @@ fn walk_caps_depth_on_forward_chain() {
     let r = Reader::new(&src, &tables, &cache);
 
     let mut seen = 0;
-    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1);
+    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1).unwrap();
     assert_eq!(seen, 0, "the depth cap must prune the over-cap leaf before it is reached");
 }
 

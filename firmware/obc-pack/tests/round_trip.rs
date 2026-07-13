@@ -120,7 +120,7 @@ fn expect_poly(style_id: u8, ext: &[(i32, i32)], holes: &[&[(i32, i32)]]) -> Dec
 /// the real allocation-free reader path (`for_each_chunk` + `for_each_feature`).
 fn decode_lod(r: &Reader, lod: usize) -> Vec<Decoded> {
     let mut chunks: Vec<(u32, BBox)> = Vec::new();
-    r.for_each_chunk(lod, &r.bbox, |cid, node| chunks.push((cid, node)));
+    r.for_each_chunk(lod, &r.bbox, |cid, node| chunks.push((cid, node))).unwrap();
 
     let mut out = Vec::new();
     let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
@@ -133,7 +133,8 @@ fn decode_lod(r: &Reader, lod: usize) -> Vec<Decoded> {
                 exterior: f.exterior().to_vec(),
                 interiors: f.interiors().map(|h| h.to_vec()).collect(),
             });
-        });
+        })
+        .unwrap();
     }
     out
 }
@@ -142,7 +143,7 @@ fn decode_lod(r: &Reader, lod: usize) -> Vec<Decoded> {
 /// removed `Reader::query` test convenience.
 fn query_all(r: &Reader, lod: usize, view: &BBox) -> Vec<(u32, BBox)> {
     let mut out = Vec::new();
-    r.for_each_chunk(lod, view, |cid, node| out.push((cid, node)));
+    r.for_each_chunk(lod, view, |cid, node| out.push((cid, node))).unwrap();
     out
 }
 
