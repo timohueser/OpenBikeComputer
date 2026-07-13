@@ -260,6 +260,32 @@ fn truncated_ring_drops_whole_feature() {
     assert_eq!(status.capacity_dropped, 0);
 }
 
+/// Public single-feature refetch must clear both caller buffers even when malformed hole framing is
+/// discovered only after a valid exterior has already been decoded into them.
+#[test]
+fn decode_feature_at_clears_partial_and_stale_scratch_on_malformed_hole() {
+    let ext = [(10i8, 0i8), (0, 10), (-10, 0)];
+    let holes = vec![vec![(2i8, 2i8), (2, 0), (0, 2)]];
+    let mut chunk = pack_poly_holes(1, 100, 100, &ext, &holes);
+    // Keep the complete exterior and the hole-count byte, but remove the first hole's u16 count.
+    // The decoder therefore mutates scratch before it discovers the structural truncation.
+    chunk.truncate(12 + ext.len() * 2 + 1);
+    let bytes = single_leaf(GLOBAL, chunk.clone(), chunk.len());
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut points = heapless::Vec::<(i32, i32), 16>::new();
+    let mut ring_lens = heapless::Vec::<usize, 4>::new();
+    points.push((-1, -1)).unwrap();
+    ring_lens.push(99).unwrap();
+
+    let result = r.decode_feature_at(0, 0, 0, &r.bbox, &mut points, &mut ring_lens);
+    assert!(matches!(result, Err(obc_reader::FeatureReadError::Decode(obc_reader::FeatureDecodeError::Malformed))));
+    assert!(points.is_empty(), "partial exterior and stale points must be cleared");
+    assert!(ring_lens.is_empty(), "partial exterior and stale ring lengths must be cleared");
+}
+
 /// A feature header that itself straddles the chunk end: the `while off + 12 <= cs` guard
 /// must stop before reading a partial 12-byte header. We place one whole feature,
 /// then trailing bytes too short to be a header (and not 0xFF, so the 0xFF early-out doesn't mask

@@ -1658,6 +1658,11 @@ impl<'a> Reader<'a> {
         points: &'p mut Vec<(i32, i32), P>,
         ring_lens: &'p mut Vec<usize, R>,
     ) -> Result<FeatureRef<'p>, FeatureReadError> {
+        // Every error leaves caller scratch empty. Besides making retries deterministic, this is
+        // the public expression of the whole-feature contract: no stale geometry from a previous
+        // success and no prefix decoded before a malformed hole may escape through these buffers.
+        points.clear();
+        ring_lens.clear();
         let l = self.tables.lods.get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
         let (start, end) = l.chunk_range(cid).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
         if end > self.src.len() as usize {
@@ -1841,10 +1846,10 @@ fn decode_chunk_into<const P: usize, const R: usize>(
 
 /// Decode the single feature whose 12-byte header starts at `off` in `chunk`, into `points`/
 /// `ring_lens` (cleared first), returning its [`FeatureRef`] (borrowing those buffers, with
-/// [`FeatureRef::offset`] set to `off`) plus the offset just past it. `None` if `off` leaves no room
-/// for a header or lands on the `0xFF` end-marker — so it is safe to call with an untrusted `off`
-/// (issue #564's pass-B re-decode hands back a `FeatureRef::offset` from earlier this frame). `node`
-/// gives the leaf's min corner, the per-feature anchor base. This is the exact decode
+/// [`FeatureRef::offset`] set to `off`) plus the offset just past it. A malformed/capacity result
+/// also leaves both buffers empty, so it is safe to call with an untrusted `off` (issue #564's
+/// pass-B re-decode hands back a `FeatureRef::offset` from earlier this frame). `node` gives the
+/// leaf's min corner, the per-feature anchor base. This is the exact decode
 /// [`decode_chunk_into`] runs, so a feature decodes byte-for-byte identically whether it comes from
 /// the full-chunk walk or from [`Reader::decode_feature_at`].
 enum DecodeOne<'a> {
@@ -1859,8 +1864,10 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
     points: &'b mut Vec<(i32, i32), P>,
     ring_lens: &'b mut Vec<usize, R>,
 ) -> DecodeOne<'b> {
+    points.clear();
+    ring_lens.clear();
     if off + FEATURE_HEADER_LEN > chunk.len() || chunk[off] == CHUNK_END {
-        return DecodeOne::Dropped(FeatureDecodeError::Malformed, chunk.len());
+        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
     }
     let feat_off = off;
     let style_id = chunk[off];
@@ -1876,22 +1883,20 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
     let dsize = if is_16 { 2 } else { 1 };
 
     if ext_pt_count == 0 || flags & !(FEATURE_FLAG_16BIT | FEATURE_FLAG_POLYGON | FEATURE_FLAG_HOLES) != 0 {
-        return DecodeOne::Dropped(FeatureDecodeError::Malformed, chunk.len());
+        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
     }
     if has_holes && !is_poly {
-        return DecodeOne::Dropped(FeatureDecodeError::Malformed, chunk.len());
+        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
     }
 
     let anchor = (node.min_lon.wrapping_add(ax), node.min_lat.wrapping_add(ay));
 
-    points.clear();
-    ring_lens.clear();
     let mut bounds = Bounds::new();
 
     let mut failure = None;
     let ext_end = match ring_end(chunk, off, ext_pt_count, false, dsize) {
         Some(end) => end,
-        None => return DecodeOne::Dropped(FeatureDecodeError::Malformed, chunk.len()),
+        None => return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len()),
     };
     if ext_pt_count > points.capacity() {
         failure = Some(FeatureDecodeError::Capacity(CapacityError::Points));
@@ -1906,21 +1911,21 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
     if is_poly && has_holes {
         let hole_count = match chunk.get(off) {
             Some(count) => *count as usize,
-            None => return DecodeOne::Dropped(FeatureDecodeError::Malformed, chunk.len()),
+            None => return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len()),
         };
         off += 1;
         for _ in 0..hole_count {
             if off.checked_add(2).is_none_or(|end| end > chunk.len()) {
-                return DecodeOne::Dropped(FeatureDecodeError::Malformed, chunk.len());
+                return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
             }
             let hpc = rd_u16(chunk, off) as usize;
             off += 2;
             if hpc == 0 {
-                return DecodeOne::Dropped(FeatureDecodeError::Malformed, chunk.len());
+                return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
             }
             let end = match ring_end(chunk, off, hpc, true, dsize) {
                 Some(end) => end,
-                None => return DecodeOne::Dropped(FeatureDecodeError::Malformed, chunk.len()),
+                None => return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len()),
             };
             if failure.is_none() {
                 if hpc > points.capacity() - points.len() {
@@ -1937,9 +1942,7 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
     }
 
     if let Some(error) = failure {
-        points.clear();
-        ring_lens.clear();
-        return DecodeOne::Dropped(error, off);
+        return dropped_feature(points, ring_lens, error, off);
     }
 
     let fref = FeatureRef {
@@ -1951,6 +1954,18 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
         offset: feat_off,
     };
     DecodeOne::Complete(fref, off)
+}
+
+#[inline]
+fn dropped_feature<'a, const P: usize, const R: usize>(
+    points: &mut Vec<(i32, i32), P>,
+    ring_lens: &mut Vec<usize, R>,
+    error: FeatureDecodeError,
+    next: usize,
+) -> DecodeOne<'a> {
+    points.clear();
+    ring_lens.clear();
+    DecodeOne::Dropped(error, next)
 }
 
 fn ring_end(chunk: &[u8], off: usize, pt_count: usize, is_hole: bool, dsize: usize) -> Option<usize> {
