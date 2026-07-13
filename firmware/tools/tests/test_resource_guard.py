@@ -55,6 +55,22 @@ class ResourceGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(resource_guard.GuardError, "poll symbols exist"):
             resource_guard.parse_poll_frames(disassembly)
 
+    def test_strict_align_parser_extracts_only_requested_function(self):
+        assembly = """
+decode_u32:
+\tldrb\tr1, [r0]
+.Lfunc_end0:
+other:
+\tldr\tr0, [r0]
+.Lfunc_end1:
+"""
+        self.assertIn("ldrb", resource_guard.function_assembly(assembly, "decode_u32"))
+        self.assertNotIn("\tldr\t", resource_guard.function_assembly(assembly, "decode_u32"))
+
+    def test_strict_align_parser_fails_loudly_when_format_is_stale(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "assembly not found"):
+            resource_guard.function_assembly("unexpected assembly", "decode_u32")
+
     def test_resource_table_is_self_describing(self):
         def entry(name, value):
             return name.encode().ljust(32, b"\0") + struct.pack("<I", value)

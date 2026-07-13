@@ -292,6 +292,8 @@ jobs:
           key: thumbv8m
       - name: cargo build -p obc-app (thumbv8m.main, nRF54L)
         run: cargo build --manifest-path firmware/Cargo.toml -p obc-app --target thumbv8m.main-none-eabihf --locked
+      - name: thumbv8m +strict-align backend probe
+        run: python3 firmware/tools/resource_guard.py strict-align
 
   # Supply-chain gate: advisories + licenses + bans + sources, for both lockfiles (deny.toml).
   deny:
