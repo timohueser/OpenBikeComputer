@@ -205,6 +205,19 @@ and back.
 > id) is exempt: it reuses a slot rather than growing the catalog, so updating the
 > route you're actively navigating never hits the cap.
 
+> **Retries converge — never twin.** Restart-not-resume is only safe if the first
+> attempt can't half-count, and there is one window where it could: the device
+> commits an upload, then the link dies before the phone hears the `committed`
+> result. The phone, none the wiser, re-sends the object as *new* — and without a
+> guard the device would mint a same-content twin. So a **fresh** upload whose
+> whole-object CRC (and length) match an object the device already stores answers
+> `committed` with the **existing** object's id, storing nothing: a lost ack costs
+> one re-send, never a duplicate. The phone closes the same window from its side
+> without re-sending a byte — on every catalog reconcile, an *unlinked* entry
+> whose `crc32` matches a library route's (or trip's) current encoding is
+> **adopted** as that object's device copy, and a whole-trip upload re-reads both
+> catalogs right before planning, so a retry sees what actually landed.
+
 ### When a route lands — the device's side
 
 A committed upload isn't silent on the device. A route usually arrives because
