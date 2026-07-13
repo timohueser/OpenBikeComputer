@@ -65,6 +65,15 @@ final class MainScreenModelTests: XCTestCase {
         )
     }
 
+    /// A device link scoped to the default fixture device's identity (#769) —
+    /// serial from `default.json`, epoch the fixture DTO default. Records
+    /// seeded with it behave like uploads committed against the mock device.
+    private func mockLink(_ objectID: UInt16) -> DeviceRouteLink {
+        DeviceRouteLink(
+            serial: "OBC-24-000317", epoch: FixtureSet.defaultStoreEpoch,
+            objectID: DeviceObjectID(objectID))
+    }
+
     /// Poll until `condition` holds (the model moves on free-running tasks).
     private func waitFor(
         _ what: String,
@@ -595,7 +604,7 @@ final class MainScreenModelTests: XCTestCase {
     func testUnknownFingerprintReadsAsOutdated() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
-        record.deviceObjectID = DeviceObjectID(7)
+        record.deviceLink = mockLink(7)
         library.savePlannedRoute(record)
 
         let (model, _) = makeModel(.happyPath, library: library)
@@ -615,12 +624,15 @@ final class MainScreenModelTests: XCTestCase {
     func testSeededUploadedRouteKeepsItsBadgeWhenTheDeviceStillHoldsIt() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
-        record.deviceObjectID = DeviceObjectID(7)   // the default fixture device holds object 7
+        record.deviceLink = mockLink(7)   // the default fixture device holds object 7
         library.savePlannedRoute(record)
 
         let (model, _) = makeModel(.happyPath, library: library)
         await startLoaded(model)
         XCTAssertTrue(model.isUploaded(record.id), "a route on the device keeps its badge across a relaunch")
+        // Replace-by-id is scope-gated (#769): the object id answers only once
+        // the identity read has settled on the matching (serial, epoch).
+        await waitFor("the identity scope") { model.connectedScope != nil }
         XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), DeviceObjectID(7))
     }
 
@@ -629,14 +641,16 @@ final class MainScreenModelTests: XCTestCase {
     func testReloadClearsTheBadgeWhenTheDeviceNoLongerHoldsTheRoute() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
-        record.deviceObjectID = DeviceObjectID(999)   // no fixture device object has this id
+        record.deviceLink = mockLink(999)   // no fixture device object has this id
         library.savePlannedRoute(record)
 
         let (model, _) = makeModel(.happyPath, library: library)
         await startLoaded(model)
-        XCTAssertFalse(model.isUploaded(record.id))
+        // The clear is a reconcile write, so it waits for the identity scope
+        // (#769's fail-closed rule) — poll rather than assert immediately.
+        await waitFor("the stale link to clear") { !model.isUploaded(record.id) }
         XCTAssertNil(model.plannedDeviceObjectID(for: record.id))
-        XCTAssertNil(library.plannedRoutes().first { $0.id == record.id }?.deviceObjectID,
+        XCTAssertNil(library.plannedRoutes().first { $0.id == record.id }?.deviceLink,
                      "the cleared link persists")
     }
 

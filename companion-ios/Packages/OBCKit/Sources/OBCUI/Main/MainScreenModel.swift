@@ -78,6 +78,16 @@ public final class MainScreenModel {
     /// #303: non-nil once a connected device reports an incompatible
     /// `protocol_version` — drives the incompatibility banner and disables sync.
     public private(set) var protocolMismatch: ProtocolMismatch?
+    /// The connected device's `(serial, epoch)` identity (#769), established
+    /// by each connection's `runIdentityCheck` and `nil` until it succeeds —
+    /// **fail-closed**: a failed version+epoch read, a missing epoch (v1 peer,
+    /// short read), or an empty serial leaves this `nil`, and with it
+    /// `ackRides` and every reconcile write stay closed for the connection
+    /// (library browsing is untouched). The gate re-opens on the next
+    /// successful identity read. Every id-keyed write derives its scope from
+    /// here: the possession ack filter, route-link minting on upload, the
+    /// badge reconcile, and the legacy-claim migration.
+    public private(set) var connectedScope: LibraryScope?
     /// Whether the identity read has settled this session (with an answer *or*
     /// a failed read) — the other half of the `canSync` gate, so an id-keyed
     /// write can never run ahead of the #303 verdict. See `runIdentityCheck`.
@@ -127,6 +137,12 @@ public final class MainScreenModel {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    /// The last route catalog a reload read — kept so `runIdentityCheck` can
+    /// re-run the badge reconcile once the scope settles (#769): on launch the
+    /// catalog read usually lands *before* the identity verdict, and clearing
+    /// links under an unknown scope would be a reconcile write the fail-closed
+    /// rule forbids.
+    @ObservationIgnored private var lastRouteCatalog: [RouteCatalogEntry]?
     /// The in-flight identity read (`runIdentityCheck`) for the current
     /// connection — what the coordinator's `identitySettled` seam awaits.
     /// Replaced (never cancelled) on a reconnect: a superseded read settles the
@@ -165,9 +181,15 @@ public final class MainScreenModel {
         // decode path nor the possession ack may run ahead of the #303 verdict.
         // The settle seam is what makes an early SYNC tap wait for that verdict
         // instead of hitting the closed gate and no-oping.
+        //
+        // v2 hardening (#769): the verdict must also have produced a scope —
+        // a *failed* identity read (or one without an epoch) keeps the gate
+        // CLOSED, where #764's v1 posture settled it open. Fail-open would
+        // let a sync persist id-keyed state under an unknown era, re-creating
+        // the 2026-07-12 incident in the failure path.
         sync.canSync = { [weak self] in
             guard let self else { return false }
-            return identityChecked && protocolMismatch == nil
+            return identityChecked && protocolMismatch == nil && connectedScope != nil
         }
         sync.identitySettled = { [weak self] in await self?.identityTask?.value }
         sync.onRideListRead = { [weak self] in self?.loadState = .loaded }
@@ -308,6 +330,7 @@ public final class MainScreenModel {
                 // rides are pulled only by Sync, never on a plain (re)load.
                 let deviceRoutes = try await transport.listRoutes()
                 guard !Task.isCancelled else { return }
+                lastRouteCatalog = deviceRoutes
                 reconcileOnDevice(with: deviceRoutes)
                 routes = plannedList()
                 rides = trackedList()
@@ -320,15 +343,23 @@ public final class MainScreenModel {
     }
 
     /// One identity read (`deviceInfo()`) for the current connection: the #303
-    /// protocol-version verdict, and — strictly downstream of it — the trigger
-    /// for the coordinator's possession ack, so an id-keyed write can never
-    /// race the verdict (protocol v2's store-epoch check will hook into this
-    /// same ordering). "Settled" includes a *failed* read (launched offline, a
-    /// flaky link): the gate opens — the veto engages only on a known mismatch,
-    /// the v1 posture — and the next connect edge re-runs the check. A
-    /// compatible read clears a stale mismatch (a DFU install can fix the
-    /// device between connects).
+    /// protocol-version verdict **and the (serial, epoch) scope** (#769), and —
+    /// strictly downstream of both — the legacy-claim migration and the
+    /// coordinator's possession ack, so an id-keyed write can never race the
+    /// verdict or run under an unknown era.
+    ///
+    /// **Fail-closed (#769, reversing #764's v1 posture):** "settled" still
+    /// includes a *failed* read (launched offline, a flaky link) — the SYNC
+    /// button stops waiting — but the gate stays **closed**: no scope means no
+    /// `ackRides` and no reconcile writes for this connection. Library
+    /// browsing is unaffected, and the next connect edge re-runs the check
+    /// (the gate re-opens on the first successful read). A compatible read
+    /// clears a stale mismatch (a DFU install can fix the device between
+    /// connects).
     private func runIdentityCheck() async {
+        // Unknown until proven, every connection: the device may have been
+        // wiped (new epoch) or swapped since the last read.
+        connectedScope = nil
         if let info = try? await transport.deviceInfo() {
             deviceName = info.name
             if case let .protocolMismatch(expected, found)? =
@@ -336,24 +367,79 @@ public final class MainScreenModel {
                 protocolMismatch = ProtocolMismatch(expected: expected, found: found)
             } else {
                 protocolMismatch = nil
+                // `libraryScope` is nil on a missing epoch or empty serial —
+                // the fail-closed input, never defaulted (`0` is a legal epoch).
+                connectedScope = info.libraryScope
             }
         }
+        // The verdict is in (scope included) — the `canSync` gate may answer.
+        // Early SYNC taps still wait out the rest of this task: the
+        // `identitySettled` seam awaits the whole task, claim included, so a
+        // sync can never race the migration's re-keys.
         identityChecked = true
-        // The per-connect possession ack (spec §4.4) — a send that misses a
-        // dying link is dropped and covered by the next connect's re-ack.
-        if protocolMismatch == nil { sync.reconcilePossession() }
+        if let scope = connectedScope {
+            // One-time v1 → scoped migration, claim-on-first-contact (#769):
+            // runs before the ack so freshly-claimed ids are acked (and before
+            // any sync — see above — so a corroborated flat ride can't
+            // re-download as "new" under its scoped key, which would be the
+            // duplicate row the claim forbids).
+            await claimLegacyLibraryEntries(for: scope)
+            // The per-connect possession ack (spec §4.4), scope-filtered — a
+            // send that misses a dying link is dropped and covered by the next
+            // connect's re-ack.
+            sync.reconcilePossession(for: scope)
+            // Route links could not be reconciled while the scope was unknown
+            // (reload may have run first) — true them up against the cached
+            // catalog now that their validity is decidable.
+            if let catalog = lastRouteCatalog {
+                reconcileOnDevice(with: catalog)
+                routes = plannedList()
+            }
+        }
     }
 
-    /// True-up every record's `deviceObjectID` against the device's live catalog
+    /// Run one claim pass of the v1 → scoped migration against the connected
+    /// device (see `LibraryScopeMigrator`). Skipped in one cheap check once no
+    /// flat legacy state remains — the steady state costs no device read. The
+    /// ride-list read is the claim's corroboration evidence; if it fails, the
+    /// pass simply waits for the next connect (nothing is guessed).
+    private func claimLegacyLibraryEntries(for scope: LibraryScope) async {
+        guard LibraryScopeMigrator.hasLegacyState(in: library) else { return }
+        guard let catalog = try? await transport.listRides() else { return }
+        LibraryScopeMigrator.run(in: library, scope: scope, deviceRides: catalog.rides)
+        // Ids may have moved under the claim — re-read every mirror the lists
+        // are built from (the same set `start()` seeds).
+        rideSummaries = Dictionary(
+            uniqueKeysWithValues: library.rideSummaries().map { ($0.id, $0) })
+        deletedRideIDs = library.deletedRideIDs()
+        trashedRideIDs = library.trashedRideIDs()
+        rides = trackedList()
+        trashedRides = trashedList()
+    }
+
+    /// True-up every record's `deviceLink` against the device's live catalog
     /// (device object ids): a copy deleted out from under us (another phone,
     /// the EchoHarness) clears the badge; a record whose id is still listed keeps
     /// it. Ids are durable across device reboots (spec §4.1), so absence really
     /// means "gone", not "renumbered".
+    ///
+    /// Scope-gated both ways (#769): with the identity **unknown** nothing is
+    /// written at all (fail-closed — a catalog can't be attributed to a scope
+    /// that hasn't been proven), and with it known only links that **match the
+    /// connected scope** are eligible to clear — device B's catalog says
+    /// nothing about the copies device A legitimately holds (the v1
+    /// link-clearing bug this issue retires).
     private func reconcileOnDevice(with deviceRoutes: [RouteCatalogEntry]) {
+        guard let scope = connectedScope else {
+            refreshOnDeviceStates()
+            return
+        }
         let listed = Set(deviceRoutes.map(\.id))
         for (id, var record) in plannedRecords {
-            guard let objectID = record.deviceObjectID, !listed.contains(objectID) else { continue }
-            record.deviceObjectID = nil
+            guard let link = record.deviceLink, link.matches(scope),
+                !listed.contains(link.objectID)
+            else { continue }
+            record.deviceLink = nil
             record.uploadedCRC32 = nil
             plannedRecords[id] = record
             library.savePlannedRoute(record)
@@ -365,10 +451,13 @@ public final class MainScreenModel {
     /// record's content or its device link moves (load, reconcile, upload,
     /// rename, re-import, delete). The payload encode behind the CRC only runs
     /// for records the device actually holds with a known fingerprint.
+    /// (V6 owns making the badge itself scope-honest — presence + CRC proof
+    /// against the *connected* device; here the link's mere existence still
+    /// lights it, exactly as v1 did.)
     private func refreshOnDeviceStates() {
         onDevice = plannedRecords.mapValues { record in
             OnDeviceState.determine(
-                deviceObjectID: record.deviceObjectID,
+                deviceObjectID: record.deviceLink?.objectID,
                 uploadedCRC32: record.uploadedCRC32,
                 currentCRC: { RouteObjectCodec.payloadCRC(for: record) }
             )
@@ -526,10 +615,18 @@ public final class MainScreenModel {
         return (points?.isEmpty ?? true) ? nil : points
     }
 
-    /// The device object id this planned route is stored under, if any — threaded
-    /// into a re-upload so it replaces that object instead of duplicating.
+    /// The device object id this planned route is stored under **on the
+    /// connected device, in its current era** — threaded into a re-upload so
+    /// it replaces that object instead of duplicating. Gated by the validity
+    /// predicate (#769): a link minted on another device or in a previous
+    /// era answers `nil`, so replace-by-id can never overwrite an object the
+    /// link doesn't actually point at (the v1 wrong-route-overwrite bug); the
+    /// upload then creates a fresh copy — the safe direction.
     public func plannedDeviceObjectID(for id: RouteID) -> DeviceObjectID? {
-        plannedRecords[id]?.deviceObjectID
+        guard let link = plannedRecords[id]?.deviceLink, let scope = connectedScope,
+            link.matches(scope)
+        else { return nil }
+        return link.objectID
     }
 
     /// The committed upload fingerprint behind that link — threaded into the
@@ -544,14 +641,24 @@ public final class MainScreenModel {
         deviceName = name
     }
 
-    /// A B5 upload committed — record the device object id it landed under (the
-    /// durable "on device" link) so the C1 badge lights and a later re-upload
-    /// replaces that object. Idempotent; a new id (re-upload after a device-side
-    /// change) overwrites the old.
+    /// A B5 upload committed — record the `{serial, epoch, id}` link it landed
+    /// under (#769) so the C1 badge lights and a later re-upload replaces that
+    /// object *on that device in that era*. Idempotent; a new link (re-upload
+    /// after a device-side change) overwrites the old. The scope comes from
+    /// the connection's settled identity; in the vanishing window where an
+    /// upload commits before/without it, no link is recorded — the safe
+    /// direction (no badge, the next push or V6's adoption re-links) — because
+    /// a scope-less link is exactly the v1 aliasing this change retires.
     public func markRouteUploaded(_ id: RouteID, objectID: DeviceObjectID, crc32: UInt32) {
         guard var record = plannedRecords[id] else { return }
-        record.deviceObjectID = objectID
-        record.uploadedCRC32 = crc32
+        if let scope = connectedScope {
+            record.deviceLink = DeviceRouteLink(
+                serial: scope.serial, epoch: scope.epoch, objectID: objectID)
+            record.uploadedCRC32 = crc32
+        } else {
+            record.deviceLink = nil
+            record.uploadedCRC32 = nil
+        }
         plannedRecords[id] = record
         library.savePlannedRoute(record)
         refreshOnDeviceStates()

@@ -9,23 +9,67 @@ import Foundation
 /// durable by the #289/#290 identity rework) as the library id, so the
 /// synced/deleted tombstone sets key on it directly. The typed accessors below
 /// make that device-namespace nature explicit — the real transport **mints**
-/// ride ids via ``init(deviceObjectID:)`` and reads them back via
+/// ride ids via ``init(deviceObjectID:scope:)`` and reads them back via
 /// ``deviceObjectID``, never by ad-hoc string↔int round-trips (#359).
+///
+/// **Composite keys (v2, #769):** a device object id is durable only within an
+/// id era on one device, so the minted id string carries the whole
+/// `(serial, epoch, id)` composite — `v2:<epoch>:<objectID>:<serial>` (serial
+/// last, so a serial containing `:` needs no escaping; epoch and object id are
+/// canonical decimal, making the encoding injective). Everything downstream —
+/// the library's ride directories, the synced set, tombstones, trash marks —
+/// keys on the raw string, so per-(serial, epoch) scoping *falls out of the
+/// id*: an era change or a device switch changes the string, old keys stop
+/// matching, and there is no re-key flow to tear. A bare-number id is a v1
+/// (pre-scoping) legacy id — still readable, claimed by the one-time
+/// migration when the device corroborates it, archival forever otherwise.
 public struct RideID: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
 
-    /// A ride id in the device namespace — what `listRides()` mints from the
-    /// device's ride catalog, and what the library then stores as-is.
+    private static let scopedPrefix = "v2:"
+
+    /// A ride id in one device's **current-era** namespace — what the
+    /// transport mints from the device's ride catalog once the identity read
+    /// has established the scope, and what the library then stores as-is.
+    public init(deviceObjectID: DeviceObjectID, scope: LibraryScope) {
+        self.init("\(Self.scopedPrefix)\(scope.epoch):\(deviceObjectID.raw):\(scope.serial)")
+    }
+
+    /// An **unscoped** ride id — the v1 shape (the bare device object id).
+    /// Kept for the legacy-claim migration and for stand-ins that model no
+    /// device identity; the real transport always mints scoped ids.
     public init(deviceObjectID: DeviceObjectID) {
         self.init(String(deviceObjectID.raw))
     }
 
-    /// The device object id behind this ride id, or `nil` for an id that never
-    /// came from a device catalog (mock fixtures, tests). Ids on the real data
-    /// plane always parse — they were minted by ``init(deviceObjectID:)``.
+    /// The `(serial, epoch)` scope this id was minted under, or `nil` for a
+    /// v1 legacy id / an id that never came from a device catalog (mock
+    /// fixtures, tests). `nil` is what keeps unclaimed flat entries archival:
+    /// they can never equal a scoped key, and scope-filtered writes (the
+    /// possession ack) skip them.
+    public var scope: LibraryScope? {
+        guard let (epoch, _, serial) = scopedComponents else { return nil }
+        return LibraryScope(serial: serial, epoch: epoch)
+    }
+
+    /// The device object id behind this ride id — parsed from either shape —
+    /// or `nil` for an id that never came from a device catalog.
     public var deviceObjectID: DeviceObjectID? {
-        UInt16(rawValue).map(DeviceObjectID.init)
+        if let raw = UInt16(rawValue) { return DeviceObjectID(raw) }
+        guard let (_, objectID, _) = scopedComponents else { return nil }
+        return objectID
+    }
+
+    /// Decompose a `v2:<epoch>:<objectID>:<serial>` id; `nil` for any other
+    /// shape. The serial is everything after the third `:` (it may itself
+    /// contain `:`), and may be empty only in synthetic test scopes.
+    private var scopedComponents: (epoch: UInt32, objectID: DeviceObjectID, serial: String)? {
+        guard rawValue.hasPrefix(Self.scopedPrefix) else { return nil }
+        let parts = rawValue.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
+        guard parts.count == 4, let epoch = UInt32(parts[1]), let objectID = UInt16(parts[2])
+        else { return nil }
+        return (epoch, DeviceObjectID(objectID), String(parts[3]))
     }
 }
 

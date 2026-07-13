@@ -46,14 +46,17 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     /// The original interchange file, byte-exact ("Schwarzwald.gpx" + bytes).
     public var sourceFileName: String
     public var sourceFileData: Data
-    /// The device object id this route was assigned on upload — the durable link
-    /// between a library route and its copy on the device (names/local ids can't
-    /// match across the BLE boundary). `nil` until an upload commits (an
-    /// H4 save-before-pairing import, or a route never pushed); a device-side
-    /// delete clears it again at reconcile.
-    public var deviceObjectID: DeviceObjectID?
+    /// The device copy this route was assigned on upload — the durable
+    /// `{serial, epoch, id}` link between a library route and its copy on
+    /// **one device in one id era** (#769; names/local ids can't match across
+    /// the BLE boundary, and a bare object id silently matched every device).
+    /// `nil` until an upload commits (an H4 save-before-pairing import, a
+    /// route never pushed, or a v1 flat link awaiting V6's CRC adoption); a
+    /// device-side delete clears it again at reconcile. Only meaningful when
+    /// ``DeviceRouteLink/matches(_:)`` holds for the connected device.
+    public var deviceLink: DeviceRouteLink?
     /// The CRC-32 of the upload payload the device last **committed** — the
-    /// fingerprint behind ``OnDeviceState``. Set alongside ``deviceObjectID``
+    /// fingerprint behind ``OnDeviceState``. Set alongside ``deviceLink``
     /// when an upload's result lands; `nil` when the copy's content is unknown
     /// (pre-fingerprint library), which reads as outdated until the next push.
     public var uploadedCRC32: UInt32?
@@ -62,15 +65,15 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
 
     public var id: RouteID { summary.id }
 
-    /// Whether the device holds a copy — derived from ``deviceObjectID``.
-    public var uploadedToDevice: Bool { deviceObjectID != nil }
+    /// Whether some device holds a copy — derived from ``deviceLink``.
+    public var uploadedToDevice: Bool { deviceLink != nil }
 
     public init(
         summary: RouteSummary,
         route: ImportedRoute,
         sourceFileName: String,
         sourceFileData: Data,
-        deviceObjectID: DeviceObjectID? = nil,
+        deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
         addedAt: Date = Date()
     ) {
@@ -78,7 +81,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
         self.route = route
         self.sourceFileName = sourceFileName
         self.sourceFileData = sourceFileData
-        self.deviceObjectID = deviceObjectID
+        self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
         self.addedAt = addedAt
     }
