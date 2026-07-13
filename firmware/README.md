@@ -8,7 +8,7 @@ render pipeline, formats, UI) read the docs site:
 in the [repo README](../README.md#repository-layout).
 
 The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
-(`obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
+(`obc-formats`, `obc-ports`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
 (`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
 both simulator hosts share in `obc-host-core`), the map packer (`obc-pack`),
 and the test/host helpers. The

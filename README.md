@@ -38,10 +38,12 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | Path | What it is |
 | :-- | :-- |
 | `firmware/` | Rust workspace — the device app, the desktop simulator, the shared reader/renderer, and the map packer. See [`firmware/README.md`](firmware/README.md). |
+| `firmware/obc-formats/` | Dependency-free `no_std` persistent-format authority — versions, fixed layouts, flags, sentinels, primitive codecs, and the shared byte-I/O seam. |
+| `firmware/obc-ports/` | Dependency-free `no_std` semantic ports — fixes, sensor/input/settings traits, clocks, and recorded-track points shared without depending upward on app, platform, or host policy. |
 | `firmware/obc-reader/` | `no_std + alloc` — pure OBCM **v5** parsing (header, style table, LOD table, per-LOD quadtree query + chunk decode). Dependency-light. |
 | `firmware/obc-route/` | `no_std` — the OBCR route reader **and** the GPX → OBCR converter. |
 | `firmware/obc-render/` | `no_std` — the **shared rendering path**: `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering, even-odd scanline polygon fill, weighted polylines, text. Generic over an `embedded-graphics` `DrawTarget` so host and MCU run identical drawing code. |
-| `firmware/obc-app/` | `no_std` — the **application + hardware-abstraction layer**: camera, camera mode (follow-user / free), screen stack, input model, route tracking. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
+| `firmware/obc-app/` | `no_std` — the **application layer**: camera, camera mode (follow-user / free), screen stack, input model, route tracking, plus compatibility re-exports of `obc-ports`. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
 | `firmware/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
 | `firmware/obc-web-demo/` | The website's **live-demo host**: the same shared crates compiled to wasm behind a small `obc_demo_*` API — the landing page's JS owns the frame loop and canvas, no GUI framework in the tree. |
 | `firmware/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
@@ -58,8 +60,10 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route / firmware-update-image format specifications and the BLE wire contract. |
 | `firmware/docs/`, `packer/docs/` | Design notes and handover docs (UI spec, rendering pipeline, line-style plans, packer port stages…). |
 
-The crate dependency direction is `obc-sim → obc-app → obc-render → obc-reader`
-(with `obc-route` shared alongside). The nRF54L firmware and the website's
+The crate dependency direction includes `obc-sim → obc-app → obc-render → obc-reader`,
+with the dependency-free `obc-formats` byte-contract and `obc-ports` semantic foundations
+beneath the reader/route and app/route layers respectively.
+The nRF54L firmware and the website's
 `obc-web-demo` are *sibling hosts* beside `obc-sim`, reusing
 `obc-app` / `obc-render` / `obc-reader` / `obc-route` unchanged.
 
