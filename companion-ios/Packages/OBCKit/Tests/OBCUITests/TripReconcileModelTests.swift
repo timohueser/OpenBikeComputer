@@ -153,9 +153,13 @@ struct TripReconcileModelTests {
         let deviceTripID = control.deviceTripObjectIDs.first!
 
         // TR3 long-press: the device deletes the trip AND its member routes.
+        // The cascade notifies TWO storeChanged edges (route, then trip), each
+        // triggering a reload that cancels its predecessor — the stage link can
+        // clear a beat before the trip reconcile lands, so poll both (asserting
+        // the trip state right after the stage poll raced the second reload).
         control.deviceDeletesTripCascade(deviceTripID)
         await poll("stage link cleared") { model.onDeviceState(stageA) == .notOnDevice }
-        #expect(model.tripOnDeviceState(tripID) == .notOnDevice)
+        await poll("trip link cleared") { model.tripOnDeviceState(tripID) == .notOnDevice }
     }
 
     /// The on-glass regression (2026-07-13): the device deletes ONE member route
