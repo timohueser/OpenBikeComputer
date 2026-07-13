@@ -100,6 +100,9 @@ struct RootView: View {
                     onSelectRoute: { route in
                         path.append(.route(id: route.id))
                     },
+                    onSelectTrip: { trip in
+                        path.append(.trip(id: trip.id))
+                    },
                     onSelectRide: { ride in
                         path.append(.ride(id: ride.id))
                     },
@@ -320,6 +323,21 @@ struct RootView: View {
                     onRename: { mainModel.renameRide(id, to: $0) }
                 )
             }
+        case .trip(let id):
+            TripDetailView(
+                model: mainModel,
+                tripID: id,
+                // A stage opens the ordinary route detail (E2), exactly as a
+                // top-level route card does.
+                onSelectRoute: { route in path.append(.route(id: route.id)) },
+                // The trip dissolved or was deleted — pop back to the routes list
+                // (drop the trip and anything pushed above it).
+                onClose: {
+                    if let index = path.firstIndex(of: .trip(id: id)) {
+                        path.removeSubrange(index...)
+                    }
+                }
+            )
         case .trash:
             RecentlyDeletedView(model: mainModel)
         case .settings:
@@ -367,6 +385,7 @@ struct RootView: View {
 /// up in `MainScreenModel`, so a rename mid-stack stays consistent.
 enum MainDestination: Hashable {
     case route(id: RouteID)
+    case trip(id: TripID)
     case ride(id: RideID)
     case trash
     case settings

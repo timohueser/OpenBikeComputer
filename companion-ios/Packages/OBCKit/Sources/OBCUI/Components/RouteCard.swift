@@ -17,21 +17,32 @@ public struct RouteCard: View {
     /// The device-copy state — picks the small C1 badge (check = up to date,
     /// refresh = on device but out of date, nothing when not on the device).
     let onDevice: OnDeviceState
+    /// A trip stage's palette color (TR6), drawn as a leading edge swatch so a
+    /// route reads as stage *N* on the trip page. `nil` — the default — is the
+    /// plain top-level card everywhere else, byte-identical to before.
+    let stageAccent: Color?
 
-    public init(title: String, subtitle: String, preview: TrackPreview?, onDevice: OnDeviceState = .notOnDevice) {
+    public init(
+        title: String, subtitle: String, preview: TrackPreview?,
+        onDevice: OnDeviceState = .notOnDevice, stageAccent: Color? = nil
+    ) {
         self.title = title
         self.subtitle = subtitle
         self.preview = preview
         self.onDevice = onDevice
+        self.stageAccent = stageAccent
     }
 
     /// Planned-route row: "62.4 km · 840 m ↑ · 3h 20m".
-    public init(route: RouteSummary, onDevice: OnDeviceState = .notOnDevice) {
+    public init(
+        route: RouteSummary, onDevice: OnDeviceState = .notOnDevice, stageAccent: Color? = nil
+    ) {
         self.init(
             title: route.name,
             subtitle: OBCFormat.plannedSubtitle(route),
             preview: route.trackPreview,
-            onDevice: onDevice
+            onDevice: onDevice,
+            stageAccent: stageAccent
         )
     }
 
@@ -69,6 +80,14 @@ public struct RouteCard: View {
             .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
         }
         .background(OBCTheme.panel)
+        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
+        .overlay(alignment: .leading) {
+            if let stageAccent {
+                stageAccent
+                    .frame(width: 5)
+                    .accessibilityIdentifier("routeCard.stageAccent")
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
         .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
         .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)

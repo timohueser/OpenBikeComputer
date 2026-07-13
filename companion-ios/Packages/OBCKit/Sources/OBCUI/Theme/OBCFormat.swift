@@ -113,6 +113,21 @@ public enum OBCFormat {
         ].joined(separator: " · ")
     }
 
+    /// Trip card stat line: "2 stages · 141 km · 2,050 m ↑" (TR6) — the summed
+    /// distance/climb over a trip's resolvable stages, led by the stage count.
+    public static func tripSubtitle(
+        stageCount: Int,
+        distanceMeters: Double,
+        elevationGainMeters: Double,
+        locale: Locale = .current
+    ) -> String {
+        [
+            stageCount == 1 ? "1 stage" : "\(stageCount) stages",
+            distance(meters: distanceMeters, locale: locale),
+            climb(meters: elevationGainMeters, locale: locale),
+        ].joined(separator: " · ")
+    }
+
     // ------------------------------------------------------------- stat-strip parts
     // The detail stat strips (E1–E3) render value and unit separately (`OBCStat`);
     // these are the same numbers the joined lines above use, without the unit.

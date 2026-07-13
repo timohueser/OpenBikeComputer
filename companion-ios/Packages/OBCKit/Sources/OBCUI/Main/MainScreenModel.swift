@@ -69,6 +69,15 @@ public final class MainScreenModel {
     /// (unlike the `plannedRecords` mirror) so the badge moves the instant an
     /// upload commits or a rename/re-import changes the content.
     public private(set) var onDevice: [RouteID: OnDeviceState] = [:]
+    /// Every saved trip, newest first (TR6) — the top-level trip cards and the
+    /// backing for the trip page. Read from the library (dangling stages already
+    /// pruned) and refreshed on every trip edit.
+    public private(set) var trips: [TripRecord] = []
+    /// The interleaved Planned tab (TR6): trip cards + **loose** route cards (a
+    /// filed route lives only inside its trip), newest first. Derived from
+    /// `plannedRecords` + `trips`; `routes` stays the flat list of *all* planned
+    /// summaries (filed included) so a stage still resolves to a detail.
+    public private(set) var plannedItems: [PlannedItem] = []
     public private(set) var rides: [RideSummary] = []
     /// Recently Deleted (#292): trashed rides, most recently trashed first —
     /// the trash screen's rows and the Tracked tab's entry-row count.
@@ -108,6 +117,12 @@ public final class MainScreenModel {
 
     public var filteredRoutes: [RouteSummary] {
         filtered(routes, by: \.name)
+    }
+
+    /// The Planned tab rows after search (TR6) — trips and loose routes filtered
+    /// by name together, so a query narrows the mixed list as one.
+    public var filteredPlannedItems: [PlannedItem] {
+        filtered(plannedItems, by: \.name)
     }
 
     public var filteredRides: [RideSummary] {
@@ -234,6 +249,7 @@ public final class MainScreenModel {
         trashedRideIDs = library.trashedRideIDs()
         purgeExpiredTrash()
         routes = plannedList()
+        reloadTrips()
         rides = trackedList()
         trashedRides = trashedList()
 
@@ -342,6 +358,7 @@ public final class MainScreenModel {
                 lastRouteCatalog = deviceRoutes
                 reconcileOnDevice(with: deviceRoutes)
                 routes = plannedList()
+                rebuildPlannedItems()
                 rides = trackedList()
                 loadState = .loaded
             } catch {
@@ -403,6 +420,7 @@ public final class MainScreenModel {
             if let catalog = lastRouteCatalog {
                 reconcileOnDevice(with: catalog)
                 routes = plannedList()
+                rebuildPlannedItems()
             }
         }
     }
@@ -551,6 +569,121 @@ public final class MainScreenModel {
         plannedRecords.values.sorted { $0.addedAt > $1.addedAt }.map(\.summary)
     }
 
+    // MARK: Trips (route grouping, TR6)
+
+    /// Re-read trips from the library (dangling stages pruned there) and rebuild
+    /// the interleaved Planned list — the one call every trip/route edit ends on.
+    private func reloadTrips() {
+        trips = library.trips()
+        rebuildPlannedItems()
+    }
+
+    /// Recompute the interleaved Planned tab from the current records + trips.
+    private func rebuildPlannedItems() {
+        plannedItems = PlannedItem.partition(records: Array(plannedRecords.values), trips: trips)
+    }
+
+    /// The trip behind `id`, or `nil` if it dissolved / never existed.
+    public func trip(_ id: TripID) -> TripRecord? { trips.first { $0.id == id } }
+
+    /// A trip's member routes as list summaries, **in ride order** — the trip
+    /// page's rows. Skips any stage whose record is gone (already pruned on read;
+    /// belt-and-suspenders here).
+    public func tripStages(_ id: TripID) -> [RouteSummary] {
+        guard let trip = trip(id) else { return [] }
+        return trip.stageIDs.compactMap { plannedRecords[$0]?.summary }
+    }
+
+    /// A trip's summed stats (distance/climb + stage count) — the single
+    /// definition, `TripStats.summing` over the resolved member summaries.
+    public func tripStats(_ id: TripID) -> TripStats {
+        TripStats.summing(tripStages(id))
+    }
+
+    /// The trip-level device-copy state behind the card badge (TR6): the trip is
+    /// "up to date" only when the **trip object itself** is proven current *and*
+    /// every stage is up to date. The trip object's own proof needs the device's
+    /// `tripList` catalog, which the transport gains in TR8 — until then no trip
+    /// is proven, so the badge stays off (a trip the phone never pushed as a trip
+    /// isn't on the device). The composition rule is kept whole so TR8 only has
+    /// to supply the proven trip CRC.
+    public func tripOnDeviceState(_ id: TripID) -> OnDeviceState {
+        guard let trip = trip(id), !trip.stageIDs.isEmpty else { return .notOnDevice }
+        let tripSelf = OnDeviceState.determine(provenCommittedCRC: nil, currentCRC: { 0 })
+        let stageStates = trip.stageIDs.map { onDeviceState($0) }
+        return Self.composeTripState(tripSelf: tripSelf, stageStates: stageStates)
+    }
+
+    /// Compose the trip badge from the trip object's own state and its stages'
+    /// (TR6). Pure + `static` so the rule is unit-testable without a device.
+    static func composeTripState(
+        tripSelf: OnDeviceState, stageStates: [OnDeviceState]
+    ) -> OnDeviceState {
+        guard !stageStates.isEmpty, tripSelf != .notOnDevice else { return .notOnDevice }
+        if tripSelf == .upToDate, stageStates.allSatisfy({ $0 == .upToDate }) { return .upToDate }
+        return .outdated
+    }
+
+    /// Rename a trip (H12 idiom) — phone-local, persisted; the new name rides the
+    /// next trip upload (TR8). A no-op name is the caller's guard.
+    public func renameTrip(_ id: TripID, to name: String) {
+        guard var trip = trip(id) else { return }
+        trip.name = name
+        library.saveTrip(trip)
+        reloadTrips()
+    }
+
+    /// Reorder a trip's stages (drag) — ride order is the trip's source of truth,
+    /// so this is the whole edit; a reorder out-dates the device copy (TR8).
+    public func reorderTripStages(_ id: TripID, from source: IndexSet, to destination: Int) {
+        guard var trip = trip(id) else { return }
+        trip.stageIDs.move(fromOffsets: source, toOffset: destination)
+        library.saveTrip(trip)
+        reloadTrips()
+    }
+
+    /// Remove one stage from a trip — the route returns to the top level (its
+    /// record is untouched). Removing the **last** stage dissolves the trip;
+    /// returns `true` in that case so the caller can pop the page.
+    @discardableResult
+    public func removeStage(_ routeID: RouteID, from tripID: TripID) -> Bool {
+        guard var trip = trip(tripID) else { return false }
+        trip.stageIDs.removeAll { $0 == routeID }
+        if trip.stageIDs.isEmpty {
+            library.deleteTrip(tripID)  // dissolve — routes stay in the library
+            reloadTrips()
+            return true
+        }
+        library.saveTrip(trip)
+        reloadTrips()
+        return false
+    }
+
+    /// **Ungroup** a trip (the Delete dialog's non-destructive branch): drop the
+    /// trip metadata; every member route stays in the library and returns to the
+    /// top level. Routes are untouched — the store's `deleteTrip` contract.
+    public func ungroupTrip(_ id: TripID) {
+        library.deleteTrip(id)
+        reloadTrips()
+    }
+
+    /// **Delete trip & routes** (the Delete dialog's destructive branch): the
+    /// cascade the initiating UI composes (the protocol-level trip delete is
+    /// non-cascading) — drop the trip, then delete each member route from the
+    /// phone library. Phone-local here; the device-side cascade is TR8's.
+    public func deleteTripAndRoutes(_ id: TripID) {
+        guard let trip = trip(id) else { return }
+        let stages = trip.stageIDs
+        library.deleteTrip(id)
+        for stage in stages {
+            routes.removeAll { $0.id == stage }
+            plannedRecords[stage] = nil
+            onDevice[stage] = nil
+            library.deletePlannedRoute(stage)
+        }
+        reloadTrips()
+    }
+
     // MARK: Delete (H11 → H1, post-confirm)
 
     /// Remove a planned route from the phone (list + library). **Never** from
@@ -561,7 +694,10 @@ public final class MainScreenModel {
         routes.removeAll { $0.id == id }
         plannedRecords[id] = nil
         onDevice[id] = nil
+        // Also prunes the id from any trip that held it, dissolving a trip left
+        // with no stages (the store's contract) — re-read so the list reflects it.
         library.deletePlannedRoute(id)
+        reloadTrips()
     }
 
     /// Move a tracked ride to Recently Deleted (#292) — recoverable, and
@@ -627,6 +763,7 @@ public final class MainScreenModel {
             // The name rides in the upload payload: a rename out-dates the
             // device copy until the next push updates it.
             refreshOnDeviceStates()
+            rebuildPlannedItems()
         }
     }
 
@@ -654,6 +791,7 @@ public final class MainScreenModel {
         refreshOnDeviceStates()
         routes.removeAll { $0.id == record.id }
         routes.insert(record.summary, at: 0)
+        rebuildPlannedItems()
         tab = .planned
     }
 
