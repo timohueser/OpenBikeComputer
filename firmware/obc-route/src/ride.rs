@@ -54,48 +54,15 @@ use crate::byte_io::{ByteSink, ByteSource, Error};
 use crate::reader::NAME_CAP;
 use crate::track::{decode_record, TRACK_RECORD_LEN};
 
-/// The ride-object version [`track_to_ride`] writes (spec §7.2). Bumped to 2 for the BLE-sensor
-/// summary + per-point sensor fields (epic #707); [`RideInfo::read`] still accepts v1.
-pub const RIDE_VERSION: u8 = 2;
-/// Fixed header bytes for a **v1** object (name's `name_len` bytes ride between `name_len` and
-/// `start_time`).
-pub const RIDE_HEADER_LEN_V1: usize = 23;
-/// Fixed header bytes for a **v2** object — v1's 23 plus the 8-byte sensor summary tail.
-pub const RIDE_HEADER_LEN_V2: usize = 31;
-/// One encoded **v1** point record.
-pub const RIDE_POINT_LEN_V1: usize = 14;
-/// One encoded **v2** point record — v1's 14 plus `hr u8 · cad u8 · pwr u16`.
-pub const RIDE_POINT_LEN_V2: usize = 18;
-/// The point `ele` sentinel for "no elevation recorded".
-pub const RIDE_ELE_NONE: i16 = i16::MIN;
-/// Sentinel for an absent `avg_hr` / `max_hr` / `avg_cad` header field or per-point `hr` / `cad`.
-pub const RIDE_HR_NONE: u8 = 0xFF;
-/// Sentinel for an absent cadence value (same byte as [`RIDE_HR_NONE`], named for the field).
-pub const RIDE_CAD_NONE: u8 = 0xFF;
-/// Sentinel for an absent `avg_pwr` / `max_pwr` header field or per-point `pwr`.
-pub const RIDE_PWR_NONE: u16 = 0xFFFF;
-
-/// Fixed header bytes for a given ride-object `version`. An unknown version sizes as v2 (the
-/// current writer); callers gate on [`RideInfo::read`]'s version check first.
-pub const fn ride_header_len(version: u8) -> usize {
-    match version {
-        1 => RIDE_HEADER_LEN_V1,
-        _ => RIDE_HEADER_LEN_V2,
-    }
-}
-
-/// One encoded point record's size for a given ride-object `version`.
-pub const fn ride_point_len(version: u8) -> usize {
-    match version {
-        1 => RIDE_POINT_LEN_V1,
-        _ => RIDE_POINT_LEN_V2,
-    }
-}
-
-/// The whole encoded object's size for a given `version`, name, and point count.
-pub const fn ride_object_len(version: u8, name_len: usize, point_count: u32) -> u32 {
-    (ride_header_len(version) + name_len) as u32 + ride_point_len(version) as u32 * point_count
-}
+// Compatibility paths for the normative ride-object versions, sizes, sentinels, and primitive
+// length arithmetic now owned by `obc-formats`; streaming conversion remains in this crate.
+pub use obc_formats::ride::{
+    checked_object_len as checked_ride_object_len, header_len as ride_header_len, object_len as ride_object_len,
+    point_len as ride_point_len, CAD_NONE as RIDE_CAD_NONE, ELE_NONE as RIDE_ELE_NONE,
+    HEADER_LEN_V1 as RIDE_HEADER_LEN_V1, HEADER_LEN_V2 as RIDE_HEADER_LEN_V2, HR_NONE as RIDE_HR_NONE,
+    POINT_LEN_V1 as RIDE_POINT_LEN_V1, POINT_LEN_V2 as RIDE_POINT_LEN_V2, PWR_NONE as RIDE_PWR_NONE,
+    VERSION as RIDE_VERSION,
+};
 
 /// The ride totals the header carries, plus the wall-clock anchor that turns the log's
 /// monotonic-millis timestamps into unix seconds. The app accumulates the totals live
@@ -168,7 +135,8 @@ impl RideInfo {
         let tail = &mut tail[..tail_len];
         src.read_at(3 + name_len as u32, tail).map_err(|_| Error::BadOffset)?;
         let point_count = u32::from_le_bytes([tail[16], tail[17], tail[18], tail[19]]);
-        if src.len() != ride_object_len(version, name_len, point_count) {
+        let object_len = checked_ride_object_len(version, name_len, point_count).map_err(|_| Error::BadOffset)?;
+        if src.len() != object_len {
             return Err(Error::BadOffset);
         }
         // v2 sensor summary (tail offset 20..28); v1 has no such bytes → all absent.
