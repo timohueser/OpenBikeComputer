@@ -30,7 +30,7 @@ pub use descriptor::{
     StoreChanged, TransferControl, TransferResult, TransferStatus, VersionRead, CMD_ACK_RIDES, CMD_DELETE_OBJECT,
     CMD_FORGET_BOND, CMD_INSTALL_FW,
 };
-pub use list::{ListHeader, RideListEntry, RouteListEntry, MIN_LIST_ENTRY_LEN};
+pub use list::{ListHeader, RideListEntry, RouteListEntry, TripListEntry, MIN_LIST_ENTRY_LEN};
 pub use sensors::{
     classify_advertisement, parse_battery_level, parse_csc_measurement, parse_hr_measurement, parse_power_measurement,
     power_crank_feeds_cadence, AdvMatch, CrankCadence, CrankRevs, CscSample, HrSample, PowerSample, SensorKind,

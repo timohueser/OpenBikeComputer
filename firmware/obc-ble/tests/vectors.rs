@@ -294,6 +294,16 @@ fn upload_open_reject_rule() {
         Some(TransferStatus::StorageFull),
         "unknown id + full → storageFull"
     );
+
+    // The rule is object-type-agnostic (epic #526 TR4): the board's `upload_open_trip` passes the
+    // *trip* catalog's `catalog_full`/`id_known` into the exact same classifier — a new trip past the
+    // 16-trip cap → storageFull before any byte streams, a replace-by-id of a stored trip is exempt.
+    assert_eq!(
+        TransferStatus::upload_open_reject(new, false, true),
+        Some(TransferStatus::StorageFull),
+        "new trip + full trip catalog → storageFull"
+    );
+    assert_eq!(TransferStatus::upload_open_reject(known, true, true), None, "replace trip at the cap still commits");
 }
 
 /// An unknown `status` discriminator decodes to `None` (ignored), never an error — forward
@@ -301,6 +311,52 @@ fn upload_open_reject_rule() {
 #[test]
 fn unknown_status_discriminator_is_ignored() {
     assert_eq!(StatusMessage::decode(&[0xEE, 0, 0, 0]), Ok(None));
+}
+
+/// The `tripList` fixture (spec §7.4) decodes through the production list codec: a 6-byte v2 header
+/// (entry_len 76) + one 76-byte entry whose totals sum the trip's two **resolvable** stages
+/// (2×2207 m / 2×76 m) while `stage_count` counts all three stored stages (the third is dangling),
+/// and whose trailing `crc32` is the trip file's whole-object CRC-32. Re-encoding reproduces the
+/// file byte-for-byte — the Swift `TripCodecTests` pin the same bytes.
+#[test]
+fn trip_list_vector() {
+    use obc_ble::{ListHeader, TripListEntry};
+
+    let trip = fixture("trip-v1.bin");
+    let bytes = fixture("trip-list.bin");
+    let (h, entry_len) = ListHeader::decode(&bytes).unwrap();
+    assert_eq!(h.count, 1);
+    assert_eq!(h.total, 1, "nothing truncated");
+    assert!(!h.is_truncated());
+    assert_eq!(entry_len, TripListEntry::ENTRY_LEN, "v2 tripList entry is 76 bytes");
+    assert_eq!(bytes.len(), ListHeader::object_len(h.count as usize, entry_len));
+
+    let e = TripListEntry::decode(&bytes[ListHeader::ENCODED_LEN..ListHeader::ENCODED_LEN + entry_len]).unwrap();
+    assert_eq!(e.object_id, 1, "the trip's own device id (separate counter, §4.1)");
+    assert_eq!(e.byte_len as usize, trip.len(), "byte_len sizes the stored trip file");
+    assert_eq!((e.total_distance_m, e.total_ascent_m), (2 * 2207, 2 * 76), "summed over resolvable stages");
+    assert_eq!(e.stage_count, 3, "counts every stored stage, dangling ref included");
+    assert_eq!(e.name, b"Alpen Traverse");
+    assert_eq!(e.crc32, Crc32::checksum(&trip), "trailing crc32 = the trip file's whole-object CRC");
+
+    let mut rebuilt = ListHeader { count: h.count, total: h.total }.encode(entry_len as u8).to_vec();
+    rebuilt.extend_from_slice(&e.encode());
+    assert_eq!(rebuilt, bytes, "re-encode");
+}
+
+/// The trip object type + tripList type decode from the wire `type` byte (spec §4.1: trip = 9,
+/// tripList = 10). Pins the discriminants so a reorder can't silently shift the wire byte, and that
+/// a download-request descriptor for the tripList round-trips.
+#[test]
+fn trip_object_types_and_descriptor() {
+    assert_eq!(ObjectType::from_u8(9).unwrap(), ObjectType::Trip);
+    assert_eq!(ObjectType::from_u8(10).unwrap(), ObjectType::TripList);
+    assert_eq!(ObjectType::Trip.as_u8(), 9);
+    assert_eq!(ObjectType::TripList.as_u8(), 10);
+
+    // A tripList download request (op=2, type=10, id 0) round-trips through the production codec.
+    let desc = TransferControl { op: Op::Download, ty: ObjectType::TripList, object_id: 0, total_len: 0, crc32: 0 };
+    assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
 }
 
 /// The `routeList` fixture decodes through the production list codec, its entries agree with the
