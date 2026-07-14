@@ -141,10 +141,22 @@ embedded-hal = "1.0"
 embedded-storage = "0.3"
 
 # The board-agnostic glue: the `Panel` banded-display seam + the `Band` frame-absolute draw view
-# the LS021 backend implements, and `Framebuffer565`'s `RawFb`/`Pack` the overlay composite reuses
-# (issue #122). Pulls obc-app/route/reader transitively — all no_std, all defmt-free. `debug-link` stays
-# off (no embassy-sync) until the sensor stream at N6.
+# the source/handoff adapters over obc-ports: the button debouncer, the debug-sensor codec + its
+# `debug-link` sources, the `sensor-link`/BLE-sensor hand-offs, and the synth/stub fallback sources.
+# `debug-link` stays off (no embassy-sync) until the sensor stream at N6. (#807 split the display
+# seam, sensor decoders, and SD adapters into the sibling crates below.)
 obc-platform = { path = "../obc-platform" }
+# The display seam (#807): the generic frame/presentation contracts the LS021/FLPR backend
+# implements, the `FbDevice64` map plane the shared renderer draws into, `Framebuffer565`'s
+# `RawFb`/`Pack` the overlay composite reuses, and the `ls021` pairing (geometry/rowdiff/wire/
+# composite). embedded-graphics only. (was `obc-platform::{framebuffer,panel,ls021,display_contracts}`)
+obc-display = { path = "../obc-display" }
+# The pure sensor chip/protocol decoders (#807): UBX / BMP581 / ICM-20948 / compass. The board owns
+# the concrete `Twim` transactions in `sensors.rs`; these decode the bytes. No embassy, host-tested.
+obc-sensors = { path = "../obc-sensors" }
+# The board-agnostic SD storage adapters (#807): `SdByteSource`/`SdByteSink`/`SdTrackSink` + the
+# FAT-extent map fast path — only the concrete SPIM bus type is board-specific here.
+obc-storage = { path = "../obc-storage" }
 # The shared text renderer — `draw_text` + the Terminus `Font` tiers every on-device screen uses. (#122)
 obc-render = { path = "../obc-render" }
 # `Rgb565` / `DrawTarget` / `Point` / `Rectangle` for the map path's `color_fn` + the hold-bulge
@@ -153,7 +165,7 @@ obc-render = { path = "../obc-render" }
 embedded-graphics = "0.8"
 
 # microSD map storage (issue #123). The card stores the map/routes/tracks; the board-agnostic FatFs
-# byte adapters live in obc-platform (`SdByteSource`/`SdByteSink`/`SdTrackSink`) and the format
+# byte adapters live in obc-storage (`SdByteSource`/`SdByteSink`/`SdTrackSink`) and the format
 # parsers in obc-reader/obc-route — only the concrete SPIM bus type is board-specific here.
 # `nrf-mem` (issue #124) is the constrained memory profile and forwards to obc-render/reader/route,
 # so this single edge trims every shared crate's resident buffers for the 256 KB part; Cargo's
@@ -169,7 +181,7 @@ obc-dfu = { path = "../obc-dfu" }
 # FatFs over SPI. `default-features = false` (no `log`/`defmt-log`): embedded-sdmmc 0.9 pins
 # `defmt = "0.3"`, which would clash with this crate's defmt 1.0 — so its internal logging stays
 # the no-op fallback and card/FS errors are surfaced via this crate's `defmt::Debug2Format`.
-# Matches obc-platform's own `embedded-sdmmc` resolve so the `VolumeManager` types unify.
+# Matches obc-storage's own `embedded-sdmmc` resolve so the `VolumeManager` types unify.
 embedded-sdmmc = { version = "0.9", default-features = false }
 # `ExclusiveDevice` turns the embassy-nrf `Spim` bus + a GPIO CS into the `SpiDevice` `SdCard` wants.
 embedded-hal-bus = "0.3"

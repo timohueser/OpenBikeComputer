@@ -8,9 +8,10 @@
 //! only on the tick a fresh sample arrived and `None` between — the fresh-fix mailbox semantics the
 //! seam documents, with zero I²C traffic at the frame rate and no teleport on a stale fix.
 //!
-//! The pure decode this bridges lives in the always-compiled [`crate::ubx`] / [`crate::bmp581`] /
-//! [`crate::compass`] / [`crate::icm20948`] modules; only this embassy-sync plumbing pulls
-//! `embassy-sync`, so it is gated behind the `sensor-link` feature.
+//! The pure decode this bridges lives in the always-compiled `obc_sensors::ubx` /
+//! `obc_sensors::bmp581` / `obc_sensors::compass` / `obc_sensors::icm20948` modules (their own
+//! crate, #807); only this embassy-sync plumbing pulls `embassy-sync`, so it is gated behind the
+//! `sensor-link` feature.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;

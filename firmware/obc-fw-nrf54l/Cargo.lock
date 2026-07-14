@@ -1234,6 +1234,13 @@ name = "obc-dfu"
 version = "0.1.0"
 
 [[package]]
+name = "obc-display"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+]
+
+[[package]]
 name = "obc-formats"
 version = "0.1.0"
 
@@ -1264,11 +1271,14 @@ dependencies = [
  "obc-app",
  "obc-ble",
  "obc-dfu",
+ "obc-display",
  "obc-platform",
  "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-route",
+ "obc-sensors",
+ "obc-storage",
  "panic-probe",
  "static_cell",
  "trouble-host",
@@ -1289,12 +1299,9 @@ dependencies = [
  "embassy-futures",
  "embassy-sync",
  "embassy-time",
- "embedded-graphics",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "embedded-sdmmc",
  "heapless 0.8.0",
- "libm",
  "obc-ports",
  "obc-route",
 ]
@@ -1332,6 +1339,24 @@ dependencies = [
  "obc-formats",
  "obc-ports",
  "obc-reader",
+]
+
+[[package]]
+name = "obc-sensors"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "obc-ports",
+]
+
+[[package]]
+name = "obc-storage"
+version = "0.1.0"
+dependencies = [
+ "embedded-sdmmc",
+ "heapless 0.8.0",
+ "obc-ports",
+ "obc-route",
 ]
 
 [[package]]

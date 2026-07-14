@@ -2368,7 +2368,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "obc-app",
- "obc-platform",
+ "obc-display",
  "obc-reader",
  "obc-render",
  "obcm-testkit",
@@ -2384,6 +2384,15 @@ dependencies = [
 [[package]]
 name = "obc-dfu"
 version = "0.1.0"
+
+[[package]]
+name = "obc-display"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "obc-reader",
+ "pollster",
+]
 
 [[package]]
 name = "obc-formats"
@@ -2440,16 +2449,11 @@ dependencies = [
  "embassy-futures",
  "embassy-sync",
  "embassy-time",
- "embedded-graphics",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "embedded-sdmmc",
  "heapless 0.8.0",
- "libm",
  "obc-ports",
- "obc-reader",
  "obc-route",
- "pollster",
 ]
 
 [[package]]
@@ -2499,6 +2503,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-sensors"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "obc-ports",
+]
+
+[[package]]
 name = "obc-sim"
 version = "0.1.0"
 dependencies = [
@@ -2507,8 +2519,8 @@ dependencies = [
  "image",
  "obc-app",
  "obc-dfu",
+ "obc-display",
  "obc-host-core",
- "obc-platform",
  "obc-ports",
  "obc-reader",
  "obc-render",
@@ -2516,6 +2528,16 @@ dependencies = [
  "obc-route",
  "pollster",
  "rfd",
+]
+
+[[package]]
+name = "obc-storage"
+version = "0.1.0"
+dependencies = [
+ "embedded-sdmmc",
+ "heapless 0.8.0",
+ "obc-ports",
+ "obc-route",
 ]
 
 [[package]]
@@ -2549,8 +2571,8 @@ dependencies = [
  "heapless 0.8.0",
  "js-sys",
  "obc-app",
+ "obc-display",
  "obc-host-core",
- "obc-platform",
  "obc-reader",
  "obc-render",
  "obc-replay",
