@@ -284,6 +284,15 @@ pub fn command_ack_rides(ids: &[u16]) -> Vec<u8> {
     v
 }
 
+/// The `setClock` command write (spec §4.4, cmd 5, epic #638 S2): `cmd u8 = 5 · utc u32 LE ·
+/// offset_min i16 LE`. 7 bytes.
+pub fn command_set_clock(utc: u32, offset_min: i16) -> Vec<u8> {
+    let mut v = vec![5u8];
+    v.extend_from_slice(&le32(utc));
+    v.extend_from_slice(&offset_min.to_le_bytes());
+    v
+}
+
 /// One `routeList` entry (spec §7.4): **76 bytes** (protocol v2), name zero-padded to 48, trailing
 /// whole-object content `crc32` (`0` = unknown).
 #[allow(clippy::too_many_arguments)] // mirrors the spec's field list one-to-one
@@ -446,6 +455,9 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("command-ack-rides.bin", command_ack_rides(&[3, 5, 9])),
         // Its answer: ok, detail = 3 newly-flagged rides.
         ("status-command-result-ack.bin", status_command_result(2, 0, 3)),
+        // The phone's clock stamp (cmd 5, epic #638 S2): 2026-07-09T12:00:00Z (unix 1783598400),
+        // +02:00 (offset 120 min). 7 bytes.
+        ("command-set-clock.bin", command_set_clock(1_783_598_400, 120)),
         // The OBCU firmware-update container (spec §1) — a `fwImage` payload (spec
         // §7.6, id 0): 64-byte header + a 128-byte raw image. Pinned on the device
         // side by `obc-dfu` and on the app side by the iOS `OBCUHeader` decoder.

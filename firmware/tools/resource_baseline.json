@@ -56,8 +56,8 @@
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE, constrained nrf-mem capacities)",
-      "measured_resident": 212784,
-      "resident_ram_max": 212788,
+      "measured_resident": 212792,
+      "resident_ram_max": 212796,
       "uninit_max": 1024,
       "measured_flash": 1075792,
       "framebuffer_count": 1,

@@ -267,6 +267,38 @@ pub(crate) fn mark_device_settings_changed() {
     DEVICE_SETTINGS_CHANGED.store(true, Ordering::Relaxed);
 }
 
+// ==================== BLE setClock → ride loop (auto-expiry epic #638 S2, #642) ====================
+//
+// A `setClock` command (spec §4.4 cmd 5) must not touch `App` from the BLE plane. Like the other
+// crossings, the validated `(utc_unix, offset_min)` is stashed here and the ride loop drains it into
+// `App::stamp_clock_ble`, which sets + persists the offset and marks the clock trusted (`ClockTrust::
+// Ble`). A data-carrying `Signal` (level, last write wins — a reconnect that re-sends before the loop
+// drains simply supersedes the pending value, which is exactly right) mirrors the `*_DELETE_REQ`
+// idiom; the payload rides in the signal itself, so there is no torn read of two separate atomics.
+// Persistence + the device→phone config-cache refresh (`DEVICE_SETTINGS_CHANGED`) then happen through
+// the normal #810 settings-save path stamp_clock arms, so a Config read soon after a setClock serves
+// the fresh offset — no extra coherence wiring here.
+
+/// A validated BLE `setClock`: `(utc unix seconds, offset_min)`, posted by the command handler and
+/// drained once by the ride loop. Level-coalescing — a second connect's clock supersedes an undrained
+/// one (the newest phone time is the one to stamp).
+static BLE_CLOCK_SET: Signal<CriticalSectionRawMutex, (u32, i16)> = Signal::new();
+
+/// Post a validated `setClock` (the `command` handler, spec §4.4 cmd 5). Wakes a parked ride loop
+/// through [`STORE_WAKE`] so the home-screen clock jumps promptly (the same wake `installFw` uses —
+/// the clock is trusted device state moving, even though it is not a listed object and bumps no
+/// revision).
+pub(crate) fn post_ble_clock(utc: u32, offset_min: i16) {
+    BLE_CLOCK_SET.signal((utc, offset_min));
+    STORE_WAKE.signal(());
+}
+
+/// The ride loop's cue to stamp the wall clock from a BLE `setClock`, or `None` when none is pending
+/// (drains on read).
+pub(crate) fn take_ble_clock() -> Option<(u32, i16)> {
+    BLE_CLOCK_SET.try_take()
+}
+
 /// One catalog slot: the object id and where its bytes live (routes and rides alike).
 struct ObjectSlot {
     id: u16,
