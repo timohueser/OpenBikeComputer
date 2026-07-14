@@ -7,9 +7,9 @@ use embedded_graphics::{
     primitives::{Polyline, PrimitiveStyle, Rectangle},
 };
 
-use crate::fill::fill_polygon;
+use crate::fill::fill_convex_quad;
 use crate::viewport::{round_pt, Viewport};
-use crate::{MAX_CROSSINGS, MAX_SCREEN_POINTS};
+use crate::MAX_SCREEN_POINTS;
 
 /// Cohen–Sutherland outcode: bit 1 = left, 2 = right, 4 = above the top, 8 = below the bottom.
 #[inline]
@@ -149,13 +149,13 @@ where
 }
 
 /// One stroke operation's invariants + scratch, borrowed for the duration of a single polyline
-/// stroke. `run` accumulates the current visible segment run; `xs` is the scanline-crossing
-/// scratch the span fills use. Bundling these keeps the pipeline's helpers argument-light and
-/// gives the coming per-stroke state (v6 dashes, road casing) a home.
+/// stroke. `run` accumulates the current visible segment run. Bundling these keeps the pipeline's
+/// helpers argument-light and gives the per-stroke state (v6 dashes, road casing) a home. The thick
+/// segment fill needs no scanline-crossing scratch — [`fill_convex_quad`] scan-converts each quad
+/// from a fixed stack edge record — so the stroker no longer borrows [`crate::DrawScratch::xs`].
 pub(crate) struct Stroker<'a, D: DrawTarget> {
     target: &'a mut D,
     run: &'a mut Vec<Point, MAX_SCREEN_POINTS>,
-    xs: &'a mut Vec<f32, MAX_CROSSINGS>,
     color: D::Color,
     /// Stroke width in px, already `.max(1)`-clamped by [`Stroker::new`].
     weight: u32,
@@ -175,7 +175,6 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     pub(crate) fn new(
         target: &'a mut D,
         run: &'a mut Vec<Point, MAX_SCREEN_POINTS>,
-        xs: &'a mut Vec<f32, MAX_CROSSINGS>,
         color: D::Color,
         weight: u32,
         w: i32,
@@ -185,7 +184,7 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         let m = weight as f32 + 2.0; // clip margin ≥ half-width, so edge strokes still paint in
         let clip = (-m, -m, w as f32 + m, h as f32 + m);
         run.clear();
-        Self { target, run, xs, color, weight, dashed: false, clip, w, h }
+        Self { target, run, color, weight, dashed: false, clip, w, h }
     }
 
     /// Clip a projected overlay polyline to the view and stroke the on-screen runs
@@ -313,9 +312,8 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
         let hw = (self.weight / 2) as f32;
         let weight = self.weight;
         // Reborrow disjoint fields so `walk_dashes` may read `run` while the emit closure writes the
-        // target/scratch — the closure captures locals, never `self`.
+        // target — the closure captures locals, never `self`.
         let target = &mut *self.target;
-        let xs = &mut *self.xs;
         let color = self.color;
         let (w, h) = (self.w, self.h);
         walk_dashes(self.run, dash, |a, b| {
@@ -325,7 +323,7 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
             if weight <= 1 {
                 let _ = Polyline::new(&[a, b]).into_styled(PrimitiveStyle::with_stroke(color, weight)).draw(target);
             } else {
-                fill_butt_quad(target, a, b, hw, color, w, h, xs);
+                fill_butt_quad(target, a, b, hw, color, w, h);
             }
         });
     }
@@ -334,7 +332,7 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     /// perpendicular). Thin wrapper over [`fill_butt_quad`], sharing the quad math with the dash
     /// path. A zero-length segment is left to the joint/cap disc.
     fn fill_thick_segment(&mut self, a: Point, b: Point, hw: f32) {
-        fill_butt_quad(self.target, a, b, hw, self.color, self.w, self.h, self.xs);
+        fill_butt_quad(self.target, a, b, hw, self.color, self.w, self.h);
     }
 
     /// Fill a solid disc of radius `r` px at `(cx, cy)` as horizontal spans — one
@@ -359,39 +357,39 @@ impl<'a, D: DrawTarget> Stroker<'a, D> {
     }
 }
 
-/// Lay down one thick-stroke segment as a filled rectangle (swept ±`hw` px along its perpendicular)
-/// via [`fill_polygon`] — a convex quad, so every row has exactly two crossings. **Butt ends** (no
-/// end caps): both the solid stroke's per-segment fill ([`Stroker::fill_thick_segment`], which caps
-/// via separate joint discs) and the dash path reuse this. A zero-length segment draws nothing.
-/// Spans round **outward** (see `fill_polygon`), so adjacent quads overlap by ≤1 px, no hairline
-/// crack.
-#[allow(clippy::too_many_arguments)]
-fn fill_butt_quad<D>(
-    target: &mut D,
-    a: Point,
-    b: Point,
-    hw: f32,
-    color: D::Color,
-    w: i32,
-    h: i32,
-    xs: &mut Vec<f32, MAX_CROSSINGS>,
-) where
-    D: DrawTarget,
-{
+/// The rounded four-point quad a thick-stroke segment `a`→`b` sweeps: the endpoints offset ±`hw` px
+/// along the segment's perpendicular, each corner snapped to integer pixels by [`round_pt`]. `None`
+/// for a zero-length segment (nothing to sweep). Split out of [`fill_butt_quad`] so the differential
+/// test harness can rasterise the *exact* reachable geometry through both fillers.
+fn butt_quad(a: Point, b: Point, hw: f32) -> Option<[Point; 4]> {
     let (ax, ay, bx, by) = (a.x as f32, a.y as f32, b.x as f32, b.y as f32);
     let (dx, dy) = (bx - ax, by - ay);
     let len = libm::sqrtf(dx * dx + dy * dy);
     if len < 1e-3 {
-        return;
+        return None;
     }
     let (nx, ny) = (-dy / len * hw, dx / len * hw); // perpendicular × half-width
-    let quad = [
+    Some([
         round_pt(ax + nx, ay + ny),
         round_pt(bx + nx, by + ny),
         round_pt(bx - nx, by - ny),
         round_pt(ax - nx, ay - ny),
-    ];
-    fill_polygon(target, &quad, &[4], color, w, h, xs);
+    ])
+}
+
+/// Lay down one thick-stroke segment as a filled rectangle (swept ±`hw` px along its perpendicular)
+/// via [`fill_convex_quad`] — the convex-quad specialization of the even-odd filler (exactly two
+/// crossings per row). **Butt ends** (no end caps): both the solid stroke's per-segment fill
+/// ([`Stroker::fill_thick_segment`], which caps via separate joint discs) and the dash path reuse
+/// this. A zero-length segment draws nothing. Spans round **outward** (see [`fill_convex_quad`]), so
+/// adjacent quads overlap by ≤1 px, no hairline crack.
+fn fill_butt_quad<D>(target: &mut D, a: Point, b: Point, hw: f32, color: D::Color, w: i32, h: i32)
+where
+    D: DrawTarget,
+{
+    if let Some(quad) = butt_quad(a, b, hw) {
+        fill_convex_quad(target, &quad, color, w, h);
+    }
 }
 
 /// Dash on/off length in screen px for a `weight`-px dashed stroke (`on == off`). **Screen-space,
@@ -470,7 +468,6 @@ pub(crate) fn draw_line<D>(
     dashed: bool,
     color2: Option<D::Color>,
     screen: &mut Vec<Point, MAX_SCREEN_POINTS>,
-    xs: &mut Vec<f32, MAX_CROSSINGS>,
 ) where
     D: DrawTarget,
 {
@@ -479,25 +476,27 @@ pub(crate) fn draw_line<D>(
         // Solid (with or without color2 — casing is #559's job, not draw_line's). Unchanged path.
         (false, _) => {
             let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, screen, xs, color, weight, w, h).stroke(projected);
+            Stroker::new(target, screen, color, weight, w, h).stroke(projected);
         }
         (true, None) => {
             let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, screen, xs, color, weight, w, h).stroke_dashed(projected);
+            Stroker::new(target, screen, color, weight, w, h).stroke_dashed(projected);
         }
         (true, Some(c2)) => {
             let base = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, screen, xs, c2, weight, w, h).stroke(base);
+            Stroker::new(target, screen, c2, weight, w, h).stroke(base);
             let dashes = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, screen, xs, color, weight, w, h).stroke_dashed(dashes);
+            Stroker::new(target, screen, color, weight, w, h).stroke_dashed(dashes);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dash_len, joint_disc_cos2, simplify, turn_is_sharp, walk_dashes, within_eps};
-    use embedded_graphics::prelude::Point;
+    use super::{butt_quad, dash_len, joint_disc_cos2, simplify, turn_is_sharp, walk_dashes, within_eps};
+    use crate::fill::{fill_convex_quad, fill_polygon};
+    use crate::MAX_CROSSINGS;
+    use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
     use heapless::Vec;
 
     /// Collect the vertices [`simplify`] keeps from `pts` at tolerance `eps`.
@@ -634,5 +633,147 @@ mod tests {
         let out = kept(&pts, 0.75);
         assert_eq!(out.len(), 3, "start, corner, end");
         assert_eq!(out[1], Point::new(10, 0), "the corner is kept");
+    }
+
+    // ---- convex-quad fill differential harness (#850) --------------------------------------------
+    //
+    // The specialized [`fill_convex_quad`] must produce a framebuffer **byte-for-byte identical** to
+    // the general even-odd [`fill_polygon`] for every quad the stroker can actually hand it. These
+    // tests rasterise the *exact* reachable geometry (via [`butt_quad`], the same helper
+    // `fill_butt_quad` uses) plus hand-built degenerates through both fillers and compare the pixels.
+
+    const GW: i32 = 44;
+    const GH: i32 = 40;
+    const GN: usize = (GW * GH) as usize;
+
+    /// A tiny fixed-size 1-bpp framebuffer that records exactly which pixels each filler paints.
+    /// Both fillers reach pixels only through [`DrawTarget::fill_solid`]; `draw_iter` is implemented
+    /// for completeness so the comparison can never silently miss a code path.
+    struct Grid {
+        px: [u8; GN],
+    }
+    impl Grid {
+        fn new() -> Self {
+            Grid { px: [0; GN] }
+        }
+        fn set(&mut self, x: i32, y: i32, on: bool) {
+            if (0..GW).contains(&x) && (0..GH).contains(&y) {
+                self.px[(y * GW + x) as usize] = on as u8;
+            }
+        }
+    }
+    impl OriginDimensions for Grid {
+        fn size(&self) -> Size {
+            Size::new(GW as u32, GH as u32)
+        }
+    }
+    impl DrawTarget for Grid {
+        type Color = BinaryColor;
+        type Error = core::convert::Infallible;
+        fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            for Pixel(p, c) in pixels {
+                self.set(p.x, p.y, c == BinaryColor::On);
+            }
+            Ok(())
+        }
+        fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
+            let on = color == BinaryColor::On;
+            for dy in 0..area.size.height as i32 {
+                for dx in 0..area.size.width as i32 {
+                    self.set(area.top_left.x + dx, area.top_left.y + dy, on);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Fill `quad` through both the general even-odd filler and the convex-quad specialization,
+    /// returning the two framebuffers for a byte-for-byte comparison.
+    fn draw_both(quad: &[Point; 4]) -> (Grid, Grid) {
+        let mut generic = Grid::new();
+        let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
+        fill_polygon(&mut generic, quad, &[4], BinaryColor::On, GW, GH, &mut xs);
+        let mut specialized = Grid::new();
+        fill_convex_quad(&mut specialized, quad, BinaryColor::On, GW, GH);
+        (generic, specialized)
+    }
+
+    #[test]
+    fn convex_quad_fill_matches_even_odd_on_a_reachable_grid() {
+        // A deterministic grid of segment endpoints — negative, zero, mid-screen, the last column
+        // (GW-1 = 43), the edge (44), and beyond — crossed with the reachable half-width range
+        // (weight/2 for weights 2..=11, plus half-integers). Every produced quad is what the stroker
+        // would sweep, so a mismatch here is a real pixel drift, not a synthetic one.
+        let coords = [-6, -1, 0, 1, 7, 20, 33, 43, 44, 50];
+        let hws = [1.0f32, 1.5, 2.0, 2.5, 3.0, 4.0, 5.5];
+        let mut checked = 0usize;
+        for &ax in &coords {
+            for &ay in &coords {
+                for &bx in &coords {
+                    for &by in &coords {
+                        for &hw in &hws {
+                            if let Some(quad) = butt_quad(Point::new(ax, ay), Point::new(bx, by), hw) {
+                                let (g, s) = draw_both(&quad);
+                                assert!(
+                                    g.px == s.px,
+                                    "pixel drift for a=({ax},{ay}) b=({bx},{by}) hw={hw} quad={quad:?}"
+                                );
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000, "grid should exercise many quads, only {checked}");
+    }
+
+    #[test]
+    fn convex_quad_fill_matches_even_odd_on_pseudo_random_quads() {
+        // A linear-congruential stream of endpoints ranging well outside every screen edge and widths
+        // up to ~10 px, to shake out one-pixel deltas and shallow near-horizontal/near-vertical quads
+        // the fixed grid might miss.
+        let mut state: u32 = 0x1234_5678;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state
+        };
+        for _ in 0..60_000 {
+            let coord = |r: u32| ((r >> 9) % 130) as i32 - 45; // [-45, 84]
+            let ax = coord(next());
+            let ay = coord(next());
+            let bx = coord(next());
+            let by = coord(next());
+            let hw = 1.0 + ((next() >> 8) % 950) as f32 / 100.0; // [1.0, ~10.5]
+            if let Some(quad) = butt_quad(Point::new(ax, ay), Point::new(bx, by), hw) {
+                let (g, s) = draw_both(&quad);
+                assert!(g.px == s.px, "pixel drift for a=({ax},{ay}) b=({bx},{by}) hw={hw} quad={quad:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn convex_quad_fill_matches_even_odd_on_degenerate_quads() {
+        // Hand-built quads `round_pt` can collapse a stroke into — plus non-convex/self-intersecting
+        // shapes that force the >2-crossing even-odd fallback — must still match the general filler
+        // exactly. (The bowtie is not reachable from `butt_quad`; it is here to exercise that branch.)
+        let quads: &[[Point; 4]] = &[
+            [Point::new(5, 5), Point::new(5, 5), Point::new(5, 5), Point::new(5, 5)], // zero-area point
+            [Point::new(2, 2), Point::new(10, 2), Point::new(10, 2), Point::new(2, 2)], // collinear line
+            [Point::new(5, 3), Point::new(6, 3), Point::new(6, 20), Point::new(5, 20)], // 1px vertical sliver
+            [Point::new(3, 5), Point::new(20, 5), Point::new(20, 6), Point::new(3, 6)], // 1px horizontal sliver
+            [Point::new(4, 4), Point::new(4, 4), Point::new(20, 10), Point::new(4, 18)], // collapsed to triangle
+            [Point::new(4, 18), Point::new(20, 10), Point::new(4, 4), Point::new(4, 4)], // reversed winding
+            [Point::new(0, 0), Point::new(10, 10), Point::new(10, 0), Point::new(0, 10)], // bowtie → 4 crossings
+            [Point::new(-30, -30), Point::new(-20, -30), Point::new(-20, -10), Point::new(-30, -10)], // fully outside
+            [Point::new(-8, 12), Point::new(60, 15), Point::new(60, 18), Point::new(-8, 15)], // spans both x edges
+        ];
+        for quad in quads {
+            let (g, s) = draw_both(quad);
+            assert!(g.px == s.px, "pixel drift for degenerate quad {quad:?}");
+        }
     }
 }

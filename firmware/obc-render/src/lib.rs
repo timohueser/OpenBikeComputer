@@ -518,7 +518,6 @@ impl MapRenderer {
                     false,
                     None,
                     &mut draw.screen,
-                    &mut draw.xs,
                 );
             }
         }
@@ -651,7 +650,6 @@ impl MapRenderer {
                     dashed,
                     color2,
                     &mut draw.screen,
-                    &mut draw.xs,
                 );
             }
         }
@@ -702,7 +700,7 @@ impl MapRenderer {
             // Stroke the ring **closed**: chain the first vertex again so the wall between the last and
             // first point is drawn. Projects lazily, exactly like a line's exterior ring.
             let closed = ring.iter().chain(ring.first()).map(|&(lon, lat)| vp.project(lon, lat));
-            Stroker::new(target, &mut draw.screen, &mut draw.xs, color2, weight, w, h).stroke(closed);
+            Stroker::new(target, &mut draw.screen, color2, weight, w, h).stroke(closed);
         }
     }
 }
