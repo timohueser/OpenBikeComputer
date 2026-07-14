@@ -5,7 +5,7 @@
 //! geometry, the device-native storage cell, the stride/backing-length invariant, and how drawing
 //! code writes it (a [`DrawTarget`] view straight into the backing — no staging buffer, no format
 //! conversion). Presenters are *paired* with a frame type; anything beyond this contract (raw byte
-//! access for a row-hash diff, a wire pack) is the pairing's private business on the concrete type,
+//! access for a damage diff, a wire pack) is the pairing's private business on the concrete type,
 //! not a generic requirement.
 
 use core::convert::Infallible;
@@ -50,9 +50,9 @@ pub trait NativeFrame {
 
     /// The backing storage, row-major at [`STRIDE`](Self::STRIDE) cells per row.
     fn backing(&self) -> &[Self::Pixel];
-    /// Mutable backing access — the escape hatch a *board's* composition edge may need (the FLPR
-    /// backend transiently composites into the resident bytes); generic render/UI code draws
-    /// through [`draw_target`](Self::draw_target) instead.
+    /// Mutable backing access — the escape hatch a *board's* composition edge may need (a backend
+    /// whose transport scans the resident frame transiently composites into the backing); generic
+    /// render/UI code draws through [`draw_target`](Self::draw_target) instead.
     fn backing_mut(&mut self) -> &mut [Self::Pixel];
     /// A [`DrawTarget`] writing **directly into the backing** — the render path's view. Infallible:
     /// out-of-frame writes clip, they don't error.
@@ -83,9 +83,17 @@ impl<'b, const W: usize, const H: usize> Device64Frame<'b, W, H> {
         Self { buf }
     }
 
-    /// The backing as raw bytes — what a row-diff/wire-pack pairing reads (`W` bytes per row).
-    /// Same slice as [`NativeFrame::backing`]; named for call sites that want bytes, not cells.
+    /// The backing as raw bytes — what a byte-plane pairing's damage diff and wire pack read
+    /// (`W` bytes per row). Same slice as [`NativeFrame::backing`]; named for call sites that want
+    /// bytes, not cells.
     pub fn bytes(&self) -> &[u8] {
+        self.buf
+    }
+
+    /// [`bytes`](Self::bytes), mutable — the board composition edge's render entry (it wraps these
+    /// bytes in the concrete draw target) without importing the trait. Same slice as
+    /// [`NativeFrame::backing_mut`].
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
         self.buf
     }
 }

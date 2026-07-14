@@ -28,7 +28,8 @@ use obc_platform::sensor_link;
 use obc_platform::SynthLocation;
 // The map render's framebuffer adapter (the status screen builds its own inside `ble.rs`) + the
 // battery stand-in until the nPM1300 PMIC gauge is read.
-use obc_platform::{DisplayDriver, FbDevice64, StubFuelGauge, FRAME_H, FRAME_W};
+use obc_platform::ls021::{FRAME_H, FRAME_W};
+use obc_platform::{FbDevice64, StubFuelGauge};
 use obc_reader::{MapCache, MapTables, Reader};
 // The ride loop's route types: the decoded-route-geometry cache, the resident per-route chunk
 // index, and the streamed route reader the matcher + map render share.
@@ -1136,8 +1137,8 @@ pub(crate) async fn run_app(
                     // repaints normally via `notify_dfu_install_failed`.
                     app.show_dfu_installing();
                     app.set_render_clip(None);
-                    let render = |d: &mut dyn DisplayDriver| {
-                        let mut fbdev = FbDevice64::new(d.fb_mut(), FRAME_W as u32, FRAME_H as u32);
+                    let render = |f: &mut crate::ls021_flpr::Frame64| {
+                        let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                         app.render_map_timed(
                             &mut fbdev,
                             None,
@@ -1426,8 +1427,8 @@ pub(crate) async fn run_app(
                 // the row-diffed push scales down with it.
                 let clip = if needs_map { None } else { dirty.region };
                 app.set_render_clip(clip);
-                let render = |d: &mut dyn DisplayDriver| {
-                    let mut fbdev = FbDevice64::new(d.fb_mut(), FRAME_W as u32, FRAME_H as u32);
+                let render = |f: &mut crate::ls021_flpr::Frame64| {
+                    let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                     if let Some(r) = clip {
                         fbdev.set_clip(r);
                     }

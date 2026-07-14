@@ -199,8 +199,8 @@ impl Default for Args {
     fn default() -> Self {
         Args {
             map: String::new(),
-            width: obc_platform::FRAME_W as u32,
-            height: obc_platform::FRAME_H as u32,
+            width: obc_platform::ls021::FRAME_W as u32,
+            height: obc_platform::ls021::FRAME_H as u32,
             scale: 1,
             png: None,
             screenshot: None,

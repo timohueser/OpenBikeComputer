@@ -2,17 +2,16 @@
 //! implements for the [`NativeFrame`] it pairs with.
 //!
 //! A presenter owns the *transport* and its own damage bookkeeping; it never owns render or domain
-//! policy. Damage is deliberately presenter-typed ([`Presenter::Damage`]): the LS021/FLPR pairing
-//! self-diffs with a per-row hash and pushes span-masked rows, another panel may diff tiles or use
-//! a controller dirty window, and neither model leaks into the other. The neutral vocabulary every
+//! policy. Damage is deliberately presenter-typed ([`Presenter::Damage`]): one pairing self-diffs
+//! and pushes masked row spans, another may diff tiles or use a controller dirty window, and
+//! neither model leaks into the other. The neutral vocabulary every
 //! caller can speak is small and constructor-shaped — [`damage_full`](Presenter::damage_full),
 //! [`damage_unknown`](Presenter::damage_unknown), and (for overlay-capable pairings)
 //! [`damage_around`](OverlayPresenter::damage_around) a live overlay region — so generic host code
 //! never names rows, tiles, or hashes.
 //!
-//! The methods are `async` with no `Send` bound and no boxed futures (the same discipline as the
-//! existing [`DisplayDriver`](crate::display::DisplayDriver) seam): the FLPR-style backend awaits
-//! its coprocessor's frame ack while the executor runs other futures, and a host backend completes
+//! The methods are `async` with no `Send` bound and no boxed futures: a coprocessor-driven backend
+//! awaits its frame ack while the executor runs other futures, and a host backend completes
 //! synchronously under the same signature.
 
 use core::fmt::Debug;
@@ -22,8 +21,8 @@ use embedded_graphics::primitives::Rectangle;
 
 use super::frame::NativeFrame;
 
-/// What one present cost, in the presenter's own damage grain (**units** — rows for the LS021
-/// pairing, tiles for a tiled one). `pushed_units == 0` is the "spurious redraw is free" outcome;
+/// What one present cost, in the presenter's own damage grain (**units** — rows for a
+/// row-addressed pairing, tiles for a tiled one). `pushed_units == 0` is the "spurious redraw is free" outcome;
 /// `pushed_units == total_units` is a full push. `regions` counts the disjoint pushed regions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PresentStats {
@@ -60,8 +59,8 @@ pub trait Presenter<F: NativeFrame> {
     /// on glass.
     fn damage_full() -> Self::Damage;
     /// Damage meaning "the frame may have changed anywhere" — the immediate-mode redraw case. A
-    /// presenter with its own damage strategy refines this (the LS021 pairing's row-hash self-diff);
-    /// one without pushes fully. The choice is the *pairing's*, made at compile time — generic code
+    /// presenter with its own damage strategy refines this (a self-diffing pairing pushes only the
+    /// units that changed); one without pushes fully. The choice is the *pairing's*, made at compile time — generic code
     /// never falls back to a slow path silently, because there is no generic fallback.
     fn damage_unknown() -> Self::Damage;
 
@@ -77,8 +76,9 @@ pub trait Presenter<F: NativeFrame> {
 /// frame as the backdrop, hands the closure a bounded, frame-absolute draw target, and puts the
 /// composite on glass. It may stage the composite in bounded scratch or transiently in
 /// hardware/the resident frame — but the frame's backing must be **byte-identical when the call
-/// returns** (that is why the frame is borrowed `&mut`: the shipping FLPR backend composites into
-/// the resident bytes for the scan and restores them, which shared access could not express).
+/// returns** (that is why the frame is borrowed `&mut`: a backend whose transport scans the
+/// resident frame composites into those bytes and restores them, which shared access could not
+/// express).
 /// Because each composite starts from the clean frame, a shrinking bulge redraws less and the
 /// backdrop shows through — retraction needs no undo pass — and
 /// [`clear_overlay`](Self::clear_overlay) (compositing nothing) *is* the trailing clear.
@@ -90,13 +90,13 @@ pub trait Presenter<F: NativeFrame> {
 #[allow(async_fn_in_trait)]
 pub trait OverlayPresenter<F: NativeFrame>: Presenter<F> {
     /// A bounded overlay region in this presenter's grain. Constructed from a frame-space
-    /// rectangle by [`region`](Self::region); the presenter may widen it to its grain (the
-    /// row-addressed LS021 widens to full-width rows, a tiled panel to whole tiles).
+    /// rectangle by [`region`](Self::region); the presenter may widen it to its grain (a
+    /// row-addressed panel widens to full-width rows, a tiled panel to whole tiles).
     type Region: Copy;
     /// The frame-absolute draw target the composite closure paints into. Writes outside the
     /// region are clipped, exactly like off-frame writes. The target borrows call-local composite
     /// scratch, deliberately **not** the presenter (no `Self: 't` clause): that keeps
-    /// `for<'t> …OverlayTarget<'t> = Band<'t>` bounds usable without forcing `Self: 'static`.
+    /// `for<'t> …OverlayTarget<'t> = Concrete<'t>` bounds usable without forcing `Self: 'static`.
     type OverlayTarget<'t>: DrawTarget<Color = F::Color>;
 
     /// The smallest region of this presenter's grain covering `rect` (frame coordinates).
