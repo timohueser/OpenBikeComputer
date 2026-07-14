@@ -665,13 +665,12 @@ impl SavedSensor {
 pub struct Settings {
     /// Metric or imperial readouts.
     pub units: Units,
-    /// `Set from GPS`: when set, the clock is GPS-stamped and only [`utc_offset_min`] is the
-    /// user's; when clear, [`clock`] is set by hand.
-    ///
-    /// [`utc_offset_min`]: Settings::utc_offset_min
-    /// [`clock`]: Settings::clock
-    pub gps_time: bool,
-    /// The manually-set (or last GPS-stamped) local date/time.
+    /// The last time source's **UTC** set-point — the anchor a GPS fix (or, after epic #638 S2, a
+    /// BLE `setClock`) stamps. Manual editing was removed in #641: the only writers are those two
+    /// trusted sources, so this is always UTC and [`local_clock`](Settings::local_clock) always
+    /// folds in [`utc_offset_min`](Settings::utc_offset_min). Persisted so it seeds the boot display
+    /// clock — display-only until re-stamped this boot (see
+    /// [`App::clock_trusted`](crate::App::clock_trusted)).
     pub clock: DateTime,
     /// Local time's offset from UTC, in minutes (`+02:00` → `120`).
     pub utc_offset_min: i16,
@@ -746,7 +745,6 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             units: Units::Metric,
-            gps_time: false,
             clock: DateTime::default(),
             utc_offset_min: 0,
             fix_interval_s: 1,
@@ -768,17 +766,12 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The **local** wall-clock set-point the device shows: [`clock`](Settings::clock) verbatim in
-    /// manual mode, or — when GPS-stamped ([`gps_time`](Settings::gps_time)) — the UTC anchor
-    /// shifted into local time by [`utc_offset_min`](Settings::utc_offset_min) (via
-    /// calendar offset operation, so a shift across midnight rolls the date too). In manual mode the
-    /// clock is already local, so the offset is deliberately *not* applied (it would double-count).
+    /// The **local** wall-clock set-point the device shows: the UTC [`clock`](Settings::clock)
+    /// anchor shifted into local time by [`utc_offset_min`](Settings::utc_offset_min) (via a
+    /// calendar offset operation, so a shift across midnight rolls the date too). Manual editing was
+    /// removed in #641, so the anchor is always UTC and the offset always applies.
     pub fn local_clock(&self) -> DateTime {
-        if self.gps_time {
-            with_offset_bounded(self.clock, self.utc_offset_min)
-        } else {
-            self.clock
-        }
+        with_offset_bounded(self.clock, self.utc_offset_min)
     }
 
     /// Adopt the **BLE-writable** fields — `units` and `device_name` — from `other`, leaving every
@@ -858,7 +851,10 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     let mut b = [0u8; ENCODED_LEN];
     b[0] = VERSION;
     b[1] = s.units as u8;
-    b[2] = s.gps_time as u8;
+    // Byte 2 was the `gps_time` flag (removed #641). Its offset is frozen so v11 blobs keep their
+    // layout — written as a constant `0` and ignored on decode. (Repurpose it, don't reorder, if a
+    // future field wants a byte here.)
+    b[2] = 0;
     b[3..5].copy_from_slice(&s.clock.year.to_le_bytes());
     b[5] = s.clock.month;
     b[6] = s.clock.day;
@@ -920,7 +916,7 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
     }
     let mut s = Settings {
         units: if b[1] == Units::Imperial as u8 { Units::Imperial } else { Units::Metric },
-        gps_time: b[2] != 0,
+        // Byte 2 (the retired `gps_time` flag, #641) is ignored — old blobs decode cleanly.
         clock: DateTime { year: u16::from_le_bytes([b[3], b[4]]), month: b[5], day: b[6], hour: b[7], minute: b[8] },
         utc_offset_min: i16::from_le_bytes([b[9], b[10]]),
         fix_interval_s: u16::from_le_bytes([b[11], b[12]]),
@@ -1008,7 +1004,6 @@ mod tests {
         assert!(stat_fields.push(crate::stat_fields::StatField::Clock)); // …and pin the wide clock
         let s = Settings {
             units: Units::Imperial,
-            gps_time: true,
             clock: DateTime { year: 2026, month: 6, day: 29, hour: 14, minute: 40 },
             utc_offset_min: 120,
             fix_interval_s: 5,
@@ -1031,6 +1026,24 @@ mod tests {
             ],
         };
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    /// A v11 blob written by a pre-#641 firmware carried the `gps_time` flag in byte 2. That byte's
+    /// offset is now frozen and ignored, so an old blob with the flag **set** still decodes cleanly
+    /// to the same `Settings` — no field shifts, no version bump, nothing surprises a decode.
+    #[test]
+    fn old_gps_time_byte_is_ignored_on_decode() {
+        let s = Settings {
+            clock: DateTime { year: 2026, month: 7, day: 14, hour: 9, minute: 5 },
+            utc_offset_min: 60,
+            ..Settings::default()
+        };
+        // Encode (byte 2 == 0 today), then forge the retired flag on and re-CRC to mimic an old blob.
+        let mut old = encode(&s);
+        old[2] = 1;
+        let crc = crate::store_meta::crc16(&old[0..PAYLOAD_LEN]);
+        old[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode(&old), Some(s), "the retired gps_time byte doesn't affect the decoded value");
     }
 
     /// The v4 tail: the Bluetooth switch round-trips, defaults **on**, and is device-only —
@@ -1526,17 +1539,17 @@ mod tests {
         assert_eq!((sat.month, sat.day), (12, 31), "it saturates at Dec 31 rather than rolling over");
     }
 
-    /// `local_clock` applies the UTC offset **only** in GPS mode — the hand-set manual clock is
-    /// already local, so applying the offset there would double-count it.
+    /// `local_clock` always applies the UTC offset — the anchor is UTC (manual editing was removed
+    /// in #641), so local = anchor + offset, and a zero offset leaves it verbatim.
     #[test]
-    fn local_clock_applies_offset_only_in_gps_mode() {
+    fn local_clock_applies_the_utc_offset() {
         let clock = DateTime { year: 2025, month: 6, day: 29, hour: 12, minute: 0 };
-        let manual = Settings { gps_time: false, clock, utc_offset_min: 120, ..Settings::default() };
-        assert_eq!(manual.local_clock(), clock, "manual: the clock is already local, offset ignored");
-        let gps = Settings { gps_time: true, clock, utc_offset_min: 120, ..Settings::default() };
-        let local = gps.local_clock();
-        assert_eq!((local.hour, local.minute), (14, 0), "GPS: local = UTC anchor + offset");
-        assert_eq!((gps.clock.hour, gps.clock.minute), (12, 0), "the stored UTC anchor itself did not move");
+        let zero = Settings { clock, utc_offset_min: 0, ..Settings::default() };
+        assert_eq!(zero.local_clock(), clock, "a +00:00 offset leaves the UTC anchor unchanged");
+        let plus2 = Settings { clock, utc_offset_min: 120, ..Settings::default() };
+        let local = plus2.local_clock();
+        assert_eq!((local.hour, local.minute), (14, 0), "local = UTC anchor + offset");
+        assert_eq!((plus2.clock.hour, plus2.clock.minute), (12, 0), "the stored UTC anchor itself did not move");
     }
 
     /// `to_unix` against independently-computed references (`date -u +%s`), including the
