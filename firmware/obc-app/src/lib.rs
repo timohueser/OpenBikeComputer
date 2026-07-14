@@ -27,6 +27,7 @@ pub mod i18n;
 pub mod input;
 pub mod input_plane;
 pub mod nav_profiles;
+pub(crate) mod render_res;
 pub mod ride;
 pub(crate) mod ride_engine;
 pub mod route;
