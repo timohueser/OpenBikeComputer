@@ -3,7 +3,7 @@
 //! This owns the concrete SPI bus → [`SdCard`] → [`VolumeManager`] stack and reconciles the FAT
 //! filesystem to the shared app's *intent*, exactly as the simulator's `RouteStore`/`TrackStore`
 //! reconcile a folder of files on the host. The reusable, board-agnostic adapters it hands the
-//! format code live in [`obc_platform::sd`] ([`SdByteSource`]/[`SdByteSink`]/[`SdTrackSink`]);
+//! format code live in [`obc_storage::sd`] ([`SdByteSource`]/[`SdByteSink`]/[`SdTrackSink`]);
 //! everything here is nRF-specific (a dedicated SPIM + a GPIO chip-select).
 //!
 //! The `Storage` impl and every adapter below are generic over the concrete [`SdCard`] **bus type**
@@ -50,12 +50,12 @@ use obc_app::{
     STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
-use obc_platform::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
-use obc_platform::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, ByteSource, Profile, RideInfo, RideStats, RouteIndex,
     RouteObjectInfo, RouteSummary, TripMeta, TripSummary, NAME_CAP,
 };
+use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
+use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 
 /// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
 /// [`Frequency`] ladder has no 400 kHz step, so [`Frequency::K250`] is the fastest in-spec choice
@@ -2126,7 +2126,7 @@ impl Storage {
 //
 // The storage half of the app-side armer: locate + validate the staged `UPDATE.BIN` and write
 // the `ROLLBACK.BIN` snapshot, both resolved to raw block extents through the same
-// `obc_platform::fat_extents` machinery as the map (#500). The *decision logic* — the scan
+// `obc_storage::fat_extents` machinery as the map (#500). The *decision logic* — the scan
 // matrix, the arm sequencing — is pure and host-tested in `obc_dfu::armer`; these methods are
 // its thin `StageIo`/snapshot adapters over FatFs + the raw card. Everything here runs inside
 // the ride loop's drained request at shallow per-pass depth, in frames that pop on return —

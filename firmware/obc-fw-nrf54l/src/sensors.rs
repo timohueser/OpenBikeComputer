@@ -5,8 +5,8 @@
 //! All three chips sit on one **TWIM30** I²C bus on the low-power P0 domain (SDA P0.01 / SCL P0.02);
 //! the GPS **TX-Ready** line is the single interrupt (P0.03). The pure decode — UBX NAV-PVT framing,
 //! NAV-PVT → [`Fix`](obc_ports::Fix), BMP581 raw → metres, magnetometer axes → heading — lives
-//! host-tested in [`obc_platform::ubx`] / [`obc_platform::bmp581`] / [`obc_platform::compass`] /
-//! [`obc_platform::icm20948`]; this module owns only the concrete `Twim` transactions and the
+//! host-tested in [`obc_sensors::ubx`] / [`obc_sensors::bmp581`] / [`obc_sensors::compass`] /
+//! [`obc_sensors::icm20948`]; this module owns only the concrete `Twim` transactions and the
 //! [`sensor_task`] that coalesces a GPS fix + a coincident baro + magnetometer reading into one
 //! coherent datapoint and publishes it through [`obc_platform::sensor_link`].
 //!
@@ -15,8 +15,8 @@
 //! reached by putting the ICM in **I²C bypass** (its aux bus tied to the host pins), so it answers
 //! directly at `0x0C` as if it were a standalone 3-axis compass. That's deliberate: the shipping
 //! board is expected to drop the ICM for a plain magnetometer, and swapping it is then a new chip
-//! module like [`obc_platform::icm20948`] plus new transaction calls here — the heading geometry
-//! ([`obc_platform::compass`]) and the `obc-ports` `CompassSource` seam don't move.
+//! module like [`obc_sensors::icm20948`] plus new transaction calls here — the heading geometry
+//! ([`obc_sensors::compass`]) and the `obc-ports` `CompassSource` seam don't move.
 //!
 //! Unlike the altimeter (which is logged into each track point and so *must* be fix-coherent), the
 //! heading is **never stored** — it only orients a heading-up *map while the rider is stopped*. So it
@@ -39,15 +39,16 @@
 //! [`GpsPower`] request: **deep-sleep** (`RXM-PMREQ` backup, ~µA, zero bus traffic) whenever a ride
 //! isn't running, waking on a DDC poke for a fast *warm* fix when one starts; full-power fixes while
 //! riding, or the M10's on-chip **low-power** tracking when the `power_saver` toggle is on. The
-//! `RXM-PMREQ` / `CFG-PM` encodings live host-tested in [`obc_platform::ubx`].
+//! `RXM-PMREQ` / `CFG-PM` encodings live host-tested in [`obc_sensors::ubx`].
 
 use defmt::{debug, error, info, warn};
 use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_nrf::gpio::Input;
 use embassy_nrf::twim::Twim;
 use embassy_time::{Duration, Instant, Timer};
+use obc_platform::sensor_link;
 use obc_platform::sensor_link::GpsPower;
-use obc_platform::{bmp581, compass, icm20948, sensor_link, ubx};
+use obc_sensors::{bmp581, compass, icm20948, ubx};
 
 /// SAM-M10Q I²C (DDC) slave address.
 const M10_ADDR: u8 = 0x42;

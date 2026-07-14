@@ -3,7 +3,7 @@ name = "obc-platform"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "Board-agnostic no_std firmware adapters over obc-ports — written once, reused by every OBC board crate: the framebuffer DrawTargets, the banded Panel seam, FatFs ByteSource/Sink adapters, the input debouncer, the synthetic GPS, and the transport-agnostic debug protocol."
+description = "Board-agnostic no_std firmware source/handoff adapters over obc-ports — written once, reused by every OBC board crate: the button debouncer, the transport-agnostic debug-sensor protocol, the real-sensor and BLE-sensor cross-task hand-offs, and the synthetic/stub fallback sources. The display seam, sensor decoders, and SD adapters live in the sibling obc-display / obc-sensors / obc-storage crates (#807)."
 
 [features]
 # Transport-agnostic fake-sensor debug protocol (issue #38). The pure codec in `debug_link` (line
@@ -16,8 +16,8 @@ description = "Board-agnostic no_std firmware adapters over obc-ports — writte
 # turns it on in its own default features.
 debug-link = ["dep:embassy-sync"]
 
-# Real-sensor cross-task hand-off (issue #218). Like `debug-link`, the pure decode (`ubx`, `bmp581`)
-# is always compiled — board-agnostic, dependency-light — so it host-tests with default features.
+# Real-sensor cross-task hand-off (issue #218). The pure decode (`ubx`, `bmp581`, …) lives in the
+# sibling `obc-sensors` crate (#807) — board-agnostic, dependency-light, host-tested with no feature.
 # This feature adds only the embassy-sync `Signal` plumbing + the LocationSource/AltimeterSource/
 # TemperatureSource impls (`sensor_link`) that bridge the board's I²C sensor task to the app poll.
 # The board firmware turns it on in its default features; the host workspace never pulls embassy-sync.
@@ -31,11 +31,7 @@ sensor-link = ["dep:embassy-sync"]
 input-wait = ["dep:embedded-hal-async", "dep:embassy-futures"]
 
 [dependencies]
-# The `DrawTarget` / `Rgb565` the framebuffer implements — pinned to the same 0.8
-# the renderer and app use so the target type unifies across the path deps.
-embedded-graphics = "0.8"
-
-# The dependency-light semantic HAL the button debouncer and sensor/storage adapters speak.
+# The dependency-light semantic HAL the button debouncer and source/handoff adapters speak.
 # Adapters depend on the port contract directly, never upward on application/UI policy.
 obc-ports = { path = "../obc-ports" }
 
@@ -56,20 +52,10 @@ embassy-futures = { version = "0.1", optional = true }
 # Same 0.8 the rest of the OBC stack uses.
 heapless = "0.8"
 
-# `powf` for the BMP581 barometric pressure→altitude formula (issue #218): no `std` in this no_std
-# crate, so transcendental math goes through libm — the same 0.2 obc-render/obc-route already use.
-libm = { version = "0.2", default-features = false } # no arch asm — see the obc-reader edge (Miri tripwire)
-
-# The OBCR byte I/O the SD adapters implement (`ByteSource`/`ByteSink`/`Error`) plus the
-# track record codec — so `SdByteSource` drops into `RouteReader`/`RouteSummary::read` and
-# `SdTrackSink` encodes `obc_ports::TrackPoint`s exactly like the simulator's host store.
+# `cos_lat` for the synthetic GPS's east-west µdeg/metre scaling (the `debug-link`-off fallback walk).
+# The SD/track adapters that used the rest of obc-route moved to obc-storage (#807); `synth` keeps
+# this single geo-helper edge — platform → core, the allowed direction.
 obc-route = { path = "../obc-route" }
-
-# The FatFs/SD-card stack the adapters wrap. The adapters are generic over its
-# `BlockDevice` + `TimeSource`, so they carry no board/bus types — a board crate picks the
-# concrete `SdCard<SpiDevice, _>`. `default-features = false` drops the `log` facade (the
-# board logs over defmt/RTT itself); the adapters add no logging of their own.
-embedded-sdmmc = { version = "0.9", default-features = false }
 
 # `Signal` for the `debug-link` fresh-fix hand-off (transport task → app poll). Pinned to the 0.8 the
 # nRF board crate already resolves so the board build shares one embassy-sync. Optional — only
@@ -95,11 +81,3 @@ critical-section = { version = "1.1", features = ["std"] }
 # registers `driver_std` on the host. Dev-only, so the MCU lib build never pulls it — there the
 # board's embassy-nrf driver is the one linked.
 embassy-time = { version = "0.5.1", features = ["std"] }
-
-# The reader's RGB565→device-64 quantizer, so the framebuffer test can pin the panel-plane pack
-# against it exhaustively (the two implement the same quantization and must never drift).
-obc-reader = { path = "../obc-reader" }
-
-# Drives the async display-contract presents in host tests (they complete synchronously on the
-# host) — the same minimal block_on the simulator already uses, so no new lockfile entry.
-pollster = "0.3"

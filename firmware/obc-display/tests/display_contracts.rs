@@ -24,12 +24,12 @@ use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
-use obc_platform::display_contracts::conformance::{self, GlassProbe};
-use obc_platform::display_contracts::{Device64Frame, NativeFrame, OverlayPresenter, PresentStats, Presenter};
-use obc_platform::ls021::{
+use obc_display::display_contracts::conformance::{self, GlassProbe};
+use obc_display::display_contracts::{Device64Frame, NativeFrame, OverlayPresenter, PresentStats, Presenter};
+use obc_display::ls021::{
     composite_into_resident, spans_missed_changes, OverlayScratch, RowDamage, RowDiff, RowWindow,
 };
-use obc_platform::{device64_to_rgb565, Band};
+use obc_display::{device64_to_rgb565, Band};
 use obc_reader::rgb565_to_device64;
 use pollster::block_on;
 

@@ -1,0 +1,26 @@
+[package]
+name = "obc-storage"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
+description = "Board-agnostic no_std storage adapters from an embedded-sdmmc SD card to the OBC format/port seams: FatFs ByteSource/ByteSink/TrackSink adapters (map/route/track on SD) and the FAT-extent fast path that resolves the map file's chain once into direct-block reads (#500). Generic over BlockDevice/TimeSource — no board bus types, no renderer/UI."
+
+[dependencies]
+# The OBCR byte I/O the adapters implement (`ByteSource`/`ByteSink`/`Error`) plus the track record
+# codec — so `SdByteSource` drops into `RouteReader`/`RouteSummary::read` and `SdTrackSink` encodes
+# `obc_ports::TrackPoint`s exactly like the simulator's host store.
+obc-route = { path = "../obc-route" }
+
+# The `TrackSink`/`TrackPoint`/`TrackError` semantic seam the track adapter fulfils — the foundation
+# port contract, never an upward renderer/UI dependency.
+obc-ports = { path = "../obc-ports" }
+
+# The FatFs/SD-card stack the adapters wrap. The adapters are generic over its `BlockDevice` +
+# `TimeSource`, so they carry no board/bus types — a board crate picks the concrete
+# `SdCard<SpiDevice, _>`. `default-features = false` drops the `log` facade (the board logs over
+# defmt/RTT itself); the adapters add no logging of their own.
+embedded-sdmmc = { version = "0.9", default-features = false }
+
+# The bounded `Vec<Run, MAX_EXTENTS>` the FAT-extent table stores the resolved map chain in.
+# Same 0.8 the rest of the OBC stack uses.
+heapless = "0.8"

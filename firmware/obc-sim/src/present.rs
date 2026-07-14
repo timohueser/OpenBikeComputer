@@ -1,22 +1,22 @@
 //! The simulator's **display presenter** — the host stand-in for the device's LS021/FLPR panel, and
 //! the second live backend of the generic display contracts
-//! ([`Presenter`]/[`OverlayPresenter`] in `obc_platform::display_contracts`).
+//! ([`Presenter`]/[`OverlayPresenter`] in `obc_display::display_contracts`).
 //!
 //! Like the device, the simulator keeps one resident **RGB222 / device-64** frame (one byte per
 //! pixel, `0b00_RR_GG_BB`) that the shared renderer draws the whole frame into — owned by the host
 //! *next to* this presenter, per the contracts' borrow model. [`Present::present_now`] then pushes
-//! it, driving the *same* self-diffing [`diff_rows`](obc_platform::ls021::diff_rows) core the
+//! it, driving the *same* self-diffing [`diff_rows`](obc_display::ls021::diff_rows) core the
 //! device does — re-pushing only the rows whose per-row hash changed, honouring a live overlay's
-//! exclude span with the *same* [`clip_span`](obc_platform::ls021::clip_span) — and
+//! exclude span with the *same* [`clip_span`](obc_display::ls021::clip_span) — and
 //! [`Present::present_overlay_now`] composites through the *same*
-//! [`composite_overlay_window`](obc_platform::composite_overlay_window) helper. The only
+//! [`composite_overlay_window`](obc_display::composite_overlay_window) helper. The only
 //! host-specific step is expanding the pushed device-64 rows to the RGB888 texture egui uploads
-//! (via [`device64_to_rgb565`](obc_platform::device64_to_rgb565) → RGB888 — exactly the ramp the
+//! (via [`device64_to_rgb565`](obc_display::device64_to_rgb565) → RGB888 — exactly the ramp the
 //! panel shows).
 //!
 //! On top of the device's path it does what the device can't afford: it keeps a full copy of the
 //! last-presented frame, independently computes which rows *actually* changed, and asserts the
-//! hash-diff's spans covered every one ([`spans_missed_changes`](obc_platform::ls021::spans_missed_changes))
+//! hash-diff's spans covered every one ([`spans_missed_changes`](obc_display::ls021::spans_missed_changes))
 //! — the exact-diff **oracle** that catches any *systematic* diff bug in CI (a real FNV-1a collision
 //! is ~2⁻³² per row-change and self-healing). Because the uploaded texture is reconstructed from the
 //! partial pushes (mutated **only on changed spans**), a diff bug also surfaces as a stale row on
@@ -40,9 +40,9 @@
 
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
-use obc_platform::display_contracts::{Device64Frame, OverlayPresenter, Presenter};
-use obc_platform::ls021::{clip_span, diff_rows, row_hash, spans_missed_changes, RowDamage, RowWindow};
-use obc_platform::{composite_overlay_window, device64_to_rgb565, Band};
+use obc_display::display_contracts::{Device64Frame, OverlayPresenter, Presenter};
+use obc_display::ls021::{clip_span, diff_rows, row_hash, spans_missed_changes, RowDamage, RowWindow};
+use obc_display::{composite_overlay_window, device64_to_rgb565, Band};
 use obc_reader::rgb565_to_rgb888;
 
 /// Last present's push metric, surfaced in the render-stats panel.
@@ -293,7 +293,7 @@ impl<'b, const W: usize, const H: usize> Presenter<Device64Frame<'b, W, H>> for 
         &mut self,
         frame: &Device64Frame<'b, W, H>,
         damage: RowDamage,
-    ) -> Result<obc_platform::display_contracts::PresentStats, Self::Error> {
+    ) -> Result<obc_display::display_contracts::PresentStats, Self::Error> {
         debug_assert!(W == self.width && H == self.rows, "frame type geometry != presenter geometry");
         let exclude = match damage {
             RowDamage::Full => {
@@ -304,7 +304,7 @@ impl<'b, const W: usize, const H: usize> Presenter<Device64Frame<'b, W, H>> for 
             RowDamage::SelfDiff { exclude } => exclude,
         };
         self.present_now(frame.bytes(), exclude);
-        Ok(obc_platform::display_contracts::PresentStats {
+        Ok(obc_display::display_contracts::PresentStats {
             pushed_units: self.stats.pushed_rows as u32,
             total_units: self.stats.total_rows as u32,
             regions: self.stats.spans as u32,
@@ -329,7 +329,7 @@ impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H
         frame: &mut Device64Frame<'b, W, H>,
         region: RowWindow,
         draw: impl for<'t> FnOnce(&mut Band<'t>),
-    ) -> Result<obc_platform::display_contracts::PresentStats, Self::Error> {
+    ) -> Result<obc_display::display_contracts::PresentStats, Self::Error> {
         debug_assert!(W == self.width && H == self.rows, "frame type geometry != presenter geometry");
         let mut draw = Some(draw);
         self.present_overlay_now(frame.bytes(), region, &mut |band| {
@@ -337,7 +337,7 @@ impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H
                 d(band)
             }
         });
-        Ok(obc_platform::display_contracts::PresentStats {
+        Ok(obc_display::display_contracts::PresentStats {
             pushed_units: region.rows as u32,
             total_units: self.rows as u32,
             regions: 1,
@@ -349,9 +349,9 @@ impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H
 mod tests {
     use embedded_graphics::pixelcolor::raw::RawU16;
     use embedded_graphics::pixelcolor::Rgb565;
-    use obc_platform::display_contracts::conformance::{self, GlassProbe};
-    use obc_platform::ls021::{FRAME_H, FRAME_W};
-    use obc_platform::FbDevice64;
+    use obc_display::display_contracts::conformance::{self, GlassProbe};
+    use obc_display::ls021::{FRAME_H, FRAME_W};
+    use obc_display::FbDevice64;
     use pollster::block_on;
 
     use super::*;
