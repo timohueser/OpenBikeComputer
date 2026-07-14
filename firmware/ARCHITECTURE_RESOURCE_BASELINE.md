@@ -149,6 +149,37 @@ was bumped 212,768 → 212,788 B** (the 212,784 B measurement plus the repo's 4 
 floating-toolchain headroom). The owner accepted the growth (2026-07-14: a
 handful of bytes is fine, only hundreds would matter).
 
+FAR-19 closeout (#812, the final audit — removing the format/codec/hours/POI
+compatibility aliases, privatizing the `Activity` staging fields behind an
+in-crate test harness, deleting the dead `take_update_confirmed` accessor, and
+the CRC/unsafe/panic/host-mutation audits) is **resident-RAM-neutral: +0 B on
+both profiles**. It repoints imports to `obc-formats`, changes field visibility,
+and deletes re-exports — it introduces, moves, and removes no runtime data. The
+board ELFs are `.bss`/`.data` byte-identical to the merge-base develop
+(`5eccd2ee`, which already carries FAR-19 parts 1–2), both built on pinned rustc
+1.96.0: default `.bss 200,800 + .data 72 = 200,872 B`, BLE `.bss 208,280 +
+.data 4,504 = 212,784 B`; poll frames (52 B / 6,240 B) and the allocation report
+are unchanged. Render hashes are unchanged (bench 7/7) and the nine-run host
+timing medians are within the reference host's recorded noise. No ceiling moved:
+the default `resident_ram_max` stays 200,868 B and BLE stays the FAR-19 part-2
+212,788 B. (Note the local-vs-CI trap: on this rustc 1.96.0 host **develop
+itself** links 200,872 B default — above the 200,868 B ceiling that was
+re-baselined from the 1.97.0 floating-stable CI ELF — so the local overage is a
+toolchain artifact shared by develop, not drift introduced here; the CI contract
+is the authority and this closeout's delta against it is zero.) Flash grew a
+small amount from making `obc-formats` a direct `obc-app`/board dependency (the
+"consumers import the authority directly" outcome): default +1,720 B, BLE
++1,592 B against develop on 1.96.0 — untracked headroom on the 512 KB-flash
+target, no gated budget affected.
+
+The final production dependency graph has **66 local edges, zero exceptions**,
+all pointing downward (`python3 tools/check_dependencies.py`). Against the
+FAR-00 baseline's 64, the epic's net change is: #807/#857 severed
+`obc-storage → obc-route` and added `obc-storage → obc-formats` +
+`obc-formats → obc-ports`; #812 added the two direct `obc-app → obc-formats` and
+`obc-fw-nrf54l → obc-formats` import edges that replace the deleted reader/route
+compatibility re-exports. No upward edge exists; CI rejects every removed one.
+
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B
 after default `.bss + .data + .uninit` and 40,160 B after BLE. Those residuals
