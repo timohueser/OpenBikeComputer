@@ -1453,14 +1453,20 @@ impl App {
     /// path (only when the minute-resolution anchor actually moves, so a per-fix GPS stamp writes
     /// RRAM at most once a minute, not every second); and records the trust `source`.
     pub fn stamp_clock(&mut self, utc: DateTime, second: u8, source: ClockTrust) {
-        // The save path is change-detected (`Settings` is `Copy + Eq`): only re-arm a persist when
-        // the stored anchor actually changes. `clock` is minute-resolution, so a stamp every fix
-        // dirties the store at most once per displayed minute.
-        let anchor_changed = self.settings.clock != utc;
+        // Persist the set-point only when it's worth an RRAM write. The persisted `clock` exists
+        // solely to seed the *boot* display clock — which is untrusted until the next boot's first
+        // stamp re-establishes it within seconds — so a mid-ride re-stamp buys only display-only,
+        // untrusted precision nobody sees, at the cost of a store write (+ #810 revision bump) on
+        // every displayed-minute roll for a whole ride. So arm a save only on the untrusted→trusted
+        // transition (the first trusted stamp of the boot) or when the persisted UTC offset actually
+        // moves (GPS carries none, but S2's BLE `setClock` does — keep the guard general). Either
+        // way the live `WallClock` re-stamps below on *every* fix, so the displayed time stays exact.
+        let first_trusted_this_boot = self.clock_trust == ClockTrust::Untrusted;
+        let offset_before = self.settings.utc_offset_min;
         self.settings.clock = utc;
         let epoch = self.ui.now_ms.wrapping_sub(second as u32 * 1000);
         self.wall_clock.set(self.settings.local_clock(), epoch);
-        if anchor_changed {
+        if first_trusted_this_boot || self.settings.utc_offset_min != offset_before {
             self.host.note_settings_edited();
         }
         self.clock_trust = source;
@@ -2324,19 +2330,28 @@ mod tests {
         assert!(settings_dirty(&mut app), "the moved anchor persists via the settings-save path");
     }
 
-    /// The persist is coalesced to the minute-resolution anchor: a second GPS stamp inside the same
-    /// displayed minute doesn't re-arm the save (no per-fix RRAM thrash), but still keeps trust.
+    /// Only the **first trusted stamp of the boot** persists — the boot seed is display-only,
+    /// untrusted until re-established next boot, so mid-ride freshness buys nothing. Later same-boot
+    /// GPS stamps re-stamp the live clock every fix but never re-arm a save, including a stamp in a
+    /// *new* displayed minute (no ride-long RRAM/revision thrash).
     #[test]
-    fn gps_restamp_within_the_minute_does_not_re_persist() {
+    fn only_the_first_trusted_stamp_of_the_boot_persists() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.set_settings(Settings::default());
         tick_clock(&mut app, gps_time(14, 37, 10), 1000);
-        assert!(settings_dirty(&mut app), "the first stamp moved the anchor → one save");
-        // A later fix in the same minute (different seconds only) leaves the minute-resolution anchor
-        // unchanged, so no new save is armed.
+        assert!(app.clock_trusted(), "the first stamp establishes trust");
+        assert!(settings_dirty(&mut app), "the first trusted stamp of the boot persists once");
+        // A later fix in the same displayed minute — no re-persist.
         tick_clock(&mut app, gps_time(14, 37, 42), 5000);
-        assert!(!settings_dirty(&mut app), "same displayed minute → the anchor didn't move → no re-save");
-        assert!(app.clock_trusted(), "trust holds across the re-stamp");
+        assert!(!settings_dirty(&mut app), "same-minute re-stamp doesn't re-arm a save");
+        // A fix in a NEW displayed minute (the anchor moved) — still no re-persist, already trusted.
+        tick_clock(&mut app, gps_time(14, 38, 3), 65_000);
+        assert!(!settings_dirty(&mut app), "a new-minute re-stamp still doesn't re-persist once trusted");
+        assert_eq!(
+            (app.wall_clock_now().hour, app.wall_clock_now().minute),
+            (14, 38),
+            "but the live wall clock still re-stamps every fix",
+        );
     }
 
     /// The seconds-into-the-minute back-date makes the displayed minute roll over at the true
