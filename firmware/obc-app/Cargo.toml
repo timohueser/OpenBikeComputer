@@ -16,6 +16,9 @@ nrf-mem = ["obc-render/nrf-mem", "obc-reader/nrf-mem", "obc-route/nrf-mem"]
 # Dependency-light semantic hardware/host ports. obc-app re-exports these names during the staged
 # migration so existing board and simulator imports remain source-compatible.
 obc-ports = { path = "../obc-ports" }
+# The persistent-format authority: OBCM/ride format constants, the POI category/subtype table, and
+# its lookups (`poi_label_of` / `poi_category_of`). no_std foundation crate — a downward edge.
+obc-formats = { path = "../obc-formats" }
 # default-features = false keeps `std` OUT of the shared app layer, so this crate
 # (and everything it pulls) compiles for the nRF54L's bare-metal target. The host
 # simulator re-enables std on `obc-reader` through its own dependency edge. `render`

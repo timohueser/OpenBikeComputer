@@ -15,7 +15,8 @@
 
 use heapless::String;
 
-use obc_route::{RideInfo, NAME_CAP};
+use obc_formats::obcr::NAME_CAP;
+use obc_route::RideInfo;
 
 /// Maximum rides the **store** tracks — the synced-set sidecar's id capacity and the BLE
 /// `rideList`'s sizing peer (the board's wire cap is its own 128). Storage-side only: the resident

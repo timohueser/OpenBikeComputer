@@ -357,7 +357,7 @@ fn truncated_style_table_parses_only_present_records() {
     // style_offset is fixed at HEADER_LEN (40) by the builder; the count byte is the first byte
     // of the style table.
     let style_off = u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize;
-    assert_eq!(style_off, obc_reader::HEADER_LEN);
+    assert_eq!(style_off, obc_formats::obcm::HEADER_LEN);
     let mut forged = bytes.clone();
     forged[style_off] = 8; // claim 8 styles; only 2 records (16 bytes) follow before the LOD table
 

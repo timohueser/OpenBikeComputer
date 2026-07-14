@@ -36,11 +36,9 @@ use obc_formats::obcm::{
     CHUNK_END, FEATURE_HEADER_LEN, MAGIC, NAV_DIR_LEN, POI_CAT_ENTRY_LEN, POI_HOURS_REF_NONE, POI_RECORD_LEN,
     STYLE_RECORD_LEN, VERSION,
 };
-// Compatibility exports for existing `obc_reader::reader::*` and crate-root paths. Remove in the
-// #812 final audit once downstream crates import the authority directly.
-pub use obc_formats::obcm::{
+use obc_formats::obcm::{
     HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN,
-    NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN as POI_NAME_MAX,
+    NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN,
 };
 
 /// Upper bound on the vertices of a single decoded feature — the capacity a caller
@@ -606,15 +604,15 @@ impl Default for NavTileCache {
 /// A single POI result from [`Reader::nearest_pois`]. Coordinates are absolute microdegrees (§7.3);
 /// `distance_m` is the ground distance from the query position, computed during the scan. `name` is
 /// empty for an unnamed POI — the app then shows the subtype's fallback label
-/// ([`label_of`](crate::label_of)).
+/// ([`poi_label_of`](obc_formats::obcm::poi_label_of)).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Poi {
     pub lat: i32,
     pub lon: i32,
     /// Canonical subtype id (§7.4), always in `1..=18` for a returned POI.
     pub subtype: u8,
-    /// Stored name (≤ [`POI_NAME_MAX`] bytes); empty ⇒ unnamed.
-    pub name: heapless::String<POI_NAME_MAX>,
+    /// Stored name (≤ [`POI_NAME_LEN`] bytes); empty ⇒ unnamed.
+    pub name: heapless::String<POI_NAME_LEN>,
     /// 0-based index into the hours pool (§7.5), decoded from record bytes `[34..36]`; `0xFFFF` = no
     /// hours. Carried into the detail screen (#444) so it can resolve the schedule via
     /// [`Reader::poi_hours`] without re-running the query.
@@ -1132,7 +1130,7 @@ impl<'a> Reader<'a> {
                     return Ok(()); // end-of-records sentinel — nothing valid follows in this chunk
                 }
                 // Skip an out-of-range subtype (0, or past the table) cleanly — never panic/UB.
-                if crate::poi_table::subtype_row(subtype).is_none() {
+                if obc_formats::obcm::poi_subtype_row(subtype).is_none() {
                     continue;
                 }
                 let lat = rd_i32(win, off);
@@ -1721,14 +1719,14 @@ fn consider_poi(out: &mut Vec<Poi, MAX_POI_RESULTS>, cand: PoiCand, buf: &[u8], 
 /// pre-folded printable ASCII, but this stays defensive — `name_len` is clamped to what the field
 /// and the buffer hold, and any non-printable byte (a corrupt record) is dropped — so a bad chunk
 /// yields a short/empty name, never a panic or garbage glyph.
-fn decode_poi_name(buf: &[u8], off: usize) -> heapless::String<POI_NAME_MAX> {
+fn decode_poi_name(buf: &[u8], off: usize) -> heapless::String<POI_NAME_LEN> {
     let mut name = heapless::String::new();
     let name_off = off + 10;
     // Clamp to the 24-byte field and to the bytes actually present in the buffer.
-    let len = (buf[off + 9] as usize).min(POI_NAME_MAX).min(buf.len().saturating_sub(name_off));
+    let len = (buf[off + 9] as usize).min(POI_NAME_LEN).min(buf.len().saturating_sub(name_off));
     for &b in &buf[name_off..name_off + len] {
         // Printable ASCII only (the device font's range); drop anything else rather than trust a
-        // corrupt byte. `push` can't fail — `len <= POI_NAME_MAX` == the String capacity.
+        // corrupt byte. `push` can't fail — `len <= POI_NAME_LEN` == the String capacity.
         if (0x20..=0x7E).contains(&b) {
             let _ = name.push(b as char);
         }

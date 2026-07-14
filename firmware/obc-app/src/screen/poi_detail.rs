@@ -25,7 +25,8 @@
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
-use obc_reader::{label_of, weekday_from_ymd, Interval, Poi, WeeklySchedule};
+use obc_formats::obcm::poi_label_of;
+use obc_reader::{weekday_from_ymd, Interval, Poi, WeeklySchedule};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -74,14 +75,14 @@ impl PoiDetailScreen {
             // the same fallback the list row shows, so the catalog entry reads like the row did.
             Gesture::Press => {
                 let name = if self.poi.name.is_empty() {
-                    label_of(self.poi.subtype).unwrap_or("POI")
+                    poi_label_of(self.poi.subtype).unwrap_or("POI")
                 } else {
                     self.poi.name.as_str()
                 };
                 Transition::Push(Screen::NavConfirm(super::NavConfirmScreen::new(
                     (self.poi.lon, self.poi.lat),
                     name,
-                    obc_reader::category_of(self.poi.subtype),
+                    obc_formats::obcm::poi_category_of(self.poi.subtype),
                 )))
             }
             Gesture::Back => Transition::Pop, // return to the POI list
@@ -112,7 +113,7 @@ impl PoiDetailScreen {
 
         // The subtype fallback label ("Supermarket", "Pharmacy", …) — the subtitle, and the whole
         // name line when the POI is unnamed.
-        let label = label_of(self.poi.subtype).unwrap_or("POI");
+        let label = poi_label_of(self.poi.subtype).unwrap_or("POI");
         let named = !self.poi.name.is_empty();
         let name = if named { self.poi.name.as_str() } else { label };
 
@@ -124,7 +125,7 @@ impl PoiDetailScreen {
         let x = 16;
         let name_top = LIST_TOP + 4;
         let mut name_x = x;
-        if let Some(cat) = obc_reader::category_of(self.poi.subtype) {
+        if let Some(cat) = obc_formats::obcm::poi_category_of(self.poi.subtype) {
             let icon_c = Point::new(x + 11, name_top + Font::Body.cap_height() as i32 / 2);
             super::poi_menu::draw_category_icon(cv, cat, icon_c, INK, PARCHMENT);
             name_x = x + 22 + 8;
@@ -319,7 +320,7 @@ fn fit_chars(s: &str, max: usize) -> heapless::String<24> {
 mod tests {
     use super::*;
     use crate::settings::DateTime;
-    use obc_reader::POI_HOURS_BLOB_LEN;
+    use obc_formats::obcm::POI_HOURS_BLOB_LEN;
 
     /// A 29-byte pool blob from `flags` + per-day `(open_q, close_q)` slot pairs (Mon..Sun) — the
     /// same shape the reader/packer hours tests build.
