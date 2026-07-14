@@ -539,8 +539,9 @@ async fn spawn_ble_stack(
     cracen_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::CRACEN>,
     shared: &'static SharedStoreMutex,
     store_epoch: Option<u32>,
+    sensor_injector: obc_platform::sensor_hub::SampleInjector<'static>,
 ) {
-    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, shared, store_epoch)));
+    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, shared, store_epoch, sensor_injector)));
 }
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
@@ -665,16 +666,21 @@ mod stackmeter {
 
 /// VCOM RX → sensor signals: read bytes from the interrupt-fed ring and feed each complete
 /// `F`/`A`/`C`/`K`/`Z` line into `obc-platform`'s fresh-fix signals, which the app's
-/// `DebugLocation`/`DebugAltimeter`/`DebugCompass`/`DebugInput` poll. A UART never "disconnects", so
+/// `DebugLocation`/`DebugAltimeter`/`DebugCompass`/`DebugInput` poll. Injected HR/power/cadence
+/// (`H`/`P`/`R`) route through the hub's [`SampleInjector`](obc_platform::sensor_hub::SampleInjector)
+/// — the *same* mailboxes the BLE manager feeds (last-writer-wins). A UART never "disconnects", so
 /// one `LineReader` lives for the whole session.
 #[cfg(feature = "debug-uart")]
 #[embassy_executor::task]
-async fn vcom_rx_task(mut rx: BufferedUarteRx<'static, peripherals::SERIAL20>) {
+async fn vcom_rx_task(
+    mut rx: BufferedUarteRx<'static, peripherals::SERIAL20>,
+    injector: obc_platform::sensor_hub::SampleInjector<'static>,
+) {
     let mut buf = [0u8; 64];
     let mut reader = obc_platform::debug_link::LineReader::new();
     loop {
         match rx.read(&mut buf).await {
-            Ok(n) => obc_platform::debug_link::feed_bytes(&mut reader, &buf[..n]),
+            Ok(n) => obc_platform::debug_link::feed_bytes(&mut reader, &buf[..n], injector),
             Err(e) => defmt::warn!("VCOM RX error: {}", defmt::Debug2Format(&e)),
         }
     }
@@ -715,6 +721,16 @@ async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
         }
     }
 }
+
+/// The board's one instance-owned sensor hand-off (#808): every cross-task sensor stream owned by a
+/// single [`SensorHub`](obc_platform::SensorHub) placed in static storage here, split into typed
+/// producer/consumer/control handles wired to the sensor task, the ride loop, the BLE central
+/// manager, and the debug-uart injection path at composition (below) — the successor to the former
+/// process-global `sensor_link`/`sensor_values` mailboxes. `const`-constructed, so its `.bss`
+/// footprint is exactly the scattered statics it replaces. Absent on the pure `synth` build (which
+/// drives `SynthLocation` and reads no hub stream).
+#[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))]
+static SENSOR_HUB: obc_platform::SensorHub = obc_platform::SensorHub::new();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -810,7 +826,7 @@ async fn main(_spawner: Spawner) {
                 tx_buf,
             );
             let (rx, tx) = uart.split();
-            _spawner.spawn(defmt::unwrap!(vcom_rx_task(rx)));
+            _spawner.spawn(defmt::unwrap!(vcom_rx_task(rx, SENSOR_HUB.injector())));
             _spawner.spawn(defmt::unwrap!(vcom_tx_task(tx)));
             info!("VCOM debug sensors up on UARTE20 (J-Link VCOM, TX P1_04 / RX P1_05) @ 115200");
         }
@@ -832,9 +848,9 @@ async fn main(_spawner: Spawner) {
         // --- Real GPS + altimeter on the shared TWIM30 I²C bus. Default build only (neither `synth` nor
         // `debug-uart`). Build the bus + the TX-Ready interrupt line on the free P0 pins and spawn the
         // event-driven sensor task on the thread-mode executor; it probes both chips, configures the M10,
-        // and publishes coherent (fix, altitude, temperature) datapoints through
-        // `obc_platform::sensor_link`, which `run_app`'s `GpsLocation`/`BaroAltimeter`/`SensorTemp`
-        // sources drain. The task is fully async (TWIM is DMA-backed). SERIAL30's ISR runs at P3. ---
+        // and publishes coherent (fix, altitude, temperature) datapoints through its
+        // `SensorTaskLink` into `SENSOR_HUB`, which `run_app`'s consumer sources drain. The task is
+        // fully async (TWIM is DMA-backed). SERIAL30's ISR runs at P3. ---
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         {
             // EasyDMA can't fetch a write buffer from flash, so byte-literal register writes need a RAM
@@ -852,7 +868,7 @@ async fn main(_spawner: Spawner) {
             // TX-Ready (DDC data-ready) on the lone spare GPIO. Active-high, so pull down: a floating
             // / unconfigured line then reads low and the task's poll fallback drives fixes instead.
             let txready = Input::new(p.P0_03, Pull::Down);
-            _spawner.spawn(defmt::unwrap!(sensors::sensor_task(twim, txready)));
+            _spawner.spawn(defmt::unwrap!(sensors::sensor_task(twim, txready, SENSOR_HUB.task_link())));
             info!("sensors: SAM-M10Q + BMP581 task spawned on TWIM30 (SDA P0.01 / SCL P0.02, TX-Ready P0.03)");
         }
 
@@ -1330,7 +1346,8 @@ async fn main(_spawner: Spawner) {
                 sdc_p,
                 cracen_p,
                 shared_store,
-                _store_epoch
+                _store_epoch,
+                SENSOR_HUB.injector()
             )));
         }
 
@@ -1340,8 +1357,22 @@ async fn main(_spawner: Spawner) {
         // only on the `synth` build (the host feed + the real GPS stream absolute positions, so they need
         // no synthetic-loop centre).
         #[cfg(any(feature = "debug-uart", not(feature = "synth")))]
-        let app_fut =
-            ride::run_app(display, app, shared_store, map_tables, map_cache, route_cache, nav, &mut led, wdt_handle);
+        let app_fut = ride::run_app(
+            display,
+            app,
+            shared_store,
+            map_tables,
+            map_cache,
+            route_cache,
+            nav,
+            &mut led,
+            wdt_handle,
+            // The hub's consumer (every non-`synth` build) + control (real-sensor only) handles —
+            // ownership visible right here at composition (#808), not reached through a global.
+            SENSOR_HUB.consumer(),
+            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+            SENSOR_HUB.control(),
+        );
         #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
         let app_fut = ride::run_app(
             display,

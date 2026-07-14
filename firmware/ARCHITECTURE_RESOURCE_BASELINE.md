@@ -101,6 +101,30 @@ exactly at 212,768 B resident with the same 6,240 B poll frame on that CI run;
 its flash decreased to 1,034,048 B and its exact allocation report still
 matched, so its ceiling did not change.
 
+FAR-15 (#808, the instance-owned `SensorHub` replacing the process-global
+sensor mailboxes) grew resident RAM by a measured **+68 B default / +88 B
+BLE** against its merge-base develop, both sides built on pinned rustc
+1.96.0: default 200,780 → 200,848 B (`.bss` 200,776 B + `.data` 72 B), BLE
+212,672 → 212,760 B (`.bss` 208,256 B + `.data` 4,504 B). Per-symbol: the
+new 156 B `SENSOR_HUB` static replaces ~156 B of deleted per-stream signal
+statics (net ≈ 0), and the real growth is the handles threaded into task
+futures instead of tasks reaching globals — `__embassy_main`'s pool +16 B
+on both profiles (the ride loop's consumer/control handles plus its
+select-arm event-wait), `sensor_task`'s pool +8 B (its link argument), and
+on BLE `ble::run`'s pool +32 B (the `SampleInjector` held across the awaits
+of each nesting level, run → sensors::run → run_link → serve_link) — plus
+~30 B of linker global-merge/alignment reshuffle from swapping twelve small
+statics for one large one. Two accidental costs were offset in review: the
+ride loop had parked one hub pointer per stateless `*Source` in the main
+future for the loop's lifetime (now call-expression temporaries at the
+synchronous `app.tick` sites, −24/−32 B), and the fix mailbox's
+niche-encoded `State::None` tag had dragged the whole 156 B hub static into
+`.data` (now stored niche-free, keeping the hub all-zero `.bss`; `.data`
+lands below its develop size on both profiles). The remaining growth is
+inherent to instance ownership and was accepted by the owner (2026-07-14:
+a handful of bytes is fine, only hundreds would matter); it fits under the
+existing ceilings above, which are unchanged.
+
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B
 after default `.bss + .data + .uninit` and 40,160 B after BLE. Those residuals
