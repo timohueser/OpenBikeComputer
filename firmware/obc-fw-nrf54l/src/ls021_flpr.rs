@@ -1,7 +1,7 @@
 //! **The LS021B7DD02 FLPR display backend, driving the real app's map/ride render.**
 //!
 //! `main.rs` runs the real [`obc_app::App`](obc_app) on the reflective LS021 panel through the
-//! generic display contracts (`obc_platform::display_contracts`): the board's composition edge
+//! generic display contracts (`obc_display::display_contracts`): the board's composition edge
 //! pairs [`Frame64`] (the resident device-64 [`Device64Frame`]) with this crate's [`Ls021Flpr`]
 //! presenter — no panel-specific code in the map plane's callers. The simulator presenter is the
 //! contracts' other live backend.
@@ -36,7 +36,7 @@
 //!
 //! The app still **renders** the whole frame into the resident RGB222 plane each redraw — the screens
 //! are immediate-mode, they `clear()` and redraw (the map path writes device-64
-//! ([`FbDevice64`](obc_platform::FbDevice64)) straight into [`Frame64`]'s bytes). What the
+//! ([`FbDevice64`](obc_display::FbDevice64)) straight into [`Frame64`]'s bytes). What the
 //! self-diffing **present** then changes is the *push*: a single `CMD_RUN_FRAME` masked to the changed
 //! rows, the FLPR fast-forwarding its gate scan over the unchanged ones and early-stopping after the
 //! last. Render CPU is unchanged (a full draw), but the push — the dominant ~44 ms cost (#348; ~97 ms before its timing pass) — scales to
@@ -51,7 +51,7 @@
 //! owns it for the duration of a push anyway (it presents, then renders — never both at once). So
 //! the M33's only per-frame work is publishing `fb_addr` + the span list and ringing the doorbell —
 //! the pack (~20 RISC-V integer ops/word, ported from the host-tested
-//! [`ls021::wire`](obc_platform::ls021::wire)) rides inside the panel's mandatory data-setup windows
+//! [`ls021::wire`](obc_display::ls021::wire)) rides inside the panel's mandatory data-setup windows
 //! on the FLPR, where the old blob just busy-spun.
 //!
 //! ## Async push — the M33 is freed for the whole frame
@@ -83,15 +83,15 @@ use embassy_time::{with_deadline, Duration, Instant, Timer};
 // The panel width the wire pack is defined over — the C blob's pack is the line-for-line port of
 // `ls021_wire::pack_pair`/`pack_row` (the host-tested normative reference), so the seam geometry is
 // pinned to it below.
-use obc_platform::ls021::wire::WIDTH;
+use obc_display::ls021::wire::WIDTH;
 // The generic display contracts this backend pairs `Frame64` with, and the LS021 pairing's shared
 // substance: `RowDiff` (the self-diffing present store — a per-row hash of the last-pushed frame so
 // a present pushes only the rows that actually changed), the `RowDamage`/`RowWindow` vocabulary,
 // and `composite_into_resident` (the shared save→composite→push→restore overlay engine — the FLPR
 // scans the resident frame directly, so the composited window must transiently live in it).
-use obc_platform::display_contracts::{Device64Frame, OverlayPresenter, PresentStats, Presenter};
-use obc_platform::ls021::{composite_into_resident, OverlayScratch, RowDamage, RowDiff, RowWindow};
-use obc_platform::Band;
+use obc_display::display_contracts::{Device64Frame, OverlayPresenter, PresentStats, Presenter};
+use obc_display::ls021::{composite_into_resident, OverlayScratch, RowDamage, RowDiff, RowWindow};
+use obc_display::Band;
 // The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
 // re-quantised overlay window lands on the panel's RGB222 gamut exactly as the map style cards do.
 use obc_reader::rgb565_to_device64;
@@ -165,7 +165,7 @@ const HALT_DEADLINE: Duration = Duration::from_millis(10);
 
 // ── Frame geometry. The framebuffer is the LS021 pairing's `ls021::FRAME_W × FRAME_H` frame; the
 //    wire-word counts (`WIDTH` 240, `BCK_PER_SUBLINE` 124, `ROW_WORDS` 248) come from
-//    `obc_platform::ls021::wire`. The static asserts pin the frame geometry to the protocol constants
+//    `obc_display::ls021::wire`. The static asserts pin the frame geometry to the protocol constants
 //    it must equal, so the frame the app renders can never silently fork from the frame this backend
 //    scans. ──
 /// Visible pixel rows the FLPR scans per frame — the `status` the M33 cross-checks, and the
@@ -173,12 +173,12 @@ const HALT_DEADLINE: Duration = Duration::from_millis(10);
 /// equal it (asserted below).
 pub const ROWS_PER_FRAME: u32 = 320;
 /// Framebuffer width = the seam's frame width (re-exported for the resident-plane sizing in the app).
-pub const FB_W: usize = obc_platform::ls021::FRAME_W;
+pub const FB_W: usize = obc_display::ls021::FRAME_W;
 /// Framebuffer height = the seam's frame height = the visible row count.
-pub const FB_H: usize = obc_platform::ls021::FRAME_H;
-// The wire pack consumes exactly one `ls021_wire::WIDTH`-pixel row per framebuffer row, and the FLPR
-// blob scans exactly `ROWS_PER_FRAME` gate lines — the seam's frame must match both. (`obc_platform`
-// itself already asserts `ls021_wire::WIDTH == FRAME_W`; this pins the FLPR gate-scan height too.)
+pub const FB_H: usize = obc_display::ls021::FRAME_H;
+// The wire pack consumes exactly one `ls021::wire::WIDTH`-pixel row per framebuffer row, and the FLPR
+// blob scans exactly `ROWS_PER_FRAME` gate lines — the seam's frame must match both. (`obc_display`
+// itself already asserts `ls021::wire::WIDTH == FRAME_W`; this pins the FLPR gate-scan height too.)
 const _: () = assert!(FB_W == WIDTH, "ls021::FRAME_W diverged from the LS021 wire row width");
 const _: () =
     assert!(FB_H == ROWS_PER_FRAME as usize, "ls021::FRAME_H diverged from the FLPR blob's 320-row gate scan");
@@ -422,7 +422,7 @@ pub struct Ls021Flpr<'b> {
 impl<'b> Ls021Flpr<'b> {
     /// Build the presenter for the resident **device-64 map/ride plane** (`main.rs` wraps it as
     /// [`Frame64`]): the app quantises to the device-64 gamut itself
-    /// ([`FbDevice64`](obc_platform::FbDevice64)) and renders straight into the frame, then the
+    /// ([`FbDevice64`](obc_display::FbDevice64)) and renders straight into the frame, then the
     /// self-diffing present diffs + drives it. The FLPR packs the frame straight to the wire, so
     /// there is no RGB565 band scratch (the ~7.5 KB an intermediate band push would need is never
     /// allocated). `diff` is the `FB_H`-row [`RowDiff`] store the self-diffing present compares
@@ -570,7 +570,7 @@ impl<'b> Ls021Flpr<'b> {
     /// already records the (un-pushed) current frame; a plain retry would then diff an identical
     /// frame against an up-to-date store and re-push **nothing**, stranding the rows that missed
     /// glass. Resetting forces the retry to repaint every row. Delegates to
-    /// [`RowDiff::reset`](obc_platform::ls021::RowDiff::reset). (The contracts' `damage_full`
+    /// [`RowDiff::reset`](obc_display::ls021::RowDiff::reset). (The contracts' `damage_full`
     /// collapses this + the push into one present; the board keeps the two-step shape because the
     /// reset happens at the fault site and the repaint on the ride loop's next latched redraw.)
     pub fn reset_diff(&mut self) {
@@ -583,7 +583,7 @@ impl<'b> Ls021Flpr<'b> {
 //    (`Frame64`, `Ls021Flpr`) pairing — the panel-swap point; the simulator presenter is the
 //    contracts' other live backend. The only LS021-specific code is the device-64 → 6-line wire
 //    pack the pushes drive (on the FLPR); the diff/clip/exclusion policy and the overlay composite
-//    are the shared, host-conformance-tested `obc_platform::ls021` strategy pieces. ──
+//    are the shared, host-conformance-tested `obc_display::ls021` strategy pieces. ──
 
 impl Presenter<Frame64> for Ls021Flpr<'_> {
     type Damage = RowDamage;

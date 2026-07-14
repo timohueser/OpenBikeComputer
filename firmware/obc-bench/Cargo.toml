@@ -11,8 +11,8 @@ obc-render = { path = "../obc-render" }
 # The app owns the route-overlay draw params; the route scene imports the stroke colour + weight
 # from here so the bench can't silently drift from what the Map screen actually draws.
 obc-app = { path = "../obc-app" }
-# `Framebuffer565` — the same RGB565 DrawTarget the banded device path renders into.
-obc-platform = { path = "../obc-platform" }
+# `Framebuffer565` — the same RGB565 DrawTarget the banded device path renders into (obc-display, #807).
+obc-display = { path = "../obc-display" }
 # The deterministic bench fixture (`build_bench_map`) the committed frame hashes are computed over.
 obcm-testkit = { path = "../obcm-testkit" }
 # Same 0.8 the render path uses, so `Rgb565`/`DrawTarget` unify.

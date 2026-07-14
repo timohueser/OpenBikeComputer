@@ -21,7 +21,10 @@
       "obc-app"
     ],
     "platform": [
-      "obc-platform"
+      "obc-platform",
+      "obc-display",
+      "obc-sensors",
+      "obc-storage"
     ],
     "host": [
       "obc-bench",

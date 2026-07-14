@@ -168,9 +168,12 @@ deterministic CI gate.
 core, app, platform, and host layers. Production normal/build edges may not
 point upward; development-only fixture edges are ignored. New packages fail
 until classified exactly once, and disappeared exceptions fail as stale. The
-current graph has 58 production local edges and zero exceptions:
+current graph has 64 production local edges and zero exceptions:
 `obc-platform -> obc-app` was removed by #797, and platform adapters now import
-their semantic contracts directly from `obc-ports`.
+their semantic contracts directly from `obc-ports`. #807 split `obc-platform`
+into four platform-layer crates (`obc-display`, `obc-sensors`, `obc-storage`,
+and the narrowed `obc-platform`), adding the consumer edges to the new crates
+(58 -> 64) without introducing any upward edge.
 
 The checker covers the `firmware/Cargo.toml` workspace plus the standalone
 manifests for the excluded `obc-fw-nrf54l` composition root and `obc-boot` boot

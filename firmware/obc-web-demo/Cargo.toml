@@ -21,8 +21,8 @@ obc-host-core = { path = "../obc-host-core" }
 # USB feeder use.
 obc-replay = { path = "../obc-replay" }
 # The device-resolution frame authority (FRAME_W/FRAME_H) — no re-declared 240×320 literals.
-# Only the pure constants/rowdiff surface is used; the crate's embassy/SD glue is dead-stripped.
-obc-platform = { path = "../obc-platform" }
+# The display seam lives in obc-display (#807); only its pure `ls021` geometry surface is used.
+obc-display = { path = "../obc-display" }
 embedded-graphics = "0.8"
 # The fixed-cap string type `RideSummary.name` carries (same 0.8 the shared crates pin) — the
 # demo's seeded ride catalog constructs summaries directly.

@@ -194,13 +194,13 @@ struct Args {
 
 impl Default for Args {
     /// Device resolution + all knobs off — the CLI parser's base. The resolution is the single
-    /// [`obc_platform`] frame authority, not a re-declared literal (`--size` overrides it for
+    /// [`obc_display`] frame authority, not a re-declared literal (`--size` overrides it for
     /// off-device experiments).
     fn default() -> Self {
         Args {
             map: String::new(),
-            width: obc_platform::ls021::FRAME_W as u32,
-            height: obc_platform::ls021::FRAME_H as u32,
+            width: obc_display::ls021::FRAME_W as u32,
+            height: obc_display::ls021::FRAME_H as u32,
             scale: 1,
             png: None,
             screenshot: None,

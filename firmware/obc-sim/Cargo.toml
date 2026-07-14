@@ -24,8 +24,8 @@ obc-host-core = { path = "../obc-host-core" }
 # The board-agnostic self-diffing present core (epic #199 / issue #200): `diff_rows` + `row_hash` +
 # the `spans_missed_changes` oracle. The sim drives the exact same row-diff the device present path
 # adopts in D2, under an exact full-frame diff oracle — so a systematic hash-diff bug fails here in
-# CI. Only the pure-math `rowdiff` module is used; the crate's embassy/SD glue is dead-stripped.
-obc-platform = { path = "../obc-platform" }
+# CI. The display seam (frame/presentation contracts + `ls021` rowdiff) lives in obc-display (#807).
+obc-display = { path = "../obc-display" }
 # Shared host GPX replay (the GpxPlayer / BaroSensor the control panel drives) — the same
 # crate the USB feeder (obc-usb-host) uses, so a recorded ride plays back identically here.
 obc-replay = { path = "../obc-replay" }
