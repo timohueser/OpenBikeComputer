@@ -184,6 +184,21 @@ small amount from making `obc-formats` a direct `obc-app`/board dependency (the
 +1,592 B against develop on 1.96.0 — untracked headroom on the 512 KB-flash
 target, no gated budget affected.
 
+Auto-expiry S4 (#644, the `setRouteRetention` command + the `routeList` entry's
+84-byte expiry tail) is **resident-RAM-neutral: +0 B on both profiles** and
+**allocation-report-neutral**. The command decode/handler and the entry-tail
+encode are code, not resident data, and the `routeList` entry buffer did **not**
+grow — the shared list scratch (`LIST_BUF_LEN`) is sized by the *larger* list,
+which is `rideList` (128 × 72 B = 9,216 B), still dominating `routeList`'s
+64 × 84 B = 5,376 B. Built on rustc 1.96.0 both board ELFs are `.bss`/`.data`
+byte-identical to develop (default 201,752 B, BLE 213,672 B), the poll frames
+(52 B / 6,240 B) and all 22 allocation-report entries unchanged (`ble_object_store`
+stays 13,048 B — no field was added to any resident struct). Only flash grew —
+default +704 B, BLE +1,448 B on 1.96.0 — untracked headroom on the 512 KB-flash
+target, no gated budget affected. The `resident_ram_max` ceilings and the numbers
+table above are therefore unchanged; CI's `embedded (build (ble, release))` guard
+and report pass against the S3 baseline unmodified.
+
 The final production dependency graph has **69 local edges, zero exceptions**,
 all pointing downward (`python3 tools/check_dependencies.py`). Against the
 FAR-00 baseline's 64, the epic's net change is: #807/#857 severed

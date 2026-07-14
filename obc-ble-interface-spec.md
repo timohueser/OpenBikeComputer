@@ -473,11 +473,12 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 | `3` | `installFw` | none (`cmd` byte only) | ask the device to install the staged `UPDATE.BIN` — runs the on-device scan + **on-glass confirm** flow (see below). The command only *requests*; it never waits for the human and never installs on its own |
 | `4` | `forgetBond` | none (`cmd` byte only) | ask the device to dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged. The device answers `commandResult(ok)` **first**, then clears the bond + drops the link and returns to open-pairing advertising. **Honoured only on the bonded, authenticated link** (see below) |
 | `5` | `setClock` | `utc u32 · offset_min i16` | the phone stamps the device's UTC clock + local offset on **every connect** (auto-expiry #638). Stamps the wall-clock set-point, **persists** the offset, and marks the clock *trusted* for the boot — the retention sweep's safety gate. Sent immediately after encryption, **before** `ackRides`. Validated → `error` on a malformed length, `utc < 1577836800`, or `\|offset_min\| > 840`; no store-revision bump (the clock is not an object). See below |
-| `6`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
+| `6` | `setRouteRetention` | `object_id u16 · retention u8` | the phone sets a stored route's **retention level** (`0` never · `1` 1 day · `2` 1 week · `3` 2 weeks · `4` 1 month · `5` 2 months, auto-expiry #638) **without re-uploading** the route. Writes the level in the device's retention store **without touching `last_used`** (changing retention never resets the usage clock) and bumps the **route** store revision **only on a real change** (the app sees the fresh `expires_at` in the next `routeList`). Additive on protocol v2 — no `protocolVersion` bump. See below |
+| `7`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
 
-**Next free command: `6`.** (`setClock` landed at `5`, not the `3` epic #638's
-draft table drew: that draft predates `installFw`/`forgetBond` taking `3`/`4`.
-`setRouteRetention` — #638's second command — takes `6` when S4 lands.)
+**Next free command: `7`.** (`setClock` landed at `5` and `setRouteRetention`
+at `6`, not the `3`/`4` epic #638's draft table drew: that draft predates
+`installFw`/`forgetBond` taking `3`/`4`, so #638's two commands slid to `5`/`6`.)
 
 **`ackRides` — possession reconciliation.** The device keeps a per-ride
 "synced" flag (it drives the delete-guard cue on the device's Rides screen).
@@ -587,6 +588,34 @@ after encryption and before the first `ackRides`** (or any reconcile write). Thi
 runs *after* the clock is trusted, so the timestamp it stamps is real. (`setClock` itself needs no
 identity read — it establishes local time, not id-scoped state — but it shares the same
 post-encryption prologue as the version+epoch read and the ack, §1.)
+
+**`setRouteRetention` — set a route's expiry policy (auto-expiry #638).** Retention is mutable
+device-local state, never baked into the byte-pinned OBCR route file (§7.1): it travels as this
+command and lives in an SD sidecar (route id → retention + `last_used`). `setRouteRetention` is a
+4-byte write — `cmd u8 = 6 · object_id u16 · retention u8`, all little-endian:
+
+- **`object_id`** names a stored route. An id the device does not hold answers `commandResult`
+  `notFound` (2).
+- **`retention`** is the level enum: `0` never · `1` 1 day · `2` 1 week · `3` 2 weeks · `4` 1 month
+  (30 d) · `5` 2 months (60 d). A value **above `5`** answers `error` (4), as does a write that is not
+  exactly 4 bytes. The device sanitises any unknown stored/wire byte to `Never` on read, so a
+  forward-compat value can never surprise-delete a route.
+
+On a valid write to a known route the device writes the level into its retention sidecar **without
+touching `last_used`** — changing retention never resets the usage clock, so a route mid-countdown
+keeps its anchor — and answers `commandResult(ok)`. A **real** change bumps the **route** store
+revision and fires `storeChanged(route)` (§4.3 `msg = 2`), so the app re-reads the `routeList` and
+sees the route's new `expires_at` (§7.4). **Idempotence:** setting the level a route already has is
+`ok` with **no** revision bump and no `storeChanged` — only a real change moves the store.
+
+The app sends it **(a)** right after a route upload's `transferResult` commits — the result carries
+the assigned id — so a freshly-uploaded route gets its chosen retention without a second upload, and
+**(b)** any time the user edits retention for an on-device route. The device stamps a route's
+`last_used = now` at **upload commit** (when the clock is trusted), so a retention set right after an
+upload yields `expires_at = upload_time + retention`; an upload under an untrusted clock leaves
+`last_used` unstarted (`0`) and the retention sweep starts the clock on its next pass (the safe
+fallback — nothing deletes on sight). A device that predates the command answers `unknown` (§4.4
+compat), which the app reads as "this device predates expiry support" and degrades gracefully.
 
 ### 4.5 Change signalling
 
@@ -735,14 +764,14 @@ after a confirmed DFU. Duplicating it here would only risk the two disagreeing.
 
 Downloaded over the CoC (they outgrow the 512-byte ATT cap fast). Shared shape: a
 **6-byte header** + fixed entries, so entry `k` is at `6 + entry_len·k` — O(1)
-indexing, no string scanning. In v2 the list types **differ in entry length**
-(`routeList` 76 bytes, `rideList` 72, `tripList` 76), so the entry size is carried
+indexing, no string scanning. The list types **differ in entry length**
+(`routeList` 84 bytes, `rideList` 72, `tripList` 76), so the entry size is carried
 per-list in the header's `entry_len` byte; readers step by it, never a constant.
 
 ```
 List header (6 bytes):
   version     u8   = 2
-  entry_len   u8   the entry size (76 routeList · 72 rideList · 76 tripList) — readers skip by it
+  entry_len   u8   the entry size (84 routeList · 72 rideList · 76 tripList) — readers skip by it
   count       u16  entries actually in this object (after the MAX_RIDES / MAX_ROUTES / MAX_TRIPS cap)
   total       u16  full catalog size BEFORE the cap
 ```
@@ -753,7 +782,8 @@ List header (6 bytes):
 one-line warning instead of silently answering "up to date". When nothing was
 dropped `total == count`.
 
-`routeList` entry (**76 bytes**) — from the stored OBCR header:
+`routeList` entry (**84 bytes**) — from the stored OBCR header, plus the auto-expiry
+tail (offsets `76..84`, epic #638 S4):
 
 ```
   object_id       u16
@@ -766,7 +796,10 @@ dropped `total == count`.
   name_len        u8   ≤ 48
   name            char[48]  UTF-8, zero-padded
   reserved        u8   = 0
-  crc32           u32  whole-object CRC-32 (§6) of the stored OBCR bytes · 0 = unknown
+  crc32           u32  whole-object CRC-32 (§6) of the stored OBCR bytes · 0 = unknown   (offset 72)
+  expires_at      u32  unix seconds the route auto-deletes at · 0 = never / not yet started  (offset 76)
+  retention       u8   the stored retention enum value (0 never … 5 = 2 months)          (offset 80)
+  reserved        u8[3]  = 0                                                               (offset 81)
 ```
 
 **`crc32`** (v2, epic #632 item 6) is the whole-object CRC-32 the device computes
@@ -777,7 +810,21 @@ identical unlinked copy by content. A stored route whose genuine CRC-32 happens 
 be `0` (probability 2⁻³²) is indistinguishable from "unknown" and is served — and
 read — as unknown; the consequence is merely "no badge until re-upload", the
 conservative direction, so implementations do **not** special-case it. `rideList`
-entries are **unchanged** (72 bytes) — which is why entry length is now per-list.
+entries are **unchanged** (72 bytes) — which is why entry length is per-list.
+
+**`expires_at` / `retention`** (auto-expiry #638 S4) report the route's device
+truth so the app can show a countdown. **`retention`** is the level set by
+`setRouteRetention` (§4.4 cmd 6). **`expires_at`** is computed **at list-encode
+time** — `last_used + retention days`, or `0` when the route is `Never` or its clock
+has not started (`last_used == 0`). Both are **device-computed volatile state** — an
+`expires_at` that merely ticked, or a retention edit, is *not* a change of route
+content — so they sit deliberately **after** the content `crc32` and are **outside
+its coverage**: the `crc32` fingerprints only the stored OBCR bytes, so a route
+whose expiry moved never spuriously reads as "content changed". The 76-byte v2 core
+(offsets `0..76`) is **byte-identical** to before; the tail is appended via the
+`entry_len` mechanism — the format's designed additive path (list `version` stays
+`2`; a reader steps by `entry_len` and decodes the prefix it knows), so growing the
+entry needs **no** `protocolVersion` bump (§1).
 
 `rideList` entry (72 bytes) — from the stored ride-object header:
 
@@ -795,9 +842,11 @@ entries are **unchanged** (72 bytes) — which is why entry length is now per-li
 ```
 
 `tripList` entry (**76 bytes**) — from the stored trip object (§7.7). It mirrors
-`routeList`: the same trailing whole-object `crc32`, so the app's identity /
-outdated-copy machinery works on trips exactly as on routes (a stage reorder
-changes neither `byte_len` nor `name`, so only the `crc32` reveals it):
+`routeList`'s **v2 core**: the same trailing whole-object `crc32`, so the app's
+identity / outdated-copy machinery works on trips exactly as on routes (a stage
+reorder changes neither `byte_len` nor `name`, so only the `crc32` reveals it). It
+carries **no** auto-expiry tail — trips have no per-object retention — which is why
+`tripList` stays 76 bytes while `routeList` grew to 84:
 
 ```
   object_id         u16
@@ -1006,11 +1055,24 @@ pinned by the shared `protocol-vectors/` fixtures:
    type (id `5`, §7.6) and `installFw` / `forgetBond` commands (§4.4), and the
    `transferResult` / `commandResult` status envelopes (§4.3).
 
-**Post-v2 additive (no version bump, §1).** `setClock` (§4.4 cmd `5`, auto-expiry
-#638 S2) is an additive command layered on v2, not part of the v1→v2 break above.
-Its iOS mirror repin — send it on every connect, before `ackRides`, and pin the
-`command-set-clock.bin` fixture — lands with **S6 (#646)**, the epic's iOS
-transport sub-issue.
+**Post-v2 additive (no version bump, §1).** Auto-expiry (#638) layers additive
+changes on v2, not part of the v1→v2 break above:
+
+- `setClock` (§4.4 cmd `5`, S2) — the phone stamps the trusted clock every connect.
+- `setRouteRetention` (§4.4 cmd `6`, S4) — the phone sets a route's retention level.
+- **`routeList` entry 76 → 84 bytes** (§7.4, S4): the auto-expiry tail
+  (`expires_at u32 · retention u8 · reserved u8[3]`) appended **after** the content
+  `crc32` (outside its coverage — device-computed volatile state), via the
+  `entry_len` mechanism. The 76-byte v2 core is byte-identical; `rideList` (72) and
+  `tripList` (76) are untouched.
+
+Their iOS mirror repin — send `setClock`/`setRouteRetention` at the documented
+times, decode the 84-byte `routeList` entry by `entry_len`, and pin the
+`command-set-clock.bin` / `command-set-route-retention.bin` / regenerated
+`route-list.bin` fixtures — lands with **S6 (#646)**, the epic's iOS transport
+sub-issue. Until then the iOS `routeList` decoder must keep passing by stepping over
+`entry_len` (it reads the 76-byte prefix it knows); a decoder that hard-codes the
+entry length is an S6 fix.
 
 ## Reference implementation
 

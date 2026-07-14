@@ -293,8 +293,27 @@ pub fn command_set_clock(utc: u32, offset_min: i16) -> Vec<u8> {
     v
 }
 
-/// One `routeList` entry (spec §7.4): **76 bytes** (protocol v2), name zero-padded to 48, trailing
-/// whole-object content `crc32` (`0` = unknown).
+/// The `setRouteRetention` command write (spec §4.4, cmd 6, epic #638 S4): `cmd u8 = 6 · object_id
+/// u16 LE · retention u8`. 4 bytes.
+pub fn command_set_route_retention(object_id: u16, retention: u8) -> Vec<u8> {
+    let mut v = vec![6u8];
+    v.extend_from_slice(&le16(object_id));
+    v.push(retention);
+    v
+}
+
+/// The `route-list.bin` entries' auto-expiry spread (epic #638 S4, spec §7.4): id 7 is a **live
+/// countdown** (Week2 = `3`, a nonzero `expires_at`), id 8 has a **not-yet-started** clock (Day1 =
+/// `1`, `expires_at 0` because `last_used == 0`), and id 9 is **Never** (retention `0`, `expires_at
+/// 0`). `EXPIRES_AT_LIVE` is `command-set-clock.bin`'s UTC + a 2-week window, so the fixtures agree.
+pub const ROUTE_EXPIRES_AT_LIVE: u32 = 1_783_598_400 + 14 * 86_400;
+/// `(expires_at, retention)` per `route-list.bin` entry, in id order (7, 8, 9) — see [`route_list`].
+pub const ROUTE_RETENTION_SPREAD: [(u32, u8); 3] = [(ROUTE_EXPIRES_AT_LIVE, 3), (0, 1), (0, 0)];
+
+/// One `routeList` entry (spec §7.4): **84 bytes** — the 76-byte protocol-v2 core (name zero-padded to
+/// 48, trailing whole-object content `crc32`, `0` = unknown) + the auto-expiry tail `expires_at u32 ·
+/// retention u8 · reserved u8[3]` (epic #638 S4). The tail sits **after** the content `crc32` — it is
+/// device-computed volatile state, not route-content identity — so the 76-byte core is byte-identical.
 #[allow(clippy::too_many_arguments)] // mirrors the spec's field list one-to-one
 pub fn route_list_entry(
     object_id: u16,
@@ -305,6 +324,8 @@ pub fn route_list_entry(
     waypoint_count: u16,
     name: &str,
     crc: u32,
+    expires_at: u32,
+    retention: u8,
 ) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&le16(object_id));
@@ -319,16 +340,19 @@ pub fn route_list_entry(
     padded[..name.len()].copy_from_slice(name.as_bytes());
     v.extend_from_slice(&padded);
     v.push(0); // reserved
-    v.extend_from_slice(&le32(crc)); // whole-object content CRC-32
-    assert_eq!(v.len(), 76);
+    v.extend_from_slice(&le32(crc)); // whole-object content CRC-32 (offset 72)
+    v.extend_from_slice(&le32(expires_at)); // auto-expiry tail (offset 76) — outside the content crc32
+    v.push(retention); // offset 80
+    v.extend_from_slice(&[0u8; 3]); // reserved (offset 81)
+    assert_eq!(v.len(), 84);
     v
 }
 
 /// A whole `routeList` object (spec §7.4): the **6-byte** v2 list header
-/// (`version 2 · entry_len 76 · count · total`) + packed 76-byte entries. `total` = the full catalog
+/// (`version 2 · entry_len 84 · count · total`) + packed 84-byte entries. `total` = the full catalog
 /// size before the `MAX_ROUTES` cap (equal to `count` when nothing was dropped).
 pub fn route_list(entries: &[Vec<u8>], total: u16) -> Vec<u8> {
-    let mut v = vec![2u8, 76];
+    let mut v = vec![2u8, 84];
     v.extend_from_slice(&le16(entries.len() as u16));
     v.extend_from_slice(&le16(total));
     for e in entries {
@@ -458,21 +482,63 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // The phone's clock stamp (cmd 5, epic #638 S2): 2026-07-09T12:00:00Z (unix 1783598400),
         // +02:00 (offset 120 min). 7 bytes.
         ("command-set-clock.bin", command_set_clock(1_783_598_400, 120)),
+        // The phone's route-retention set (cmd 6, epic #638 S4): route id 7 → retention 3 (2 weeks).
+        // 4 bytes. Answered with a bare commandResult(ok) + a companion storeChanged(route) on a real
+        // change (no storeChanged / no bump when the value is unchanged — the idempotence pin).
+        ("command-set-route-retention.bin", command_set_route_retention(7, 3)),
         // The OBCU firmware-update container (spec §1) — a `fwImage` payload (spec
         // §7.6, id 0): 64-byte header + a 128-byte raw image. Pinned on the device
         // side by `obc-dfu` and on the app side by the iOS `OBCUHeader` decoder.
         ("update-container-v1.bin", update_container_v1()),
-        // Catalog for both stored route fixtures: fields from their OBCR headers
-        // (distance 2207 m, ascent 76 m, 9 points), ids continuing from 7, each with
-        // its whole-object content CRC-32. total = count (nothing truncated).
+        // Catalog for the stored route fixtures + a synthetic third entry: fields from their OBCR
+        // headers (distance 2207 m, ascent 76 m, 9 points), ids continuing from 7, each with its
+        // whole-object content CRC-32, and the epic #638 S4 auto-expiry tail spanning a spread of
+        // retention states (`ROUTE_RETENTION_SPREAD`): id 7 a live countdown (Week2, nonzero
+        // expires_at), id 8 a not-yet-started clock (Day1, expires_at 0), id 9 a Never route
+        // (retention 0, expires_at 0). Id 9 is synthetic (no `.obcr` file — reuses the plain route's
+        // size/CRC), present only to pin the Never state on the wire. total = count (nothing truncated).
         (
             "route-list.bin",
             route_list(
                 &[
-                    route_list_entry(7, len, 2207, 76, 9, 2, ROUTE_NAME, crc),
-                    route_list_entry(8, plain_len, 2207, 76, 9, 0, ROUTE_NAME, plain_crc),
+                    route_list_entry(
+                        7,
+                        len,
+                        2207,
+                        76,
+                        9,
+                        2,
+                        ROUTE_NAME,
+                        crc,
+                        ROUTE_RETENTION_SPREAD[0].0,
+                        ROUTE_RETENTION_SPREAD[0].1,
+                    ),
+                    route_list_entry(
+                        8,
+                        plain_len,
+                        2207,
+                        76,
+                        9,
+                        0,
+                        ROUTE_NAME,
+                        plain_crc,
+                        ROUTE_RETENTION_SPREAD[1].0,
+                        ROUTE_RETENTION_SPREAD[1].1,
+                    ),
+                    route_list_entry(
+                        9,
+                        plain_len,
+                        2207,
+                        76,
+                        9,
+                        0,
+                        ROUTE_NAME,
+                        plain_crc,
+                        ROUTE_RETENTION_SPREAD[2].0,
+                        ROUTE_RETENTION_SPREAD[2].1,
+                    ),
                 ],
-                2,
+                3,
             ),
         ),
         // A trip (§7.7): "Alpen Traverse", 3 stages referencing route ids 7 and 8 (both stored in

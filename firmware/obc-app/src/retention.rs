@@ -522,6 +522,20 @@ impl RetentionRuntime {
         }
     }
 
+    /// Enqueue a `last_used` stamp for a route a BLE upload just committed (auto-expiry epic #638 S4):
+    /// a fresh or replace upload is a "use", so its expiry clock should anchor at **upload time** — the
+    /// precise stamp the sweep otherwise only approximates (invariant 2 starts an unknown `last_used`
+    /// at the *next sweep*, up to an hour later). Called from `on_route_uploaded` **only when the clock
+    /// is trusted** (an untrusted upload leaves `last_used == 0`, which the sweep starts later — the
+    /// safe fallback). Idempotent: skips an id already queued (the drain mirrors `last_used` into the
+    /// resident meta, so a stamped route stops re-enqueuing). Reuses the `StampRouteUsed` host path (the
+    /// same sidecar write a sweep / activation stamp takes) — no new channel.
+    pub(crate) fn note_route_uploaded(&mut self, id: u16) {
+        if !self.queue.iter().any(|a| matches!(a, SweepAction::StampRoute(q) if *q == id)) {
+            let _ = self.queue.push(SweepAction::StampRoute(id));
+        }
+    }
+
     /// Eagerly enqueue a `synced_at` stamp for every resident ride that is `synced` but not yet
     /// stamped (`synced_at == 0`) — the ack-time countdown start (epic #638, S3). Called each
     /// **trusted** tick **regardless of recording**: a metadata stamp is safe mid-ride (invariant 4
@@ -901,5 +915,39 @@ mod tests {
         // Next hour, empty queue → runs.
         rt.maybe_sweep(7200, |_| runs += 1);
         assert_eq!(runs, 2, "next wall-clock hour → sweeps again");
+    }
+
+    /// The `setRouteRetention` idempotence pin (epic #638 S4): `set` reports a change only on a real
+    /// edit — the board's command handler bumps the route revision on exactly that, so setting the
+    /// same value twice is `ok` with **no** bump. A retention change **preserves `last_used`** (the
+    /// command must never reset the usage clock): the board sets `{new_level, existing last_used}`.
+    #[test]
+    fn set_route_retention_change_semantics() {
+        let mut store = RouteRetentionStore::new();
+        // First set of a level is a change.
+        assert!(store.set(7, RouteRetentionMeta::new(Retention::Week2, 1_000)), "first set changes the store");
+        // Same value again → no change (the no-bump idempotence pin).
+        assert!(!store.set(7, RouteRetentionMeta::new(Retention::Week2, 1_000)), "same value twice → no change");
+        // The board's `set_route_retention_level` preserves last_used: read it, set {new, last_used}.
+        let preserved = store.get(7).last_used_utc;
+        assert_eq!(preserved, 1_000);
+        assert!(store.set(7, RouteRetentionMeta::new(Retention::Day1, preserved)), "a real level change is reported");
+        assert_eq!(store.get(7), RouteRetentionMeta::new(Retention::Day1, 1_000), "level changed, last_used kept");
+        // Reverting to the same new level again → no change.
+        assert!(!store.set(7, RouteRetentionMeta::new(Retention::Day1, preserved)), "unchanged again → no change");
+    }
+
+    /// The route-upload `last_used` stamp (epic #638 S4): `note_route_uploaded` enqueues exactly one
+    /// `StampRoute` per uploaded id, idempotently (a re-fire before the drain must not double-enqueue).
+    #[test]
+    fn runtime_note_route_uploaded_enqueues_once() {
+        let mut rt = RetentionRuntime::new();
+        rt.note_route_uploaded(7);
+        rt.note_route_uploaded(7); // a second call before draining must not stack a duplicate
+        assert_eq!(rt.take(SweepKind::StampRoute), Some(7), "the uploaded route is stamped");
+        assert_eq!(rt.take(SweepKind::StampRoute), None, "exactly one stamp per upload");
+        // A different id enqueues its own stamp.
+        rt.note_route_uploaded(8);
+        assert_eq!(rt.take(SweepKind::StampRoute), Some(8));
     }
 }
