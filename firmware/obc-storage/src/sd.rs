@@ -11,9 +11,9 @@
 //! and an [`SdTrackSink`] over the track log at once and feed both to one app tick.
 
 use embedded_sdmmc::{BlockDevice, RawFile, TimeSource, VolumeManager};
-use obc_ports::{TrackError, TrackPoint, TrackSink};
 use obc_formats::io::{ByteSink, ByteSource, Error};
 use obc_formats::track::encode_record;
+use obc_ports::{TrackError, TrackPoint, TrackSink};
 
 /// A random-access [`ByteSource`] over an open FatFs file — the device backing for
 /// `obc-route`'s `RouteReader` / `RouteSummary::read`. Each
