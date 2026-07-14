@@ -125,6 +125,30 @@ inherent to instance ownership and was accepted by the owner (2026-07-14:
 a handful of bytes is fine, only hundreds would matter); it fits under the
 existing ceilings above, which are unchanged.
 
+FAR-19 (#812, deleting the `take_*`/`notify_*` host-protocol compatibility
+adapters and moving the board/sim/host-core onto the typed
+`drain_host_commands`/`apply_event` protocol) grew resident RAM by a measured
+**+24 B on both profiles** against develop, both sides on pinned rustc 1.96.0:
+default 200,840 → 200,864 B, BLE 212,760 → 212,784 B. The growth is the board's
+per-pass `HostPass` staging struct: the pass now drains the whole typed protocol
+once, up front, into a small board-local struct whose fields cross the pass's
+awaits (the bulge push, the DFU install, the store lock) to each command's
+original consumption site in the store phase — where the deleted adapters used
+to drain each one inline as a store-phase-local temporary that never entered the
+task future. The irreducible core is the three `Option<u16>` object-delete ids
+plus the `Option<u16>` settings-persist revision (16 B) that genuinely must
+survive from the drain to the store phase; the small `bool`/`Copy`-enum fields
+pack into their padding. The 44 B `NavRequest` is deliberately **not** staged —
+the planner's `.bss` slot is written from it synchronously at the drain
+(`nav_begin` needs no store lock), so only a 1-byte flag rides into the store
+phase; staging the full request measured +52 B default, the flag-only design
++24 B. Poll frames and the allocation report are unchanged (the mailbox is a
+stack temporary, dropped before the first await). The default result fits under
+the unchanged 200,868 B ceiling with 4 B to spare; the **BLE resident ceiling
+was bumped 212,768 → 212,788 B** (the 212,784 B measurement plus the repo's 4 B
+floating-toolchain headroom). The owner accepted the growth (2026-07-14: a
+handful of bytes is fine, only hundreds would matter).
+
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B
 after default `.bss + .data + .uninit` and 40,160 B after BLE. Those residuals
