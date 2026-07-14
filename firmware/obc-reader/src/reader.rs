@@ -13,9 +13,10 @@
 //! "the whole file is resident" a one-line wrapper for the sim and tests.
 //!
 //! Because `read_at` takes `&self`, the lazy reads go through an internal
-//! [`MapCache`] behind a `RefCell`: a geometry-chunk cache (the renderer re-runs
-//! `for_each_chunk` once per priority level, so this avoids re-reading a chunk per
-//! pass) plus a small block cache coalescing the 4-byte quadtree-node reads. The
+//! [`MapCache`] behind a `RefCell`: a geometry-chunk cache (the renderer walks the
+//! visible chunks twice — pass A to select candidates, pass B to re-decode the
+//! winners — so this keeps pass B's winner chunks resident and reuses chunks across
+//! frames) plus a small block cache coalescing the 4-byte quadtree-node reads. The
 //! cache changes only *when* a byte is read, never *what* decodes, so renders stay
 //! byte-identical.
 
@@ -112,16 +113,16 @@ pub const MAX_CHUNK_BYTES: usize = 16384;
 pub const MAX_CHUNK_BYTES: usize = 8192;
 
 /// Size of one geometry-chunk **cache** slot. A chunk this size or smaller is cached (kept
-/// resident across the frame's priority passes); a larger one — up to [`MAX_CHUNK_BYTES`] — is
+/// resident across the frame's two collect passes); a larger one — up to [`MAX_CHUNK_BYTES`] — is
 /// decoded through the scratch without being cached. Matches the packer's default `chunk_size`
 /// (4096) so the maps the device actually loads are fully cacheable.
 const CACHE_SLOT_BYTES: usize = 4096;
 
-/// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer makes four priority
-/// passes over the same visible-chunk set per frame, so the cache must hold the whole working set
-/// or each pass re-reads every chunk (`miss ≈ chunks × 4`) and SD I/O dominates. Size it to the
-/// **visible-chunk count**, not a fixed 16: the worst zooms (LOD1, ~3–4 m/px) put ~50 chunks in
-/// view, so 64 slots keep them resident across all four passes and across frames (a slow pan
+/// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer walks the visible-chunk set
+/// twice per frame (pass A selects candidates, pass B re-decodes the winners), so the cache must
+/// hold the whole working set or pass B re-reads every winner chunk and SD I/O dominates. Size it to
+/// the **visible-chunk count**, not a fixed 16: the worst zooms (LOD1, ~3–4 m/px) put ~50 chunks in
+/// view, so 64 slots keep them resident across both passes and across frames (a slow pan
 /// re-hits last frame's chunks). 64 × 4 KB = 256 KB.
 ///
 /// The constrained `nrf-mem` profile drops to a single slot: a riding-zoom working set already
@@ -1461,8 +1462,8 @@ impl<'a> Reader<'a> {
     /// quadtree order. `lod` indexes [`Reader::lods`]; out-of-range visits nothing. Unlike a
     /// capacity-bounded collect, this streams through a callback with **no upper bound** on the
     /// chunk count — the renderer relies on this so a wide viewport never silently drops chunks.
-    /// The walk only reads the index (bbox tests over `u32` nodes), so re-running it once per
-    /// priority pass is cheap relative to decoding.
+    /// The walk only reads the index (bbox tests over `u32` nodes), so re-running it for the second
+    /// (pass B) traversal is cheap relative to decoding.
     pub fn for_each_chunk(
         &self,
         lod: usize,
@@ -1554,8 +1555,9 @@ impl<'a> Reader<'a> {
     /// Like [`Reader::for_each_feature`], but `should_decode` is consulted with each feature's
     /// style id **before** its coordinates are decoded: `false` skips the geometry cheaply
     /// (advancing past its bytes with no coordinate math), `true` decodes it and hands a
-    /// [`FeatureRef`] to `visit`. The renderer uses this so each priority pass decodes only its own
-    /// features — across all passes a feature's coordinates decode **at most once per frame**.
+    /// [`FeatureRef`] to `visit`. The renderer uses this so a collect traversal decodes only the
+    /// features it needs — pass B decodes just the **selected winners** and skips everything else
+    /// cheaply, advancing past their bytes with no coordinate math.
     ///
     /// # Reentrancy
     ///
