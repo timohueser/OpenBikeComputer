@@ -353,6 +353,25 @@ const GESTURE_BUF: usize = 16;
 ///     app.render_frame(&mut display, &reader, route.as_ref(), w, h, color_policy);
 /// }
 /// ```
+/// Whether — and by which source — the wall clock has been established from a **real time source
+/// this boot**. The safety core of the auto-expiry epic (#638): the device has no RTC, so at boot
+/// the clock resumes from a persisted set-point that is stale by the powered-off span. That stale
+/// clock is [`Untrusted`](ClockTrust::Untrusted); it advances to [`Gps`](ClockTrust::Gps) or
+/// [`Ble`](ClockTrust::Ble) **only** when that source stamps the clock this boot (via
+/// [`App::stamp_clock`]). The expiry sweep (S3) refuses to stamp or delete anything while untrusted,
+/// so a stale or fat-fingered clock can never drive a deletion. **Never persisted** — every power
+/// cycle resets it to `Untrusted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockTrust {
+    /// No real time source has stamped the clock this boot: it is the stale persisted set-point (or
+    /// the factory default). Display-only — no stamps, no deletions.
+    Untrusted,
+    /// A GPS fix stamped the clock this boot (the fix payload carries full UTC date + time).
+    Gps,
+    /// A BLE `setClock` from the phone stamped the clock this boot (epic #638 S2, #642).
+    Ble,
+}
+
 pub struct App {
     /// The camera / orientation / last-fix state — public so the host's mouse pan/zoom and control
     /// panel can read and adjust it directly.
@@ -391,6 +410,12 @@ pub struct App {
     /// the set-point changes in [`set_settings`](App::set_settings) /
     /// [`apply_gesture`](App::apply_gesture). See [`WallClock`].
     wall_clock: WallClock,
+    /// Whether the wall clock has been established from a real time source **this boot** (see
+    /// [`ClockTrust`]). Starts [`Untrusted`](ClockTrust::Untrusted) at every boot — the persisted
+    /// set-point is display-only — and only [`stamp_clock`](App::stamp_clock) (GPS now, BLE in S2)
+    /// advances it. Read through [`clock_trusted`](App::clock_trusted); the auto-expiry sweep (#638
+    /// S3) gates every stamp and deletion on it. **Never persisted.**
+    clock_trust: ClockTrust,
     /// The app-side pending protocol state that isn't a one-shot slot on [`Activity`]: the
     /// counted store-changed cue (#450) and the #810 settings-persistence state machine
     /// (revision, handshake state, bounded retry pacing). Drained and answered only through the
@@ -448,6 +473,9 @@ impl App {
             // The wall clock starts from the same default set-point at the boot origin; the host's
             // `set_settings` re-stamps it from the persisted clock a moment later.
             wall_clock: WallClock::new(Settings::default().local_clock()),
+            // No real time source has stamped the clock yet this boot — the persisted set-point is
+            // display-only until GPS (or, in S2, BLE) re-establishes it. See `ClockTrust`.
+            clock_trust: ClockTrust::Untrusted,
             host: HostPending::new(),
             fw_version: heapless::String::new(),
             map_name: heapless::String::new(),
@@ -501,6 +529,7 @@ impl App {
             RenderResources::init_zeroed(addr_of_mut!((*slot).render_res));
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
+            addr_of_mut!((*slot).clock_trust).write(ClockTrust::Untrusted);
             addr_of_mut!((*slot).host).write(HostPending::new());
             addr_of_mut!((*slot).fw_version).write(heapless::String::new());
             addr_of_mut!((*slot).map_name).write(heapless::String::new());
@@ -526,6 +555,7 @@ impl App {
                 render_res: _,
                 settings: _,
                 wall_clock: _,
+                clock_trust: _,
                 host: _,
                 fw_version: _,
                 map_name: _,
@@ -637,21 +667,13 @@ impl App {
                 self.activity.record_cadence(rpm, now_ms);
             }
         }
-        // GPS UTC time → the wall clock, but **only** in "Set from GPS" mode (so a manual clock is
-        // never overwritten). The receiver resolves time before a 3D position, so this lands during
-        // acquisition — the clock can be right while the "No GPS Fix" banner is still up. Not flagged
-        // `settings_dirty`: don't persist on every fix (the set-point self-heals from GPS each boot;
-        // a per-second RRAM write would thrash the store).
-        if self.settings.gps_time {
-            if let Some(t) = clock.and_then(|c| c.poll()) {
-                self.settings.clock = t.utc;
-                // Stamp against the **map-plane** clock `self.ui.now_ms` (not the sensor-timebase
-                // `RideClock`), the clock `WallClock::now` is later read with. Back-date by the
-                // seconds-into-the-minute so the displayed minute rolls at the true instant, not up
-                // to a fix-interval late.
-                let epoch = self.ui.now_ms.wrapping_sub(t.second as u32 * 1000);
-                self.wall_clock.set(self.settings.local_clock(), epoch);
-            }
+        // GPS UTC time → the wall clock. GPS **always** stamps now (manual date/time was removed in
+        // #641, so a fat-fingered clock can't feed the expiry sweep). The receiver resolves time
+        // before a 3D position, so this lands during acquisition — the clock can be right while the
+        // "No GPS Fix" banner is still up. Funnels through `stamp_clock`, the one entry point that
+        // owns the trusted-clock invariant (BLE `setClock` joins it in epic #638 S2).
+        if let Some(t) = clock.and_then(|c| c.poll()) {
+            self.stamp_clock(t.utc, t.second, ClockTrust::Gps);
         }
         // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a dropout
         // doesn't re-run the matcher or double-count). A *logged* fix also feeds the breadcrumb +
@@ -1358,8 +1380,9 @@ impl App {
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
         // Stamp the wall clock to the persisted *local* set-point as of now (boot millis), so it
-        // resumes from the stored time. `local_clock` folds in the UTC offset in GPS mode, so the
-        // Home clock shows local time, not the raw UTC anchor.
+        // resumes from the stored time. `local_clock` folds the UTC offset out of the UTC anchor, so
+        // the Home clock shows local time. This seed is display-only: `clock_trust` stays Untrusted
+        // until a real source (GPS/BLE) re-stamps this boot.
         self.wall_clock.set(self.settings.local_clock(), self.ui.now_ms);
         // The value came from the store (or the default), so it is already persisted: reset the
         // revision handshake to Clean. Any pending edit is discarded — seeding is a boot/reload
@@ -1402,24 +1425,52 @@ impl App {
         self.wall_clock.now(self.ui.now_ms)
     }
 
-    /// Whether the wall clock has an **established** set-point — a persisted/manual/GPS time has been
+    /// Whether the wall clock has an **established** set-point — a persisted/GPS/BLE time has been
     /// applied, versus a fresh clock that has never been told the time (see
     /// [`WallClock::is_established`](crate::wall_clock::WallClock::is_established)). The Home date
-    /// line gates on this so it never shows a date with no trusted origin.
+    /// line gates on this so it never shows a date with no origin at all. This is the *coarse*
+    /// "do we know a date?" gate — a **stale persisted** set-point is established but **not**
+    /// [`trusted`](App::clock_trusted); the auto-expiry sweep uses the finer trust gate.
     pub fn clock_is_set(&self) -> bool {
         self.wall_clock.is_established()
     }
 
-    /// The current **UTC** unix seconds, from the wall clock. The clock's set-point is local
-    /// time, so in GPS mode the persisted UTC offset is folded back out; a hand-set clock knows
-    /// no zone, so its local reading is served as-is.
+    /// Whether the wall clock was established from a **real time source this boot** — GPS now, BLE in
+    /// epic #638 S2 (see [`ClockTrust`]). `false` from every boot until the first
+    /// [`stamp_clock`](App::stamp_clock), regardless of any stale persisted set-point. S3's expiry
+    /// sweep gates every timestamp write and deletion on this: no trusted clock → nothing is stamped
+    /// or deleted.
+    pub fn clock_trusted(&self) -> bool {
+        self.clock_trust != ClockTrust::Untrusted
+    }
+
+    /// The single entry point that establishes a **trusted** wall clock from a real time source —
+    /// GPS (`tick`) now, BLE `setClock` (epic #638 S2) next. Both funnel here so one place owns the
+    /// invariant. It: sets the persisted UTC `clock` anchor to `utc`; re-stamps the live
+    /// [`WallClock`] against the map-plane clock (`now_ms`), **back-dating the epoch by `second`**
+    /// (the fix's seconds-into-the-minute) so the displayed minute rolls at the true instant, not up
+    /// to a fix-interval late; persists the new set-point through the change-detected settings-save
+    /// path (only when the minute-resolution anchor actually moves, so a per-fix GPS stamp writes
+    /// RRAM at most once a minute, not every second); and records the trust `source`.
+    pub fn stamp_clock(&mut self, utc: DateTime, second: u8, source: ClockTrust) {
+        // The save path is change-detected (`Settings` is `Copy + Eq`): only re-arm a persist when
+        // the stored anchor actually changes. `clock` is minute-resolution, so a stamp every fix
+        // dirties the store at most once per displayed minute.
+        let anchor_changed = self.settings.clock != utc;
+        self.settings.clock = utc;
+        let epoch = self.ui.now_ms.wrapping_sub(second as u32 * 1000);
+        self.wall_clock.set(self.settings.local_clock(), epoch);
+        if anchor_changed {
+            self.host.note_settings_edited();
+        }
+        self.clock_trust = source;
+    }
+
+    /// The current **UTC** unix seconds, from the wall clock. The clock's set-point is local time
+    /// (the UTC anchor shifted by the offset), so the persisted UTC offset is folded back out.
     pub fn wall_unix_now(&self) -> u32 {
         let local = self.wall_clock.unix_now(self.ui.now_ms);
-        if self.settings.gps_time {
-            (local as i64 - self.settings.utc_offset_min as i64 * 60) as u32
-        } else {
-            local
-        }
+        (local as i64 - self.settings.utc_offset_min as i64 * 60) as u32
     }
 
     /// The ride totals + wall-clock anchor for the Finish-time ride-object save, read in the same
@@ -1593,9 +1644,11 @@ impl App {
             // A rider edit: bump the revision and (re-)arm the save — superseding any in-flight or
             // backing-off older revision (#810); see `HostPending::note_settings_edited`.
             self.host.note_settings_edited();
-            // A change to the *local* set-point re-stamps the wall clock: the manual clock edit, but
-            // also — in GPS mode — a UTC-offset turn or GPS-clock toggle, both of which shift local
-            // time. Flipping units or the GPS interval leaves the local clock alone.
+            // A change to the *local* set-point re-stamps the wall clock so Home shows the new local
+            // time: the only settings-screen edit that shifts it now is a UTC-offset turn (manual
+            // date/time editing was removed in #641). It does **not** touch `clock_trust` — nudging
+            // the offset isn't a real time source. Flipping units or the GPS interval leaves the
+            // local clock alone.
             let local_now = self.settings.local_clock();
             if local_now != settings_before.local_clock() {
                 self.wall_clock.set(local_now, self.ui.now_ms);
@@ -2238,26 +2291,52 @@ mod tests {
         obc_ports::GpsTime { utc: DateTime { year: 2026, month: 6, day: 30, hour, minute }, second }
     }
 
-    /// In "Set from GPS" mode a resolved GPS UTC stamps the wall clock (the UTC anchor shifted into
-    /// local time by the offset); in manual mode the GPS time is ignored so a hand-set clock is
-    /// never overwritten. The set-point updates without flagging a save.
+    /// A fresh boot is **untrusted** — the persisted set-point is display-only until a real source
+    /// re-establishes the clock this boot (#641). `clock_is_set` (the coarse "do we know a date?"
+    /// gate) can still be true from the seeded set-point; `clock_trusted` (the finer expiry gate) is
+    /// not.
     #[test]
-    fn gps_time_sets_the_wall_clock_only_in_gps_mode() {
-        // Manual mode: GPS time is ignored; the hand-set clock stands.
-        let mut manual = App::new(AppState::new(0, 0, 1.0));
-        let hand_set = DateTime { year: 2025, month: 1, day: 1, hour: 9, minute: 0 };
-        manual.set_settings(Settings { gps_time: false, clock: hand_set, ..Settings::default() });
-        tick_clock(&mut manual, gps_time(14, 37, 0), 1000);
-        assert_eq!(manual.wall_clock_now(), hand_set, "manual mode ignores GPS time");
-        assert!(!settings_dirty(&mut manual), "a GPS stamp never flags a settings save");
+    fn boot_clock_is_untrusted() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        assert!(!app.clock_trusted(), "no source stamped the clock yet — untrusted from boot");
+        // Even after seeding a persisted set-point, trust stays false: the seed is display-only.
+        app.set_settings(Settings {
+            clock: DateTime { year: 2026, month: 6, day: 30, hour: 8, minute: 0 },
+            ..Settings::default()
+        });
+        assert!(app.clock_is_set(), "the seeded set-point is established (the Home date line shows)");
+        assert!(!app.clock_trusted(), "but a stale persisted seed is never trusted");
+    }
 
-        // GPS mode with a +02:00 offset: local = UTC anchor + offset = 16:37.
-        let mut gps = App::new(AppState::new(0, 0, 1.0));
-        gps.set_settings(Settings { gps_time: true, utc_offset_min: 120, ..Settings::default() });
-        tick_clock(&mut gps, gps_time(14, 37, 0), 1000);
-        let now = gps.wall_clock_now();
+    /// GPS **always** stamps now (#641, manual mode gone): a resolved GPS UTC re-stamps the wall
+    /// clock to the local time (UTC anchor + offset), marks the clock trusted as `Gps`, and — since
+    /// the anchor moved — arms a persist through the change-detected save path.
+    #[test]
+    fn gps_stamp_sets_clock_and_marks_trusted() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { utc_offset_min: 120, ..Settings::default() });
+        assert!(!app.clock_trusted(), "untrusted before the first fix");
+        tick_clock(&mut app, gps_time(14, 37, 0), 1000);
+        let now = app.wall_clock_now();
         assert_eq!((now.hour, now.minute), (16, 37), "GPS UTC 14:37 + 02:00 → local 16:37");
-        assert_eq!(gps.settings().clock, gps_time(14, 37, 0).utc, "the stored anchor is the raw UTC");
+        assert_eq!(app.settings().clock, gps_time(14, 37, 0).utc, "the stored anchor is the raw UTC");
+        assert!(app.clock_trusted(), "a GPS stamp establishes trust this boot");
+        assert!(settings_dirty(&mut app), "the moved anchor persists via the settings-save path");
+    }
+
+    /// The persist is coalesced to the minute-resolution anchor: a second GPS stamp inside the same
+    /// displayed minute doesn't re-arm the save (no per-fix RRAM thrash), but still keeps trust.
+    #[test]
+    fn gps_restamp_within_the_minute_does_not_re_persist() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::default());
+        tick_clock(&mut app, gps_time(14, 37, 10), 1000);
+        assert!(settings_dirty(&mut app), "the first stamp moved the anchor → one save");
+        // A later fix in the same minute (different seconds only) leaves the minute-resolution anchor
+        // unchanged, so no new save is armed.
+        tick_clock(&mut app, gps_time(14, 37, 42), 5000);
+        assert!(!settings_dirty(&mut app), "same displayed minute → the anchor didn't move → no re-save");
+        assert!(app.clock_trusted(), "trust holds across the re-stamp");
     }
 
     /// The seconds-into-the-minute back-date makes the displayed minute roll over at the true
@@ -2265,7 +2344,7 @@ mod tests {
     #[test]
     fn gps_time_back_dates_the_epoch_by_seconds() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.set_settings(Settings { gps_time: true, ..Settings::default() });
+        app.set_settings(Settings::default());
         tick_clock(&mut app, gps_time(14, 37, 56), 10_000); // stamped 56 s into the minute
         assert_eq!((app.wall_clock_now().hour, app.wall_clock_now().minute), (14, 37));
         // 4 s on (56 + 4 = 60 s since the minute's true start) the minute must have rolled.
@@ -2957,8 +3036,9 @@ mod tests {
         let cases: [Case; 8] = [
             // Pure navigation — no edit gesture of its own.
             ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
-            // Press on row 0 flips the `GPS clock` toggle.
-            ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press]),
+            // Open the UTC-offset stepper (#641: the one editable row), +one step — and leave the
+            // field open, so Back must still close it then exit.
+            ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Turn(1)]),
             // Press flips metric ↔ imperial.
             ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
             // Open the page-cycle stepper, +1 s (and leave the field open — Back must still exit).
@@ -3100,38 +3180,34 @@ mod tests {
         assert_eq!((now.hour, now.minute), (15, 5), "the clock advanced 25 min, carrying into the hour");
     }
 
-    /// Editing the time on the Date & Time screen re-stamps the wall clock, so it resumes ticking
-    /// from the freshly set value rather than carrying the pre-edit monotonic offset into it.
-    /// Drives the real navigation (Home → Menu → Settings → Date & Time → TIME → minute).
+    /// Turning the UTC offset on the Date & Time screen re-stamps the wall clock to the new local
+    /// time (the one surviving clock edit — manual date/time was removed in #641). Drives the real
+    /// navigation (Home → Menu → Settings → Date & Time → offset field).
     #[test]
-    fn editing_the_clock_restamps_the_wall_clock() {
+    fn offset_edit_restamps_the_wall_clock_to_local() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        // Ten minutes of monotonic time since boot: with a stale epoch the display would read the
-        // set-point + 10 min, so the re-stamp is exactly what makes it read the edited value.
-        app.ui.now_ms = 10 * 60_000;
+        app.set_settings(Settings {
+            clock: DateTime { year: 2026, month: 6, day: 29, hour: 12, minute: 0 }, // UTC anchor
+            utc_offset_min: 0,
+            ..Settings::default()
+        });
         app.apply_gesture(Gesture::BackHold); // Home → Menu
         app.apply_gesture(Gesture::Turn(-1)); // → Settings entry (wraps back from Routes)
         app.apply_gesture(Gesture::Press); // → Settings list (row 0 = Date & Time)
-        app.apply_gesture(Gesture::Press); // → Date & Time
-        app.apply_gesture(Gesture::Turn(2)); // Toggle → DATE → TIME row
-        app.apply_gesture(Gesture::Press); // open the hour field
-        app.apply_gesture(Gesture::Press); // step to the minute field
-        let before = app.settings().clock.minute;
-        app.apply_gesture(Gesture::Turn(1)); // minute + 1 → a real clock edit
-        let edited = app.settings().clock;
-        assert_ne!(edited.minute, before, "the edit moved the minute");
-        assert_eq!(app.wall_clock_now(), edited, "the edit re-stamped the clock to the new set-point");
-        app.ui.now_ms += 60_000;
-        assert_eq!(app.wall_clock_now().minute, (edited.minute + 1) % 60, "ticks on from the new stamp");
+        app.apply_gesture(Gesture::Press); // → Date & Time (cursor parked on the offset row)
+        app.apply_gesture(Gesture::Press); // open the offset field
+        app.apply_gesture(Gesture::Turn(1)); // +one step (+15 min)
+        assert_eq!(app.settings().utc_offset_min, crate::settings::UTC_OFFSET_STEP, "the offset stepped one detent");
+        let now = app.wall_clock_now();
+        assert_eq!((now.hour, now.minute), (12, 15), "the offset re-stamped the wall clock to local = UTC + offset");
     }
 
-    /// In GPS mode the Home wall clock shows **local** time (the UTC anchor shifted by the offset),
-    /// so it agrees with the Date & Time screen's "Local time" row instead of trailing it.
+    /// The Home wall clock shows **local** time (the UTC anchor shifted by the offset), so it agrees
+    /// with the Date & Time screen's "Local time" row instead of trailing it.
     #[test]
-    fn gps_mode_wall_clock_shows_local_time() {
+    fn wall_clock_shows_local_time() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let seeded = crate::settings::Settings {
-            gps_time: true,
             clock: DateTime { year: 2026, month: 6, day: 29, hour: 12, minute: 0 }, // the UTC anchor
             utc_offset_min: 120,                                                    // +02:00
             ..Default::default()
