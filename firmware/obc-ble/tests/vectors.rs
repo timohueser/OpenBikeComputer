@@ -271,6 +271,66 @@ fn valid_cmd(cmd: u8, utc: u32, offset_min: i16) -> [u8; 7] {
     b
 }
 
+/// `setRouteRetention` (§4.4 cmd 6, epic #638 S4): the shared fixture decodes as `(object_id 7,
+/// retention 3)` and re-encodes to the same 4 bytes — the Swift side pins the same file in S6. Its
+/// answer is a bare `commandResult(ok)` (with a companion `storeChanged(route)` on a real change).
+#[test]
+fn command_set_route_retention_vector() {
+    use obc_ble::{CommandResult, CommandStatus, ObjectType, SetRouteRetention, StoreChanged, CMD_SET_ROUTE_RETENTION};
+
+    assert_eq!(
+        CMD_SET_ROUTE_RETENTION, 6,
+        "the wire command id is pinned by the spec (§4.4, next-free after setClock)"
+    );
+
+    let bytes = fixture("command-set-route-retention.bin");
+    assert_eq!(bytes.len(), SetRouteRetention::ENCODED_LEN, "setRouteRetention is a fixed 4-byte write");
+    let srr = SetRouteRetention::decode(&bytes).expect("valid setRouteRetention");
+    assert_eq!(srr.object_id, 7, "route id 7 — the waypoint route in route-list.bin");
+    assert_eq!(srr.retention, 3, "retention = 2 weeks");
+
+    let mut out = [0u8; SetRouteRetention::ENCODED_LEN];
+    let len = SetRouteRetention::encode(srr.object_id, srr.retention, &mut out).unwrap();
+    assert_eq!(&out[..len], &bytes[..], "re-encode");
+
+    // The device's answer: commandResult{cmd 6, ok}; a real change also notifies storeChanged(route).
+    let (buf, len) = Msg::CommandResult(CommandResult::new(CMD_SET_ROUTE_RETENTION, CommandStatus::Ok)).encode();
+    let StatusMessage::CommandResult(r) = StatusMessage::decode(&buf[..len]).unwrap().unwrap() else {
+        panic!("expected commandResult")
+    };
+    assert_eq!((r.command, r.status, r.detail), (CMD_SET_ROUTE_RETENTION, CommandStatus::Ok, 0));
+    // The companion storeChanged names the *route* store (§4.3 msg 2), like a route delete.
+    let (buf, len) = Msg::StoreChanged(StoreChanged { ty: ObjectType::Route, revision: 43 }).encode();
+    let StatusMessage::StoreChanged(sc) = StatusMessage::decode(&buf[..len]).unwrap().unwrap() else {
+        panic!("expected storeChanged")
+    };
+    assert_eq!(sc.ty, ObjectType::Route);
+}
+
+/// `setRouteRetention` decode rejects every malformed / out-of-range write — each maps to
+/// `commandResult error` (§4.4). The range check lives in the shared codec so the firmware and the
+/// iOS mirror agree on "valid".
+#[test]
+fn set_route_retention_decode_edges() {
+    use obc_ble::{SetRouteRetention, SET_ROUTE_RETENTION_MAX};
+
+    // Exactly 4 bytes — no variable tail, so a short or long write is malformed.
+    assert!(SetRouteRetention::decode(&[6, 7, 0]).is_err(), "3 bytes: short");
+    assert!(SetRouteRetention::decode(&[6, 7, 0, 3, 0]).is_err(), "5 bytes: trailing is malformed");
+    // A wrong command byte is refused.
+    assert!(SetRouteRetention::decode(&[5, 7, 0, 3]).is_err(), "cmd 5 is not setRouteRetention");
+    // Every in-range retention decodes; one above the max is rejected.
+    for r in 0..=SET_ROUTE_RETENTION_MAX {
+        let d = SetRouteRetention::decode(&[6, 7, 0, r]).expect("in-range retention");
+        assert_eq!((d.object_id, d.retention), (7, r));
+    }
+    assert!(
+        SetRouteRetention::decode(&[6, 7, 0, SET_ROUTE_RETENTION_MAX + 1]).is_err(),
+        "retention > 5 is out of range"
+    );
+    assert!(SetRouteRetention::decode(&[6, 7, 0, 0xFF]).is_err(), "0xFF is out of range");
+}
+
 /// `ackRides` decode edges: a `count` promising more ids than the write carries is truncated; a
 /// wrong command byte is refused; an empty ack and ignored trailing bytes are both fine.
 #[test]
@@ -425,8 +485,10 @@ fn trip_object_types_and_descriptor() {
     assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
 }
 
-/// The `routeList` fixture decodes through the production list codec, its entries agree with the
-/// stored route fixtures they describe, and re-encoding reproduces the file byte-for-byte.
+/// The `routeList` fixture decodes through the production list codec, its first two entries agree
+/// with the stored route fixtures they describe, its auto-expiry tail spans the epic #638 S4 spread
+/// (a live countdown, a not-yet-started clock, a Never route), and re-encoding reproduces the file
+/// byte-for-byte.
 #[test]
 fn route_list_vector() {
     use obc_ble::{ListHeader, RouteListEntry};
@@ -435,25 +497,34 @@ fn route_list_vector() {
     let route_plain = fixture("route-plain.obcr");
     let bytes = fixture("route-list.bin");
     let (h, entry_len) = ListHeader::decode(&bytes).unwrap();
-    assert_eq!(h.count, 2);
-    assert_eq!(h.total, 2, "nothing truncated");
+    assert_eq!(h.count, 3);
+    assert_eq!(h.total, 3, "nothing truncated");
     assert!(!h.is_truncated());
-    assert_eq!(entry_len, RouteListEntry::ENTRY_LEN, "v2 routeList entry is 76 bytes");
+    assert_eq!(entry_len, RouteListEntry::ENTRY_LEN, "v2 routeList entry is 84 bytes (76 core + expiry tail)");
+    assert_eq!(entry_len, 84);
     assert_eq!(bytes.len(), ListHeader::object_len(h.count as usize, entry_len));
 
+    // Per-entry expectations, in id order: (byte_len, waypoint_count, content_crc, expires_at,
+    // retention). Ids 7/8 are the two stored `.obcr` fixtures; id 9 is a synthetic Never route
+    // (reusing the plain route's size/CRC) that pins the Never state on the wire.
+    let plain_crc = Crc32::checksum(&route_plain);
+    let expect = [
+        (7u16, route_wp.len(), 2u16, Crc32::checksum(&route_wp), obc_vectors::ROUTE_EXPIRES_AT_LIVE, 3u8),
+        (8, route_plain.len(), 0, plain_crc, 0, 1),
+        (9, route_plain.len(), 0, plain_crc, 0, 0),
+    ];
     let mut rebuilt = ListHeader { count: h.count, total: h.total }.encode(entry_len as u8).to_vec();
-    for (k, (byte_len, waypoints, crc)) in
-        [(route_wp.len(), 2u16, Crc32::checksum(&route_wp)), (route_plain.len(), 0, Crc32::checksum(&route_plain))]
-            .iter()
-            .enumerate()
-    {
+    for (k, &(id, byte_len, waypoints, crc, expires_at, retention)) in expect.iter().enumerate() {
         let off = ListHeader::ENCODED_LEN + k * entry_len;
         let e = RouteListEntry::decode(&bytes[off..off + entry_len]).unwrap();
-        assert_eq!(e.byte_len as usize, *byte_len, "entry {k} sizes its stored file");
-        assert_eq!(e.waypoint_count, *waypoints);
+        assert_eq!(e.object_id, id, "entry {k} id");
+        assert_eq!(e.byte_len as usize, byte_len, "entry {k} sizes its stored file");
+        assert_eq!(e.waypoint_count, waypoints);
         assert_eq!(e.name, b"Vector Loop");
-        assert_eq!(e.crc32, *crc, "entry {k} carries its content CRC-32");
+        assert_eq!(e.crc32, crc, "entry {k} carries its content CRC-32");
         assert_eq!((e.distance_m, e.ascent_m, e.point_count), (2207, 76, 9), "OBCR header stats");
+        assert_eq!(e.expires_at, expires_at, "entry {k} expires_at");
+        assert_eq!(e.retention, retention, "entry {k} retention");
         rebuilt.extend_from_slice(&e.encode());
     }
     assert_eq!(rebuilt, bytes, "re-encode");

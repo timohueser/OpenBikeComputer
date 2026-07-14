@@ -40,7 +40,7 @@ use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
 use obc_app::settings::DeviceName;
-use obc_app::{Settings, MAX_ROUTES, MAX_TRIPS};
+use obc_app::{Retention, Settings, MAX_ROUTES, MAX_TRIPS};
 use obc_ble::{
     Crc32, ListHeader, ObjectType, Receiver, RideListEntry, RouteListEntry, StreamSender, TransferControl,
     TransferStatus, TripListEntry,
@@ -780,6 +780,30 @@ impl ObjectStore {
         added.min(u8::MAX as usize) as u8
     }
 
+    /// Set a stored route's retention level from the `setRouteRetention` command (§4.4 cmd 6 /
+    /// epic #638 S4). Writes the level through the S3 route-retention sidecar **without touching
+    /// `last_used`** (changing retention never resets the usage clock). Returns:
+    ///
+    /// - `None` — the id names no stored route → the handler answers `notFound` (2). No sidecar write.
+    /// - `Some(true)` — a real change; the sidecar was rewritten and the **route** store revision
+    ///   bumped, so the phone's `storeChanged(route)` fires and the ride loop's `STORE_CHANGED` rescan
+    ///   re-feeds `set_routes_with_meta` with the fresh retention (the app displays device truth).
+    /// - `Some(false)` — the value was already that level; `ok` with **no** revision bump (the
+    ///   idempotence pin: only a real change moves the store).
+    ///
+    /// A missing card is treated as "no such route" (`None`) — nothing to write.
+    pub fn set_route_retention(&mut self, shared: &mut SharedStore, id: u16, retention: Retention) -> Option<bool> {
+        if !self.has_route(id) {
+            return None;
+        }
+        let storage = shared.storage.as_mut()?;
+        let changed = storage.set_route_retention_level(id, retention);
+        if changed {
+            self.bump_revision();
+        }
+        Some(changed)
+    }
+
     /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so
     /// the phone's `storeChanged(ride)` + digest and the ride loop's [`STORE_CHANGED`] edge (→ the
     /// Rides menu re-feed) all move from this one edge — the exact path an upload commit or a delete
@@ -1298,6 +1322,11 @@ impl ObjectStore {
             return Some((ListHeader::ENCODED_LEN, 0, 0, RouteListEntry::ENTRY_LEN as u8));
         };
         let mut crcs = storage.load_route_crcs();
+        // The per-route retention state (auto-expiry epic #638 S4): one sidecar read for the whole
+        // build. Each entry's `expires_at` is device-computed (`last_used + retention days`, `0` for
+        // Never or an unstarted clock) — **volatile** state, so it rides the entry tail *after* the
+        // content crc32, never conflated with the route-content fingerprint.
+        let retention = storage.load_route_retention();
         let mut crcs_dirty = false;
         let mut off = ListHeader::ENCODED_LEN;
         let mut count: u16 = 0;
@@ -1323,6 +1352,7 @@ impl ObjectStore {
                     None => RouteListEntry::CRC_UNKNOWN, // transient read failure → 0 = unknown
                 },
             };
+            let meta = retention.get(id);
             let entry = RouteListEntry {
                 object_id: id,
                 byte_len,
@@ -1332,6 +1362,9 @@ impl ObjectStore {
                 waypoint_count: info.waypoint_count,
                 name: info.name.as_bytes(),
                 crc32: crc,
+                // Auto-expiry tail: `expires_at = last_used + retention days` (0 = Never / unstarted).
+                expires_at: meta.expires_at().unwrap_or(0),
+                retention: meta.retention.as_u8(),
             }
             .encode();
             self.list_buf[off..off + RouteListEntry::ENTRY_LEN].copy_from_slice(&entry);

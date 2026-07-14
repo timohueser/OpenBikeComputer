@@ -25,8 +25,10 @@ use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use nrf_sdc::{self as sdc};
+use obc_app::Retention;
 use obc_ble::{
-    CommandResult, CommandStatus, Config, ObjectType, Op, SetClock, StatusMessage, TransferControl, TransferStatus,
+    CommandResult, CommandStatus, Config, ObjectType, Op, SetClock, SetRouteRetention, StatusMessage, TransferControl,
+    TransferStatus,
 };
 use trouble_host::prelude::*;
 
@@ -57,8 +59,10 @@ struct CommandOutcome {
 /// `ackRides` (cmd 2: `count u8 · count × object_id u16`) reconciles the synced sidecar from the
 /// phone's possession list ([`ObjectStore::ack_rides`]); its `commandResult.detail` reports the
 /// newly-flagged count. `setClock` (cmd 5: `utc u32 · offset_min i16`, epic #638 S2) validates the
-/// phone's clock and crosses it to the ride loop to stamp — no store movement. Any other command byte
-/// is `unknownCommand`.
+/// phone's clock and crosses it to the ride loop to stamp — no store movement. `setRouteRetention`
+/// (cmd 6: `object_id u16 · retention u8`, epic #638 S4) sets a stored route's retention level through
+/// the S3 sidecar (not touching `last_used`), bumping the route revision on a real change. Any other
+/// command byte is `unknownCommand`.
 fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
     let mut forget_bond = false;
@@ -155,6 +159,40 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedSto
                 }
                 Err(_) => {
                     warn!("ble: [cmd] setClock rejected: malformed / out-of-range ({} B)", data.len());
+                    (CommandStatus::Error, 0, None)
+                }
+            }
+        }
+        (obc_ble::CMD_SET_ROUTE_RETENTION, _) => {
+            // setRouteRetention (auto-expiry epic #638 S4, #644): set a stored route's retention level
+            // without re-uploading it. `SetRouteRetention::decode` owns the whole §4.4 validation
+            // (exact 4-byte length, `retention` ≤ 5) so a bad write never mutates the store: any `Err`
+            // → `error`. A known id writes the level through the S3 retention sidecar **without
+            // touching `last_used`** (changing retention never resets the usage clock) and bumps the
+            // **route** store revision only on a *real* change — so `storeChanged(route)` + the ride
+            // loop's rescan re-feed `set_routes_with_meta`, and the phone sees the fresh expiry in the
+            // next `routeList`. Setting the same value twice is `ok` with no bump (the idempotence
+            // pin); an unknown `object_id` is `notFound`.
+            match SetRouteRetention::decode(data) {
+                Ok(srr) => match store.borrow_mut().set_route_retention(
+                    shared,
+                    srr.object_id,
+                    Retention::from_u8(srr.retention),
+                ) {
+                    None => {
+                        info!("ble: [cmd] setRouteRetention: unknown route {}", srr.object_id);
+                        (CommandStatus::NotFound, 0, None)
+                    }
+                    Some(changed) => {
+                        info!(
+                            "ble: [cmd] setRouteRetention: route {} -> retention {} (changed {})",
+                            srr.object_id, srr.retention, changed
+                        );
+                        (CommandStatus::Ok, 0, changed.then_some(ObjectType::Route))
+                    }
+                },
+                Err(_) => {
+                    warn!("ble: [cmd] setRouteRetention rejected: malformed / out-of-range ({} B)", data.len());
                     (CommandStatus::Error, 0, None)
                 }
             }
