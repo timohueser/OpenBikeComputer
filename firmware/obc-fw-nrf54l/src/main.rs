@@ -10,7 +10,8 @@
 //! firmware with the BLE stack folded in (`ble/`: MPSL, the SoftDevice Controller, TrouBLE) —
 //! **map + BLE in one image** (#270). [`ble::run`] is spawned beside the ride loop; both drive the
 //! shared SD + settings store ([`SharedStore`] — the ride loop locks it per frame across the
-//! render, the object plane per chunk between frames). Fits the 256 KB DK on the culled `nrf-mem`
+//! render but never across the present (#809), the object plane per chunk). Fits the 256 KB DK
+//! on the culled `nrf-mem`
 //! caps; the budget assert + the ~53 KB residual stack (deep-ride peak ~36 KB) are the margins.
 //! `--no-default-features` stays mandatory — it swaps the critical-section impl to MPSL's.
 //!
@@ -197,7 +198,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 // The async `Mutex` guards the shared SD + settings store ([`SharedStore`], every build) — a lock
-// held across an `.await` (the ride loop holds it across a whole map render).
+// whose guard can outlive an `.await` (the BLE plane's per-chunk ops); the ride loop's holds are
+// synchronous — render yes, present never (#809).
 use embassy_sync::mutex::Mutex;
 // The map/ride half of obc-app, alongside the shared `InputPlane`.
 use obc_app::InputPlane;
@@ -504,9 +506,12 @@ unsafe fn init_static<T>(slot: *mut MaybeUninit<T>, val: T) -> &'static mut T {
 /// The two persistent resources both thread-mode planes drive: the mounted SD card (`None` = no
 /// card — the map plane then idles, the BLE plane still serves config/bond/diagnostics) and the RRAM
 /// settings store. Held behind an async [`Mutex`] so a locker can keep the guard **across an
-/// `.await`** — the ride loop holds it across a whole map render; the BLE object plane takes it per
-/// chunk between passes — which a `RefCell` can't (the ble planes avoid that only by never borrowing
-/// across an await). `NoopRawMutex` suffices: both planes are cooperative futures on the one
+/// `.await`** where it must (the BLE object plane takes it per chunk, around channel awaits) —
+/// which a `RefCell` can't (the ble planes avoid that only by never borrowing across an await).
+/// The ride loop holds it in two short per-pass scopes — the store phase (reconcile + the sync
+/// map render, which borrows the open SD handles) and the post-present tail — and **never across
+/// the display present** (#809), so BLE store ops interleave with the ~44 ms FLPR scan.
+/// `NoopRawMutex` suffices: both planes are cooperative futures on the one
 /// thread-mode executor and no ISR touches storage, so no critical section is needed.
 pub(crate) struct SharedStore {
     pub(crate) storage: Option<sd::Storage>,
