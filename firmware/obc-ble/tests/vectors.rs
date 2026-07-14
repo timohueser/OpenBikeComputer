@@ -218,7 +218,7 @@ fn command_set_clock_vector() {
     let bytes = fixture("command-set-clock.bin");
     assert_eq!(bytes.len(), SetClock::ENCODED_LEN, "setClock is a fixed 7-byte write");
     let sc = SetClock::decode(&bytes).expect("valid setClock");
-    assert_eq!(sc.utc, 1_752_062_400, "2025-07-09T12:00:00Z");
+    assert_eq!(sc.utc, 1_783_598_400, "2026-07-09T12:00:00Z");
     assert_eq!(sc.offset_min, 120, "+02:00");
 
     let mut out = [0u8; SetClock::ENCODED_LEN];
