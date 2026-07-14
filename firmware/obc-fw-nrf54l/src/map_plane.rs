@@ -7,8 +7,15 @@
 //! [`run_app`](crate::ride::run_app) stays free of the panel's transport details. `MapDisplay` owns
 //! the `Ls021Flpr` panel and exposes the methods the loop calls:
 //!   - `poll_overlay`     — this frame's hold-bulge state (dirty edge + live row span);
-//!   - `render_present`   — render the clean frame into the framebuffer + push it to glass;
+//!   - `render_frame`     — render the clean frame into the resident framebuffer (sync, no push);
+//!   - `present_frame`    — push the rendered frame to glass (async — the FLPR scan);
 //!   - `present_bulge`    — re-present the hold bulge over the clean map.
+//!
+//! Render and present are **separate calls** (#809): the ride loop renders while its store guard
+//! is live (the render closure borrows the open SD reader) and presents after the guard is gone,
+//! so BLE object operations never queue behind the ~44 ms FLPR scan. Framebuffer ownership makes
+//! the split safe: both halves borrow the same owned `frame` field, so nothing can render into it
+//! while a present's shared borrow is scanning it.
 //!
 //! The FLPR owns the panel outright (whole-frame scan per push → no shared bus), so the map plane
 //! pushes both the clean frame and the bulge itself; the input plane only recognises gestures. The
@@ -56,34 +63,23 @@ const OVL_W: u16 = 16;
 // changed-row spans it pushes (`obc_display::ls021::RowDiff::diff_clipped`), leaving those rows for
 // the map plane's own `MapDisplay::present_bulge`.
 
-/// What [`MapDisplay::render_present`] reports for one map frame: whether the push reached glass
-/// (`false` → a transport fault to retry, #66), the render's [`RenderStats`], and the render / push
-/// timings (µs) the RTT log + the VCOM telemetry carry.
-pub(crate) struct FramePresent {
-    pub(crate) ok: bool,
-    // Read by the ride loop's telemetry/log lines only.
-    pub(crate) stats: RenderStats,
-    pub(crate) render_us: u64,
-    pub(crate) push_us: u64,
-}
-
 /// Draw a full-screen [boot fault](obc_app::BootFault) to glass and return — the **undismissable**
 /// storage-failure screen (no card / no map file / unreadable map). `main` brings the display up
 /// first, then calls this at the fatal SD/map sites before dropping to the heartbeat idle, so the
 /// rider sees *what's wrong* instead of a silently dark panel. Reuses the map plane's
-/// [`render_present`](MapDisplay::render_present) so the fault frame lands through the same backend
-/// push (and the same self-diffing FLPR scan) as any other frame; one push holds, since the message
-/// never changes. Free-standing (not tied to an [`App`]) because at boot there may be no map to
-/// build one around. Backend-agnostic: the one concrete `MapDisplay` this build compiled.
+/// [`render_frame`](MapDisplay::render_frame) + [`present_frame`](MapDisplay::present_frame) so the
+/// fault frame lands through the same backend push (and the same self-diffing FLPR scan) as any
+/// other frame; one push holds, since the message never changes. Free-standing (not tied to an
+/// [`App`]) because at boot there may be no map to build one around. Backend-agnostic: the one
+/// concrete `MapDisplay` this build compiled.
 pub(crate) async fn show_boot_fault(display: &mut MapDisplay, fault: obc_app::BootFault) {
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
-    display
-        .render_present(None, |f| {
-            let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
-            obc_app::draw_boot_fault(&mut fbdev, FRAME_W as i32, FRAME_H as i32, color_fn, fault);
-            RenderStats::default()
-        })
-        .await;
+    display.render_frame(|f| {
+        let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+        obc_app::draw_boot_fault(&mut fbdev, FRAME_W as i32, FRAME_H as i32, color_fn, fault);
+        RenderStats::default()
+    });
+    let _ = display.present_frame(None).await;
 }
 
 /// Consecutive failed presents that trigger one FLPR relaunch (#349): each failure already costs a
@@ -170,29 +166,37 @@ impl MapDisplay {
         self.input_plane.lock(|c| c.borrow_mut().cancel_holds());
     }
 
-    /// Render the clean frame into the owned `Frame64` and **self-diff** it to glass: push only the
-    /// rows that changed since the last present. With a live bulge, presenting with
-    /// `damage_around(bulge window)` clips its rows out (`overlay_span`) and leaves them for
-    /// `present_bulge` — the FLPR's ~44 ms full-frame scan would otherwise blank the bulge for that
-    /// whole scan (the pop-flicker), and even a partial clean push would flash it off. No shared
-    /// bus: the map plane owns every push here. Marked `#[inline(always)]` with a generic
+    /// Render the clean frame into the owned `Frame64` — the **sync half** of the #809 render /
+    /// present split. No push, no await: the ride loop calls this while its store guard is live
+    /// (the render closure borrows the open SD reader) and pushes the result with
+    /// [`present_frame`](Self::present_frame) after the guard is gone. Returns the closure's
+    /// [`RenderStats`] plus the render time (µs). Marked `#[inline(always)]` with a generic
     /// (non-`dyn`) `render` so the deep render folds into the caller's frame rather than nesting
     /// another (the stack regression).
     #[inline(always)]
-    pub(crate) async fn render_present(
-        &mut self,
-        overlay_span: Option<(u16, u16)>,
-        mut render: impl FnMut(&mut Frame64) -> RenderStats,
-    ) -> FramePresent {
+    pub(crate) fn render_frame(&mut self, mut render: impl FnMut(&mut Frame64) -> RenderStats) -> (RenderStats, u64) {
         let t_render = Instant::now();
         let stats = render(&mut self.frame);
-        let render_us = t_render.elapsed().as_micros();
+        (stats, t_render.elapsed().as_micros())
+    }
+
+    /// **Self-diff** the already-rendered resident frame to glass — the **async half** of the #809
+    /// split: push only the rows that changed since the last present. With a live bulge, presenting
+    /// with `damage_around(bulge window)` clips its rows out (`overlay_span`) and leaves them for
+    /// `present_bulge` — the FLPR's ~44 ms full-frame scan would otherwise blank the bulge for that
+    /// whole scan (the pop-flicker), and even a partial clean push would flash it off. No shared
+    /// bus: the map plane owns every push here. Returns `(reached_glass, push_us)`; a `false` is a
+    /// transport fault the caller retries (#66). Rendering between a [`render_frame`](Self#) and
+    /// this push is impossible for anyone but the caller: both halves borrow the same owned
+    /// `frame` field through `&mut self`.
+    #[inline(always)]
+    pub(crate) async fn present_frame(&mut self, overlay_span: Option<(u16, u16)>) -> (bool, u64) {
         if self.degraded {
             // Terminal FLPR-down mode (#349): don't spin a frame deadline against a dead core —
             // drop the frame, reporting `ok` so the caller doesn't latch an endless retry. The
             // ride loop has already dropped (or is about to drop) to the heartbeat idle; the `ble`
             // status build keeps its radio useful with the glass frozen on the last good frame.
-            return FramePresent { ok: true, stats, render_us, push_us: 0 };
+            return (true, 0);
         }
         let t_push = Instant::now();
         // Self-diffing present through the contracts, clipped around a live bulge's rows so
@@ -212,7 +216,7 @@ impl MapDisplay {
         }
         let push_us = t_push.elapsed().as_micros();
         self.note_push(ok).await;
-        FramePresent { ok, stats, render_us, push_us }
+        (ok, push_us)
     }
 
     /// Present the hold bulge over the clean map (the FLPR bulge rides this map plane — no shared SPI
