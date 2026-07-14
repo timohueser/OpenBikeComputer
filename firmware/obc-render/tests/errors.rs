@@ -4,8 +4,8 @@ use core::cell::Cell;
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
-use obc_reader::byte_io::Error as IoError;
-use obc_reader::format::{BRANCH_BIT, EMPTY_LEAF};
+use obc_formats::io::Error as IoError;
+use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 use obc_reader::{rgb565_to_rgb888, ByteSource, MapCache, MapTables, Reader};
 use obc_render::{MapRenderer, Viewport, MAX_DECODE_POINTS};
 use obcm_testkit::{build_file, pack_line, pack_line_decl, pad, LodSpec, Style};

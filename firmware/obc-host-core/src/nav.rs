@@ -89,7 +89,7 @@ pub fn finish_nav_plan(
     // stale preview) so the copy keys to the fresh `active_route`. Skipped when the answer was
     // dropped (rider cancelled — no overview is up to draw it).
     if result.is_ok() && app.nav_preview_missing() {
-        let src = obc_route::SliceSource(sink_bytes);
+        let src = obc_formats::io::SliceSource(sink_bytes);
         if let Ok(idx) = obc_route::RouteIndex::read(&src) {
             let pts = obc_route::RouteReader::new(&idx, &src).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
             app.set_nav_preview(&pts);

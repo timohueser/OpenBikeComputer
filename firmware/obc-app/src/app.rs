@@ -1117,16 +1117,6 @@ impl App {
         true
     }
 
-    /// Take the one-time "update confirmed" fact — the just-confirmed running version, if this
-    /// boot set one. S5's toast is the consumer; taking it clears it (shown once).
-    ///
-    /// Not part of the host protocol: the fact is app-internal delivery state (the
-    /// [`reconcile_update_toast`](App::reconcile_update_toast) pass consumes it); this accessor
-    /// exists for tests/introspection. Its disposition is owned by #812.
-    pub fn take_update_confirmed(&mut self) -> Option<heapless::String<32>> {
-        self.ui.update_confirmed.take()
-    }
-
     /// **Debug bench** (#500): start a route plan from `from` to `to` (both `(lon, lat)` µdeg) exactly
     /// as the POI create-route confirm does — record the [`NavRequest`](crate::activity::NavRequest)
     /// **and** push the planning screen — so the host steps the resumable router with the same live
@@ -1308,10 +1298,12 @@ impl App {
         self.activity.sensor_scan_active()
     }
 
-    /// How many [`notify_store_changed`](App::apply_event) signals are pending (not yet acted
-    /// on). Non-zero once the store has moved since the last drain. A read-only observation hook for
-    /// the board wiring and the seam tests; the acting consumer is
-    /// [`take_store_changed`](App::drain_host_commands).
+    /// How many `StoreChanged` events ([`apply_event`](App::apply_event)) are pending (not yet
+    /// acted on). Non-zero once the store has moved since the last drain. The **retained** read-only,
+    /// non-consuming observer of the burst count (FAR-19, #812): the acting consumer drains the count
+    /// as the `RescanStore` command through [`drain_host_commands`](App::drain_host_commands), which
+    /// resets it — there is no other way to *observe* the accumulated burst without consuming it, so
+    /// the `ble`/screen seam tests read it here. Kept deliberately; not part of the host protocol.
     pub fn store_changed_pending(&self) -> u32 {
         self.host.store_changed_pending()
     }
@@ -3211,7 +3203,8 @@ mod tests {
     // and the C5 auto-switch — through `App::update_active_climb` and `App::tick` over the
     // committed `grimsel-climb.obcr` fixture (3 back-to-back climbs).
 
-    use obc_route::{RouteIndex, SliceSource};
+    use obc_formats::io::SliceSource;
+    use obc_route::RouteIndex;
 
     /// The committed Grimsel fixture bytes (3 back-to-back climbs), embedded so the `no_std` lib
     /// tests need no `std::fs`. Boundaries: 501–11067, 11067–14472, 14472–18547; total ~18.7 km.
@@ -3623,11 +3616,13 @@ mod tests {
         assert_eq!(drain_dfu(&mut app), Some(DfuAction::Install), "the posted request drains");
         assert_eq!(drain_dfu(&mut app), None, "…exactly once");
 
-        assert_eq!(app.take_update_confirmed(), None, "no confirmed update on a normal boot");
+        // The confirmed-update fact is app-internal delivery state consumed by
+        // `reconcile_update_toast` (no host-protocol accessor); the in-crate test reads the field.
+        assert_eq!(app.ui.update_confirmed.take(), None, "no confirmed update on a normal boot");
         app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v1.2.3-4-gabc1234")));
-        let v = app.take_update_confirmed().expect("the fact is set");
+        let v = app.ui.update_confirmed.take().expect("the fact is set");
         assert_eq!(v.as_str(), "v1.2.3-4-gabc1234");
-        assert_eq!(app.take_update_confirmed(), None, "taken once — the toast shows once");
+        assert_eq!(app.ui.update_confirmed.take(), None, "taken once — the toast shows once");
     }
 
     /// The S5 scan-result seam (epic #615 S5, #620): `notify_dfu_scan_result` lands in the

@@ -20,9 +20,9 @@
 //! caller's stack for the lifetime of the detail screen.
 
 use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_DAYS, POI_HOURS_SLOTS_PER_DAY};
-
-// Compatibility names retained until the #812 final audit.
-pub use obc_formats::obcm::{
+// The normative flag bits are owned by `obc-formats`; imported under the module-local `HOURS_FLAG_*`
+// names this decoder reads. Not re-exported — consumers reach the flags via `obc_formats::obcm`.
+use obc_formats::obcm::{
     POI_HOURS_FLAG_SEASONAL as HOURS_FLAG_SEASONAL, POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED,
 };
 
@@ -67,7 +67,7 @@ pub const MINUTES_PER_DAY: u16 = 1440;
 
 impl WeeklySchedule {
     /// Decode a 29-byte pool blob (spec §7.5) into a schedule. `blob` must be exactly
-    /// [`POI_HOURS_BLOB_LEN`](crate::POI_HOURS_BLOB_LEN) bytes; a shorter slice yields
+    /// [`POI_HOURS_BLOB_LEN`](obc_formats::obcm::POI_HOURS_BLOB_LEN) bytes; a shorter slice yields
     /// `None` (a corrupt/truncated pool is handled cleanly, never a panic). Every
     /// quarter-hour byte is taken as-is — the packer guarantees `0..=96`, and the eval
     /// helpers stay total for any byte value regardless.

@@ -10,7 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use obc_app::{App, TripInput};
-use obc_route::{SliceSource, TripMeta};
+use obc_formats::io::SliceSource;
+use obc_route::TripMeta;
 
 /// The scanned trips folder: each trip's session id + its decoded [`TripMeta`], parallel to its file
 /// path. Trip ids live in their own namespace (separate from routes/rides, spec §4.1).
@@ -164,7 +165,8 @@ mod tests {
     use super::*;
     use crate::routes::RouteStore;
     use obc_app::{App, AppState};
-    use obc_route::{write_trip, RouteSummary, SliceSource};
+    use obc_formats::io::SliceSource;
+    use obc_route::{write_trip, RouteSummary};
 
     /// The committed sample route (`assets/grimsel-climb.obcr`) — the "Grimsel Climb" OBCR the fixture
     /// trip groups copies of.
@@ -196,12 +198,12 @@ mod tests {
     #[test]
     fn committed_trip_asset_matches_the_production_writer() {
         struct VecSink(Vec<u8>);
-        impl obc_route::ByteSink for VecSink {
-            fn write(&mut self, b: &[u8]) -> Result<(), obc_route::Error> {
+        impl obc_formats::io::ByteSink for VecSink {
+            fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
                 self.0.extend_from_slice(b);
                 Ok(())
             }
-            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_route::Error> {
+            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
                 let o = off as usize;
                 self.0[o..o + b.len()].copy_from_slice(b);
                 Ok(())

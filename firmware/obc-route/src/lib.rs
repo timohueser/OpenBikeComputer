@@ -6,7 +6,6 @@
 //! format. The on-disk layout is specified in `OBCR_Spec.md`.
 //!
 //! Modules:
-//! - [`byte_io`] — compatibility paths for the `obc-formats` byte-I/O seam.
 //! - [`reader`] — header / chunk-index parsing and on-demand chunk decode
 //!   ([`RouteReader`], [`RouteSummary`], [`ChunkMeta`], [`RoutePoint`]).
 //! - [`profile`] — a route's elevation sampled to a fixed-width [`Profile`] for the
@@ -33,7 +32,6 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod byte_io;
 pub mod climb;
 pub mod climb_profile;
 pub mod convert;
@@ -48,7 +46,6 @@ pub mod ride;
 pub mod track;
 pub mod trip;
 
-pub use byte_io::{ByteSink, ByteSource, Error, SliceSource};
 pub use climb::{
     segment_climbs, ClimbSeg, Climbs, ElePt, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE, MIN_GAIN, MIN_LEN,
 };
@@ -59,24 +56,22 @@ pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner};
 pub use matcher::{Match, RouteMatch};
 pub use nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
+// `obc-formats` owns the byte-I/O seam. `Error` is re-exported here **solely** so obc-route's own
+// public GPX/OBCR writer signatures (`track_to_gpx` and the `ByteSink::{write, patch_at}` helpers)
+// can name it as `obc_route::Error` — it is not a downstream byte-I/O path. Every consumer, obc-route
+// included, imports the seam (`ByteSource` / `ByteSink` / `SliceSource` / `Error`) from
+// `obc_formats::io` directly.
+pub use obc_formats::io::Error;
 pub use profile::{
     elevation_sparkline, ride_elevation_profile, ride_preview_polyline, Profile, Window, PROFILE_COLS,
     SPARKLINE_BUCKETS,
 };
 pub use reader::{
     for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RouteReader, RouteSummary,
-    Waypoint, Waypoints, WptEntry, CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
-    MAX_WAYPOINTS, NAME_CAP, WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_CAP,
+    Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
 };
-pub use ride::{
-    checked_ride_object_len, ride_header_len, ride_object_len, ride_point_len, track_to_ride, RideInfo, RideStats,
-    RIDE_CAD_NONE, RIDE_ELE_NONE, RIDE_HEADER_LEN_V1, RIDE_HEADER_LEN_V2, RIDE_HR_NONE, RIDE_POINT_LEN_V1,
-    RIDE_POINT_LEN_V2, RIDE_PWR_NONE, RIDE_VERSION,
-};
-pub use track::{
-    decode_record, encode_record, track_to_gpx, TrackPoint, TRACK_CAD_NONE, TRACK_HR_NONE, TRACK_PWR_NONE,
-    TRACK_RECORD_LEN,
-};
+pub use ride::{track_to_ride, RideInfo, RideStats};
+pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint};
 pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
 
 pub use obc_reader::BBox;

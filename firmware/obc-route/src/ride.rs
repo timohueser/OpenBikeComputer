@@ -56,14 +56,13 @@ use obc_formats::obcr::NAME_CAP;
 use obc_formats::ride::{is_supported_version, VERSION_V2};
 use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
 
-// Compatibility paths for existing module/root exports; streaming conversion remains here. Remove
-// these aliases in the #812 final audit.
-pub use obc_formats::ride::{
-    checked_object_len as checked_ride_object_len, header_len as ride_header_len, object_len as ride_object_len,
-    point_len as ride_point_len, CAD_NONE as RIDE_CAD_NONE, ELE_NONE as RIDE_ELE_NONE,
-    HEADER_LEN_V1 as RIDE_HEADER_LEN_V1, HEADER_LEN_V2 as RIDE_HEADER_LEN_V2, HR_NONE as RIDE_HR_NONE,
-    POINT_LEN_V1 as RIDE_POINT_LEN_V1, POINT_LEN_V2 as RIDE_POINT_LEN_V2, PWR_NONE as RIDE_PWR_NONE,
-    VERSION as RIDE_VERSION,
+// The ride-object codec/constants are owned by `obc-formats`; imported under the module-local
+// `RIDE_*` / `ride_*` names this converter + reader read. Not re-exported — consumers reach the
+// format authority via `obc_formats::ride`.
+use obc_formats::ride::{
+    checked_object_len as checked_ride_object_len, header_len as ride_header_len, CAD_NONE as RIDE_CAD_NONE,
+    HEADER_LEN_V2 as RIDE_HEADER_LEN_V2, HR_NONE as RIDE_HR_NONE, POINT_LEN_V2 as RIDE_POINT_LEN_V2,
+    PWR_NONE as RIDE_PWR_NONE, VERSION as RIDE_VERSION,
 };
 
 /// The ride totals the header carries, plus the wall-clock anchor that turns the log's
@@ -95,7 +94,7 @@ pub struct RideStats {
 /// point records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RideInfo {
-    /// The stored object's version (1 or 2). Point-record readers ([`ride_point_len`]) and the
+    /// The stored object's version (1 or 2). Point-record readers ([`point_len`](obc_formats::ride::point_len)) and the
     /// point offset ([`ride_header_len`]) key off this.
     pub version: u8,
     /// Truncated to [`NAME_CAP`] on a char boundary for display; the on-disk name may be longer
@@ -119,7 +118,7 @@ pub struct RideInfo {
 impl RideInfo {
     /// Read + validate a stored ride object's header. Accepts **v1 and v2**: an unknown version
     /// (including the held-back `0` of a torn save) is [`Error::BadVersion`]; the fully-determined
-    /// length for that version (`ride_object_len(version, name_len, point_count)`) must equal the
+    /// length for that version (`obc_formats::ride::object_len(version, name_len, point_count)`) must equal the
     /// source's — the torn-write guard. A v1 object decodes with every sensor field `None`. Point
     /// records are not touched.
     pub fn read(src: &dyn ByteSource) -> Result<RideInfo, Error> {
@@ -212,7 +211,7 @@ const BLOCK_RECORDS: usize = 64;
 /// - Coordinates translate µ° → 10⁻⁷ ° (× 10, no overflow: ±180 × 10⁷ fits `i32`) and swap into
 ///   the ride object's `lat, lon` order (track records are `lon, lat`).
 /// - `ele` is carried verbatim — the log stamps every point (0 before the first baro sample), so
-///   the device never writes [`RIDE_ELE_NONE`]; the sentinel exists for other encoders (the app).
+///   the device never writes [`ELE_NONE`](obc_formats::ride::ELE_NONE); the sentinel exists for other encoders (the app).
 /// - The per-ride sensor summary ([`RideStats::avg_hr`] etc.) heads the v2 header; per-point
 ///   `hr`/`cad`/`pwr` carry 1:1 from the v2 track records, absent ↔ sentinel.
 /// - Segment breaks don't exist in the ride object; a trailing partial record is ignored (the

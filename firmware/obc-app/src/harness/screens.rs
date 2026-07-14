@@ -2,20 +2,19 @@
 //! hold" rule, the stack discipline ([`apply`]), and a render snapshot proving pausing swaps the
 //! map view for the full-screen Paused page.
 
-use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
-use obc_app::activity::Activity;
-use obc_app::screen::{
+use crate::activity::Activity;
+use crate::screen::{
     apply, Ctx, HomeScreen, MapScreen, MenuScreen, PoiScratch, RideControl, RouteMenuScreen, RouteOverviewScreen,
     RouteSwapScreen, Screen, ScreenTick, Stack, Transition,
 };
-use obc_app::{
+use crate::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, HostCommand, HostMailbox, InputClock, InputEvent,
     Mode, PanAxis, RouteSummary, Settings, TrackAction, MAX_ROUTES,
 };
+use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_reader::{BBox, MapTables, SliceSource};
 
-mod common;
-use common::{build_min_obcm, build_min_obcm_profiles, keys, render_120, ReplayFix};
+use super::support::{build_min_obcm, build_min_obcm_profiles, keys, render_120, ReplayFix};
 
 /// The drained `DeleteRoute` id, if pending (the `take_route_delete` successor). FAR-19, #812. A
 /// co-pending derived preview cue re-emits, so discarding it in the drain is harmless.
@@ -61,11 +60,11 @@ fn leaked_scratch() -> &'static PoiScratch {
     Box::leak(Box::new(PoiScratch::new()))
 }
 
-/// An empty [`NavProfiles`](obc_app::NavProfiles) for the handle `Ctx` — leaked for the same `&'a`
+/// An empty [`NavProfiles`](crate::NavProfiles) for the handle `Ctx` — leaked for the same `&'a`
 /// reason as the scratch (a `&NavProfiles::EMPTY` const can't promote to `'static`). The screens
 /// under test aren't the Bike-type screen, so they never read it.
-fn leaked_profiles() -> &'static obc_app::NavProfiles {
-    Box::leak(Box::new(obc_app::NavProfiles::new()))
+fn leaked_profiles() -> &'static crate::NavProfiles {
+    Box::leak(Box::new(crate::NavProfiles::new()))
 }
 
 /// A handle [`Ctx`] over freshly-made state/activity. The Route-menu tests pass a catalog via
@@ -439,7 +438,7 @@ fn ride_control_finish_saves_and_discard_discards() {
 
 #[test]
 fn list_window_keeps_the_selection_visible() {
-    use obc_app::screen::window_start;
+    use crate::screen::window_start;
     // Everything fits → never scrolls.
     assert_eq!(window_start(0, 4, 3), 0);
     assert_eq!(window_start(2, 4, 3), 0);
@@ -723,8 +722,8 @@ fn rescan_cancels_a_swap_whose_pick_vanished() {
 fn take_store_changed_drains_the_pending_count() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     assert_eq!(rescan_commits(&mut app), 0);
-    app.apply_event(obc_app::HostEvent::StoreChanged);
-    app.apply_event(obc_app::HostEvent::StoreChanged);
+    app.apply_event(crate::HostEvent::StoreChanged);
+    app.apply_event(crate::HostEvent::StoreChanged);
     assert_eq!(app.store_changed_pending(), 2, "the read-only observer still sees the count");
     assert_eq!(rescan_commits(&mut app), 2);
     assert_eq!(app.store_changed_pending(), 0, "drained");
@@ -911,7 +910,7 @@ fn bike_type_cycles_and_persists_across_reboot() {
     app.apply_gesture(Gesture::Press); // → Settings list
     app.apply_gesture(Gesture::Turn(2)); // Date & Time → Units → Bike type
     app.apply_gesture(Gesture::Press); // → Bike type screen
-    assert!(matches!(app.top_screen(), obc_app::Screen::BikeType(_)), "navigated to the Bike type screen");
+    assert!(matches!(app.top_screen(), crate::Screen::BikeType(_)), "navigated to the Bike type screen");
 
     // Two detents: Road → Gravel → MTB.
     app.apply_gesture(Gesture::Turn(1));
@@ -925,8 +924,8 @@ fn bike_type_cycles_and_persists_across_reboot() {
     assert!(settings_dirty(&mut app), "leaving Settings fires the debounced save");
 
     // Simulated reboot: the persisted blob seeds a fresh App (the boot path of both hosts).
-    let blob = obc_app::settings::encode(app.settings());
-    let restored = obc_app::settings::decode(&blob).expect("clean blob decodes");
+    let blob = crate::settings::encode(app.settings());
+    let restored = crate::settings::decode(&blob).expect("clean blob decodes");
     let mut app2 = App::new_idle(AppState::new(0, 0, 0.05));
     app2.set_settings(restored);
     assert_eq!(app2.settings().bike_profile_idx, 2, "the bike profile survives the reboot");

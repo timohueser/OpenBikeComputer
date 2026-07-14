@@ -4,8 +4,9 @@
 
 use crate::{RideRepository, RouteRepository, TrackRepository};
 use obc_app::{RideSummary, TrackAction};
+use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
-use obc_route::{Profile, RideStats, RouteSummary, SliceSource};
+use obc_route::{Profile, RideStats, RouteSummary};
 
 /// The in-memory route store's reserved id for the computed nav route (out of the small
 /// positional band the seeded catalog uses), so a re-plan replaces the previous computed route
@@ -63,7 +64,7 @@ impl MemRouteStore {
         self.active = None;
     }
 
-    /// A [`ByteSource`](obc_route::ByteSource) over the active route's bytes, for opening a
+    /// A [`ByteSource`](obc_formats::io::ByteSource) over the active route's bytes, for opening a
     /// [`RouteReader`](obc_route::RouteReader) to stream geometry from.
     pub fn active_source(&self) -> Option<SliceSource<'_>> {
         self.active.and_then(|i| self.bytes.get(i)).map(|b| SliceSource(b.as_slice()))

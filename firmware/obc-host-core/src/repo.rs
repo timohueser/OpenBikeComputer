@@ -10,8 +10,9 @@
 //! shares are pinned by protocol tests instead.
 
 use obc_app::{App, RideSummary, TrackAction};
+use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
-use obc_route::{Profile, RideStats, RouteSummary, SliceSource};
+use obc_route::{Profile, RideStats, RouteSummary};
 
 /// The route catalog + the one active route's bytes, plus the reserved nav-route commit slot the
 /// router writes into. Supersedes the old `NavRouteStore` (which was only the nav-commit slice):
@@ -31,7 +32,7 @@ pub trait RouteRepository {
     /// the active bytes were (re)loaded this call** — the signal [`ActiveRouteSession`](crate::ActiveRouteSession)
     /// gates its index reparse on, so a settled view never reparses.
     fn sync_active(&mut self, want: Option<usize>) -> bool;
-    /// A [`ByteSource`](obc_route::ByteSource) over the active route's bytes.
+    /// A [`ByteSource`](obc_formats::io::ByteSource) over the active route's bytes.
     fn active_source(&self) -> Option<SliceSource<'_>>;
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)
     /// even under an unchanged index — a re-route rewrites the nav bytes beneath the same catalog slot.

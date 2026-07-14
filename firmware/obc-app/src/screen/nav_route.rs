@@ -27,7 +27,8 @@ use embedded_graphics::{
     prelude::{Point, Size},
     primitives::Rectangle,
 };
-use obc_reader::{PoiCategory, POI_NAME_MAX};
+use obc_formats::obcm::POI_NAME_LEN;
+use obc_reader::PoiCategory;
 use obc_render::{
     text::{Font, TextAlign},
     Surface,
@@ -54,7 +55,7 @@ pub struct NavConfirmScreen {
     /// The POI coordinate, `(lon, lat)` µdeg — the route's goal.
     to: (i32, i32),
     /// The route's name-to-be (what the emitted OBCR is titled and the catalog lists).
-    name: heapless::String<POI_NAME_MAX>,
+    name: heapless::String<POI_NAME_LEN>,
     /// The destination's POI category, drawn as its pixel icon in the T1 glyph slot above the
     /// name (#685 §3) — `None` (an unmapped subtype; shouldn't happen for a queried POI) just
     /// leaves the slot empty.
@@ -199,7 +200,7 @@ pub fn needle_region(w: i32, h: i32) -> Rectangle {
 #[derive(Debug)]
 pub struct NavPlanningScreen {
     /// The destination's name, echoed so the rider sees what's being planned.
-    name: heapless::String<POI_NAME_MAX>,
+    name: heapless::String<POI_NAME_LEN>,
     /// The spinner's current angle (0° = N, clockwise), advanced in [`tick_timers`].
     needle_deg: f32,
     /// Clock of the previous spin tick, for the per-frame `dt`; `None` before the first.

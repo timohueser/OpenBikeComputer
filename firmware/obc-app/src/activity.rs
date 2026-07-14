@@ -81,14 +81,14 @@ pub struct NavRequest {
     /// The POI coordinate, `(lon, lat)` µdeg — the route's goal.
     pub to: (i32, i32),
     /// The route name bytes (UTF-8, `name_len` valid) — read via [`name`](NavRequest::name).
-    name: [u8; obc_reader::POI_NAME_MAX],
+    name: [u8; obc_formats::obcm::POI_NAME_LEN],
     name_len: u8,
 }
 
 impl NavRequest {
     /// Build a request, truncating `name` to the POI name cap on a char boundary.
     pub fn new(from: (i32, i32), to: (i32, i32), name: &str) -> Self {
-        let mut buf = [0u8; obc_reader::POI_NAME_MAX];
+        let mut buf = [0u8; obc_formats::obcm::POI_NAME_LEN];
         let mut len = 0usize;
         for ch in name.chars() {
             let n = ch.len_utf8();
@@ -121,25 +121,19 @@ pub(crate) struct Motion {
 /// actually-ridden accumulators. Small and `Copy` — the screens read it by value.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Activity {
-    /// The operating mode. Deliberately still `pub`: the screens flip it through their `Ctx`, and
-    /// the bare-`Activity` screen-harness integration tests (`tests/screens.rs`) stage and assert it
-    /// directly. #803 narrowed the **draw/prepare** contexts (the POI scratch moved behind the
-    /// immutable [`Render`](crate::screen::Render) + the [`Prepare`](crate::screen::Prepare) action
-    /// view), but this field's staging seam is the bare-`Activity` harness, not a draw context;
-    /// privatizing it would need read/write accessors added purely for those integration tests (the
-    /// epic's "no API just for tests" line), so it is deferred to #812, which owns the
-    /// test-harness/compat cleanup. Hosts read it through [`App::mode`](crate::App::mode).
-    pub mode: Mode,
+    /// The operating mode. `pub(crate)`: the screens flip it through their `Ctx`, and the
+    /// in-crate screen-harness tests (`src/harness/screens.rs`) stage and assert it directly (#803
+    /// narrowed the draw/prepare contexts; #812 relocated that bare-`Activity` harness in-crate so
+    /// this field needs no public accessor). Hosts read it through [`App::mode`](crate::App::mode).
+    pub(crate) mode: Mode,
     /// Index into the route [`Catalog`](crate::route::Catalog) of the loaded route, or `None` when
     /// idle. The geometry is opened separately by the host (only the active route is resident).
-    /// Deliberately still `pub`: hosts are fully covered by
+    /// `pub(crate)`: hosts are fully covered by
     /// [`App::active_route_index`](crate::App::active_route_index) /
-    /// [`App::activate_route`](crate::App::activate_route) and use them, but the bare-`Activity`
-    /// screen-harness integration tests (`tests/screens.rs`) preload it exactly as the Route menu's
-    /// `Ctx` write does. #803 narrowed the draw/prepare contexts (see [`mode`](Activity::mode)); this
-    /// field's remaining staging seam is that harness, so its privatization is deferred to #812 with
-    /// the rest of the test-harness/compat cleanup.
-    pub active_route: Option<usize>,
+    /// [`App::activate_route`](crate::App::activate_route) and use them; the in-crate screen-harness
+    /// tests (`src/harness/screens.rs`) preload it exactly as the Route menu's `Ctx` write does
+    /// (#812 relocated that harness in-crate — see [`mode`](Activity::mode)).
+    pub(crate) active_route: Option<usize>,
     /// Index into the ride catalog of the ride whose **detail screen** is open, or `None` (epic
     /// #678 T2 / #680) — the ride namespace's `active_route`: set on detail entry, cleared on
     /// exit, and the key the host's one-shot track-profile fill hangs off
@@ -220,16 +214,15 @@ pub struct Activity {
     /// compute the progress fraction without re-reading the route. `0` when none loaded.
     pub(crate) route_total_m: u32,
     /// Matched distance along the route (m): the riding cursor / progress bar. Frozen while
-    /// off-route. Written internally via [`apply_match`](Activity::apply_match); still `pub` because
-    /// the bare-`Activity` upload integration test (`tests/upload.rs`) stages **and** asserts the
-    /// three match readouts directly — the same test-harness staging seam as
-    /// [`mode`](Activity::mode), deferred to #812.
-    pub progress_m: u32,
+    /// off-route. Written internally via [`apply_match`](Activity::apply_match); `pub(crate)` — the
+    /// in-crate upload harness (`src/harness/upload.rs`) stages **and** asserts the three match
+    /// readouts directly (#812 relocated it in-crate — see [`mode`](Activity::mode)).
+    pub(crate) progress_m: u32,
     /// Whether the rider is currently off-route. Match readout — see [`progress_m`](Activity::progress_m).
-    pub off_route: bool,
+    pub(crate) off_route: bool,
     /// Live cross-track distance to the route (m) — the "off route · NNN m" readout. Match readout —
     /// see [`progress_m`](Activity::progress_m).
-    pub dist_to_route_m: u32,
+    pub(crate) dist_to_route_m: u32,
     /// Index into the App-owned [`Climbs`](obc_route::Climbs) list of the climb the rider is
     /// currently on, or `None` when between climbs / off any climb. Set by
     /// [`App::update_active_climb`](crate::App::update_active_climb) on each matched fix — with
@@ -463,12 +456,11 @@ impl Activity {
         self.track_action = Some(action);
     }
 
-    /// Take (and clear) the pending [`TrackAction`], if any — the host calls this each frame
-    /// and performs the file I/O (finalise / discard).
-    ///
-    /// Compatibility drain of [`HostCommand::FinishTrack`](crate::host::HostCommand::FinishTrack)
-    /// (#800) — the same single slot [`App::drain_host_commands`](crate::App::drain_host_commands)
-    /// consumes; removal owned by #812.
+    /// Take (and clear) the pending [`TrackAction`], if any — the one-shot slot behind
+    /// [`HostCommand::FinishTrack`](crate::host::HostCommand::FinishTrack) (#800). Retained: it is
+    /// the slot [`App::drain_host_commands`](crate::App::drain_host_commands) drains internally, and
+    /// the simulator's separate `reconcile_tracks` fidelity pass re-drains it after re-posting the
+    /// command (so the scripted single-frame flow still performs the file I/O).
     pub fn take_track_action(&mut self) -> Option<TrackAction> {
         self.track_action.take()
     }

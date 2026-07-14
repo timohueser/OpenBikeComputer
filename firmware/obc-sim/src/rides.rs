@@ -10,7 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use obc_app::{decode_synced_rides, encode_synced_rides, RideSummary, SyncedRides, SYNCED_RIDES_MAX_LEN};
-use obc_route::{ride_elevation_profile, ride_preview_polyline, Profile, RideInfo, SliceSource};
+use obc_formats::io::SliceSource;
+use obc_route::{ride_elevation_profile, ride_preview_polyline, Profile, RideInfo};
 
 /// The synced-ride sidecar filename in the tracks folder — matches the device's `SYNCED_SET`.
 const SYNCED_SET: &str = "SYNCED.SET";

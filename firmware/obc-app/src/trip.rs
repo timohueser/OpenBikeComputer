@@ -18,7 +18,8 @@
 
 use heapless::{String, Vec};
 
-use obc_route::{MAX_TRIP_STAGES, NAME_CAP};
+use obc_formats::obcr::NAME_CAP;
+use obc_route::MAX_TRIP_STAGES;
 
 use crate::route::RouteSummary;
 
