@@ -153,6 +153,21 @@ const WIDTH_GAMMA: f32 = 0.6;
 /// the 240-px panel. The lower clamp is 1 px (a hairline never vanishes). See [`scale_weight`].
 const MAX_LINE_PX: u32 = 12;
 
+/// Conservative screen-space cull margin for base-map features (px). It must cover the widest ink a
+/// feature's fill/stroke can extend **past its centerline bbox**, or the screen-space broad phase
+/// ([`Viewport::bbox_may_touch_screen`]) would false-negative and drop a visible feature. Derived
+/// from the maximum supported ink extent — a stroke ramped to the [`MAX_LINE_PX`] cap, the road
+/// casing added on **each** side (`2 * CASING_PX`), and a stroker/rounding safety pad:
+///
+/// ```text
+/// MAX_LINE_PX (12) + 2 * CASING_PX (2) + stroker/rounding safety (2) = 16 px
+/// ```
+///
+/// Using the full maximum stroke *width* (not merely its half-radius) is deliberately conservative,
+/// so a future width or casing change cannot silently invalidate the cull. Kept here — the one place
+/// the stroke-width constants live — so the cull can never disagree with what the draw path paints.
+pub(crate) const BASE_MAP_INK_MARGIN_PX: i32 = MAX_LINE_PX as i32 + 2 * MapRenderer::CASING_PX as i32 + 2;
+
 /// Per-frame width multiplier from the current ground scale: `(REF_MPP / mpp) ^ WIDTH_GAMMA`. A
 /// style's nominal `weight` times this is its on-screen px width, so a road thickens as you zoom in
 /// and thins as you zoom out. Computed **once per frame** (not per span) and fed to [`scale_weight`].
@@ -392,7 +407,7 @@ impl MapRenderer {
         // reads the map source) and record the per-frame delta — robust whether the caller hands us
         // a fresh source adapter each frame or a reused one.
         let before = diagnostics(scene, &mut stats, Diagnostics::default());
-        self.frame.collect(scene, lod, &view, &mut stats);
+        self.frame.collect(scene, lod, vp, &view, &mut stats);
         let after = diagnostics(scene, &mut stats, before);
         stats.map_chunk_hits = after.chunk_hits.wrapping_sub(before.chunk_hits);
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);

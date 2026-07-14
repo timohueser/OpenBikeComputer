@@ -33,6 +33,14 @@ const ARROW_BACK: f32 = 2.5;
 /// line, framed by the route colour whatever map colour the line crosses.
 const ARROW_HALF: f32 = 4.5;
 
+/// Screen-space cull margin for route chunks (px), used by the same conservative broad phase
+/// ([`Viewport::bbox_may_touch_screen`]) as the base map (issue #847). It must cover the route's own
+/// ink past a chunk's centerline bbox: the route half-stroke (≤ 6 px at the 11 px `ROUTE_WEIGHT`)
+/// and the direction chevrons ([`ARROW_TIP`] = 8 px ahead of centre, [`ARROW_HALF`] to the side).
+/// Both sit inside the base-map ink margin, so route culling reuses that single renderer-owned
+/// constant rather than introducing a second value that could drift.
+const ROUTE_INK_MARGIN_PX: i32 = crate::BASE_MAP_INK_MARGIN_PX;
+
 /// What the route overlay needs to know about one route chunk.
 pub struct OverlayChunk {
     pub bbox: obc_map_scene::BBox,
@@ -150,7 +158,10 @@ impl MapRenderer {
 
         // Pass 1 — stroke every visible chunk, in full, before any chevron is drawn.
         for k in 0..route.chunk_count() {
-            if !route.chunk(k).bbox.intersects(&view) {
+            let chunk = route.chunk(k);
+            // Cheap map-space AABB test first, then the conservative screen-space broad phase (#847)
+            // so a heading-up view skips chunks in the rotated AABB's empty corners.
+            if !chunk.bbox.intersects(&view) || !vp.bbox_may_touch_screen(&chunk.bbox, ROUTE_INK_MARGIN_PX) {
                 continue;
             }
             route.visit_points(k, &mut |pts| {
@@ -180,7 +191,11 @@ impl MapRenderer {
             let chunk_start = cm.cum_distance_m as f32;
             let next_start = if k + 1 < route.chunk_count() { route.chunk(k + 1).cum_distance_m } else { total };
             let chunk_end = next_start as f32;
-            if chunk_end < lo || chunk_start > hi || !cm.bbox.intersects(&view) {
+            if chunk_end < lo
+                || chunk_start > hi
+                || !cm.bbox.intersects(&view)
+                || !vp.bbox_may_touch_screen(&cm.bbox, ROUTE_INK_MARGIN_PX)
+            {
                 continue;
             }
             route.visit_points(k, &mut |pts| {

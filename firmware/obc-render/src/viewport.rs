@@ -127,6 +127,52 @@ impl Viewport {
         BBox { min_lon, min_lat, max_lon, max_lat }
     }
 
+    /// Conservative screen-space broad-phase overlap test for a map-space bbox.
+    ///
+    /// Projects all four map-bbox corners through the **same** [`to_screen`](Viewport::to_screen)
+    /// path drawing uses, takes the integer AABB of the four projected corners, and returns `false`
+    /// only when that AABB lies wholly outside the display rectangle (inclusive pixels `0..=w-1` ×
+    /// `0..=h-1`) expanded by `margin_px` on every side.
+    ///
+    /// For one frame the projection is affine (aspect scale → rotation → scale → translate), so the
+    /// projected bbox is a parallelogram fully contained by the AABB of its projected corners. An
+    /// AABB miss therefore guarantees the feature paints no pixel inside the margin-expanded screen
+    /// — a **safe reject**. This is a broad phase, not polygon clipping: false positives (a
+    /// corner-AABB that overlaps while the true parallelogram does not) are allowed and harmless;
+    /// false negatives are not, so `margin_px` must cover the widest ink a feature can extend past
+    /// its centerline bbox (see [`BASE_MAP_INK_MARGIN_PX`](crate::BASE_MAP_INK_MARGIN_PX)).
+    ///
+    /// This is the renderer-owned second cull, applied only after the source's coarse map-space
+    /// quadtree walk (over [`visible_bbox`](Viewport::visible_bbox)) and the per-feature map-space
+    /// AABB test have already passed — heading-up, that enclosing AABB has large empty corners this
+    /// test rejects.
+    pub fn bbox_may_touch_screen(&self, bbox: &BBox, margin_px: i32) -> bool {
+        let corners = [
+            self.to_screen(bbox.min_lon, bbox.min_lat),
+            self.to_screen(bbox.min_lon, bbox.max_lat),
+            self.to_screen(bbox.max_lon, bbox.min_lat),
+            self.to_screen(bbox.max_lon, bbox.max_lat),
+        ];
+        let mut min_x = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+        for (x, y) in corners {
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+        // Inclusive display rect [0, w-1] × [0, h-1] expanded by `margin_px` on each side, with
+        // saturating arithmetic so an absurd margin or a far-off-screen projected corner can't wrap.
+        let left = margin_px.saturating_neg();
+        let top = margin_px.saturating_neg();
+        let right = (self.w as i32).saturating_sub(1).saturating_add(margin_px);
+        let bottom = (self.h as i32).saturating_sub(1).saturating_add(margin_px);
+        // Overlap iff the projected-corner AABB meets the expanded rect on both axes.
+        !(max_x < left || min_x > right || max_y < top || min_y > bottom)
+    }
+
     /// Ground meters per pixel at the current zoom, used to pick the LOD layer. Independent of
     /// display size — a 1024px host and a 240px panel over the same ground span pick the same level.
     #[inline]

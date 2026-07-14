@@ -30,7 +30,10 @@ use obc_map_scene::{
     BBox, Candidate, Feature, FeatureError, FeatureToken, Kind, MapScene, ReadFailures, SelectedFeatures,
 };
 
-use crate::{RenderStats, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, MAX_FRAME_RINGS, MAX_SPANS};
+use crate::{
+    RenderStats, Viewport, BASE_MAP_INK_MARGIN_PX, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS,
+    MAX_FRAME_RINGS, MAX_SPANS,
+};
 
 /// The renderer's collection scratch: per-feature decode buffers plus the frame buffers that
 /// accumulate every visible feature's geometry (and its [`Span`]). Cleared (not freed) each frame.
@@ -54,7 +57,14 @@ impl FrameScratch {
     /// two-phase stub-select collect (see the module docs). On return, [`FrameScratch::spans`] /
     /// [`FrameScratch::spans_mut`] expose the drawn features' [`Span`]s (unordered — the caller
     /// sorts them into painter order).
-    pub(crate) fn collect<S: MapScene>(&mut self, scene: &S, lod: usize, view: &BBox, stats: &mut RenderStats) {
+    pub(crate) fn collect<S: MapScene>(
+        &mut self,
+        scene: &S,
+        lod: usize,
+        vp: &Viewport,
+        view: &BBox,
+        stats: &mut RenderStats,
+    ) {
         self.frame_points.clear();
         self.frame_ring_lens.clear();
         self.slots.clear();
@@ -69,7 +79,7 @@ impl FrameScratch {
             }
         }
 
-        let candidates = self.collect_stubs(scene, lod, view, &vis_mask, stats);
+        let candidates = self.collect_stubs(scene, lod, vp, view, &vis_mask, stats);
         let winners = self.select();
         let drawn = self.decode_winners(scene, lod, view, winners, stats);
 
@@ -115,6 +125,7 @@ impl FrameScratch {
         &mut self,
         scene: &S,
         lod: usize,
+        vp: &Viewport,
         view: &BBox,
         vis_mask: &[u32; 8],
         stats: &mut RenderStats,
@@ -150,8 +161,18 @@ impl FrameScratch {
                     return;
                 }
 
-                // Per-feature bbox cull (tighter than the leaf); bounds come free from decode.
-                if !f.bbox().intersects(view) {
+                // Per-feature map-space bbox cull (tighter than the leaf); bounds come free from
+                // decode. Keep it first — it is the cheaper of the two culls.
+                let bbox = f.bbox();
+                if !bbox.intersects(view) {
+                    return;
+                }
+                // Conservative screen-space broad phase (issue #847). A heading-up view's enclosing
+                // map-space AABB has large empty corners the map-space test above still admits;
+                // reject a candidate whose projected-corner screen AABB can't touch the
+                // ink-margin-expanded display. Affine projection ⇒ an AABB miss is a safe reject.
+                // Only after both tests pass does the feature count as an admitted candidate.
+                if !vp.bbox_may_touch_screen(&bbox, BASE_MAP_INK_MARGIN_PX) {
                     return;
                 }
                 candidates += 1;
