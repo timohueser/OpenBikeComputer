@@ -16,6 +16,7 @@ pub mod activity;
 pub mod app;
 pub mod ble;
 pub mod breadcrumb;
+pub mod catalog_state;
 pub mod dfu;
 pub mod dirty;
 pub mod fault;
