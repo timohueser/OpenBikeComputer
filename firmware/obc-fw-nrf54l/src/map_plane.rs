@@ -12,7 +12,7 @@
 //!
 //! The FLPR owns the panel outright (whole-frame scan per push → no shared bus), so the map plane
 //! pushes both the clean frame and the bulge itself; the input plane only recognises gestures. The
-//! seam it goes through is the generic display contracts (`obc_platform::display_contracts`): the
+//! seam it goes through is the generic display contracts (`obc_display::display_contracts`): the
 //! map plane owns the ([`Frame64`], [`Ls021Flpr`]) pairing — the frame *next to* the presenter, so
 //! render (`&mut Frame64`) and present (`&Frame64` across the whole FLPR scan) are statically
 //! exclusive — and the simulator presenter is the contracts' second backend, so the abstraction
@@ -32,9 +32,9 @@ use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::InputPlane;
 // `Band` is the frame-absolute draw view the map plane's overlay drawer paints the hold bulge into;
 // `RowDamage`/`RowWindow` are the LS021 pairing's damage/region vocabulary behind the contracts.
-use obc_platform::display_contracts::{OverlayPresenter, Presenter};
-use obc_platform::ls021::{RowDamage, RowWindow, FRAME_H, FRAME_W};
-use obc_platform::{Band, FbDevice64};
+use obc_display::display_contracts::{OverlayPresenter, Presenter};
+use obc_display::ls021::{RowDamage, RowWindow, FRAME_H, FRAME_W};
+use obc_display::{Band, FbDevice64};
 use obc_render::RenderStats;
 
 #[cfg(feature = "com-hw")]
@@ -53,7 +53,7 @@ const OVL_W: u16 = 16;
 
 // The live-bulge "present the rows *around* it" discipline lives **inside** the self-diffing present:
 // the map plane presents with `damage_around(bulge window)`, which clips the bulge's rows out of the
-// changed-row spans it pushes (`obc_platform::ls021::RowDiff::diff_clipped`), leaving those rows for
+// changed-row spans it pushes (`obc_display::ls021::RowDiff::diff_clipped`), leaving those rows for
 // the map plane's own `MapDisplay::present_bulge`.
 
 /// What [`MapDisplay::render_present`] reports for one map frame: whether the push reached glass

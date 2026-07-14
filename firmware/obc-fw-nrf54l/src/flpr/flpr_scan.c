@@ -115,7 +115,7 @@ _Static_assert(sizeof(flpr_control_t) == 96, "control block must be 96 bytes (ma
 
 #define CTRL ((volatile flpr_control_t *)FLPR_CONTROL_ADDR)
 
-/* ── Frame geometry (the datasheet §6-5/§6-6 charts; mirrors obc_platform::ls021_wire). ── */
+/* ── Frame geometry (the datasheet §6-5/§6-6 charts; mirrors obc_display::ls021::wire). ── */
 #define COLS_PER_SUBLINE 120u /* 240 columns ÷ 2 pixels-per-BCK-edge */
 #define BCK_PER_SUBLINE  124u /* 120 data + 4 trailing dummy/flush BCK words per sub-line */
 #define ROW_STRIDE       (2u * COLS_PER_SUBLINE) /* framebuffer bytes per row (byte per pixel) */
@@ -181,7 +181,7 @@ static void busy(uint32_t iters)
 }
 
 /* Pack one source-bus wire word straight from the framebuffer row — the C port of
- * `obc_platform::ls021_wire::pack_pair` (the normative, host-tested reference; its tests are the
+ * `obc_display::ls021::wire::pack_pair` (the normative, host-tested reference; its tests are the
  * spec). Word `k` of a sub-line is the pixel pair `(row[2k], row[2k+1])`: the even-x pixel on the
  * `*0` lines (bits 0/2/4), the odd-x pixel on the `*1` lines (bits 1/3/5), pre-shifted to the P2
  * GPIO positions (DATA_MASK). `shift` selects the area-gradation bit of each 2-bit device-64

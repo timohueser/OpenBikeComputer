@@ -23,9 +23,9 @@ use obc_route::RouteReader;
 
 use crate::frame::RgbaFrame;
 
-/// The demo panel resolution — the one [`obc_platform`] frame authority, not re-declared literals.
-pub const FRAME_W: u32 = obc_platform::ls021::FRAME_W as u32;
-pub const FRAME_H: u32 = obc_platform::ls021::FRAME_H as u32;
+/// The demo panel resolution — the one [`obc_display`] frame authority, not re-declared literals.
+pub const FRAME_W: u32 = obc_display::ls021::FRAME_W as u32;
+pub const FRAME_H: u32 = obc_display::ls021::FRAME_H as u32;
 
 // The embedded demo payload (epic #624 S4, #637). The binaries live with the other committed
 // fixtures in `obc-sim/assets/` — one provenance-controlled home (`repack.sh` + its README rules)
