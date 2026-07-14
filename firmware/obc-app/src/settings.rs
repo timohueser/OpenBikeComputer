@@ -851,19 +851,6 @@ const SENSORS_OFF: usize = LANGUAGE_OFF + 1;
 /// Bytes per saved-sensor slot: `present(1) · addr_kind(1) · addr[6]`.
 const SAVED_SENSOR_LEN: usize = 8;
 
-/// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
-/// plenty to reject a blank/half-written blob. Guards the codec on both stores.
-fn crc16(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0xFFFF;
-    for &b in data {
-        crc ^= (b as u16) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
-        }
-    }
-    crc
-}
-
 /// Pack [`Settings`] into its fixed [`ENCODED_LEN`]-byte blob: a version byte, the little-endian
 /// fields, then a trailing CRC. The inverse of [`decode`]; shared verbatim by the sim file store
 /// and the device RRAM store so one round-trip test covers both.
@@ -911,7 +898,7 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
         b[off + 1] = slot.addr_kind;
         b[off + 2..off + 2 + 6].copy_from_slice(&slot.addr);
     }
-    let crc = crc16(&b[0..PAYLOAD_LEN]);
+    let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
 }
@@ -928,7 +915,7 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         return None;
     }
     let crc = u16::from_le_bytes([b[PAYLOAD_LEN], b[PAYLOAD_LEN + 1]]);
-    if crc != crc16(&b[0..PAYLOAD_LEN]) {
+    if crc != crate::store_meta::crc16(&b[0..PAYLOAD_LEN]) {
         return None;
     }
     let mut s = Settings {
@@ -994,520 +981,19 @@ fn decode_saved_sensors(b: &[u8]) -> [SavedSensor; SENSOR_SLOTS] {
     slots
 }
 
-// ==================== durable object-id high-water marks (#450) ====================
+// ==================== compatibility re-exports (FAR-09, #802) ====================
 //
-// The device names stored objects by durable `u16` ids (`RT{id}.OBR` routes, `RD{id}.ORD` rides);
-// the phone persists those ids (`deviceObjectID`, ride synced/tombstone sets), so an id must
-// **never be reused** — even after the file it named is deleted and a reboot re-scans the card.
-// `scan-max + 1` alone re-issues a deleted id; these high-water marks are the durable floor:
-// one CRC-checked 16-byte RRAM line holding the next fresh id per namespace, bumped on every
-// assignment. Allocation = `max(scan_max + 1, stored_next)`.
-//
-// The codec lives here — beside the settings blob codec, the established precedent — because the
-// board crate is target-only: encode/decode/torn-line semantics must be host-testable.
-
-/// The id high-water line's fixed length: one RRAM write line (16 bytes), like the bond and
-/// boot-counter lines. Layout: `magic(4) · version(1) · pad(1) · next_route_id u16 LE ·
-/// next_ride_id u16 LE · pad(2) · crc16 LE · pad(2)` — CRC-16 over bytes `[0..12]`.
-pub const ID_MARKS_LEN: usize = 16;
-/// The id-marks line's tag; anything else there (blank page, torn write, older layout) decodes to
-/// "no floor" and allocation falls back to scan-max + 1 (exactly today's behaviour).
-const ID_MARKS_MAGIC: [u8; 4] = *b"OBCI";
-/// Id-marks layout version — bump on any field change (an old version reads as no floor).
-const ID_MARKS_VERSION: u8 = 1;
-/// CRC-covered prefix of the id-marks line.
-const ID_MARKS_PAYLOAD: usize = 12;
-
-/// The durable id floors: the next fresh **route** and **ride** object id the store may hand out.
-/// `Default` (both 0) is "no floor" — a fresh device / reflash allocates from the scan alone.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct IdMarks {
-    /// One past the highest route object id ever assigned (`RT{id}.OBR` uploads).
-    pub next_route_id: u16,
-    /// One past the highest ride object id ever assigned (`RD{id}.ORD` saves).
-    pub next_ride_id: u16,
-}
-
-impl IdMarks {
-    /// Allocate the next fresh **route** id: `max(scan_next, stored floor)`, bumping the floor past
-    /// it — call with `scan_next` = one past the highest id the card scan saw, then persist `self`.
-    pub fn alloc_route(&mut self, scan_next: u16) -> u16 {
-        let id = self.next_route_id.max(scan_next);
-        self.next_route_id = id.saturating_add(1);
-        id
-    }
-
-    /// Allocate the next fresh **ride** id — the ride-namespace twin of
-    /// [`alloc_route`](IdMarks::alloc_route).
-    pub fn alloc_ride(&mut self, scan_next: u16) -> u16 {
-        let id = self.next_ride_id.max(scan_next);
-        self.next_ride_id = id.saturating_add(1);
-        id
-    }
-}
-
-/// Pack the id high-water marks into their fixed 16-byte RRAM line. Inverse of
-/// [`decode_id_marks`].
-pub fn encode_id_marks(m: &IdMarks) -> [u8; ID_MARKS_LEN] {
-    let mut b = [0u8; ID_MARKS_LEN];
-    b[0..4].copy_from_slice(&ID_MARKS_MAGIC);
-    b[4] = ID_MARKS_VERSION;
-    b[6..8].copy_from_slice(&m.next_route_id.to_le_bytes());
-    b[8..10].copy_from_slice(&m.next_ride_id.to_le_bytes());
-    let crc = crc16(&b[0..ID_MARKS_PAYLOAD]);
-    b[ID_MARKS_PAYLOAD..ID_MARKS_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
-    b
-}
-
-/// Decode an id high-water line, or `None` for anything but a clean read of this format — a blank
-/// page, a torn write, a short slice, or an older layout. `None` means **no floor**: the caller
-/// falls back to scan-max + 1, so a fresh device behaves exactly as before the marks existed.
-pub fn decode_id_marks(bytes: &[u8]) -> Option<IdMarks> {
-    if bytes.len() < ID_MARKS_LEN {
-        return None;
-    }
-    let b = &bytes[..ID_MARKS_LEN];
-    if b[0..4] != ID_MARKS_MAGIC || b[4] != ID_MARKS_VERSION {
-        return None;
-    }
-    let crc = u16::from_le_bytes([b[ID_MARKS_PAYLOAD], b[ID_MARKS_PAYLOAD + 1]]);
-    if crc != crc16(&b[0..ID_MARKS_PAYLOAD]) {
-        return None;
-    }
-    Some(IdMarks { next_route_id: u16::from_le_bytes([b[6], b[7]]), next_ride_id: u16::from_le_bytes([b[8], b[9]]) })
-}
-
-// ==================== store-epoch nonce (protocol v2, #632/#767; card-resident #776) ====================
-//
-// A per-id-era `u32` nonce that lets the phone detect an **id-era reset**: any event that loses the
-// durable id floor (the id-marks line above) while the app keeps its library — a full-chip reflash,
-// a factory reset / RMA / recovery, or a torn id-marks write — reopens already-issued object ids, so
-// freshly-minted ids silently *alias* months-old phone-side state (the 2026-07-12 ride-sync
-// incident). The nonce is minted from the TRNG and persisted in a small **card-resident file**
-// (`EPOCH.OBE` in the card root), so the SD card is the sole home of the id-era name (#776): a card
-// swap **transplants** the store's identity (swap back restores the old era, a card upgrade-by-copy
-// carries the era along), and a card written by a *different* device presents *its* epoch — its own
-// scope — closing the residual foreign-card hole the RRAM-line design left open. It is served over
-// the pre-pairing `protocolVersion` read (V2, #766); the app scopes all id-keyed state by
-// (device serial, store epoch), so an era change makes the old era's keys stop matching by
-// construction — no migration code.
-//
-// The mint decision ([`store_epoch_mint`]) is a pure function so the subtle rule is host-tested
-// without the board crate; the board glue reads the card epoch file + the RRAM id-marks line, draws
-// one TRNG word, and writes back (epoch → card, id-marks → RRAM). Torn/absent/foreign file → `None`,
-// exactly the id-marks (and other sidecar) conventions. The file carries no RRAM line-size padding —
-// it is idiomatic with the `SYNCED.SET` / `ROUTES.CRC` card sidecars, not the retired RRAM line.
-
-/// The store-epoch file's fixed length: 12 bytes, `magic(4) · version(1) · pad(1) · epoch u32 LE ·
-/// crc16 LE` — CRC-16 over bytes `[0..10]`. A card sidecar, not an RRAM line, so no 16-byte write-line
-/// padding (unlike the retired id-era RRAM line this replaced).
-pub const STORE_EPOCH_LEN: usize = 12;
-/// The store-epoch file's tag; anything else there (absent, torn write, older layout) decodes
-/// to `None` — "no epoch", which the mint rule treats as clause 1 (mint a fresh nonce).
-const STORE_EPOCH_MAGIC: [u8; 4] = *b"OBCE";
-/// Store-epoch layout version — bump on any field change (an old version reads as no epoch).
-const STORE_EPOCH_VERSION: u8 = 1;
-/// CRC-covered prefix of the store-epoch file: `magic(4) · version(1) · pad(1) · epoch u32 LE`.
-const STORE_EPOCH_PAYLOAD: usize = 10;
-
-/// Pack the store-epoch nonce into its fixed 12-byte card file. Inverse of [`decode_store_epoch`].
-pub fn encode_store_epoch(epoch: u32) -> [u8; STORE_EPOCH_LEN] {
-    let mut b = [0u8; STORE_EPOCH_LEN];
-    b[0..4].copy_from_slice(&STORE_EPOCH_MAGIC);
-    b[4] = STORE_EPOCH_VERSION;
-    b[6..10].copy_from_slice(&epoch.to_le_bytes());
-    let crc = crc16(&b[0..STORE_EPOCH_PAYLOAD]);
-    b[STORE_EPOCH_PAYLOAD..STORE_EPOCH_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
-    b
-}
-
-/// Decode a store-epoch file, or `None` for anything but a clean read of this format — an absent
-/// file (the board returns `None` before calling this), a torn write, a short slice, or an older
-/// layout. `None` means **no epoch**: the mint rule draws a fresh one (clause 1).
-pub fn decode_store_epoch(bytes: &[u8]) -> Option<u32> {
-    if bytes.len() < STORE_EPOCH_LEN {
-        return None;
-    }
-    let b = &bytes[..STORE_EPOCH_LEN];
-    if b[0..4] != STORE_EPOCH_MAGIC || b[4] != STORE_EPOCH_VERSION {
-        return None;
-    }
-    let crc = u16::from_le_bytes([b[STORE_EPOCH_PAYLOAD], b[STORE_EPOCH_PAYLOAD + 1]]);
-    if crc != crc16(&b[0..STORE_EPOCH_PAYLOAD]) {
-        return None;
-    }
-    Some(u32::from_le_bytes([b[6], b[7], b[8], b[9]]))
-}
-
-/// The boot-time store-epoch mint decision (protocol v2, #632 item 5; card-resident #776) — a pure
-/// function so the subtle rule is host-testable. Given the decoded **card epoch** (from `EPOCH.OBE`)
-/// and the RRAM id-marks line (each `None` when absent/torn/foreign) plus one freshly-drawn TRNG word
-/// `fresh`, returns:
-///
-/// - `None` — **keep** the card's epoch: this boot writes nothing (the common steady-state path,
-///   including a *card swap* to another store with a valid epoch — that epoch is adopted verbatim,
-///   the transplant semantics #776 exists for).
-/// - `Some((new_epoch, marks))` — **mint**: persist `new_epoch` to the **card** epoch file **and**
-///   (re)write the RRAM id-marks line to `marks` in the same boot pass.
-///
-/// Mint fires when the card epoch is absent (**clause 1**: absent/torn/foreign file) **or** the
-/// id-marks line decodes to "no floor" (**clause 2**: a torn id-marks write — floors lost under an
-/// intact card epoch would be *undetectable* aliasing, so a lost floor **is** a new era, and it
-/// reopens the deleted-id band on the very card whose epoch was intact).
-///
-/// The marks (re)write is what makes clause 2 unambiguous: an already-valid id-marks line is kept
-/// verbatim (its durable floors survive a clause-1-only mint), while an absent one is (re)seeded to
-/// [`IdMarks::default`] — "no floor", which the store's `max(scan_max + 1, floor)` allocation
-/// re-derives from the card scan at the first allocation (today's fallback; the board mints before
-/// the scan runs). This establishes the invariant *a valid epoch implies a valid id-marks line at
-/// mint*: without it a fresh device (no ride/upload → no id-marks line **by design**) would re-mint
-/// on every boot via clause 2; with it, "valid epoch + no floor" is unambiguous torn-line evidence
-/// — exactly what clause 2 exists to catch.
-///
-/// Note the function is agnostic to *where* the epoch is stored — the #776 move is entirely in the
-/// board glue (it now reads/writes the card file, not an RRAM line); the decision logic is
-/// unchanged, which is why the mint matrix + stability tests carry straight over.
-pub fn store_epoch_mint(epoch: Option<u32>, marks: Option<IdMarks>, fresh: u32) -> Option<(u32, IdMarks)> {
-    if epoch.is_some() && marks.is_some() {
-        return None; // steady state: valid card epoch + valid floors → nothing to write this boot
-    }
-    Some((fresh, marks.unwrap_or_default()))
-}
-
-// ==================== DFU arm marker (boot-outcome popup) ====================
-//
-// The armer's breadcrumb: written to its settings-page line right after the `Armed` boot-state
-// write, just before the reboot into the bootloader. At the next boot the board's
-// `dfu::reconcile_boot_outcome` reads it back and — together with the boot-state page — derives
-// the one-time verdict card: `Trial` = the confirm path owns it, `Armed` = the bootloader never
-// ran the install, `Idle` + this marker = the staged version either accepted (it IS the installed
-// header, first-install case) or failed (rejected / rolled back). Cleared wherever a verdict is
-// delivered. Torn/blank/foreign decodes to `None` — "no arm happened", a plain boot.
-
-/// The arm marker's fixed slot length: 3 whole 16-byte RRAM lines.
-pub const ARM_MARKER_LEN: usize = 48;
-/// The arm-marker tag; anything else there decodes to "no arm happened".
-const ARM_MARKER_MAGIC: [u8; 4] = *b"OBCA";
-/// Arm-marker layout version — bump on any field change (an old version reads as no marker).
-const ARM_MARKER_VERSION: u8 = 1;
-/// CRC-covered prefix: `magic(4) · version(1) · vlen(1) · pad(2) · generation u32 LE · version
-/// string bytes(32)`.
-const ARM_MARKER_PAYLOAD: usize = 44;
-
-/// What the armer records before rebooting into the bootloader: the arm's generation and the
-/// staged image's OBCU version string (the popup's "which update" fact).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArmMarker {
-    /// The `Armed` record's generation (the ticket the armer reported).
-    pub generation: u32,
-    /// The staged image's version string, verbatim from its OBCU header (≤ 32 bytes).
-    pub staged: heapless::String<32>,
-}
-
-/// Pack an arm marker into its fixed [`ARM_MARKER_LEN`]-byte slot. Inverse of
-/// [`decode_arm_marker`].
-pub fn encode_arm_marker(m: &ArmMarker) -> [u8; ARM_MARKER_LEN] {
-    let mut b = [0u8; ARM_MARKER_LEN];
-    b[0..4].copy_from_slice(&ARM_MARKER_MAGIC);
-    b[4] = ARM_MARKER_VERSION;
-    let v = m.staged.as_bytes();
-    let vlen = v.len().min(32);
-    b[5] = vlen as u8;
-    b[8..12].copy_from_slice(&m.generation.to_le_bytes());
-    b[12..12 + vlen].copy_from_slice(&v[..vlen]);
-    let crc = crc16(&b[0..ARM_MARKER_PAYLOAD]);
-    b[ARM_MARKER_PAYLOAD..ARM_MARKER_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
-    b
-}
-
-/// Decode an arm-marker slot, or `None` for anything but a clean read of this format — a blank
-/// slot, a torn write, a short slice, an older layout, or a version string that isn't UTF-8.
-/// `None` means **no arm happened**: the boot-outcome reconcile treats the boot as plain.
-pub fn decode_arm_marker(bytes: &[u8]) -> Option<ArmMarker> {
-    if bytes.len() < ARM_MARKER_LEN {
-        return None;
-    }
-    let b = &bytes[..ARM_MARKER_LEN];
-    if b[0..4] != ARM_MARKER_MAGIC || b[4] != ARM_MARKER_VERSION {
-        return None;
-    }
-    let crc = u16::from_le_bytes([b[ARM_MARKER_PAYLOAD], b[ARM_MARKER_PAYLOAD + 1]]);
-    if crc != crc16(&b[0..ARM_MARKER_PAYLOAD]) {
-        return None;
-    }
-    let vlen = b[5] as usize;
-    if vlen > 32 {
-        return None;
-    }
-    let mut staged: heapless::String<32> = heapless::String::new();
-    staged.push_str(core::str::from_utf8(&b[12..12 + vlen]).ok()?).ok()?;
-    Some(ArmMarker { generation: u32::from_le_bytes([b[8], b[9], b[10], b[11]]), staged })
-}
-
-// ==================== synced-ride sidecar (#454) ====================
-//
-// The unsynced-ride delete guard (epic #447 P7, locked option b): the device records "the phone
-// has downloaded this ride at least once" per ride, set when a ride-object download **completes**.
-// It's persisted in a small SD **sidecar file in /tracks** (`SYNCED.SET`) so it survives a reflash
-// and travels with the card/rides — deliberately *not* the RRAM settings carve (which a reflash may
-// wipe and which doesn't move with the card). The Rides screen renders an unsynced ride's delete
-// footer warning-red with a "not synced" cue; a synced ride gets the standard footer.
-//
-// The codec lives here — beside the id-marks + settings codecs, the established host-testable
-// precedent — so the "torn/missing sidecar = nothing synced, never a crash" contract is unit-tested
-// without the board crate. The format is intentionally simple: a magic + version + a `u16` count +
-// that many little-endian `u16` ride ids + a trailing CRC-16 over everything before it. A blank
-// page, a short slice, a torn write, or an unknown version all decode to the **empty** set — which
-// reads as "nothing synced", the safe default (every ride shows the warning footer, all deletable).
-
-/// The sidecar magic tag; anything else there decodes to the empty synced set.
-const SYNCED_MAGIC: [u8; 4] = *b"OBCS";
-/// Sidecar layout version — bump on any format change (an old version reads as empty).
-const SYNCED_VERSION: u8 = 1;
-/// Fixed header bytes before the id list: `magic(4) · version(1) · pad(1) · count u16 LE`.
-const SYNCED_HEADER_LEN: usize = 8;
-
-/// The persisted set of ride ids the phone has downloaded at least once. Bounded by
-/// [`MAX_RIDES`](crate::ride::MAX_RIDES) (a ride can only be synced if it's stored). `Default` is the
-/// empty set — "nothing synced".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SyncedRides {
-    ids: heapless::Vec<u16, { crate::ride::MAX_RIDES }>,
-}
-
-impl SyncedRides {
-    /// An empty synced set.
-    pub fn new() -> Self {
-        SyncedRides::default()
-    }
-
-    /// Whether ride `id` has been downloaded at least once.
-    pub fn contains(&self, id: u16) -> bool {
-        self.ids.contains(&id)
-    }
-
-    /// Record ride `id` as synced. Returns `true` if it was newly added (so the caller only rewrites
-    /// the sidecar on an actual change). Idempotent; a full set silently ignores a new id.
-    pub fn insert(&mut self, id: u16) -> bool {
-        if self.ids.contains(&id) {
-            return false;
-        }
-        self.ids.push(id).is_ok()
-    }
-
-    /// Drop ride `id` from the synced set (a deleted ride's id is retired so a later scan doesn't
-    /// carry a stale flag — though ids never reuse, so this is belt-and-braces). Returns `true` if it
-    /// was present.
-    pub fn remove(&mut self, id: u16) -> bool {
-        if let Some(pos) = self.ids.iter().position(|&x| x == id) {
-            self.ids.swap_remove(pos);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// The synced ids, for the codec / tests.
-    pub fn ids(&self) -> &[u16] {
-        &self.ids
-    }
-}
-
-/// The encoded sidecar's byte length for `count` synced ids: the fixed header, the `u16` id list,
-/// then the trailing CRC-16.
-pub const fn synced_rides_len(count: usize) -> usize {
-    SYNCED_HEADER_LEN + count * 2 + 2
-}
-
-/// The largest an encoded sidecar can be (a full synced set) — the buffer a host reserves to write it.
-pub const SYNCED_RIDES_MAX_LEN: usize = synced_rides_len(crate::ride::MAX_RIDES);
-
-/// Pack the synced-ride set into `out`, returning the encoded byte length. `out` must be at least
-/// [`synced_rides_len`]`(set.ids().len())` (use a [`SYNCED_RIDES_MAX_LEN`] buffer). Inverse of
-/// [`decode_synced_rides`].
-pub fn encode_synced_rides(set: &SyncedRides, out: &mut [u8]) -> usize {
-    let ids = set.ids();
-    let len = synced_rides_len(ids.len());
-    out[0..4].copy_from_slice(&SYNCED_MAGIC);
-    out[4] = SYNCED_VERSION;
-    out[5] = 0;
-    out[6..8].copy_from_slice(&(ids.len() as u16).to_le_bytes());
-    for (i, &id) in ids.iter().enumerate() {
-        let o = SYNCED_HEADER_LEN + i * 2;
-        out[o..o + 2].copy_from_slice(&id.to_le_bytes());
-    }
-    let crc = crc16(&out[..len - 2]);
-    out[len - 2..len].copy_from_slice(&crc.to_le_bytes());
-    len
-}
-
-/// Decode a synced-ride sidecar, always returning a set — a blank page, a short slice, a torn write,
-/// an unknown version, a count that overruns the slice, or a CRC mismatch all yield the **empty**
-/// set ("nothing synced", the safe default). Never panics on malformed input.
-pub fn decode_synced_rides(bytes: &[u8]) -> SyncedRides {
-    let empty = SyncedRides::new();
-    if bytes.len() < SYNCED_HEADER_LEN + 2 {
-        return empty; // shorter than an empty-set sidecar → treat as absent
-    }
-    if bytes[0..4] != SYNCED_MAGIC || bytes[4] != SYNCED_VERSION {
-        return empty;
-    }
-    let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-    let len = synced_rides_len(count);
-    if count > crate::ride::MAX_RIDES || bytes.len() < len {
-        return empty; // a count that claims more ids than the slice (or the cap) holds is corrupt
-    }
-    let crc = u16::from_le_bytes([bytes[len - 2], bytes[len - 1]]);
-    if crc != crc16(&bytes[..len - 2]) {
-        return empty;
-    }
-    let mut set = SyncedRides::new();
-    for i in 0..count {
-        let o = SYNCED_HEADER_LEN + i * 2;
-        let _ = set.insert(u16::from_le_bytes([bytes[o], bytes[o + 1]]));
-    }
-    set
-}
-
-// ==================== route-CRC sidecar (#632 item 6, V2) ====================
-//
-// The route-identity content fingerprint (epic #632 item 6, device half): the whole-object CRC-32
-// of each stored route's OBCR bytes, keyed by durable object id, so the `routeList` entry can carry
-// it and the app can verify *what* a linked id points at (identity-verified badges) and adopt an
-// identical unlinked copy. Persisted in a small SD **sidecar in /routes** (`ROUTES.CRC`) — the
-// direct analogue of the `/tracks` `SYNCED.SET` synced-ride sidecar — so it survives a reflash and
-// travels with the card/routes, and is *not* the RRAM settings carve. A BLE upload writes the entry
-// at commit (the CRC is already verified there); a side-loaded / pre-v2 route with no entry is filled
-// lazily at first list build (one streaming CRC pass, then persisted).
-//
-// The codec lives here — beside the synced-set + id-marks codecs, the host-testable precedent — so
-// the "torn/missing sidecar = empty map, never a crash" contract is unit-tested without the board
-// crate. Same shape as `SYNCED.SET`: a magic + version + a `u16` count + that many
-// `(id u16, crc32 u32)` little-endian pairs + a trailing CRC-16 over everything before it. A blank
-// page, a short slice, a torn write, an unknown version, an overrunning count, or a CRC mismatch all
-// decode to the **empty** map — which serves `0 = unknown` for every route (the safe default; the
-// device then re-fills lazily).
-
-/// The sidecar magic tag; anything else there decodes to the empty CRC map.
-const ROUTE_CRCS_MAGIC: [u8; 4] = *b"ORCS";
-/// Sidecar layout version — bump on any format change (an old version reads as empty).
-const ROUTE_CRCS_VERSION: u8 = 1;
-/// Fixed header bytes before the entry list: `magic(4) · version(1) · pad(1) · count u16 LE`.
-const ROUTE_CRCS_HEADER_LEN: usize = 8;
-/// One `(id u16 LE, crc32 u32 LE)` entry.
-const ROUTE_CRCS_ENTRY_LEN: usize = 6;
-
-/// The persisted map of route object id → whole-object CRC-32. Bounded by
-/// [`MAX_ROUTES`](crate::route::MAX_ROUTES) (a CRC can only exist for a cataloged route). `Default`
-/// is the empty map — "no CRC known for any route".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RouteCrcs {
-    entries: heapless::Vec<(u16, u32), { crate::route::MAX_ROUTES }>,
-}
-
-impl RouteCrcs {
-    /// An empty CRC map.
-    pub fn new() -> Self {
-        RouteCrcs::default()
-    }
-
-    /// The stored whole-object CRC-32 for route `id`, or `None` when the map has no entry for it
-    /// (the caller then lazily fills it). Note a genuine CRC of `0` is a legal value stored and
-    /// returned as `Some(0)` — it is only ever *served* on the wire as `0 = unknown`, never
-    /// special-cased here.
-    pub fn get(&self, id: u16) -> Option<u32> {
-        self.entries.iter().find(|(i, _)| *i == id).map(|(_, c)| *c)
-    }
-
-    /// Upsert the CRC for route `id`. Returns `true` when the map changed (a new entry, or an
-    /// existing entry whose CRC differs) so the caller only rewrites the sidecar on an actual
-    /// change. A full map silently ignores a brand-new id.
-    pub fn insert(&mut self, id: u16, crc: u32) -> bool {
-        if let Some(slot) = self.entries.iter_mut().find(|(i, _)| *i == id) {
-            if slot.1 == crc {
-                return false;
-            }
-            slot.1 = crc;
-            return true;
-        }
-        self.entries.push((id, crc)).is_ok()
-    }
-
-    /// Retire route `id`'s CRC entry (a deleted route — ids never reuse, so this is belt-and-braces
-    /// tidiness). Returns `true` if it was present.
-    pub fn remove(&mut self, id: u16) -> bool {
-        if let Some(pos) = self.entries.iter().position(|(i, _)| *i == id) {
-            self.entries.swap_remove(pos);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// The `(id, crc)` entries, for the codec / tests.
-    pub fn entries(&self) -> &[(u16, u32)] {
-        &self.entries
-    }
-}
-
-/// The encoded sidecar's byte length for `count` entries: the fixed header, the entry list, then the
-/// trailing CRC-16.
-pub const fn route_crcs_len(count: usize) -> usize {
-    ROUTE_CRCS_HEADER_LEN + count * ROUTE_CRCS_ENTRY_LEN + 2
-}
-
-/// The largest an encoded sidecar can be (a full map) — the buffer a host reserves to write it.
-pub const ROUTE_CRCS_MAX_LEN: usize = route_crcs_len(crate::route::MAX_ROUTES);
-
-/// Pack the route-CRC map into `out`, returning the encoded byte length. `out` must be at least
-/// [`route_crcs_len`]`(map.entries().len())` (use a [`ROUTE_CRCS_MAX_LEN`] buffer). Inverse of
-/// [`decode_route_crcs`].
-pub fn encode_route_crcs(map: &RouteCrcs, out: &mut [u8]) -> usize {
-    let entries = map.entries();
-    let len = route_crcs_len(entries.len());
-    out[0..4].copy_from_slice(&ROUTE_CRCS_MAGIC);
-    out[4] = ROUTE_CRCS_VERSION;
-    out[5] = 0;
-    out[6..8].copy_from_slice(&(entries.len() as u16).to_le_bytes());
-    for (i, (id, crc)) in entries.iter().enumerate() {
-        let o = ROUTE_CRCS_HEADER_LEN + i * ROUTE_CRCS_ENTRY_LEN;
-        out[o..o + 2].copy_from_slice(&id.to_le_bytes());
-        out[o + 2..o + 6].copy_from_slice(&crc.to_le_bytes());
-    }
-    let crc = crc16(&out[..len - 2]);
-    out[len - 2..len].copy_from_slice(&crc.to_le_bytes());
-    len
-}
-
-/// Decode a route-CRC sidecar, always returning a map — a blank page, a short slice, a torn write,
-/// an unknown version, a count that overruns the slice (or the cap), or a CRC mismatch all yield the
-/// **empty** map ("no CRC known", the safe default). Never panics on malformed input.
-pub fn decode_route_crcs(bytes: &[u8]) -> RouteCrcs {
-    let empty = RouteCrcs::new();
-    if bytes.len() < ROUTE_CRCS_HEADER_LEN + 2 {
-        return empty; // shorter than an empty-map sidecar → treat as absent
-    }
-    if bytes[0..4] != ROUTE_CRCS_MAGIC || bytes[4] != ROUTE_CRCS_VERSION {
-        return empty;
-    }
-    let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-    let len = route_crcs_len(count);
-    if count > crate::route::MAX_ROUTES || bytes.len() < len {
-        return empty; // a count claiming more entries than the slice (or the cap) holds is corrupt
-    }
-    let crc = u16::from_le_bytes([bytes[len - 2], bytes[len - 1]]);
-    if crc != crc16(&bytes[..len - 2]) {
-        return empty;
-    }
-    let mut map = RouteCrcs::new();
-    for i in 0..count {
-        let o = ROUTE_CRCS_HEADER_LEN + i * ROUTE_CRCS_ENTRY_LEN;
-        let id = u16::from_le_bytes([bytes[o], bytes[o + 1]]);
-        let c = u32::from_le_bytes([bytes[o + 2], bytes[o + 3], bytes[o + 4], bytes[o + 5]]);
-        let _ = map.insert(id, c);
-    }
-    map
-}
+// The independent store-metadata codecs used to live in this module; they moved beside the
+// invariants they protect (store identity → `store_meta`, DFU arm → `dfu`, ride sync → `ride`,
+// route identity → `route`). Every name stays importable as `settings::*` — the board, BLE, and
+// vector crates address them through this path — so the move is invisible to callers.
+pub use crate::dfu::{decode_arm_marker, encode_arm_marker, ArmMarker, ARM_MARKER_LEN};
+pub use crate::ride::{decode_synced_rides, encode_synced_rides, synced_rides_len, SyncedRides, SYNCED_RIDES_MAX_LEN};
+pub use crate::route::{decode_route_crcs, encode_route_crcs, route_crcs_len, RouteCrcs, ROUTE_CRCS_MAX_LEN};
+pub use crate::store_meta::{
+    decode_id_marks, decode_store_epoch, encode_id_marks, encode_store_epoch, store_epoch_mint, IdMarks, ID_MARKS_LEN,
+    STORE_EPOCH_LEN,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1580,7 +1066,7 @@ mod tests {
         // default Auto, not a garbage variant — re-stamp the CRC so only the payload is "wrong".
         let mut b = encode(&Settings { climb_mode: ClimbMode::Off, ..Settings::default() });
         b[CLIMB_OFF] = 200;
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert_eq!(got.climb_mode, ClimbMode::Auto, "an unknown climb-mode byte falls back to Auto");
@@ -1608,7 +1094,7 @@ mod tests {
         // payload byte is "wrong".
         let mut b = encode(&Settings { idle_return: IdleReturn::S15, ..Settings::default() });
         b[IDLE_OFF] = 200;
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert_eq!(got.idle_return, IdleReturn::S30, "an unknown idle-return byte falls back to 30 s");
@@ -1701,7 +1187,7 @@ mod tests {
         // default Approach — re-stamp the CRC so only the payload byte is "wrong".
         let mut b = encode(&Settings { waypoint_mode: WaypointMode::Off, ..Settings::default() });
         b[WAYPOINT_OFF] = 200;
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert_eq!(got.waypoint_mode, WaypointMode::Approach, "an unknown waypoint-mode byte falls back to Approach");
@@ -1733,7 +1219,7 @@ mod tests {
         // default English — re-stamp the CRC so only the payload byte is "wrong".
         let mut b = encode(&Settings { language: Language::De, ..Settings::default() });
         b[LANGUAGE_OFF] = 200;
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert_eq!(got.language, Language::En, "an unknown language byte falls back to English");
@@ -1742,7 +1228,7 @@ mod tests {
         // the language reads English — the established cross-version contract (no in-place upgrade).
         let mut old = encode(&Settings { language: Language::De, ..Settings::default() });
         old[0] = 9;
-        let crc = crc16(&old[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&old[0..PAYLOAD_LEN]);
         old[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&old), None, "an old-version blob is rejected (→ host uses defaults, language En)");
 
@@ -1784,7 +1270,7 @@ mod tests {
         b[off] = 0; // present = false
         b[off + 1] = 1; // stray addr_kind
         b[off + 2..off + 2 + 6].copy_from_slice(&[9, 9, 9, 9, 9, 9]); // stray address
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&b).unwrap().saved_sensors[1], SavedSensor::EMPTY, "an absent slot ignores stray bytes");
 
@@ -1793,7 +1279,7 @@ mod tests {
         let mut b = encode(&s);
         let off = SENSORS_OFF; // the HR slot
         b[off + 1] = 200;
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&b).unwrap().saved_sensors[0].addr_kind, 1, "an out-of-range addr_kind reads as random");
 
@@ -1802,7 +1288,7 @@ mod tests {
         // (no in-place upgrade), exactly like every prior codec bump.
         let mut old = encode(&s);
         old[0] = 10;
-        let crc = crc16(&old[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&old[0..PAYLOAD_LEN]);
         old[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&old), None, "a v10 blob is rejected → host uses defaults, sensors empty");
 
@@ -1849,7 +1335,7 @@ mod tests {
         // Corrupt the stored name to invalid UTF-8, re-stamp the CRC: decode sanitises to factory.
         let mut b = encode(&s);
         b[NAME_OFF + 1] = 0xFF;
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert!(got.device_name.is_empty(), "invalid UTF-8 falls back to the factory name");
@@ -1857,7 +1343,7 @@ mod tests {
         // An impossible stored length does too.
         let mut b = encode(&s);
         b[NAME_OFF] = 200;
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         assert!(decode(&b).unwrap().device_name.is_empty());
     }
@@ -1871,7 +1357,7 @@ mod tests {
         // Corrupt a stored discriminant to an unknown value, then re-stamp the CRC so only the
         // payload (not the framing) is "wrong" — decode must still reject the bad tile.
         b[STAT_FIELDS_OFF + 1] = 250;
-        let crc = crc16(&b[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         let got = decode(&b).expect("valid CRC → Some, just sanitised");
         assert!(got.stat_cycle_s <= STAT_CYCLE_MAX, "the cycle period is clamped into range");
@@ -1900,7 +1386,7 @@ mod tests {
         assert_eq!(decode(&encode(&Settings::default())[..ENCODED_LEN - 1]), None, "a short slice is rejected");
         let mut wrong = encode(&Settings::default());
         wrong[0] = VERSION + 1; // bump version, fix the CRC so only the version differs
-        let crc = crc16(&wrong[0..PAYLOAD_LEN]);
+        let crc = crate::store_meta::crc16(&wrong[0..PAYLOAD_LEN]);
         wrong[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&wrong), None, "a future version is rejected");
     }
@@ -1919,332 +1405,6 @@ mod tests {
         assert!((1..=12).contains(&got.clock.month));
         assert!(got.clock.day >= 1 && got.clock.day <= 31);
         assert!(got.fix_interval_s <= FIX_INTERVAL_MAX);
-    }
-
-    // ---- durable id high-water marks (#450) ----
-
-    /// The 16-byte id-marks line round-trips, and every torn/blank/foreign shape decodes to
-    /// `None` — "no floor", the fall-back-to-scan-max behaviour.
-    #[test]
-    fn id_marks_codec_round_trips_and_rejects_torn_lines() {
-        let m = IdMarks { next_route_id: 7, next_ride_id: 41 };
-        assert_eq!(decode_id_marks(&encode_id_marks(&m)), Some(m));
-        assert_eq!(decode_id_marks(&encode_id_marks(&IdMarks::default())), Some(IdMarks::default()));
-
-        assert_eq!(decode_id_marks(&[0u8; ID_MARKS_LEN]), None, "a blank (all-zero) line is no floor");
-        assert_eq!(decode_id_marks(&[0xFF; ID_MARKS_LEN]), None, "an erased (all-ones) line is no floor");
-        assert_eq!(decode_id_marks(&encode_id_marks(&m)[..ID_MARKS_LEN - 1]), None, "a short slice is rejected");
-        let mut torn = encode_id_marks(&m);
-        torn[7] ^= 0xFF; // flip a payload byte without fixing the CRC — the torn-write shape
-        assert_eq!(decode_id_marks(&torn), None, "a CRC mismatch (torn write) is no floor");
-        let mut old = encode_id_marks(&m);
-        old[4] = ID_MARKS_VERSION + 1;
-        let crc = crc16(&old[0..ID_MARKS_PAYLOAD]);
-        old[ID_MARKS_PAYLOAD..ID_MARKS_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(decode_id_marks(&old), None, "a foreign layout version is no floor");
-    }
-
-    // ---- store-epoch nonce (protocol v2, #632/#767; card-resident #776) ----
-
-    /// The 12-byte store-epoch card file round-trips, and every torn/absent/foreign shape decodes to
-    /// `None` — "no epoch", which the mint rule reads as clause 1.
-    #[test]
-    fn store_epoch_codec_round_trips_and_rejects_torn_lines() {
-        assert_eq!(encode_store_epoch(0).len(), STORE_EPOCH_LEN, "the file is 12 bytes, no RRAM padding");
-        assert_eq!(decode_store_epoch(&encode_store_epoch(0xDEAD_BEEF)), Some(0xDEAD_BEEF));
-        assert_eq!(decode_store_epoch(&encode_store_epoch(0)), Some(0), "a zero nonce is a legal value");
-
-        assert_eq!(decode_store_epoch(&[0u8; STORE_EPOCH_LEN]), None, "a blank (all-zero) file is no epoch");
-        assert_eq!(decode_store_epoch(&[0xFF; STORE_EPOCH_LEN]), None, "an erased (all-ones) file is no epoch");
-        assert_eq!(decode_store_epoch(&[]), None, "an absent (empty) file is no epoch");
-        assert_eq!(
-            decode_store_epoch(&encode_store_epoch(0xDEAD_BEEF)[..STORE_EPOCH_LEN - 1]),
-            None,
-            "a short slice is rejected"
-        );
-        let mut torn = encode_store_epoch(0xDEAD_BEEF);
-        torn[7] ^= 0xFF; // flip an epoch byte without fixing the CRC — the torn-write shape
-        assert_eq!(decode_store_epoch(&torn), None, "a CRC mismatch (torn write) is no epoch");
-        let mut old = encode_store_epoch(0xDEAD_BEEF);
-        old[4] = STORE_EPOCH_VERSION + 1;
-        let crc = crc16(&old[0..STORE_EPOCH_PAYLOAD]);
-        old[STORE_EPOCH_PAYLOAD..STORE_EPOCH_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(decode_store_epoch(&old), None, "a foreign layout version is no epoch");
-    }
-
-    /// The mint rule's four cases, plus the two invariants the 2026-07-12 review added. `FRESH` is
-    /// the TRNG word the board draws; the pure function never draws it, so the test is deterministic.
-    #[test]
-    fn store_epoch_mint_rule() {
-        const FRESH: u32 = 0x1234_5678;
-        let floor = IdMarks { next_route_id: 9, next_ride_id: 4 };
-
-        // Steady state: a valid card epoch + valid floors → keep the card's epoch, write nothing.
-        assert_eq!(store_epoch_mint(Some(0xABCD), Some(floor), FRESH), None);
-
-        // Clause 1 only (card epoch absent/torn, id-marks *intact*): mint a fresh epoch but keep the
-        // existing floors verbatim — a torn/absent epoch file must never cost the durable id floor.
-        assert_eq!(store_epoch_mint(None, Some(floor), FRESH), Some((FRESH, floor)));
-
-        // Clause 2 (id-marks blank/torn, card epoch intact): a lost floor is a new era → mint a fresh
-        // epoch even though the card's was valid, and (re)seed the floor to "no floor" (default),
-        // which the store re-derives from the card scan via `max(scan_max + 1, floor)`.
-        assert_eq!(store_epoch_mint(Some(0xABCD), None, FRESH), Some((FRESH, IdMarks::default())));
-
-        // Fresh device (no card epoch + no floor): mint + seed default floors.
-        assert_eq!(store_epoch_mint(None, None, FRESH), Some((FRESH, IdMarks::default())));
-    }
-
-    /// Card-swap semantics — the whole point of #776 (a pure-function pin). The epoch now rides the
-    /// card, so swapping cards **transplants** the store identity with no mint, and swapping back
-    /// restores the original era. The device's own RRAM floor stays intact throughout (a card swap is
-    /// never an era event by itself — clause 2 is only about a *lost* floor).
-    #[test]
-    fn store_epoch_card_swap_transplants_the_era() {
-        const FRESH: u32 = 0xDEAD_0001; // never consumed: every step below is a "keep"
-        let floor = IdMarks { next_route_id: 3, next_ride_id: 2 };
-        let e_a = 0xAAAA_1111u32; // card A's epoch
-        let e_b = 0xBBBB_2222u32; // card B's epoch
-
-        // Card A mounted, steady state → no mint, the served epoch is card A's.
-        assert_eq!(store_epoch_mint(Some(e_a), Some(floor), FRESH), None, "card A steady: no mint");
-
-        // Swap to card B (its own valid epoch, RRAM floor unchanged) → no mint, the store transplants
-        // to card B's era. The served epoch is now e_b — a *different* store identity on the wire.
-        assert_eq!(store_epoch_mint(Some(e_b), Some(floor), FRESH), None, "card B adopted verbatim — transplant");
-
-        // Swap back to card A → no mint again, e_a served. The original era is restored intact.
-        assert_eq!(store_epoch_mint(Some(e_a), Some(floor), FRESH), None, "swap-back restores card A's era");
-    }
-
-    /// The invariant *valid epoch ⇒ valid id-marks at mint*: after a mint the caller persists both
-    /// (the epoch to the card file, the marks to the RRAM line), and a re-decode of what it wrote
-    /// leaves **both** valid — so the next boot can't mistake the fresh state for a torn one.
-    #[test]
-    fn store_epoch_mint_writes_a_valid_marks_line() {
-        const FRESH: u32 = 0x0BAD_F00D;
-        // Clause-2 mint (blank id-marks + intact card epoch), the review's headline case.
-        let (new_epoch, new_marks) = store_epoch_mint(Some(0x55), None, FRESH).expect("clause 2 mints");
-        // Persist-then-reload both records exactly as the board does.
-        assert_eq!(decode_store_epoch(&encode_store_epoch(new_epoch)), Some(FRESH), "epoch file valid post-mint");
-        assert_eq!(decode_id_marks(&encode_id_marks(&new_marks)), Some(new_marks), "id-marks line valid post-mint");
-    }
-
-    /// Fresh-device stability: a device that never saves a ride or uploads a route mints **once**,
-    /// and every subsequent boot (its epoch file + id-marks line now valid) keeps that same epoch —
-    /// no clause-2 churn.
-    #[test]
-    fn store_epoch_fresh_device_stability() {
-        const FRESH: u32 = 0xFEED_BEEF;
-        // Boot 1: no card epoch + no floor → mint.
-        let (epoch, marks) = store_epoch_mint(None, None, FRESH).expect("first boot mints");
-        // The board writes both records; model them as the encoded card file + RRAM line it persisted.
-        let epoch_line = encode_store_epoch(epoch);
-        let marks_line = encode_id_marks(&marks);
-
-        // Boots 2..N with no rides/uploads: both read back valid, so the decision is "keep" —
-        // a *different* TRNG word each boot is irrelevant because the function never reaches it.
-        for boot_fresh in [0x1111_1111u32, 0x2222_2222, 0x3333_3333] {
-            let e = decode_store_epoch(&epoch_line);
-            let m = decode_id_marks(&marks_line);
-            assert_eq!(store_epoch_mint(e, m, boot_fresh), None, "a settled fresh device never re-mints");
-        }
-        assert_eq!(decode_store_epoch(&epoch_line), Some(epoch), "and the epoch is stable across boots");
-    }
-
-    // ---- DFU arm marker (boot-outcome popup) ----
-
-    /// The 48-byte arm-marker slot round-trips (generation + verbatim version string), and every
-    /// torn/blank/foreign shape decodes to `None` — "no arm happened", a plain boot.
-    #[test]
-    fn arm_marker_codec_round_trips_and_rejects_torn_slots() {
-        let m = ArmMarker { generation: 3, staged: heapless::String::try_from("v0.4.0-12-gabc1234").unwrap() };
-        assert_eq!(decode_arm_marker(&encode_arm_marker(&m)), Some(m.clone()));
-        let empty = ArmMarker { generation: 1, staged: heapless::String::new() };
-        assert_eq!(decode_arm_marker(&encode_arm_marker(&empty)), Some(empty), "an empty version string is legal");
-
-        assert_eq!(decode_arm_marker(&[0u8; ARM_MARKER_LEN]), None, "a blank (all-zero) slot is no marker");
-        assert_eq!(decode_arm_marker(&[0xFF; ARM_MARKER_LEN]), None, "an erased (all-ones) slot is no marker");
-        assert_eq!(decode_arm_marker(&encode_arm_marker(&m)[..ARM_MARKER_LEN - 1]), None, "a short slice is rejected");
-        let mut torn = encode_arm_marker(&m);
-        torn[15] ^= 0xFF; // flip a version-string byte without fixing the CRC — the torn-write shape
-        assert_eq!(decode_arm_marker(&torn), None, "a CRC mismatch (torn write) is no marker");
-        let mut old = encode_arm_marker(&m);
-        old[4] = ARM_MARKER_VERSION + 1;
-        let crc = crc16(&old[0..ARM_MARKER_PAYLOAD]);
-        old[ARM_MARKER_PAYLOAD..ARM_MARKER_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(decode_arm_marker(&old), None, "a foreign layout version is no marker");
-        let mut bad_utf8 = encode_arm_marker(&m);
-        bad_utf8[12] = 0xFF; // a non-UTF-8 version byte
-        let crc = crc16(&bad_utf8[0..ARM_MARKER_PAYLOAD]);
-        bad_utf8[ARM_MARKER_PAYLOAD..ARM_MARKER_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(decode_arm_marker(&bad_utf8), None, "a non-UTF-8 version string is no marker");
-    }
-
-    /// The DoD guarantee: with the marks persisted across "reboots", an id is **never reused after
-    /// a delete** — even when the delete lowers the card's scan-max below an already-issued id.
-    /// Simulates the store as the set of live filename-encoded ids, exactly what a mount scan sees.
-    #[test]
-    fn id_allocation_never_reuses_after_delete() {
-        let mut card: heapless::Vec<u16, 8> = heapless::Vec::new(); // the live RD{id}/RT{id} files
-        let mut marks = IdMarks::default(); // fresh device: no floor
-        let scan_next = |card: &[u16]| card.iter().max().map_or(0, |m| m + 1);
-
-        // Three rides saved: 0, 1, 2 — identical to scan-max+1 while nothing deletes.
-        for want in 0..3u16 {
-            let id = marks.alloc_ride(scan_next(&card));
-            assert_eq!(id, want);
-            let _ = card.push(id);
-        }
-
-        // Delete the highest (id 2) — the trap: scan-max+1 alone would re-issue 2.
-        card.retain(|&id| id != 2);
-        // "Reboot": the floor survives in RRAM (marks kept), the scan is rebuilt from the card.
-        let mut rebooted = decode_id_marks(&encode_id_marks(&marks)).expect("persisted floor survives");
-        let id = rebooted.alloc_ride(scan_next(&card));
-        assert_eq!(id, 3, "the deleted id 2 is never reused");
-        let _ = card.push(id);
-
-        // A torn floor line falls back cleanly: allocation degrades to scan-max+1 (no floor) —
-        // ids can collide with tombstones again, but only exactly as they did before the marks.
-        let mut torn = encode_id_marks(&rebooted);
-        torn[9] ^= 0x55;
-        let mut no_floor = decode_id_marks(&torn).unwrap_or_default();
-        assert_eq!(no_floor.alloc_ride(scan_next(&card)), 4, "torn line → scan-max+1");
-
-        // The two namespaces are independent: route allocations never disturb ride marks.
-        let mut m = IdMarks::default();
-        assert_eq!(m.alloc_route(5), 5);
-        assert_eq!(m.next_ride_id, 0, "route allocation leaves the ride floor untouched");
-        assert_eq!(m.alloc_route(0), 6, "and the route floor advanced past the assignment");
-    }
-
-    // ---- synced-ride sidecar (#454) ----
-
-    /// A synced set round-trips through the sidecar codec — order-insensitive membership, exact ids.
-    #[test]
-    fn synced_rides_codec_round_trips() {
-        let mut set = SyncedRides::new();
-        assert!(set.insert(3));
-        assert!(set.insert(7));
-        assert!(set.insert(41));
-        assert!(!set.insert(7), "a duplicate insert is a no-op");
-        assert!(set.contains(3) && set.contains(7) && set.contains(41));
-        assert!(!set.contains(4));
-
-        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
-        let n = encode_synced_rides(&set, &mut buf);
-        assert_eq!(n, synced_rides_len(3));
-        let got = decode_synced_rides(&buf[..n]);
-        assert_eq!(got, set);
-
-        // The empty set is a valid, non-crashing round-trip too.
-        let empty = SyncedRides::new();
-        let n = encode_synced_rides(&empty, &mut buf);
-        assert_eq!(decode_synced_rides(&buf[..n]), empty);
-    }
-
-    /// The DoD guarantee: a torn, blank, short, or foreign sidecar decodes to "nothing synced" —
-    /// never a crash, never a false positive that would drop the warning footer on an unsynced ride.
-    #[test]
-    fn synced_rides_torn_or_missing_reads_as_nothing_synced() {
-        let mut set = SyncedRides::new();
-        set.insert(9);
-        set.insert(12);
-        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
-        let n = encode_synced_rides(&set, &mut buf);
-
-        assert_eq!(decode_synced_rides(&[]), SyncedRides::new(), "an absent sidecar → nothing synced");
-        assert_eq!(decode_synced_rides(&[0u8; 4]), SyncedRides::new(), "a runt slice → nothing synced");
-        assert_eq!(decode_synced_rides(&[0u8; SYNCED_HEADER_LEN + 2]), SyncedRides::new(), "a blank page");
-        assert_eq!(decode_synced_rides(&[0xFF; 64]), SyncedRides::new(), "an erased page → nothing synced");
-
-        let mut torn = buf;
-        torn[SYNCED_HEADER_LEN] ^= 0xFF; // flip an id byte without fixing the CRC
-        assert_eq!(decode_synced_rides(&torn[..n]), SyncedRides::new(), "a CRC mismatch → nothing synced");
-
-        let mut bad_count = buf;
-        bad_count[6..8].copy_from_slice(&0xFFFFu16.to_le_bytes()); // claim more ids than the slice holds
-        assert_eq!(decode_synced_rides(&bad_count[..n]), SyncedRides::new(), "an overrunning count → nothing");
-
-        let mut old = buf;
-        old[4] = SYNCED_VERSION + 1;
-        assert_eq!(decode_synced_rides(&old[..n]), SyncedRides::new(), "a foreign version → nothing synced");
-    }
-
-    /// `remove` retires an id (the deleted-ride cleanup) without disturbing the rest.
-    #[test]
-    fn synced_rides_remove_retires_one_id() {
-        let mut set = SyncedRides::new();
-        set.insert(1);
-        set.insert(2);
-        set.insert(3);
-        assert!(set.remove(2));
-        assert!(!set.remove(2), "removing an absent id is a no-op");
-        assert!(set.contains(1) && !set.contains(2) && set.contains(3));
-    }
-
-    /// The route-CRC sidecar round-trips id → crc32 pairs byte-for-byte, empty included.
-    #[test]
-    fn route_crcs_codec_round_trips() {
-        let mut map = RouteCrcs::new();
-        assert!(map.insert(1, 0xDEAD_BEEF));
-        assert!(map.insert(7, 0));
-        assert!(map.insert(65535, 0x0000_0001));
-        let mut buf = [0u8; ROUTE_CRCS_MAX_LEN];
-        let n = encode_route_crcs(&map, &mut buf);
-        assert_eq!(n, route_crcs_len(3));
-        let got = decode_route_crcs(&buf[..n]);
-        assert_eq!(got, map);
-        assert_eq!(got.get(1), Some(0xDEAD_BEEF));
-        assert_eq!(got.get(7), Some(0), "a genuine CRC of 0 is a stored, retrievable value");
-        assert_eq!(got.get(2), None, "an unlisted route has no CRC (→ lazily filled)");
-
-        let empty = RouteCrcs::new();
-        let n = encode_route_crcs(&empty, &mut buf);
-        assert_eq!(decode_route_crcs(&buf[..n]), empty);
-    }
-
-    /// A torn / missing / foreign route-CRC sidecar decodes to the empty map (serve `0 = unknown`).
-    #[test]
-    fn route_crcs_torn_or_missing_reads_as_empty() {
-        let mut map = RouteCrcs::new();
-        map.insert(9, 0x1111_2222);
-        map.insert(12, 0x3333_4444);
-        let mut buf = [0u8; ROUTE_CRCS_MAX_LEN];
-        let n = encode_route_crcs(&map, &mut buf);
-
-        assert_eq!(decode_route_crcs(&[]), RouteCrcs::new(), "an absent sidecar → empty");
-        assert_eq!(decode_route_crcs(&[0u8; 4]), RouteCrcs::new(), "a runt slice → empty");
-        assert_eq!(decode_route_crcs(&[0u8; ROUTE_CRCS_HEADER_LEN + 2]), RouteCrcs::new(), "a blank page");
-        assert_eq!(decode_route_crcs(&[0xFF; 64]), RouteCrcs::new(), "an erased page → empty");
-
-        let mut torn = buf;
-        torn[ROUTE_CRCS_HEADER_LEN] ^= 0xFF; // flip an id byte without fixing the CRC
-        assert_eq!(decode_route_crcs(&torn[..n]), RouteCrcs::new(), "a CRC mismatch → empty");
-
-        let mut bad_count = buf;
-        bad_count[6..8].copy_from_slice(&0xFFFFu16.to_le_bytes()); // claim more entries than the slice holds
-        assert_eq!(decode_route_crcs(&bad_count[..n]), RouteCrcs::new(), "an overrunning count → empty");
-
-        let mut old = buf;
-        old[4] = ROUTE_CRCS_VERSION + 1;
-        assert_eq!(decode_route_crcs(&old[..n]), RouteCrcs::new(), "a foreign version → empty");
-    }
-
-    /// `insert` upserts (a changed CRC rewrites, an identical one is a no-op) and `remove` retires
-    /// one id — the upload-replace + delete cleanup paths.
-    #[test]
-    fn route_crcs_upsert_and_remove() {
-        let mut map = RouteCrcs::new();
-        assert!(map.insert(5, 0xAAAA), "a new id changes the map");
-        assert!(!map.insert(5, 0xAAAA), "the same id+crc is a no-op");
-        assert!(map.insert(5, 0xBBBB), "a replaced route's new crc rewrites in place");
-        assert_eq!(map.get(5), Some(0xBBBB));
-        assert_eq!(map.entries().len(), 1, "upsert never duplicates an id");
-        assert!(map.remove(5));
-        assert!(!map.remove(5), "removing an absent id is a no-op");
-        assert_eq!(map.get(5), None);
     }
 
     /// `from_unix` is the exact inverse of `to_unix` (minute granularity) across epoch, a leap day,

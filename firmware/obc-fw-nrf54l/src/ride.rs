@@ -1188,7 +1188,7 @@ pub(crate) async fn run_app(
             None => {}
         }
 
-        let active = app.activity.active_route;
+        let active = app.active_route_index();
         // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't yank the
         // camera off it (`synth` build only — the host feed and the real GPS stream absolute positions).
         #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
@@ -1206,7 +1206,7 @@ pub(crate) async fn run_app(
         // pending track action) so the dominant static frame does no per-tick `String<64>` copy or
         // state re-walk. `has_track_action` is a non-consuming peek; `take_track_action` stays inside,
         // so the one-shot is drained only when processed.
-        let session = app.activity.session;
+        let session = app.activity.session();
         if active != prev_active || session != prev_session || app.activity.has_track_action() {
             let action = app.activity.take_track_action();
             let mut name: heapless::String<64> = heapless::String::new();
