@@ -6,10 +6,12 @@ publish = false  # internal firmware crate — not published to crates.io
 description = "Board-agnostic no_std storage adapters from an embedded-sdmmc SD card to the OBC format/port seams: FatFs ByteSource/ByteSink/TrackSink adapters (map/route/track on SD) and the FAT-extent fast path that resolves the map file's chain once into direct-block reads (#500). Generic over BlockDevice/TimeSource — no board bus types, no renderer/UI."
 
 [dependencies]
-# The OBCR byte I/O the adapters implement (`ByteSource`/`ByteSink`/`Error`) plus the track record
-# codec — so `SdByteSource` drops into `RouteReader`/`RouteSummary::read` and `SdTrackSink` encodes
-# `obc_ports::TrackPoint`s exactly like the simulator's host store.
-obc-route = { path = "../obc-route" }
+# The byte-I/O seam the adapters implement (`ByteSource`/`ByteSink`/`Error`) plus the fixed-record
+# track codec — both owned by the format authority, so `SdByteSource` drops into
+# `RouteReader`/`RouteSummary::read` (which consume the same `obc_formats::io` traits) and
+# `SdTrackSink` encodes `obc_ports::TrackPoint`s without a dependency on the `obc-route` algorithms
+# (#807/#812 severed `obc-storage -> obc-route`).
+obc-formats = { path = "../obc-formats" }
 
 # The `TrackSink`/`TrackPoint`/`TrackError` semantic seam the track adapter fulfils — the foundation
 # port contract, never an upward renderer/UI dependency.
