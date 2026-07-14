@@ -101,7 +101,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
   <a class="doc-card" href="software/rendering/">
     <span class="dc-tag">Software</span>
     <h3>Rendering pipeline</h3>
-    <p>How one map frame is drawn — projection, level-of-detail, the quadtree cull, the priority multi-pass, and the polygon/line rasterisers. The deepest page.</p>
+    <p>How one map frame is drawn — projection, level-of-detail, the quadtree cull, the stub-select collector, and the polygon/line rasterisers. The deepest page.</p>
   </a>
   <a class="doc-card" href="software/architecture/">
     <span class="dc-tag">Software</span>
