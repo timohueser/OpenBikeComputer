@@ -124,9 +124,6 @@ impl FrameScratch {
         let FrameScratch { dec_points, dec_ring_lens, slots, .. } = self;
         let mut candidates = 0usize;
         let mut arrival = 0u16;
-        // Count of resident stubs at each priority level (1..=4 → index 0..=3), for O(1) worst-level
-        // eviction triage.
-        let mut level_count = [0u16; 4];
         let report = scene.visit_candidates(
             lod,
             view,
@@ -160,39 +157,21 @@ impl FrameScratch {
                 let stub = Stub::new(token, pts.len(), f.ring_lens().len(), f.style_id, f.kind, level, arrival);
                 arrival = arrival.saturating_add(1);
 
-                if !slots.is_full() {
-                    let _ = slots.push(Slot::of_stub(stub));
-                    level_count[(level - 1) as usize] += 1;
-                    return;
-                }
-
-                // Buffer full — a streaming "keep the K lowest-keyed" selection, key =
-                // (priority_level, arrival). This candidate's arrival is the largest seen so far,
-                // so it can only displace a *higher-level* held stub; and to keep exactly the K
-                // lowest keys, the one it displaces is the **highest-arrival** stub at the worst
-                // (highest) level present. Evicting that specific stub — not just any at that
-                // level — makes the survivors identical to the old level-major collector's set
-                // under saturation too, so the render stays byte-identical there, not only when
-                // nothing saturates. Equal-or-worse candidates are dropped, so a higher-priority
-                // feature is never lost to a lower one.
-                let worst = worst_level(&level_count);
-                if level < worst {
-                    let mut victim = 0usize;
-                    let mut victim_arrival = 0u16;
-                    let mut found = false;
-                    for (i, slot) in slots.iter().enumerate() {
-                        let held = slot.stub();
-                        // `held.seq` still holds the pass-A arrival (select overwrites it later).
-                        if held.priority() == worst && (!found || held.seq > victim_arrival) {
-                            victim = i;
-                            victim_arrival = held.seq;
-                            found = true;
-                        }
-                    }
-                    // `worst` has a positive count, so a victim always exists.
-                    slots[victim] = Slot::of_stub(stub);
-                    level_count[(worst - 1) as usize] -= 1;
-                    level_count[(level - 1) as usize] += 1;
+                // Streaming "keep the K lowest-keyed" selection, key = `(priority_level, arrival)`
+                // (`arrival` lives in `Stub::seq` until select overwrites it). `slots` is held as an
+                // in-place max-heap on that key, so the **root is the worst retained candidate**
+                // (largest priority number, then latest arrival). While the buffer has room every
+                // stub is admitted; once it is full a new stub replaces the root exactly when it
+                // out-ranks that worst resident — the classic bounded max-heap that ends holding the
+                // K smallest keys. Because a new candidate's `arrival` is the largest seen so far,
+                // `key < root_key` reduces to `level < root.priority` (equal priority ⇒ equal-or-later
+                // arrival ⇒ never <), i.e. it can only displace a strictly-higher-level stub, and the
+                // root is precisely the highest-arrival stub at the worst level present. That is the
+                // same accept/reject decision and the same victim the old level-major linear scan
+                // made, so the survivor set — hence the render — is identical (see the tie note on
+                // `Stub::seq` for the >65,536-candidate saturation edge, the one case outside this
+                // exactness claim).
+                if heap_admit(slots, stub) {
                     stats.stub_evictions += 1;
                 }
             },
@@ -461,16 +440,69 @@ fn empty_span(stub: Stub, z: i8, weight: u8, color: u16, pt_start: u16, ring_sta
     }
 }
 
-/// Highest priority level (1..=4, i.e. *lowest* priority) with a resident stub, for eviction triage;
-/// `4` when the buffer is somehow empty (never, since the caller only asks when it is full).
+/// The max-heap ordering key of a stub slot: `(priority_level, arrival)`, read from the live `stub`
+/// variant. Larger = worse = closer to the root. Valid only during pass A (before select rewrites
+/// `seq`), where every live slot still holds a [`Stub`] and `seq` still carries the pass-A arrival.
 #[inline]
-fn worst_level(level_count: &[u16; 4]) -> u8 {
-    for level in (1..=4u8).rev() {
-        if level_count[(level - 1) as usize] > 0 {
-            return level;
+fn stub_key(stub: &Stub) -> (u8, u16) {
+    (stub.priority(), stub.seq)
+}
+
+/// Streaming bounded-max-heap admit — the whole pass-A insertion rule in one allocation-free step.
+/// While the buffer has room, `stub` is pushed and sifted up. Once full, it replaces the root (the
+/// worst retained candidate) exactly when its key is strictly smaller, then sifts the new root down;
+/// otherwise it is rejected. Returns `true` iff it evicted a resident. Const-generic over the buffer
+/// capacity so the tests can drive the identical logic at tiny K.
+fn heap_admit<const N: usize>(slots: &mut Vec<Slot, N>, stub: Stub) -> bool {
+    if !slots.is_full() {
+        // `push` cannot fail here (checked not-full); index the fresh tail for sift-up.
+        let _ = slots.push(Slot::of_stub(stub));
+        sift_up(slots, slots.len() - 1);
+        false
+    } else if stub_key(&stub) < stub_key(&slots[0].stub()) {
+        slots[0] = Slot::of_stub(stub);
+        sift_down(slots, 0);
+        true
+    } else {
+        false
+    }
+}
+
+/// Restore the max-heap property after `slots[i]` was inserted at a leaf: bubble it toward the root
+/// while it out-keys its parent. Allocation-free; compares stubs through [`Slot::stub`].
+fn sift_up<const N: usize>(slots: &mut Vec<Slot, N>, mut i: usize) {
+    while i > 0 {
+        let parent = (i - 1) / 2;
+        if stub_key(&slots[i].stub()) > stub_key(&slots[parent].stub()) {
+            slots.swap(i, parent);
+            i = parent;
+        } else {
+            break;
         }
     }
-    4
+}
+
+/// Restore the max-heap property after `slots[i]` (usually the root) was replaced with a smaller-keyed
+/// stub: sink it toward the leaves, swapping with its larger-keyed child until it dominates both.
+/// Allocation-free; compares stubs through [`Slot::stub`].
+fn sift_down<const N: usize>(slots: &mut Vec<Slot, N>, mut i: usize) {
+    let len = slots.len();
+    loop {
+        let left = 2 * i + 1;
+        let right = 2 * i + 2;
+        let mut largest = i;
+        if left < len && stub_key(&slots[left].stub()) > stub_key(&slots[largest].stub()) {
+            largest = left;
+        }
+        if right < len && stub_key(&slots[right].stub()) > stub_key(&slots[largest].stub()) {
+            largest = right;
+        }
+        if largest == i {
+            break;
+        }
+        slots.swap(i, largest);
+        i = largest;
+    }
 }
 
 /// A pass-A candidate: exactly what selection and the pass-B re-decode need, and nothing else —
@@ -486,7 +518,16 @@ struct Stub {
     /// Ring count, for the ring-budget admission.
     ring_count: u16,
     /// Pass-A encounter index (level-major seq replication), overwritten with the admission `seq`
-    /// during select — pass B reads it for the painter's-order tie-break.
+    /// during select — pass B reads it for the painter's-order tie-break. It is the low half of the
+    /// pass-A max-heap key and is assigned with `saturating_add`, so the first 65,536 candidates
+    /// (arrivals `0..=u16::MAX`) get **distinct** keys and the heap's survivor set — identities and
+    /// all — is provably the exact set the old linear victim scan kept. Only a viewport with **more
+    /// than 65,536** pass-A candidates pins later arrivals at `u16::MAX`, and only then can two
+    /// worst-level residents share a key; the heap then still makes the identical accept/reject
+    /// decision and keeps the identical multiset of keys, but which of the tied-key features it
+    /// evicts is fixed by heap order rather than by the old buffer's slot order. That regime is far
+    /// beyond `MAX_SPANS` (1152) and never reached by the OBCM source at its coarsest LOD; the
+    /// exactness claim and the reference-selector tests are scoped to it. See `collect_stubs`.
     seq: u16,
     /// Style id. z / weight / color re-derive `O(1)` from the style table.
     style_id: u8,
@@ -600,3 +641,218 @@ pub(crate) struct Span {
 // `style_id` must land in the spare byte, not grow the struct — thousands are buffered per frame and
 // `MCU_RENDERER_BYTES` budgets `MAX_SPANS * size_of::<Span>()`.
 const _: () = assert!(core::mem::size_of::<Span>() == 14, "Span must stay 14 bytes");
+
+#[cfg(test)]
+mod heap_tests {
+    //! Unit tests for the pass-A bounded max-heap victim selection ([`heap_admit`] / [`sift_up`] /
+    //! [`sift_down`]). They drive the exact production insertion at tiny capacities and check its
+    //! survivor set — keys *and* identity tokens — plus its eviction count against two independent
+    //! references:
+    //!
+    //! * a **spec reference selector** (collect every candidate, stable-sort by `(priority, arrival)`,
+    //!   `truncate(K)`) — proves the heap keeps the K lowest keys, and
+    //! * a **replica of the old linear victim scan** the heap replaces — proves the heap is
+    //!   identical to the previous collector down to which stub each eviction drops (the byte-for-byte
+    //!   render-equivalence guarantee) and to `stats.stub_evictions`.
+    //!
+    //! Every test stream stays well under 65,536 candidates, so all arrivals — hence all keys — are
+    //! distinct and the survivor identity is uniquely determined (see the `Stub::seq` saturation note).
+
+    extern crate std;
+    use std::vec::Vec;
+
+    use obc_map_scene::{FeatureToken, Kind};
+
+    use super::{heap_admit, stub_key, Slot, Stub};
+
+    /// A synthetic pass-A stub: `priority` is the heap key's high half, `arrival` its low half, and
+    /// `token` an independent bijection of `arrival` stashed in the opaque source token so the tests
+    /// can confirm the heap moves *identities* around, not just keys. Geometry fields are irrelevant
+    /// to selection and left zero.
+    fn test_stub(priority: u8, arrival: u16, token: u16) -> Stub {
+        Stub::new(FeatureToken::from_source_words([token, 0, 0]), 0, 0, 0, Kind::Line, priority, arrival)
+    }
+
+    /// Token bijection: distinct from `arrival` so a test that checks the token is really checking the
+    /// carried identity, not accidentally re-deriving the key.
+    fn token_of(arrival: u16) -> u16 {
+        arrival.wrapping_mul(2654).wrapping_add(3)
+    }
+
+    /// A survivor as `(priority, arrival, token)` — the full identity the render depends on.
+    type Survivor = (u8, u16, u16);
+
+    /// Drive the production heap over a stream of priorities (arrival = stream index) at capacity `N`.
+    /// Returns the survivors sorted by `(priority, arrival)` and the eviction count.
+    fn run_heap<const N: usize>(priorities: &[u8]) -> (Vec<Survivor>, u32) {
+        let mut slots: super::Vec<Slot, N> = super::Vec::new();
+        let mut evictions = 0u32;
+        for (arrival, &priority) in priorities.iter().enumerate() {
+            let arrival = arrival as u16;
+            let admitted_full = heap_admit(&mut slots, test_stub(priority, arrival, token_of(arrival)));
+            if admitted_full {
+                evictions += 1;
+            }
+            // The max-heap invariant must hold after every single admit.
+            assert!(is_max_heap(&slots), "heap property violated after arrival {arrival}");
+        }
+        let mut out: Vec<Survivor> = slots
+            .iter()
+            .map(|s| {
+                let st = s.stub();
+                (st.priority(), st.seq, st.token.source_words()[0])
+            })
+            .collect();
+        out.sort_by_key(|&(p, a, _)| (p, a));
+        (out, evictions)
+    }
+
+    /// True iff `slots` satisfies the max-heap property under `stub_key`.
+    fn is_max_heap<const N: usize>(slots: &super::Vec<Slot, N>) -> bool {
+        (1..slots.len()).all(|i| stub_key(&slots[i].stub()) <= stub_key(&slots[(i - 1) / 2].stub()))
+    }
+
+    /// Spec reference: every candidate, stable-sorted by `(priority, arrival)`, truncated to K. The
+    /// definition of "the K lowest keys". Uses a *stable* sort so same-priority order stays arrival
+    /// order — matching the heap's earlier-arrival-wins tie rule.
+    fn reference_select(priorities: &[u8], k: usize) -> Vec<Survivor> {
+        let mut all: Vec<Survivor> =
+            priorities.iter().enumerate().map(|(i, &p)| (p, i as u16, token_of(i as u16))).collect();
+        all.sort_by_key(|&(p, a, _)| (p, a)); // stable
+        all.truncate(k);
+        all
+    }
+
+    /// Replica of the removed linear victim scan (the `level_count` + `worst_level` + highest-arrival
+    /// first-index eviction). Returns survivors sorted by `(priority, arrival)` and the eviction count
+    /// so the heap can be checked against the exact prior behaviour it must reproduce.
+    fn reference_linear(priorities: &[u8], k: usize) -> (Vec<Survivor>, u32) {
+        let mut buf: Vec<Survivor> = Vec::new();
+        let mut level_count = [0u32; 4];
+        let mut evictions = 0u32;
+        for (arrival, &p) in priorities.iter().enumerate() {
+            let arrival = arrival as u16;
+            let cand = (p, arrival, token_of(arrival));
+            if buf.len() < k {
+                buf.push(cand);
+                level_count[(p - 1) as usize] += 1;
+                continue;
+            }
+            let worst = (1..=4u8).rev().find(|&l| level_count[(l - 1) as usize] > 0).unwrap_or(4);
+            if p < worst {
+                // Highest-arrival stub at the worst level, ties broken by lowest slot index.
+                let mut victim = 0usize;
+                let mut va = 0u16;
+                let mut found = false;
+                for (i, &(hp, ha, _)) in buf.iter().enumerate() {
+                    if hp == worst && (!found || ha > va) {
+                        victim = i;
+                        va = ha;
+                        found = true;
+                    }
+                }
+                buf[victim] = cand;
+                level_count[(worst - 1) as usize] -= 1;
+                level_count[(p - 1) as usize] += 1;
+                evictions += 1;
+            }
+        }
+        buf.sort_by_key(|&(p, a, _)| (p, a));
+        (buf, evictions)
+    }
+
+    /// Assert the heap matches *both* references at capacity `N`.
+    fn check<const N: usize>(priorities: &[u8]) {
+        let (heap, heap_evictions) = run_heap::<N>(priorities);
+        let (linear, linear_evictions) = reference_linear(priorities, N);
+        let spec = reference_select(priorities, N);
+        assert_eq!(heap, spec, "heap survivors != K lowest keys (N={N}, len={})", priorities.len());
+        assert_eq!(heap, linear, "heap survivors != old linear scan (N={N}, len={})", priorities.len());
+        assert_eq!(heap_evictions, linear_evictions, "eviction count != old linear scan (N={N})");
+        assert_eq!(heap.len(), priorities.len().min(N), "survivor count is min(stream, K)");
+    }
+
+    #[test]
+    fn empty_stream() {
+        check::<8>(&[]);
+    }
+
+    #[test]
+    fn under_capacity_keeps_everything() {
+        check::<16>(&[1, 4, 2, 3, 1, 4]);
+    }
+
+    #[test]
+    fn exactly_full_keeps_everything() {
+        check::<6>(&[3, 1, 4, 2, 4, 1]);
+    }
+
+    #[test]
+    fn heavily_over_capacity_all_priorities_and_ties() {
+        // 40 candidates cycling all four priorities with repeats (ties within a level) into K=8.
+        let stream: Vec<u8> = (0..40u32).map(|i| (i % 4) as u8 + 1).collect();
+        check::<8>(&stream);
+        // A different tie pattern: blocks of equal priority.
+        let blocks: Vec<u8> = [1u8, 1, 1, 4, 4, 4, 4, 2, 2, 3, 3, 3, 1, 1, 4, 4, 2, 3, 3, 3].iter().copied().collect();
+        check::<5>(&blocks);
+    }
+
+    #[test]
+    fn late_priority_one_displaces_priority_four() {
+        // Fill K=4 with priority-4 stubs, then stream priority-1 stubs late: each must evict a p4,
+        // and after four of them the buffer is all priority-1 — the priority guarantee under
+        // saturation.
+        let mut stream = std::vec![4u8, 4, 4, 4];
+        stream.extend_from_slice(&[1, 1, 1, 1]);
+        let (heap, evictions) = run_heap::<4>(&stream);
+        assert_eq!(evictions, 4, "each late priority-1 evicts a priority-4");
+        assert!(heap.iter().all(|&(p, ..)| p == 1), "buffer is all priority-1 after four displacements");
+        // Survivors are exactly the four priority-1 arrivals (indices 4..=7).
+        let arrivals: Vec<u16> = heap.iter().map(|&(_, a, _)| a).collect();
+        assert_eq!(arrivals, std::vec![4, 5, 6, 7]);
+        check::<4>(&stream);
+    }
+
+    #[test]
+    fn same_priority_later_never_evicts_earlier() {
+        // All one priority: once full, no later same-priority arrival may displace an earlier one.
+        let stream: Vec<u8> = std::vec![2u8; 20];
+        let (heap, evictions) = run_heap::<5>(&stream);
+        assert_eq!(evictions, 0, "equal-key candidates are all rejected once full");
+        let arrivals: Vec<u16> = heap.iter().map(|&(_, a, _)| a).collect();
+        assert_eq!(arrivals, std::vec![0, 1, 2, 3, 4], "the first-arriving five survive");
+        check::<5>(&stream);
+    }
+
+    #[test]
+    fn small_capacities_const_generic() {
+        // The same over-capacity stream through a spread of tiny K, exercising the const-generic
+        // helper the spec calls for.
+        let stream: Vec<u8> = (0..64u32).map(|i| ((i * 7 + 2) % 4) as u8 + 1).collect();
+        check::<1>(&stream);
+        check::<2>(&stream);
+        check::<3>(&stream);
+        check::<4>(&stream);
+        check::<7>(&stream);
+        check::<16>(&stream);
+        check::<64>(&stream);
+    }
+
+    #[test]
+    fn deterministic_pseudo_random_streams() {
+        // A cheap LCG over several seeds and lengths — the heap must track the references exactly on
+        // every one. Deterministic, so a failure reproduces.
+        for seed in [1u64, 2, 7, 42, 1234, 987_654_321] {
+            let mut state = seed;
+            let mut next = || {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (state >> 33) as u32
+            };
+            let len = 200 + (seed as usize % 300);
+            let stream: Vec<u8> = (0..len).map(|_| (next() % 4) as u8 + 1).collect();
+            check::<8>(&stream);
+            check::<32>(&stream);
+            check::<3>(&stream);
+        }
+    }
+}
