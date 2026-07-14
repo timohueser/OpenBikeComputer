@@ -146,7 +146,7 @@ fn success_activates_and_opens_the_computed_overview() {
     let _ = app.take_dirty();
     app.notify_nav_result(Ok(7));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "success swaps the confirm for the overview");
-    assert_eq!(app.activity.active_route, Some(0), "the computed route activates for the preview");
+    assert_eq!(app.active_route_index(), Some(0), "the computed route activates for the preview");
     assert!(app.take_dirty().map, "the swap repaints");
 
     // Accept from Idle = the normal route start.
@@ -164,14 +164,14 @@ fn overview_back_restores_the_previous_route_and_returns_to_the_detail() {
     let _req = request_route(&mut app);
     nav_catalog(&mut app);
     app.notify_nav_result(Ok(7));
-    assert_eq!(app.activity.active_route, Some(0));
+    assert_eq!(app.active_route_index(), Some(0));
 
     app.apply_gesture(Gesture::Back); // cancel the overview
     assert!(
         matches!(app.top_screen(), Screen::PoiDetail(_)),
         "the overview replaced the confirm, so Back lands on the detail"
     );
-    assert_eq!(app.activity.active_route, None, "cancel restores what was loaded before (nothing)");
+    assert_eq!(app.active_route_index(), None, "cancel restores what was loaded before (nothing)");
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     app.apply_gesture(Gesture::Press); // → overview
     app.apply_gesture(Gesture::Press); // → START RIDE
     assert!(app.activity.is_tracking());
-    let session = app.activity.session;
+    let session = app.activity.session();
 
     // Mid-ride: Menu → POIs → detail → confirm → create → (host answers).
     app.apply_gesture(Gesture::BackHold);
@@ -202,12 +202,12 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     // Accept while tracking → the existing save/swap prompt, session untouched.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "mid-ride accept opens the save/swap prompt");
-    assert_eq!(app.activity.session, session, "the recording session is untouched until the prompt decides");
+    assert_eq!(app.activity.session(), session, "the recording session is untouched until the prompt decides");
 
     // "Swap route" keeps the session and drops onto the riding Map.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)));
-    assert_eq!(app.activity.session, session, "swap keeps the session");
+    assert_eq!(app.activity.session(), session, "swap keeps the session");
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn failure_tiers_swap_the_confirm_for_the_right_card() {
             ),
             _ => panic!("{tier}: failure swaps in the card"),
         }
-        assert_eq!(app.activity.active_route, None, "{tier}: nothing activates on failure");
+        assert_eq!(app.active_route_index(), None, "{tier}: nothing activates on failure");
         app.apply_gesture(Gesture::Press);
         assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "{tier}: any press dismisses to the detail");
     }
@@ -268,7 +268,7 @@ fn result_without_a_planning_screen_on_stack_is_dropped() {
     let _ = app.take_dirty();
     app.notify_nav_result(Ok(7));
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no planning screen up ⇒ the answer is dropped");
-    assert_eq!(app.activity.active_route, None, "…and nothing activates behind the rider's back");
+    assert_eq!(app.active_route_index(), None, "…and nothing activates behind the rider's back");
     assert!(!app.take_dirty().map, "…and nothing repaints");
 }
 
@@ -292,7 +292,7 @@ fn back_on_planning_cancels_cleanly() {
     nav_catalog(&mut app);
     app.notify_nav_result(Ok(7));
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "a post-cancel answer is dropped");
-    assert_eq!(app.activity.active_route, None, "nothing activates after a cancel");
+    assert_eq!(app.active_route_index(), None, "nothing activates after a cancel");
 }
 
 #[test]

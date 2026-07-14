@@ -175,9 +175,9 @@ fn reconcile_track(
     // session or a drained action — skip the small String copy on the idle no-ride path. During an
     // active ride it's one ≤48-byte name clone per pass, deliberately not cached: the active route
     // (and thus the save name a mid-ride swap would freeze) can change between passes.
-    let name = (app.activity.session.is_some() || finish.is_some()).then(|| active_route_name(app)).flatten();
+    let name = (app.activity.session().is_some() || finish.is_some()).then(|| active_route_name(app)).flatten();
     let stats = matches!(finish, Some(TrackAction::Save)).then(|| app.ride_stats());
-    tracks.reconcile(finish, app.activity.session, name.as_deref(), stats);
+    tracks.reconcile(finish, app.activity.session(), name.as_deref(), stats);
     if matches!(finish, Some(TrackAction::Save)) {
         rides.refresh();
         app.set_rides(rides.catalog(), rides.ids());
@@ -186,6 +186,6 @@ fn reconcile_track(
 
 /// The active route's catalog name (the ride-log save filename), or `None` when nothing is active.
 fn active_route_name(app: &App) -> Option<String> {
-    let i = app.activity.active_route?;
+    let i = app.active_route_index()?;
     app.routes().get(i).map(|r| r.name.as_str().to_string())
 }
