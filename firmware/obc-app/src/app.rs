@@ -4,16 +4,16 @@
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_reader::Reader;
 use obc_render::{zoom_for_mpp, Canvas, Clock, MapRenderer, NoopClock, RenderStats, Viewport};
-use obc_route::{ClimbProfile, Climbs, Profile, RouteMatch, RouteReader, Waypoints};
+use obc_route::{Profile, RouteReader};
 
 use crate::activity::{Activity, Mode};
-use crate::breadcrumb::Breadcrumb;
 use crate::catalog_state::CatalogState;
 use crate::dirty::Dirty;
 use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 use crate::input::Gesture;
 use crate::input_plane::InputPlane;
 use crate::ride::RideSummary;
+use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack, WarningFlags};
 use crate::settings::{DateTime, Settings};
@@ -426,60 +426,11 @@ pub struct App {
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
     stack: Stack,
-    /// The active route's resident elevation profile, rebuilt on route load (it streams every
-    /// chunk, so never per frame). `None` when no route is loaded;
-    /// [`profile_route`](App::profile_route) tracks which route it was built for.
-    profile: Option<Profile>,
-    /// The [`active_route`](Activity::active_route) the cached [`profile`](App::profile)
-    /// was built for, so a route change triggers exactly one rebuild.
-    profile_route: Option<usize>,
-    /// The active route's detected climbs, segmented once on route load (one streaming chunk sweep,
-    /// so never per frame). Empty when no route is loaded; [`climbs_route`](App::climbs_route)
-    /// tracks which route the list was built for. The riding views query it (with hysteresis, via
-    /// [`update_active_climb`](App::update_active_climb)) to decide "am I on a climb now?".
-    climbs: Climbs,
-    /// The [`active_route`](Activity::active_route) the cached [`climbs`](App::climbs) list was
-    /// built for, so a route change triggers exactly one re-segmentation. Kept apart from
-    /// [`profile_route`](App::profile_route) even though they change together, so each cache states
-    /// its own build key.
-    climbs_route: Option<usize>,
-    /// The active route's resident named-waypoint table, loaded once on route load (it streams the
-    /// stored waypoint section, so never per frame) — the waypoint twin of [`climbs`](App::climbs).
-    /// Empty when no route is loaded; the riding views read it (map diamonds, the approach chip, the
-    /// progress-bar ticks, the stat fields — later in the epic) and [`Activity::next_waypoint`]
-    /// indexes it. A [`truncated`](obc_route::Waypoints::truncated) table is re-windowed forward in
-    /// [`tick`](App::tick) once the rider passes its tail.
-    waypoints: Waypoints,
-    /// The [`active_route`](Activity::active_route) the cached [`waypoints`](App::waypoints) table was
-    /// loaded for — its own build key, alongside [`climbs_route`](App::climbs_route). A re-window
-    /// leaves it pointed at the same route (it reloads a *later* window of the same route, not a new
-    /// route), so only an actual route change reloads from the start.
-    waypoints_route: Option<usize>,
-    /// The **single** resident detail profile for the currently-active climb — one buffer refilled
-    /// in place only when [`Activity::active_climb`] transitions to a new `Some(i)`, never per frame
-    /// (the fill streams the climb's chunks; ~400 B, held resident to keep it off the ~36 KB device
-    /// stack). Meaningless (a flat base line) while no climb is active; the [`Render`] surface only
-    /// hands it out alongside a `Some` `active_climb`, so a stale buffer is never drawn.
-    climb_profile: ClimbProfile,
-    /// Test-only tally of [`ClimbProfile::fill`] calls, so a test can assert the detail buffer is
-    /// rebuilt **exactly** on climb-entry transitions — never per fix on the same climb. Not
-    /// compiled into the firmware.
-    #[cfg(test)]
-    climb_fill_count: u32,
-    /// The live route-matcher (snaps each GPS fix to the active route → progress /
-    /// off-route). Reset on route change; runs in [`tick`](App::tick), result stored on
-    /// [`Activity`].
-    route_match: RouteMatch,
-    /// The [`active_route`](Activity::active_route) the **matcher** was last reset for, so
-    /// changing the navigated route — a load *or* a "Swap route only" — re-locks it once.
-    matched_route: Option<usize>,
-    /// The [`session`](Activity::session) the **ride accumulators + breadcrumb** were last
-    /// reset for, so a new tracking session (load from Idle / "Save & start new") restarts
-    /// them once, while a swap (same session) leaves them running.
-    ride_session: Option<u32>,
-    /// The travelled-path breadcrumb (RAM, bounded), fed each logged fix in
-    /// [`tick`](App::tick) and drawn on the Map; cleared when `ride_session` changes.
-    breadcrumb: Breadcrumb,
+    /// The ride-domain component: the live route-matcher, the once-per-load route caches
+    /// (elevation profile, climbs, waypoints) with their build keys, the resident climb detail
+    /// buffer, the per-session breadcrumb, and the tick-edge state (fix freshness, sensor-tile
+    /// edges, battery-poll cadence, ambient temperature). `App::tick` orchestrates it each frame.
+    ride: RideEngine,
     /// Reused renderer; clears (not frees) its scratch each frame, so steady-state rendering does no
     /// allocation — important on the MCU.
     renderer: MapRenderer,
@@ -570,32 +521,6 @@ pub struct App {
     /// firmware drains it via [`take_hold_cancel`](App::take_hold_cancel) and cancels its own
     /// input plane's recogniser.
     hold_cancel_pending: bool,
-    /// Millis of the last battery [`FuelGauge`](crate::FuelGauge) poll, or `None` before the first.
-    /// Read on a slow cadence ([`BATTERY_POLL_MS`]) — *not* every tick — so a real PMIC read never
-    /// spins the I²C bus at the frame rate.
-    last_battery_poll_ms: Option<u32>,
-    /// Last ambient temperature (°C), or `None` before the first sample / no thermometer. Held
-    /// across ticks. No screen consumes it yet, so it lives **off** [`AppState`] — storing it there
-    /// would gate a needless map redraw on every reading, breaking render-on-demand. Read via
-    /// [`temperature_c`](App::temperature_c).
-    temp_c: Option<f32>,
-    /// Map-plane millis of the last accepted GPS fix, or `None` before the first ever. Drives the
-    /// "No GPS Fix" banner via [`has_live_fix`](App::has_live_fix). Lives **off** [`AppState`] —
-    /// like [`temp_c`](App::temp_c) — so advancing it on every fix (incl. a stationary one) never
-    /// trips the `state != state_before` redraw gate; the banner's own repaint edge comes from
-    /// [`advance_animations`](App::advance_animations) instead.
-    last_fix_ms: Option<u32>,
-    /// The no-fix state at the previous [`advance_animations`](App::advance_animations), so the
-    /// timer edge that flips the "No GPS Fix" banner dirties the live-data views exactly once.
-    /// Starts `true` — no fix at boot.
-    prev_no_fix: bool,
-    /// The sensor-tile display values `(hr, power, cadence)` at the previous `tick`'s end, so a
-    /// fresh BLE sample — or the 5 s staleness gate expiring one into `--` — repaints the riding
-    /// views exactly once (the sensor twin of [`prev_no_fix`](App::prev_no_fix)). The samples land
-    /// in [`Activity`], which the `state != state_before` redraw gate never compares, so without
-    /// this edge a live tile only repainted when something *else* (a moving fix, a screen change)
-    /// happened to dirty the frame — frozen solid on an indoor bench with no fix (epic #744, SR3).
-    prev_live_sensors: (Option<u16>, Option<u16>, Option<u8>),
     /// The single POI-list snapshot buffer (issue #425), threaded into the draw context as
     /// [`Render::poi_scratch`]. Held once here rather than per-screen so the ~800 B doesn't multiply
     /// across the screen-stack union (see [`PoiScratch`](crate::screen::PoiScratch)). Filled lazily
@@ -684,105 +609,11 @@ struct UploadEvent {
     elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
 }
 
-/// A fix older than this (map-plane millis) means "no current GPS fix". The window is the larger of
-/// this floor and a few fix intervals (see [`App::no_fix_window_ms`]), so a long configured
-/// interval doesn't false-trip the banner between its own expected fixes.
-const NO_FIX_FLOOR_MS: u32 = 5_000;
-/// How many configured fix intervals of silence count as "lost" before the floor takes over.
-const NO_FIX_INTERVALS: u32 = 3;
-
-/// How often [`App::tick`] reads the battery [`FuelGauge`](crate::FuelGauge). Charge drifts over
-/// minutes, so a ~30 s cadence keeps the Home gauge fresh while reading the PMIC a few times a
-/// minute at most. Independent of redraws: an unchanged reading repaints nothing.
-const BATTERY_POLL_MS: u32 = 30_000;
-
 /// Cap on the computed route's shape-preview polyline (#685 §4): the host decimates the planned
 /// polyline to at most this many points before handing it to
 /// [`set_nav_preview`](App::set_nav_preview) — plenty for the overview's ~212×90 px sketch, and a
 /// fixed ~512 B resident buffer here rather than a route-sized one.
 pub const NAV_PREVIEW_MAX: usize = 64;
-
-/// Enter/exit hysteresis for [`App::update_active_climb`] — the margins that turn the raw interval
-/// lookup ([`Climbs::active_at`], exact detected geometry, no slack) into a flap-free "on a climb
-/// now" state.
-///
-/// **Enter early, exit late.** The raw intervals are the detected trough→summit, but the matched
-/// `progress_m` jitters a few metres either way of the true position each fix (matcher snap +
-/// smoothing). Without slack a rider straddling the base or the summit would toggle the Climb
-/// screen on and off between consecutive fixes. So we **arm** the climb once progress reaches
-/// [`CLIMB_ENTER_MARGIN_M`] *before* the base and **hold** it until progress passes
-/// [`CLIMB_EXIT_MARGIN_M`] *past* the summit — an on-then-off band wider than the jitter, biased so
-/// the panel appears slightly ahead of the ramp (useful) and lingers slightly past the crest
-/// (avoids a premature dismissal on the false-flat over the top).
-///
-/// The margins are asymmetric on purpose: showing the climb a touch early is welcome, and holding a
-/// touch past the crest reads better than snapping away the instant `progress == end_m`. Both are
-/// well under [`obc_route::MIN_LEN`] (400 m), so they can't make one climb's exit band overlap the
-/// next climb's entry band on any kept climb.
-const CLIMB_ENTER_MARGIN_M: u32 = 50;
-/// Distance (m) past a climb's summit the "on climb" state is held before it disarms — see
-/// [`CLIMB_ENTER_MARGIN_M`].
-const CLIMB_EXIT_MARGIN_M: u32 = 30;
-
-/// The active-climb hysteresis, as a **pure** function of the climbs list, the matched progress,
-/// and the previous active index — the whole flap-guard policy in one testable place (the
-/// `App::update_active_climb` wrapper only adds the off-route freeze and the once-per-entry refill).
-///
-/// While *on* climb `prev`, hold it until `progress` passes its summit + [`CLIMB_EXIT_MARGIN_M`]
-/// (or the index went stale — a shrunk list after a swap); otherwise re-arm. To *arm* a climb,
-/// `progress` must have reached within [`CLIMB_ENTER_MARGIN_M`] of its base and not yet passed its
-/// summit — the first such climb in route order (they're non-overlapping and the margins are far
-/// under [`obc_route::MIN_LEN`], so the bands can't collide on kept climbs). The exit band is wider
-/// on the far side and the entry band on the near side, so a rider straddling a boundary can't
-/// toggle the state between consecutive fixes.
-fn resolve_active_climb(climbs: &Climbs, progress: u32, prev: Option<usize>) -> Option<usize> {
-    // While committed to a climb, hold it across its exit band before reconsidering.
-    if let Some(i) = prev {
-        if let Some(seg) = climbs.as_slice().get(i) {
-            if progress <= seg.end_m.saturating_add(CLIMB_EXIT_MARGIN_M) {
-                return Some(i);
-            }
-        }
-    }
-    // Not held: arm the first climb whose entry band (base − enter margin ..= summit) contains
-    // progress.
-    climbs
-        .as_slice()
-        .iter()
-        .position(|c| progress >= c.start_m.saturating_sub(CLIMB_ENTER_MARGIN_M) && progress <= c.end_m)
-}
-
-/// Distance (m) a passed waypoint **lingers** as "next" before the index advances — distance
-/// hysteresis, not time. GPS jitter around a waypoint's position stays inside this band, so the
-/// resolved index can't flap there; the shown distance-to-go clamps to 0 through the linger. Matches
-/// the epic's 100 m pass-linger.
-pub(crate) const WAYPOINT_LINGER_M: u32 = 100;
-
-/// The next-waypoint index as a **pure** function of the resident table, the matched progress, and
-/// the previously-resolved index — the waypoint sibling of [`resolve_active_climb`]. The
-/// [`update_next_waypoint`](App::update_next_waypoint) wrapper adds the off-route freeze and the
-/// re-window; this is the whole "which waypoint is next?" policy in one testable place.
-///
-/// The next waypoint is the **first entry still ahead**: one whose linger band is open,
-/// `progress < dist_along_m + WAYPOINT_LINGER_M`. A passed waypoint therefore lingers
-/// [`WAYPOINT_LINGER_M`] before the index moves on, so jitter around a waypoint can't flap it. `prev`
-/// only keeps the index from *regressing* on a progress dip (jitter at the far, advance edge of the
-/// band) — it never steps back onto a waypoint already passed while progress oscillates. `None` once
-/// the rider is past every waypoint's linger.
-fn resolve_next_waypoint(wpts: &Waypoints, progress_m: u32, prev: Option<usize>) -> Option<usize> {
-    let ahead = wpts.as_slice().iter().position(|w| progress_m < w.dist_along_m.saturating_add(WAYPOINT_LINGER_M));
-    match ahead {
-        // Past every waypoint's linger — the chip / fields go empty even if one was held.
-        None => None,
-        // Hold the furthest-reached index against a jittering cursor (never un-pass a waypoint);
-        // otherwise take the first still-ahead one. A stale `prev` (≥ len, after a table shrink)
-        // falls through to `a`.
-        Some(a) => match prev {
-            Some(p) if p > a && p < wpts.len() => Some(p),
-            _ => Some(a),
-        },
-    }
-}
 
 impl App {
     /// Build the app straight onto the live map: stack `[Home, Map]`, Home the always-present root
@@ -806,21 +637,9 @@ impl App {
             state,
             activity: Activity::new(Mode::Idle),
             catalogs: CatalogState::new(),
+            ride: RideEngine::new(),
             nav_profiles: crate::NavProfiles::new(),
             stack,
-            profile: None,
-            profile_route: None,
-            climbs: Climbs::new(),
-            climbs_route: None,
-            waypoints: Waypoints::new(),
-            waypoints_route: None,
-            climb_profile: ClimbProfile::new(),
-            #[cfg(test)]
-            climb_fill_count: 0,
-            route_match: RouteMatch::new(),
-            matched_route: None,
-            ride_session: None,
-            breadcrumb: Breadcrumb::new(),
             renderer: MapRenderer::new(),
             input: InputPlane::new(),
             now_ms: 0,
@@ -840,11 +659,6 @@ impl App {
             settings_retry_at_ms: 0,
             hold_progress_override: None,
             hold_cancel_pending: false,
-            last_battery_poll_ms: None,
-            temp_c: None,
-            last_fix_ms: None,
-            prev_no_fix: true,
-            prev_live_sensors: (None, None, None),
             poi_scratch: screen::PoiScratch::new(),
             ble_passkey: None,
             sensor_status: [crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS],
@@ -892,6 +706,9 @@ impl App {
             // The several-KB catalogs + view caches are initialized field-by-field in place by
             // their own component (the same discipline, one level down).
             CatalogState::init_in_place(addr_of_mut!((*slot).catalogs));
+            // The KB-scale ride caches (waypoint table, climb caches, breadcrumb) are initialized
+            // field-by-field in place by their own component.
+            RideEngine::init_in_place(addr_of_mut!((*slot).ride));
             // (Was missing until #678 rework 3's field audit, like #680's `update_failed` catch:
             // the profile-name mirror must be initialized like every other, or the board's first
             // render reads uninit memory through it.)
@@ -900,23 +717,6 @@ impl App {
             // `heapless::Vec::push` isn't `const`, so the root can't be part of a literal.
             addr_of_mut!((*slot).stack).write(Stack::new());
             let _ = (*slot).stack.push(Screen::Home(HomeScreen::new()));
-            addr_of_mut!((*slot).profile).write(None);
-            addr_of_mut!((*slot).profile_route).write(None);
-            // The climb caches mirror the profile: an empty list + a zeroed detail buffer
-            // (`Climbs::new`/`ClimbProfile::new` are const, so no large temporary is formed here).
-            addr_of_mut!((*slot).climbs).write(Climbs::new());
-            addr_of_mut!((*slot).climbs_route).write(None);
-            // The waypoint table mirrors the climbs list: an empty table (~1.3 KB) written straight
-            // into the slot, keyed to no route until the first load.
-            addr_of_mut!((*slot).waypoints).write(Waypoints::new());
-            addr_of_mut!((*slot).waypoints_route).write(None);
-            addr_of_mut!((*slot).climb_profile).write(ClimbProfile::new());
-            #[cfg(test)]
-            addr_of_mut!((*slot).climb_fill_count).write(0);
-            addr_of_mut!((*slot).route_match).write(RouteMatch::new());
-            addr_of_mut!((*slot).matched_route).write(None);
-            addr_of_mut!((*slot).ride_session).write(None);
-            addr_of_mut!((*slot).breadcrumb).write(Breadcrumb::new());
             // The ~200 KB scratch renderer: an empty renderer *is* the all-zero bit
             // pattern, so it is zeroed straight into the slot — never on the stack.
             MapRenderer::init_zeroed(addr_of_mut!((*slot).renderer));
@@ -936,11 +736,6 @@ impl App {
             addr_of_mut!((*slot).settings_retry_at_ms).write(0);
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).hold_cancel_pending).write(false);
-            addr_of_mut!((*slot).last_battery_poll_ms).write(None);
-            addr_of_mut!((*slot).temp_c).write(None);
-            addr_of_mut!((*slot).last_fix_ms).write(None);
-            addr_of_mut!((*slot).prev_no_fix).write(true);
-            addr_of_mut!((*slot).prev_live_sensors).write((None, None, None));
             addr_of_mut!((*slot).poi_scratch).write(screen::PoiScratch::new());
             addr_of_mut!((*slot).ble_passkey).write(None);
             addr_of_mut!((*slot).sensor_status)
@@ -972,21 +767,9 @@ impl App {
                 state: _,
                 activity: _,
                 catalogs: _,
+                ride: _,
                 nav_profiles: _,
                 stack: _,
-                profile: _,
-                profile_route: _,
-                climbs: _,
-                climbs_route: _,
-                waypoints: _,
-                waypoints_route: _,
-                climb_profile: _,
-                #[cfg(test)]
-                    climb_fill_count: _,
-                route_match: _,
-                matched_route: _,
-                ride_session: _,
-                breadcrumb: _,
                 renderer: _,
                 input: _,
                 now_ms: _,
@@ -1003,11 +786,6 @@ impl App {
                 settings_retry_at_ms: _,
                 hold_progress_override: _,
                 hold_cancel_pending: _,
-                last_battery_poll_ms: _,
-                temp_c: _,
-                last_fix_ms: _,
-                prev_no_fix: _,
-                prev_live_sensors: _,
                 poi_scratch: _,
                 ble_passkey: _,
                 sensor_status: _,
@@ -1064,81 +842,19 @@ impl App {
         // `self.now_ms` is wall time), and a tile reading `self.now_ms` would blank to `--` seconds
         // into a replay — see the `sensor_tiles_…` test.
         self.activity.note_sensor_clock(now_ms);
-        // The matcher follows the *navigated route*: a load or a "Swap route only" re-locks it.
-        if self.activity.active_route != self.matched_route {
-            self.route_match.reset();
-            self.matched_route = self.activity.active_route;
-            self.map_dirty = true; // route load / swap repaints the route line + recenters
-        }
-        // The accumulators + breadcrumb follow the *tracking session*: a new session restarts
-        // them, while a swap (which keeps the session) leaves them running.
-        if self.activity.session != self.ride_session {
-            self.activity.reset_ride();
-            self.breadcrumb.clear();
-            self.ride_session = self.activity.session;
-            self.map_dirty = true; // the breadcrumb cleared — the map's travelled trail changed
-        }
-        // Mirror the active route's length for the riding views (0 when none loaded). A change here
-        // means the *drawable* route appeared or vanished — a load, or a transient SD glitch
-        // recovering where the geometry becomes streamable a frame or two later. Dirty the map so
-        // the route line is painted (or cleared) even on a frame with no fresh fix.
-        let route_total_before = self.activity.route_total_m;
-        self.activity.route_total_m = route.map_or(0, |r| r.total_distance_m);
-        if self.activity.route_total_m != route_total_before {
+        // The once-per-load route/session sync — matcher re-lock, session restart (accumulators +
+        // breadcrumb), the route-length mirror, and the climbs/waypoints cache builds — is the
+        // ride engine's; a change there (route line appeared/vanished, breadcrumb cleared)
+        // repaints the map even on a frame with no fresh fix.
+        if self.ride.sync_route_state(&mut self.activity, route) {
             self.map_dirty = true;
-        }
-
-        // Segment the route's climbs once per load — the twin of the elevation-profile rebuild, but
-        // done here in `tick` (not render) because `update_active_climb` below needs the list before
-        // the fix is matched. Like the profile it streams every chunk, so it's built once and never
-        // per frame. Only advance the build key when the geometry is actually streamable: a `None`
-        // route (idle, or a transient SD glitch) leaves the empty list in place and retries next
-        // tick, rather than latching an empty result for the route.
-        if self.activity.active_route != self.climbs_route {
-            match (self.activity.active_route, route) {
-                (Some(_), Some(r)) => {
-                    self.climbs = r.detect_climbs();
-                    self.climbs_route = self.activity.active_route;
-                    self.activity.active_climb = None; // a fresh list — re-derive the active climb below
-                }
-                (None, _) => {
-                    // The route unloaded: drop the climbs and the on-climb state.
-                    self.climbs = Climbs::new();
-                    self.climbs_route = None;
-                    self.activity.active_climb = None;
-                }
-                (Some(_), None) => { /* geometry not yet streamable — keep the old state, retry next tick */ }
-            }
-        }
-
-        // Load the route's named waypoints once per load, alongside the climbs above and on the same
-        // streamable-geometry guard — the resident table the riding views (and `resolve_next_waypoint`
-        // below) read. Loaded from the route start (`min_dist_m = 0`); a truncated table is slid
-        // forward later, in `update_next_waypoint`, not here.
-        if self.activity.active_route != self.waypoints_route {
-            match (self.activity.active_route, route) {
-                (Some(_), Some(r)) => {
-                    self.waypoints = r.load_waypoints(0);
-                    self.waypoints_route = self.activity.active_route;
-                    self.activity.next_waypoint = None; // a fresh table — re-derive the next waypoint below
-                }
-                (None, _) => {
-                    // The route unloaded: drop the table and the next-waypoint state.
-                    self.waypoints = Waypoints::new();
-                    self.waypoints_route = None;
-                    self.activity.next_waypoint = None;
-                }
-                (Some(_), None) => { /* geometry not yet streamable — keep the old table, retry next tick */ }
-            }
         }
 
         let Sensors { loc, altimeter, temperature, clock, compass, track, fuel, hr, power, cadence } = sensors;
         // Battery charge from the PMIC gauge, on the slow ~30 s cadence. A reading only repaints
         // Home — the one screen that draws the gauge — when the level **actually changes** (the
         // `shows_live_data` gate below is for the riding views, not Home, so dirty it here).
-        let battery_due = self.last_battery_poll_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= BATTERY_POLL_MS);
-        if battery_due {
-            self.last_battery_poll_ms = Some(now_ms);
+        if self.ride.battery_poll_due(now_ms) {
             if let Some(soc) = fuel.and_then(|f| f.poll()) {
                 if soc != self.state.battery_pct {
                     self.state.battery_pct = soc;
@@ -1166,7 +882,7 @@ impl App {
         // read. Stored off `AppState` (no screen draws it yet) so it never gates a map redraw.
         if let Some(temperature) = temperature {
             if let Some(c) = temperature.poll() {
-                self.temp_c = Some(c);
+                self.ride.temp_c = Some(c);
             }
         }
         // BLE sensors → the live values Activity staleness-gates + the per-ride summaries. Drained
@@ -1213,10 +929,9 @@ impl App {
             // Stamp the fix-freshness clock against `self.now_ms` — the map-plane clock the banner's
             // staleness check + render read with. Off `AppState`, so a stationary fix that moves
             // nothing doesn't force a redraw here.
-            self.last_fix_ms = Some(self.now_ms);
+            self.ride.last_fix_ms = Some(self.now_ms);
             if let Some(route) = route {
-                let m = self.route_match.update(fix.lon, fix.lat, route);
-                self.activity.apply_match(m);
+                self.ride.match_fix(&mut self.activity, fix, route);
                 // "Am I on a climb now?" is derived from the fresh match — with hysteresis, and a
                 // detail-profile refill only on a new climb entry (see `update_active_climb`).
                 self.update_active_climb(route);
@@ -1226,7 +941,7 @@ impl App {
             }
             let motion = self.activity.record_motion(fix, now_ms);
             if motion.log {
-                self.breadcrumb.push(fix.lon, fix.lat);
+                self.ride.breadcrumb.push(fix.lon, fix.lat);
                 if let Some(track) = track {
                     let logged = track.record(TrackPoint {
                         lon: fix.lon,
@@ -1279,8 +994,8 @@ impl App {
         // `last_fix_ms` is stamped, every frame) so it reads the exact `no_fix` the render will,
         // dirtying only the live-data views, once per flip.
         let no_fix = !self.has_live_fix(self.now_ms);
-        if no_fix != self.prev_no_fix {
-            self.prev_no_fix = no_fix;
+        if no_fix != self.ride.prev_no_fix {
+            self.ride.prev_no_fix = no_fix;
             if self.shows_live_data() {
                 self.map_dirty = true;
             }
@@ -1299,101 +1014,38 @@ impl App {
                 self.activity.live_power_display(),
                 self.activity.live_cadence_display(),
             );
-            if live != self.prev_live_sensors {
+            if live != self.ride.prev_live_sensors {
                 let fields = &self.settings.stat_fields;
-                let shown = (live.0 != self.prev_live_sensors.0 && fields.contains(StatField::HeartRate))
-                    || (live.1 != self.prev_live_sensors.1 && fields.contains(StatField::Power))
-                    || (live.2 != self.prev_live_sensors.2 && fields.contains(StatField::Cadence));
+                let shown = (live.0 != self.ride.prev_live_sensors.0 && fields.contains(StatField::HeartRate))
+                    || (live.1 != self.ride.prev_live_sensors.1 && fields.contains(StatField::Power))
+                    || (live.2 != self.ride.prev_live_sensors.2 && fields.contains(StatField::Cadence));
                 if shown && self.shows_live_data() {
                     self.map_dirty = true;
                 }
-                self.prev_live_sensors = live;
+                self.ride.prev_live_sensors = live;
             }
         }
     }
 
-    /// Recompute [`Activity::active_climb`] from the freshly-matched `progress_m`, applying
-    /// enter/exit hysteresis over the raw [`Climbs::active_at`] lookup, and refill the resident
-    /// [`climb_profile`](App::climb_profile) detail buffer **only on a new climb entry** (never per
-    /// frame — the fill streams the climb's chunks).
-    ///
-    /// **Hysteresis.** The raw intervals carry no slack, so this widens them per the current state:
-    /// while *off* a climb, a climb arms once progress reaches within [`CLIMB_ENTER_MARGIN_M`] of its
-    /// base; while *on* a climb, it stays that climb until progress passes [`CLIMB_EXIT_MARGIN_M`]
-    /// past its summit (or the rider has clearly moved onto a *different* climb's core interval).
-    /// That asymmetric band is wider than the matcher's per-fix jitter, so straddling a boundary
-    /// can't flap the on-climb state between consecutive fixes.
-    ///
-    /// **Off-route.** A stale match freezes `progress_m` (the matcher holds it while off-route), so
-    /// leaving the route mid-climb *keeps* the current climb rather than snapping it away on a
-    /// frozen cursor — the panel stays put until the rider rejoins and progress moves again. Only an
-    /// explicit clear path (route swap/unload/replace) drops it.
-    ///
-    /// Called on each matched fix from [`tick`](App::tick) with the live route reader (the source
-    /// the refill reads); a no-op that touches no SD when the active climb is unchanged.
+    /// Recompute [`Activity::active_climb`] from the freshly-matched `progress_m` — the ride
+    /// engine's hysteresis + once-per-entry detail refill
+    /// ([`RideEngine::update_active_climb`]) — then apply the App-plane consequences of a
+    /// transition: one repaint, and the C5 host auto-switch off the same edge.
     fn update_active_climb(&mut self, route: &RouteReader) {
-        // Off-route freezes the cursor, so keep whatever climb we were on — don't recompute against
-        // a stale progress. `apply_match` leaves `progress_m` frozen while off-route.
-        if self.activity.off_route {
-            return;
+        if let Some((prev, next)) = self.ride.update_active_climb(&mut self.activity, route) {
+            // The active climb changed: the riding views' climb-scoped readouts (and the Climb
+            // screen) must repaint.
+            self.map_dirty = true;
+            // Host-driven auto-switch / auto-return (C5), off the same entry/exit edge.
+            self.apply_climb_auto_switch(prev, next);
         }
-        let prev = self.activity.active_climb;
-        let next = resolve_active_climb(&self.climbs, self.activity.progress_m, prev);
-        if next == prev {
-            return; // unchanged — no refill, no SD read.
-        }
-        self.activity.active_climb = next;
-        // Refill the single resident detail buffer for the new climb — only here, on the transition,
-        // so a fix that stays on the same climb never re-reads the card.
-        if let Some(seg) = next.and_then(|i| self.climbs.as_slice().get(i)) {
-            self.climb_profile.fill(route, seg);
-            #[cfg(test)]
-            {
-                self.climb_fill_count += 1;
-            }
-        }
-        // The active climb changed: the riding views' climb-scoped readouts (and the Climb screen)
-        // must repaint.
-        self.map_dirty = true;
-        // Host-driven auto-switch / auto-return (C5), off the same entry/exit edge.
-        self.apply_climb_auto_switch(prev, next);
     }
 
-    /// Recompute [`Activity::next_waypoint`] from the freshly-matched `progress_m` via the pure
-    /// [`resolve_next_waypoint`], and slide a truncated table's window forward when the rider passes
-    /// its tail — the waypoint twin of [`update_active_climb`](App::update_active_climb).
-    ///
-    /// **Off-route.** `apply_match` freezes `progress_m` off-route, so the index self-freezes; like
-    /// the climb resolver, just don't fight that — return and hold whatever was next. (The chip is
-    /// hidden off-route anyway; the along-route distance is meaningless there.)
-    ///
-    /// **Re-window on exhaustion.** A file with more than [`MAX_WAYPOINTS`](obc_route::MAX_WAYPOINTS)
-    /// named waypoints loads only the first window and flags [`truncated`](obc_route::Waypoints).
-    /// Once the rider has passed the resident tail (its linger included), reload from the current
-    /// progress so the far waypoints keep tracking. Gated on `truncated`, so a normal route never
-    /// re-streams; and the reload starts strictly past the old window (all its entries sit at
-    /// `dist < progress`), so it can't re-fire on the next tick.
-    ///
-    /// Called on each matched fix from [`tick`](App::tick); touches SD only on the rare re-window.
+    /// Recompute [`Activity::next_waypoint`] from the freshly-matched `progress_m` — the ride
+    /// engine's linger hysteresis + truncated-table re-window
+    /// ([`RideEngine::update_next_waypoint`]) — repainting once when the next waypoint moved.
     fn update_next_waypoint(&mut self, route: &RouteReader) {
-        // Off-route freezes progress, so the resolved index freezes with it — keep what we had.
-        if self.activity.off_route {
-            return;
-        }
-        // Slide a truncated window forward once its whole resident span (last entry + linger) is
-        // behind the rider — see the re-window note above.
-        if self.waypoints.truncated {
-            if let Some(last) = self.waypoints.as_slice().last() {
-                if self.activity.progress_m >= last.dist_along_m.saturating_add(WAYPOINT_LINGER_M) {
-                    self.waypoints = route.load_waypoints(self.activity.progress_m);
-                    self.activity.next_waypoint = None; // the window slid — re-derive against it below
-                }
-            }
-        }
-        let prev = self.activity.next_waypoint;
-        let next = resolve_next_waypoint(&self.waypoints, self.activity.progress_m, prev);
-        if next != prev {
-            self.activity.next_waypoint = next;
+        if self.ride.update_next_waypoint(&mut self.activity, route) {
             self.map_dirty = true; // the next waypoint changed — the chip / fields must repaint
         }
     }
@@ -1493,18 +1145,12 @@ impl App {
         !self.poi_scratch.holds(screen.category())
     }
 
-    /// The fix-staleness window (map-plane millis): the larger of [`NO_FIX_FLOOR_MS`] and a few
-    /// configured fix intervals, so a long interval doesn't flag "no fix" in the normal gap between
-    /// its own fixes. A 1 s interval gives the 5 s floor; a 30 s interval gives 90 s.
-    fn no_fix_window_ms(&self) -> u32 {
-        (self.settings.fix_interval_s as u32 * 1000 * NO_FIX_INTERVALS).max(NO_FIX_FLOOR_MS)
-    }
-
     /// Whether there's a **current** GPS fix at `now_ms`: a fix has been accepted and is no older
-    /// than [`no_fix_window_ms`](App::no_fix_window_ms). `false` before the first fix (acquiring)
-    /// and once the signal drops (lost) — exactly when the "No GPS Fix" banner shows.
+    /// than the ride engine's staleness window ([`RideEngine::has_live_fix`]). `false` before the
+    /// first fix (acquiring) and once the signal drops (lost) — exactly when the "No GPS Fix"
+    /// banner shows.
     pub fn has_live_fix(&self, now_ms: u32) -> bool {
-        self.last_fix_ms.is_some_and(|t| now_ms.wrapping_sub(t) <= self.no_fix_window_ms())
+        self.ride.has_live_fix(now_ms, &self.settings)
     }
 
     /// Replace the resident route catalog from a host store without durable ids, assigning
@@ -1605,47 +1251,20 @@ impl App {
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
     /// [`set_routes_with_ids`](App::set_routes_with_ids).
     fn remap_route_indices(&mut self, old_ids: &[u16]) {
-        let catalogs = &self.catalogs;
+        let App { catalogs, ride, activity, stack, .. } = self;
         let remap = |i: usize| -> Option<usize> { catalogs.remap_route(old_ids, i) };
 
-        // The navigated route + the caches keyed on it. When the identity survives, all three move
-        // together, so nothing resets (no matcher re-lock, no profile rebuild). When it vanished,
-        // navigation unloads and the stale per-route state is dropped with it.
-        let old_active = self.activity.active_route;
-        self.activity.active_route = old_active.and_then(remap);
-        if old_active.is_some() && self.activity.active_route.is_none() {
-            self.route_match.reset(); // drop stale progress/off-route from the vanished route
-        }
-        self.matched_route = self.matched_route.and_then(remap);
-        let old_profile = self.profile_route;
-        self.profile_route = old_profile.and_then(remap);
-        if old_profile.is_some() && self.profile_route.is_none() {
-            self.profile = None;
-        }
-        // The climbs cache follows the same identity: it survives a rescan that keeps the route
-        // (same-id remap), and drops when the navigated route vanishes. Clearing the active-climb
-        // state too keeps a stale "on climb" flag from stranding the rider on a gone route.
-        let old_climbs = self.climbs_route;
-        self.climbs_route = old_climbs.and_then(remap);
-        if old_climbs.is_some() && self.climbs_route.is_none() {
-            self.climbs = Climbs::new();
-            self.activity.active_climb = None;
-        }
-        // The waypoint table follows that same identity — remapped across a rescan, dropped (with the
-        // next-waypoint index) when the navigated route vanishes.
-        let old_wpts = self.waypoints_route;
-        self.waypoints_route = old_wpts.and_then(remap);
-        if old_wpts.is_some() && self.waypoints_route.is_none() {
-            self.waypoints = Waypoints::new();
-            self.activity.next_waypoint = None;
-        }
+        // The navigated route + every ride-engine cache keyed on it follow the identity together
+        // (survives → nothing resets; vanished → navigation unloads and the stale per-route state
+        // drops with it) — the ride engine owns that walk.
+        ride.remap_route_keys(activity, &remap);
 
         // Every screen on the stack that holds a catalog index. The Route menu also takes the
         // re-resolved trips (`replace_routes` re-filed them before returning) + the new route count
         // so it can follow its highlight into the regrouped (folders + unfiled routes) list.
         let new_len = catalogs.route_len();
         let trips = catalogs.trips();
-        for s in self.stack.iter_mut() {
+        for s in stack.iter_mut() {
             match s {
                 Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len),
                 Screen::RouteOverview(o) => o.remap_routes(&remap),
@@ -2151,19 +1770,7 @@ impl App {
                 // New bytes may sit under a same-id reserved file (a re-route): drop everything
                 // derived from the old geometry so the matcher re-locks and the profile rebuilds
                 // from the fresh route — cheap, runs once per plan.
-                self.route_match.reset();
-                self.matched_route = None;
-                self.profile = None;
-                self.profile_route = None;
-                self.climbs = Climbs::new();
-                self.climbs_route = None; // re-segmented from the fresh geometry on the next tick
-                self.activity.active_climb = None;
-                self.waypoints = Waypoints::new();
-                self.waypoints_route = None; // re-loaded from the fresh geometry on the next tick
-                self.activity.next_waypoint = None;
-                self.activity.progress_m = 0;
-                self.activity.off_route = false;
-                self.activity.dist_to_route_m = 0;
+                self.ride.drop_route_derived_state(&mut self.activity);
                 // Activate for the preview (the overview contract: the host streams the geometry
                 // while the page shows); `prev_active` restores whatever was loaded on cancel.
                 let prev = self.activity.active_route;
@@ -2479,19 +2086,7 @@ impl App {
             // Same index, same id — but new bytes. Invalidate everything derived from the old
             // geometry (the remap deliberately preserves same-id state; a replace is the one case
             // where that preservation would carry stale state onto new geometry).
-            self.route_match.reset();
-            self.matched_route = None; // tick re-locks the matcher from the current fix
-            self.profile = None;
-            self.profile_route = None; // the next render rebuilds from the reopened geometry
-            self.climbs = Climbs::new();
-            self.climbs_route = None; // the next tick re-segments from the reopened geometry
-            self.activity.active_climb = None;
-            self.waypoints = Waypoints::new();
-            self.waypoints_route = None; // the next tick re-loads from the reopened geometry
-            self.activity.next_waypoint = None;
-            self.activity.progress_m = 0;
-            self.activity.off_route = false;
-            self.activity.dist_to_route_m = 0;
+            self.ride.drop_route_derived_state(&mut self.activity);
             self.map_dirty = true; // the drawn route line + progress changed under the rider
         }
         self.pending_upload = Some(UploadEvent { id, active_replace, elevation });
@@ -2750,7 +2345,7 @@ impl App {
     /// The last ambient temperature (°C), or `None` before the first reading / no thermometer. No
     /// screen draws it yet; exposed for a future readout and host introspection.
     pub fn temperature_c(&self) -> Option<f32> {
-        self.temp_c
+        self.ride.temp_c
     }
 
     /// The live wall-clock time right now (see [`WallClock`]). What a screen draws as `HH:MM`;
@@ -3275,10 +2870,7 @@ impl App {
 
         // Rebuild the cached elevation profile when the active route changes — it streams every
         // chunk, so it's built once on load, never per frame; clears when no route is loaded.
-        if self.activity.active_route != self.profile_route {
-            self.profile = route.map(|r| r.elevation_profile());
-            self.profile_route = self.activity.active_route;
-        }
+        self.ride.refresh_route_profile(self.activity.active_route, route);
         // Invalidate the resident **ride** profile + track preview the moment they stop matching
         // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
         // (`viewed_ride` cleared) or moved subjects. Filling is the host's (`set_ride_profile` /
@@ -3298,15 +2890,11 @@ impl App {
             activity,
             settings,
             catalogs,
+            ride,
             nav_profiles,
             renderer,
             stack,
             now_ms,
-            profile,
-            climbs,
-            climb_profile,
-            waypoints,
-            breadcrumb,
             poi_scratch,
             fw_version,
             map_name,
@@ -3325,8 +2913,8 @@ impl App {
         // resolves to a live segment — a stale buffer is never reachable through `Render`.
         let climb = activity
             .active_climb
-            .and_then(|i| climbs.as_slice().get(i))
-            .map(|seg| screen::ActiveClimb { seg, profile: &*climb_profile });
+            .and_then(|i| ride.climbs.as_slice().get(i))
+            .map(|seg| screen::ActiveClimb { seg, profile: &ride.climb_profile });
         let mut rx = Render {
             reader,
             renderer,
@@ -3338,11 +2926,11 @@ impl App {
             trips: catalogs.trips(),
             nav_profiles,
             route,
-            profile: profile.as_ref(),
+            profile: ride.profile.as_ref(),
             ride_profile: catalogs.ride_profile_for(activity.viewed_ride),
             climb,
-            waypoints: &*waypoints,
-            breadcrumb: &*breadcrumb,
+            waypoints: &ride.waypoints,
+            breadcrumb: &ride.breadcrumb,
             nav_preview,
             ride_preview,
             poi_scratch,
@@ -4150,13 +3738,16 @@ mod tests {
         assert_eq!(placed.activity.mode, Mode::Idle, "boots Idle, not Riding");
         assert!(placed.map_dirty, "first frame must paint");
         assert_eq!(placed.now_ms, 0);
-        assert!(placed.profile.is_none() && placed.profile_route.is_none());
-        assert!(placed.climbs.is_empty() && placed.climbs_route.is_none(), "no climbs before a route loads");
+        assert!(placed.ride.profile.is_none() && placed.ride.profile_route.is_none());
+        assert!(placed.ride.climbs.is_empty() && placed.ride.climbs_route.is_none(), "no climbs before a route loads");
         assert!(placed.activity.active_climb.is_none(), "not on a climb at power-on");
-        assert!(placed.waypoints.is_empty() && placed.waypoints_route.is_none(), "no waypoints before a route loads");
+        assert!(
+            placed.ride.waypoints.is_empty() && placed.ride.waypoints_route.is_none(),
+            "no waypoints before a route loads"
+        );
         assert!(placed.activity.next_waypoint.is_none(), "no next waypoint at power-on");
-        assert!(placed.matched_route.is_none() && placed.ride_session.is_none());
-        assert!(placed.breadcrumb.is_empty(), "no breadcrumb before any ride");
+        assert!(placed.ride.matched_route.is_none() && placed.ride.ride_session.is_none());
+        assert!(placed.ride.breadcrumb.is_empty(), "no breadcrumb before any ride");
         // The stack is exactly the Home root, like `new_idle`.
         let reference = App::new_idle(state);
         assert_eq!(placed.stack.len(), reference.stack.len());
@@ -4714,182 +4305,13 @@ mod tests {
 
     // --- climb state tracking (C3, #509) ---
     //
-    // Two layers, matching the code split: the **pure** hysteresis resolver
-    // (`resolve_active_climb`) is pinned directly over a hand-built `Climbs` list — enter, exit,
-    // and the flap-guard — with no reader; then the wiring (build-on-load, clear-on-unload, and the
-    // once-per-entry `ClimbProfile::fill`) is driven end-to-end through `App::update_active_climb`
-    // and `App::tick` over the committed `grimsel-climb.obcr` fixture (3 back-to-back climbs).
+    // The **pure** hysteresis resolvers (`resolve_active_climb` / `resolve_next_waypoint`) are
+    // pinned in `ride_engine.rs`, next to the policy they encode. Here the App-side wiring is
+    // driven end-to-end — build-on-load, clear-on-unload, the once-per-entry `ClimbProfile::fill`,
+    // and the C5 auto-switch — through `App::update_active_climb` and `App::tick` over the
+    // committed `grimsel-climb.obcr` fixture (3 back-to-back climbs).
 
-    // `Climbs` / `RouteReader` are already in scope via `use super::*`; only the extras the
-    // fixture tests need are imported here.
-    use obc_route::{ClimbSeg, RouteIndex, SliceSource, WptEntry};
-
-    /// A `ClimbSeg` over `[start_m, end_m]` — the other fields don't affect the interval hysteresis.
-    fn seg(start_m: u32, end_m: u32) -> ClimbSeg {
-        ClimbSeg {
-            start_m,
-            end_m,
-            base_ele_m: 0,
-            top_ele_m: (end_m - start_m) as i16,
-            gain_m: (end_m - start_m) as u16,
-            avg_grade_pct: 5,
-            category: 0,
-        }
-    }
-
-    /// A `Climbs` list from `(start, end)` pairs.
-    fn climbs(spans: &[(u32, u32)]) -> Climbs {
-        let mut c = Climbs::new();
-        for &(s, e) in spans {
-            c.0.push(seg(s, e)).unwrap();
-        }
-        c
-    }
-
-    /// Enter: below a climb's entry band there's no active climb; once progress reaches within
-    /// `CLIMB_ENTER_MARGIN_M` of the base the climb arms (slightly *before* the base), and it stays
-    /// armed through the interval.
-    #[test]
-    fn resolve_arms_a_climb_at_its_entry_band() {
-        let cs = climbs(&[(1000, 3000)]);
-        // Well before the entry band (base 1000 − 50 = 950): nothing.
-        assert_eq!(resolve_active_climb(&cs, 800, None), None);
-        // Just outside the band: still nothing.
-        assert_eq!(resolve_active_climb(&cs, 949, None), None);
-        // Inside the entry band, before the base: armed early (the point of the enter margin).
-        assert_eq!(resolve_active_climb(&cs, 960, None), Some(0));
-        // Mid-climb: on it.
-        assert_eq!(resolve_active_climb(&cs, 2000, None), Some(0));
-    }
-
-    /// Exit: while on a climb it's *held* past the summit by `CLIMB_EXIT_MARGIN_M`, then disarms.
-    #[test]
-    fn resolve_holds_past_the_summit_then_exits() {
-        let cs = climbs(&[(1000, 3000)]);
-        // At the summit: still on it.
-        assert_eq!(resolve_active_climb(&cs, 3000, Some(0)), Some(0));
-        // Within the exit band (summit 3000 + 30 = 3030): held.
-        assert_eq!(resolve_active_climb(&cs, 3025, Some(0)), Some(0));
-        // Past the exit band: disarmed (no next climb to take over).
-        assert_eq!(resolve_active_climb(&cs, 3040, Some(0)), None);
-    }
-
-    /// The flap guard: jitter around the base boundary (the matcher wobbling progress a few metres
-    /// either way of the entry point) must not toggle the active climb once it's armed.
-    #[test]
-    fn resolve_does_not_flap_at_a_boundary() {
-        let cs = climbs(&[(1000, 3000)]);
-        // Arm at the base.
-        let mut active = resolve_active_climb(&cs, 1000, None);
-        assert_eq!(active, Some(0));
-        // Progress jitters back a few metres below the base across several fixes — inside the entry
-        // band, so the climb stays armed every time (no off→on→off flapping).
-        for p in [995u32, 980, 970, 990, 1005, 998] {
-            active = resolve_active_climb(&cs, p, active);
-            assert_eq!(active, Some(0), "jitter around the base must not drop the active climb");
-        }
-        // …and jitter around the *summit* likewise doesn't flap (held by the exit band).
-        active = resolve_active_climb(&cs, 3000, active);
-        for p in [3005u32, 2998, 3010, 2995, 3020] {
-            active = resolve_active_climb(&cs, p, active);
-            assert_eq!(active, Some(0), "jitter around the summit must not drop the active climb");
-        }
-    }
-
-    /// Back-to-back climbs (the Grimsel shape): leaving climb 0's exit band hands straight over to
-    /// climb 1 whose entry band it's already inside — one clean transition, never a gap of `None`.
-    #[test]
-    fn resolve_hands_over_between_adjacent_climbs() {
-        let cs = climbs(&[(1000, 3000), (3000, 5000)]);
-        // On climb 0 at its summit, held through the exit band.
-        assert_eq!(resolve_active_climb(&cs, 3010, Some(0)), Some(0));
-        // Past climb 0's exit band: re-arms, and climb 1's entry band already contains progress →
-        // straight onto climb 1.
-        assert_eq!(resolve_active_climb(&cs, 3040, Some(0)), Some(1));
-    }
-
-    /// A stale index (the list shrank under the previous active climb, e.g. a swap to a flatter
-    /// route) doesn't strand the resolver — it re-arms from scratch (here: nothing).
-    #[test]
-    fn resolve_recovers_from_a_stale_index() {
-        let cs = climbs(&[(1000, 3000)]);
-        // prev = 5, but only one climb exists and progress is nowhere near it.
-        assert_eq!(resolve_active_climb(&cs, 200, Some(5)), None);
-    }
-
-    // --- next-waypoint tracking (#569) ---
-    //
-    // The pure resolver `resolve_next_waypoint` is pinned directly over a hand-built `Waypoints`
-    // table: the linger advance, the anti-flap jitter guard, the past-the-last `None`, and a fresh
-    // route starting at index 0. (The App-side wiring — build-on-load, off-route freeze, re-window,
-    // route-swap clear — rides the same `tick`/`Activity` machinery the climb wiring does.)
-
-    /// A `Waypoints` table from `(dist_along_m, name)` pairs, in route order.
-    fn wpts(items: &[(u32, &str)]) -> Waypoints {
-        let mut w = Waypoints::new();
-        for &(dist_along_m, name) in items {
-            let mut n = heapless::String::new();
-            n.push_str(name).unwrap();
-            w.entries.push(WptEntry { dist_along_m, lon: 0, lat: 0, name: n }).unwrap();
-        }
-        w
-    }
-
-    /// The index advances at exactly `dist + WAYPOINT_LINGER_M`, and not one metre before — the
-    /// passed waypoint lingers the whole 100 m band.
-    #[test]
-    fn resolve_next_advances_exactly_at_the_linger() {
-        let w = wpts(&[(1_000, "A"), (2_000, "B")]);
-        // Before A, and anywhere in A's linger band [1000, 1100): A is next.
-        assert_eq!(resolve_next_waypoint(&w, 0, None), Some(0));
-        assert_eq!(resolve_next_waypoint(&w, 1_000, None), Some(0));
-        assert_eq!(resolve_next_waypoint(&w, 1_099, Some(0)), Some(0));
-        // Exactly at dist + 100: A's band closes, B is next.
-        assert_eq!(resolve_next_waypoint(&w, 1_100, Some(0)), Some(1));
-    }
-
-    /// Jitter around a waypoint's own position (progress wobbling ±30 m across A's `dist`) never
-    /// flaps the index — the linger band absorbs it.
-    #[test]
-    fn resolve_next_does_not_flap_around_a_waypoint() {
-        let w = wpts(&[(1_000, "A"), (2_000, "B")]);
-        let mut next = resolve_next_waypoint(&w, 970, None);
-        assert_eq!(next, Some(0));
-        for p in [1_005u32, 980, 1_030, 995, 1_020, 970] {
-            next = resolve_next_waypoint(&w, p, next);
-            assert_eq!(next, Some(0), "jitter around A's position must not advance the index");
-        }
-        // …and a dip back below the advance boundary after passing it doesn't regress the index.
-        next = resolve_next_waypoint(&w, 1_100, next);
-        assert_eq!(next, Some(1));
-        for p in [1_080u32, 1_060, 1_090] {
-            next = resolve_next_waypoint(&w, p, next);
-            assert_eq!(next, Some(1), "a progress dip must not step back onto a passed waypoint");
-        }
-    }
-
-    /// Past the last waypoint's linger the index is `None` — the chip / fields go empty.
-    #[test]
-    fn resolve_next_is_none_past_the_last() {
-        let w = wpts(&[(1_000, "A"), (2_000, "B")]);
-        // Inside B's band: still B.
-        assert_eq!(resolve_next_waypoint(&w, 2_099, Some(1)), Some(1));
-        // Past B + 100: nothing ahead.
-        assert_eq!(resolve_next_waypoint(&w, 2_100, Some(1)), None);
-        assert_eq!(resolve_next_waypoint(&w, 9_999, Some(1)), None);
-    }
-
-    /// A fresh route (no prior index) starts at the first waypoint ahead — index 0 from progress 0,
-    /// or the first still-ahead one when the rider starts mid-route.
-    #[test]
-    fn resolve_next_fresh_route_starts_at_the_first_ahead() {
-        let w = wpts(&[(1_000, "A"), (2_000, "B"), (3_000, "C")]);
-        assert_eq!(resolve_next_waypoint(&w, 0, None), Some(0));
-        // Starting past A's linger picks B (the first still-ahead), not A.
-        assert_eq!(resolve_next_waypoint(&w, 1_500, None), Some(1));
-        // An empty table is always `None`.
-        assert_eq!(resolve_next_waypoint(&Waypoints::new(), 0, None), None);
-    }
+    use obc_route::{RouteIndex, SliceSource};
 
     /// The committed Grimsel fixture bytes (3 back-to-back climbs), embedded so the `no_std` lib
     /// tests need no `std::fs`. Boundaries: 501–11067, 11067–14472, 14472–18547; total ~18.7 km.
@@ -4910,8 +4332,8 @@ mod tests {
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.climbs = route.detect_climbs();
-        assert_eq!(app.climbs.len(), 3, "the Grimsel fixture segments into 3 climbs");
+        app.ride.climbs = route.detect_climbs();
+        assert_eq!(app.ride.climbs.len(), 3, "the Grimsel fixture segments into 3 climbs");
 
         // Sweep progress across the whole route in 250 m steps. Climb boundaries (from the fixture):
         // 501–11067, 11067–14472, 14472–18547 — three entries as the sweep crosses each base.
@@ -4928,7 +4350,7 @@ mod tests {
         // Exactly one refill per climb *entry* — never per fix on the same climb. Three climbs, and
         // because they're back-to-back the sweep enters all three: 3 entries ⇒ 3 fills.
         assert_eq!(entries, 3, "the sweep enters each of the 3 climbs once");
-        assert_eq!(app.climb_fill_count, 3, "the detail buffer is rebuilt exactly on the 3 entries, not per fix");
+        assert_eq!(app.ride.climb_fill_count, 3, "the detail buffer is rebuilt exactly on the 3 entries, not per fix");
     }
 
     /// Off-route freezes the active climb: a stale (frozen) match must not strand the rider onto a
@@ -4939,13 +4361,13 @@ mod tests {
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.climbs = route.detect_climbs();
+        app.ride.climbs = route.detect_climbs();
 
         // On climb 0 (progress mid-first-climb).
         app.activity.progress_m = 5000;
         app.update_active_climb(&route);
         assert_eq!(app.activity.active_climb, Some(0));
-        let fills_on_climb = app.climb_fill_count;
+        let fills_on_climb = app.ride.climb_fill_count;
 
         // Go off-route: progress freezes (the matcher holds it). Even a progress value that would
         // otherwise be past every climb must not change the active climb while off-route.
@@ -4953,7 +4375,7 @@ mod tests {
         app.activity.progress_m = 99_999;
         app.update_active_climb(&route);
         assert_eq!(app.activity.active_climb, Some(0), "off-route holds the current climb");
-        assert_eq!(app.climb_fill_count, fills_on_climb, "no refill while off-route");
+        assert_eq!(app.ride.climb_fill_count, fills_on_climb, "no refill while off-route");
     }
 
     // --- host auto-switch / auto-return (C5, #511) ---
@@ -4971,7 +4393,7 @@ mod tests {
         {
             let src = SliceSource(GRIMSEL);
             let route = RouteReader::new(&idx, &src);
-            app.climbs = route.detect_climbs();
+            app.ride.climbs = route.detect_climbs();
         }
         (app, idx)
     }
@@ -5088,28 +4510,34 @@ mod tests {
             );
         };
         no_loc(&mut app, Some(&route));
-        assert!(app.climbs.is_empty(), "no active route → no climbs, even with a reader present");
-        assert!(app.climbs_route.is_none());
-        assert!(app.waypoints.is_empty() && app.waypoints_route.is_none(), "no active route → no waypoint table");
+        assert!(app.ride.climbs.is_empty(), "no active route → no climbs, even with a reader present");
+        assert!(app.ride.climbs_route.is_none());
+        assert!(
+            app.ride.waypoints.is_empty() && app.ride.waypoints_route.is_none(),
+            "no active route → no waypoint table"
+        );
 
         // Load the route (active_route = Some) and tick with the reader → climbs segmented once, and
         // the waypoint table loaded on the same edge (GRIMSEL carries none, so the table is empty but
         // the build key advances to Some(0) — the load ran).
         app.activity.active_route = Some(0);
         no_loc(&mut app, Some(&route));
-        assert_eq!(app.climbs.len(), 3, "an active route + reader segments the climbs on load");
-        assert_eq!(app.climbs_route, Some(0));
-        assert_eq!(app.waypoints_route, Some(0), "the waypoint table loads on the same route edge");
+        assert_eq!(app.ride.climbs.len(), 3, "an active route + reader segments the climbs on load");
+        assert_eq!(app.ride.climbs_route, Some(0));
+        assert_eq!(app.ride.waypoints_route, Some(0), "the waypoint table loads on the same route edge");
 
         // Unload (active_route → None) and tick → the climbs / waypoints and their derived indices clear.
         app.activity.active_climb = Some(0); // pretend we were on a climb
         app.activity.next_waypoint = Some(0); // …and had a next waypoint
         app.activity.active_route = None;
         no_loc(&mut app, None);
-        assert!(app.climbs.is_empty(), "unloading the route clears the climbs");
-        assert!(app.climbs_route.is_none());
+        assert!(app.ride.climbs.is_empty(), "unloading the route clears the climbs");
+        assert!(app.ride.climbs_route.is_none());
         assert_eq!(app.activity.active_climb, None, "and the on-climb state is dropped");
-        assert!(app.waypoints.is_empty() && app.waypoints_route.is_none(), "unloading clears the waypoint table");
+        assert!(
+            app.ride.waypoints.is_empty() && app.ride.waypoints_route.is_none(),
+            "unloading clears the waypoint table"
+        );
         assert_eq!(app.activity.next_waypoint, None, "and the next-waypoint index is dropped");
     }
 

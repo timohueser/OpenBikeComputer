@@ -28,6 +28,7 @@ pub mod input;
 pub mod input_plane;
 pub mod nav_profiles;
 pub mod ride;
+pub(crate) mod ride_engine;
 pub mod route;
 pub mod screen;
 pub mod sensors;
