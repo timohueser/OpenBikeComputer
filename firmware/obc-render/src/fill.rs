@@ -133,6 +133,134 @@ pub(crate) fn fill_polygon<D>(
     }
 }
 
+/// Emit one outward-rounded solid span for row `y` covering `left..=right` in sub-pixel x — the
+/// shared span-emit of [`fill_polygon`] and [`fill_convex_quad`]. Rounds **outward** (`floor` the
+/// left edge, `ceil` the right) and clamps to `0..=w-1`, so adjacent fills overlap by ≤1 px rather
+/// than leaving a hairline crack (see [`fill_polygon`]). A span that clips to nothing draws nothing.
+#[inline]
+fn fill_span<D>(target: &mut D, left: f32, right: f32, y: i32, w: i32, color: D::Color)
+where
+    D: DrawTarget,
+{
+    let x0 = (libm::floorf(left) as i32).max(0);
+    let x1 = (libm::ceilf(right) as i32).min(w - 1);
+    if x1 >= x0 {
+        let _ = target.fill_solid(&Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)), color);
+    }
+}
+
+/// Scan-convert a **convex four-point quad** — a thick stroke segment's swept rectangle — as one
+/// solid span per row. The specialization of [`fill_polygon`] for the `fill_butt_quad`
+/// (`crate::stroke`) call site: a convex quad crosses any scanline exactly twice, so the generic
+/// filler's crossing-vector clear/push/overflow-guard, its per-row two-element sort, and its
+/// per-ring y-band bookkeeping are all avoidable — we keep the minimum and maximum active x
+/// directly and emit a single rectangle.
+///
+/// **Byte-identical to [`fill_polygon`] on the same quad.** This is a hard requirement, not just a
+/// scene-hash coincidence, so the per-row crossing is computed with the *exact same expression*
+/// [`fill_polygon`] uses — base vertex `i`, previous vertex `j`, `xi + (yc - yi)/(yj - yi)*(xj -
+/// xi)` — rather than a hoisted reciprocal slope, whose different float rounding drifts spans by a
+/// pixel on some quads (the differential harness in `crate::stroke` catches it). The half-open edge
+/// rule (`y_min <= yc < y_max`) and the outward span rounding ([`fill_span`]) are likewise the same
+/// pixel contract. The saved work is the scratch buffer, the sort, and the ring machinery — not the
+/// division.
+///
+/// `round_pt` can collapse a short or shallow segment's quad to a triangle or a zero-area sliver;
+/// those still cross any row at most twice, so the fast path holds. Should a rounded quad ever
+/// present **more than two** crossings on a row (a self-intersecting or concave degenerate), that
+/// row falls through to the very same even-odd sort-and-pair [`fill_polygon`] runs — so the output
+/// can never drift from the general filler regardless of what geometry `round_pt` produces.
+///
+/// Fixed-size and allocation-free: at most four stack edge records (~64 bytes) — no resident buffer,
+/// no [`crate::DrawScratch`]. `#[inline(never)]` keeps these locals off the already-deep stroker
+/// frame.
+#[inline(never)]
+pub(crate) fn fill_convex_quad<D>(target: &mut D, quad: &[Point; 4], color: D::Color, w: i32, h: i32)
+where
+    D: DrawTarget,
+{
+    /// One non-horizontal quad side, in [`fill_polygon`]'s `i`/`j` roles (`i` = current vertex, `j`
+    /// = previous): `xi`/`yi` are vertex `i`, `dx`/`dy` are `xj - xi`/`yj - yi`. The half-open
+    /// active test `y_min <= yc < y_max` is exactly `(yi<=yc<yj) || (yj<=yc<yi)`, so it drops
+    /// horizontal sides for free (they can never satisfy it) — those are never recorded.
+    struct Edge {
+        y_min: f32,
+        y_max: f32,
+        xi: f32,
+        yi: f32,
+        dx: f32,
+        dy: f32,
+    }
+
+    // Union y-range clamped to the framebuffer, exactly as `fill_polygon`.
+    let mut ymin = i32::MAX;
+    let mut ymax = i32::MIN;
+    for p in quad {
+        ymin = ymin.min(p.y);
+        ymax = ymax.max(p.y);
+    }
+    ymin = ymin.max(0);
+    ymax = ymax.min(h - 1);
+    if ymin > ymax {
+        return;
+    }
+
+    // Build the (≤4) non-horizontal edges once, iterating `i`/`j` as `fill_polygon` does (i = the
+    // current vertex, j = its predecessor, starting j = quad[3]).
+    let mut edges: Vec<Edge, 4> = Vec::new();
+    let mut prev = quad[3];
+    for &cur in quad {
+        if prev.y != cur.y {
+            let (xi, yi) = (cur.x as f32, cur.y as f32);
+            let (xj, yj) = (prev.x as f32, prev.y as f32);
+            let (y_min, y_max) = if yi < yj { (yi, yj) } else { (yj, yi) };
+            let _ = edges.push(Edge { y_min, y_max, xi, yi, dx: xj - xi, dy: yj - yi });
+        }
+        prev = cur;
+    }
+
+    for y in ymin..=ymax {
+        let yc = y as f32 + 0.5;
+        // Keep the min/max active x directly — no crossing buffer, no sort — plus a tiny fixed
+        // record of every crossing so a >2-crossing degenerate row can fall back to exact even-odd.
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        let mut xs4 = [0.0f32; 4];
+        let mut n = 0usize;
+        for e in &edges {
+            if e.y_min <= yc && yc < e.y_max {
+                // Bit-for-bit `fill_polygon`'s crossing: `xi + (yc - yi)/(yj - yi)*(xj - xi)`.
+                let x = e.xi + (yc - e.yi) / e.dy * e.dx;
+                xs4[n] = x;
+                n += 1;
+                if x < lo {
+                    lo = x;
+                }
+                if x > hi {
+                    hi = x;
+                }
+            }
+        }
+        if n < 2 {
+            continue; // matches `fill_polygon`'s `xs.len() < 2` row skip
+        }
+        if n == 2 {
+            fill_span(target, lo, hi, y, w, color); // the fast path: sort of two is just (min, max)
+        } else {
+            // A rounded quad that presents 3–4 crossings on this row is non-convex/self-intersecting.
+            // Mirror `fill_polygon` exactly — sort the crossings and pair them even-odd — so the
+            // specialized filler can never diverge from the general one on any reachable geometry.
+            let s = &mut xs4[..n];
+            s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            let mut k = 0;
+            while k + 1 < n {
+                fill_span(target, s[k], s[k + 1], y, w, color);
+                k += 2;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::fill_polygon;
