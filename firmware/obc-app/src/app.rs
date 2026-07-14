@@ -3,7 +3,7 @@
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_reader::Reader;
-use obc_render::{zoom_for_mpp, Canvas, Clock, MapRenderer, NoopClock, RenderStats, Viewport};
+use obc_render::{zoom_for_mpp, Canvas, Clock, NoopClock, RenderStats, Viewport};
 use obc_route::{Profile, RouteReader};
 
 use crate::activity::{Activity, Mode};
@@ -13,6 +13,7 @@ use crate::host::{
     DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HostPending, HOST_COMMAND_CLASSES,
 };
 use crate::input::Gesture;
+use crate::render_res::RenderResources;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
@@ -378,9 +379,10 @@ pub struct App {
     /// idle-return policy, and the modal-reconciliation state for every host-pushed card
     /// (passkey, upload popups, warnings, post-update toasts, DFU landings).
     ui: UiRuntime,
-    /// Reused renderer; clears (not frees) its scratch each frame, so steady-state rendering does no
-    /// allocation — important on the MCU.
-    renderer: MapRenderer,
+    /// The render-only resources: the reusable [`MapRenderer`] + its large per-frame scratch (the
+    /// dominant slice of `App`'s resident size), kept apart from the domain state so allocation
+    /// and placement ownership stay obvious.
+    render_res: RenderResources,
     /// The persisted device settings, seeded from the host's store at boot
     /// ([`set_settings`](App::set_settings)) and edited in place by the settings screens.
     settings: Settings,
@@ -441,7 +443,7 @@ impl App {
             ride: RideEngine::new(),
             ui: UiRuntime::new(),
             nav_profiles: crate::NavProfiles::new(),
-            renderer: MapRenderer::new(),
+            render_res: RenderResources::new(),
             settings: Settings::default(),
             // The wall clock starts from the same default set-point at the boot origin; the host's
             // `set_settings` re-stamps it from the persisted clock a moment later.
@@ -494,9 +496,9 @@ impl App {
             // the profile-name mirror must be initialized like every other, or the board's first
             // render reads uninit memory through it.)
             addr_of_mut!((*slot).nav_profiles).write(crate::NavProfiles::new());
-            // The ~200 KB scratch renderer: an empty renderer *is* the all-zero bit
+            // The KB-scale scratch renderer: an empty renderer *is* the all-zero bit
             // pattern, so it is zeroed straight into the slot — never on the stack.
-            MapRenderer::init_zeroed(addr_of_mut!((*slot).renderer));
+            RenderResources::init_zeroed(addr_of_mut!((*slot).render_res));
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
             addr_of_mut!((*slot).host).write(HostPending::new());
@@ -521,7 +523,7 @@ impl App {
                 ride: _,
                 ui: _,
                 nav_profiles: _,
-                renderer: _,
+                render_res: _,
                 settings: _,
                 wall_clock: _,
                 host: _,
@@ -2153,7 +2155,7 @@ impl App {
             ride,
             ui,
             nav_profiles,
-            renderer,
+            render_res,
             fw_version,
             map_name,
             map_obcm_version,
@@ -2173,7 +2175,7 @@ impl App {
             .map(|seg| screen::ActiveClimb { seg, profile: &ride.climb_profile });
         let mut rx = Render {
             reader,
-            renderer,
+            renderer: &mut render_res.renderer,
             state,
             activity,
             settings,
