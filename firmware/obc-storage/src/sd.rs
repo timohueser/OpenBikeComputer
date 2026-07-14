@@ -1,6 +1,6 @@
 //! FatFs byte adapters over a microSD card — the board-agnostic half of "map/route/track on SD".
 //!
-//! The shared format code in [`obc_route`] never touches a filesystem: it reads through a
+//! The shared format code (in `obc-route`/`obc-reader`) never touches a filesystem: it reads through a
 //! [`ByteSource`], writes through a [`ByteSink`], and logs the ride through an
 //! [`obc_ports::TrackSink`]. On the host those seams are backed by `std::fs`; here by an
 //! [`embedded_sdmmc`] FatFs file. Only these thin adapters are platform-specific.
@@ -11,11 +11,12 @@
 //! and an [`SdTrackSink`] over the track log at once and feed both to one app tick.
 
 use embedded_sdmmc::{BlockDevice, RawFile, TimeSource, VolumeManager};
+use obc_formats::io::{ByteSink, ByteSource, Error};
+use obc_formats::track::encode_record;
 use obc_ports::{TrackError, TrackPoint, TrackSink};
-use obc_route::{encode_record, ByteSink, ByteSource, Error};
 
 /// A random-access [`ByteSource`] over an open FatFs file — the device backing for
-/// [`RouteReader`](obc_route::RouteReader) / [`RouteSummary::read`]. Each
+/// `obc-route`'s `RouteReader` / `RouteSummary::read`. Each
 /// [`read_at`](ByteSource::read_at) seeks the file then reads, so a route never has to be resident.
 /// The length is captured once at construction (the file doesn't grow under a reader).
 pub struct SdByteSource<
