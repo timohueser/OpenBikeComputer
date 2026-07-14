@@ -34,6 +34,7 @@ use obc_render::{
 
 use crate::activity::Activity;
 use crate::input::Gesture;
+use crate::retention::{Retention, RouteRetentionMeta, DAY_SECS};
 use crate::route::RouteSummary;
 use crate::screen::ScreenTick;
 use crate::Msg;
@@ -42,8 +43,18 @@ use super::{ledger_row, palette, title_frame, Ctx, MenuItem, Render, Transition,
 
 /// Chart band: below the title bar, deep enough to read the terrain, clear of the stat tiles.
 const BAND_TOP: i32 = LIST_TOP + 8;
+/// The media band's top when the Auto-delete expiry row shows (epic #638 S5): 24 px lower, so the
+/// row's compact caption line tucks between the title bar and the band. A `Never` route keeps
+/// [`BAND_TOP`] (the row is absent), so existing routes render byte-identically.
+const BAND_TOP_EXPIRY: i32 = LIST_TOP + 32;
 const BAND_BOT: i32 = 140;
 const SIDE_MARGIN: i32 = 12;
+
+/// The Auto-delete expiry row (epic #638 S5): a compact caption line between the title bar and the
+/// (lowered) media band — a muted "Auto-delete" label + the ink remaining-time value, centred as
+/// one group. `Y` is its top; `X` is the minimum side inset the centred group clamps to.
+const EXPIRY_ROW_Y: i32 = LIST_TOP + 4;
+const EXPIRY_ROW_X: i32 = 12;
 
 /// The stat ledger under the media band — the content-paired pager's stat half (owner review
 /// round 3): page A (track shape) carries DISTANCE, page B (elevation) CLIMB + DESCENT;
@@ -253,15 +264,38 @@ impl RouteOverviewScreen {
         let name = super::route_menu::fit_name(&summary.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
         title_frame(cv, w, h, &name, "");
 
+        // The Auto-delete expiry row (epic #638 S5): one muted metadata line between the title bar
+        // and the media band — the label left, the time left right — shown only for a route that
+        // actually expires (retention ≠ Never; hidden entirely otherwise). When shown, the media
+        // band starts [`BAND_TOP_EXPIRY`] instead of [`BAND_TOP`] to make room; a `Never` route
+        // keeps the full band, so nothing about the existing (all-`Never`) routes changes.
+        let meta = rx.route_metas.get(self.route).copied().unwrap_or_default();
+        let expiry = expiry_value(meta, rx.now_utc);
+        let band_top = if expiry.is_some() { BAND_TOP_EXPIRY } else { BAND_TOP };
+        if let Some(value) = &expiry {
+            // A muted label + an ink value, drawn as one **centred group** with a one-space gap:
+            // the label alone is nearly half the 240 px line, so left/right anchoring would leave
+            // no room between them. Two-tone (SUBTEXT label, INK value) separates the two without a
+            // separator glyph.
+            let label = rx.t(Msg::RouteOverviewAutoDelete);
+            let cw = Font::Label.char_width() as i32;
+            let label_w = label.chars().count() as i32 * cw;
+            let value_w = value.chars().count() as i32 * cw;
+            let gap = cw; // one space between label and value
+            let x0 = ((w - (label_w + gap + value_w)) / 2).max(EXPIRY_ROW_X);
+            cv.text(label, Point::new(x0, EXPIRY_ROW_Y), Font::Label, TextAlign::Left, SUBTEXT);
+            cv.text(value, Point::new(x0 + label_w + gap, EXPIRY_ROW_Y), Font::Label, TextAlign::Left, INK);
+        }
+
         // The content-paired media band (owner review round 3): the auto-flip swaps this WITH the
         // stat rows below — page A the route's track-shape preview, page B the elevation profile.
-        // Both draw in the same slot ([`BAND_TOP`]..[`BAND_BOT`]), so nothing jumps on the flip.
+        // Both draw in the same slot (`band_top`..[`BAND_BOT`]), so nothing jumps on the flip.
         let page_b = self.page & 1 == 1;
         if !page_b {
             // Page A: the host-decimated track shape (the NEW ROUTE page's sketch, aspect-fit,
             // start disc + destination diamond). An empty slice (the frame or two before the host
             // hands it in) just leaves the slot blank, like the shape preview always has.
-            draw_route_preview(cv, w, BAND_TOP, BAND_BOT, rx.nav_preview);
+            draw_route_preview(cv, w, band_top, BAND_BOT, rx.nav_preview);
         } else if let Some(profile) = rx.profile {
             // Page B: the full-route elevation band — the Statistics silhouette without any of
             // its live layers (no traveled shading, no cursor, no progress bar). A small peak
@@ -271,7 +305,7 @@ impl RouteOverviewScreen {
             let span_ele = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
             let ele_to_y = |e: i16| -> i32 {
                 let t = ((e - profile.min_ele_m) as f32 / span_ele).clamp(0.0, 1.0);
-                BAND_BOT - (t * (BAND_BOT - BAND_TOP) as f32) as i32
+                BAND_BOT - (t * (BAND_BOT - band_top) as f32) as i32
             };
             let mut prev_top: Option<i32> = None;
             for px in 0..chart_w {
@@ -290,13 +324,13 @@ impl RouteOverviewScreen {
             let _ = write!(peak, "{} {}", units.elev(profile.peak_ele_m() as f32) as i32, units.elev_label());
             let peak_x =
                 (chart_x + (profile.peak_frac() * chart_w as f32) as i32).clamp(chart_x + 30, chart_x + chart_w - 30);
-            let peak_y = (ele_to_y(profile.peak_ele_m()) - 22).max(BAND_TOP - 2);
+            let peak_y = (ele_to_y(profile.peak_ele_m()) - 22).max(band_top - 2);
             cv.text(&peak, Point::new(peak_x, peak_y), Font::Label, TextAlign::Center, SUBTEXT);
         } else {
             // Route still streaming open: keep the band's footprint so the page doesn't jump.
             cv.text(
                 rx.t(Msg::RouteOverviewLoadingProfile),
-                Point::new(w / 2, (BAND_TOP + BAND_BOT) / 2 - 9),
+                Point::new(w / 2, (band_top + BAND_BOT) / 2 - 9),
                 Font::Label,
                 TextAlign::Center,
                 SUBTEXT,
@@ -375,6 +409,46 @@ impl RouteOverviewScreen {
 /// margin. Fixed at the two-row position regardless of whether Delete is drawn (see `draw`).
 fn action_rows_top(h: i32) -> i32 {
     h - 10 - 2 * OPTION_ROW_H - OPTION_GAP
+}
+
+/// The Route overview's **Auto-delete** row value for `meta` at `now_utc` (epic #638 S5), or `None`
+/// when the route never expires (retention [`Never`](Retention::Never) → the row is absent
+/// entirely, per the locked UI — no "Never" noise). A retention-bearing route whose clock was never
+/// started (`last_used == 0`, so [`expires_at`](RouteRetentionMeta::expires_at) is `None`) reads
+/// `--`; otherwise the remaining time from [`fmt_remaining`].
+fn expiry_value(meta: RouteRetentionMeta, now_utc: u32) -> Option<heapless::String<12>> {
+    if matches!(meta.retention, Retention::Never) {
+        return None;
+    }
+    let mut s = heapless::String::new();
+    match meta.expires_at() {
+        // Retention set, but the clock has never been established for this route — show a neutral
+        // placeholder rather than a bogus countdown (matches the page's existing `--` for a missing
+        // descent). The em dash the epic sketches isn't in the font's Latin repertoire, so `--`.
+        None => {
+            let _ = s.push_str("--");
+        }
+        Some(deadline) => s = fmt_remaining(deadline, now_utc),
+    }
+    Some(s)
+}
+
+/// The time left until `deadline` from `now_utc`, in the Route overview's locked format (epic #638
+/// S5): `≥ 2 days → "in N d"`, `≥ 1 hour (and < 48 h) → "in N h"`, anything sooner — the sub-hour
+/// tail or an already-past deadline the hourly sweep hasn't collected yet — `"soon"`. Whole units
+/// (floor); day-grain expiry doesn't warrant minutes, and the sub-hour → "soon" fold avoids an
+/// "in 0 h" readout in the final hour. Not localised — the format is pinned by the issue.
+fn fmt_remaining(deadline: u32, now_utc: u32) -> heapless::String<12> {
+    let mut s = heapless::String::new();
+    let secs = deadline.saturating_sub(now_utc);
+    if secs >= 2 * DAY_SECS {
+        let _ = write!(s, "in {} d", secs / DAY_SECS);
+    } else if secs >= 3600 {
+        let _ = write!(s, "in {} h", secs / 3600);
+    } else {
+        let _ = s.push_str("soon");
+    }
+    s
 }
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
@@ -622,5 +696,41 @@ mod tests {
         let mut scr = RouteOverviewScreen::computed(0, None);
         assert!(!scr.tick_timers(PAGE_FLIP_MS).changed);
         assert_eq!(scr.tick_timers(PAGE_FLIP_MS), ScreenTick::idle());
+    }
+
+    /// The locked remaining-time format (epic #638 S5), at every boundary: the day/hour cutover at
+    /// exactly 48 h, an exact 2-day span, the hour band, the sub-hour fold to "soon", and past-due.
+    #[test]
+    fn fmt_remaining_boundaries() {
+        let now = 1_000_000;
+        let at = |secs: u32| fmt_remaining(now + secs, now);
+        // ≥ 2 days → whole days. 48 h *exactly* is the first day-grain tick (not "in 47 h").
+        assert_eq!(at(2 * DAY_SECS).as_str(), "in 2 d", "48 h exactly reads as 2 days");
+        assert_eq!(at(12 * DAY_SECS).as_str(), "in 12 d");
+        assert_eq!(at(2 * DAY_SECS - 1).as_str(), "in 47 h", "one second under 48 h is still the hour band");
+        // < 48 h → whole hours, down to the last full hour.
+        assert_eq!(at(5 * 3600).as_str(), "in 5 h");
+        assert_eq!(at(3600).as_str(), "in 1 h", "exactly one hour left");
+        // The final sub-hour tail folds to "soon" rather than "in 0 h".
+        assert_eq!(at(3599).as_str(), "soon", "under an hour → soon, never \"in 0 h\"");
+        // Past-due (the sweep hasn't collected it yet): now == deadline, and now > deadline.
+        assert_eq!(fmt_remaining(now, now).as_str(), "soon", "exactly due → soon");
+        assert_eq!(fmt_remaining(now - DAY_SECS, now).as_str(), "soon", "past-due → soon (saturating)");
+    }
+
+    /// The Auto-delete row's presence rule: absent for `Never`, "--" for a retention-set route whose
+    /// clock never started, and the countdown once it has.
+    #[test]
+    fn expiry_value_states() {
+        let now = 1_000_000;
+        // Never → no row at all (locked: no "Never" noise).
+        assert_eq!(expiry_value(RouteRetentionMeta::new(Retention::Never, now), now), None);
+        assert_eq!(expiry_value(RouteRetentionMeta::new(Retention::Never, 0), now), None);
+        // Retention set but last_used == 0 (clock never started) → "--".
+        let unknown = expiry_value(RouteRetentionMeta::new(Retention::Week1, 0), now);
+        assert_eq!(unknown.as_deref(), Some("--"));
+        // Retention set with a real last_used → the countdown ("in 12 d" for a 14-day route used 2 d ago).
+        let counting = expiry_value(RouteRetentionMeta::new(Retention::Week2, now - 2 * DAY_SECS), now);
+        assert_eq!(counting.as_deref(), Some("in 12 d"));
     }
 }

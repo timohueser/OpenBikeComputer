@@ -146,6 +146,7 @@ grade = "pente "
 [settings]
 title = "RÉGLAGES"
 datetime = "Date & heure"
+autodelete = "Suppr. auto"
 units = "Unités"
 bike_type = "Type de vélo"
 stats = "Statistiques"
@@ -165,6 +166,15 @@ searching = "Recherche fix"
 local_time = "Heure locale"
 offset = "Décalage"
 utc = "UTC "
+
+# --- Auto-delete settings screen (route auto-expiry + ride auto-delete, epic #638 S5) ---
+[autodelete]
+title = "SUPPR. AUTO"
+synced_rides = "SORTIES SYNC."
+never = "Jamais"
+day1 = "1 jour"
+week1 = "1 sem."
+month1 = "1 mois"
 
 # --- Stats settings screen ---
 [set_stats]
@@ -323,6 +333,7 @@ start_ride = "DÉMARRER"
 loading_profile = "Chargement"
 delete = "Supprimer"
 new_route = "NOUV. PARCOURS"
+auto_delete = "Suppr. auto"
 
 # --- Route-received / route-updated popups ---
 [route_received]

@@ -160,6 +160,7 @@ grade = "grade "
 [settings]
 title = "SETTINGS"
 datetime = "Date & Time"
+autodelete = "Auto-delete"
 units = "Units"
 bike_type = "Bike type"
 stats = "Stats"
@@ -179,6 +180,15 @@ searching = "Searching for fix"
 local_time = "Local time"
 offset = "Offset"
 utc = "UTC "
+
+# --- Auto-delete settings screen (route auto-expiry + ride auto-delete, epic #638 S5) ---
+[autodelete]
+title = "AUTO-DELETE"
+synced_rides = "SYNCED RIDES"
+never = "Never"
+day1 = "1 day"
+week1 = "1 week"
+month1 = "1 month"
 
 # --- Stats settings screen ---
 [set_stats]
@@ -341,6 +351,7 @@ start_ride = "START RIDE"
 loading_profile = "loading profile"
 delete = "Delete route"
 new_route = "NEW ROUTE"
+auto_delete = "Auto-delete"
 
 # --- Route-received / route-updated popups ---
 [route_received]

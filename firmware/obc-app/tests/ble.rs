@@ -101,8 +101,9 @@ fn a_link_change_repaints_the_bluetooth_screen() {
     app.apply_gesture(obc_app::Gesture::BackHold); // → Menu
     app.apply_gesture(obc_app::Gesture::Turn(-1)); // compass: one ccw detent to Settings
     app.apply_gesture(obc_app::Gesture::Press); // → Settings list
-    for _ in 0..6 {
-        app.apply_gesture(obc_app::Gesture::Turn(1)); // → the Bluetooth row (Date/Time, Units, Bike type, Stats, Display, Power, Bluetooth)
+    for _ in 0..7 {
+        // → the Bluetooth row (Date/Time, Auto-delete, Units, Bike type, Stats, Display, Power, Bluetooth)
+        app.apply_gesture(obc_app::Gesture::Turn(1));
     }
     app.apply_gesture(obc_app::Gesture::Press); // → Bluetooth screen
     assert!(matches!(app.top_screen(), obc_app::Screen::Bluetooth(_)), "navigated to the Bluetooth screen");
