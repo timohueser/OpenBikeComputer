@@ -19,6 +19,19 @@ fn separator_above(ui: &mut egui::Ui) {
     ui.separator();
 }
 
+/// A short human label for a [`Retention`](obc_app::Retention) level — the retention combo's text.
+fn retention_label(r: obc_app::Retention) -> &'static str {
+    use obc_app::Retention;
+    match r {
+        Retention::Never => "Never",
+        Retention::Day1 => "1 day",
+        Retention::Week1 => "1 week",
+        Retention::Week2 => "2 weeks",
+        Retention::Month1 => "1 month",
+        Retention::Month2 => "2 months",
+    }
+}
+
 /// A labelled `0–100%` progress bar (a render-stats buffer-utilization row).
 #[allow(dead_code)]
 fn util_bar(ui: &mut egui::Ui, label: &str, frac: f32) {
@@ -211,6 +224,12 @@ impl SimGui {
 
                         separator_above(ui);
 
+                        egui::CollapsingHeader::new("Auto-delete (retention)")
+                            .default_open(false)
+                            .show(ui, |ui| self.show_retention_controls(ui));
+
+                        separator_above(ui);
+
                         self.show_display_controls(ui);
 
                         separator_above(ui);
@@ -392,6 +411,122 @@ impl SimGui {
             if self.trip_store.delete_by_id(id) {
                 self.app.set_trips(&self.trip_store.inputs());
             }
+        }
+    }
+
+    /// The **auto-delete / retention** controls (auto-expiry epic #638, S3) — the sim's face of the
+    /// self-cleaning storage feature, so route/ride expiry is eyeball-testable without hardware:
+    ///
+    /// - **GPS time** toggles the trusted-clock feed ([`SimClock`](super::SimClock)); off is the
+    ///   fresh-device untrusted state where nothing auto-deletes.
+    /// - **+1 day** fast-forwards the fed clock 24 h and forces the next sweep, so a 1-day-retention
+    ///   route or an aged synced ride disappears in seconds.
+    /// - **Set route retention** stands in for the phone's `setRouteRetention` (until S4 gives it a
+    ///   wire): pick a route + level and the sweep will delete it once it's been unused that long.
+    /// - **Mark ride synced** is the `ackRides` stand-in: it stamps a ride's `synced_at` so the
+    ///   sweep can auto-delete it per the device `ride_retention` setting.
+    fn show_retention_controls(&mut self, ui: &mut egui::Ui) {
+        use obc_app::Retention;
+
+        ui.checkbox(&mut self.panel.gps_time, "GPS time (trusted clock)");
+        ui.weak("feeds host UTC as a GPS fix — off = untrusted, nothing auto-deletes");
+
+        ui.horizontal(|ui| {
+            if ui.button("+1 day").clicked() {
+                self.panel.clock_offset_secs = self.panel.clock_offset_secs.saturating_add(86_400);
+                // Force the next tick's sweep regardless of the (fast-forwarded) wall-clock hour, so
+                // an expiry is visible immediately instead of on the next hour boundary.
+                self.app.force_retention_sweep();
+            }
+            if ui.button("reset clock").clicked() {
+                self.panel.clock_offset_secs = 0;
+            }
+            ui.weak(format!("+{} d", self.panel.clock_offset_secs / 86_400));
+        });
+
+        ui.separator();
+
+        // Set a route's retention level (the setRouteRetention stand-in until S4).
+        let mut apply: Option<(u16, Retention)> = None;
+        {
+            let routes = self.app.routes();
+            if routes.is_empty() {
+                ui.weak("no routes — add .obcr files to the routes folder");
+            } else {
+                self.panel.retention_route_sel = self.panel.retention_route_sel.min(routes.len() - 1);
+                let ids = self.app.route_ids();
+                let sel_id = ids[self.panel.retention_route_sel];
+                egui::ComboBox::from_id_salt("retention-route")
+                    .selected_text(routes[self.panel.retention_route_sel].name.as_str())
+                    .show_ui(ui, |ui| {
+                        for (i, r) in routes.iter().enumerate() {
+                            ui.selectable_value(&mut self.panel.retention_route_sel, i, r.name.as_str());
+                        }
+                    });
+                egui::ComboBox::from_id_salt("retention-level")
+                    .selected_text(retention_label(self.panel.retention_level))
+                    .show_ui(ui, |ui| {
+                        for lvl in [
+                            Retention::Never,
+                            Retention::Day1,
+                            Retention::Week1,
+                            Retention::Week2,
+                            Retention::Month1,
+                            Retention::Month2,
+                        ] {
+                            ui.selectable_value(&mut self.panel.retention_level, lvl, retention_label(lvl));
+                        }
+                    });
+                if ui.button("Set route retention").clicked() {
+                    apply = Some((sel_id, self.panel.retention_level));
+                }
+                let meta = self.store.retention_of(sel_id);
+                ui.weak(format!(
+                    "route id {sel_id}: {} · last_used {}",
+                    retention_label(meta.retention),
+                    if meta.last_used_utc == 0 { "unset".to_string() } else { meta.last_used_utc.to_string() }
+                ));
+            }
+        }
+        if let Some((id, level)) = apply {
+            self.store.set_retention(id, level);
+        }
+
+        ui.separator();
+
+        // Mark a ride synced (the ackRides stand-in) so the sweep can auto-delete it.
+        let mut mark: Option<u16> = None;
+        {
+            let rides = self.app.rides();
+            if rides.is_empty() {
+                ui.weak("no rides — record one (Ride ▶ … ▶ Finish) to test ride expiry");
+            } else {
+                self.panel.synced_ride_sel = self.panel.synced_ride_sel.min(rides.len() - 1);
+                let ids = self.app.ride_ids();
+                let sel_id = ids[self.panel.synced_ride_sel];
+                egui::ComboBox::from_id_salt("synced-ride")
+                    .selected_text(rides[self.panel.synced_ride_sel].name.as_str())
+                    .show_ui(ui, |ui| {
+                        for (i, r) in rides.iter().enumerate() {
+                            let tag = if r.synced { " (synced)" } else { "" };
+                            ui.selectable_value(
+                                &mut self.panel.synced_ride_sel,
+                                i,
+                                format!("{}{tag}", r.name.as_str()),
+                            );
+                        }
+                    });
+                if ui.button("Mark ride synced (ackRides)").clicked() {
+                    mark = Some(sel_id);
+                }
+                ui.weak("stamps synced_at = now; the sweep deletes it per the device ride_retention");
+            }
+        }
+        if let Some(id) = mark {
+            let utc = self.app.wall_unix_now();
+            self.ride_store.mark_synced(id, utc);
+            self.ride_store.rescan();
+            self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
         }
     }
 

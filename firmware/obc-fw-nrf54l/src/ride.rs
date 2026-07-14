@@ -155,7 +155,10 @@ impl obc_render::Clock for InstantClock {
 #[inline(never)]
 pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
     let catalog = storage.scan_routes();
-    app.set_routes_with_ids(&catalog, storage.route_ids());
+    // Carry each route's device-local retention meta (auto-expiry epic #638, S3) from the
+    // `/routes` sidecar, pairwise with the ids, so the sweep reads device truth.
+    let metas = storage.route_retention_metas();
+    app.set_routes_with_meta(&catalog, storage.route_ids(), &metas);
 }
 
 /// Scan the card's `/tracks` into the app's Rides menu (epic #447 P7 / #454), carrying each ride's
@@ -447,6 +450,14 @@ struct HostPass {
     delete_trip: Option<u16>,
     /// `DeleteRide { id }` — the durable ride id (index-resolved at drain).
     delete_ride: Option<u16>,
+    /// `StampRouteUsed { id, utc }` — write route `id`'s `last_used` to the retention sidecar
+    /// (auto-expiry epic #638, S3). A device-local sidecar write (no store revision/notify), so the
+    /// ride loop applies it directly under the store lock in both builds — unlike a delete.
+    stamp_route: Option<(u16, u32)>,
+    /// `StampRideSynced { id, utc }` — write ride `id`'s `synced_at` to the synced sidecar
+    /// (auto-expiry epic #638, S3), the sweep's legacy-ride countdown start. Sidecar write, applied
+    /// directly like [`stamp_route`](HostPass::stamp_route).
+    stamp_ride: Option<(u16, u32)>,
     /// `FinishTrack(action)` — close the open ride log (Save / Discard).
     finish: Option<obc_app::TrackAction>,
     /// `PlanRoute` was drained — the router should begin a plan this pass. The 44-byte `NavRequest`
@@ -823,6 +834,8 @@ pub(crate) async fn run_app(
                     obc_app::HostCommand::DeleteRoute { id } => host_pass.delete_route = Some(id),
                     obc_app::HostCommand::DeleteTrip { id } => host_pass.delete_trip = Some(id),
                     obc_app::HostCommand::DeleteRide { id } => host_pass.delete_ride = Some(id),
+                    obc_app::HostCommand::StampRouteUsed { id, utc } => host_pass.stamp_route = Some((id, utc)),
+                    obc_app::HostCommand::StampRideSynced { id, utc } => host_pass.stamp_ride = Some((id, utc)),
                     obc_app::HostCommand::FinishTrack(action) => host_pass.finish = Some(action),
                     obc_app::HostCommand::PlanRoute(_req) => {
                         // Write the planner's `.bss` slot from the request **now** (synchronously,
@@ -1197,6 +1210,23 @@ pub(crate) async fn run_app(
                     if s.delete_ride_by_id(_id) {
                         load_rides(s, app);
                     }
+                }
+            }
+
+            // ── Auto-expiry sidecar stamps (epic #638, S3), on the sweep / activation edge ──
+            // `last_used` (routes) / `synced_at` (rides) are **device-local** sidecar writes — no
+            // store revision, no phone `storeChanged` — so unlike a delete they're applied directly
+            // here under the store lock in both builds (the ride loop already holds the card this
+            // phase), rather than routed through the BLE plane's `ObjectStore`. The app already
+            // mirrored the value into its resident meta, so no re-feed is needed.
+            if let Some((id, utc)) = host_pass.stamp_route {
+                if let Some(s) = storage.as_mut() {
+                    s.stamp_route_last_used(id, utc);
+                }
+            }
+            if let Some((id, utc)) = host_pass.stamp_ride {
+                if let Some(s) = storage.as_mut() {
+                    s.stamp_ride_synced_at(id, utc);
                 }
             }
 

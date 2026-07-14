@@ -64,6 +64,23 @@ struct PanelState {
     /// The "Delete trip" combo's selected trip row (epic #526, TR2) — which trip the panel's
     /// delete button removes (the `.obt`, non-cascading).
     trip_sel: usize,
+    /// **GPS time** (auto-expiry epic #638, S3): when on (the default), the sim feeds the host
+    /// wall-clock UTC (plus [`clock_offset_secs`](PanelState::clock_offset_secs)) as a `GpsTime`
+    /// poll each tick, so the device boots into a **trusted** clock exactly as a real fix would —
+    /// the precondition the deletion sweep gates on. Off leaves the clock untrusted (nothing
+    /// auto-deletes), the fresh-device state.
+    gps_time: bool,
+    /// The accumulated clock fast-forward in seconds (auto-expiry epic #638, S3): the "+1 day"
+    /// button adds 86 400 so route/ride expiry is eyeball-testable in seconds rather than days.
+    clock_offset_secs: u32,
+    /// The "Set route retention" combo's selected catalog row (auto-expiry epic #638, S3) — the
+    /// stand-in for the phone's `setRouteRetention` command until S4 gives it a wire.
+    retention_route_sel: usize,
+    /// The retention level the panel's "Set" button assigns to the selected route.
+    retention_level: obc_app::Retention,
+    /// The "Mark ride synced" combo's selected Rides row — the `ackRides` stand-in that stamps a
+    /// ride's `synced_at` so the sweep can later auto-delete it.
+    synced_ride_sel: usize,
 }
 
 /// In-progress 1:1 size calibration: the user measures the on-screen reference bar and
@@ -71,6 +88,31 @@ struct PanelState {
 #[derive(Default)]
 struct CalibState {
     measured_mm: String,
+}
+
+/// The simulator's GPS-time source (auto-expiry epic #638, S3): when `enabled`, each poll resolves
+/// the host wall-clock UTC (plus the accumulated `offset_secs` fast-forward) into a [`GpsTime`], so
+/// [`App::tick`](obc_app::App::tick) stamps a **trusted** clock exactly as a real fix would. When
+/// disabled it yields nothing — the fresh-device untrusted state, where nothing auto-deletes.
+struct SimClock {
+    enabled: bool,
+    offset_secs: u32,
+}
+
+impl obc_ports::ClockSource for SimClock {
+    fn poll(&mut self) -> Option<obc_ports::GpsTime> {
+        if !self.enabled {
+            return None;
+        }
+        let unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as u32)
+            .unwrap_or(0)
+            .wrapping_add(self.offset_secs);
+        // `DateTime` is minute-resolution; the seconds-into-the-minute ride separately so the wall
+        // clock back-dates its epoch exactly like a real fix (see `App::stamp_clock`).
+        Some(obc_ports::GpsTime { utc: obc_ports::DateTime::from_unix(unix), second: (unix % 60) as u8 })
+    }
 }
 
 /// Launch the simulator window. Owns the map bytes for the process lifetime; the
@@ -227,6 +269,11 @@ impl SimGui {
                 ble: obc_app::BleStatus::DISCONNECTED,
                 upload_sel: 0,
                 trip_sel: 0,
+                gps_time: true,
+                clock_offset_secs: 0,
+                retention_route_sel: 0,
+                retention_level: obc_app::Retention::Day1,
+                synced_ride_sel: 0,
             },
             None => PanelState {
                 lat_deg: 0.0,
@@ -236,6 +283,11 @@ impl SimGui {
                 ble: obc_app::BleStatus::DISCONNECTED,
                 upload_sel: 0,
                 trip_sel: 0,
+                gps_time: true,
+                clock_offset_secs: 0,
+                retention_route_sel: 0,
+                retention_level: obc_app::Retention::Day1,
+                synced_ride_sel: 0,
             },
         };
 
@@ -415,6 +467,12 @@ impl SimGui {
             );
         }
 
+        // Mirror the sim's route-retention sidecar into the app each frame (auto-expiry epic #638,
+        // S3), pairwise with the just-fed catalog ids — cheap, and it keeps the sweep reading
+        // device-truth retention even on frames the reconcile didn't re-feed the catalog.
+        let metas = self.store.retention_metas();
+        self.app.set_route_meta(&metas);
+
         // Open the active route's geometry from the resident session — no per-frame `RouteIndex`
         // reparse (reloads only when the active bytes change). It stays borrowed through `tick` +
         // `render_frame` below so the map-matcher gets it.
@@ -470,13 +528,17 @@ impl SimGui {
             // effort-follows-speed has no GPX speed here, so it reads whatever the last fix had (~0).
             let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
             self.sim_sensors.feed(now_ms, speed_mps);
+            // The **GPS time** feed (auto-expiry epic #638, S3): with the control-panel toggle on
+            // (the default), stamp the device clock from the host wall clock (plus the "+1 day"
+            // offset) each tick — booting the sim into a trusted clock like a real fix would, the
+            // precondition the deletion sweep gates on.
+            let mut sim_clock = SimClock { enabled: self.panel.gps_time, offset_secs: self.panel.clock_offset_secs };
             let sensors = Sensors {
                 loc: &mut self.loc,
                 altimeter: None,
                 // No thermometer in manual control — BMP581 temperature is device-only.
                 temperature: None,
-                // No GPS time in the sim — the clock stays whatever was set by hand.
-                clock: None,
+                clock: Some(&mut sim_clock),
                 compass: Some(&mut self.compass),
                 track: self.tracks.sink(),
                 // Battery is set once from `--battery`; no live sim gauge.

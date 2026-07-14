@@ -8,6 +8,7 @@
 //! back to [`Settings::default`] rather than loading garbage.
 
 use crate::i18n::{t, Msg};
+use crate::retention::RideRetention;
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
 
 pub use obc_ports::DateTime;
@@ -703,6 +704,13 @@ pub struct Settings {
     /// [`adopt_ble_fields`](Settings::adopt_ble_fields) — a phone can't repick the rider's sensors.
     /// Default: all three slots empty.
     pub saved_sensors: [SavedSensor; SENSOR_SLOTS],
+    /// How long after a ride is verifiably synced to the phone the device auto-deletes it (epic
+    /// #638): Never / 1 day / 1 week / 1 month. **Device-only**, like
+    /// [`climb_mode`](Settings::climb_mode) — the auto-expiry setting is device-local (the app never
+    /// surfaces it), so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across.
+    /// Default **1 week**. Only synced rides are ever deleted; unsynced rides are never touched. S5
+    /// adds the Auto-delete settings screen that edits this.
+    pub ride_retention: RideRetention,
 }
 
 impl Default for Settings {
@@ -725,6 +733,7 @@ impl Default for Settings {
             waypoint_mode: WaypointMode::default(),
             language: Language::default(),
             saved_sensors: [SavedSensor::EMPTY; SENSOR_SLOTS],
+            ride_retention: RideRetention::default(),
         }
     }
 }
@@ -770,8 +779,9 @@ impl Settings {
 /// the `idle_return` byte; v7 appended the `map_clock` + `map_scale_bar` bytes; v8 appended the
 /// `bike_profile_idx` byte (routing-v2 N5, #538); v9 appended the `waypoint_mode` byte (epic #523);
 /// v10 appended the `language` byte (epic #602); v11 appended the 24-byte `saved_sensors` block
-/// (BLE-sensors SE7, #714) — 3 slots × 8 B (`present · addr_kind · addr[6]`).
-pub const VERSION: u8 = 11;
+/// (BLE-sensors SE7, #714) — 3 slots × 8 B (`present · addr_kind · addr[6]`); v12 appended the
+/// `ride_retention` byte (auto-expiry epic #638, S3).
+pub const VERSION: u8 = 12;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -780,7 +790,9 @@ pub const VERSION: u8 = 11;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = SENSORS_OFF + SENSOR_SLOTS * SAVED_SENSOR_LEN;
+const PAYLOAD_LEN: usize = RIDE_RET_OFF + 1;
+/// Byte offset of the `ride_retention` byte (the v12 tail, right after the `saved_sensors` block).
+const RIDE_RET_OFF: usize = SENSORS_OFF + SENSOR_SLOTS * SAVED_SENSOR_LEN;
 /// Byte offset of the field selection (right after the 14-byte head).
 const STAT_FIELDS_OFF: usize = 14;
 /// Byte offset of `stat_cycle_s` (right after the field selection).
@@ -858,6 +870,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
         b[off + 1] = slot.addr_kind;
         b[off + 2..off + 2 + 6].copy_from_slice(&slot.addr);
     }
+    // v12 tail: the ride-retention (auto-delete) setting.
+    b[RIDE_RET_OFF] = s.ride_retention.as_u8();
     let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -919,6 +933,9 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // `addr_kind` past `1` (corrupt-but-CRC-valid) reads as random (`!= 0`), the board's own
         // interpretation, so a bit-flip never mis-picks the address kind.
         saved_sensors: decode_saved_sensors(b),
+        // The v12 ride-retention (auto-delete) setting: an unknown byte sanitises to the default
+        // (1 week), like the other enum codec fields.
+        ride_retention: RideRetention::from_u8(b[RIDE_RET_OFF]),
     };
     s.sanitize();
     Some(s)
@@ -988,6 +1005,7 @@ mod tests {
                 SavedSensor::EMPTY,
                 SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]),
             ],
+            ride_retention: RideRetention::Month1,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
@@ -1008,6 +1026,32 @@ mod tests {
         let crc = crate::store_meta::crc16(&old[0..PAYLOAD_LEN]);
         old[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&old), Some(s), "the retired gps_time byte doesn't affect the decoded value");
+    }
+
+    /// The v12 tail: the ride-retention (auto-delete) setting round-trips, defaults **1 week**,
+    /// sanitises an unknown byte to the default, and stays device-only ([`adopt_ble_fields`] never
+    /// pulls it across — the auto-expiry setting is device-local).
+    #[test]
+    fn ride_retention_round_trips_and_is_device_only() {
+        assert_eq!(Settings::default().ride_retention, RideRetention::Week1, "the ride-retention default is 1 week");
+
+        for r in [RideRetention::Never, RideRetention::Day1, RideRetention::Week1, RideRetention::Month1] {
+            let s = Settings { ride_retention: r, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "{r:?} round-trips");
+        }
+
+        // An out-of-range stored byte (a newer writer, a bit-flip the CRC missed) sanitises to the
+        // default 1 week — re-stamp the CRC so only the payload byte is "wrong".
+        let mut b = encode(&Settings { ride_retention: RideRetention::Never, ..Settings::default() });
+        b[RIDE_RET_OFF] = 200;
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode(&b).expect("valid CRC").ride_retention, RideRetention::Week1, "unknown → default");
+
+        // Device-only: a BLE blob's ride_retention never lands via the #456 coherence merge.
+        let mut app = Settings { ride_retention: RideRetention::Never, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { ride_retention: RideRetention::Month1, ..Settings::default() });
+        assert_eq!(app.ride_retention, RideRetention::Never, "adopt_ble_fields leaves ride_retention alone");
     }
 
     /// The v4 tail: the Bluetooth switch round-trips, defaults **on**, and is device-only —
@@ -1105,7 +1149,7 @@ mod tests {
         assert!(Settings::default().map_clock, "the map clock defaults on");
         assert!(Settings::default().map_scale_bar, "the scale bar defaults on");
         // The RRAM carve is unchanged — the two new bytes fit inside the same 16-byte line rounding.
-        assert_eq!(ENCODED_LEN, 112, "the settings blob is 112 B / 7 RRAM lines (v11 saved_sensors tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v12 ride_retention tail)");
 
         // Every on/off combination round-trips byte-for-byte.
         for clock in [false, true] {
@@ -1129,7 +1173,7 @@ mod tests {
     fn bike_profile_idx_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().bike_profile_idx, 0, "the profile index defaults to 0");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v7.
-        assert_eq!(ENCODED_LEN, 112, "the settings blob is 112 B / 7 RRAM lines (v11 saved_sensors tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v12 ride_retention tail)");
 
         // Every index round-trips byte-for-byte — including a value past any real map's profile count,
         // which the codec stores verbatim (the router/UI own the fallback, not decode).
@@ -1152,7 +1196,7 @@ mod tests {
     fn waypoint_mode_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().waypoint_mode, WaypointMode::Approach, "the chip defaults to Approach");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v8.
-        assert_eq!(ENCODED_LEN, 112, "the settings blob is 112 B / 7 RRAM lines (v11 saved_sensors tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v12 ride_retention tail)");
 
         // Each mode round-trips through the codec byte-for-byte.
         for mode in [WaypointMode::Off, WaypointMode::Approach, WaypointMode::Always] {
@@ -1182,9 +1226,9 @@ mod tests {
     #[test]
     fn language_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().language, Language::En, "the UI language defaults to English");
-        // The saved_sensors tail (v11) grew the blob to 112 B / 7 RRAM lines; the language byte kept
-        // its v10 offset.
-        assert_eq!(ENCODED_LEN, 112, "the settings blob is 112 B / 7 RRAM lines (v11 saved_sensors tail)");
+        // The saved_sensors tail (v11) then the ride_retention byte (v12) grew the blob to 128 B /
+        // 8 RRAM lines; the language byte kept its v10 offset.
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v12 ride_retention tail)");
 
         // Each language round-trips through the codec byte-for-byte.
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
@@ -1221,7 +1265,7 @@ mod tests {
     /// repick the rider's sensors).
     #[test]
     fn saved_sensors_round_trip_and_migration() {
-        assert_eq!(VERSION, 11, "saved_sensors is the v11 layout (settings reset on flash)");
+        assert_eq!(VERSION, 12, "saved_sensors is the v11 tail; the codec is now v12 (ride_retention)");
         assert_eq!(
             Settings::default().saved_sensors,
             [SavedSensor::EMPTY; SENSOR_SLOTS],

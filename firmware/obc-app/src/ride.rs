@@ -52,11 +52,19 @@ pub struct RideSummary {
     /// Whether the phone has downloaded this ride at least once. `false` (not synced) renders the
     /// warning-red delete footer with the "not synced" cue; the ride is still deletable.
     pub synced: bool,
+    /// When this ride was first verifiably synced to the phone, as UTC unix seconds — `0` means
+    /// unstamped (never synced, or a legacy sidecar written before `synced_at` existed). The
+    /// auto-expiry sweep (epic #638, S3) deletes a ride only once `now ≥ synced_at + ride_retention`,
+    /// and a synced ride with `synced_at == 0` is stamped `now` (the countdown starts) rather than
+    /// deleted on sight — so a legacy synced ride is never surprise-deleted.
+    pub synced_at_utc: u32,
 }
 
 impl RideSummary {
-    /// Build a summary from a stored ride's [`RideInfo`] header and its device-local synced flag.
-    pub fn from_info(info: &RideInfo, synced: bool) -> Self {
+    /// Build a summary from a stored ride's [`RideInfo`] header, its device-local synced flag, and
+    /// its `synced_at` UTC stamp (`0` when unsynced or unstamped — see
+    /// [`synced_at_utc`](RideSummary::synced_at_utc)).
+    pub fn from_info(info: &RideInfo, synced: bool, synced_at_utc: u32) -> Self {
         RideSummary {
             name: info.name.clone(),
             start_time: info.start_time,
@@ -64,6 +72,7 @@ impl RideSummary {
             moving_time_s: info.moving_time_s,
             climb_m: info.climb_m,
             synced,
+            synced_at_utc,
         }
     }
 }
@@ -79,24 +88,41 @@ impl RideSummary {
 //
 // The codec lives here — beside the id-marks + settings codecs, the established host-testable
 // precedent — so the "torn/missing sidecar = nothing synced, never a crash" contract is unit-tested
-// without the board crate. The format is intentionally simple: a magic + version + a `u16` count +
-// that many little-endian `u16` ride ids + a trailing CRC-16 over everything before it. A blank
-// page, a short slice, a torn write, or an unknown version all decode to the **empty** set — which
-// reads as "nothing synced", the safe default (every ride shows the warning footer, all deletable).
+// without the board crate. The format is a magic + version + a `u16` count + that many entries + a
+// trailing CRC-16 over everything before it. A blank page, a short slice, a torn write, or an
+// unknown version all decode to the **empty** set — which reads as "nothing synced", the safe
+// default (every ride shows the warning footer, all deletable).
+//
+// **v2 (epic #638, S3)** grows each entry from a bare `u16` id to `id u16 · synced_at u32` — the
+// UTC instant the ride was first synced, the auto-expiry sweep's countdown anchor. A **v1** sidecar
+// (id-only) still decodes: every entry reads `synced_at = 0` ("legacy synced", which the sweep
+// stamps `now` rather than deleting on sight), so upgrading a device never surprise-deletes a ride.
 
 /// The sidecar magic tag; anything else there decodes to the empty synced set.
 const SYNCED_MAGIC: [u8; 4] = *b"OBCS";
-/// Sidecar layout version — bump on any format change (an old version reads as empty).
-const SYNCED_VERSION: u8 = 1;
-/// Fixed header bytes before the id list: `magic(4) · version(1) · pad(1) · count u16 LE`.
+/// The v1 layout version — id-only entries (2 bytes each). Still decoded (with `synced_at = 0`) for
+/// backward compatibility; never written.
+const SYNCED_VERSION_V1: u8 = 1;
+/// The current layout version — `id u16 · synced_at u32` entries (6 bytes each).
+const SYNCED_VERSION: u8 = 2;
+/// Fixed header bytes before the entry list: `magic(4) · version(1) · pad(1) · count u16 LE`.
 const SYNCED_HEADER_LEN: usize = 8;
+/// Bytes per v2 entry: `id u16 LE · synced_at u32 LE`.
+const SYNCED_ENTRY_LEN: usize = 6;
 
-/// The persisted set of ride ids the phone has downloaded at least once. Bounded by
-/// [`MAX_RIDES`](MAX_RIDES) (a ride can only be synced if it's stored). `Default` is the
-/// empty set — "nothing synced".
+/// One synced ride: its id and the UTC instant it was first synced (`0` = legacy unstamped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyncedRide {
+    id: u16,
+    synced_at: u32,
+}
+
+/// The persisted set of rides the phone has downloaded at least once, each with its `synced_at`
+/// stamp (epic #638). Bounded by [`MAX_RIDES`](MAX_RIDES) (a ride can only be synced if it's
+/// stored). `Default` is the empty set — "nothing synced".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncedRides {
-    ids: heapless::Vec<u16, { MAX_RIDES }>,
+    rides: heapless::Vec<SyncedRide, { MAX_RIDES }>,
 }
 
 impl SyncedRides {
@@ -107,79 +133,114 @@ impl SyncedRides {
 
     /// Whether ride `id` has been downloaded at least once.
     pub fn contains(&self, id: u16) -> bool {
-        self.ids.contains(&id)
+        self.rides.iter().any(|r| r.id == id)
     }
 
-    /// Record ride `id` as synced. Returns `true` if it was newly added (so the caller only rewrites
-    /// the sidecar on an actual change). Idempotent; a full set silently ignores a new id.
-    pub fn insert(&mut self, id: u16) -> bool {
-        if self.ids.contains(&id) {
+    /// Ride `id`'s `synced_at` UTC stamp, or `0` when unsynced or legacy-unstamped.
+    pub fn synced_at(&self, id: u16) -> u32 {
+        self.rides.iter().find(|r| r.id == id).map(|r| r.synced_at).unwrap_or(0)
+    }
+
+    /// Record ride `id` as synced at `synced_at` (UTC unix seconds). Returns `true` if it was newly
+    /// added (so the caller only rewrites the sidecar on an actual change). Idempotent: an
+    /// already-synced ride keeps its **original** stamp (sync time is first-sync, not last), and a
+    /// full set silently ignores a new id.
+    pub fn insert(&mut self, id: u16, synced_at: u32) -> bool {
+        if self.contains(id) {
             return false;
         }
-        self.ids.push(id).is_ok()
+        self.rides.push(SyncedRide { id, synced_at }).is_ok()
     }
 
-    /// Drop ride `id` from the synced set (a deleted ride's id is retired so a later scan doesn't
-    /// carry a stale flag — though ids never reuse, so this is belt-and-braces). Returns `true` if it
-    /// was present.
-    pub fn remove(&mut self, id: u16) -> bool {
-        if let Some(pos) = self.ids.iter().position(|&x| x == id) {
-            self.ids.swap_remove(pos);
+    /// Stamp a **present** ride's `synced_at` — the sweep's "start the countdown on a legacy
+    /// synced-without-stamp ride" path. Only ever moves a `0` stamp forward (never re-stamps an
+    /// already-stamped ride), so the countdown anchor is stable. Returns whether the set changed.
+    pub fn stamp_synced_at(&mut self, id: u16, synced_at: u32) -> bool {
+        if let Some(r) = self.rides.iter_mut().find(|r| r.id == id && r.synced_at == 0) {
+            r.synced_at = synced_at;
             true
         } else {
             false
         }
     }
 
-    /// The synced ids, for the codec / tests.
-    pub fn ids(&self) -> &[u16] {
-        &self.ids
+    /// Drop ride `id` from the synced set (a deleted ride's id is retired so a later scan doesn't
+    /// carry a stale flag — though ids never reuse, so this is belt-and-braces). Returns `true` if it
+    /// was present.
+    pub fn remove(&mut self, id: u16) -> bool {
+        if let Some(pos) = self.rides.iter().position(|r| r.id == id) {
+            self.rides.swap_remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The synced ids, for tests.
+    pub fn ids(&self) -> impl Iterator<Item = u16> + '_ {
+        self.rides.iter().map(|r| r.id)
+    }
+
+    /// How many rides are synced.
+    pub fn len(&self) -> usize {
+        self.rides.len()
+    }
+
+    /// Whether the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.rides.is_empty()
     }
 }
 
-/// The encoded sidecar's byte length for `count` synced ids: the fixed header, the `u16` id list,
-/// then the trailing CRC-16.
+/// The encoded (v2) sidecar's byte length for `count` synced entries: the fixed header, the entry
+/// list, then the trailing CRC-16.
 pub const fn synced_rides_len(count: usize) -> usize {
-    SYNCED_HEADER_LEN + count * 2 + 2
+    SYNCED_HEADER_LEN + count * SYNCED_ENTRY_LEN + 2
 }
 
 /// The largest an encoded sidecar can be (a full synced set) — the buffer a host reserves to write it.
 pub const SYNCED_RIDES_MAX_LEN: usize = synced_rides_len(MAX_RIDES);
 
-/// Pack the synced-ride set into `out`, returning the encoded byte length. `out` must be at least
-/// [`synced_rides_len`]`(set.ids().len())` (use a [`SYNCED_RIDES_MAX_LEN`] buffer). Inverse of
+/// Pack the synced-ride set into `out` (v2), returning the encoded byte length. `out` must be at
+/// least [`synced_rides_len`]`(set.len())` (use a [`SYNCED_RIDES_MAX_LEN`] buffer). Inverse of
 /// [`decode_synced_rides`].
 pub fn encode_synced_rides(set: &SyncedRides, out: &mut [u8]) -> usize {
-    let ids = set.ids();
-    let len = synced_rides_len(ids.len());
+    let len = synced_rides_len(set.rides.len());
     out[0..4].copy_from_slice(&SYNCED_MAGIC);
     out[4] = SYNCED_VERSION;
     out[5] = 0;
-    out[6..8].copy_from_slice(&(ids.len() as u16).to_le_bytes());
-    for (i, &id) in ids.iter().enumerate() {
-        let o = SYNCED_HEADER_LEN + i * 2;
-        out[o..o + 2].copy_from_slice(&id.to_le_bytes());
+    out[6..8].copy_from_slice(&(set.rides.len() as u16).to_le_bytes());
+    for (i, r) in set.rides.iter().enumerate() {
+        let o = SYNCED_HEADER_LEN + i * SYNCED_ENTRY_LEN;
+        out[o..o + 2].copy_from_slice(&r.id.to_le_bytes());
+        out[o + 2..o + 6].copy_from_slice(&r.synced_at.to_le_bytes());
     }
     let crc = crate::store_meta::crc16(&out[..len - 2]);
     out[len - 2..len].copy_from_slice(&crc.to_le_bytes());
     len
 }
 
-/// Decode a synced-ride sidecar, always returning a set — a blank page, a short slice, a torn write,
-/// an unknown version, a count that overruns the slice, or a CRC mismatch all yield the **empty**
-/// set ("nothing synced", the safe default). Never panics on malformed input.
+/// Decode a synced-ride sidecar (v2 or the legacy v1), always returning a set — a blank page, a
+/// short slice, a torn write, an unknown version, a count that overruns the slice, or a CRC mismatch
+/// all yield the **empty** set ("nothing synced", the safe default). A **v1** sidecar decodes with
+/// every entry's `synced_at = 0` (legacy — the sweep stamps rather than deletes). Never panics.
 pub fn decode_synced_rides(bytes: &[u8]) -> SyncedRides {
     let empty = SyncedRides::new();
     if bytes.len() < SYNCED_HEADER_LEN + 2 {
         return empty; // shorter than an empty-set sidecar → treat as absent
     }
-    if bytes[0..4] != SYNCED_MAGIC || bytes[4] != SYNCED_VERSION {
+    if bytes[0..4] != SYNCED_MAGIC {
         return empty;
     }
+    let (entry_len, has_stamp) = match bytes[4] {
+        SYNCED_VERSION => (SYNCED_ENTRY_LEN, true),
+        SYNCED_VERSION_V1 => (2, false),
+        _ => return empty,
+    };
     let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-    let len = synced_rides_len(count);
+    let len = SYNCED_HEADER_LEN + count * entry_len + 2;
     if count > MAX_RIDES || bytes.len() < len {
-        return empty; // a count that claims more ids than the slice (or the cap) holds is corrupt
+        return empty; // a count that claims more entries than the slice (or the cap) holds is corrupt
     }
     let crc = u16::from_le_bytes([bytes[len - 2], bytes[len - 1]]);
     if crc != crate::store_meta::crc16(&bytes[..len - 2]) {
@@ -187,8 +248,11 @@ pub fn decode_synced_rides(bytes: &[u8]) -> SyncedRides {
     }
     let mut set = SyncedRides::new();
     for i in 0..count {
-        let o = SYNCED_HEADER_LEN + i * 2;
-        let _ = set.insert(u16::from_le_bytes([bytes[o], bytes[o + 1]]));
+        let o = SYNCED_HEADER_LEN + i * entry_len;
+        let id = u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+        let synced_at =
+            if has_stamp { u32::from_le_bytes([bytes[o + 2], bytes[o + 3], bytes[o + 4], bytes[o + 5]]) } else { 0 };
+        let _ = set.insert(id, synced_at);
     }
     set
 }
@@ -197,16 +261,18 @@ pub fn decode_synced_rides(bytes: &[u8]) -> SyncedRides {
 mod synced_rides_tests {
     use super::*;
 
-    /// A synced set round-trips through the sidecar codec — order-insensitive membership, exact ids.
+    /// A synced set round-trips through the v2 sidecar codec — membership, exact ids, `synced_at`.
     #[test]
     fn synced_rides_codec_round_trips() {
         let mut set = SyncedRides::new();
-        assert!(set.insert(3));
-        assert!(set.insert(7));
-        assert!(set.insert(41));
-        assert!(!set.insert(7), "a duplicate insert is a no-op");
+        assert!(set.insert(3, 5_000));
+        assert!(set.insert(7, 6_000));
+        assert!(set.insert(41, 7_000));
+        assert!(!set.insert(7, 9_999), "a duplicate insert is a no-op — keeps the first-sync stamp");
+        assert_eq!(set.synced_at(7), 6_000, "the original stamp is preserved");
         assert!(set.contains(3) && set.contains(7) && set.contains(41));
         assert!(!set.contains(4));
+        assert_eq!(set.synced_at(4), 0, "absent → 0");
 
         let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
         let n = encode_synced_rides(&set, &mut buf);
@@ -220,13 +286,50 @@ mod synced_rides_tests {
         assert_eq!(decode_synced_rides(&buf[..n]), empty);
     }
 
+    /// A legacy **v1** (id-only) sidecar still decodes — every ride reads `synced_at = 0` ("legacy
+    /// synced"), so upgrading a device never surprise-deletes a ride; the sweep stamps it instead.
+    #[test]
+    fn synced_rides_v1_decodes_with_zero_stamp() {
+        // Forge a v1 sidecar by hand: header + two id-only entries + CRC.
+        let ids = [9u16, 12];
+        let mut buf = [0u8; 64];
+        buf[0..4].copy_from_slice(&SYNCED_MAGIC);
+        buf[4] = SYNCED_VERSION_V1;
+        buf[6..8].copy_from_slice(&(ids.len() as u16).to_le_bytes());
+        for (i, &id) in ids.iter().enumerate() {
+            let o = SYNCED_HEADER_LEN + i * 2;
+            buf[o..o + 2].copy_from_slice(&id.to_le_bytes());
+        }
+        let len = SYNCED_HEADER_LEN + ids.len() * 2 + 2;
+        let crc = crate::store_meta::crc16(&buf[..len - 2]);
+        buf[len - 2..len].copy_from_slice(&crc.to_le_bytes());
+
+        let set = decode_synced_rides(&buf[..len]);
+        assert!(set.contains(9) && set.contains(12), "v1 ids decode");
+        assert_eq!(set.synced_at(9), 0, "v1 has no stamp → 0 (legacy synced)");
+    }
+
+    /// `stamp_synced_at` starts a legacy ride's countdown, but never re-stamps an already-stamped one.
+    #[test]
+    fn synced_rides_stamp_starts_legacy_countdown_once() {
+        let mut set = SyncedRides::new();
+        set.insert(1, 0); // legacy synced, unstamped
+        set.insert(2, 5_000); // already stamped
+        assert!(set.stamp_synced_at(1, 8_000), "legacy ride gets its countdown started");
+        assert_eq!(set.synced_at(1), 8_000);
+        assert!(!set.stamp_synced_at(1, 9_000), "a stamped ride is never re-stamped");
+        assert_eq!(set.synced_at(1), 8_000);
+        assert!(!set.stamp_synced_at(2, 9_000), "an already-stamped ride is untouched");
+        assert_eq!(set.synced_at(2), 5_000);
+    }
+
     /// The DoD guarantee: a torn, blank, short, or foreign sidecar decodes to "nothing synced" —
     /// never a crash, never a false positive that would drop the warning footer on an unsynced ride.
     #[test]
     fn synced_rides_torn_or_missing_reads_as_nothing_synced() {
         let mut set = SyncedRides::new();
-        set.insert(9);
-        set.insert(12);
+        set.insert(9, 100);
+        set.insert(12, 200);
         let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
         let n = encode_synced_rides(&set, &mut buf);
 
@@ -252,9 +355,9 @@ mod synced_rides_tests {
     #[test]
     fn synced_rides_remove_retires_one_id() {
         let mut set = SyncedRides::new();
-        set.insert(1);
-        set.insert(2);
-        set.insert(3);
+        set.insert(1, 10);
+        set.insert(2, 20);
+        set.insert(3, 30);
         assert!(set.remove(2));
         assert!(!set.remove(2), "removing an absent id is a no-op");
         assert!(set.contains(1) && !set.contains(2) && set.contains(3));

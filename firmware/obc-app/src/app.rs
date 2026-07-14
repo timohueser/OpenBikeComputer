@@ -416,6 +416,11 @@ pub struct App {
     /// advances it. Read through [`clock_trusted`](App::clock_trusted); the auto-expiry sweep (#638
     /// S3) gates every stamp and deletion on it. **Never persisted.**
     clock_trust: ClockTrust,
+    /// The auto-expiry runtime (epic #638, S3): the pending sweep-action queue, the hourly-sweep
+    /// gate, and the once-per-activation stamp memory. Fed from [`tick`](App::tick) (gated on a
+    /// trusted clock + no ride recording); drained into the typed [`HostCommand`] protocol as route/
+    /// ride deletes and `last_used` / `synced_at` stamps.
+    retention: crate::retention::RetentionRuntime,
     /// The app-side pending protocol state that isn't a one-shot slot on [`Activity`]: the
     /// counted store-changed cue (#450) and the #810 settings-persistence state machine
     /// (revision, handshake state, bounded retry pacing). Drained and answered only through the
@@ -476,6 +481,7 @@ impl App {
             // No real time source has stamped the clock yet this boot — the persisted set-point is
             // display-only until GPS (or, in S2, BLE) re-establishes it. See `ClockTrust`.
             clock_trust: ClockTrust::Untrusted,
+            retention: crate::retention::RetentionRuntime::new(),
             host: HostPending::new(),
             fw_version: heapless::String::new(),
             map_name: heapless::String::new(),
@@ -530,6 +536,7 @@ impl App {
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
             addr_of_mut!((*slot).clock_trust).write(ClockTrust::Untrusted);
+            addr_of_mut!((*slot).retention).write(crate::retention::RetentionRuntime::new());
             addr_of_mut!((*slot).host).write(HostPending::new());
             addr_of_mut!((*slot).fw_version).write(heapless::String::new());
             addr_of_mut!((*slot).map_name).write(heapless::String::new());
@@ -556,6 +563,7 @@ impl App {
                 settings: _,
                 wall_clock: _,
                 clock_trust: _,
+                retention: _,
                 host: _,
                 fw_version: _,
                 map_name: _,
@@ -780,6 +788,72 @@ impl App {
                 self.ride.prev_live_sensors = live;
             }
         }
+
+        // Auto-expiry (epic #638, S3): stamp the active route's `last_used` on activation, then run
+        // the roughly-hourly sweep — both gated on a trusted clock (GPS stamped it above / BLE will
+        // in S2) and no ride recording. Deletes + stamps leave here as typed host commands.
+        self.retention_tick();
+    }
+
+    /// The per-tick auto-expiry step (epic #638, S3): the once-per-activation active-route
+    /// `last_used` stamp and the roughly-hourly deletion sweep. Both are hard-gated on the epic's
+    /// safety core — **nothing runs, nothing is stamped or deleted, without a clock established from
+    /// a real source this boot** ([`clock_trusted`](App::clock_trusted)) — and the sweep is
+    /// additionally suppressed while a ride is recording (invariant 4). Enqueued actions drain into
+    /// the typed [`HostCommand`] protocol.
+    fn retention_tick(&mut self) {
+        if !self.clock_trusted() {
+            return; // invariant 1: no trusted clock this boot → no stamps, no deletions
+        }
+        let now = self.wall_unix_now();
+
+        // Once-per-activation stamp: when the active nav route *changes*, mark it used now so a
+        // freshly-started route can't expire underneath the ride it is guiding (invariant 3's
+        // companion). `note_active_route` fires the stamp only on a change, not every tick — and
+        // only for a route that actually expires: a `Never` route (the migration default, and every
+        // route until S4 sets retention) needs no `last_used`, so stamping it would just churn the
+        // sidecar on each activation for no benefit.
+        let active_non_never = self
+            .activity
+            .active_route
+            .and_then(|i| self.catalogs.route_metas().get(i))
+            .is_some_and(|m| m.retention.days().is_some());
+        let active_id =
+            active_non_never.then(|| self.activity.active_route.and_then(|i| self.catalogs.route_id_at(i))).flatten();
+        self.retention.note_active_route(active_id);
+
+        // Eager ride `synced_at` stamp (epic #638, S3): a ride acked synced under a trusted clock
+        // starts its delete countdown at ~ack-time — **not** deferred to the recording-gated hourly
+        // sweep, which would leave a ride acked mid-tour un-started until the ride ends. A metadata
+        // stamp is safe mid-ride (invariant 4 gates *deletions*, not stamps), so this runs regardless
+        // of `is_tracking`. (Rides acked while *untrusted* — an old app with no `setClock` — keep
+        // `synced_at == 0` until this fires on the first trusted tick: the lazy fallback.)
+        self.retention.stamp_synced_rides(self.catalogs.ride_ids(), self.catalogs.rides());
+
+        // The roughly-hourly delete sweep (invariant 4: not while recording). `maybe_sweep` gates on the
+        // wall-clock hour and an empty queue, then fills the batch from the pure policy function.
+        if !self.activity.is_tracking() {
+            let App { retention, catalogs, activity, settings, .. } = self;
+            retention.maybe_sweep(now, |queue| {
+                let inputs = crate::retention::SweepInputs {
+                    now_utc: now,
+                    route_ids: catalogs.route_ids(),
+                    route_metas: catalogs.route_metas(),
+                    active_route: activity.active_route,
+                    ride_ids: catalogs.ride_ids(),
+                    rides: catalogs.rides(),
+                    ride_retention: settings.ride_retention,
+                };
+                crate::retention::collect_sweep_actions(&inputs, queue);
+            });
+        }
+    }
+
+    /// Force the auto-expiry sweep to run on the next eligible tick, ignoring the hourly gate (epic
+    /// #638, S3) — the seam the simulator's "+1 day" control uses so a fast-forwarded clock sweeps
+    /// immediately instead of waiting for the wall-clock hour to roll. No production path calls it.
+    pub fn force_retention_sweep(&mut self) {
+        self.retention.force_next_sweep();
     }
 
     /// Recompute [`Activity::active_climb`] from the freshly-matched `progress_m` — the ride
@@ -958,6 +1032,37 @@ impl App {
         let old_ids = self.catalogs.replace_routes(summaries, ids);
         self.remap_route_indices(&old_ids);
         self.ui.map_dirty = true;
+    }
+
+    /// [`set_routes_with_ids`](App::set_routes_with_ids) **plus** the host's fresh per-route
+    /// retention metas (read from the SD route-retention sidecar, epic #638 S3), pairwise with
+    /// `ids`. The base call remaps held indices and carries surviving routes' metas across by
+    /// identity; this then overlays the host's device-durable retention values so the sweep reads
+    /// device truth. Retention-aware hosts (the board, the simulator) call this; plain
+    /// [`set_routes_with_ids`](App::set_routes_with_ids) callers leave every route at the safe
+    /// default ([`Never`](crate::Retention::Never) — nothing expires).
+    pub fn set_routes_with_meta(
+        &mut self,
+        summaries: &[RouteSummary],
+        ids: &[u16],
+        metas: &[crate::retention::RouteRetentionMeta],
+    ) {
+        self.set_routes_with_ids(summaries, ids);
+        self.catalogs.set_route_meta(metas);
+    }
+
+    /// Each resident route's retention meta, pairwise with [`route_ids`](App::route_ids) (epic #638
+    /// S3) — the host's read-back (e.g. to keep a sidecar row aligned) and the sweep tests' probe.
+    pub fn route_metas(&self) -> &[crate::retention::RouteRetentionMeta] {
+        self.catalogs.route_metas()
+    }
+
+    /// Overlay the host's fresh per-route retention metas (from the SD sidecar), pairwise with the
+    /// **current** [`route_ids`](App::route_ids) — the standalone meta feed a host calls when it
+    /// re-reads the sidecar without replacing the catalog (the sim re-pushes it each frame so the
+    /// sweep always mirrors device truth). No catalog replacement, no remap. Excess metas are ignored.
+    pub fn set_route_meta(&mut self, metas: &[crate::retention::RouteRetentionMeta]) {
+        self.catalogs.set_route_meta(metas);
     }
 
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
@@ -2099,9 +2204,17 @@ impl App {
         match class {
             HostCommandClass::RescanStore => self.host.store_changed_pending() > 0,
             HostCommandClass::CancelRoutePlan => self.activity.nav_cancel_pending(),
-            HostCommandClass::DeleteRoute => self.activity.has_route_delete(),
+            // The delete classes are pended by either the UI hold-to-delete (an Activity slot) or the
+            // auto-expiry sweep (a queued action) — the host handles both identically (#638 S3).
+            HostCommandClass::DeleteRoute => {
+                self.activity.has_route_delete() || self.retention.has(crate::retention::SweepKind::DeleteRoute)
+            }
             HostCommandClass::DeleteTrip => self.activity.has_trip_delete(),
-            HostCommandClass::DeleteRide => self.activity.has_ride_delete(),
+            HostCommandClass::DeleteRide => {
+                self.activity.has_ride_delete() || self.retention.has(crate::retention::SweepKind::DeleteRide)
+            }
+            HostCommandClass::StampRouteUsed => self.retention.has(crate::retention::SweepKind::StampRoute),
+            HostCommandClass::StampRideSynced => self.retention.has(crate::retention::SweepKind::StampRide),
             HostCommandClass::FinishTrack => self.activity.has_track_action(),
             HostCommandClass::PlanRoute => self.activity.has_nav_request(),
             HostCommandClass::Dfu => self.activity.has_dfu_request(),
@@ -2130,13 +2243,39 @@ impl App {
                 self.activity.take_nav_cancel().then_some(HostCommand::CancelRoutePlan)
             }
             HostCommandClass::DeleteRoute => {
-                let idx = self.activity.take_route_delete()?;
-                Some(HostCommand::DeleteRoute { id: self.catalogs.route_entry(idx)?.id })
+                // The UI hold-to-delete (index-resolved to a durable id) takes priority; a sweep
+                // delete (already id-shaped) drains after it, one per pass (#638 S3).
+                if let Some(idx) = self.activity.take_route_delete() {
+                    Some(HostCommand::DeleteRoute { id: self.catalogs.route_entry(idx)?.id })
+                } else {
+                    self.retention
+                        .take(crate::retention::SweepKind::DeleteRoute)
+                        .map(|id| HostCommand::DeleteRoute { id })
+                }
             }
             HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
             HostCommandClass::DeleteRide => {
-                let idx = self.activity.take_ride_delete()?;
-                Some(HostCommand::DeleteRide { id: self.catalogs.ride_entry(idx)?.id })
+                if let Some(idx) = self.activity.take_ride_delete() {
+                    Some(HostCommand::DeleteRide { id: self.catalogs.ride_entry(idx)?.id })
+                } else {
+                    self.retention
+                        .take(crate::retention::SweepKind::DeleteRide)
+                        .map(|id| HostCommand::DeleteRide { id })
+                }
+            }
+            HostCommandClass::StampRouteUsed => {
+                let id = self.retention.take(crate::retention::SweepKind::StampRoute)?;
+                let utc = self.wall_unix_now();
+                // Mirror the stamp into the resident meta so a re-derivation before the host's rescan
+                // lands doesn't re-enqueue it (the sidecar write is the host's, applied on drain).
+                self.catalogs.stamp_route_last_used(id, utc);
+                Some(HostCommand::StampRouteUsed { id, utc })
+            }
+            HostCommandClass::StampRideSynced => {
+                let id = self.retention.take(crate::retention::SweepKind::StampRide)?;
+                let utc = self.wall_unix_now();
+                self.catalogs.stamp_ride_synced_at(id, utc);
+                Some(HostCommand::StampRideSynced { id, utc })
             }
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
             HostCommandClass::PlanRoute => self.activity.take_nav_request().map(HostCommand::PlanRoute),
@@ -4002,6 +4141,7 @@ mod tests {
             moving_time_s: 600,
             climb_m: 10,
             synced: false,
+            synced_at_utc: 0,
         };
         app.set_rides(&[ride("A"), ride("B")], &[7, 9]);
 
@@ -4049,6 +4189,7 @@ mod tests {
             moving_time_s: 600,
             climb_m: 10,
             synced: false,
+            synced_at_utc: 0,
         }
     }
 
@@ -4081,6 +4222,10 @@ mod tests {
         app.arm_settings_save(); // Home is on top — the settings subtree was left
         app.activity.viewed_ride = Some(0); // derives LoadRideTrack { id: 7 }
         app.activity.active_route = Some(0); // + an overview with no preview derives RefreshNavPreview
+                                             // The auto-expiry sweep's two stamp classes (epic #638 S3), enqueued directly for this
+                                             // ordering probe (their sweep semantics are exercised in the retention_* tests).
+        app.retention.test_push(crate::retention::SweepAction::StampRoute(10));
+        app.retention.test_push(crate::retention::SweepAction::StampRide(7));
         let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
 
         let mut mailbox: HostMailbox = HostMailbox::new();
@@ -4099,6 +4244,8 @@ mod tests {
                     HostCommand::DeleteRoute { id: 11 },
                     HostCommand::DeleteTrip { id: 42 },
                     HostCommand::DeleteRide { id: 7 },
+                    HostCommand::StampRouteUsed { id: 10, .. },
+                    HostCommand::StampRideSynced { id: 7, .. },
                     HostCommand::FinishTrack(TrackAction::Save),
                     HostCommand::PlanRoute(_),
                     HostCommand::Dfu(DfuAction::Scan),
@@ -4409,5 +4556,267 @@ mod tests {
         let _ = app.drain_host_commands(&mut mailbox);
         assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan), "one cancel: aborts the in-flight A");
         assert!(mailbox.is_empty(), "B never runs");
+    }
+
+    // ==================== Auto-expiry sweep (epic #638, S3) — the safety invariants ====================
+
+    use crate::retention::{Retention, RideRetention, RouteRetentionMeta, DAY_SECS};
+
+    /// A known UTC set-point for the trusted-clock helper — mid-2026, offset 0.
+    fn sweep_dt() -> DateTime {
+        DateTime { year: 2026, month: 7, day: 14, hour: 12, minute: 0 }
+    }
+
+    /// A fresh app with a **trusted** GPS-stamped clock; returns it and the UTC `now` it reads.
+    fn trusted_app() -> (App, u32) {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
+        let now = app.wall_unix_now();
+        (app, now)
+    }
+
+    /// Re-stamp the trusted clock `days` days later than `sweep_dt` (advancing `now`) and force the
+    /// next sweep to run regardless of the hourly gate. Returns the new UTC `now`.
+    fn advance_days(app: &mut App, days: u32) -> u32 {
+        // The set-point is minute-resolution; advance via a fresh `stamp_clock` at a later date.
+        let mut dt = sweep_dt();
+        dt.day += days as u8; // stays within July for the small offsets these tests use
+        app.stamp_clock(dt, 0, None, ClockTrust::Gps);
+        app.force_retention_sweep();
+        app.wall_unix_now()
+    }
+
+    fn synced_ride(name: &str, synced: bool, synced_at_utc: u32) -> crate::ride::RideSummary {
+        crate::ride::RideSummary {
+            name: heapless::String::try_from(name).unwrap(),
+            start_time: 1_720_000_000,
+            distance_m: 1_000,
+            moving_time_s: 600,
+            climb_m: 10,
+            synced,
+            synced_at_utc,
+        }
+    }
+
+    /// Drive several retention-tick + drain rounds (mimicking the host's per-pass loop) and collect
+    /// every command produced. Multiple rounds are needed because the once-per-activation stamp and
+    /// the batch sweep land on consecutive ticks (the stamp's queued action defers the sweep one
+    /// tick); a round that produces nothing new ends the drive.
+    fn sweep_and_drain(app: &mut App) -> heapless::Vec<HostCommand, 128> {
+        let mut out: heapless::Vec<HostCommand, 128> = heapless::Vec::new();
+        for _ in 0..8 {
+            let before = out.len();
+            app.retention_tick();
+            loop {
+                let mut mb: HostMailbox = HostMailbox::new();
+                let _ = app.drain_host_commands(&mut mb);
+                let mut any = false;
+                while let Some(c) = mb.pop() {
+                    let _ = out.push(c);
+                    any = true;
+                }
+                if !any {
+                    break;
+                }
+            }
+            if out.len() == before {
+                break; // a full round produced nothing new
+            }
+        }
+        out
+    }
+
+    fn n_deletes(cmds: &[HostCommand]) -> usize {
+        cmds.iter().filter(|c| matches!(c, HostCommand::DeleteRoute { .. } | HostCommand::DeleteRide { .. })).count()
+    }
+
+    /// Invariant 1: no trusted clock this boot → the sweep does nothing and stamps nothing, even
+    /// with data that *looks* long expired.
+    #[test]
+    fn sweep_does_nothing_without_a_trusted_clock() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // never stamped → Untrusted
+        app.set_routes_with_meta(
+            &[summary("Old")],
+            &[10],
+            &[RouteRetentionMeta::new(Retention::Day1, 1)], // "used" at unix 1 → ancient
+        );
+        app.set_rides(&[synced_ride("R", true, 1)], &[7]);
+        let cmds = sweep_and_drain(&mut app);
+        assert!(cmds.is_empty(), "untrusted clock → no deletes, no stamps: {cmds:?}");
+    }
+
+    /// Invariant 6 + the delete happy-path: a trusted sweep deletes an expired route, keeps a fresh
+    /// one, and never touches a `Never` route.
+    #[test]
+    fn sweep_deletes_expired_keeps_fresh_and_never() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(
+            &[summary("Expired"), summary("Fresh"), summary("Forever")],
+            &[10, 11, 12],
+            &[
+                RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS),
+                RouteRetentionMeta::new(Retention::Week1, now - DAY_SECS),
+                RouteRetentionMeta::new(Retention::Never, 1),
+            ],
+        );
+        let cmds = sweep_and_drain(&mut app);
+        assert!(cmds.contains(&HostCommand::DeleteRoute { id: 10 }), "expired route deleted");
+        assert!(!cmds.iter().any(|c| matches!(c, HostCommand::DeleteRoute { id: 11 | 12 })), "fresh + Never kept");
+    }
+
+    /// Invariant 2: a retention-set route with an **unknown** `last_used` is stamped (the clock
+    /// starts) — never deleted on sight — and only deletes after the full period from that stamp.
+    #[test]
+    fn sweep_starts_the_clock_then_deletes_after_the_period() {
+        let (mut app, _now) = trusted_app();
+        app.set_routes_with_meta(&[summary("New")], &[10], &[RouteRetentionMeta::new(Retention::Day1, 0)]);
+        let cmds = sweep_and_drain(&mut app);
+        assert!(cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })), "clock started");
+        assert_eq!(n_deletes(&cmds), 0, "unknown last_used is never deleted on sight");
+        // The stamp's optimistic mirror set last_used = now; a forced re-sweep at the same instant
+        // finds it freshly stamped and well within the 1-day window — nothing deletes.
+        app.force_retention_sweep();
+        assert_eq!(n_deletes(&sweep_and_drain(&mut app)), 0, "freshly stamped — not expired");
+        // Days past the 1-day window it deletes.
+        advance_days(&mut app, 5);
+        assert!(sweep_and_drain(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }), "deletes after the period");
+    }
+
+    /// Invariant 3: the active navigation route is never deleted — it re-stamps when it would expire.
+    #[test]
+    fn sweep_never_deletes_the_active_route() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(
+            &[summary("Active"), summary("Idle")],
+            &[10, 11],
+            &[
+                RouteRetentionMeta::new(Retention::Day1, now - 5 * DAY_SECS), // active + long expired
+                RouteRetentionMeta::new(Retention::Day1, now - 5 * DAY_SECS), // inactive + long expired
+            ],
+        );
+        app.activate_route(0); // route 10 is the active nav route
+        let cmds = sweep_and_drain(&mut app);
+        assert!(cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })), "active re-stamped");
+        assert!(!cmds.contains(&HostCommand::DeleteRoute { id: 10 }), "the active route is never deleted");
+        assert!(cmds.contains(&HostCommand::DeleteRoute { id: 11 }), "the idle expired route is deleted");
+    }
+
+    /// Invariant 4: no sweep (no deletions) while a ride is recording — even with an expired route.
+    #[test]
+    fn sweep_suppressed_while_recording() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(
+            &[summary("Expired")],
+            &[10],
+            &[RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)],
+        );
+        app.activity.start_session(); // recording in progress
+        let cmds = sweep_and_drain(&mut app);
+        assert_eq!(n_deletes(&cmds), 0, "recording suppresses the sweep — nothing deleted");
+    }
+
+    /// A ride acked synced under a **trusted clock while recording** gets its `synced_at` stamped
+    /// **at ack-time** (its countdown starts) — the eager stamp is *not* deferred to the
+    /// recording-gated delete sweep. A metadata stamp is safe mid-ride; only deletions wait for
+    /// recording to end (invariant 4). (Regression guard for the S3 review fix.)
+    #[test]
+    fn ride_synced_at_stamped_eagerly_even_while_recording() {
+        let (mut app, _now) = trusted_app();
+        app.activity.start_session(); // recording a multi-day tour
+                                      // The phone acks a ride synced (synced_at not yet set) mid-recording.
+        app.set_rides(&[synced_ride("Acked", true, 0)], &[7]);
+        let cmds = sweep_and_drain(&mut app);
+        assert!(
+            cmds.iter().any(|c| matches!(c, HostCommand::StampRideSynced { id: 7, .. })),
+            "the countdown starts at ack-time, not deferred to recording-end: {cmds:?}"
+        );
+        assert_eq!(n_deletes(&cmds), 0, "but nothing is deleted while recording");
+        // The stamp mirrored synced_at = now, so it isn't re-enqueued on the next tick.
+        app.force_retention_sweep();
+        let again = sweep_and_drain(&mut app);
+        assert!(
+            !again.iter().any(|c| matches!(c, HostCommand::StampRideSynced { id: 7, .. })),
+            "a stamped ride is not re-stamped: {again:?}"
+        );
+    }
+
+    /// Invariant 5: rides — unsynced is untouched at any age; synced + aged deletes; synced +
+    /// `synced_at == 0` (legacy) is stamped then later deletes; `ride_retention = Never` deletes
+    /// nothing.
+    #[test]
+    fn sweep_ride_rules_end_to_end() {
+        let (mut app, now) = trusted_app();
+        app.set_settings(Settings { ride_retention: RideRetention::Week1, ..Settings::default() });
+        // Re-stamp trust (set_settings re-stamped the wall clock from the persisted set-point).
+        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
+        let now = app.wall_unix_now().max(now);
+        app.set_rides(
+            &[
+                synced_ride("Aged", true, now - 8 * DAY_SECS), // synced 8d ago → delete (>7)
+                synced_ride("Recent", true, now - DAY_SECS),   // synced 1d ago → keep
+                synced_ride("Legacy", true, 0),                // synced, no stamp → stamp
+                synced_ride("Unsynced", false, 0),             // unsynced → never touched
+            ],
+            &[1, 2, 3, 4],
+        );
+        let cmds = sweep_and_drain(&mut app);
+        assert!(cmds.contains(&HostCommand::DeleteRide { id: 1 }), "aged synced ride deleted");
+        assert!(!cmds.contains(&HostCommand::DeleteRide { id: 2 }), "recent synced ride kept");
+        assert!(cmds.iter().any(|c| matches!(c, HostCommand::StampRideSynced { id: 3, .. })), "legacy ride stamped");
+        assert!(
+            !cmds.iter().any(|c| matches!(c, HostCommand::DeleteRide { id: 3 })),
+            "legacy ride not deleted on sight"
+        );
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| matches!(c, HostCommand::DeleteRide { id: 4 } | HostCommand::StampRideSynced { id: 4, .. })),
+            "the unsynced ride is never touched"
+        );
+    }
+
+    /// `ride_retention = Never` deletes no ride, however long ago it synced.
+    #[test]
+    fn sweep_ride_retention_never_deletes_nothing() {
+        let (mut app, _now) = trusted_app();
+        app.set_settings(Settings { ride_retention: RideRetention::Never, ..Settings::default() });
+        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
+        app.set_rides(&[synced_ride("Aged", true, 1)], &[1]); // synced at unix 1 → ancient
+        assert_eq!(n_deletes(&sweep_and_drain(&mut app)), 0, "ride_retention Never → nothing");
+    }
+
+    /// Exact boundary: `now == expires_at` deletes (the `>=` in the policy).
+    #[test]
+    fn sweep_deletes_on_the_exact_boundary() {
+        let (mut app, now) = trusted_app();
+        // last_used = now - 1 day, retention 1 day → expires_at == now exactly.
+        app.set_routes_with_meta(
+            &[summary("Boundary")],
+            &[10],
+            &[RouteRetentionMeta::new(Retention::Day1, now - DAY_SECS)],
+        );
+        assert!(sweep_and_drain(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }), "now == expires_at deletes");
+    }
+
+    /// Remap coherence: a route delete mid-session keeps each surviving route's retention meta
+    /// aligned with its id across the rescan.
+    #[test]
+    fn route_meta_stays_aligned_across_a_rescan() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_meta(
+            &[summary("A"), summary("B"), summary("C")],
+            &[10, 11, 12],
+            &[
+                RouteRetentionMeta::new(Retention::Day1, 100),
+                RouteRetentionMeta::new(Retention::Week1, 200),
+                RouteRetentionMeta::new(Retention::Month1, 300),
+            ],
+        );
+        // A rescan drops the middle route (id 11) — B is gone, A and C survive in a new order.
+        app.set_routes_with_ids(&[summary("C"), summary("A")], &[12, 10]);
+        assert_eq!(app.route_ids(), &[12, 10]);
+        let metas = app.route_metas();
+        assert_eq!(metas[0], RouteRetentionMeta::new(Retention::Month1, 300), "C's meta followed its id");
+        assert_eq!(metas[1], RouteRetentionMeta::new(Retention::Day1, 100), "A's meta followed its id");
     }
 }

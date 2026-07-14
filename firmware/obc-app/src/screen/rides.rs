@@ -252,6 +252,7 @@ mod tests {
             moving_time_s: 2 * 3600 + 31 * 60,
             climb_m: 640,
             synced,
+            synced_at_utc: 0,
         }
     }
 
