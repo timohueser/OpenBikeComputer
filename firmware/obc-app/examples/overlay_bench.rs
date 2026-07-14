@@ -10,8 +10,9 @@
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use heapless::Vec as HVec;
+use obc_formats::io::SliceSource;
 use obc_render::{zoom_for_mpp, MapRenderer, Viewport};
-use obc_route::{RouteIndex, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
+use obc_route::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 use std::time::Instant;
 
 const W: f32 = 240.0; // device LCD (LS021B7DD02): 240×320

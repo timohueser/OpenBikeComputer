@@ -6,7 +6,6 @@
 //! format. The on-disk layout is specified in `OBCR_Spec.md`.
 //!
 //! Modules:
-//! - [`byte_io`] — compatibility paths for the `obc-formats` byte-I/O seam.
 //! - [`reader`] — header / chunk-index parsing and on-demand chunk decode
 //!   ([`RouteReader`], [`RouteSummary`], [`ChunkMeta`], [`RoutePoint`]).
 //! - [`profile`] — a route's elevation sampled to a fixed-width [`Profile`] for the
@@ -57,9 +56,12 @@ pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner};
 pub use matcher::{Match, RouteMatch};
 pub use nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
-// The byte-I/O seam (including the crate's canonical `Error`) is owned by `obc-formats`;
-// re-exported here at the crate root — `obc_route::Error` is obc-route's public error type.
-pub use obc_formats::io::{ByteSink, ByteSource, Error, SliceSource};
+// `obc-formats` owns the byte-I/O seam. `Error` is re-exported here **solely** so obc-route's own
+// public GPX/OBCR writer signatures (`track_to_gpx` and the `ByteSink::{write, patch_at}` helpers)
+// can name it as `obc_route::Error` — it is not a downstream byte-I/O path. Every consumer, obc-route
+// included, imports the seam (`ByteSource` / `ByteSink` / `SliceSource` / `Error`) from
+// `obc_formats::io` directly.
+pub use obc_formats::io::Error;
 pub use profile::{
     elevation_sparkline, ride_elevation_profile, ride_preview_polyline, Profile, Window, PROFILE_COLS,
     SPARKLINE_BUCKETS,

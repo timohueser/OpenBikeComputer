@@ -13,9 +13,10 @@
 //! smoothing (which the reader applies but these direct-stream tests bypass) wouldn't change
 //! the outcome.
 
+use obc_formats::io::SliceSource;
 use obc_route::{
-    segment_climbs, ClimbSeg, Climbs, ElePt, RouteIndex, RouteReader, SliceSource, MAX_CLIMBS, MAX_DROP, MAX_FLAT,
-    MIN_AVG_GRADE, MIN_GAIN, MIN_LEN,
+    segment_climbs, ClimbSeg, Climbs, ElePt, RouteIndex, RouteReader, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE,
+    MIN_GAIN, MIN_LEN,
 };
 
 /// Build an `(dist_m, ele_m)` stream by connecting successive `(dist, ele)` waypoints with a

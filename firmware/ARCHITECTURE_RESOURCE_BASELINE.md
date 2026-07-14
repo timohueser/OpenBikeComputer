@@ -172,13 +172,17 @@ small amount from making `obc-formats` a direct `obc-app`/board dependency (the
 +1,592 B against develop on 1.96.0 — untracked headroom on the 512 KB-flash
 target, no gated budget affected.
 
-The final production dependency graph has **66 local edges, zero exceptions**,
+The final production dependency graph has **69 local edges, zero exceptions**,
 all pointing downward (`python3 tools/check_dependencies.py`). Against the
 FAR-00 baseline's 64, the epic's net change is: #807/#857 severed
 `obc-storage → obc-route` and added `obc-storage → obc-formats` +
-`obc-formats → obc-ports`; #812 added the two direct `obc-app → obc-formats` and
-`obc-fw-nrf54l → obc-formats` import edges that replace the deleted reader/route
-compatibility re-exports. No upward edge exists; CI rejects every removed one.
+`obc-formats → obc-ports`; #812 added the direct `obc-formats` import edges from
+every persistent-format consumer that previously reached the byte-I/O seam and
+format constants through a reader/route re-export — `obc-app`, `obc-fw-nrf54l`,
+`obc-host-core`, and `obc-sim`. The byte-I/O seam (`ByteSource`/`ByteSink`/
+`SliceSource`/`Error`) is now imported from `obc_formats::io` at every call site;
+`obc-route` re-exports only `Error`, solely so its own `track_to_gpx`/`ByteSink`
+writer signatures can name it. No upward edge exists; CI rejects every removed one.
 
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B

@@ -2,7 +2,8 @@
 //! equal its spec-derived builder byte-for-byte, and the route vectors must load and
 //! ride through `obc-route`. The app's `swift test` consumes the same files.
 
-use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
+use obc_formats::io::SliceSource;
+use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_vectors::{all, crc32, dir, ride_v1, ride_v2, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS};
 
 fn fixture(name: &str) -> Vec<u8> {

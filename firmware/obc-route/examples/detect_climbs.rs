@@ -21,8 +21,9 @@
 
 use std::path::Path;
 
+use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::climb::{MAX_DROP, MAX_FLAT, MIN_AVG_GRADE, MIN_GAIN, MIN_LEN};
-use obc_route::{ByteSink, Climbs, Error, RouteIndex, RouteReader, SliceSource};
+use obc_route::{Climbs, RouteIndex, RouteReader};
 
 /// A `ByteSink` over a growable `Vec` — the host's "write the whole file to RAM" backing, so the
 /// in-memory GPX→OBCR conversion has somewhere to land (the device uses a FatFs-backed sink).

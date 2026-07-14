@@ -2,7 +2,7 @@
 //! hosts' route stores (GPX → OBCR, the nav router's emit) and `obc-sim`'s track store
 //! (`.obct` log → GPX).
 
-use obc_route::{ByteSink, Error};
+use obc_formats::io::{ByteSink, Error};
 
 #[derive(Default)]
 pub struct VecSink {
