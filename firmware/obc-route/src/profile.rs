@@ -25,7 +25,7 @@ use heapless::Vec;
 use crate::deadband::DeadBand;
 use crate::geo::seg_dist_m;
 use crate::reader::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
-use crate::ByteSource;
+use obc_formats::io::{ByteSource, Error};
 
 /// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
 /// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
@@ -302,7 +302,7 @@ impl RouteReader<'_> {
 /// buffer, so the board can run it inside its pass without a stack spike beyond the returned
 /// `Profile` itself. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version,
 /// torn length).
-pub fn ride_elevation_profile(src: &dyn crate::ByteSource) -> Result<Profile, crate::Error> {
+pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     use obc_formats::ride::{
         header_len as ride_header_len, point_len as ride_point_len, ELE_NONE as RIDE_ELE_NONE,
         POINT_LEN_V2 as RIDE_POINT_LEN_V2,
@@ -388,7 +388,7 @@ pub fn ride_elevation_profile(src: &dyn crate::ByteSource) -> Result<Profile, cr
 /// pass over the 14-byte (v1) / 18-byte (v2) records. Call it once per detail entry, never per
 /// frame. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version, torn
 /// length).
-pub fn ride_preview_polyline<const N: usize>(src: &dyn crate::ByteSource) -> Result<Vec<(i32, i32), N>, crate::Error> {
+pub fn ride_preview_polyline<const N: usize>(src: &dyn ByteSource) -> Result<Vec<(i32, i32), N>, Error> {
     use obc_formats::ride::{
         header_len as ride_header_len, point_len as ride_point_len, POINT_LEN_V2 as RIDE_POINT_LEN_V2,
     };

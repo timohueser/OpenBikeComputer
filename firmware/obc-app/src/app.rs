@@ -3203,7 +3203,8 @@ mod tests {
     // and the C5 auto-switch — through `App::update_active_climb` and `App::tick` over the
     // committed `grimsel-climb.obcr` fixture (3 back-to-back climbs).
 
-    use obc_route::{RouteIndex, SliceSource};
+    use obc_formats::io::SliceSource;
+    use obc_route::RouteIndex;
 
     /// The committed Grimsel fixture bytes (3 back-to-back climbs), embedded so the `no_std` lib
     /// tests need no `std::fs`. Boundaries: 501–11067, 11067–14472, 14472–18547; total ~18.7 km.

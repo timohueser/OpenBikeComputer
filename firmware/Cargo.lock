@@ -2407,6 +2407,7 @@ name = "obc-host-core"
 version = "0.1.0"
 dependencies = [
  "obc-app",
+ "obc-formats",
  "obc-ports",
  "obc-reader",
  "obc-replay",
@@ -2525,6 +2526,7 @@ dependencies = [
  "obc-app",
  "obc-dfu",
  "obc-display",
+ "obc-formats",
  "obc-host-core",
  "obc-ports",
  "obc-reader",

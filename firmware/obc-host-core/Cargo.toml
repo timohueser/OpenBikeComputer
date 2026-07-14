@@ -13,6 +13,7 @@ obc-reader = { path = "../obc-reader" }
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
 # (the ~39 KB A* table would overflow the wasm build's stack via a plain `Box::new`).
 obc-route = { path = "../obc-route", features = ["alloc"] }
+obc-formats = { path = "../obc-formats" } # the byte-I/O seam (ByteSource/ByteSink/SliceSource/Error) — the authority, not via obc-route
 # Shared host GPX replay (the GpxPlayer / BaroSensor `replay_step` advances) — the same crate the
 # USB feeder (obc-usb-host) uses, so a recorded ride plays back identically on every host.
 obc-replay = { path = "../obc-replay" }

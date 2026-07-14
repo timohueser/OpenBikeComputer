@@ -14,9 +14,10 @@
 //! Runs three variants for differential signal: stepped `NavScratch<768>` (the device),
 //! stepped `NavScratch<1536>` (the sim), and one-shot `plan_route` at 768.
 
+use obc_formats::io::{ByteSink, Error};
 use obc_reader::{MapCache, MapTables, NavTileCache, PoiCategory, Reader, SliceSource};
+use obc_route::ground_dist_m;
 use obc_route::nav::{NavPhase, NavPlanner, NavScratch, Step};
-use obc_route::{ground_dist_m, ByteSink, Error};
 
 struct VecSink(Vec<u8>);
 impl ByteSink for VecSink {

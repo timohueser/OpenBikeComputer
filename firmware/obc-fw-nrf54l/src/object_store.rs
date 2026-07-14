@@ -1204,7 +1204,7 @@ impl ObjectStore {
                 .storage
                 .as_ref()
                 .and_then(|s| s.object_source())
-                .is_some_and(|src| obc_route::ByteSource::read_at(&src, offset, buf).is_ok()),
+                .is_some_and(|src| obc_formats::io::ByteSource::read_at(&src, offset, buf).is_ok()),
         }
     }
 
@@ -1452,7 +1452,7 @@ fn object_crc(storage: &Storage, len: u32) -> Option<u32> {
     let mut off = 0u32;
     while off < len {
         let n = ((len - off) as usize).min(buf.len());
-        obc_route::ByteSource::read_at(&src, off, &mut buf[..n]).ok()?;
+        obc_formats::io::ByteSource::read_at(&src, off, &mut buf[..n]).ok()?;
         crc.update(&buf[..n]);
         off += n as u32;
     }
