@@ -209,6 +209,14 @@
       "utc_iso": "2026-07-09T12:00:00Z",
       "offset_min": 120
     },
+    "command-set-route-retention.bin": {
+      "format": "setRouteRetention command (spec 4.4, cmd 6, epic #638 S4)",
+      "byte_len": 4,
+      "cmd": 6,
+      "object_id": 7,
+      "retention": 3,
+      "retention_meaning": "2 weeks"
+    },
     "update-container-v1.bin": {
       "format": "OBCU update container (spec 1) — fwImage payload (spec 7.6)",
       "byte_len": 192,
@@ -220,11 +228,11 @@
       "object_id": 0
     },
     "route-list.bin": {
-      "format": "routeList object (spec 7.4) — 6-byte v2 header + 76-byte entries",
-      "byte_len": 158,
+      "format": "routeList object (spec 7.4) — 6-byte v2 header + 84-byte entries (76-byte v2 core + auto-expiry tail: expires_at u32 · retention u8 · reserved u8[3], epic #638 S4)",
+      "byte_len": 258,
       "version": 2,
-      "entry_len": 76,
-      "count": 2,
+      "entry_len": 84,
+      "count": 3,
       "entries": [
         {
           "object_id": 7,
@@ -234,7 +242,10 @@
           "point_count": 9,
           "waypoint_count": 2,
           "name": "Vector Loop",
-          "crc32": "0x1F66C051"
+          "crc32": "0x1F66C051",
+          "expires_at": 1784808000,
+          "retention": 3,
+          "retention_state": "live countdown (2 weeks)"
         },
         {
           "object_id": 8,
@@ -244,10 +255,26 @@
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0xEBD7D5B6"
+          "crc32": "0xEBD7D5B6",
+          "expires_at": 0,
+          "retention": 1,
+          "retention_state": "clock not yet started (last_used == 0)"
+        },
+        {
+          "object_id": 9,
+          "byte_len": 220,
+          "distance_m": 2207,
+          "ascent_m": 76,
+          "point_count": 9,
+          "waypoint_count": 0,
+          "name": "Vector Loop",
+          "crc32": "0xEBD7D5B6",
+          "expires_at": 0,
+          "retention": 0,
+          "retention_state": "never (synthetic entry — no .obcr file)"
         }
       ],
-      "total": 2
+      "total": 3
     },
     "version-read.bin": {
       "format": "protocolVersion read (spec 1) — version u16 · store_epoch u32",
@@ -277,7 +304,7 @@
       "crc32": "0xA3C5D591"
     },
     "trip-list.bin": {
-      "format": "tripList object (spec 7.4) — 6-byte v2 header + 76-byte entries (mirrors routeList)",
+      "format": "tripList object (spec 7.4) — 6-byte v2 header + 76-byte entries (mirrors routeList's v2 core; no expiry tail)",
       "byte_len": 82,
       "version": 2,
       "entry_len": 76,

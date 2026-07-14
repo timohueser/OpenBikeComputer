@@ -1453,6 +1453,15 @@ impl App {
             &self.catalogs,
             self.activity.is_tracking(),
         );
+        // Anchor the route's retention clock at upload time (auto-expiry epic #638 S4): a fresh or
+        // replace upload is a "use", so stamp `last_used = now` when the clock is trusted — the precise
+        // expiry anchor the app's `setRouteRetention` (which never touches `last_used`) then reads. An
+        // *untrusted* upload leaves `last_used == 0`, which the sweep starts later (invariant 2) — the
+        // safe fallback. Reuses the `StampRouteUsed` host path (drained into the S3 sidecar), no new
+        // channel; the drain mirrors the stamp into the resident meta so it fires once per upload.
+        if self.clock_trusted() {
+            self.retention.note_route_uploaded(id);
+        }
     }
 
     /// [`HostEvent::Warning`]: accumulate the flags and deliver (or defer) the advisory card.
@@ -4699,6 +4708,44 @@ mod tests {
         assert!(cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })), "active re-stamped");
         assert!(!cmds.contains(&HostCommand::DeleteRoute { id: 10 }), "the active route is never deleted");
         assert!(cmds.contains(&HostCommand::DeleteRoute { id: 11 }), "the idle expired route is deleted");
+    }
+
+    /// The route-upload `last_used` stamp (epic #638 S4): a committed upload under a **trusted** clock
+    /// enqueues a `StampRouteUsed` for the route — anchoring its expiry clock at upload time — while an
+    /// upload under an **untrusted** clock stamps nothing (the sweep starts the clock later, invariant
+    /// 2). A fresh route is `Never` at upload (the app sets real retention via a later
+    /// `setRouteRetention`), yet the upload still anchors `last_used` so the eventual expiry counts
+    /// from upload time.
+    #[test]
+    fn route_upload_stamps_last_used_only_when_trusted() {
+        fn upload_and_drain(app: &mut App) -> heapless::Vec<HostCommand, 16> {
+            app.apply_event(crate::HostEvent::RouteUploaded { id: 10, replaced: false, elevation: None });
+            let mut mb: HostMailbox = HostMailbox::new();
+            let _ = app.drain_host_commands(&mut mb);
+            let mut out = heapless::Vec::new();
+            while let Some(c) = mb.pop() {
+                let _ = out.push(c);
+            }
+            out
+        }
+
+        // Trusted: an upload commit stamps the route used (anchoring the expiry clock at upload time).
+        let (mut app, _now) = trusted_app();
+        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
+        let cmds = upload_and_drain(&mut app);
+        assert!(
+            cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })),
+            "a trusted upload stamps last_used: {cmds:?}"
+        );
+
+        // Untrusted (never stamped this boot): the same upload stamps nothing — the safe fallback.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
+        let cmds = upload_and_drain(&mut app);
+        assert!(
+            !cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { .. })),
+            "an untrusted upload stamps nothing: {cmds:?}"
+        );
     }
 
     /// Invariant 4: no sweep (no deletions) while a ride is recording — even with an expired route.
