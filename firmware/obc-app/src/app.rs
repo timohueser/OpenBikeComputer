@@ -8,12 +8,13 @@ use obc_route::{ClimbProfile, Climbs, Profile, RouteMatch, RouteReader, Waypoint
 
 use crate::activity::{Activity, Mode};
 use crate::breadcrumb::Breadcrumb;
+use crate::catalog_state::CatalogState;
 use crate::dirty::Dirty;
 use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 use crate::input::Gesture;
 use crate::input_plane::InputPlane;
 use crate::ride::RideSummary;
-use crate::route::{Catalog, RouteSummary};
+use crate::route::RouteSummary;
 use crate::screen::{self, Ctx, HomeScreen, MapScreen, Render, Screen, Stack, WarningFlags};
 use crate::settings::{DateTime, Settings};
 use crate::wall_clock::WallClock;
@@ -412,31 +413,11 @@ pub struct App {
     pub state: AppState,
     /// The ride mode + tracking accumulators.
     pub activity: Activity,
-    /// The resident route catalog (summaries), populated by the host ([`set_routes`](App::set_routes)).
-    /// The Route menu lists it; `active_route` indexes it.
-    catalog: Catalog,
-    /// Each catalog entry's **durable object id**, parallel to [`catalog`](App::catalog) (#450).
-    /// The identity that survives a live rescan: on every [`set_routes_with_ids`](App::set_routes_with_ids)
-    /// every held catalog *index* (`active_route`, an open Route-menu selection, a pending swap) is
-    /// remapped old-id → new-index, so an inserted/removed route can never silently shift which
-    /// route is navigated. The firmware feeds the filename-encoded upload ids (+ session-scoped
-    /// side-load ids); hosts without ids get positional ones from [`set_routes`](App::set_routes).
-    catalog_ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }>,
-    /// The resident **trip** catalog (epic #526, TR2): the grouped-route folders the host feeds via
-    /// [`set_trips`](App::set_trips), each a [`TripSummary`](crate::trip::TripSummary) resolving its
-    /// stage route ids against [`catalog_ids`](App::catalog_ids). Re-resolved on every route rescan
-    /// so an appeared/vanished route re-files. The device UI rows land in TR3; the flat Route menu
-    /// (which reads [`catalog`](App::catalog)) is untouched, so filed routes keep listing until then.
-    trips: crate::trip::Trips,
-    /// The resident ride catalog (summaries), populated by the host ([`set_rides`](App::set_rides)) —
-    /// the Rides screen lists it (epic #447, P7). Each entry carries its `synced` flag; the parallel
-    /// [`ride_catalog_ids`](App::ride_catalog_ids) holds the durable object ids the hold-to-delete
-    /// footer resolves against.
-    ride_catalog: crate::ride::RideCatalog,
-    /// Each ride-catalog entry's **durable object id**, parallel to [`ride_catalog`](App::ride_catalog)
-    /// — the identity the Rides-menu selection follows across a live rescan, and what the
-    /// hold-to-delete drain resolves a highlighted index to.
-    ride_catalog_ids: heapless::Vec<u16, { crate::ride::UI_RIDES_CAP }>,
+    /// The resident route / ride / trip catalogs keyed by durable object ids, plus the
+    /// identity-keyed view caches (ride profile/preview, nav preview) — the one component owning
+    /// the id ↔ summary pairing and every rescan-remap invariant (#450, epic #526). Populated by
+    /// the host through the `set_*` façade methods below.
+    catalogs: CatalogState,
     /// The loaded map's routing-profile **names** (routing-v2 N5), refreshed by the host on map load
     /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the Bike-type settings screen
     /// and the created-route overview label render them on frames the host draws without a `Reader`.
@@ -452,40 +433,6 @@ pub struct App {
     /// The [`active_route`](Activity::active_route) the cached [`profile`](App::profile)
     /// was built for, so a route change triggers exactly one rebuild.
     profile_route: Option<usize>,
-    /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
-    /// detail's band source, and the app's **single** resident ride-profile buffer (the same
-    /// [`Profile`] type the route band uses; statics grow by exactly this one buffer). The app
-    /// can't build it itself — the track lives on the card — so the host fills it: on detail
-    /// entry [`take_ride_track_request`](App::take_ride_track_request) hands out the ride's
-    /// durable id, the host streams `RD{id}.ORD` once, and
-    /// [`set_ride_profile`](App::set_ride_profile) parks the result here. Invalidated when
-    /// [`Activity::viewed_ride`] leaves the ride (exit, or a rescan that vanished it).
-    ride_profile: Option<Profile>,
-    /// The [`viewed_ride`](Activity::viewed_ride) the [`ride_profile`](App::ride_profile) buffer
-    /// was **answered** for (a failed fill parks `None` under the same key, so a dead file isn't
-    /// re-streamed every pass), remapped by identity across rescans like every held ride index.
-    ride_profile_for: Option<usize>,
-    /// The viewed ride's decimated recorded-track shape polyline (#678 rework 3 — the Ride
-    /// detail's track pager page), ≤ [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points, host-filled via
-    /// [`set_ride_preview`](App::set_ride_preview) in the same drain as the ride profile.
-    ride_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
-    /// The [`viewed_ride`](Activity::viewed_ride) the [`ride_preview`](App::ride_preview) was
-    /// handed in for — the staleness key (render gates on it; the exit/rescan invalidation drops
-    /// it alongside the profile), remapped by identity across rescans like the profile key.
-    ride_preview_for: Option<usize>,
-    /// The Route overview's decimated route-shape preview polyline (#685 §4, generalized to
-    /// stored routes by #678 rework 3's content-paired pager) — ≤ [`NAV_PREVIEW_MAX`]
-    /// `(lon, lat)` µdeg points, **decimated host-side** and handed in via
-    /// [`set_nav_preview`](App::set_nav_preview): a computed route's at plan-commit time, a
-    /// stored route's on overview entry (the per-pass [`nav_preview_missing`](App::nav_preview_missing)
-    /// cue). Drawn by the Route overview; empty otherwise.
-    nav_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
-    /// The [`active_route`](Activity::active_route) the [`nav_preview`](App::nav_preview) was
-    /// handed in for — the staleness key ([`nav_preview_missing`](App::nav_preview_missing)
-    /// compares it, and the render gates on it so an old plan's shape can never draw under a
-    /// different route). Cleared by [`notify_nav_result`](App::notify_nav_result) so every plan
-    /// starts preview-less.
-    nav_preview_route: Option<usize>,
     /// The active route's detected climbs, segmented once on route load (one streaming chunk sweep,
     /// so never per frame). Empty when no route is loaded; [`climbs_route`](App::climbs_route)
     /// tracks which route the list was built for. The riding views query it (with hysteresis, via
@@ -858,21 +805,11 @@ impl App {
         App {
             state,
             activity: Activity::new(Mode::Idle),
-            catalog: Catalog::new(),
-            catalog_ids: heapless::Vec::new(),
-            trips: crate::trip::Trips::new(),
-            ride_catalog: crate::ride::RideCatalog::new(),
-            ride_catalog_ids: heapless::Vec::new(),
+            catalogs: CatalogState::new(),
             nav_profiles: crate::NavProfiles::new(),
             stack,
             profile: None,
             profile_route: None,
-            ride_profile: None,
-            ride_profile_for: None,
-            ride_preview: heapless::Vec::new(),
-            ride_preview_for: None,
-            nav_preview: heapless::Vec::new(),
-            nav_preview_route: None,
             climbs: Climbs::new(),
             climbs_route: None,
             waypoints: Waypoints::new(),
@@ -952,14 +889,12 @@ impl App {
         unsafe {
             addr_of_mut!((*slot).state).write(state);
             addr_of_mut!((*slot).activity).write(Activity::new(Mode::Idle));
-            addr_of_mut!((*slot).catalog).write(Catalog::new());
-            addr_of_mut!((*slot).catalog_ids).write(heapless::Vec::new());
-            addr_of_mut!((*slot).trips).write(crate::trip::Trips::new());
-            addr_of_mut!((*slot).ride_catalog).write(crate::ride::RideCatalog::new());
-            addr_of_mut!((*slot).ride_catalog_ids).write(heapless::Vec::new());
+            // The several-KB catalogs + view caches are initialized field-by-field in place by
+            // their own component (the same discipline, one level down).
+            CatalogState::init_in_place(addr_of_mut!((*slot).catalogs));
             // (Was missing until #678 rework 3's field audit, like #680's `update_failed` catch:
-            // the profile-name mirror and the two shape-preview fields must be initialized like
-            // every other, or the board's first render reads uninit memory through them.)
+            // the profile-name mirror must be initialized like every other, or the board's first
+            // render reads uninit memory through it.)
             addr_of_mut!((*slot).nav_profiles).write(crate::NavProfiles::new());
             // The screen stack: empty in place, then push the always-present Home root.
             // `heapless::Vec::push` isn't `const`, so the root can't be part of a literal.
@@ -967,12 +902,6 @@ impl App {
             let _ = (*slot).stack.push(Screen::Home(HomeScreen::new()));
             addr_of_mut!((*slot).profile).write(None);
             addr_of_mut!((*slot).profile_route).write(None);
-            addr_of_mut!((*slot).ride_profile).write(None);
-            addr_of_mut!((*slot).ride_profile_for).write(None);
-            addr_of_mut!((*slot).ride_preview).write(heapless::Vec::new());
-            addr_of_mut!((*slot).ride_preview_for).write(None);
-            addr_of_mut!((*slot).nav_preview).write(heapless::Vec::new());
-            addr_of_mut!((*slot).nav_preview_route).write(None);
             // The climb caches mirror the profile: an empty list + a zeroed detail buffer
             // (`Climbs::new`/`ClimbProfile::new` are const, so no large temporary is formed here).
             addr_of_mut!((*slot).climbs).write(Climbs::new());
@@ -1042,21 +971,11 @@ impl App {
             let App {
                 state: _,
                 activity: _,
-                catalog: _,
-                catalog_ids: _,
-                trips: _,
-                ride_catalog: _,
-                ride_catalog_ids: _,
+                catalogs: _,
                 nav_profiles: _,
                 stack: _,
                 profile: _,
                 profile_route: _,
-                ride_profile: _,
-                ride_profile_for: _,
-                ride_preview: _,
-                ride_preview_for: _,
-                nav_preview: _,
-                nav_preview_route: _,
                 climbs: _,
                 climbs_route: _,
                 waypoints: _,
@@ -1675,13 +1594,9 @@ impl App {
     /// preview/swap subject turns into its screen's own missing-route path. Dirties the map once —
     /// a store change is a repaint-worthy host event (the open menu refreshes in place).
     pub fn set_routes_with_ids(&mut self, summaries: &[RouteSummary], ids: &[u16]) {
-        let old_ids = self.catalog_ids.clone();
-        self.catalog.clear();
-        self.catalog_ids.clear();
-        for (s, &id) in summaries.iter().zip(ids).take(crate::route::MAX_ROUTES) {
-            let _ = self.catalog.push(s.clone());
-            let _ = self.catalog_ids.push(id);
-        }
+        // The catalog + trip replacement (and the id ↔ summary pairing) is `CatalogState`'s; the
+        // old-id snapshot it returns drives the remap of everything held *outside* it.
+        let old_ids = self.catalogs.replace_routes(summaries, ids);
         self.remap_route_indices(&old_ids);
         self.map_dirty = true;
     }
@@ -1690,11 +1605,8 @@ impl App {
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
     /// [`set_routes_with_ids`](App::set_routes_with_ids).
     fn remap_route_indices(&mut self, old_ids: &[u16]) {
-        let new_ids = &self.catalog_ids;
-        let remap = |i: usize| -> Option<usize> {
-            let id = *old_ids.get(i)?;
-            new_ids.iter().position(|&x| x == id)
-        };
+        let catalogs = &self.catalogs;
+        let remap = |i: usize| -> Option<usize> { catalogs.remap_route(old_ids, i) };
 
         // The navigated route + the caches keyed on it. When the identity survives, all three move
         // together, so nothing resets (no matcher re-lock, no profile rebuild). When it vanished,
@@ -1728,19 +1640,11 @@ impl App {
             self.activity.next_waypoint = None;
         }
 
-        // Trips resolve stage *ids* into catalog indices, so a catalog replacement re-points them: a
-        // route that appeared re-files, one that vanished dangles (dropped from the resolved list,
-        // its stats no longer summed). Re-resolve from each trip's verbatim `stage_ids` (epic #526)
-        // **before** the stack walk below, so the Route menu's remap sees the regrouped folders.
-        for t in self.trips.iter_mut() {
-            t.reresolve(&self.catalog, &self.catalog_ids);
-        }
-
         // Every screen on the stack that holds a catalog index. The Route menu also takes the
-        // re-resolved trips + the new route count so it can follow its highlight into the regrouped
-        // (folders + unfiled routes) list.
-        let new_len = new_ids.len();
-        let trips = &self.trips;
+        // re-resolved trips (`replace_routes` re-filed them before returning) + the new route count
+        // so it can follow its highlight into the regrouped (folders + unfiled routes) list.
+        let new_len = catalogs.route_len();
+        let trips = catalogs.trips();
         for s in self.stack.iter_mut() {
             match s {
                 Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len),
@@ -1755,14 +1659,14 @@ impl App {
 
     /// The resident route catalog.
     pub fn routes(&self) -> &[RouteSummary] {
-        &self.catalog
+        self.catalogs.routes()
     }
 
-    /// Each catalog entry's durable object id, parallel to [`routes`](App::routes) — as last fed to
-    /// [`set_routes_with_ids`](App::set_routes_with_ids) (positional for plain
+    /// Each catalog entry's durable object id, pairwise with [`routes`](App::routes) — as last fed
+    /// to [`set_routes_with_ids`](App::set_routes_with_ids) (positional for plain
     /// [`set_routes`](App::set_routes)).
     pub fn route_ids(&self) -> &[u16] {
-        &self.catalog_ids
+        self.catalogs.route_ids()
     }
 
     /// The active route's catalog index, or `None` when no route is loaded — the read a host uses to
@@ -1777,7 +1681,7 @@ impl App {
     /// catalog, so hosts never write `activity.active_route` directly to stage a route. An
     /// out-of-range index clears the active route. Dirties the map so an open Map repaints the line.
     pub fn activate_route(&mut self, idx: usize) {
-        self.activity.active_route = (idx < self.catalog.len()).then_some(idx);
+        self.activity.active_route = (idx < self.catalogs.route_len()).then_some(idx);
         self.map_dirty = true;
     }
 
@@ -1791,25 +1695,21 @@ impl App {
     /// resolve; a later [`set_routes_with_ids`](App::set_routes_with_ids) re-resolves them in place.
     /// Dirties the map so an open (TR3) menu repaints.
     pub fn set_trips(&mut self, trips: &[crate::trip::TripInput]) {
-        self.trips.clear();
-        for input in trips.iter().take(crate::trip::MAX_TRIPS) {
-            let _ = self.trips.push(crate::trip::TripSummary::resolve(input, &self.catalog, &self.catalog_ids));
-        }
+        self.catalogs.set_trips(trips);
         self.map_dirty = true;
     }
 
     /// The resident trip catalog (epic #526) — the grouped-route folders. The TR3 Route menu lists
     /// these above the unfiled routes; until then they're resolved but unrendered.
     pub fn trips(&self) -> &[crate::trip::TripSummary] {
-        &self.trips
+        self.catalogs.trips()
     }
 
     /// Whether the route at catalog index `idx` is **filed** into some trip (epic #526) — a filed
     /// route shows only inside its folder, so the TR3 top level lists trips + unfiled routes. Until
     /// TR3 the flat menu ignores this and lists every route.
     pub fn route_filed(&self, idx: usize) -> bool {
-        let i = idx as u16;
-        self.trips.iter().any(|t| t.stage_indices.contains(&i))
+        self.catalogs.route_filed(idx)
     }
 
     /// Drain the Route menu's pending route-delete request (epic #447, P6), resolved to the route's
@@ -1877,24 +1777,16 @@ impl App {
     /// that are ignored. Sorted-by-`start_time` is the host's job (the board scan and the sim store
     /// both hand newest-first). Dirties the map once — a store change is a repaint-worthy event.
     pub fn set_rides(&mut self, summaries: &[RideSummary], ids: &[u16]) {
-        let old_ids = self.ride_catalog_ids.clone();
-        self.ride_catalog.clear();
-        self.ride_catalog_ids.clear();
-        for (s, &id) in summaries.iter().zip(ids).take(crate::ride::UI_RIDES_CAP) {
-            let _ = self.ride_catalog.push(s.clone());
-            let _ = self.ride_catalog_ids.push(id);
-        }
         // Re-point every held ride index by identity (its id in `old_ids` → new index), the
-        // ride-namespace twin of the route remap: the Rides menu's highlight, an open Ride
-        // detail's subject (#680 — a vanished subject becomes the detail's missing-ride state),
-        // and the viewed-ride/profile keys the detail's band hangs off (identity survives → the
-        // resident profile moves with it, no re-stream; vanished → the buffer drops below).
-        let new_ids = &self.ride_catalog_ids;
-        let remap = |i: usize| -> Option<usize> {
-            let id = *old_ids.get(i)?;
-            new_ids.iter().position(|&x| x == id)
-        };
-        let new_len = new_ids.len();
+        // ride-namespace twin of the route remap: `replace_rides` moves its own view-cache keys
+        // (the profile/preview the detail's band hangs off — identity survives → the resident
+        // profile moves with it, no re-stream; vanished → the buffer drops); the Rides menu's
+        // highlight, an open Ride detail's subject (#680 — a vanished subject becomes the detail's
+        // missing-ride state), and the viewed-ride key are remapped here with the same old ids.
+        let old_ids = self.catalogs.replace_rides(summaries, ids);
+        let catalogs = &self.catalogs;
+        let remap = |i: usize| -> Option<usize> { catalogs.remap_ride(&old_ids, i) };
+        let new_len = catalogs.ride_len();
         for s in self.stack.iter_mut() {
             match s {
                 Screen::Rides(m) => m.remap_rides(&remap, new_len),
@@ -1903,26 +1795,18 @@ impl App {
             }
         }
         self.activity.viewed_ride = self.activity.viewed_ride.and_then(remap);
-        self.ride_profile_for = self.ride_profile_for.and_then(remap);
-        if self.ride_profile_for.is_none() {
-            self.ride_profile = None; // the profiled ride vanished (or none was profiled)
-        }
-        self.ride_preview_for = self.ride_preview_for.and_then(remap);
-        if self.ride_preview_for.is_none() {
-            self.ride_preview.clear(); // the previewed ride vanished (or none was previewed)
-        }
         self.map_dirty = true;
     }
 
     /// The resident ride catalog (summaries) — what the Rides screen lists.
     pub fn rides(&self) -> &[RideSummary] {
-        &self.ride_catalog
+        self.catalogs.rides()
     }
 
     /// Each ride-catalog entry's durable object id, parallel to [`rides`](App::rides) — as last fed to
     /// [`set_rides`](App::set_rides).
     pub fn ride_ids(&self) -> &[u16] {
-        &self.ride_catalog_ids
+        self.catalogs.ride_ids()
     }
 
     /// Drain the Rides screen's pending ride-delete request (epic #447, P7), resolved to the ride's
@@ -1973,8 +1857,7 @@ impl App {
     /// the stream failed; the band keeps its loading note and the request doesn't re-fire).
     /// Dirties the map once — the open detail's band appears with the answer.
     pub fn set_ride_profile(&mut self, profile: Option<Profile>) {
-        self.ride_profile = profile;
-        self.ride_profile_for = self.activity.viewed_ride;
+        self.catalogs.set_ride_profile(profile, self.activity.viewed_ride);
         self.map_dirty = true;
     }
 
@@ -1985,11 +1868,7 @@ impl App {
     /// both residents, so the file streams at most twice per entry, never per pass). Keyed to the
     /// currently-viewed ride; exit/rescan invalidation drops it alongside the profile.
     pub fn set_ride_preview(&mut self, pts: &[(i32, i32)]) {
-        self.ride_preview.clear();
-        for &p in pts.iter().take(NAV_PREVIEW_MAX) {
-            let _ = self.ride_preview.push(p);
-        }
-        self.ride_preview_for = self.activity.viewed_ride;
+        self.catalogs.set_ride_preview(pts, self.activity.viewed_ride);
         self.map_dirty = true;
     }
 
@@ -2266,7 +2145,7 @@ impl App {
         };
         // Resolve the id in the (already rescanned) catalog; a missing id degrades to the
         // generic failure tier.
-        let resolved = result.and_then(|id| self.catalog_ids.iter().position(|&x| x == id).ok_or(NavError::NoPath));
+        let resolved = result.and_then(|id| self.catalogs.route_index_of(id).ok_or(NavError::NoPath));
         let screen = match resolved {
             Ok(idx) => {
                 // New bytes may sit under a same-id reserved file (a re-route): drop everything
@@ -2293,8 +2172,7 @@ impl App {
                 // the same id/index, so an old shape must never survive into the new overview.
                 // The host hands the fresh decimated polyline via `set_nav_preview` (the sim's
                 // commit tail does it in the same pass; the board on the next one).
-                self.nav_preview.clear();
-                self.nav_preview_route = None;
+                self.catalogs.clear_nav_preview();
                 Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(idx, prev))
             }
             // Exhaustion is the device's honest "too far" — the range tier's trigger now that
@@ -2316,7 +2194,7 @@ impl App {
     /// the moment the preview is in (or the overview is gone), never per pass.
     pub fn nav_preview_missing(&self) -> bool {
         self.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
-            && self.nav_preview_route != self.activity.active_route
+            && self.catalogs.nav_preview_stale(self.activity.active_route)
     }
 
     /// Hand in the previewed route's decimated shape polyline (#685 §4) — ≤
@@ -2325,11 +2203,7 @@ impl App {
     /// the current [`active_route`](Activity::active_route) — the route the overview activated —
     /// so a later route change stales it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
-        self.nav_preview.clear();
-        for &p in pts.iter().take(NAV_PREVIEW_MAX) {
-            let _ = self.nav_preview.push(p);
-        }
-        self.nav_preview_route = self.activity.active_route;
+        self.catalogs.set_nav_preview(pts, self.activity.active_route);
         self.map_dirty = true;
     }
 
@@ -2599,7 +2473,7 @@ impl App {
 
     /// [`HostEvent::RouteUploaded`]: forced adoption on an active replace + the advisory prompt.
     fn on_route_uploaded(&mut self, id: u16, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>) {
-        let active_id = self.activity.active_route.and_then(|i| self.catalog_ids.get(i).copied());
+        let active_id = self.activity.active_route.and_then(|i| self.catalogs.route_id_at(i));
         let active_replace = replaced && active_id == Some(id);
         if active_replace {
             // Same index, same id — but new bytes. Invalidate everything derived from the old
@@ -2649,7 +2523,7 @@ impl App {
         self.pending_upload = None;
         // Resolve the durable id in the (already rescanned) catalog; a vanished route drops the
         // advisory prompt entirely.
-        let Some(idx) = self.catalog_ids.iter().position(|&x| x == ev.id) else { return };
+        let Some(idx) = self.catalogs.route_index_of(ev.id) else { return };
         let screen = if ev.active_replace {
             Screen::RouteUpdated(crate::screen::RouteUpdatedScreen::new(idx, self.now_ms))
         } else if self.activity.is_tracking() {
@@ -2999,8 +2873,8 @@ impl App {
                 &self.settings,
                 &self.state,
                 &self.activity,
-                self.catalog.as_slice(),
-                self.ride_catalog.as_slice(),
+                self.catalogs.routes(),
+                self.catalogs.rides(),
             )
         })
     }
@@ -3076,26 +2950,15 @@ impl App {
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
         let App {
-            state,
-            activity,
-            settings,
-            catalog,
-            ride_catalog,
-            trips,
-            nav_profiles,
-            stack,
-            now_ms,
-            poi_scratch,
-            sensor_scan_hits,
-            ..
+            state, activity, settings, catalogs, nav_profiles, stack, now_ms, poi_scratch, sensor_scan_hits, ..
         } = self;
         let mut cx = Ctx {
             state,
             activity,
             settings,
-            routes: catalog.as_slice(),
-            rides: ride_catalog.as_slice(),
-            trips: trips.as_slice(),
+            routes: catalogs.routes(),
+            rides: catalogs.rides(),
+            trips: catalogs.trips(),
             nav_profiles,
             poi_scratch,
             sensor_scan_hits: sensor_scan_hits.as_slice(),
@@ -3420,14 +3283,7 @@ impl App {
         // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
         // (`viewed_ride` cleared) or moved subjects. Filling is the host's (`set_ride_profile` /
         // `set_ride_preview`); only the drop lives here, so a stale band/shape is never drawn.
-        if self.ride_profile_for != self.activity.viewed_ride {
-            self.ride_profile = None;
-            self.ride_profile_for = None;
-        }
-        if self.ride_preview_for != self.activity.viewed_ride {
-            self.ride_preview.clear();
-            self.ride_preview_for = None;
-        }
+        self.catalogs.drop_stale_ride_views(self.activity.viewed_ride);
 
         // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.now_ms);
@@ -3441,15 +3297,12 @@ impl App {
             state,
             activity,
             settings,
-            catalog,
-            ride_catalog,
-            trips,
+            catalogs,
             nav_profiles,
             renderer,
             stack,
             now_ms,
             profile,
-            ride_profile,
             climbs,
             climb_profile,
             waypoints,
@@ -3459,20 +3312,14 @@ impl App {
             map_name,
             map_obcm_version,
             card_free_bytes,
-            nav_preview,
-            nav_preview_route,
-            ride_preview,
-            ride_preview_for,
             sensor_status,
             sensor_scan_hits,
             ..
         } = self;
         // The shape previews draw only for the subject they were decimated for — a stale key
         // (route/ride changed, preview not re-fed yet) hands the screens an empty slice.
-        let nav_preview: &[(i32, i32)] =
-            if nav_preview_route.is_some() && *nav_preview_route == activity.active_route { nav_preview } else { &[] };
-        let ride_preview: &[(i32, i32)] =
-            if ride_preview_for.is_some() && *ride_preview_for == activity.viewed_ride { ride_preview } else { &[] };
+        let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(activity.active_route);
+        let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(activity.viewed_ride);
         // Bundle the active climb for the screens: the resident detail buffer is only meaningful
         // when a climb is active, so hand out the `(seg, profile)` pair exactly when `active_climb`
         // resolves to a live segment — a stale buffer is never reachable through `Render`.
@@ -3486,13 +3333,13 @@ impl App {
             state,
             activity,
             settings,
-            routes: catalog.as_slice(),
-            rides: ride_catalog.as_slice(),
-            trips: trips.as_slice(),
+            routes: catalogs.routes(),
+            rides: catalogs.rides(),
+            trips: catalogs.trips(),
             nav_profiles,
             route,
             profile: profile.as_ref(),
-            ride_profile: ride_profile.as_ref(),
+            ride_profile: catalogs.ride_profile_for(activity.viewed_ride),
             climb,
             waypoints: &*waypoints,
             breadcrumb: &*breadcrumb,
@@ -3755,12 +3602,12 @@ impl App {
             }
             HostCommandClass::DeleteRoute => {
                 let idx = self.activity.take_route_delete()?;
-                Some(HostCommand::DeleteRoute { id: self.catalog_ids.get(idx).copied()? })
+                Some(HostCommand::DeleteRoute { id: self.catalogs.route_entry(idx)?.id })
             }
             HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
             HostCommandClass::DeleteRide => {
                 let idx = self.activity.take_ride_delete()?;
-                Some(HostCommand::DeleteRide { id: self.ride_catalog_ids.get(idx).copied()? })
+                Some(HostCommand::DeleteRide { id: self.catalogs.ride_entry(idx)?.id })
             }
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
             HostCommandClass::PlanRoute => self.activity.take_nav_request().map(HostCommand::PlanRoute),
@@ -3794,10 +3641,10 @@ impl App {
     /// stale across a rescan (the identity remap moves the keys, and the cue follows).
     fn ride_track_request(&self) -> Option<u16> {
         let viewed = self.activity.viewed_ride?;
-        if self.ride_profile_for == Some(viewed) {
+        if self.catalogs.ride_profile_answered_for(viewed) {
             return None; // already answered for this ride (profile or a recorded failure)
         }
-        self.ride_catalog_ids.get(viewed).copied()
+        Some(self.catalogs.ride_entry(viewed)?.id)
     }
 }
 
