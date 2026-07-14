@@ -1,6 +1,6 @@
 ---
 title: Rendering pipeline
-description: How OpenBikeComputer draws one map frame — projection, level-of-detail, the quadtree cull, the priority multi-pass, and the polygon/line rasterisers — running identically on the simulator and the device.
+description: How OpenBikeComputer draws one map frame — projection, level-of-detail, the quadtree cull, the stub-select collector, and the polygon/line rasterisers — running identically on the simulator and the device.
 ---
 
 # The rendering pipeline
@@ -875,7 +875,7 @@ Everything above happens in fixed-size buffers owned by the renderer and **clear
 | `screen` | projected points for the feature being drawn | 4 096 |
 | `xs` | scanline crossings for one row | 256 |
 
-A compile-time assertion fails the build if the renderer's total buffer footprint grows past its RAM budget — so you can't accidentally blow the memory ceiling by bumping a constant. The frame buffers are the reason the priority multi-pass exists: they're deliberately *too small* for the densest views, and the priority order is what makes "too small" degrade gracefully instead of catastrophically.
+A compile-time assertion fails the build if the renderer's total buffer footprint grows past its RAM budget — so you can't accidentally blow the memory ceiling by bumping a constant. The frame buffers are the reason the collector drops by priority: they're deliberately *too small* for the densest views, and the global priority order is what makes "too small" degrade gracefully instead of catastrophically.
 
 ---
 
