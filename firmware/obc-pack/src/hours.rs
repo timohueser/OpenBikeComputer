@@ -34,9 +34,10 @@
 
 use std::collections::HashMap;
 
-// Existing packer-facing names remain aliases during FAR; remove them in #812 after downstream
-// callers import the OBCM authority directly.
-pub use obc_formats::obcm::{
+// The normative hours-blob dimensions/flags are owned by `obc-formats`; imported under the
+// packer-local names this encoder reads (`BLOB_LEN` is also read by `serialize.rs`'s width assert,
+// hence `pub(crate)`). Not exported from the crate.
+pub(crate) use obc_formats::obcm::{
     POI_HOURS_BLOB_LEN as BLOB_LEN, POI_HOURS_DAYS as DAYS, POI_HOURS_FLAG_SEASONAL as FLAG_SEASONAL,
     POI_HOURS_FLAG_TRUNCATED as FLAG_TRUNCATED, POI_HOURS_SLOTS_PER_DAY as SLOTS_PER_DAY,
 };

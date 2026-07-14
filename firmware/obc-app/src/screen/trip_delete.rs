@@ -18,7 +18,7 @@ use obc_render::{
     Surface,
 };
 
-use obc_route::NAME_CAP;
+use obc_formats::obcr::NAME_CAP;
 
 use crate::input::Gesture;
 use crate::Msg;

@@ -50,9 +50,10 @@ use obc_app::{
     STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
+use obc_formats::obcr::NAME_CAP;
 use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, ByteSource, Profile, RideInfo, RideStats, RouteIndex,
-    RouteObjectInfo, RouteSummary, TripMeta, TripSummary, NAME_CAP,
+    RouteObjectInfo, RouteSummary, TripMeta, TripSummary,
 };
 use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};

@@ -17,14 +17,12 @@ pub use obc_ports::TrackPoint;
 
 use obc_formats::io::{ByteSink, ByteSource, Error};
 
-// The record codec + its constants moved to `obc-formats` (the byte authority) so a storage
-// adapter can encode/decode without an `obc-route` dependency (#807/#812). obc-route re-exports
-// them under its historical `TRACK_*` names; the streaming `.obct` → GPX conversion below is the
-// algorithm and stays here.
-pub use obc_formats::track::{
-    decode_record, encode_record, CAD_NONE as TRACK_CAD_NONE, HR_NONE as TRACK_HR_NONE, PWR_NONE as TRACK_PWR_NONE,
-    RECORD_LEN as TRACK_RECORD_LEN,
-};
+// The record codec + its constants are owned by `obc-formats` (the byte authority), so a storage
+// adapter can encode/decode without an `obc-route` dependency (#807/#812). obc-route re-exports the
+// codec (its `track_to_gpx` + `track_to_ride` and downstream hosts encode/decode through it); the
+// streaming `.obct` → GPX conversion below is the algorithm and stays here.
+use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
+pub use obc_formats::track::{decode_record, encode_record};
 
 /// Records read per [`ByteSource`] call — one SD read fills a block rather than a record,
 /// keeping the one-shot Finish conversion fast on the device.

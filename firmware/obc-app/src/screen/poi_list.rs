@@ -18,7 +18,8 @@
 //! coordinates and the rider's current heading — pure trig, **zero SD**.
 
 use embedded_graphics::prelude::Point;
-use obc_reader::{cos_lat, label_of, Poi, PoiCategory, MAX_POI_RESULTS};
+use obc_formats::obcm::poi_label_of;
+use obc_reader::{cos_lat, Poi, PoiCategory, MAX_POI_RESULTS};
 use obc_render::{
     text::{Font, TextAlign},
     Surface,
@@ -231,7 +232,7 @@ fn draw_poi_row(
 
     // Line 1 — the name, the row's primary element, now on its own full-width line so most names
     // fit whole (only a genuinely long one still gets the ".." from `fit`).
-    let name = if poi.name.is_empty() { label_of(poi.subtype).unwrap_or("POI") } else { poi.name.as_str() };
+    let name = if poi.name.is_empty() { poi_label_of(poi.subtype).unwrap_or("POI") } else { poi.name.as_str() };
     let name_top = top + 6;
     let name_max = ((w - x - 12) / Font::Body.char_width() as i32).max(6) as usize;
     cv.text(&fit(name, name_max), Point::new(x, name_top), Font::Body, TextAlign::Left, INK);

@@ -18,9 +18,9 @@ use obc_formats::obcm::{
     FEATURE_HEADER_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN,
 };
 
-// FAR compatibility paths for existing packer callers. These aliases carry no independent values;
-// remove them in the #812 final audit after downstream imports use `obc_formats::obcm`.
-pub use obc_formats::obcm::{
+// The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
+// `VERSION as OBCM_VERSION` rename is a module-local readability alias). Not re-exported.
+use obc_formats::obcm::{
     HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_MAX_PROFILES,
     NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN,
     POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, VERSION as OBCM_VERSION,
