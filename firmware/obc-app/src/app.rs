@@ -2139,6 +2139,11 @@ impl App {
         // `set_ride_preview`); only the drop lives here, so a stale band/shape is never drawn.
         self.catalogs.drop_stale_ride_views(self.activity.viewed_ride);
 
+        // Pre-draw acquisition (#803): the base screen resolves any reader-backed one-shot state
+        // (the POI snapshot / hours) before the draw loop, so `Render` carries the POI scratch
+        // read-only and every screen's `draw` is side-effect-free (target + render-stats only).
+        self.ui.prepare_base(reader, self.state.user_fix);
+
         // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.ui.now_ms);
         let clock_set = self.wall_clock.is_established();
@@ -2191,7 +2196,7 @@ impl App {
             breadcrumb: &ride.breadcrumb,
             nav_preview,
             ride_preview,
-            poi_scratch: &mut ui.poi_scratch,
+            poi_scratch: &ui.poi_scratch,
             sensor_status: ui.sensor_status.as_slice(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
             w: w as i32,

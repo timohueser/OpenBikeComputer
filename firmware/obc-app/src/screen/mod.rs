@@ -10,6 +10,7 @@
 use core::fmt::Write;
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
+use obc_ports::Fix;
 use obc_reader::Reader;
 use obc_render::{
     rect,
@@ -250,11 +251,12 @@ pub struct Render<'a, 'd> {
     /// hands an empty slice when it's missing or stale). Only the Ride detail's track pager page
     /// draws it.
     pub ride_preview: &'a [(i32, i32)],
-    /// The single [`App`](crate::App)-owned POI-list snapshot buffer. Only the
-    /// [`PoiList`](crate::screen::poi_list) screen touches it — it takes its static snapshot into
-    /// this on the first draw with a `Reader` + fix (see [`PoiScratch`]); every other screen leaves
-    /// it untouched. `&mut` because that lazy fill is the one screen write that happens at draw time.
-    pub poi_scratch: &'a mut PoiScratch,
+    /// The single [`App`](crate::App)-owned POI-list snapshot buffer, **read-only** here (#803).
+    /// Only the [`PoiList`](crate::screen::poi_list) screen reads it, drawing the frozen snapshot its
+    /// [`prepare`](Screen::prepare) pass already took (see [`PoiScratch`] / [`Prepare`]); every other
+    /// screen leaves it untouched. Draw is side-effect-free — the acquisition moved out of the draw
+    /// path to the pre-draw prepare phase, so `Render` no longer carries mutable POI scratch.
+    pub poi_scratch: &'a PoiScratch,
     /// The per-slot BLE **sensor status** (epic #707, SE7) — the Sensors settings screen draws the
     /// HR / power / cadence rows' status lines from it. Fed each pass by the host; empty defaults
     /// elsewhere, so the screen indexes it by slot unconditionally.
@@ -324,6 +326,24 @@ impl Render<'_, '_> {
     }
 }
 
+/// The narrow **pre-draw acquisition** context (#803): the streamed-map [`Reader`] (when the host
+/// built it this frame), the shared POI snapshot buffer, and the live fix — everything a screen
+/// needs to resolve its reader-backed one-shot state **before** drawing. Handed to
+/// [`Screen::prepare`], which runs on the base screen once per frame ahead of the draw loop, so the
+/// side-effectful POI snapshot / hours read happens here and [`draw`](Screen::draw) then consumes
+/// immutable prepared state (the narrowed, mutable-scratch-free [`Render`]). Only the two POI
+/// screens read it; every other screen's `prepare` is a no-op.
+pub struct Prepare<'a, 'd> {
+    /// The streamed-map `Reader`, or `None` when the host didn't build it this frame — the POI
+    /// acquisitions retry next frame until [`base_needs_reader`](crate::App::base_needs_reader)
+    /// (which reads the same [`ReaderNeed`] declaration) stops asking the board to build it.
+    pub reader: Option<&'a Reader<'d>>,
+    /// The single [`App`](crate::App)-owned POI-list snapshot buffer — the POI list fills it here.
+    pub poi_scratch: &'a mut PoiScratch,
+    /// The rider's current fix, `(lon, lat)` µdeg — the POI list's nearest-16 query origin.
+    pub user_fix: Option<Fix>,
+}
+
 /// A screen's classification, declared **in its `screens!` table row** so it can never drift from
 /// the enum. The two kinds behavior hangs off: [`Overlay`](ScreenKind::Overlay) screens composite
 /// over the screen below instead of replacing the view, and [`Settings`](ScreenKind::Settings)
@@ -355,16 +375,193 @@ impl ScreenKind {
     }
 }
 
-/// The one screen table. Each row is `Variant(StateType) => kind`; the macro expands it into the
-/// [`Screen`] enum, the `handle`/`draw` delegation matches, and [`Screen::kind`]. **Adding a screen
-/// = adding one row here** (plus its module, and a [`tick_timers`](Screen::tick_timers) arm only if
-/// it has timed content) — there is no second list to keep in sync. Deliberately a dumb
-/// token-pasting table, not a framework.
+/// What a screen's **base content** is — the thing its lowest-opaque draw *is*. The map-plane host
+/// gates whole pipelines off this one declared fact rather than scattered `matches!` on the enum:
+/// building the streamed-map [`Reader`], counting a screen as live-data (a fresh fix must redraw
+/// it), and showing the BLE connected indicator all read the base screen's [`BaseContent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaseContent {
+    /// Draws the streamed base map — the only screen that reads the [`Reader`] for the map itself.
+    Map,
+    /// A live riding view fed by the fix but not the map (Statistics, Climb): a fresh fix redraws
+    /// it, but it draws no map I/O and shows no BLE indicator.
+    LiveRiding,
+    /// Static chrome — Home, the menus, the lists, the prompts, the settings subtree. No live
+    /// map/fix redraw; carries the BLE connected indicator in its title bar.
+    Chrome,
+}
+
+/// Whether — and until when — a screen needs the streamed-map [`Reader`] built and passed to
+/// [`render_map_timed`](crate::App::render_map_timed). Declared per screen so the render-on-demand
+/// board host skips the per-frame `Reader` build (an SD style-table parse + its stack spike) on
+/// every frame that doesn't need it. The two POI variants take a **one-shot** read at
+/// [`prepare`](Screen::prepare) time (the snapshot / the hours), so their need is conditional on
+/// that read still being pending — [`base_needs_reader`](crate::App::base_needs_reader) keeps the
+/// runtime pending check, but which check to run is chosen from this declaration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReaderNeed {
+    /// Never needs the `Reader` (all chrome and live-riding non-map screens).
+    Never,
+    /// Always needs it — the [`Map`](BaseContent::Map) screen.
+    Always,
+    /// Needs it until the POI list's category snapshot has been taken (issue #425).
+    PoiSnapshot,
+    /// Needs it until the POI detail's opening-hours read has resolved (issue #444).
+    PoiHours,
+}
+
+/// Which durable catalog a screen's held **indices** are remapped against after a store rescan
+/// (#450). The rescan renumbers the route/ride catalogs; a screen that caches an index into one
+/// must be re-pointed (or dropped) through the App's remap closure. Declared per screen so the
+/// remap fan-out ([`App::remap_route_indices`](crate::App)) can never silently forget a screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemapKind {
+    /// Holds no catalog index — nothing to remap.
+    None,
+    /// Holds a **route** catalog index (the Route menu / overview / swap / upload cards).
+    Route,
+    /// Holds a **ride** catalog index (the Rides list / ride detail).
+    Ride,
+}
+
+/// The compact **capability metadata** for one screen, declared **in its `screens!` table row** so
+/// cross-cutting UI policy is a single declaration that can never drift from the enum. The map-plane
+/// host, the idle-return policy, the timer sweep, the hold-fill gate, the reader-build seam, and the
+/// rescan remap all read a screen's [`Caps`] instead of open-coding a `matches!` on the variant.
+///
+/// Built with the const archetype constructors ([`nav`](Caps::nav), [`map`](Caps::map),
+/// [`riding`](Caps::riding), [`settings`](Caps::settings), [`modal`](Caps::modal)) and refined with
+/// the const chaining setters — a row reads `Caps::map().timed()` or
+/// `Caps::settings().hold_fill()`. The struct is **not** stored in the [`Screen`] enum (it would
+/// inflate every stack slot); it compiles to a `const` per variant reachable by
+/// [`caps`](Screen::caps) / the [`CAPS`](Screen::CAPS) table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caps {
+    /// The [`ScreenKind`] the overlay/settings behaviors hang off.
+    pub kind: ScreenKind,
+    /// What the screen's base draw is — gates map I/O, live-data redraw, and the BLE indicator.
+    pub base: BaseContent,
+    /// **Idle-return exempt**: a modal card/wait the idle-return timeout must never yank away (the
+    /// passkey card, the upload popups, the routing spinner, the whole DFU flow).
+    pub idle_exempt: bool,
+    /// A **deliberate ride view** (Map, Statistics, Climb, Ride control): stays put on the idle
+    /// timeout *while a ride is tracked* instead of returning to the Map.
+    pub ride_view: bool,
+    /// A **deliberate browse view when not tracking** (the route-less browse Map): the idle timeout
+    /// treats it as intentional, not idleness, so it isn't returned to Home.
+    pub browse_exempt: bool,
+    /// Whether — and until when — the screen needs the streamed-map [`Reader`] at draw.
+    pub reader: ReaderNeed,
+    /// Declares the screen has **timed content**: its [`tick_timers`](Screen::tick_timers) arm can
+    /// fire a time-driven repaint (and it must therefore have a non-idle arm — the invariant tests
+    /// pin the two together).
+    pub timed: bool,
+    /// Declares the screen can draw a live **hold fill** for a guarded selection — it has a
+    /// [`wants_hold_fill`](Screen::wants_hold_fill) arm.
+    pub hold_fill: bool,
+    /// Which catalog the screen's held indices remap against after a rescan (#450).
+    pub remap: RemapKind,
+}
+
+impl Caps {
+    /// Navigation chrome — Home, the menus, the lists, the info prompts. The neutral base every
+    /// other archetype refines from.
+    pub const fn nav() -> Self {
+        Caps {
+            kind: ScreenKind::Nav,
+            base: BaseContent::Chrome,
+            idle_exempt: false,
+            ride_view: false,
+            browse_exempt: false,
+            reader: ReaderNeed::Never,
+            timed: false,
+            hold_fill: false,
+            remap: RemapKind::None,
+        }
+    }
+
+    /// The base **Map** screen: reads the `Reader` every frame, and is both a tracking ride view and
+    /// a deliberate browse view when not tracking.
+    pub const fn map() -> Self {
+        Caps {
+            kind: ScreenKind::Riding,
+            base: BaseContent::Map,
+            ride_view: true,
+            browse_exempt: true,
+            reader: ReaderNeed::Always,
+            ..Caps::nav()
+        }
+    }
+
+    /// A live **riding** view fed by the fix but not the map (Statistics, Climb): a tracking ride
+    /// view, redrawn on a fresh fix, no map I/O.
+    pub const fn riding() -> Self {
+        Caps { kind: ScreenKind::Riding, base: BaseContent::LiveRiding, ride_view: true, ..Caps::nav() }
+    }
+
+    /// A **settings** subtree screen — a pending save is held un-persisted while one is on top.
+    pub const fn settings() -> Self {
+        Caps { kind: ScreenKind::Settings, ..Caps::nav() }
+    }
+
+    /// A **modal** card or wait — idle-return exempt (must stay until dismissed/answered): the
+    /// passkey card, the upload popups, the routing spinner, and the DFU flow.
+    pub const fn modal() -> Self {
+        Caps { idle_exempt: true, ..Caps::nav() }
+    }
+
+    /// Mark the screen a deliberate ride view (stays put on the idle timeout while tracking) — for
+    /// the Ride-control page, whose base is chrome but which is a live ride view.
+    pub const fn ride_view(mut self) -> Self {
+        self.ride_view = true;
+        self
+    }
+
+    /// Mark the screen idle-return exempt — for the manual Route-swap prompt, which shares the
+    /// upload popups' "never yank mid-decision" rule.
+    pub const fn exempt(mut self) -> Self {
+        self.idle_exempt = true;
+        self
+    }
+
+    /// Declare the screen has timed content (a [`tick_timers`](Screen::tick_timers) arm).
+    pub const fn timed(mut self) -> Self {
+        self.timed = true;
+        self
+    }
+
+    /// Declare the screen can draw a hold fill (a [`wants_hold_fill`](Screen::wants_hold_fill) arm).
+    pub const fn hold_fill(mut self) -> Self {
+        self.hold_fill = true;
+        self
+    }
+
+    /// Set the screen's [`ReaderNeed`].
+    pub const fn reader(mut self, need: ReaderNeed) -> Self {
+        self.reader = need;
+        self
+    }
+
+    /// Set the screen's rescan [`RemapKind`].
+    pub const fn remap(mut self, remap: RemapKind) -> Self {
+        self.remap = remap;
+        self
+    }
+}
+
+/// The one screen table. Each row is `Variant(StateType) => Caps`; the macro expands it into the
+/// [`Screen`] enum, the `handle`/`draw`/`prepare` delegation matches, and the per-screen
+/// [`Caps`](Screen::caps) (from which [`kind`](Screen::kind) and every cross-cutting policy
+/// derives). **Adding a normal screen = adding one row here** (plus its own module, and a
+/// [`tick_timers`](Screen::tick_timers) arm only if the row declares `.timed()`) — there is no
+/// second list to keep in sync, and a cross-cutting policy addition is an explicit capability on the
+/// row, not a forgotten `matches!` elsewhere. Deliberately a dumb token-pasting table, not a
+/// framework.
 macro_rules! screens {
-    ($( $(#[$doc:meta])* $variant:ident($state:ty) => $kind:ident, )+) => {
+    ($( $(#[$doc:meta])* $variant:ident($state:ty) => $caps:expr, )+) => {
         /// The on-device screens. Each variant owns its typed state and forwards to that screen's
         /// inherent `handle`/`draw`. Generated by `screens!` — the variants, delegation, and
-        /// per-screen [`ScreenKind`] all come from the one table.
+        /// per-screen [`Caps`] all come from the one table.
         pub enum Screen {
             $( $(#[$doc])* $variant($state), )+
         }
@@ -390,11 +587,20 @@ macro_rules! screens {
                 }
             }
 
-            /// This screen's [`ScreenKind`], exactly as declared in its `screens!` table row.
-            pub fn kind(&self) -> ScreenKind {
+            /// This screen's [`Caps`], exactly as declared in its `screens!` table row — the single
+            /// authority for its cross-cutting UI policy (base content, idle-return, reader need,
+            /// timed/hold-fill, rescan remap). Every other classifier
+            /// ([`kind`](Screen::kind), [`is_overlay`](Screen::is_overlay), the host's
+            /// live-data/reader/idle gates) reads it instead of re-`matches!`ing the variant.
+            pub fn caps(&self) -> Caps {
                 match self {
-                    $( Screen::$variant(_) => ScreenKind::$kind, )+
+                    $( Screen::$variant(_) => $caps, )+
                 }
+            }
+
+            /// This screen's [`ScreenKind`], from its declared [`Caps`].
+            pub fn kind(&self) -> ScreenKind {
+                self.caps().kind
             }
 
             /// This screen's variant name (e.g. `"Map"`, `"PoiList"`, `"NavPlanning"`), generated
@@ -412,119 +618,124 @@ macro_rules! screens {
             /// (`obc_demo_screens`) as the landing page's drift-guard: a tour scripted against a
             /// screen name that no longer exists fails CI instead of silently stalling.
             pub const NAMES: &'static [&'static str] = &[ $( stringify!($variant), )+ ];
+
+            /// Every screen's declared [`Caps`], in `screens!` table order — paired index-for-index
+            /// with [`NAMES`](Screen::NAMES). The capability invariant tests enumerate this without
+            /// having to construct each variant's state.
+            pub const CAPS: &'static [Caps] = &[ $( $caps, )+ ];
         }
     };
 }
 
 screens! {
-    Home(HomeScreen) => Nav,
-    Map(MapScreen) => Riding,
-    Statistics(StatisticsScreen) => Riding,
+    Home(HomeScreen) => Caps::nav().timed(),
+    Map(MapScreen) => Caps::map().timed(),
+    Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
     /// + four climb-scoped tiles. A full-screen riding view like the Map/Statistics siblings; C5
     /// wires it into the Back-cycle and the auto-switch, so nothing reaches it yet except the
     /// debug-open bench path.
-    Climb(ClimbScreen) => Riding,
+    Climb(ClimbScreen) => Caps::riding(),
     /// The pause page: ride-so-far ledger + the guarded Resume / Finish / Discard rows.
-    RideControl(RideControl) => Nav,
+    RideControl(RideControl) => Caps::nav().ride_view().hold_fill(),
     /// The route-less start card (Menu → Map → press): "Start ride" / "Back". *Start ride* begins a
     /// tracking session with no route via [`start_ride_routeless`].
-    RideStart(RideStartScreen) => Nav,
-    Menu(MenuScreen) => Nav,
+    RideStart(RideStartScreen) => Caps::nav(),
+    Menu(MenuScreen) => Caps::nav().timed(),
     /// The POIs browser's category list (Menu → POIs).
-    PoiMenu(PoiMenuScreen) => Nav,
+    PoiMenu(PoiMenuScreen) => Caps::nav(),
     /// One category's distance-sorted nearest-16 with live bearing arrows.
-    PoiList(PoiListScreen) => Nav,
+    PoiList(PoiListScreen) => Caps::nav().reader(ReaderNeed::PoiSnapshot),
     /// A single POI's detail: full name, subtype, live bearing arrow, today's hours + open/closed.
-    PoiDetail(PoiDetailScreen) => Nav,
+    PoiDetail(PoiDetailScreen) => Caps::nav().reader(ReaderNeed::PoiHours),
     /// The POI "Create a route?" confirm (epic #116, R4): *Create route* records the one-shot
     /// [`NavRequest`](crate::activity::NavRequest) and swaps to the planning screen.
-    NavConfirm(NavConfirmScreen) => Nav,
+    NavConfirm(NavConfirmScreen) => Caps::nav(),
     /// The route-**planning** screen (#499): the spinning-needle wait while the host steps the
     /// resumable router; Back cancels (pops to the detail + rings [`App::take_nav_cancel`]). The
     /// host's answer ([`App::notify_nav_result`]) replaces it with the computed-route overview
     /// or the failure card.
-    NavPlanning(NavPlanningScreen) => Nav,
+    NavPlanning(NavPlanningScreen) => Caps::modal().timed(),
     /// The route-planning failure card (epic #116, R4): the locked two-tier copy ("Too far to
     /// route here." / "Couldn't find a route."), info-only — any press/Back returns to the detail.
-    NavFail(NavFailScreen) => Nav,
-    RouteMenu(RouteMenuScreen) => Nav,
+    NavFail(NavFailScreen) => Caps::nav(),
+    RouteMenu(RouteMenuScreen) => Caps::nav().remap(RemapKind::Route),
     /// The trip cascade-delete confirm dialog (epic #526, TR3): reached by long-pressing a trip
     /// folder row in the Route menu's top level. A warning-red hold-guarded Delete row + a Cancel
     /// row; a completed hold records the trip's durable id for the host to cascade-delete (trip +
     /// member routes).
-    TripDelete(TripDeleteScreen) => Nav,
+    TripDelete(TripDeleteScreen) => Caps::nav().hold_fill(),
     /// The Rides screen (Menu → Rides): the stored-rides list — name + sync glyph over an olive
     /// `D MON · distance` line; press opens the Ride detail. Epic #447 P7 (#454), rows
     /// redesigned by #680.
-    Rides(RidesScreen) => Nav,
+    Rides(RidesScreen) => Caps::nav().remap(RemapKind::Ride),
     /// The Ride detail (Rides → press, #680): the recorded sibling of the Route overview —
     /// elevation band of the tracked ride, stat ledger, and the guarded Delete-ride row.
-    RideDetail(RideDetailScreen) => Nav,
-    RouteOverview(RouteOverviewScreen) => Nav,
-    RouteSwap(RouteSwapScreen) => Nav,
+    RideDetail(RideDetailScreen) => Caps::nav().timed().hold_fill().remap(RemapKind::Ride),
+    RouteOverview(RouteOverviewScreen) => Caps::nav().timed().hold_fill().remap(RemapKind::Route),
+    RouteSwap(RouteSwapScreen) => Caps::nav().exempt().timed().hold_fill().remap(RemapKind::Route),
     /// The idle route-upload prompt (epic #447, P4): "ROUTE RECEIVED" — Start navigation / Dismiss.
     /// **Host-pushed** by [`App::notify_route_uploaded`]; auto-closes (= dismisses) after
     /// [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory — the route is already committed and in the Route menu.
-    RouteReceived(RouteReceivedScreen) => Nav,
+    RouteReceived(RouteReceivedScreen) => Caps::modal().timed().remap(RemapKind::Route),
     /// The active-route-replaced info card (epic #447, P4). Adoption already happened when it
     /// opens (the app dropped the stale matcher/profile; the host reopened the geometry) — this
     /// only *tells* the rider. Dismiss on any press/Back, or the same auto-close.
-    RouteUpdated(RouteUpdatedScreen) => Nav,
+    RouteUpdated(RouteUpdatedScreen) => Caps::modal().timed().remap(RemapKind::Route),
     /// The BLE pairing passkey card (epic #447, P2). **Host-pushed** by [`App::set_ble_status`]
     /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
-    Passkey(PasskeyScreen) => Nav,
+    Passkey(PasskeyScreen) => Caps::modal(),
     /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
     /// **Host-pushed** by [`App::notify_warning`], coalesced, dismissed on any press.
-    Warning(WarningScreen) => Nav,
-    Settings(SettingsScreen) => Settings,
-    DateTime(DateTimeScreen) => Settings,
-    Units(UnitsScreen) => Settings,
+    Warning(WarningScreen) => Caps::modal(),
+    Settings(SettingsScreen) => Caps::settings(),
+    DateTime(DateTimeScreen) => Caps::settings(),
+    Units(UnitsScreen) => Caps::settings(),
     /// The Bike type screen: cycles the routing profile (§8.6) the planner weights edges by, by name
     /// from the loaded map (routing-v2 N5, epic #533).
-    BikeType(BikeTypeScreen) => Settings,
-    Stats(StatsScreen) => Settings,
-    StatFields(StatFieldsScreen) => Settings,
-    AddField(AddFieldScreen) => Settings,
+    BikeType(BikeTypeScreen) => Caps::settings(),
+    Stats(StatsScreen) => Caps::settings(),
+    StatFields(StatFieldsScreen) => Caps::settings().hold_fill(),
+    AddField(AddFieldScreen) => Caps::settings(),
     /// The Display screen: the Map's clock + scale-bar overlay toggles and the idle-return timeout.
-    Display(DisplayScreen) => Settings,
-    Power(PowerScreen) => Settings,
+    Display(DisplayScreen) => Caps::settings(),
+    Power(PowerScreen) => Caps::settings(),
     /// The Bluetooth screen: radio on/off, status line, Paired row, hold-guarded Forget phone.
-    Bluetooth(BluetoothScreen) => Settings,
+    Bluetooth(BluetoothScreen) => Caps::settings().hold_fill(),
     /// The Sensors screen (BLE sensors epic #707, SE7): the HR / power / cadence rows with their live
     /// status; press → scan list, hold a saved row → forget.
-    Sensors(SensorsScreen) => Settings,
+    Sensors(SensorsScreen) => Caps::settings().hold_fill(),
     /// One quantity's live scan list (SE7): the discovered sensors of that kind; press saves + connects.
-    SensorScan(SensorScanScreen) => Settings,
+    SensorScan(SensorScanScreen) => Caps::settings(),
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
-    Language(LanguageScreen) => Settings,
+    Language(LanguageScreen) => Caps::settings(),
     /// The System settings screen (epic #615 S5): the "Install update from card" door into the
     /// SD-sideload firmware-update flow.
-    System(SystemScreen) => Settings,
-    Reset(ResetScreen) => Settings,
+    System(SystemScreen) => Caps::settings(),
+    Reset(ResetScreen) => Caps::settings().hold_fill(),
     /// The "Checking card..." scan wait (epic #615 S5): a spinner up while the board validates
     /// `UPDATE.BIN`; the board's answer replaces it with the confirm screen or an error card.
-    DfuCheck(DfuCheckScreen) => Nav,
+    DfuCheck(DfuCheckScreen) => Caps::modal().timed(),
     /// The install confirm (epic #615 S5): installed → update versions, the no-undo / same-version
     /// warnings, and the standard two-row Install / Cancel chrome.
-    DfuConfirm(DfuConfirmScreen) => Nav,
+    DfuConfirm(DfuConfirmScreen) => Caps::modal(),
     /// The "Preparing update..." progress spinner (epic #615 S5): up while the install one-shot
     /// waits for the board's drain; the drain swaps it for the terminal DfuInstalling card.
-    DfuProgress(DfuProgressScreen) => Nav,
+    DfuProgress(DfuProgressScreen) => Caps::modal().timed(),
     /// The static, terminal "Installing update" card: board-pushed right before the arm's warm
     /// reset — the last painted frame, which the MIP panel holds through the whole install.
-    DfuInstalling(DfuInstallingScreen) => Nav,
+    DfuInstalling(DfuInstallingScreen) => Caps::modal(),
     /// The scan-error card (epic #615 S5): a typed [`DfuScanError`](crate::dfu::DfuScanError) as a
     /// plain sentence; Back dismisses.
-    DfuError(DfuErrorScreen) => Nav,
+    DfuError(DfuErrorScreen) => Caps::modal(),
     /// The one-time "Updated to vX" post-update toast (epic #615 S5), host-pushed on the first
     /// healthy boot after an update.
-    DfuUpdated(DfuUpdatedScreen) => Nav,
+    DfuUpdated(DfuUpdatedScreen) => Caps::modal(),
     /// The one-time "UPDATE FAILED" card, host-pushed by the boot-outcome reconcile on the first
     /// boot after an armed update that did not end with the staged image running (never started /
     /// reverted).
-    DfuFailed(DfuFailedScreen) => Nav,
+    DfuFailed(DfuFailedScreen) => Caps::modal(),
 }
 
 impl Screen {
@@ -532,6 +743,23 @@ impl Screen {
     /// top) rather than replacing the view — derived from [`kind`](Screen::kind).
     pub fn is_overlay(&self) -> bool {
         self.kind().is_overlay()
+    }
+
+    /// **Pre-draw acquisition** (#803): resolve any reader-backed one-shot state before drawing, so
+    /// [`draw`](Screen::draw) stays side-effect-free (target + render-stats only). Run on the base
+    /// screen once per frame, ahead of the draw loop, whenever the host built the `Reader`
+    /// ([`base_needs_reader`](crate::App::base_needs_reader) reads the same [`ReaderNeed`]
+    /// declaration). Only the two POI screens act — the list takes its category snapshot into the
+    /// shared scratch, the detail resolves its opening-hours cache; every other screen is a no-op.
+    /// Intentionally partial, like [`tick_timers`](Screen::tick_timers) and
+    /// [`wants_hold_fill`](Screen::wants_hold_fill): a row that declares no reader need never lands
+    /// here.
+    pub(crate) fn prepare(&mut self, px: &mut Prepare) {
+        match self {
+            Screen::PoiList(s) => s.prepare(px),
+            Screen::PoiDetail(s) => s.prepare(px),
+            _ => {}
+        }
     }
 
     /// Whether this screen's `draw` would fill a live hold bar for its **current** selection/state
@@ -1391,5 +1619,124 @@ mod tests {
         let fitted = fit_caption("Pass Summit Overlook", 10 * cw, &mut buf, Font::Label);
         assert_eq!(fitted, "Pass Su...", "7 leading chars + ellipsis fill the 10-cell budget");
         assert!(text_width(fitted, Font::Label) as i32 <= 10 * cw, "and it stays within budget");
+    }
+
+    // ── Capability metadata (#803) ──────────────────────────────────────────────────────────────
+
+    /// The [`Caps`] table and the [`NAMES`](Screen::NAMES) table are generated from the same
+    /// `screens!` rows, so they must stay index-for-index aligned — the enumeration the capability
+    /// invariants below iterate.
+    #[test]
+    fn caps_table_pairs_with_names() {
+        assert_eq!(Screen::CAPS.len(), Screen::NAMES.len(), "one Caps per screen name");
+        assert!(!Screen::CAPS.is_empty());
+    }
+
+    /// The generated per-variant [`caps`](Screen::caps) match agrees with the [`CAPS`](Screen::CAPS)
+    /// const table at each variant's index — pins the macro plumbing (both come from the one table,
+    /// like [`name`](Screen::name) vs [`NAMES`](Screen::NAMES)).
+    #[test]
+    fn constructed_caps_match_the_table() {
+        for (name, scr) in [
+            ("Home", Screen::Home(HomeScreen::new())),
+            ("Map", Screen::Map(MapScreen::new())),
+            ("Statistics", Screen::Statistics(StatisticsScreen::new())),
+            ("Menu", Screen::Menu(MenuScreen::new())),
+            ("PoiList", Screen::PoiList(PoiListScreen::new(obc_reader::PoiCategory::Water))),
+        ] {
+            let idx = Screen::NAMES.iter().position(|n| *n == name).unwrap();
+            assert_eq!(scr.caps(), Screen::CAPS[idx], "{name}.caps() must equal CAPS[{idx}]");
+            assert_eq!(scr.kind(), Screen::CAPS[idx].kind, "{name}.kind() derives from its Caps");
+        }
+    }
+
+    /// Every screen's declared capabilities are internally consistent — the acceptance-criterion
+    /// invariants. A screen that declares one capability must declare the companions it implies, so
+    /// a mis-declared row fails here instead of silently mis-routing a policy at runtime.
+    #[test]
+    fn every_screen_capability_combination_is_valid() {
+        for (name, c) in Screen::NAMES.iter().zip(Screen::CAPS) {
+            // Reader need is pinned to base content: the Map is the one always-reader screen, and the
+            // two POI one-shot readers are chrome-kind list/detail screens; no other screen reads it.
+            match c.reader {
+                ReaderNeed::Always => assert_eq!(c.base, BaseContent::Map, "{name}: Always-reader ⟺ Map base"),
+                ReaderNeed::Never => assert_ne!(c.base, BaseContent::Map, "{name}: a Map base must read Always"),
+                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours => {
+                    assert_eq!(c.base, BaseContent::Chrome, "{name}: a POI reader screen is chrome-based");
+                    assert_eq!(c.kind, ScreenKind::Nav, "{name}: a POI reader screen is Nav-kind");
+                }
+            }
+            // A non-chrome base (Map / LiveRiding) is a live view fed by the fix — and a deliberate
+            // ride view (never idle-returned mid-ride).
+            if c.base != BaseContent::Chrome {
+                assert!(c.ride_view, "{name}: a live-data base must be a ride view");
+                assert!(!c.idle_exempt, "{name}: a live view is not a modal exemption");
+            }
+            // The browse-exempt "deliberate view when not tracking" is the Map alone.
+            if c.browse_exempt {
+                assert_eq!(c.base, BaseContent::Map, "{name}: only the Map is browse-exempt");
+            }
+            // Modal exemptions are chrome cards/waits, never ride views.
+            if c.idle_exempt {
+                assert_eq!(c.base, BaseContent::Chrome, "{name}: an idle-exempt modal is chrome-based");
+                assert!(!c.ride_view, "{name}: an idle-exempt modal is not a ride view");
+            }
+            // A settings-subtree screen is pure chrome with no live/idle/reader/remap role.
+            if c.kind == ScreenKind::Settings {
+                assert_eq!(c.base, BaseContent::Chrome, "{name}: a settings screen is chrome-based");
+                assert_eq!(c.reader, ReaderNeed::Never, "{name}: a settings screen needs no reader");
+                assert_eq!(c.remap, RemapKind::None, "{name}: a settings screen holds no catalog index");
+                assert!(!c.ride_view && !c.idle_exempt && !c.browse_exempt, "{name}: settings carry no view policy");
+            }
+            // A screen that remaps catalog indices is a chrome list/card, not a live view.
+            if c.remap != RemapKind::None {
+                assert_eq!(c.base, BaseContent::Chrome, "{name}: a remap-participating screen is chrome-based");
+            }
+        }
+    }
+
+    /// Every declared capability is actually exercised by at least one screen, and the headline
+    /// classifications land on the screens they should — a coarse guard that the table isn't
+    /// mis-populated (e.g. every reader kind, both remap catalogs, and the ride-view/modal roles
+    /// have a member).
+    #[test]
+    fn capability_coverage_and_landmarks() {
+        let caps = Screen::CAPS;
+        let named = |name: &str| caps[Screen::NAMES.iter().position(|n| *n == name).unwrap()];
+        // Landmark screens carry the capabilities their behavior depends on.
+        assert_eq!(named("Map").base, BaseContent::Map);
+        assert_eq!(named("Map").reader, ReaderNeed::Always);
+        assert!(named("Map").browse_exempt && named("Map").ride_view && named("Map").timed);
+        assert_eq!(named("Statistics").base, BaseContent::LiveRiding);
+        assert_eq!(named("Climb").base, BaseContent::LiveRiding);
+        assert_eq!(named("PoiList").reader, ReaderNeed::PoiSnapshot);
+        assert_eq!(named("PoiDetail").reader, ReaderNeed::PoiHours);
+        assert!(named("RideControl").ride_view, "the Paused page is a deliberate ride view");
+        assert!(named("Passkey").idle_exempt, "the passkey card is idle-exempt");
+        assert!(named("RouteSwap").idle_exempt, "the route-swap prompt is idle-exempt");
+        assert_eq!(named("RouteMenu").remap, RemapKind::Route);
+        assert_eq!(named("Rides").remap, RemapKind::Ride);
+        // Each capability value is used by at least one screen (nothing dead-declared).
+        assert!(caps.iter().any(|c| c.reader == ReaderNeed::Always));
+        assert!(caps.iter().any(|c| c.reader == ReaderNeed::PoiSnapshot));
+        assert!(caps.iter().any(|c| c.reader == ReaderNeed::PoiHours));
+        assert!(caps.iter().any(|c| c.remap == RemapKind::Route));
+        assert!(caps.iter().any(|c| c.remap == RemapKind::Ride));
+        assert!(caps.iter().any(|c| c.timed));
+        assert!(caps.iter().any(|c| c.hold_fill));
+        assert!(caps.iter().any(|c| c.idle_exempt));
+        assert!(caps.iter().any(|c| c.base == BaseContent::Map));
+        assert!(caps.iter().any(|c| c.base == BaseContent::LiveRiding));
+        assert!(caps.iter().any(|c| c.base == BaseContent::Chrome));
+    }
+
+    /// The capability additions compile to `const` tables and generated matches, never to fields on
+    /// the enum — so `size_of::<Screen>()` (and thus every `.bss` screen-stack slot) is unchanged.
+    /// The board's resident-RAM guard is the ELF authority; this pins the host measurement (the
+    /// pre-#803 baseline: 104 B on the 64-bit host) so a variant-widening regression fails in CI.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn screen_enum_size_is_unchanged() {
+        assert_eq!(core::mem::size_of::<Screen>(), 104, "capability metadata must not inflate the Screen enum");
     }
 }
