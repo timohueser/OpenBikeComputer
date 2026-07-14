@@ -22,7 +22,6 @@
 //! the device already has a fix (the list required one), so the local date is plausible — no
 //! separate "clock unset" state in v1 (see the epic's locked decision).
 
-use core::cell::Cell;
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
@@ -46,25 +45,26 @@ use super::{palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
 #[derive(Debug)]
 pub struct PoiDetailScreen {
     poi: Poi,
-    /// The resolved schedule, cached on the first draw with a `Reader`. Tri-state: `None` = not
-    /// resolved yet (keep asking for the reader), `Some(None)` = resolved to *no hours*
-    /// (`hours_ref` 0xFFFF or an out-of-range ref), `Some(Some(_))` = the pooled schedule. `Cell`
-    /// so the one draw-time read mutates without a `&mut self` draw.
-    schedule: Cell<Option<Option<WeeklySchedule>>>,
+    /// The resolved schedule, cached on the first [`prepare`](Self::prepare) pass with a `Reader`.
+    /// Tri-state: `None` = not resolved yet (keep asking for the reader), `Some(None)` = resolved to
+    /// *no hours* (`hours_ref` 0xFFFF or an out-of-range ref), `Some(Some(_))` = the pooled schedule.
+    /// A plain field (#803): the acquisition moved out of the draw path into `prepare`, so the read
+    /// mutates `&mut self` there and [`draw`](Self::draw) consumes it immutably.
+    schedule: Option<Option<WeeklySchedule>>,
 }
 
 impl PoiDetailScreen {
     /// Open the detail for `poi` (cloned out of the list snapshot by the list's `Gesture::Press`).
-    /// The schedule is resolved lazily on the first draw with a `Reader`.
+    /// The schedule is resolved lazily on the first [`prepare`](Self::prepare) pass with a `Reader`.
     pub fn new(poi: Poi) -> Self {
-        PoiDetailScreen { poi, schedule: Cell::new(None) }
+        PoiDetailScreen { poi, schedule: None }
     }
 
-    /// Whether the schedule cache still needs a `Reader` at draw — it hasn't resolved yet. Drives
+    /// Whether the schedule cache still needs a `Reader` — it hasn't resolved yet. Drives
     /// [`base_needs_reader`](crate::App::base_needs_reader) so the board host keeps building the
-    /// reader until the one hours read lands, then stops.
+    /// reader until the one hours read lands in `prepare`, then stops.
     pub(crate) fn hours_pending(&self) -> bool {
-        self.schedule.get().is_none()
+        self.schedule.is_none()
     }
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
@@ -89,23 +89,23 @@ impl PoiDetailScreen {
         }
     }
 
-    /// Resolve the POI's schedule on the first draw that has a `Reader`, caching it in `self.schedule`
-    /// through the `Cell`. A no-op once resolved (the cache is `Some`). Runs in the draw path — the
-    /// only place [`Render::reader`] exists — so [`base_needs_reader`](crate::App::base_needs_reader)
-    /// keeps `rx.reader` `Some` here until this lands.
-    fn ensure_schedule(&self, rx: &Render) {
-        if self.schedule.get().is_some() {
+    /// Resolve the POI's schedule on the first [`prepare`](super::Screen::prepare) pass that has a
+    /// `Reader`, caching it in `self.schedule`. A no-op once resolved (the cache is `Some`). Runs in
+    /// the pre-draw prepare pass (#803) — the one place the side-effectful hours read lives — so
+    /// [`base_needs_reader`](crate::App::base_needs_reader) keeps the `Reader` built and passed here
+    /// until this lands, then [`draw`](Self::draw) consumes the cache immutably.
+    pub(crate) fn prepare(&mut self, px: &super::Prepare) {
+        if self.schedule.is_some() {
             return; // already resolved (possibly to `None` — no hours)
         }
-        let Some(reader) = rx.reader else {
-            return; // no map this frame — retry next draw
+        let Some(reader) = px.reader else {
+            return; // no map this frame — retry next prepare
         };
-        self.schedule.set(Some(reader.poi_hours(self.poi.hours_ref)));
+        self.schedule = Some(reader.poi_hours(self.poi.hours_ref));
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        self.ensure_schedule(rx);
 
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::PoiDetailTitle), "");
@@ -170,7 +170,7 @@ impl PoiDetailScreen {
         // each open interval on its own Body row (`08:00 – 18:00`). Stacking the (up to two) ranges
         // keeps each within the 240 px panel, where a single two-range line wouldn't fit.
         let head_y = dist_y + Font::Body.cap_height() as i32 + 16;
-        let schedule = self.schedule.get().flatten();
+        let schedule = self.schedule.flatten();
         let weekday = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day);
         let intervals: &[Interval] = match &schedule {
             Some(sched) => sched.today_intervals(weekday),

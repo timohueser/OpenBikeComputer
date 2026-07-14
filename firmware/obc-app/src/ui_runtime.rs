@@ -19,10 +19,13 @@
 
 use embedded_graphics::primitives::Rectangle;
 
+use obc_ports::Fix;
+use obc_reader::Reader;
+
 use crate::catalog_state::CatalogState;
 use crate::dirty::Dirty;
 use crate::input_plane::InputPlane;
-use crate::screen::{self, HomeScreen, MapScreen, PoiScratch, Screen, Stack, WarningFlags};
+use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack, WarningFlags};
 use crate::settings::{DateTime, Settings};
 
 /// One committed route upload, as [`App::notify_route_uploaded`](crate::App::notify_route_uploaded)
@@ -295,49 +298,70 @@ impl UiRuntime {
         self.next_wake_ms = next_wake;
     }
 
-    /// Whether the base screen shows live sensor data (user fix / ride accumulators) — Map,
-    /// Statistics and Climb do, so a fresh fix must redraw them; Home and the menus don't. The base
-    /// is the lowest *opaque* drawn screen, so an overlay (Ride control) over a riding view still
-    /// counts as live since the map keeps moving under the pause panel.
-    pub(crate) fn shows_live_data(&self) -> bool {
+    /// The [`BaseContent`] of the base (lowest *opaque*) screen — the single declared fact the
+    /// live-data / map-I/O / indicator gates read instead of open-coding a `matches!` on the enum.
+    /// The base is the lowest opaque drawn screen, so an overlay over a riding view still reports the
+    /// riding view's content.
+    fn base_content(&self) -> BaseContent {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_)))
+        self.stack.get(base).map(|s| s.caps().base).unwrap_or(BaseContent::Chrome)
+    }
+
+    /// Whether the base screen shows live sensor data (user fix / ride accumulators) — the Map and
+    /// the live-riding views ([`BaseContent::Map`] / [`LiveRiding`](BaseContent::LiveRiding)) do, so
+    /// a fresh fix must redraw them; Home and the menus (chrome) don't.
+    pub(crate) fn shows_live_data(&self) -> bool {
+        self.base_content() != BaseContent::Chrome
     }
 
     /// Whether the base (lowest opaque) screen draws the **map** — the [`Map`](crate::screen::map)
-    /// screen, the only one that reads the streamed-map [`Reader`]. A render-on-demand host polls
-    /// this to skip the whole map pipeline on a non-map frame: don't build the `Reader` (an SD
-    /// style-table parse + its stack spike), pass `None` to
+    /// screen ([`BaseContent::Map`]), the only one that reads the streamed-map [`Reader`]. A
+    /// render-on-demand host polls this to skip the whole map pipeline on a non-map frame: don't
+    /// build the `Reader` (an SD style-table parse + its stack spike), pass `None` to
     /// [`render_map_timed`](App::render_map_timed), and a menu / Home redraw draws only its own
     /// chrome with zero map I/O.
     pub(crate) fn base_draws_map(&self) -> bool {
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        matches!(self.stack.get(base), Some(Screen::Map(_)))
+        self.base_content() == BaseContent::Map
     }
 
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
     /// [`render_map_timed`](App::render_map_timed) — a superset of [`base_draws_map`](App::base_draws_map).
-    /// The Map always does; the **POI list** screen (issue #425) does too, but only until it has
-    /// taken its one-shot snapshot; and the **POI detail** screen (issue #444) does until it has
-    /// resolved its one hours read. Both read the `Reader` in the *draw* path off `rx.reader`, so a
-    /// render-on-demand host (the board's two-plane loop) must build the `Reader` on the frame each
-    /// one-shot read is taken. Once the list's [`poi_snapshot_pending`](App::poi_snapshot_pending) is
-    /// false — or the detail's schedule cache has resolved — the screen draws from its frozen
-    /// state with no `Reader`, so the host skips the build again.
+    /// Chosen from the base screen's declared [`ReaderNeed`]: the Map always needs it; the **POI
+    /// list** screen (issue #425) does too, but only until it has taken its one-shot snapshot; and
+    /// the **POI detail** screen (issue #444) does until it has resolved its one hours read. Both
+    /// take their one-shot read in the pre-draw [`prepare`](crate::screen::Screen::prepare) pass off
+    /// the `Reader`, so a render-on-demand host (the board's two-plane loop) must build the `Reader`
+    /// on the frame each one-shot read is taken. Once the list's
+    /// [`poi_snapshot_pending`](App::poi_snapshot_pending) is false — or the detail's schedule cache
+    /// has resolved — the screen draws from its frozen state with no `Reader`, so the host skips the
+    /// build again.
     ///
     /// The sim's `render_frame` always passes `Some(reader)`, so it never consults this — only the
     /// board host does, keeping its per-frame `Reader` build (and stack spike) off every non-map,
     /// already-resolved frame.
     pub(crate) fn base_needs_reader(&self) -> bool {
-        if self.base_draws_map() {
-            return true;
-        }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        match self.stack.get(base) {
-            Some(Screen::PoiList(s)) => self.poi_snapshot_pending(s),
-            // The detail's hours read runs at draw off `rx.reader`; keep it built until it lands.
-            Some(Screen::PoiDetail(s)) => s.hours_pending(),
-            _ => false,
+        let Some(scr) = self.stack.get(base) else { return false };
+        match scr.caps().reader {
+            ReaderNeed::Always => true,
+            ReaderNeed::PoiSnapshot => matches!(scr, Screen::PoiList(s) if self.poi_snapshot_pending(s)),
+            // The detail's hours read runs in `prepare` off the `Reader`; keep it built until it lands.
+            ReaderNeed::PoiHours => matches!(scr, Screen::PoiDetail(s) if s.hours_pending()),
+            ReaderNeed::Never => false,
+        }
+    }
+
+    /// Run the base (lowest-opaque) screen's pre-draw acquisition (#803): hand it the frame's
+    /// `Reader` and fix so it resolves any reader-backed one-shot state (the POI snapshot / hours)
+    /// into immutable prepared state before the draw loop. A no-op for every non-POI base — only the
+    /// two POI screens' [`prepare`](crate::screen::Screen::prepare) acts. Called by
+    /// [`render_map_timed`](App::render_map_timed) ahead of building the draw context, so `Render`
+    /// carries the POI scratch read-only and draw stays side-effect-free.
+    pub(crate) fn prepare_base(&mut self, reader: Option<&Reader>, user_fix: Option<Fix>) {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        if let Some(scr) = self.stack.get_mut(base) {
+            let mut px = screen::Prepare { reader, poi_scratch: &mut self.poi_scratch, user_fix };
+            scr.prepare(&mut px);
         }
     }
 
@@ -395,12 +419,12 @@ impl UiRuntime {
     }
 
     /// Whether the base (lowest opaque) screen draws the connected indicator — Home, or any framed
-    /// screen with a title bar (a menu / list / prompt), i.e. everything that isn't a full-screen
-    /// riding view. Gates [`set_ble_status`](App::set_ble_status)'s repaint so a link change never
-    /// re-renders the map on the Map / Statistics / Climb screens, which deliberately omit the glyph.
+    /// screen with a title bar (a menu / list / prompt): everything whose base is
+    /// [`BaseContent::Chrome`] rather than a full-screen riding view. Gates
+    /// [`set_ble_status`](App::set_ble_status)'s repaint so a link change never re-renders the map
+    /// on the Map / Statistics / Climb screens, which deliberately omit the glyph.
     pub(crate) fn indicator_visible(&self) -> bool {
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        !matches!(self.stack.get(base), Some(Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_)))
+        self.base_content() == BaseContent::Chrome
     }
 
     /// Whether a hold gesture is charging right now — either button down, its long-press not yet
@@ -725,51 +749,33 @@ impl UiRuntime {
         if tracking {
             !self.is_ride_view()
         } else {
-            // Not tracking: any overlay above the Home root would return to Home — **except** the
-            // route-less browse Map (Menu → Map). Riding with the map open without recording is a
-            // deliberate view, not idleness, so it's exempt just like a ride view is mid-ride.
-            self.stack.len() > 1 && !matches!(self.stack.last(), Some(Screen::Map(_)))
+            // Not tracking: any overlay above the Home root would return to Home — **except** a
+            // browse-exempt view (the route-less browse Map, Menu → Map). Riding with the map open
+            // without recording is a deliberate view, not idleness, so it's exempt (the declared
+            // `browse_exempt` capability) just like a ride view is mid-ride.
+            self.stack.len() > 1 && !self.stack.last().is_some_and(|s| s.caps().browse_exempt)
         }
     }
 
     /// Whether the current top screen is **exempt** from the idle-return timeout — the modal cards
     /// that must stay put until dismissed (the BLE passkey card, the three route-received /
-    /// -updated / -swap popups, the #504 sensor/storage warning card) and the route-planning
-    /// spinner (a multi-second wait that isn't idleness). While one of these is up, no idle return
-    /// fires and no idle wake is armed.
+    /// -updated / -swap popups, the #504 sensor/storage warning card), the route-planning spinner (a
+    /// multi-second wait that isn't idleness), and the whole SD-sideload update flow (a card/wait the
+    /// rider is acting on — never yank it Home mid-flow). Reads the top screen's declared
+    /// [`idle_exempt`](crate::screen::Caps::idle_exempt) capability, so a new modal card can't be
+    /// forgotten here. While one is up, no idle return fires and no idle wake is armed.
     fn idle_return_exempt(&self) -> bool {
-        matches!(
-            self.stack.last(),
-            Some(
-                Screen::Passkey(_)
-                    | Screen::RouteReceived(_)
-                    | Screen::RouteUpdated(_)
-                    | Screen::RouteSwap(_)
-                    | Screen::NavPlanning(_)
-                    | Screen::Warning(_)
-                    // The whole SD-sideload update flow (epic #615 S5): a card/wait the rider is
-                    // acting on — never yank it Home mid-flow (the progress screen ends in a reboot).
-                    | Screen::DfuCheck(_)
-                    | Screen::DfuConfirm(_)
-                    | Screen::DfuProgress(_)
-                    | Screen::DfuInstalling(_)
-                    | Screen::DfuError(_)
-                    | Screen::DfuUpdated(_)
-                    | Screen::DfuFailed(_)
-            )
-        )
+        self.stack.last().is_some_and(|s| s.caps().idle_exempt)
     }
 
     /// Whether the current top screen is one of the **deliberate ride views** that must never time
     /// out while a ride is being tracked — the Map (the ride base), Statistics, Climb, and the
     /// Paused / Ride-control page. A rider sitting on any of these is watching live ride data, not
     /// lost in a menu. Every *other* screen (menus, lists, settings, route overview) returns to the
-    /// Map on the idle timeout when tracking.
+    /// Map on the idle timeout when tracking. Reads the top screen's declared
+    /// [`ride_view`](crate::screen::Caps::ride_view) capability.
     fn is_ride_view(&self) -> bool {
-        matches!(
-            self.stack.last(),
-            Some(Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_))
-        )
+        self.stack.last().is_some_and(|s| s.caps().ride_view)
     }
 
     /// Navigate "back to where it belongs" once the idle-return timeout ([`idle_return`]) has

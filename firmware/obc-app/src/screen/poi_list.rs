@@ -150,10 +150,9 @@ impl PoiListScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        // Lazily take the snapshot on the first draw that has a Reader **and** a fix, into the
-        // App-owned scratch. A no-op once the scratch already holds this category.
-        self.ensure_snapshot(rx);
-
+        // The snapshot was taken by the pre-draw `prepare` pass (#803), so draw is side-effect-free:
+        // it reads the frozen scratch read-only. Before `prepare` has landed a snapshot (no fix /
+        // no reader yet) the scratch simply doesn't hold this category and the empty state covers it.
         let (w, h) = (rx.w, rx.h);
         let queried = rx.poi_scratch.holds(self.category);
         let pois: &[Poi] = if queried { &rx.poi_scratch.pois } else { &[] };
@@ -190,26 +189,26 @@ impl PoiListScreen {
         });
     }
 
-    /// Fill the [`App`](crate::App)-owned scratch with this category's nearest-16 on the first draw
-    /// that has both a `Reader` and a fix — then never again (the scratch already `holds` the
-    /// category). A re-entry invalidated the scratch in [`PoiMenuScreen`](super::PoiMenuScreen), so
-    /// it re-queries.
+    /// Fill the [`App`](crate::App)-owned scratch with this category's nearest-16 on the first
+    /// **prepare** pass that has both a `Reader` and a fix — then never again (the scratch already
+    /// `holds` the category). A re-entry invalidated the scratch in
+    /// [`PoiMenuScreen`](super::PoiMenuScreen), so it re-queries.
     ///
-    /// Runs in the **draw** path — the only place [`Render::reader`] exists — writing solely to the
-    /// `&mut` [`Render::poi_scratch`] (no screen mutation, so `draw` stays `&self`). On a host that
-    /// skips building the `Reader` on a non-map frame,
-    /// [`base_needs_reader`](crate::App::base_needs_reader) keeps `rx.reader` `Some` here until the
-    /// snapshot lands.
-    fn ensure_snapshot(&self, rx: &mut Render) {
-        if rx.poi_scratch.holds(self.category) {
+    /// Runs in the pre-draw [`prepare`](super::Screen::prepare) pass (#803) — the one place the
+    /// side-effectful `Reader` query lives — writing solely to the shared [`Prepare::poi_scratch`];
+    /// [`draw`](Self::draw) then reads the frozen snapshot. On a host that skips building the
+    /// `Reader` on a non-map frame, [`base_needs_reader`](crate::App::base_needs_reader) keeps the
+    /// `Reader` built and passed here until the snapshot lands.
+    pub(crate) fn prepare(&self, px: &mut super::Prepare) {
+        if px.poi_scratch.holds(self.category) {
             return; // already queried this category
         }
-        let (Some(reader), Some(fix)) = (rx.reader, rx.state.user_fix) else {
-            return; // no map or no fix yet — retry next draw (the empty state covers "no fix ever")
+        let (Some(reader), Some(fix)) = (px.reader, px.user_fix) else {
+            return; // no map or no fix yet — retry next prepare (the empty state covers "no fix ever")
         };
         // `nearest_pois` takes `pos` as (lon, lat) µdeg — pass the fix in that order.
-        let _ = reader.nearest_pois(self.category, (fix.lon, fix.lat), &mut rx.poi_scratch.pois);
-        rx.poi_scratch.taken_for = Some(self.category);
+        let _ = reader.nearest_pois(self.category, (fix.lon, fix.lat), &mut px.poi_scratch.pois);
+        px.poi_scratch.taken_for = Some(self.category);
     }
 }
 

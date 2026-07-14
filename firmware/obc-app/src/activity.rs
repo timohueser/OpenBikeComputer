@@ -121,18 +121,24 @@ pub(crate) struct Motion {
 /// actually-ridden accumulators. Small and `Copy` — the screens read it by value.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Activity {
-    /// The operating mode. Deliberately still `pub` (#802's privatization pass): the screens
-    /// flip it through their `Ctx`, and the screen-harness integration tests drive a bare
-    /// `Activity` the same way — there is no command/query equivalent for that seam yet (narrowing
-    /// the screen contexts is #803). Hosts read it through [`App::mode`](crate::App::mode).
+    /// The operating mode. Deliberately still `pub`: the screens flip it through their `Ctx`, and
+    /// the bare-`Activity` screen-harness integration tests (`tests/screens.rs`) stage and assert it
+    /// directly. #803 narrowed the **draw/prepare** contexts (the POI scratch moved behind the
+    /// immutable [`Render`](crate::screen::Render) + the [`Prepare`](crate::screen::Prepare) action
+    /// view), but this field's staging seam is the bare-`Activity` harness, not a draw context;
+    /// privatizing it would need read/write accessors added purely for those integration tests (the
+    /// epic's "no API just for tests" line), so it is deferred to #812, which owns the
+    /// test-harness/compat cleanup. Hosts read it through [`App::mode`](crate::App::mode).
     pub mode: Mode,
     /// Index into the route [`Catalog`](crate::route::Catalog) of the loaded route, or `None` when
     /// idle. The geometry is opened separately by the host (only the active route is resident).
-    /// Deliberately still `pub` (#802's privatization pass): hosts are fully covered by
+    /// Deliberately still `pub`: hosts are fully covered by
     /// [`App::active_route_index`](crate::App::active_route_index) /
-    /// [`App::activate_route`](crate::App::activate_route) and use them, but the screen-harness
-    /// integration tests preload a bare `Activity` exactly as the Route menu's `Ctx` write does —
-    /// a seam #803's context narrowing owns.
+    /// [`App::activate_route`](crate::App::activate_route) and use them, but the bare-`Activity`
+    /// screen-harness integration tests (`tests/screens.rs`) preload it exactly as the Route menu's
+    /// `Ctx` write does. #803 narrowed the draw/prepare contexts (see [`mode`](Activity::mode)); this
+    /// field's remaining staging seam is that harness, so its privatization is deferred to #812 with
+    /// the rest of the test-harness/compat cleanup.
     pub active_route: Option<usize>,
     /// Index into the ride catalog of the ride whose **detail screen** is open, or `None` (epic
     /// #678 T2 / #680) — the ride namespace's `active_route`: set on detail entry, cleared on
@@ -214,11 +220,15 @@ pub struct Activity {
     /// compute the progress fraction without re-reading the route. `0` when none loaded.
     pub(crate) route_total_m: u32,
     /// Matched distance along the route (m): the riding cursor / progress bar. Frozen while
-    /// off-route.
+    /// off-route. Written internally via [`apply_match`](Activity::apply_match); still `pub` because
+    /// the bare-`Activity` upload integration test (`tests/upload.rs`) stages **and** asserts the
+    /// three match readouts directly — the same test-harness staging seam as
+    /// [`mode`](Activity::mode), deferred to #812.
     pub progress_m: u32,
-    /// Whether the rider is currently off-route.
+    /// Whether the rider is currently off-route. Match readout — see [`progress_m`](Activity::progress_m).
     pub off_route: bool,
-    /// Live cross-track distance to the route (m) — the "off route · NNN m" readout.
+    /// Live cross-track distance to the route (m) — the "off route · NNN m" readout. Match readout —
+    /// see [`progress_m`](Activity::progress_m).
     pub dist_to_route_m: u32,
     /// Index into the App-owned [`Climbs`](obc_route::Climbs) list of the climb the rider is
     /// currently on, or `None` when between climbs / off any climb. Set by
