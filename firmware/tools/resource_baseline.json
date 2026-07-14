@@ -13,8 +13,8 @@
   "board": {
     "default": {
       "features": "default (real sensors + LS021/FLPR, constrained nrf-mem capacities)",
-      "measured_resident": 200864,
-      "resident_ram_max": 200868,
+      "measured_resident": 200872,
+      "resident_ram_max": 200876,
       "floating_stable_observation": {
         "rustc": "1.97.0 (2d8144b78 2026-07-07)",
         "bss": 200772,
@@ -56,7 +56,8 @@
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE, constrained nrf-mem capacities)",
-      "resident_ram_max": 212768,
+      "measured_resident": 212792,
+      "resident_ram_max": 212796,
       "uninit_max": 1024,
       "measured_flash": 1055284,
       "framebuffer_count": 1,
