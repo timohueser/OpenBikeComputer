@@ -53,7 +53,7 @@ use crate::SharedStore;
 /// Store-movement edge for the app UI (epic #447): [`bump_revision`](ObjectStore::bump_revision) —
 /// the single chokepoint for every commit/delete — increments this, the same edge that notifies the
 /// phone's `storeChanged`. The map plane's ride loop drains it each pass via
-/// [`take_store_changed`] and rings [`App::notify_store_changed`](obc_app::App::notify_store_changed),
+/// [`take_store_changed`] and rings [`App::apply_event`](obc_app::App::apply_event),
 /// so the on-device catalog can react (the live rescan is P3 #450). A counter, not a flag, so a
 /// burst of commits between passes is never coalesced into a single missed edge.
 ///
@@ -63,7 +63,7 @@ use crate::SharedStore;
 static STORE_CHANGED: AtomicU32 = AtomicU32::new(0);
 
 /// Drain the count of store movements since the last call (epic #447). The ride loop calls this once
-/// per pass and rings `App::notify_store_changed` that many times. `0` = nothing moved.
+/// per pass and rings `App::apply_event` that many times. `0` = nothing moved.
 pub fn take_store_changed() -> u32 {
     STORE_CHANGED.swap(0, Ordering::Relaxed)
 }
@@ -77,7 +77,7 @@ pub fn take_store_changed() -> u32 {
 /// Published by [`ObjectStore::upload_finish`] **before** its revision bump, so the pass the
 /// [`STORE_WAKE`] pulls out of warm sleep sees the rescan edge and this event together; the ride
 /// loop drains the rescan **first** (the id must resolve against the fresh catalog), then rings
-/// [`App::notify_route_uploaded`](obc_app::App::notify_route_uploaded). Same module-static
+/// [`App::apply_event`](obc_app::App::apply_event). Same module-static
 /// hand-off pattern as [`STORE_CHANGED`] — the store lives behind the BLE planes' `RefCell`, the
 /// app in the ride loop; both are cooperative tasks on the one executor, so `Relaxed` suffices.
 static UPLOAD_EVENT: AtomicU32 = AtomicU32::new(0);
@@ -150,7 +150,7 @@ pub(crate) async fn wait_ride_delete() -> u16 {
 
 /// On-device trip **cascade**-delete request (epic #526, TR3/TR4) — the trip-namespace sibling of
 /// [`ROUTE_DELETE_REQ`]. The Route menu's long-press → confirm posts the trip's durable object id
-/// (`App::take_trip_delete` in the ride loop); the BLE plane drains it and runs
+/// (`App::drain_host_commands` in the ride loop); the BLE plane drains it and runs
 /// [`ObjectStore::delete_trip_cascade`] — member routes first, then the trip object — so both the
 /// route and the trip store revisions move and the phone gets **both** `storeChanged` edges (§4.3).
 static TRIP_CASCADE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
@@ -702,7 +702,7 @@ impl ObjectStore {
     /// so the **trip** store revision + `storeChanged(trip)` move — both edges emitted, as §4.3
     /// requires. A dangling stage id (already-deleted member) is skipped. `true` = the trip was deleted.
     ///
-    /// Driven by the ride loop's TR3 drain: `App::take_trip_delete` → [`request_trip_cascade`] →
+    /// Driven by the ride loop's TR3 drain: `App::drain_host_commands` → [`request_trip_cascade`] →
     /// the BLE plane's `trip_cascade_task`, mirroring the `request_route_delete` →
     /// [`delete_route`](Self::delete_route) seam (the map-only build routes through
     /// [`Storage::delete_trip_cascade_by_id`](crate::sd::Storage::delete_trip_cascade_by_id) instead).

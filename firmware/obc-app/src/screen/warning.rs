@@ -6,11 +6,11 @@
 //! card).
 //!
 //! **Raised as each fault is discovered**, coalesced onto one card: the host calls
-//! [`App::notify_warning`](crate::App::notify_warning) for the boot-time faults (sensor presence
+//! [`App::apply_event`](crate::App::apply_event) for the boot-time faults (sensor presence
 //! lands a moment after boot, the map-slow flag at open), and the app raises the recording-error
 //! flag itself the first time [`TrackSink::record`](crate::TrackSink::record) fails. Each distinct
 //! flag is shown **once per boot** — a dismissed notice doesn't nag, but a *new* flag arriving
-//! later re-opens the card (see `App::notify_warning`). The absent sensors are listed by name so
+//! later re-opens the card (see `App::apply_event`). The absent sensors are listed by name so
 //! the rider knows which module to check.
 
 use embedded_graphics::prelude::Point;
@@ -95,7 +95,7 @@ impl core::ops::Not for WarningFlags {
 }
 
 /// The advisory warning card. Carries the coalesced [`WarningFlags`] it lists; opened / updated by
-/// [`App::notify_warning`](crate::App::notify_warning), dismissed on any press.
+/// [`App::apply_event`](crate::App::apply_event), dismissed on any press.
 #[derive(Debug)]
 pub struct WarningScreen {
     flags: WarningFlags,

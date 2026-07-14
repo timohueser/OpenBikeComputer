@@ -4,14 +4,14 @@
 //!   [detail](super::PoiDetailScreen). *Create route* records a one-shot
 //!   [`NavRequest`](crate::activity::NavRequest) (rider fix → POI coord + the POI's name) and
 //!   swaps itself for the planning screen; the host drains the request via
-//!   [`App::take_nav_request`](crate::App::take_nav_request) and steps the resumable router.
+//!   [`App::drain_host_commands`](crate::App::drain_host_commands) and steps the resumable router.
 //! - [`NavPlanningScreen`] — up while the host plans (#499): a **spinning compass needle** (the
 //!   Menu dial's needle, shared drawing) over plain copy, animated by
 //!   [`tick_timers`](NavPlanningScreen::tick_timers) between the host's planner steps. **Back
 //!   cancels**: it pops straight back to the POI detail *and* records a one-shot the host drains
-//!   ([`App::take_nav_cancel`](crate::App::take_nav_cancel)) to abort the plan and discard the
+//!   ([`App::drain_host_commands`](crate::App::drain_host_commands)) to abort the plan and discard the
 //!   partial file — no failure card, the rider changed their mind. The host's answer
-//!   ([`App::notify_nav_result`](crate::App::notify_nav_result)) replaces this screen with the
+//!   ([`App::apply_event`](crate::App::apply_event)) replaces this screen with the
 //!   computed-route [overview](super::RouteOverviewScreen) (success) or the [`NavFailScreen`].
 //! - [`NavFailScreen`] — the locked **two-tier failure** card: `Exhausted` → "Too far to route
 //!   here." (there is no distance cap; the router's fixed table running out **is** the device's

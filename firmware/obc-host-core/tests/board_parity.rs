@@ -46,7 +46,7 @@ fn rescan_refeeds_the_catalog_like_the_board() {
     // board's `notify_store_changed` edge.
     let gone = routes.ids()[0];
     assert!(routes.delete_by_id(gone));
-    app.notify_store_changed();
+    app.apply_event(obc_app::HostEvent::StoreChanged);
 
     let mut host = HostLoop::new();
     reconcile(&mut host, &mut app, &mut routes);

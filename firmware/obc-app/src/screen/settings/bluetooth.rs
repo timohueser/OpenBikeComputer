@@ -83,7 +83,7 @@ impl BluetoothScreen {
                 Transition::None
             }
             // Forget phone: the guarded hold, live only while a bond is stored. Records the
-            // one-shot request for the host ([`App::take_ble_forget`](crate::App::take_ble_forget)).
+            // one-shot request for the host ([`App::drain_host_commands`](crate::App::drain_host_commands)).
             Gesture::Hold if self.selected == FORGET && cx.state.ble_paired => {
                 cx.state.ble_forget_pending = true;
                 Transition::None

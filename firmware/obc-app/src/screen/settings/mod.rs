@@ -93,7 +93,7 @@ impl SettingsScreen {
                 8 => Transition::Push(Screen::Language(LanguageScreen::new())),
                 9 => {
                     // Opening System triggers the one-shot card-free scan (T8 item 6): the host runs
-                    // the FAT free-cluster scan once on entry and answers via `App::set_card_free`.
+                    // the FAT free-cluster scan once on entry and answers via `App::apply_event`.
                     cx.activity.request_card_scan();
                     Transition::Push(Screen::System(SystemScreen::new()))
                 }

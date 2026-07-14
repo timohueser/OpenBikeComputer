@@ -1,7 +1,7 @@
 //! Synthetic staged `UPDATE.BIN` for the sim's DFU snapshots (epic #615 S5, #620).
 //!
 //! The scan/arm runs board-side on the device; the app only ever sees the *result*
-//! ([`App::notify_dfu_scan_result`](obc_app::App::notify_dfu_scan_result)). To drive the confirm /
+//! ([`App::apply_event`](obc_app::App::apply_event)). To drive the confirm /
 //! error screens headlessly the sim fakes that result — but faithfully: it builds a valid in-memory
 //! OBCU container with `obc-dfu`'s encoder and runs the **real** [`armer::scan`] over it (header
 //! decode + full CRC-32 + extent resolve), exactly the validation the board's `run_scan` performs,

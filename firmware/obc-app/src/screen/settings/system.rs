@@ -41,7 +41,7 @@ impl SystemScreen {
         match g {
             // Install update from card: refused (greyed) while recording — the arm reboots the
             // device. Otherwise post the scan one-shot and open the "Checking card..." wait; the
-            // board answers through `App::notify_dfu_scan_result`, which swaps the wait for the
+            // board answers through `App::apply_event`, which swaps the wait for the
             // confirm screen or an error card.
             Gesture::Press if !cx.activity.is_tracking() => {
                 cx.activity.request_dfu(crate::activity::DfuAction::Scan);
