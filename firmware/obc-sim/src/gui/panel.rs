@@ -521,8 +521,9 @@ impl SimGui {
             ui.label(format!("{}", s.chunks_visited));
             ui.end_row();
 
-            // Chunk-cache hit rate + source overhead. The map renders through 4 priority passes
-            // over the same chunks, so a healthy hit rate keeps reads near one per visible chunk.
+            // Chunk-cache hit rate + source overhead. The map renders in two collect passes (A:
+            // select candidates, B: re-decode winners) over the visible chunks, so a healthy hit
+            // rate keeps reads near one per visible chunk.
             let cache_reqs = s.map_chunk_hits + s.map_chunk_misses;
             ui.label("Map SD");
             if cache_reqs == 0 {

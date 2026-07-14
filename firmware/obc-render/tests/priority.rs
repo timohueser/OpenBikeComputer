@@ -5,8 +5,9 @@
 //! The setup is the worst case for any chunk-order collector: a *late* chunk holds the single
 //! priority-1 polygon while an *early* chunk is packed with enough priority-4 polygons to overflow
 //! `MAX_SPANS` on its own. A chunk-order dropper would fill the buffer from the early chunk and drop
-//! the late priority-1 polygon (no red pixels). The priority passes collect level 1 first, across
-//! all chunks, so it survives.
+//! the late priority-1 polygon (no red pixels). Stub-select ranks candidates by priority globally
+//! across all chunks before budgeting, so the late priority-1 polygon wins over the early
+//! priority-4 crowd and survives.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;

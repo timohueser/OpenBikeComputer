@@ -171,35 +171,47 @@ Walks a chunk's bytes; for each 12-byte feature header it consults
 
 `skip_ring` mirrors `read_ring`'s offset arithmetic exactly; a reader test
 (`filtered_decode_skips_without_drifting`) pins them together so they can't drift.
-This skip-don't-decode filter is what lets the priority multi-pass decode each
-feature's coordinates **at most once per frame** (§4.5).
+This skip-don't-decode filter is what lets **pass B** re-decode only the selected
+winners' coordinates (§4.5).
 
-### 4.5 Collect — the priority multi-pass (`lib.rs:441` / `collect_features:270`)
+### 4.5 Collect — two-phase stub-select (`collect.rs`)
 
 The frame buffers are fixed-size and a dense view holds far more geometry than
 fits, so when they saturate the **dropped features must be the lowest priority,
 globally across chunks** — never land/sea/major roads, wherever they live.
 
-The shipped design (a "header-scan multi-pass", `two_pass_descriptor_plan.md`):
+The shipped design (**stub-select**, issue #564; the earlier four-priority-pass
+collector is retired) splits *selection* from *geometry* — two tree walks, not
+four:
 
 ```
-clear frame_points, frame_ring_lens, spans
-for_each_chunk(...) { stats.chunks_visited += 1 }          // a 5th, count-only walk
-for level in 1..=4:                                        // lib.rs:469
-   for_each_chunk(lod, view):                              // re-walk the tree
-      for_each_feature_filtered(should_decode = style.priority == level):
-         compute feature bbox from decoded points          // lib.rs:305
-         if !feat_bbox.intersects(view): return            // tighter than the leaf cull
-         if buffers can't fit this feature: drop, return   // capacity check
-         push Span{kind,z,weight,color, pt/ring offsets, seq}
-         frame_points.extend(pts); frame_ring_lens.extend(lens)
+// Pass A — select: one tree walk, decode metadata only, keep the best K stubs
+clear stubs, frame_points, frame_ring_lens, spans
+for_each_chunk(lod, view):                                 // stats.chunks_visited += 1
+   for_each_feature:                                       // decode coords for bbox/counts
+      compute feature bbox + ring/point counts             // coords NOT retained
+      if !feat_bbox.intersects(view): continue             // tighter than the leaf cull
+      admit Stub{token, priority, counts, seq} into the    // fixed-size buffer
+        bounded max-heap keyed (priority, arrival)         //   evict the worst on overflow (#846)
+
+// Select: order the survivors and budget them
+sort stubs by (priority, arrival)                          // restore priority/arrival order
+for stub in stubs: admit under point/ring/span budgets → push Span
+
+// Pass B — re-decode winners: a second tree walk
+for_each_chunk(lod, view):
+   for_each_feature_filtered(feature is a selected winner):
+      decode coords into frame_points / frame_ring_lens
 ```
 
-Because passes run lowest-number-first and each fills the buffers *before* the
-next begins, saturation drops strictly by priority across all chunks. Each feature
-matches exactly one level, so its coordinates decode once per frame (header-scanned
-and skipped in the other three passes). Utilization is recorded for the stats panel
-(`lib.rs:485`).
+The bounded max-heap keeps the survivors at exactly the K highest-priority
+candidates seen anywhere in the view (later same-priority arrivals never displace
+earlier ones), so saturation still drops strictly by priority *globally across all
+chunks* — the guarantee is unchanged even though it is no longer implemented as
+four I/O passes. A winner's coordinates decode twice per frame (once in pass A for
+its bbox/counts, once in pass B for geometry); everything else decodes once, in
+pass A. Source traffic is therefore about **2× visible chunks**, not 4×, before
+cross-frame cache reuse. Utilization is recorded for the stats panel.
 
 `Span` (`lib.rs:382`) is the 14-byte per-feature draw record:
 `{ kind, z: i8, weight: u8, color: u16, pt_start: u16, ring_start: u16,
@@ -209,7 +221,9 @@ keep it small — thousands are buffered at coarse zoom.
 > Why not buffer-all-then-sort? The rejected "descriptor" alternative
 > (`two_pass_descriptor_plan.md` §"Why not") needs a descriptor entry per *visible*
 > feature; that buffer overflows on early chunks in a 15k-feature view and
-> reintroduces the exact bug. The multi-pass has no intermediate cap.
+> reintroduces the exact bug. Stub-select instead keeps a **bounded** stub buffer —
+> it evicts the lowest-priority stub on overflow (#846) — so there is no unbounded
+> intermediate that a dense early chunk could blow.
 
 ### 4.6 Painter sort (`lib.rs:490`)
 

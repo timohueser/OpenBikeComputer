@@ -1,7 +1,7 @@
 //! Edge-case coverage for the renderer's polygon fill, frame-buffer saturation, marker cull
 //! boundary and text clipping.
 //!
-//! `priority.rs` covers the happy-path priority passes and span saturation; `stroke.rs` the thick
+//! `priority.rs` covers the happy-path stub-select priority ordering and span saturation; `stroke.rs` the thick
 //! line. This drives a polygon that straddles a screen edge or sits wholly off-screen, the
 //! degenerate (sub-2-point) ring skip, the `MAX_FRAME_POINTS` drop trigger (distinct from the span
 //! one), the marker's 16-px cull boundary, and text running off the buffer edge — each through the

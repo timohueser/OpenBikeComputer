@@ -911,7 +911,7 @@ On the host that's a slice of memory; on the device it's a file on the SD card. 
 <figcaption>A map never has to fit in RAM — the device has 512 KB and no external memory to hold the whole file. Even the quadtree index streams, through a small block cache that coalesces the 4-byte node reads; geometry chunks stream through a slot cache too, and the renderer touches each visible chunk at most twice a frame (once to pick features, once to draw the survivors) so the SD reads stay bounded. The route's index is a short flat list, so it's read whole at open; its geometry streams chunk-by-chunk through a small resident cache of its own, so a redraw of the same route re-reads nothing either.</figcaption>
 </figure>
 
-The map's caches matter because the [priority multi-pass](../rendering/#4-decode-by-priority-the-clever-bit) walks the same visible chunks four times per frame; without a cache that would be four times the SD reads. With it, passes two through four are hits. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
+The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority-the-clever-bit) walks the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. With it, pass B's winner chunks are already resident, and a slow pan re-hits last frame's chunks. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
 
 ---
 
