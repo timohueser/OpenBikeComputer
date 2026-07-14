@@ -72,8 +72,11 @@ pub(crate) struct UiRuntime {
     /// [`render_map_timed`](App::render_map_timed) — what
     /// [`advance_animations`](App::advance_animations) hands the screen ticks so a reported
     /// [`ScreenTick::region`](screen::ScreenTick::region) is sized to the real panel. `(0, 0)`
-    /// until the first frame; region reporting abstains (full repaint) until then.
-    pub(crate) frame_size: (i32, i32),
+    /// until the first frame; region reporting abstains (full repaint) until then. Narrowed to
+    /// `i16` per dimension (#802's resident-RAM offset, the #810 u16-repack precedent): a panel
+    /// dimension is a few hundred pixels, bounded far below `i16::MAX`, and this pairs the four
+    /// bytes saved against the component boundaries' new tail padding.
+    pub(crate) frame_size: (i16, i16),
     /// One-shot clip for the **next** [`render_map_timed`](App::render_map_timed): the host that
     /// drained a region-scoped [`Dirty`](crate::Dirty) sets it via
     /// [`set_render_clip`](App::set_render_clip) so the frame's `Canvas` rejects whole primitives
@@ -273,7 +276,7 @@ impl UiRuntime {
     ) {
         self.now_ms = now_ms;
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        let (w, h) = self.frame_size;
+        let (w, h) = (self.frame_size.0 as i32, self.frame_size.1 as i32);
         let mut next_wake = None;
         for scr in self.stack.iter_mut().skip(base) {
             let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, settings, w, h, pan_active, tracking);
