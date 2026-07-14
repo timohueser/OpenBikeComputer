@@ -2,7 +2,8 @@
 //! [`App::drain_host_commands`] / [`HostMailbox`] on the command side and [`App::apply_event`] on
 //! the answer side. The class-order / coalescing / saturation / single-pending-state mechanics are
 //! pinned by the crate-internal unit tests; this file pins what a *host* observes — deferred owned
-//! answers, cancel-before-plan ordering, drop-if-gone answers, and compat/typed equivalence.
+//! answers, cancel-before-plan ordering, drop-if-gone answers, and one-pending-instance-per-class
+//! (counted store bursts, one-shot forget).
 
 use obc_app::screen::Screen;
 use obc_app::{App, AppState, DrainStatus, Gesture, HostCommand, HostEvent, HostMailbox, RouteSummary};
@@ -66,7 +67,7 @@ fn same_batch_confirm_and_back_net_no_plan() {
     let mut mailbox = drain(&mut app);
     assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan), "only the (no-op) cancel drains");
     assert!(mailbox.pop().is_none(), "the dismissed plan never reaches the host");
-    assert!(app.take_nav_request().is_none() && !app.take_nav_cancel(), "…and nothing is left behind");
+    assert!(drain(&mut app).is_empty(), "…and nothing is left behind");
 }
 
 /// Back mid-plan pops the spinner and posts the cancel; a plan posted **after** the cancel
@@ -112,20 +113,22 @@ fn remote_dfu_check_drains_as_one_typed_scan() {
     assert!(drain(&mut app).is_empty(), "exactly once");
 }
 
-/// One pending state, two doors: a store-changed burst drained typed leaves the compat counter
-/// empty, and a Forget-phone drained compat leaves the typed protocol empty.
+/// One pending instance per class: a store-changed burst drains as a single counted
+/// `RescanStore { commits: 2 }` (never coalesced to a lost edge) and empties the counter; a
+/// Forget-phone hold drains as one `ForgetBond` and leaves the protocol empty.
 #[test]
-fn typed_and_compat_doors_share_one_pending_state() {
+fn a_store_burst_counts_and_a_forget_hold_drains_once() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
 
     app.apply_event(HostEvent::StoreChanged);
-    app.notify_store_changed(); // the compat feeder increments the same counter
+    app.apply_event(HostEvent::StoreChanged); // a burst of two commits between drains
     let mut mailbox = drain(&mut app);
-    assert_eq!(mailbox.pop(), Some(HostCommand::RescanStore { commits: 2 }), "both feeds, one counted command");
-    assert_eq!(app.take_store_changed(), 0, "the typed drain emptied the compat counter");
+    assert_eq!(mailbox.pop(), Some(HostCommand::RescanStore { commits: 2 }), "the burst rides as one counted command");
+    assert!(drain(&mut app).is_empty(), "the drain emptied the counter");
 
     app.state.ble_forget_pending = true; // the Bluetooth screen's guarded hold
-    assert!(app.take_ble_forget());
-    assert!(drain(&mut app).is_empty(), "the compat take emptied the typed protocol");
+    let mut mailbox = drain(&mut app);
+    assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
+    assert!(drain(&mut app).is_empty(), "drained exactly once");
     assert!(!app.has_pending_host_command());
 }

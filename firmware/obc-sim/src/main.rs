@@ -128,7 +128,7 @@ struct Args {
     /// before the render. Implied by `--inject-nav-fail`.
     nav_hold: bool,
     /// Headless `--png` only: inject a **routing failure** (`exhausted` | `nopath`) after the
-    /// script runs, through the real `App::notify_nav_result` seam — so the two failure cards
+    /// script runs, through the real `App::apply_event` seam — so the two failure cards
     /// render deterministically for the snapshot net. Needed because the range tier ("Too far to
     /// route here." = the router's fixed table exhausting) is unreachable on the small fixture
     /// graphs: grimsel plans even ~25 km routes inside the 1536-node table and monaco spans ~4 km.
@@ -141,7 +141,7 @@ struct Args {
     /// buttons; the catalog is already scanned, so this is exactly the device's rescan-then-event
     /// order.
     inject_upload: Option<(u16, bool)>,
-    /// Headless `--png` only: raise device warnings through the real `App::notify_warning` seam
+    /// Headless `--png` only: raise device warnings through the real `App::apply_event` seam
     /// after the script, so the advisory warning card renders. A comma-list of `gps` / `altimeter`
     /// / `compass` / `map` (issue #504) / `rec` (the mid-ride ride-log write error, issue #11) —
     /// e.g. `gps,map`. Stands in for hardware the sim can't trip for real. `rec` here renders the
@@ -170,7 +170,7 @@ struct Args {
     fail_track: bool,
     /// Headless `--png` only: after the script left the "Checking card..." wait on top (System menu
     /// → Install), answer the DFU scan (epic #615 S5, #620) through the real
-    /// `App::notify_dfu_scan_result` seam, swapping the wait for the confirm screen. The flavour
+    /// `App::apply_event` seam, swapping the wait for the confirm screen. The flavour
     /// selects which warnings render: `normal` (a newer version, rollback available), `same` (the
     /// installed version restaged → same-version warning), or `first` (no rollback → no-undo
     /// warning). The board runs the scan for real; the sim stages a synthetic `UPDATE.BIN`.
@@ -179,7 +179,7 @@ struct Args {
     /// update..." progress spinner renders (the sim never drains the arm, so it stays up).
     dfu_progress: bool,
     /// Headless `--png` only: with `--dfu-scan --dfu-progress`, run the board drain's terminal
-    /// swap (`App::show_dfu_installing`) so the static "Installing update" card renders — the
+    /// swap (`App::apply_event`) so the static "Installing update" card renders — the
     /// pre-reset frame the MIP panel holds through the whole install.
     dfu_installing: bool,
     /// Headless `--png` only: answer the DFU scan with a typed error so the error card renders
@@ -187,7 +187,7 @@ struct Args {
     /// card..." wait on top (System menu → Install), like `--dfu-scan`.
     dfu_error: Option<obc_app::DfuScanError>,
     /// Headless `--png` only: raise the one-time post-update toast through the real
-    /// `App::notify_update_confirmed` seam, tagged with this version, so the "Updated to vX" card
+    /// `App::apply_event` seam, tagged with this version, so the "Updated to vX" card
     /// renders (the first-healthy-boot toast).
     dfu_confirmed: Option<String>,
 }
@@ -504,6 +504,69 @@ fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Read
     let outcome = plan_route(reader, req.from, req.to, req.name(), profile_idx, &mut scratch, &mut tiles, &mut sink);
     let stats = tiles.stats();
     finish_nav_plan(app, store, outcome, sink.bytes(), stats);
+}
+
+/// The fixed card-free stand-in the sim answers a card-free scan with (the sim has no FAT to scan):
+/// ~1.2 GiB → the System screen reads "1.2 GB".
+const SIM_CARD_FREE: u64 = 1_288_490_188;
+
+/// Drain the app's pending host commands (FAR-19, #812) and apply them against the headless `--png`
+/// harness's folder-backed stores — the typed successor to its per-adapter `take_*` drains (the
+/// interactive GUI drives the identical protocol through `obc-host-core::HostLoop`). Handles the
+/// commands the snapshot flow models: plan a route synchronously (the shared `run_nav_request`),
+/// cascade/route/ride delete + catalog re-feed, and the card-free scan. `hold_nav` discards a
+/// `PlanRoute` un-run so the `--nav-hold` / `--inject-nav-fail` snapshots keep their spinner up for
+/// the injected answer. A drained `FinishTrack` is re-posted to the activity slot so the
+/// replay/save-track paths' `reconcile_tracks` (which reads that slot directly, not the drain) still
+/// sees it. The two derived fill levels and the host-specific commands the sim has no analogue for
+/// are ignored.
+fn apply_host_commands(
+    app: &mut App,
+    store: &mut RouteStore,
+    ride_store: &mut RideStore,
+    trip_store: &mut TripStore,
+    reader: &Reader,
+    hold_nav: bool,
+) {
+    let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
+    let _ = app.drain_host_commands(&mut mailbox);
+    while let Some(cmd) = mailbox.pop() {
+        match cmd {
+            obc_app::HostCommand::PlanRoute(req) => {
+                if !hold_nav {
+                    run_nav_request(app, store, reader, &req);
+                }
+            }
+            obc_app::HostCommand::DeleteRoute { id } => {
+                if store.delete_by_id(id) {
+                    app.set_routes_with_ids(store.catalog(), store.ids());
+                }
+            }
+            obc_app::HostCommand::DeleteRide { id } => {
+                if ride_store.delete_by_id(id) {
+                    app.set_rides(ride_store.catalog(), ride_store.ids());
+                }
+            }
+            obc_app::HostCommand::DeleteTrip { id } => {
+                // Cascade: remove the member route files, then the trip's `.obt`, then re-feed both
+                // catalogs (routes first, so the trip's stage ids resolve).
+                for rid in trip_store.member_route_ids(id) {
+                    store.delete_by_id(rid);
+                }
+                trip_store.delete_by_id(id);
+                app.set_routes_with_ids(store.catalog(), store.ids());
+                app.set_trips(&trip_store.inputs());
+            }
+            obc_app::HostCommand::ScanCardFree => {
+                app.apply_event(obc_app::HostEvent::CardScanned { free_bytes: Some(SIM_CARD_FREE) });
+            }
+            // The scripted single-frame flow reconciles the ride log through the activity slot
+            // (`reconcile_tracks`), not here — re-post a drained Finish so that path still sees it.
+            obc_app::HostCommand::FinishTrack(action) => app.activity.request_track(action),
+            // Derived fill levels + host-specific commands the sim doesn't model.
+            _ => {}
+        }
+    }
 }
 
 /// Reconcile the track store to the app's tracking intent (drains the one-shot action,
@@ -870,70 +933,39 @@ fn main() {
             let mut render = |app: &mut App| {
                 // A pending Ride-detail track request (#680) fills before the draw, so a `d` frame
                 // (and every gesture after it) sees the elevation band, mirroring the GUI's
-                // per-frame drain.
-                if let Some(id) = app.take_ride_track_request() {
+                // per-frame drain. `LoadRideTrack` is a derived level — answered off the pure
+                // predicate, nothing consumed.
+                if let Some(id) = app.ride_track_request() {
                     app.set_ride_profile(ride_store.profile_by_id(id));
                     app.set_ride_preview(&ride_store.preview_by_id(id));
                 }
                 let mut fb = Framebuffer::new(rw, rh);
                 let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
-                if !hold_nav {
-                    if let Some(req) = app.take_nav_request() {
-                        run_nav_request(app, &mut store, &reader, &req);
-                    }
-                }
+                // Drain the typed host protocol each `d` (mirroring the GUI's per-frame dispatch):
+                // a create-route request's answer swaps the confirm for the overview/failure card
+                // so the next token acts on it; a scripted delete re-feeds the catalog.
+                apply_host_commands(app, &mut store, &mut ride_store, &mut trip_store, &reader, hold_nav);
             };
             apply_script(&mut app, script, &mut render);
-            // A create-route request recorded by the script's last press (no trailing `d`): drain
-            // it now so the final render shows the answer, mirroring the delete drains below.
-            if !hold_nav {
-                if let Some(req) = app.take_nav_request() {
-                    run_nav_request(&mut app, &mut store, &reader, &req);
-                }
-            }
-            // A scripted hold-to-delete in the Route menu (epic #447 P6) records a delete request;
-            // execute it here (delete the file + re-feed the id-carrying catalog) so the rendered
-            // frame reflects the route being gone, mirroring the GUI's per-frame drain.
-            if let Some(id) = app.take_route_delete() {
-                if store.delete_by_id(id) {
-                    app.set_routes_with_ids(store.catalog(), store.ids());
-                }
-            }
-            // A scripted hold-to-delete on the Ride detail (#680) — same per-frame drain, ride
-            // namespace: delete the `RD{id}.ORD` + sidecar flag and re-feed the ride catalog (the
-            // detail popped back to the list, whose highlight the remap keeps sane).
-            if let Some(id) = app.take_ride_delete() {
-                if ride_store.delete_by_id(id) {
-                    app.set_rides(ride_store.catalog(), ride_store.ids());
-                }
-            }
-            // A scripted long-press → confirm on a trip folder (epic #526, TR3) records a cascade
-            // delete: remove the trip's `.obt` AND every member route file, then re-feed both catalogs
-            // (routes first, so the trip's stage ids resolve) — the folder is gone and the menu
-            // regroups. Members resolved from the trip store before anything is deleted.
-            if let Some(trip_id) = app.take_trip_delete() {
-                for rid in trip_store.member_route_ids(trip_id) {
-                    store.delete_by_id(rid);
-                }
-                trip_store.delete_by_id(trip_id);
-                app.set_routes_with_ids(store.catalog(), store.ids());
-                app.set_trips(&trip_store.inputs());
-            }
+            // Anything the script's last press recorded with no trailing `d`: drain + apply it now so
+            // the final render reflects the answer (the create-route commit, the hold-to-delete
+            // re-feed, the trip cascade — all in the shared dispatcher's canonical order).
+            apply_host_commands(&mut app, &mut store, &mut ride_store, &mut trip_store, &reader, hold_nav);
             // An open Ride detail's track request left by the script's last press (no trailing
             // `d`): fill the resident ride profile now so the final render draws the band.
-            if let Some(id) = app.take_ride_track_request() {
+            if let Some(id) = app.ride_track_request() {
                 app.set_ride_profile(ride_store.profile_by_id(id));
                 app.set_ride_preview(&ride_store.preview_by_id(id));
             }
         }
 
         // Inject a routing failure (epic #116, R4) after the script left the CREATE ROUTE
-        // confirm on top: the answer goes through the real `notify_nav_result` seam, so the
-        // snapshot pins the exact error→tier mapping (`exhausted` → "Too far to route here.",
-        // anything else → "Couldn't find a route.").
+        // confirm on top: the answer goes through the real `NavPlanned` seam, so the snapshot pins
+        // the exact error→tier mapping (`exhausted` → "Too far to route here.", anything else →
+        // "Couldn't find a route.").
         if let Some(kind) = &args.inject_nav_fail {
             let err = if kind == "exhausted" { obc_route::NavError::Exhausted } else { obc_route::NavError::NoPath };
-            app.notify_nav_result(Err(err));
+            app.apply_event(obc_app::HostEvent::NavPlanned(Err(err)));
         }
 
         // Inject a committed route upload (epic #447, P4) after the script (so a `p p p` script
@@ -943,29 +975,24 @@ fn main() {
             // Build the route's mini elevation band from the committed OBCR at "commit time",
             // exactly the seam the board fills (#682) — the idle card draws it.
             let elevation = store.elevation_sparkline(id);
-            app.notify_route_uploaded(id, replaced, elevation);
+            app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
         }
-        // Raise device warnings (issue #504) through the real `notify_warning` seam, so the advisory
+        // Raise device warnings (issue #504) through the real `Warning` event, so the advisory
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.
         if let Some(w) = args.inject_warning {
-            app.notify_warning(w);
+            app.apply_event(obc_app::HostEvent::Warning(w));
         }
 
-        // Answer the System screen's card-free scan (T8 item 6). On the board this is a FAT
-        // free-cluster scan; the sim has no card, so a fixed built-in stands in (1.2 GB) — posted
-        // through the real `set_card_free` seam once the screen's on-entry request is drained.
-        if app.take_card_scan_request() {
-            const SIM_CARD_FREE: u64 = 1_288_490_188; // ~1.2 GiB → "1.2 GB"
-            app.set_card_free(Some(SIM_CARD_FREE));
-        }
+        // The System screen's card-free scan (T8 item 6) is answered by `apply_host_commands` above
+        // when the `ScanCardFree` command drains (the sim has no FAT — a fixed 1.2 GB stand-in).
 
         // DFU sideload snapshots (epic #615 S5, #620). The scan runs board-side on the device; here
         // the script left the "Checking card..." wait on top (System menu → Install) and these
-        // answer it through the real `notify_dfu_scan_result` / `notify_update_confirmed` seams — so
-        // the confirm / progress / error / toast screens render off the same app state the device
-        // reaches. The sim stages a synthetic `UPDATE.BIN` and runs the real `obc-dfu` scan.
+        // answer it through the real `DfuScanned` / `UpdateConfirmed` seams — so the confirm /
+        // progress / error / toast screens render off the same app state the device reaches. The sim
+        // stages a synthetic `UPDATE.BIN` and runs the real `obc-dfu` scan.
         if let Some(kind) = args.dfu_scan {
-            app.notify_dfu_scan_result(kind.report());
+            app.apply_event(obc_app::HostEvent::DfuScanned(kind.report()));
             if args.dfu_progress {
                 // Confirm (Install is the default selection) → the arm one-shot + the progress
                 // spinner. A tap: down, then up 80 ms later, well under the long-press threshold.
@@ -973,19 +1000,19 @@ fn main() {
                 feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Encoder))]);
                 feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Encoder))]);
                 // The board drain's terminal swap: spinner → the static "Installing update" card
-                // (the pre-reset frame), through the same seam the device uses.
+                // (the pre-reset frame), through the same `DfuInstallBegan` seam the device uses.
                 if args.dfu_installing {
-                    app.show_dfu_installing();
+                    app.apply_event(obc_app::HostEvent::DfuInstallBegan);
                 }
             }
         }
         if let Some(e) = args.dfu_error {
-            app.notify_dfu_scan_result(Err(e));
+            app.apply_event(obc_app::HostEvent::DfuScanned(Err(e)));
         }
         // The one-time post-update toast: raise the confirmed-update fact, then run one animation
         // pass — `reconcile_update_toast` pushes the "Updated to vX" card there, like the device.
         if let Some(version) = &args.dfu_confirmed {
-            app.notify_update_confirmed(version);
+            app.apply_event(obc_app::HostEvent::UpdateConfirmed(obc_app::dfu::clamp(version)));
             app.advance_animations(InputClock(500_000));
         }
         // `--sensors-screen` (SE7, epic #707): after the script lands on the Sensors screen (or its

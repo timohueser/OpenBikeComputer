@@ -10,7 +10,7 @@
 //!   reopened by the host) — the card just says so; any press/Back dismisses it.
 //!
 //! The tracking variant reuses the parameterized [`RouteSwapScreen`](super::RouteSwapScreen).
-//! All three share the popup rules [`App::notify_route_uploaded`](crate::App::notify_route_uploaded)
+//! All three share the popup rules [`App::apply_event`](crate::App::apply_event)
 //! enforces: advisory (committed before the prompt), 30 s auto-close = dismiss
 //! ([`UPLOAD_POPUP_TIMEOUT_MS`](super::UPLOAD_POPUP_TIMEOUT_MS)), replace-not-stack on consecutive
 //! uploads, never landing mid-hold, and the passkey card outranking them. Both screens carry their

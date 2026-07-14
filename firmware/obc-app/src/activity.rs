@@ -60,7 +60,7 @@ pub enum TrackAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuAction {
     /// Validate the staged `UPDATE.BIN` (header, full CRC-32, extents) without touching anything;
-    /// the board answers through [`App::notify_dfu_scan_result`](crate::App::notify_dfu_scan_result).
+    /// the board answers through [`App::apply_event`](crate::App::apply_event).
     Scan,
     /// Arm the update: snapshot the running image to `ROLLBACK.BIN`, write the `Armed` boot-state
     /// record, and reboot into the bootloader. On success the board never returns (it resets).
@@ -72,8 +72,8 @@ pub enum DfuAction {
 /// microdegrees (the OBCM/renderer convention); the name is the POI's stored name (or its subtype
 /// fallback label, matching the list row), carried as a fixed inline buffer so the request — like
 /// every other one-shot on [`Activity`] — stays `Copy`. Drained by
-/// [`App::take_nav_request`](crate::App::take_nav_request); the host answers with
-/// [`App::notify_nav_result`](crate::App::notify_nav_result).
+/// [`App::drain_host_commands`](crate::App::drain_host_commands); the host answers with
+/// [`App::apply_event`](crate::App::apply_event).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavRequest {
     /// The rider's fix, `(lon, lat)` µdeg — the route's start.
@@ -143,7 +143,7 @@ pub struct Activity {
     /// Index into the ride catalog of the ride whose **detail screen** is open, or `None` (epic
     /// #678 T2 / #680) — the ride namespace's `active_route`: set on detail entry, cleared on
     /// exit, and the key the host's one-shot track-profile fill hangs off
-    /// ([`App::take_ride_track_request`](crate::App::take_ride_track_request) → the host streams
+    /// ([`App::ride_track_request`](crate::App::ride_track_request) → the host streams
     /// `RD{id}.ORD` once → [`App::set_ride_profile`](crate::App::set_ride_profile)).
     pub(crate) viewed_ride: Option<usize>,
 
@@ -161,7 +161,7 @@ pub struct Activity {
     track_action: Option<TrackAction>,
     /// A one-shot **route-delete request** (epic #447, P6): the catalog *index* of a route the Route
     /// menu's hold-to-delete footer asked to remove, drained by the host via
-    /// [`App::take_route_delete`](crate::App::take_route_delete) which translates it to the route's
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands) which translates it to the route's
     /// durable object id. An index (not the id) because the screen holds indices; the id lookup is
     /// `App`'s, which owns the parallel [`route_ids`](crate::App::route_ids) table. Recorded by
     /// [`request_route_delete`](Activity::request_route_delete); the actual file delete + rescan is
@@ -169,7 +169,7 @@ pub struct Activity {
     delete_route: Option<usize>,
     /// A one-shot **ride-delete request** (epic #447, P7): the catalog *index* of a ride the Rides
     /// screen's hold-to-delete footer asked to remove, drained by
-    /// [`App::take_ride_delete`](crate::App::take_ride_delete) which translates it to the ride's
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands) which translates it to the ride's
     /// durable object id (the parallel [`ride_ids`](crate::App::ride_ids) table). The ride namespace's
     /// twin of [`delete_route`](Activity::delete_route); the host deletes the ride object + rescans,
     /// and the resulting store-changed edge re-feeds the ride catalog with it gone.
@@ -177,34 +177,34 @@ pub struct Activity {
     /// A one-shot **trip-delete request** (epic #526, TR3): the trip's durable **object id** the
     /// Route menu's long-press → confirm dialog asked to cascade-delete (the trip **and** all its
     /// member routes — locked). Drained by the host via
-    /// [`App::take_trip_delete`](crate::App::take_trip_delete). Unlike
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands). Unlike
     /// [`delete_route`](Activity::delete_route) this is the id, not an index: a trip id is already
     /// durable (its own device counter), the confirm screen carries it verbatim, and a trip that
     /// vanished in a racing rescan simply drains to a no-op at the host. The host deletes the
     /// `TP{id}.OBT` **and** every member route file, then rescans + re-feeds trips + routes.
     delete_trip: Option<u16>,
     /// A one-shot **route-planning request** (epic #116, R4), set by the POI create-route confirm
-    /// and drained by the host via [`App::take_nav_request`](crate::App::take_nav_request), which
+    /// and drained by the host via [`App::drain_host_commands`](crate::App::drain_host_commands), which
     /// steps the resumable router, writes the reserved nav route, rescans, and answers through
-    /// [`App::notify_nav_result`](crate::App::notify_nav_result).
+    /// [`App::apply_event`](crate::App::apply_event).
     nav_request: Option<NavRequest>,
     /// A one-shot **DFU request** (epic #615 S5, #620): the SD-sideload firmware-update flow. The
     /// System settings screen posts [`DfuAction::Scan`] (validate `UPDATE.BIN`, answer through
-    /// [`App::notify_dfu_scan_result`](crate::App::notify_dfu_scan_result)); the confirm screen
+    /// [`App::apply_event`](crate::App::apply_event)); the confirm screen
     /// posts [`DfuAction::Install`] (snapshot the rollback, arm the boot-state page, reboot into
-    /// the bootloader). The board's ride loop drains it via
-    /// [`App::take_dfu_request`](crate::App::take_dfu_request) — the same slot the `dfu-install`
-    /// debug command drives through [`App::request_dfu_install`](crate::App::request_dfu_install).
+    /// the bootloader). The board's ride loop drains it as the `Dfu` command via
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands) — the same slot the `dfu-install`
+    /// debug command drives by staging a `Dfu(Install)` directly after the drain.
     dfu_request: Option<DfuAction>,
     /// A one-shot **plan-cancel request** (#499): Back on the planning screen pops it *and*
-    /// records this; the host drains it via [`App::take_nav_cancel`](crate::App::take_nav_cancel)
+    /// records this; the host drains it via [`App::drain_host_commands`](crate::App::drain_host_commands)
     /// and aborts the in-flight plan (discarding the partial file, answering nothing — the rider
     /// is already back on the POI detail).
     nav_cancel: bool,
     /// A one-shot **card-free scan request** (T8 item 6): posted when the System settings screen is
     /// opened, so the host runs a FAT free-cluster scan *once on entry* (never per frame — the scan is
-    /// expensive) and answers through [`App::set_card_free`](crate::App::set_card_free). Drained via
-    /// [`App::take_card_scan_request`](crate::App::take_card_scan_request); until it answers the
+    /// expensive) and answers through [`App::apply_event`](crate::App::apply_event). Drained via
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands); until it answers the
     /// System screen shows `--`.
     card_scan_request: bool,
     /// The **sensor scan mode** level (BLE sensors epic #707, SE7): raised by the Sensors screen while
@@ -480,7 +480,7 @@ impl Activity {
     }
 
     /// Record a one-shot request to delete the catalog route at `index` (epic #447, P6) — set by the
-    /// Route menu's hold-to-delete footer, drained by [`App::take_route_delete`](crate::App::take_route_delete).
+    /// Route menu's hold-to-delete footer, drained by [`App::drain_host_commands`](crate::App::drain_host_commands).
     /// The index is resolved to the route's durable object id at drain, so a rescan racing between the
     /// hold and the drain can't delete the wrong route (a vanished route resolves to nothing).
     pub(crate) fn request_route_delete(&mut self, index: usize) {
@@ -501,7 +501,7 @@ impl Activity {
 
     /// Record a one-shot request to delete the ride-catalog entry at `index` (epic #447, P7) — set by
     /// the Rides screen's hold-to-delete footer, drained by
-    /// [`App::take_ride_delete`](crate::App::take_ride_delete), which resolves it to the ride's durable
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands), which resolves it to the ride's durable
     /// object id at drain (so a rescan racing the hold can't delete the wrong ride).
     pub(crate) fn request_ride_delete(&mut self, index: usize) {
         self.delete_ride = Some(index);
@@ -521,7 +521,7 @@ impl Activity {
 
     /// Record a one-shot request to cascade-delete the trip with durable object `id` (epic #526, TR3)
     /// — set by the Route menu's long-press → confirm dialog, drained by
-    /// [`App::take_trip_delete`](crate::App::take_trip_delete). The id (not an index) because a trip
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands). The id (not an index) because a trip
     /// id is durable; the host deletes the `TP{id}.OBT` **and** every member route file.
     pub(crate) fn request_trip_delete(&mut self, id: u16) {
         self.delete_trip = Some(id);
@@ -540,7 +540,7 @@ impl Activity {
     }
 
     /// Record a one-shot route-planning request (epic #116, R4) — set by the POI create-route
-    /// confirm, drained by [`App::take_nav_request`](crate::App::take_nav_request).
+    /// confirm, drained by [`App::drain_host_commands`](crate::App::drain_host_commands).
     pub(crate) fn request_nav(&mut self, req: NavRequest) {
         self.nav_request = Some(req);
     }
@@ -557,7 +557,7 @@ impl Activity {
 
     /// Record a one-shot [`DfuAction`] (epic #615 S5, #620) — set by the System settings screen
     /// (`Scan`) and the update-confirm screen (`Install`), drained by the board via
-    /// [`App::take_dfu_request`](crate::App::take_dfu_request). A later post overwrites an
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands). A later post overwrites an
     /// undrained earlier one (there is never more than one DFU phase in flight).
     pub(crate) fn request_dfu(&mut self, action: DfuAction) {
         self.dfu_request = Some(action);
@@ -569,7 +569,7 @@ impl Activity {
     }
 
     /// Record the one-shot **card-free scan request** (T8 item 6) — posted when the System settings
-    /// screen opens, drained by the host via [`App::take_card_scan_request`](crate::App::take_card_scan_request).
+    /// screen opens, drained by the host via [`App::drain_host_commands`](crate::App::drain_host_commands).
     pub(crate) fn request_card_scan(&mut self) {
         self.card_scan_request = true;
     }
@@ -600,7 +600,7 @@ impl Activity {
     }
 
     /// Record a one-shot plan-cancel (#499) — set by the planning screen's Back, drained by
-    /// [`App::take_nav_cancel`](crate::App::take_nav_cancel).
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands).
     ///
     /// **Annihilates** a still-undrained [`request_nav`](Self::request_nav): Back always comes
     /// from the planning screen of the *latest* request, so a request still latched at

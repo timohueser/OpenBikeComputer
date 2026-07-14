@@ -136,7 +136,7 @@ static RADIO_ENABLED: AtomicBool = AtomicBool::new(true);
 static RADIO_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// The Bluetooth screen's **Forget phone** (#455), rung by the ride loop after
-/// [`App::take_ble_forget`](obc_app::App::take_ble_forget): the lifecycle loop clears the RRAM bond
+/// [`App::drain_host_commands`](obc_app::App::drain_host_commands): the lifecycle loop clears the RRAM bond
 /// slot + the host's bond table and drops the bonded connection. Latching, so a request raised
 /// between phases is picked up at the next loop top.
 pub(crate) static FORGET_BOND: Signal<CriticalSectionRawMutex, ()> = Signal::new();
