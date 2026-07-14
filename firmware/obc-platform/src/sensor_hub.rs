@@ -85,13 +85,60 @@ pub enum GpsPower {
     Sleep,
 }
 
+/// The fix mailbox's stored form: [`Fix`] with its two `Option<f32>`s flattened to raw bits plus
+/// presence flags, so every field is niche-free (`i32`/`u32`/`u8`). This keeps the hub's
+/// `Signal::new()` state all-zero: `Option<f32>`'s tag byte is a niche the signal's internal
+/// `State::None` would otherwise be encoded into as a **non-zero** value, and a single non-zero
+/// initializer byte moves a board's entire `static` hub from `.bss` to `.data` (measured in #808:
+/// +136 B of `.data` plus knock-on section padding on both profiles). Private to the hub — the API
+/// speaks [`Fix`] on both ends.
+#[derive(Clone, Copy)]
+struct FixStore {
+    lat: i32,
+    lon: i32,
+    course_bits: u32,
+    speed_bits: u32,
+    /// bit 0 = course present, bit 1 = speed present.
+    flags: u8,
+}
+
+impl FixStore {
+    const COURSE: u8 = 1 << 0;
+    const SPEED: u8 = 1 << 1;
+
+    fn pack(f: Fix) -> Self {
+        let mut flags = 0;
+        let mut course_bits = 0;
+        let mut speed_bits = 0;
+        if let Some(c) = f.course {
+            flags |= Self::COURSE;
+            course_bits = c.to_bits();
+        }
+        if let Some(s) = f.speed_mps {
+            flags |= Self::SPEED;
+            speed_bits = s.to_bits();
+        }
+        Self { lat: f.lat, lon: f.lon, course_bits, speed_bits, flags }
+    }
+
+    fn unpack(self) -> Fix {
+        Fix {
+            lat: self.lat,
+            lon: self.lon,
+            course: (self.flags & Self::COURSE != 0).then(|| f32::from_bits(self.course_bits)),
+            speed_mps: (self.flags & Self::SPEED != 0).then(|| f32::from_bits(self.speed_bits)),
+        }
+    }
+}
+
 /// The instance-owned sensor hand-off: every cross-task sensor stream as a field, so the board owns
 /// exactly one and hands out typed handles. Construct it once in static storage
 /// (`static HUB: SensorHub = SensorHub::new();`) and derive handles with the `*` accessors; a host
 /// test constructs it as a plain local (`let hub = SensorHub::new();`) — no shared global state.
 pub struct SensorHub {
-    /// Latest GPS fix (valid NAV-PVT), fresh-fix — drained by [`GpsLocation`].
-    fix: Sig<Fix>,
+    /// Latest GPS fix (valid NAV-PVT), fresh-fix — drained by [`GpsLocation`]. Stored as the
+    /// niche-free [`FixStore`], not [`Fix`] — see there for why this keeps the whole hub zero-init.
+    fix: Sig<FixStore>,
     /// Latest barometric altitude (metres), coherent with [`SensorHub::fix`] — drained by [`BaroAltimeter`].
     alt: Sig<f32>,
     /// Latest ambient temperature (°C) from the BMP581's per-fix reading — drained by [`SensorTemp`].
@@ -183,7 +230,7 @@ pub struct SensorTaskLink<'a>(&'a SensorHub);
 impl SensorTaskLink<'_> {
     /// Publish a fresh GPS [`Fix`] (on a valid NAV-PVT) and pulse the event so the loop wakes.
     pub fn dispatch_fix(&self, f: Fix) {
-        self.0.fix.signal(f);
+        self.0.fix.signal(FixStore::pack(f));
         self.0.event.signal(());
     }
 
@@ -357,10 +404,10 @@ impl<'a> SensorConsumer<'a> {
 // and the debug-uart injection feed the same mailbox.
 
 /// The user's location. See [`SensorConsumer::location`].
-pub struct GpsLocation<'a>(&'a Sig<Fix>);
+pub struct GpsLocation<'a>(&'a Sig<FixStore>);
 impl LocationSource for GpsLocation<'_> {
     fn poll(&mut self) -> Option<Fix> {
-        self.0.try_take()
+        self.0.try_take().map(FixStore::unpack)
     }
 }
 
