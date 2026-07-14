@@ -35,6 +35,7 @@ pub mod screen;
 pub mod sensors;
 pub mod settings;
 pub mod stat_fields;
+pub mod store_meta;
 pub mod trip;
 pub(crate) mod ui_runtime;
 pub mod wall_clock;
