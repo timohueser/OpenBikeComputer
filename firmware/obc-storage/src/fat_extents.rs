@@ -34,7 +34,7 @@
 use core::cell::RefCell;
 
 use embedded_sdmmc::{Block, BlockCount, BlockDevice, BlockIdx};
-use obc_route::{ByteSource, Error};
+use obc_formats::io::{ByteSource, Error};
 
 /// A [`BlockDevice`] by shared reference — what lets one card serve **both** the `VolumeManager`
 /// (which takes its device by value) and this module's raw extent reads. The board parks its

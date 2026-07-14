@@ -2397,6 +2397,9 @@ dependencies = [
 [[package]]
 name = "obc-formats"
 version = "0.1.0"
+dependencies = [
+ "obc-ports",
+]
 
 [[package]]
 name = "obc-host-core"
@@ -2536,8 +2539,8 @@ version = "0.1.0"
 dependencies = [
  "embedded-sdmmc",
  "heapless 0.8.0",
+ "obc-formats",
  "obc-ports",
- "obc-route",
 ]
 
 [[package]]
