@@ -2390,12 +2390,12 @@ mod tests {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.set_settings(Settings::default());
         assert!(!app.clock_trusted(), "untrusted before the first setClock");
-        // 2025-07-09T12:00:30Z, +02:00 — the protocol-vectors timestamp (unix 1752062400) plus 30 s to
+        // 2026-07-09T12:00:30Z, +02:00 — the protocol-vectors timestamp (unix 1783598400) plus 30 s to
         // exercise the seconds-into-the-minute back-date.
-        app.stamp_clock_ble(1_752_062_400 + 30, 120);
+        app.stamp_clock_ble(1_783_598_400 + 30, 120);
         let now = app.wall_clock_now();
         assert_eq!((now.hour, now.minute), (14, 0), "UTC 12:00 + 02:00 → local 14:00");
-        assert_eq!(app.settings().clock, DateTime { year: 2025, month: 7, day: 9, hour: 12, minute: 0 });
+        assert_eq!(app.settings().clock, DateTime { year: 2026, month: 7, day: 9, hour: 12, minute: 0 });
         assert_eq!(app.settings().utc_offset_min, 120, "the phone's offset is persisted");
         assert_eq!(app.clock_trust, ClockTrust::Ble, "the trust source is BLE");
         assert!(settings_dirty(&mut app), "the first trusted stamp of the boot persists once");
@@ -2410,15 +2410,15 @@ mod tests {
     fn ble_setclock_persists_a_changed_offset_on_a_same_boot_reconnect() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.set_settings(Settings::default());
-        app.stamp_clock_ble(1_752_062_400, 120);
+        app.stamp_clock_ble(1_783_598_400, 120);
         assert!(settings_dirty(&mut app), "first trusted stamp persists (offset 120)");
         // A later connect the same boot with a *changed* offset (e.g. +01:00 after a flight): already
         // trusted, so `first_trusted_this_boot` is false — only the offset move can arm the save.
-        app.stamp_clock_ble(1_752_066_000, 60);
+        app.stamp_clock_ble(1_783_602_000, 60);
         assert_eq!(app.settings().utc_offset_min, 60, "the new offset is adopted");
         assert!(settings_dirty(&mut app), "a same-boot offset change persists even while already trusted");
         // A reconnect with the same offset: no move, no save.
-        app.stamp_clock_ble(1_752_069_600, 60);
+        app.stamp_clock_ble(1_783_605_600, 60);
         assert!(!settings_dirty(&mut app), "an unchanged offset on reconnect arms no save (no RRAM thrash)");
     }
 
