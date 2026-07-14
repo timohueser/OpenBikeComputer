@@ -21,6 +21,7 @@
 use obc_route::Profile;
 
 use crate::app::NAV_PREVIEW_MAX;
+use crate::retention::RouteRetentionMeta;
 use crate::ride::{RideCatalog, RideSummary, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
@@ -60,6 +61,13 @@ pub(crate) struct CatalogState {
     /// Each route's **durable object id**, pairwise with [`routes`](CatalogState::routes) (#450) —
     /// only ever written in lock step with it (the component's whole point).
     route_ids: heapless::Vec<u16, MAX_ROUTES>,
+    /// Each route's device-local **retention meta** (level + `last_used`), pairwise with
+    /// [`route_ids`](CatalogState::route_ids) (epic #638, S3). Carried alongside the catalog — never
+    /// in the byte-pinned OBCR file — and **remapped by identity** across a rescan (a surviving
+    /// route keeps its meta, a new id defaults to [`Never`](crate::Retention::Never)), so the sweep
+    /// always reads the meta paired with the route it belongs to. The host re-pushes fresh sidecar
+    /// values through [`set_route_meta`](CatalogState::set_route_meta) after each scan.
+    route_meta: heapless::Vec<RouteRetentionMeta, MAX_ROUTES>,
     /// The resident **trip** catalog (epic #526): grouped-route folders resolving their stage
     /// route ids against [`route_ids`](CatalogState::route_ids); re-resolved on every route
     /// replacement so an appeared/vanished route re-files.
@@ -96,6 +104,7 @@ impl CatalogState {
         CatalogState {
             routes: Catalog::new(),
             route_ids: heapless::Vec::new(),
+            route_meta: heapless::Vec::new(),
             trips: Trips::new(),
             rides: RideCatalog::new(),
             ride_ids: heapless::Vec::new(),
@@ -121,6 +130,7 @@ impl CatalogState {
         unsafe {
             addr_of_mut!((*slot).routes).write(Catalog::new());
             addr_of_mut!((*slot).route_ids).write(heapless::Vec::new());
+            addr_of_mut!((*slot).route_meta).write(heapless::Vec::new());
             addr_of_mut!((*slot).trips).write(Trips::new());
             addr_of_mut!((*slot).rides).write(RideCatalog::new());
             addr_of_mut!((*slot).ride_ids).write(heapless::Vec::new());
@@ -135,6 +145,7 @@ impl CatalogState {
             let CatalogState {
                 routes: _,
                 route_ids: _,
+                route_meta: _,
                 trips: _,
                 rides: _,
                 ride_ids: _,
@@ -188,11 +199,20 @@ impl CatalogState {
     /// ([`remap_route`](CatalogState::remap_route)).
     pub(crate) fn replace_routes(&mut self, summaries: &[RouteSummary], ids: &[u16]) -> OldRouteIds {
         let old_ids = self.route_ids.clone();
+        let old_meta = self.route_meta.clone();
         self.routes.clear();
         self.route_ids.clear();
+        self.route_meta.clear();
         for (s, &id) in summaries.iter().zip(ids).take(MAX_ROUTES) {
             let _ = self.routes.push(s.clone());
             let _ = self.route_ids.push(id);
+            // Carry each surviving route's retention meta across the rescan by identity (#638 S3):
+            // its id's old slot → its old meta, a genuinely new id → the default (Never). The host
+            // re-pushes fresh sidecar values via `set_route_meta` right after, but this keeps the
+            // meta coherent for a host that doesn't (tests, the map-only build) — the "kept coherent
+            // through the same remap machinery" contract.
+            let meta = old_ids.iter().position(|&o| o == id).map(|p| old_meta[p]).unwrap_or_default();
+            let _ = self.route_meta.push(meta);
         }
         // Trips resolve stage *ids* into catalog indices, so a catalog replacement re-points them:
         // a route that appeared re-files, one that vanished dangles (dropped from the resolved
@@ -210,6 +230,34 @@ impl CatalogState {
     pub(crate) fn remap_route(&self, old_ids: &[u16], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
         self.route_index_of(id)
+    }
+
+    // ---- route retention (epic #638, S3) ----
+
+    /// Each route's retention meta, pairwise with [`route_ids`](CatalogState::route_ids) — the
+    /// sweep's per-route input column.
+    pub(crate) fn route_metas(&self) -> &[RouteRetentionMeta] {
+        &self.route_meta
+    }
+
+    /// Push the host's fresh per-route retention metas (from the SD sidecar), pairwise with the
+    /// **current** [`route_ids`](CatalogState::route_ids) — the host calls this right after
+    /// [`replace_routes`](CatalogState::replace_routes) so the app mirrors device-durable retention.
+    /// Excess metas (a host that fed more than the catalog holds) are ignored; a short slice leaves
+    /// the remaining routes at their remap-carried value.
+    pub(crate) fn set_route_meta(&mut self, metas: &[RouteRetentionMeta]) {
+        for (slot, &m) in self.route_meta.iter_mut().zip(metas) {
+            *slot = m;
+        }
+    }
+
+    /// Optimistically stamp route `id`'s `last_used` in the resident meta (the sweep/activation
+    /// mirror of the host's sidecar write) so a re-derivation before the host's rescan lands doesn't
+    /// re-enqueue the same stamp. A no-op if the id isn't resident.
+    pub(crate) fn stamp_route_last_used(&mut self, id: u16, utc: u32) {
+        if let Some(p) = self.route_ids.iter().position(|&x| x == id) {
+            self.route_meta[p].last_used_utc = utc;
+        }
     }
 
     // ---- trips ----
@@ -290,6 +338,20 @@ impl CatalogState {
     pub(crate) fn remap_ride(&self, old_ids: &[u16], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
         self.ride_ids.iter().position(|&x| x == id)
+    }
+
+    /// Optimistically stamp ride `id`'s `synced_at` in the resident summary (the sweep's mirror of
+    /// the host's sidecar write) so a re-derivation before the host's rescan lands doesn't re-enqueue
+    /// the same stamp. Only ever fills a `0` stamp (never re-stamps). A no-op if the id isn't
+    /// resident. Returns whether it changed a summary (drives the map repaint).
+    pub(crate) fn stamp_ride_synced_at(&mut self, id: u16, utc: u32) -> bool {
+        if let Some(p) = self.ride_ids.iter().position(|&x| x == id) {
+            if self.rides[p].synced_at_utc == 0 {
+                self.rides[p].synced_at_utc = utc;
+                return true;
+            }
+        }
+        false
     }
 
     // ---- identity-keyed view caches ----

@@ -96,8 +96,21 @@ pub enum HostCommand {
     DeleteTrip { id: u16 },
     /// Delete the ride with durable object id `id` (epic #447, P7) — the ride-namespace twin of
     /// [`DeleteRoute`](HostCommand::DeleteRoute), index-resolved at drain the same way.
-    /// One-shot, modal-flow-guarded.
+    /// One-shot, modal-flow-guarded. Also the auto-expiry sweep's ride-delete (epic #638, S3):
+    /// a synced-and-aged-out ride leaves through this exact command, so the host deletes it through
+    /// the same store path (revision bump + `storeChanged`) and a connected phone reconciles it like
+    /// any other delete.
     DeleteRide { id: u16 },
+    /// Stamp route `id`'s `last_used` to `utc` in the SD route-retention sidecar (auto-expiry epic
+    /// #638, S3) — the sweep's "start the clock on an unknown stamp" and "re-stamp the active route
+    /// so it never expires under a ride" writes, and the once-per-activation stamp. **Not** a store
+    /// delete: it is a device-local sidecar write, no revision bump. Drained from the sweep queue,
+    /// one per pass; the host applies it and the next scan re-feeds the app the fresh meta.
+    StampRouteUsed { id: u16, utc: u32 },
+    /// Stamp ride `id`'s `synced_at` to `utc` in the extended synced-set sidecar (auto-expiry epic
+    /// #638, S3) — the sweep's "start the countdown on a legacy synced-without-stamp ride" write.
+    /// Only ever fills a `0` stamp (the host never re-stamps). Sidecar write, no revision bump.
+    StampRideSynced { id: u16, utc: u32 },
     /// Close the open ride log: finalise it to the host's saved-ride artifact
     /// ([`TrackAction::Save`]) or throw it away ([`TrackAction::Discard`]). Persistence-critical
     /// one-shot; the host reads [`ride_stats`](crate::App::ride_stats) in the same pass so the
@@ -159,6 +172,8 @@ pub(crate) enum HostCommandClass {
     DeleteRoute,
     DeleteTrip,
     DeleteRide,
+    StampRouteUsed,
+    StampRideSynced,
     FinishTrack,
     PlanRoute,
     Dfu,
@@ -185,12 +200,14 @@ impl HostCommand {
     /// enforced at **post time**, not here: the cancel annihilates the undrained request (see
     /// [`HostCommand::CancelRoutePlan`]), so this order alone never hands the host a
     /// dead-on-arrival plan.
-    pub(crate) const DRAIN_ORDER: [HostCommandClass; 13] = [
+    pub(crate) const DRAIN_ORDER: [HostCommandClass; 15] = [
         HostCommandClass::RescanStore,
         HostCommandClass::CancelRoutePlan,
         HostCommandClass::DeleteRoute,
         HostCommandClass::DeleteTrip,
         HostCommandClass::DeleteRide,
+        HostCommandClass::StampRouteUsed,
+        HostCommandClass::StampRideSynced,
         HostCommandClass::FinishTrack,
         HostCommandClass::PlanRoute,
         HostCommandClass::Dfu,
@@ -209,6 +226,8 @@ impl HostCommand {
             HostCommand::DeleteRoute { .. } => HostCommandClass::DeleteRoute,
             HostCommand::DeleteTrip { .. } => HostCommandClass::DeleteTrip,
             HostCommand::DeleteRide { .. } => HostCommandClass::DeleteRide,
+            HostCommand::StampRouteUsed { .. } => HostCommandClass::StampRouteUsed,
+            HostCommand::StampRideSynced { .. } => HostCommandClass::StampRideSynced,
             HostCommand::FinishTrack(_) => HostCommandClass::FinishTrack,
             HostCommand::PlanRoute(_) => HostCommandClass::PlanRoute,
             HostCommand::Dfu(_) => HostCommandClass::Dfu,

@@ -45,9 +45,10 @@ use embedded_sdmmc::{
 };
 use heapless::{String, Vec};
 use obc_app::{
-    decode_route_crcs, decode_store_epoch, decode_synced_rides, encode_route_crcs, encode_store_epoch,
-    encode_synced_rides, RouteCrcs, SyncedRides, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, ROUTE_CRCS_MAX_LEN,
-    STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
+    decode_route_crcs, decode_route_retention, decode_store_epoch, decode_synced_rides, encode_route_crcs,
+    encode_route_retention, encode_store_epoch, encode_synced_rides, RouteCrcs, RouteRetentionMeta,
+    RouteRetentionStore, SyncedRides, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, ROUTE_CRCS_MAX_LEN,
+    ROUTE_RETENTION_MAX_LEN, STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_formats::io::ByteSource;
@@ -89,6 +90,14 @@ const SYNCED_SET: &str = "SYNCED.SET";
 /// pre-v2 route fills lazily at first list build. A missing/torn file = the empty map (every route
 /// serves `0 = unknown`). Codec + torn-line semantics live in `obc-app::settings` (host-tested).
 const ROUTE_CRCS: &str = "ROUTES.CRC";
+
+/// The route-retention sidecar in `/routes` (auto-expiry epic #638, S3) — route object id →
+/// `(retention u8, last_used u32)`, the device-local expiry state the sweep reads. In `/routes` (not
+/// the byte-pinned OBCR file, not RRAM) so it survives a reflash and travels with the card/routes; a
+/// missing/torn file decodes to the **empty** store (every route reads `Never` → nothing deletes, the
+/// safe direction that self-heals when the app re-pushes retention in S7). Mirrors the [`ROUTE_CRCS`]
+/// sidecar's file handling; codec + torn-line semantics live in `obc-app::retention` (host-tested).
+const ROUTE_RETENTION: &str = "ROUTES.RET";
 
 /// The trip-CRC sidecar in `/routes` (epic #526 TR4, #653) — the trip twin of [`ROUTE_CRCS`]: trip
 /// object id → whole-object CRC-32 of the stored `TP{id}.OBT` bytes, so a `tripList` entry carries a
@@ -692,7 +701,7 @@ impl Storage {
             };
             match RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)) {
                 Ok(info) => {
-                    let sum = obc_app::RideSummary::from_info(&info, synced.contains(*id));
+                    let sum = obc_app::RideSummary::from_info(&info, synced.contains(*id), synced.synced_at(*id));
                     let pos = catalog.iter().position(|c| sum.start_time > c.start_time).unwrap_or(catalog.len());
                     // A full catalog evicts its oldest for a newer candidate; a candidate older
                     // than everything listed is simply not one of the newest UI_RIDES_CAP.
@@ -742,26 +751,37 @@ impl Storage {
         decode_synced_rides(&buf[..n])
     }
 
-    /// Record ride `id` as synced and persist the sidecar, but only when it's a **new** entry (a
-    /// re-download of an already-flagged ride rewrites nothing). Returns `true` if the sidecar
-    /// changed. Called at a ride download's completion (epic #447 P7). Read-modify-write within the
-    /// call — the handle is opened, written truncating, and closed here, so it never counts against
-    /// the open-file budget across an `await`.
-    pub fn mark_ride_synced(&mut self, id: u16) -> bool {
-        self.mark_rides_synced(core::iter::once(id)) > 0
+    /// Record ride `id` as synced at `synced_at` (UTC unix seconds, `0` when the clock is untrusted —
+    /// the sweep starts the countdown lazily) and persist the sidecar, but only when it's a **new**
+    /// entry (a re-download of an already-flagged ride rewrites nothing, keeping its first-sync
+    /// stamp). Returns `true` if the sidecar changed. Called at a ride download's completion (epic
+    /// #447 P7). Read-modify-write within the call — the handle is opened, written truncating, and
+    /// closed here, so it never counts against the open-file budget across an `await`.
+    pub fn mark_ride_synced(&mut self, id: u16, synced_at: u32) -> bool {
+        self.mark_rides_synced(core::iter::once(id), synced_at) > 0
     }
 
-    /// Record a batch of ride ids as synced in **one** sidecar read-modify-write (the `ackRides`
-    /// command can carry dozens of ids — a per-id rewrite would be that many file round-trips).
-    /// Returns how many ids were **newly** flagged; `0` = the sidecar was not rewritten. Ids
-    /// already flagged (or dropped by a full set) count as nothing-new.
-    pub fn mark_rides_synced(&mut self, ids: impl Iterator<Item = u16>) -> usize {
+    /// Record a batch of ride ids as synced at `synced_at` in **one** sidecar read-modify-write (the
+    /// `ackRides` command can carry dozens of ids — a per-id rewrite would be that many file
+    /// round-trips). Returns how many ids were **newly** flagged; `0` = the sidecar was not
+    /// rewritten. Ids already flagged (or dropped by a full set) count as nothing-new.
+    pub fn mark_rides_synced(&mut self, ids: impl Iterator<Item = u16>, synced_at: u32) -> usize {
         let mut set = self.load_synced_set();
-        let added = ids.filter(|&id| set.insert(id)).count();
+        let added = ids.filter(|&id| set.insert(id, synced_at)).count();
         if added > 0 {
             self.write_synced_set(&set);
         }
         added
+    }
+
+    /// Stamp a **legacy** synced-without-timestamp ride's `synced_at` (auto-expiry epic #638, S3 —
+    /// the sweep's [`StampRideSynced`](obc_app::HostCommand::StampRideSynced) countdown-start). Only
+    /// ever fills a `0` stamp; rewrites the sidecar only when it changed.
+    pub fn stamp_ride_synced_at(&mut self, id: u16, synced_at: u32) {
+        let mut set = self.load_synced_set();
+        if set.stamp_synced_at(id, synced_at) {
+            self.write_synced_set(&set);
+        }
     }
 
     /// Retire ride `id`'s synced flag from the sidecar (a deleted ride — ids never reuse, so this is
@@ -824,6 +844,80 @@ impl Storage {
                 let _ = self.vmgr.close_file(file);
             }
             Err(e) => defmt::warn!("SD: cannot open route-crc sidecar: {}", defmt::Debug2Format(&e)),
+        }
+    }
+
+    /// Read the route-retention sidecar (`/routes/ROUTES.RET`) into a [`RouteRetentionStore`]
+    /// (auto-expiry epic #638, S3). A missing, torn, or malformed sidecar decodes to the **empty**
+    /// store (every route reads `Never` → nothing deletes) — never a panic (the codec + torn-line
+    /// semantics are host-tested in `obc-app::retention`). One file read.
+    pub fn load_route_retention(&self) -> RouteRetentionStore {
+        let Some(dir) = self.routes_dir else { return RouteRetentionStore::new() };
+        let Ok(file) = self.vmgr.open_file_in_dir(dir, ROUTE_RETENTION, Mode::ReadOnly) else {
+            return RouteRetentionStore::new(); // absent = nothing has retention (all Never)
+        };
+        let mut buf = [0u8; ROUTE_RETENTION_MAX_LEN];
+        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
+        let _ = self.vmgr.close_file(file);
+        decode_route_retention(&buf[..n])
+    }
+
+    /// Each catalog entry's retention meta, parallel to [`route_ids`](Storage::route_ids) — the
+    /// second argument to [`App::set_routes_with_meta`](obc_app::App::set_routes_with_meta) so the
+    /// auto-expiry sweep reads device-truth retention alongside the summaries. One sidecar read.
+    pub fn route_retention_metas(&self) -> Vec<RouteRetentionMeta, MAX_ROUTES> {
+        let store = self.load_route_retention();
+        let mut out = Vec::new();
+        for &id in &self.route_ids {
+            let _ = out.push(store.get(id));
+        }
+        out
+    }
+
+    /// Set route `id`'s whole retention meta in the sidecar (the app's `setRouteRetention` command,
+    /// S4), persisting only when it actually changed. Read-modify-write within the call.
+    pub fn set_route_retention(&mut self, id: u16, meta: RouteRetentionMeta) {
+        let mut store = self.load_route_retention();
+        if store.set(id, meta) {
+            self.write_route_retention(&store);
+        }
+    }
+
+    /// Stamp route `id`'s `last_used` in the sidecar (auto-expiry epic #638, S3 — the sweep's
+    /// clock-start / active re-stamp, the once-per-activation stamp, and the upload-commit stamp),
+    /// keeping its retention level. Persists only when it changed.
+    pub fn stamp_route_last_used(&mut self, id: u16, utc: u32) {
+        let mut store = self.load_route_retention();
+        if store.stamp_last_used(id, utc) {
+            self.write_route_retention(&store);
+        }
+    }
+
+    /// Retire route `id`'s retention entry from the sidecar (a deleted route — ids never reuse, so
+    /// belt-and-braces). Rewrites only when the entry was present (setting a route back to the
+    /// default drops its row).
+    pub fn forget_route_retention(&mut self, id: u16) {
+        let mut store = self.load_route_retention();
+        if store.set(id, RouteRetentionMeta::default()) {
+            self.write_route_retention(&store);
+        }
+    }
+
+    /// Overwrite the route-retention sidecar (truncating). A write failure is warned, not fatal —
+    /// the worst case is a route reads `Never` next list build (nothing deletes), never a crash.
+    pub fn write_route_retention(&mut self, store: &RouteRetentionStore) {
+        let Some(dir) = self.routes_dir else { return };
+        let mut buf = [0u8; ROUTE_RETENTION_MAX_LEN];
+        let n = encode_route_retention(store, &mut buf);
+        match self.vmgr.open_file_in_dir(dir, ROUTE_RETENTION, Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                if self.vmgr.write(file, &buf[..n]).is_err() {
+                    defmt::warn!("SD: route-retention sidecar write failed — a route may read Never next list build");
+                }
+                let _ = self.vmgr.flush_file(file);
+                let _ = self.vmgr.close_file(file);
+            }
+            Err(e) => defmt::warn!("SD: cannot open route-retention sidecar: {}", defmt::Debug2Format(&e)),
         }
     }
 

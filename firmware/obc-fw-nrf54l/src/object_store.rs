@@ -683,6 +683,8 @@ impl ObjectStore {
         // Retire the route's content-CRC sidecar entry (epic #632 item 6) — ids never reuse, so this
         // is belt-and-braces tidiness that keeps the sidecar from carrying a stale fingerprint.
         storage.forget_route_crc(id);
+        // …and its retention entry (auto-expiry epic #638, S3), same never-reuse tidiness.
+        storage.forget_route_retention(id);
         self.routes.remove(idx);
         self.route_total = self.route_total.saturating_sub(1);
         self.bump_revision();
@@ -763,7 +765,15 @@ impl ObjectStore {
     pub fn ack_rides(&mut self, shared: &mut SharedStore, ack: &obc_ble::AckRides) -> u8 {
         let Some(storage) = &mut shared.storage else { return 0 };
         let rides = &self.rides;
-        let added = storage.mark_rides_synced(ack.iter().filter(|id| rides.iter().any(|s| s.id == *id)));
+        // `synced_at = 0` (auto-expiry epic #638, S3): the BLE plane here has no trusted-clock
+        // handle, so the ride is flagged synced now with an unset stamp. S2's `setClock` precedes
+        // `ackRides` on every connect, so the clock is trusted in practice — and the app's **eager**
+        // ride-stamp step (`RetentionRuntime::stamp_synced_rides`, run every trusted tick, *not*
+        // recording-gated) stamps `synced_at = now` at ~ack-time once the store-changed rescan
+        // re-feeds this flag. An old app that never sends `setClock` leaves the clock untrusted and
+        // the stamp waits for the first trusted tick — the lazy fallback (invariant 5: a
+        // synced-without-timestamp ride is never deleted on sight, its countdown just starts later).
+        let added = storage.mark_rides_synced(ack.iter().filter(|id| rides.iter().any(|s| s.id == *id)), 0);
         if added > 0 {
             self.bump_revision();
         }
@@ -786,7 +796,8 @@ impl ObjectStore {
     /// A no-op (no bump) when the ride was already flagged.
     pub fn mark_ride_synced(&mut self, shared: &mut SharedStore, id: u16) {
         let Some(storage) = &mut shared.storage else { return };
-        if storage.mark_ride_synced(id) {
+        // `synced_at = 0` — the sweep stamps the real countdown anchor once trusted (see `ack_rides`).
+        if storage.mark_ride_synced(id, 0) {
             self.bump_revision();
         }
     }
