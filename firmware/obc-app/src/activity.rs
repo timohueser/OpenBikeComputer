@@ -121,23 +121,32 @@ pub(crate) struct Motion {
 /// actually-ridden accumulators. Small and `Copy` — the screens read it by value.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Activity {
+    /// The operating mode. Deliberately still `pub` (#802's privatization pass): the screens
+    /// flip it through their `Ctx`, and the screen-harness integration tests drive a bare
+    /// `Activity` the same way — there is no command/query equivalent for that seam yet (narrowing
+    /// the screen contexts is #803). Hosts read it through [`App::mode`](crate::App::mode).
     pub mode: Mode,
     /// Index into the route [`Catalog`](crate::route::Catalog) of the loaded route, or `None` when
     /// idle. The geometry is opened separately by the host (only the active route is resident).
+    /// Deliberately still `pub` (#802's privatization pass): hosts are fully covered by
+    /// [`App::active_route_index`](crate::App::active_route_index) /
+    /// [`App::activate_route`](crate::App::activate_route) and use them, but the screen-harness
+    /// integration tests preload a bare `Activity` exactly as the Route menu's `Ctx` write does —
+    /// a seam #803's context narrowing owns.
     pub active_route: Option<usize>,
     /// Index into the ride catalog of the ride whose **detail screen** is open, or `None` (epic
     /// #678 T2 / #680) — the ride namespace's `active_route`: set on detail entry, cleared on
     /// exit, and the key the host's one-shot track-profile fill hangs off
     /// ([`App::take_ride_track_request`](crate::App::take_ride_track_request) → the host streams
     /// `RD{id}.ORD` once → [`App::set_ride_profile`](crate::App::set_ride_profile)).
-    pub viewed_ride: Option<usize>,
+    pub(crate) viewed_ride: Option<usize>,
 
     // tracking session (distinct from the navigated route)
     /// The active **tracking session** id, or `None` when not tracking. A session spans from a
     /// route load to Finish/Discard, and survives a "Swap route only" — so it's keyed separately
     /// from [`active_route`](Activity::active_route) (which the matcher follows). The host
     /// reconciles the open ride log to this id.
-    pub session: Option<u32>,
+    pub(crate) session: Option<u32>,
     /// Monotonic id source for [`session`](Activity::session); only increments, so a new session
     /// can't collide with a just-finished one.
     session_seq: u32,
@@ -203,7 +212,7 @@ pub struct Activity {
     // live map-match (from the GPS fix)
     /// Total distance of the active route (m), mirrored from its header so the riding views can
     /// compute the progress fraction without re-reading the route. `0` when none loaded.
-    pub route_total_m: u32,
+    pub(crate) route_total_m: u32,
     /// Matched distance along the route (m): the riding cursor / progress bar. Frozen while
     /// off-route.
     pub progress_m: u32,
@@ -218,25 +227,25 @@ pub struct Activity {
     /// owns the climbs list and the resident detail buffer keyed on this. The riding views (and, in
     /// C4, the Climb screen) read it to decide whether a climb is being tracked. Cleared on every
     /// route swap / unload / replace, alongside `progress_m` / `off_route`.
-    pub active_climb: Option<usize>,
+    pub(crate) active_climb: Option<usize>,
     /// Index into the App-owned [`Waypoints`](obc_route::Waypoints) table of the next waypoint ahead
     /// on the route, or `None` when past the last (or no route). Set by
     /// [`App::update_next_waypoint`](crate::App::update_next_waypoint) on each matched fix — with a
     /// distance-linger so it can't flap around a waypoint — since `App`, not `Activity`, owns the
     /// table. The riding views (the map chip / stat fields, later in the epic) read it for the "next
     /// waypoint" readouts. Cleared on every route swap / unload / replace, alongside `active_climb`.
-    pub next_waypoint: Option<usize>,
+    pub(crate) next_waypoint: Option<usize>,
 
     // actually-ridden accumulators
     /// Distance actually pedalled (m) — the `done` stat. Counts **every** sane fix, including
     /// sub-threshold creep, so it's the true total covered.
-    pub ridden_m: f32,
+    pub(crate) ridden_m: f32,
     /// Distance covered **while moving** (m): only fixes at or above [`MOVING_MIN_MPS`] — the
     /// numerator of Avg. Kept separate from [`ridden_m`](Activity::ridden_m) so the average pairs
     /// moving distance with moving time (mixing them inflated Avg).
     moving_m: f32,
     /// Moving time (s), accumulated only above [`MOVING_MIN_MPS`] — denominator of Avg.
-    pub moving_s: f32,
+    pub(crate) moving_s: f32,
 
     // integration state (private)
     /// Previous fix + its host timestamp, to integrate distance/time between ticks.
@@ -429,6 +438,14 @@ impl Activity {
     /// Whether a tracking session is currently active (riding or paused).
     pub fn is_tracking(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// The active tracking-session id, or `None` when not tracking — the read a host keys its
+    /// open ride log by (a change means "open a new log"). The write side stays the
+    /// invariant-preserving [`start_session`](Activity::start_session) /
+    /// [`end_session`](Activity::end_session) pair.
+    pub fn session(&self) -> Option<u32> {
+        self.session
     }
 
     /// Record a one-shot disposition for the open ride log, drained by the host.

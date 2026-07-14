@@ -510,8 +510,8 @@ fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Read
 /// opens / closes the `.obct` log). The save name comes from the active route's catalog entry.
 fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
     let action = app.activity.take_track_action();
-    let session = app.activity.session;
-    let name = app.activity.active_route.and_then(|i| app.routes().get(i)).map(|r| r.name.as_str().to_string());
+    let session = app.activity.session();
+    let name = app.active_route_index().and_then(|i| app.routes().get(i)).map(|r| r.name.as_str().to_string());
     // Snapshot the ride totals for a Save so the durable `RD{id}.ORD` ride object the Rides screen
     // lists carries them, exactly as the device does (#454).
     let stats = matches!(action, Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
@@ -1009,7 +1009,7 @@ fn main() {
         }
 
         // The script may have loaded a route; open its geometry for the Map.
-        store.sync_active(app.activity.active_route);
+        store.sync_active(app.active_route_index());
         let route_src = store.active_source();
         let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
         let route = match (route_index.as_ref(), route_src.as_ref()) {

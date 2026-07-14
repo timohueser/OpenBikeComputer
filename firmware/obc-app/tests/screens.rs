@@ -350,20 +350,20 @@ fn reselecting_the_active_route_mid_session_returns_to_the_map() {
 #[test]
 fn route_swap_swap_only_keeps_the_session() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
-    let before = act.session;
+    let before = act.session();
     let routes = test_routes();
     // Default selection (0) is "Swap route".
     let t = RouteSwapScreen::new(2).handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
     assert!(matches!(t, Transition::Root(Screen::Map(_))));
     assert_eq!(act.active_route, Some(2), "navigation swapped to the picked route");
-    assert_eq!(act.session, before, "the tracking session continues unchanged");
+    assert_eq!(act.session(), before, "the tracking session continues unchanged");
     assert!(act.take_track_action().is_none(), "swap-only saves nothing");
 }
 
 #[test]
 fn route_swap_save_and_new_saves_then_starts_a_fresh_session() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
-    let before = act.session;
+    let before = act.session();
     let routes = test_routes();
     let mut rs = RouteSwapScreen::new(2);
     rs.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight "Save & new"
@@ -376,7 +376,7 @@ fn route_swap_save_and_new_saves_then_starts_a_fresh_session() {
     let t = rs.handle(Gesture::Hold, &mut route_ctx(&mut st, &mut act, &routes));
     assert!(matches!(t, Transition::Root(Screen::Map(_))));
     assert_eq!(act.active_route, Some(2));
-    assert_ne!(act.session, before, "a fresh session id");
+    assert_ne!(act.session(), before, "a fresh session id");
     assert!(act.is_tracking());
     assert_eq!(act.take_track_action(), Some(TrackAction::Save), "the old ride is saved");
 }
@@ -435,10 +435,10 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     assert_eq!(app.mode(), Mode::Idle, "opening the route list doesn't start riding yet");
     press(&mut app); // Route menu → Route overview (route preloads, still not riding)
     assert_eq!(app.mode(), Mode::Idle, "the overview previews; START is what rides");
-    assert_eq!(app.activity.active_route, Some(0), "the preview loads the route");
+    assert_eq!(app.active_route_index(), Some(0), "the preview loads the route");
     press(&mut app); // START RIDE → Map
     assert_eq!(app.mode(), Mode::Riding);
-    assert_eq!(app.activity.active_route, Some(0));
+    assert_eq!(app.active_route_index(), Some(0));
 }
 
 // Route catalog capacity: `set_routes` truncates a host store larger than the resident catalog
@@ -514,16 +514,16 @@ fn rescan_keeps_active_route_on_the_same_route() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     let routes = test_routes(); // Alpha, Beta, Gamma
     app.set_routes_with_ids(&routes, &IDS3);
-    app.activity.active_route = Some(1); // navigating Beta (id 20)
+    app.activate_route(1); // navigating Beta (id 20)
 
     // Delete Alpha: the list shrinks, Beta shifts 1 → 0 — navigation follows the identity.
     app.set_routes_with_ids(&routes[1..], &IDS3[1..]);
-    assert_eq!(app.activity.active_route, Some(0), "shrunk list: the index moved with the route");
+    assert_eq!(app.active_route_index(), Some(0), "shrunk list: the index moved with the route");
     assert_eq!(app.routes()[0].name.as_str(), "Beta");
 
     // An upload re-inserts Alpha ahead of it: the list grows, Beta shifts back 0 → 1.
     app.set_routes_with_ids(&routes, &IDS3);
-    let active = app.activity.active_route.expect("still navigating");
+    let active = app.active_route_index().expect("still navigating");
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "grown list: still the same route");
 }
 
@@ -534,10 +534,10 @@ fn rescan_unloads_a_vanished_active_route() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     let routes = test_routes();
     app.set_routes_with_ids(&routes, &IDS3);
-    app.activity.active_route = Some(1); // Beta
+    app.activate_route(1); // Beta
     let keep = [routes[0].clone(), routes[2].clone()]; // Beta deleted
     app.set_routes_with_ids(&keep, &[IDS3[0], IDS3[2]]);
-    assert_eq!(app.activity.active_route, None, "the deleted route unloads; Gamma is not aliased in");
+    assert_eq!(app.active_route_index(), None, "the deleted route unloads; Gamma is not aliased in");
 }
 
 /// An open Route menu across a rescan: the highlight follows the previously-highlighted route's
@@ -552,7 +552,7 @@ fn rescan_follows_the_open_route_menu_selection() {
     app.apply_gesture(Gesture::Turn(1)); // highlight Beta
     app.set_routes_with_ids(&routes[1..], &IDS3[1..]); // Alpha deleted under the open menu
     app.apply_gesture(Gesture::Press); // open the highlighted route
-    let active = app.activity.active_route.expect("the overview loaded the highlighted route");
+    let active = app.active_route_index().expect("the overview loaded the highlighted route");
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight followed Beta to its new row");
 }
 
@@ -567,7 +567,7 @@ fn rescan_clamps_a_vanished_menu_selection() {
     app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (last row)
     app.set_routes_with_ids(&routes[..2], &IDS3[..2]); // Gamma deleted
     app.apply_gesture(Gesture::Press); // open whatever is highlighted now
-    let active = app.activity.active_route.expect("a clamped highlight still opens a real route");
+    let active = app.active_route_index().expect("a clamped highlight still opens a real route");
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight clamped to the last row");
 }
 
@@ -615,7 +615,7 @@ fn deleting_a_non_highlighted_route_keeps_the_highlight_by_id() {
 
     // Pressing opens the highlighted route: still Beta, now at its new row.
     app.apply_gesture(Gesture::Press);
-    let active = app.activity.active_route.expect("the overview loaded the highlighted route");
+    let active = app.active_route_index().expect("the overview loaded the highlighted route");
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight stayed on Beta across the delete");
 }
 
@@ -638,7 +638,7 @@ fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
     // so the highlight clamps to the new last row.
     app.set_routes_with_ids(&routes[..2], &IDS3[..2]);
     app.apply_gesture(Gesture::Press); // open whatever is highlighted now
-    let active = app.activity.active_route.expect("a clamped highlight still opens a real route");
+    let active = app.active_route_index().expect("a clamped highlight still opens a real route");
     assert_eq!(app.routes()[active].name.as_str(), "Beta", "the highlight clamped to the surviving last row");
 }
 
@@ -652,7 +652,7 @@ fn app_with_pending_swap_on_gamma() -> App {
     app.apply_gesture(Gesture::Press); // Alpha → overview
     app.apply_gesture(Gesture::Press); // START RIDE → Map, session running
     assert_eq!(app.mode(), Mode::Riding);
-    assert_eq!(app.activity.active_route, Some(0));
+    assert_eq!(app.active_route_index(), Some(0));
     app.apply_gesture(Gesture::BackHold); // Map → Menu
     app.apply_gesture(Gesture::Press); // Routes station → Route menu
     app.apply_gesture(Gesture::Turn(2)); // highlight Gamma
@@ -670,7 +670,7 @@ fn rescan_remaps_a_pending_swap_by_identity() {
     let keep = [routes[0].clone(), routes[2].clone()]; // Beta deleted: Gamma shifts 2 → 1
     app.set_routes_with_ids(&keep, &[IDS3[0], IDS3[2]]);
     app.apply_gesture(Gesture::Press); // fire "Swap route"
-    let active = app.activity.active_route.expect("swap navigated");
+    let active = app.active_route_index().expect("swap navigated");
     assert_eq!(app.routes()[active].name.as_str(), "Gamma", "the swap followed the picked route");
 }
 
@@ -682,7 +682,7 @@ fn rescan_cancels_a_swap_whose_pick_vanished() {
     app.set_routes_with_ids(&routes[..2], &IDS3[..2]); // Gamma itself deleted
     app.apply_gesture(Gesture::Press); // fire "Swap route" → cancels out
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the prompt popped back to the menu");
-    let active = app.activity.active_route.expect("the original navigation is untouched");
+    let active = app.active_route_index().expect("the original navigation is untouched");
     assert_eq!(app.routes()[active].name.as_str(), "Alpha", "still navigating the original route");
 }
 

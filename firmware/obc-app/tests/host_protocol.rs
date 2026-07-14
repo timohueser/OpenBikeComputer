@@ -51,7 +51,7 @@ fn a_host_defers_the_answer_without_borrowing_the_app() {
     nav_catalog(&mut app);
     app.apply_event(HostEvent::NavPlanned(Ok(7)));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "the late answer lands in the planning screen");
-    assert_eq!(app.activity.active_route, Some(0), "…and activates the committed route");
+    assert_eq!(app.active_route_index(), Some(0), "…and activates the committed route");
 }
 
 /// A confirm and its Back applied in one batch **before any drain** (reachable during a long
@@ -94,7 +94,7 @@ fn cancel_drains_before_a_new_plan_and_a_late_answer_is_dropped() {
     nav_catalog(&mut app);
     app.apply_event(HostEvent::NavPlanned(Ok(7)));
     assert!(!matches!(app.top_screen(), Screen::RouteOverview(_)), "a post-cancel answer is dropped");
-    assert_eq!(app.activity.active_route, None, "nothing activates after a cancel");
+    assert_eq!(app.active_route_index(), None, "nothing activates after a cancel");
 }
 
 /// The remote-DFU door posts a typed `Dfu(Scan)` exactly once; the open flow blocks a second
