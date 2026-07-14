@@ -101,6 +101,18 @@ exactly at 212,768 B resident with the same 6,240 B poll frame on that CI run;
 its flash decreased to 1,034,048 B and its exact allocation report still
 matched, so its ceiling did not change.
 
+FAR-15 (#808, the instance-owned `SensorHub` replacing the process-global
+sensor mailboxes) re-baselined both profiles from a rustc 1.96.0 build:
+default 200,872 B resident (`.bss` 200,640 B + `.data` 232 B), BLE 212,792 B
+(`.bss` 208,128 B + `.data` 4,664 B) — an itemized +8 B default / +24 B BLE.
+The increase is the `&SensorHub` handles now stored in spawned task futures
+instead of tasks reaching a global (the deliberate point of the refactor).
+The `.bss`→`.data` shift inside the totals is the 156 B `SENSOR_HUB` static
+itself: one field's niche-encoded `State::None` tag is non-zero, so the one
+combined static is initializer-backed where previously only that single small
+signal was. Ceilings were set 4 B above the 1.96 measurements, matching the
+observed 1.96→1.97 default drift above.
+
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B
 after default `.bss + .data + .uninit` and 40,160 B after BLE. Those residuals

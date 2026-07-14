@@ -18,10 +18,17 @@ use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 // build's store lives inside `object_store` (which imports it itself).
 use obc_app::App;
 use obc_ports::{InputClock, RideClock, Sensors, SettingsStore, TrackSink};
-// The real-sensor `Signal` sources: the `GpsLocation`/`BaroAltimeter`/`SensorTemp` ZSTs the ride
-// loop polls, fed by `sensors::sensor_task`. Real-sensor build only.
+// The instance-owned sensor hub's control handle + GPS power enum (#808): the ride loop sets the
+// rate/power latches the `sensors::sensor_task` awaits. Real-sensor build only.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-use obc_platform::sensor_link;
+use obc_platform::sensor_hub::GpsPower;
+// The hub consumer handle threaded from `main` (the ZST `*Source` drains + presence + the event
+// wake) — present on every build that uses the hub (real-sensor GPS, or debug-uart HR/power/cadence
+// injection); absent only on the pure `synth` build.
+#[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))]
+use obc_platform::sensor_hub::SensorConsumer;
+#[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+use obc_platform::sensor_hub::SensorControl;
 // The `synth`-build stand-in GPS: walks a slow square loop so a saved ride is a non-degenerate
 // ride object (the default streams the real SAM-M10Q; `debug-uart` a recorded host ride).
 #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
@@ -68,13 +75,13 @@ const SYNTH_TICK_MS: u64 = 250;
 
 /// The single sensor/host wake the event-driven map loop selects on — one `await` that covers the
 /// whole sensor set so the loop sleeps until a datapoint actually arrives. Three builds:
-/// - default (real sensors): the unified [`sensor_link::wait_event`] datapoint edge (fix / baro /
-///   temp / GPS time / heading) — exactly one wake per published sample, zero I²C at the frame rate;
+/// - default (real sensors): the hub's unified `wait_event` datapoint edge (fix / baro / temp / GPS
+///   time / heading) — exactly one wake per published sample, zero I²C at the frame rate;
 /// - `debug-uart`: the host-streamed datapoint edge from the VCOM debug link;
 /// - `synth`: no event source, so a coarse timer steps the synthetic walk.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-async fn wait_sensor_event() {
-    sensor_link::wait_event().await
+async fn wait_sensor_event(consumer: SensorConsumer<'static>) {
+    consumer.wait_event().await
 }
 #[cfg(feature = "debug-uart")]
 async fn wait_sensor_event() {
@@ -104,12 +111,27 @@ async fn wait_ble_edge() {
 /// a BLE route commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
 /// the next timer/sensor wake (a parked device otherwise dozes up to the ~12 s watchdog-feed cap).
 #[cfg(feature = "ble")]
-async fn wait_host_or_sensor_event() {
-    embassy_futures::select::select(wait_sensor_event(), crate::object_store::wait_store_changed()).await;
+async fn wait_host_or_sensor_event(
+    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
+) {
+    embassy_futures::select::select(
+        wait_sensor_event(
+            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+            consumer,
+        ),
+        crate::object_store::wait_store_changed(),
+    )
+    .await;
 }
 #[cfg(not(feature = "ble"))]
-async fn wait_host_or_sensor_event() {
-    wait_sensor_event().await
+async fn wait_host_or_sensor_event(
+    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
+) {
+    wait_sensor_event(
+        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+        consumer,
+    )
+    .await
 }
 
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
@@ -394,18 +416,18 @@ struct RenderedFrame {
 
 /// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
 /// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
-/// [`run_app`] and pushed to the sensor task (via [`sensor_link::set_power`]) only on a change.
+/// [`run_app`] and pushed to the sensor task (via [`SensorControl::set_power`]) only on a change.
 /// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-fn desired_gps_power(app: &App) -> sensor_link::GpsPower {
+fn desired_gps_power(app: &App) -> GpsPower {
     if app.activity.is_tracking() {
         if app.settings().power_saver {
-            sensor_link::GpsPower::LowPower
+            GpsPower::LowPower
         } else {
-            sensor_link::GpsPower::Active
+            GpsPower::Active
         }
     } else {
-        sensor_link::GpsPower::Sleep
+        GpsPower::Sleep
     }
 }
 
@@ -452,6 +474,14 @@ pub(crate) async fn run_app(
     // dog already running with a foreign config. Fed once per pass below, gated on the input
     // plane's heartbeat.
     mut wdt: Option<wdt::WatchdogHandle>,
+    // The sensor hub's consumer handle (#808): the `*Source` drains + presence + the event wake.
+    // Threaded from `main`'s `static SensorHub` on every build that uses the hub — the real-sensor
+    // GPS sources, or the `debug-uart`/`ble` HR/power/cadence sources — so ownership is visible in
+    // composition, not reached through a global. Absent only on the pure `synth` build.
+    #[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))] consumer: SensorConsumer<'static>,
+    // The hub's control handle (#808): the GPS rate + power latches the sensor task awaits. Only the
+    // real-sensor build drives a power-managed receiver.
+    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] control: SensorControl<'static>,
     // The OBCM bbox centre (lon, lat) — only the `SynthLocation` stand-in needs it (the host feed and
     // the real GPS both stream absolute positions). So it's threaded only on the `synth` build.
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))] cam_center: (i32, i32),
@@ -462,8 +492,8 @@ pub(crate) async fn run_app(
     // Sensor sources — three builds, one `Sensors` either way (the app can't tell which):
     // - `debug-uart`: the host-streamed GPS / altimeter / compass, parsed by the VCOM tasks into
     //   obc-platform's debug-link signals; these ZST handles just `try_take` on the ~1 Hz contract.
-    // - default (real sensors, #218): the SAM-M10Q + BMP581 task publishes through `sensor_link`;
-    //   these ZSTs drain its `Signal`s. Absolute positions, so no camera re-centre below.
+    // - default (real sensors, #218): the SAM-M10Q + BMP581 task publishes through the hub;
+    //   these consumer sources drain its mailboxes. Absolute positions, so no camera re-centre below.
     // - `synth`: the `SynthLocation` square loop (walked from a boot-relative `start`), no baro.
     #[cfg(feature = "debug-uart")]
     let (mut debug_loc, mut debug_alt, mut debug_compass) = (
@@ -471,36 +501,22 @@ pub(crate) async fn run_app(
         obc_platform::debug_link::DebugAltimeter,
         obc_platform::debug_link::DebugCompass,
     );
-    // The shared BLE-sensor mailbox sources (epic #707 SE8): on a `debug-uart` build the host's
-    // `H`/`P`/`R` injection lines land in these `sensor_values` mailboxes; the *same* sources the
+    // The shared BLE-sensor hub sources (epic #707 SE8): on a `debug-uart` build the host's
+    // `H`/`P`/`R` injection lines land in these hub mailboxes; the *same* sources the
     // BLE central manager (SE6) will feed on a `ble` build (last-writer-wins), so the `Sensors`
     // wiring below is identical either way. `debug-uart` always composes with `sensor-link` (it's a
     // default leg), so this compiles on every documented flavor.
     #[cfg(feature = "debug-uart")]
-    let (mut inj_hr, mut inj_power, mut inj_cadence) = (
-        obc_platform::sensor_values::SensorHr,
-        obc_platform::sensor_values::SensorPower,
-        obc_platform::sensor_values::SensorCadence,
-    );
+    let (mut inj_hr, mut inj_power, mut inj_cadence) = (consumer.hr(), consumer.power(), consumer.cadence());
     // On a real-sensor `ble` build (no `debug-uart`/`synth`), the BLE central manager (SE6) feeds
-    // these same shared `sensor_values` mailboxes from decoded HR/power/cadence notifications — the
-    // exact sources the `debug-uart` leg wires, so the app's `Sensors` wiring is identical. `ble`
-    // re-enables `obc-platform/sensor-link`, so these compile on the `ble` (no-default-features)
-    // build. Gated to match the real-sensor `Sensors { … }` site below (the only one that reads them).
+    // these same shared hub mailboxes from decoded HR/power/cadence notifications — the exact sources
+    // the `debug-uart` leg wires, so the app's `Sensors` wiring is identical. Gated to match the
+    // real-sensor `Sensors { … }` site below (the only one that reads them).
     #[cfg(all(feature = "ble", not(feature = "debug-uart"), not(feature = "synth")))]
-    let (mut inj_hr, mut inj_power, mut inj_cadence) = (
-        obc_platform::sensor_values::SensorHr,
-        obc_platform::sensor_values::SensorPower,
-        obc_platform::sensor_values::SensorCadence,
-    );
+    let (mut inj_hr, mut inj_power, mut inj_cadence) = (consumer.hr(), consumer.power(), consumer.cadence());
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-    let (mut gps, mut baro, mut temp, mut gps_clock, mut mag_compass) = (
-        sensor_link::GpsLocation,
-        sensor_link::BaroAltimeter,
-        sensor_link::SensorTemp,
-        sensor_link::GpsClock,
-        sensor_link::MagCompass,
-    );
+    let (mut gps, mut baro, mut temp, mut gps_clock, mut mag_compass) =
+        (consumer.location(), consumer.altimeter(), consumer.temperature(), consumer.clock(), consumer.compass());
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut synth = SynthLocation::new(cam_center.0, cam_center.1, Instant::now());
     // Battery: a fixed 75 % stand-in until the nPM1300 PMIC fuel gauge is wired in. Polled in `Sensors`
@@ -589,7 +605,7 @@ pub(crate) async fn run_app(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     let mut prev_interval = app.settings().fix_interval_s;
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-    sensor_link::set_rate(prev_interval);
+    control.set_rate(prev_interval);
 
     // Drive the GPS power state: the sensor task acquires one boot fix regardless, then honours this —
     // Sleep while idle, Active/LowPower once a ride starts. Pushed once at boot, then again whenever
@@ -597,7 +613,7 @@ pub(crate) async fn run_app(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     let mut prev_power = desired_gps_power(app);
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-    sensor_link::set_power(prev_power);
+    control.set_power(prev_power);
 
     loop {
         let now = Instant::now().as_millis() as u32;
@@ -684,7 +700,7 @@ pub(crate) async fn run_app(
         // didn't answer to a dismissable warning card. `try_take` yields once, so this fires a single
         // pass; `notify_warning(NONE)` (all present) is a no-op.
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-        if let Some(p) = sensor_link::take_presence() {
+        if let Some(p) = consumer.take_presence() {
             let mut w = obc_app::WarningFlags::NONE;
             if !p.gps {
                 w |= obc_app::WarningFlags::NO_GPS;
@@ -1196,7 +1212,7 @@ pub(crate) async fn run_app(
                         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
                         if app.settings().fix_interval_s != prev_interval {
                             prev_interval = app.settings().fix_interval_s;
-                            sensor_link::set_rate(prev_interval);
+                            control.set_rate(prev_interval);
                         }
                     }
                     Err(error) => app.apply_event(obc_app::HostEvent::SettingsPersistFailed { revision, error }),
@@ -1211,7 +1227,7 @@ pub(crate) async fn run_app(
                 let power = desired_gps_power(app);
                 if power != prev_power {
                     prev_power = power;
-                    sensor_link::set_power(power);
+                    control.set_power(power);
                 }
             }
 
@@ -1335,7 +1351,7 @@ pub(crate) async fn run_app(
                     compass: Some(&mut debug_compass),
                     track: track_dyn,
                     fuel: Some(&mut fuel),
-                    // Host-injected `H`/`P`/`R` land in the shared `sensor_values` mailboxes; on a
+                    // Host-injected `H`/`P`/`R` land in the shared hub mailboxes; on a
                     // `ble` + `debug-uart` build a real strap feeds the same ones (last-writer-wins).
                     hr: Some(&mut inj_hr),
                     power: Some(&mut inj_power),
@@ -1354,7 +1370,7 @@ pub(crate) async fn run_app(
                     compass: Some(&mut mag_compass), // ICM-20948 / AK09916 heading while stopped
                     track: track_dyn,
                     fuel: Some(&mut fuel),
-                    // On a `ble` build the central manager (SE6) feeds the shared `sensor_values`
+                    // On a `ble` build the central manager (SE6) feeds the shared hub
                     // mailboxes; without `ble` there is no radio, so no sensor source.
                     #[cfg(feature = "ble")]
                     hr: Some(&mut inj_hr),
@@ -1690,7 +1706,10 @@ pub(crate) async fn run_app(
             INPUT_WAKE.wait(),
             // A sensor/host datapoint, or (`ble` builds) a store movement — an upload/delete
             // rescans the catalog now, not at the next timer wake (#450).
-            wait_host_or_sensor_event(),
+            wait_host_or_sensor_event(
+                #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+                consumer,
+            ),
             // A BLE link edge — connect/disconnect *and* the pairing passkey — so the passkey card
             // wakes the loop from warm sleep (epic #447, P2). `pending()` on a map build.
             wait_ble_edge(),

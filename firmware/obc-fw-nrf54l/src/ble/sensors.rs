@@ -9,9 +9,10 @@
 //! ([`obc_ble::parse_hr_measurement`] …), the crank→rpm accumulator ([`obc_ble::CrankCadence`]), the
 //! advertisement classifier ([`obc_ble::classify_advertisement`]) and the cadence arbitration
 //! ([`obc_ble::power_crank_feeds_cadence`]). This file is only the radio glue: it feeds scan-report
-//! and notification bytes into those, and pushes decoded values through
-//! [`obc_platform::sensor_values`]'s mailboxes — the same ones the `debug-uart` `H`/`P`/`R` injection
-//! path feeds (last-writer-wins), so the app can't tell a real strap from an injected line.
+//! and notification bytes into those, and pushes decoded values through the hub's
+//! [`SampleInjector`](obc_platform::sensor_hub::SampleInjector) — the same mailboxes the `debug-uart`
+//! `H`/`P`/`R` injection path feeds (last-writer-wins), so the app can't tell a real strap from an
+//! injected line.
 //!
 //! ## trouble-host 0.7 API notes (verified against the vendored source)
 //!
@@ -51,7 +52,7 @@ use embassy_time::{Duration, Instant, Timer};
 use heapless::{String, Vec};
 use nrf_sdc::{self as sdc};
 use obc_ble::SensorKind;
-use obc_platform::sensor_values::{dispatch_cadence, dispatch_hr, dispatch_power};
+use obc_platform::sensor_hub::SampleInjector;
 use trouble_host::prelude::*;
 
 use super::gatt::Server;
@@ -390,7 +391,11 @@ type SensorStack = Stack<'static, sdc::SoftdeviceController<'static>, DefaultPac
 ///
 /// `server` is the shared GATT [`Server`] (the phone-facing table): every sensor connection attaches
 /// it so the *peer's* GATT client gets answered — see [`run_link`] for why that is load-bearing.
-pub async fn run(stack: &'static SensorStack, server: &'static Server<'static>) -> ! {
+pub async fn run(
+    stack: &'static SensorStack,
+    server: &'static Server<'static>,
+    injector: SampleInjector<'static>,
+) -> ! {
     // The saved table starts empty; the ride loop seeds it from `Settings.saved_sensors` on its first
     // pass and re-pushes every change through [`request_save_sensor`] / [`request_forget_sensor`] (SE7,
     // #714 — the `set_radio_enabled` shape). The SE6 hardcoded `SEED` hook is gone: the Sensors screen
@@ -423,7 +428,7 @@ pub async fn run(stack: &'static SensorStack, server: &'static Server<'static>) 
         // `connection_worker(1)` / `(2)` beside this for the other saved slots.)
         if super::state::radio_enabled() {
             if let Some(quantity) = first_saved_quantity() {
-                let interrupted = run_link(stack, server, quantity).await;
+                let interrupted = run_link(stack, server, quantity, injector).await;
                 update_status(quantity, |s| s.state = SensorSlotState::Idle);
                 // Backoff before the next attempt — but only after a drop / failure / timeout.
                 // An interrupt means a request or radio change is already waiting at the loop top
@@ -517,7 +522,12 @@ async fn run_scan(stack: &'static SensorStack) {
 /// from wedging the link. Returns `true` when the attempt/session ended on a [`WORK_EDGE`] interrupt
 /// (a request or radio change is waiting at the loop top — skip the backoff), `false` on a
 /// drop / failure / timeout (back off before retrying).
-async fn run_link(stack: &'static SensorStack, server: &'static Server<'static>, quantity: usize) -> bool {
+async fn run_link(
+    stack: &'static SensorStack,
+    server: &'static Server<'static>,
+    quantity: usize,
+    injector: SampleInjector<'static>,
+) -> bool {
     let Some(saved) = saved_sensor(quantity) else { return false };
     let kind = kind_of(quantity);
     update_status(quantity, |s| s.state = SensorSlotState::Connecting);
@@ -591,7 +601,7 @@ async fn run_link(stack: &'static SensorStack, server: &'static Server<'static>,
     // params-updated event below.
     info!("ble: [sensor] link up ({:?}), discovering", conn.raw().params());
 
-    serve_link(stack, &conn, quantity, kind).await
+    serve_link(stack, &conn, quantity, kind, injector).await
     // `conn` drops on return → the sensor link is disconnected.
 }
 
@@ -603,6 +613,7 @@ async fn serve_link(
     conn: &GattConnection<'static, 'static, DefaultPacketPool>,
     quantity: usize,
     kind: SensorKind,
+    injector: SampleInjector<'static>,
 ) -> bool {
     let client = match GattClient::<_, _, 4>::new(stack, conn.raw()).await {
         Ok(client) => client,
@@ -657,7 +668,7 @@ async fn serve_link(
             if notifications == 1 || notifications.is_multiple_of(32) {
                 info!("ble: [sensor] notification #{} ({} B)", notifications, n.as_ref().len());
             }
-            decode_and_dispatch(kind, quantity, n.as_ref(), &mut cadence);
+            decode_and_dispatch(kind, quantity, n.as_ref(), &mut cadence, injector);
         }
         // Unreachable, but pins the block's `Result<(), ()>` type for `?` above.
         #[allow(unreachable_code)]
@@ -796,26 +807,33 @@ async fn read_battery_once(
     }
 }
 
-/// Decode one measurement notification (SE1 parsers) and dispatch it through the shared
-/// [`obc_platform::sensor_values`] mailboxes. Cadence arbitration (epic #707): a saved dedicated
-/// cadence sensor owns cadence; else the power meter's crank data fills it.
-fn decode_and_dispatch(kind: SensorKind, quantity: usize, data: &[u8], cadence: &mut obc_ble::CrankCadence) {
+/// Decode one measurement notification (SE1 parsers) and dispatch it through the hub's
+/// [`SampleInjector`] — the same mailboxes the debug-uart injection path feeds (last-writer-wins).
+/// Cadence arbitration (epic #707): a saved dedicated cadence sensor owns cadence; else the power
+/// meter's crank data fills it.
+fn decode_and_dispatch(
+    kind: SensorKind,
+    quantity: usize,
+    data: &[u8],
+    cadence: &mut obc_ble::CrankCadence,
+    injector: SampleInjector<'static>,
+) {
     match kind {
         SensorKind::HeartRate => {
             if let Some(s) = obc_ble::parse_hr_measurement(data) {
-                dispatch_hr(s.bpm);
+                injector.dispatch_hr(s.bpm);
                 note_value(quantity);
             }
         }
         SensorKind::Power => {
             if let Some(s) = obc_ble::parse_power_measurement(data) {
                 // Signed meters can report negative (regen/coasting) — the mailbox is unsigned watts.
-                dispatch_power(s.watts.max(0) as u16);
+                injector.dispatch_power(s.watts.max(0) as u16);
                 note_value(quantity);
                 if let Some(crank) = s.crank {
                     if obc_ble::power_crank_feeds_cadence(has_dedicated_cadence_saved()) {
                         if let Some(rpm) = cadence.update(crank) {
-                            dispatch_cadence(rpm);
+                            injector.dispatch_cadence(rpm);
                             note_value(quantity_of(SensorKind::Cadence));
                         }
                     }
@@ -826,7 +844,7 @@ fn decode_and_dispatch(kind: SensorKind, quantity: usize, data: &[u8], cadence: 
             if let Some(s) = obc_ble::parse_csc_measurement(data) {
                 if let Some(crank) = s.crank {
                     if let Some(rpm) = cadence.update(crank) {
-                        dispatch_cadence(rpm);
+                        injector.dispatch_cadence(rpm);
                         note_value(quantity);
                     }
                 }
