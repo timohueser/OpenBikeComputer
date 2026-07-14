@@ -2126,7 +2126,7 @@ impl App {
     {
         // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
         // the one place every host states its real frame dimensions.
-        self.ui.frame_size = (w as i32, h as i32);
+        self.ui.frame_size = (w as i16, h as i16);
         // Drain the one-shot region clip (see `set_render_clip`) — `None` on every normal frame.
         let render_clip = self.ui.render_clip.take();
 
