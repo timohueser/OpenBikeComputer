@@ -56,7 +56,7 @@ fn start_riding(app: &mut App) {
     app.apply_gesture(Gesture::Press); // → START RIDE → Map
     assert!(matches!(app.top_screen(), Screen::Map(_)), "the ride opens on the Map");
     assert!(app.activity.is_tracking(), "START RIDE begins a tracking session");
-    assert_eq!(app.activity.active_route, Some(0));
+    assert_eq!(app.active_route_index(), Some(0));
     let _ = app.take_dirty();
 }
 
@@ -74,7 +74,7 @@ fn idle_upload_opens_the_prompt_and_view_route_opens_the_overview() {
     // START RIDE on the overview is a further press away. The advisory popup gives way to it.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "View route lands on the Route overview");
-    assert_eq!(app.activity.active_route, Some(1), "the overview previews the *uploaded* route, resolved by id");
+    assert_eq!(app.active_route_index(), Some(1), "the overview previews the *uploaded* route, resolved by id");
     assert!(!app.activity.is_tracking(), "View route does not start a ride — the overview's START does");
 
     // The overview's START then rides it, exactly the Routes-list flow.
@@ -99,7 +99,7 @@ fn idle_prompt_dismisses_on_back_and_on_the_dismiss_row() {
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Home(_)));
     assert_eq!(app.mode(), Mode::Idle);
-    assert_eq!(app.activity.active_route, None, "still nothing loaded — the prompt was advisory");
+    assert_eq!(app.active_route_index(), None, "still nothing loaded — the prompt was advisory");
 }
 
 // --- variant 2: tracking → the retitled Route-swap prompt --------------------------------------
@@ -108,7 +108,7 @@ fn idle_prompt_dismisses_on_back_and_on_the_dismiss_row() {
 fn tracking_upload_opens_the_swap_prompt_and_swap_keeps_the_session() {
     let mut app = idle_app();
     start_riding(&mut app);
-    let session = app.activity.session;
+    let session = app.activity.session();
 
     app.notify_route_uploaded(12, false, None); // id 12 = index 2 ("Gamma") arrives mid-ride
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "tracking upload → the swap prompt");
@@ -116,8 +116,8 @@ fn tracking_upload_opens_the_swap_prompt_and_swap_keeps_the_session() {
     // "Swap route" (row 0, press): re-navigate onto the received route, session untouched.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)));
-    assert_eq!(app.activity.active_route, Some(2), "navigation swapped onto the uploaded route");
-    assert_eq!(app.activity.session, session, "the recording session survives a swap");
+    assert_eq!(app.active_route_index(), Some(2), "navigation swapped onto the uploaded route");
+    assert_eq!(app.activity.session(), session, "the recording session survives a swap");
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn tracking_swap_prompt_cancel_keeps_the_current_route() {
     app.notify_route_uploaded(12, false, None);
     app.apply_gesture(Gesture::Back); // Back = Cancel
     assert!(matches!(app.top_screen(), Screen::Map(_)), "cancel returns to the ride");
-    assert_eq!(app.activity.active_route, Some(0), "still navigating the original route");
+    assert_eq!(app.active_route_index(), Some(0), "still navigating the original route");
 }
 
 // --- variant 3: replacing the actively-navigated route -----------------------------------------
@@ -136,7 +136,7 @@ fn tracking_swap_prompt_cancel_keeps_the_current_route() {
 fn active_replace_shows_the_info_card_and_drops_stale_match_state() {
     let mut app = idle_app();
     start_riding(&mut app); // riding index 0 = id 10
-    let session = app.activity.session;
+    let session = app.activity.session();
     // Simulate an established match on the *old* geometry.
     app.activity.progress_m = 4_321;
     app.activity.off_route = true;
@@ -149,14 +149,14 @@ fn active_replace_shows_the_info_card_and_drops_stale_match_state() {
     assert_eq!(app.activity.progress_m, 0, "stale progress over the old geometry is dropped");
     assert!(!app.activity.off_route, "the stale off-route verdict is dropped");
     assert_eq!(app.activity.dist_to_route_m, 0);
-    assert_eq!(app.activity.active_route, Some(0), "still navigating the same route (same id)");
-    assert_eq!(app.activity.session, session, "the recording session is untouched");
+    assert_eq!(app.active_route_index(), Some(0), "still navigating the same route (same id)");
+    assert_eq!(app.activity.session(), session, "the recording session is untouched");
     assert!(app.take_dirty().map, "the route line changed under the rider — repaint");
 
     // Info-only: press dismisses, nothing else moves.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)));
-    assert_eq!(app.activity.active_route, Some(0));
+    assert_eq!(app.active_route_index(), Some(0));
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn consecutive_uploads_replace_the_popup_most_recent_wins() {
     // overview for the newest route — the popup was replaced, not stacked, and re-targeted by id.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
-    assert_eq!(app.activity.active_route, Some(1), "most recent upload wins (id 11 = index 1)");
+    assert_eq!(app.active_route_index(), Some(1), "most recent upload wins (id 11 = index 1)");
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn a_route_deleted_under_the_popup_dismisses_on_action() {
     app.apply_gesture(Gesture::Press); // View route
     assert!(matches!(app.top_screen(), Screen::Home(_)), "the vanished route dismisses the popup");
     assert_eq!(app.mode(), Mode::Idle);
-    assert_eq!(app.activity.active_route, None, "nothing was navigated");
+    assert_eq!(app.active_route_index(), None, "nothing was navigated");
 }
 
 #[test]
