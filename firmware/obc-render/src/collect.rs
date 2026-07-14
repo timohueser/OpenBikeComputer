@@ -793,7 +793,7 @@ mod heap_tests {
         let stream: Vec<u8> = (0..40u32).map(|i| (i % 4) as u8 + 1).collect();
         check::<8>(&stream);
         // A different tie pattern: blocks of equal priority.
-        let blocks: Vec<u8> = [1u8, 1, 1, 4, 4, 4, 4, 2, 2, 3, 3, 3, 1, 1, 4, 4, 2, 3, 3, 3].iter().copied().collect();
+        let blocks: Vec<u8> = [1u8, 1, 1, 4, 4, 4, 4, 2, 2, 3, 3, 3, 1, 1, 4, 4, 2, 3, 3, 3].to_vec();
         check::<5>(&blocks);
     }
 
