@@ -336,6 +336,19 @@ pub const CMD_INSTALL_FW: u8 = 3;
 /// posture. The device answers `commandResult(ok)` first, then clears the bond + drops the link and
 /// returns to open-pairing advertising.
 pub const CMD_FORGET_BOND: u8 = 4;
+/// `command` byte: `setClock` (§4.4, cmd 5) — `utc u32 LE · offset_min i16 LE`; see [`SetClock`].
+/// Auto-expiry epic #638 S2 (#642): the phone stamps the device's UTC clock + local offset on every
+/// connect, the second trusted clock source after GPS. The epic's draft table numbered it `3`; that
+/// predates `installFw`/`forgetBond` taking `3`/`4`, so it lands at `5` (the next-free command, §4.4).
+pub const CMD_SET_CLOCK: u8 = 5;
+
+/// The earliest UTC a `setClock` will accept: `2020-01-01T00:00:00Z` (unix `1577836800`). An earlier
+/// stamp is an obviously-bogus phone clock (§4.4) and is rejected `error`, so it can never seed a
+/// stale set-point that the auto-expiry sweep (#638) would then treat as trusted.
+pub const SET_CLOCK_MIN_UTC: u32 = 1_577_836_800;
+/// The magnitude bound on a `setClock` UTC offset: ±14 h (±840 min), the real-world offset span
+/// (−12:00 Baker Island … +14:00 Kiribati). A write outside it is rejected `error` (§4.4).
+pub const SET_CLOCK_MAX_OFFSET_MIN: i16 = 14 * 60;
 
 /// Map the cheaply-knowable device state at the BLE edge to the `installFw` `commandResult.status`
 /// (§4.4 cmd 3). The four documented outcomes reuse the existing status vocabulary — **no new status
@@ -431,6 +444,67 @@ impl<'a> AckRides<'a> {
             out[2 + i * 2..4 + i * 2].copy_from_slice(&id.to_le_bytes());
         }
         Some(Self::encoded_len(ids.len()))
+    }
+}
+
+/// The `setClock` command (§4.4, cmd `5`): `cmd u8 = 5 · utc u32 LE · offset_min i16 LE` — the
+/// phone stamps the device's wall clock on every connect (auto-expiry epic #638 S2, #642).
+///
+/// `utc` is the phone's current time in unix seconds; `offset_min` is its local UTC offset in
+/// minutes with **DST already applied** (the phone is the timezone oracle — the device carries no tz
+/// tables). The device sets its UTC wall-clock set-point, persists the offset, and becomes *trusted*
+/// for the boot — the safety gate the retention sweep reads. The app sends it immediately after
+/// encryption and **before** `ackRides`, so ride `synced_at` stamping (S3) can assume a trusted clock.
+///
+/// [`decode`](Self::decode) checks the fixed 7-byte structure **and** the two plausibility gates a
+/// bogus phone clock would fail — `utc` no earlier than 2020-01-01 ([`SET_CLOCK_MIN_UTC`]) and
+/// `|offset|` within ±14 h ([`SET_CLOCK_MAX_OFFSET_MIN`]) — so a caller answers `error` (§4.3) on any
+/// `Err` and `ok` on success. Keeping both checks here (not only the length) means the firmware and
+/// the iOS mirror share one definition of "valid", pinned by the `command-set-clock.bin` vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetClock {
+    /// The phone's current UTC time, unix seconds.
+    pub utc: u32,
+    /// The phone's current local UTC offset in minutes (`+02:00` → `120`), DST already folded in.
+    pub offset_min: i16,
+}
+
+impl SetClock {
+    /// The wire length: `cmd u8 · utc u32 · offset_min i16`.
+    pub const ENCODED_LEN: usize = 7;
+
+    /// Decode a full `command` write (starting at the command byte). Errors — each answered `error`
+    /// (§4.4) — are a wrong length or command byte ([`Truncated`](DescriptorError::Truncated) /
+    /// [`UnknownOp`](DescriptorError::UnknownOp)), a `utc` before [`SET_CLOCK_MIN_UTC`], or an
+    /// `offset_min` beyond ±[`SET_CLOCK_MAX_OFFSET_MIN`]. The write must be **exactly** 7 bytes
+    /// (unlike `ackRides`, `setClock` carries no variable tail, so trailing bytes are malformed).
+    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
+        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
+        if bytes[0] != CMD_SET_CLOCK {
+            return Err(DescriptorError::UnknownOp(bytes[0]));
+        }
+        let utc = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+        let offset_min = i16::from_le_bytes([bytes[5], bytes[6]]);
+        // `unsigned_abs`, not `abs`: `i16::MIN.abs()` overflows (panics in a debug/test build), and a
+        // 2-byte LE field can decode to `i16::MIN`. `unsigned_abs` maps it to `32768` cleanly, well
+        // over the bound, so a bogus offset is rejected rather than panicking the decoder.
+        if utc < SET_CLOCK_MIN_UTC || offset_min.unsigned_abs() > SET_CLOCK_MAX_OFFSET_MIN as u16 {
+            return Err(DescriptorError::Truncated);
+        }
+        Ok(Self { utc, offset_min })
+    }
+
+    /// Encode into `out` (≥ [`ENCODED_LEN`](Self::ENCODED_LEN)); returns the written length or `None`
+    /// for a too-small buffer. The app side encodes (its Swift codec mirrors this); the firmware only
+    /// decodes — this exists for the shared-vector and round-trip tests.
+    pub fn encode(utc: u32, offset_min: i16, out: &mut [u8]) -> Option<usize> {
+        if out.len() < Self::ENCODED_LEN {
+            return None;
+        }
+        out[0] = CMD_SET_CLOCK;
+        out[1..5].copy_from_slice(&utc.to_le_bytes());
+        out[5..7].copy_from_slice(&offset_min.to_le_bytes());
+        Some(Self::ENCODED_LEN)
     }
 }
 

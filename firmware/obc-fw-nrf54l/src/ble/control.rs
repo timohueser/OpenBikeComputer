@@ -25,7 +25,9 @@ use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use nrf_sdc::{self as sdc};
-use obc_ble::{CommandResult, CommandStatus, Config, ObjectType, Op, StatusMessage, TransferControl, TransferStatus};
+use obc_ble::{
+    CommandResult, CommandStatus, Config, ObjectType, Op, SetClock, StatusMessage, TransferControl, TransferStatus,
+};
 use trouble_host::prelude::*;
 
 use crate::object_store::ObjectStore;
@@ -54,7 +56,9 @@ struct CommandOutcome {
 /// rides locally (tombstones) rather than deleting them here, so a re-sync can never resurrect them.
 /// `ackRides` (cmd 2: `count u8 · count × object_id u16`) reconciles the synced sidecar from the
 /// phone's possession list ([`ObjectStore::ack_rides`]); its `commandResult.detail` reports the
-/// newly-flagged count. Any other command byte is `unknownCommand`.
+/// newly-flagged count. `setClock` (cmd 5: `utc u32 · offset_min i16`, epic #638 S2) validates the
+/// phone's clock and crosses it to the ride loop to stamp — no store movement. Any other command byte
+/// is `unknownCommand`.
 fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
     let mut forget_bond = false;
@@ -134,6 +138,26 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedSto
             forget_bond = true;
             info!("ble: [cmd] forgetBond — ack first, then clear bond + drop link");
             (CommandStatus::Ok, 0, None)
+        }
+        (obc_ble::CMD_SET_CLOCK, _) => {
+            // setClock (auto-expiry epic #638 S2, #642): the phone stamps the device's UTC clock +
+            // local offset on every connect. `SetClock::decode` owns the whole §4.4 validation (exact
+            // 7-byte length, `utc` ≥ 2020-01-01, `|offset|` ≤ 14 h) so a bad phone clock never seeds a
+            // trusted-but-stale set-point the retention sweep would honour: any `Err` → `error`. On
+            // success the validated pair crosses to the ride loop (`post_ble_clock`), which stamps it
+            // through `App::stamp_clock_ble` (sets + persists the offset, marks trust `Ble`). The clock
+            // is not a listed object — **no store revision bump**, so `store_changed` stays `None`.
+            match SetClock::decode(data) {
+                Ok(sc) => {
+                    crate::object_store::post_ble_clock(sc.utc, sc.offset_min);
+                    info!("ble: [cmd] setClock: utc {} offset {} min — posted to ride loop", sc.utc, sc.offset_min);
+                    (CommandStatus::Ok, 0, None)
+                }
+                Err(_) => {
+                    warn!("ble: [cmd] setClock rejected: malformed / out-of-range ({} B)", data.len());
+                    (CommandStatus::Error, 0, None)
+                }
+            }
         }
         _ => (CommandStatus::UnknownCommand, 0, None),
     };

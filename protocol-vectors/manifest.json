@@ -201,6 +201,14 @@
       "status": "ok (0)",
       "detail": 3
     },
+    "command-set-clock.bin": {
+      "format": "setClock command (spec 4.4, cmd 5, epic #638 S2)",
+      "byte_len": 7,
+      "cmd": 5,
+      "utc": 1752062400,
+      "utc_iso": "2025-07-09T12:00:00Z",
+      "offset_min": 120
+    },
     "update-container-v1.bin": {
       "format": "OBCU update container (spec 1) — fwImage payload (spec 7.6)",
       "byte_len": 192,

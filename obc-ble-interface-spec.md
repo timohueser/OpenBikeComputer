@@ -472,11 +472,12 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 | `2` | `ackRides` | `count u8 · count × object_id u16` | the app's **ride-possession ack**: the device marks every listed ride id it still stores as synced ("downloaded at least once"). `commandResult.detail` = the newly-flagged count (saturating at 255); a flag change bumps the **ride** store revision. See below |
 | `3` | `installFw` | none (`cmd` byte only) | ask the device to install the staged `UPDATE.BIN` — runs the on-device scan + **on-glass confirm** flow (see below). The command only *requests*; it never waits for the human and never installs on its own |
 | `4` | `forgetBond` | none (`cmd` byte only) | ask the device to dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged. The device answers `commandResult(ok)` **first**, then clears the bond + drops the link and returns to open-pairing advertising. **Honoured only on the bonded, authenticated link** (see below) |
-| `5`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
+| `5` | `setClock` | `utc u32 · offset_min i16` | the phone stamps the device's UTC clock + local offset on **every connect** (auto-expiry #638). Stamps the wall-clock set-point, **persists** the offset, and marks the clock *trusted* for the boot — the retention sweep's safety gate. Sent immediately after encryption, **before** `ackRides`. Validated → `error` on a malformed length, `utc < 1577836800`, or `\|offset_min\| > 840`; no store-revision bump (the clock is not an object). See below |
+| `6`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
 
-**Next free command: `5`.** (Heads-up for auto-expiry #638: its draft `setClock`/
-`setRouteRetention` table predates `installFw`/`forgetBond` taking `3`/`4`, so it
-renumbers to `5`/`6` when it lands.)
+**Next free command: `6`.** (`setClock` landed at `5`, not the `3` epic #638's
+draft table drew: that draft predates `installFw`/`forgetBond` taking `3`/`4`.
+`setRouteRetention` — #638's second command — takes `6` when S4 lands.)
 
 **`ackRides` — possession reconciliation.** The device keeps a per-ride
 "synced" flag (it drives the delete-guard cue on the device's Rides screen).
@@ -557,6 +558,35 @@ bonded phone or physical possession via **Forget phone**), and the command mints
 — it only clears. **Ordering is fixed:** the device notifies `commandResult(ok)` on `status`
 **before** it clears the bond and disconnects, so the phone always gets its ack; the forget +
 link-drop follow the ack, never race ahead of it.
+
+**`setClock` — stamp the trusted wall clock (auto-expiry #638).** The device has no RTC: at boot its
+clock resumes from a persisted set-point, stale by however long the device was off, and that stale
+clock is **untrusted** — nothing is stamped or deleted from it. Exactly two sources establish a
+*trusted* clock for the boot: a GPS fix (which carries full UTC) and this command. `setClock` is a
+7-byte write — `cmd u8 = 5 · utc u32 · offset_min i16`, all little-endian:
+
+- **`utc`** is the phone's current time in **unix seconds** (UTC). The device sets its wall-clock
+  UTC set-point from it (seconds-resolution: the display's minute rolls at the true instant).
+- **`offset_min`** is the phone's current **local UTC offset in minutes**, with **DST already
+  applied** (`+02:00` → `120`). The phone is the timezone oracle — the device holds no tz tables and
+  runs no DST math; expiry arithmetic is pure UTC, and the offset only shifts the *displayed* hour.
+  The offset is **persisted** (it survives reboots and seeds the boot display clock) and silently
+  refreshed by every connect, so a rider crossing time zones need only reconnect the app.
+
+On a valid write the device stamps the clock, persists the offset, marks the clock **trusted** for
+the boot, and answers `commandResult(ok)`. The clock is **not an object** — there is **no
+store-revision bump** and no `storeChanged`. Validation answers `commandResult` `error` (§4.3) for a
+**malformed length** (not exactly 7 bytes), a **`utc < 1577836800`** (before 2020-01-01 — an
+obviously-bogus phone clock), or an **`offset_min` beyond ±840** (±14 h, the real-world −12:00…+14:00
+span). A device that predates the command answers `unknown` (§4.4 compat), which the app reads as
+"this device predates expiry support" and degrades gracefully.
+
+**Ordering — sent before `ackRides`.** The app sends `setClock` on **every connect, immediately
+after encryption and before the first `ackRides`** (or any reconcile write). This is what lets ride
+`synced_at` stamping (#638 S3) assume a trusted clock: the `ackRides` that first flags a ride synced
+runs *after* the clock is trusted, so the timestamp it stamps is real. (`setClock` itself needs no
+identity read — it establishes local time, not id-scoped state — but it shares the same
+post-encryption prologue as the version+epoch read and the ack, §1.)
 
 ### 4.5 Change signalling
 
@@ -975,6 +1005,12 @@ pinned by the shared `protocol-vectors/` fixtures:
    CRC-32/IEEE (§6), the 244-byte chunk preference (§3.4), the `fwImage` object
    type (id `5`, §7.6) and `installFw` / `forgetBond` commands (§4.4), and the
    `transferResult` / `commandResult` status envelopes (§4.3).
+
+**Post-v2 additive (no version bump, §1).** `setClock` (§4.4 cmd `5`, auto-expiry
+#638 S2) is an additive command layered on v2, not part of the v1→v2 break above.
+Its iOS mirror repin — send it on every connect, before `ackRides`, and pin the
+`command-set-clock.bin` fixture — lands with **S6 (#646)**, the epic's iOS
+transport sub-issue.
 
 ## Reference implementation
 

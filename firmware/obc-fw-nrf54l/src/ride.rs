@@ -785,6 +785,15 @@ pub(crate) async fn run_app(
             for _ in 0..crate::object_store::take_store_changed() {
                 app.apply_event(obc_app::HostEvent::StoreChanged);
             }
+            // BLE setClock (auto-expiry epic #638 S2, #642): a validated `(utc, offset)` from the phone
+            // is waiting to stamp the wall clock. `stamp_clock_ble` sets + persists the offset and marks
+            // the clock trusted `Ble`; posting from *this* half means the `PersistSettings` it arms is
+            // caught by the typed drain below this same pass, so its save + `DEVICE_SETTINGS_CHANGED`
+            // land promptly — a Config read soon after this setClock serves the fresh offset (#456). The
+            // home clock jumps as soon as the loop renders (the post_ble_clock wake got us here).
+            if let Some((utc, offset_min)) = crate::object_store::take_ble_clock() {
+                app.stamp_clock_ble(utc, offset_min);
+            }
             // The settings→radio switch (#455): push the persisted Bluetooth toggle across the
             // plane boundary — one atomic swap; the radio plane wakes only on a change (off = stop
             // advertising + drop the link; on = the normal lifecycle). Fire-and-forget by design:
