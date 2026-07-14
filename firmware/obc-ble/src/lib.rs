@@ -26,9 +26,9 @@ pub mod transfer;
 
 pub use crc32::Crc32;
 pub use descriptor::{
-    install_fw_reply, AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectType, Op, StatusMessage,
-    StoreChanged, TransferControl, TransferResult, TransferStatus, VersionRead, CMD_ACK_RIDES, CMD_DELETE_OBJECT,
-    CMD_FORGET_BOND, CMD_INSTALL_FW,
+    install_fw_reply, AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectType, Op, SetClock,
+    StatusMessage, StoreChanged, TransferControl, TransferResult, TransferStatus, VersionRead, CMD_ACK_RIDES,
+    CMD_DELETE_OBJECT, CMD_FORGET_BOND, CMD_INSTALL_FW, CMD_SET_CLOCK, SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC,
 };
 pub use list::{ListHeader, RideListEntry, RouteListEntry, TripListEntry, MIN_LIST_ENTRY_LEN};
 pub use sensors::{

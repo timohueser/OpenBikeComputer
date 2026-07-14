@@ -205,6 +205,72 @@ fn command_forget_bond_round_trip() {
     assert_eq!((r.command, r.status, r.detail), (CMD_FORGET_BOND, CommandStatus::Ok, 0));
 }
 
+/// `setClock` (§4.4 cmd 5, epic #638 S2): the shared fixture decodes as the documented
+/// `(utc, offset_min)` and re-encodes to the same 7 bytes — the Swift side pins the same file. Like
+/// `forgetBond`, its answer is a bare `commandResult(ok)` with no store movement (the clock is not an
+/// object — no `storeChanged`, no revision bump).
+#[test]
+fn command_set_clock_vector() {
+    use obc_ble::{CommandResult, CommandStatus, SetClock, CMD_SET_CLOCK};
+
+    assert_eq!(CMD_SET_CLOCK, 5, "the wire command id is pinned by the spec (§4.4, next-free after forgetBond)");
+
+    let bytes = fixture("command-set-clock.bin");
+    assert_eq!(bytes.len(), SetClock::ENCODED_LEN, "setClock is a fixed 7-byte write");
+    let sc = SetClock::decode(&bytes).expect("valid setClock");
+    assert_eq!(sc.utc, 1_783_598_400, "2026-07-09T12:00:00Z");
+    assert_eq!(sc.offset_min, 120, "+02:00");
+
+    let mut out = [0u8; SetClock::ENCODED_LEN];
+    let len = SetClock::encode(sc.utc, sc.offset_min, &mut out).unwrap();
+    assert_eq!(&out[..len], &bytes[..], "re-encode");
+
+    // The device's answer (no `detail`, no companion `storeChanged`): commandResult{cmd 5, ok}.
+    let (buf, len) = Msg::CommandResult(CommandResult::new(CMD_SET_CLOCK, CommandStatus::Ok)).encode();
+    let StatusMessage::CommandResult(r) = StatusMessage::decode(&buf[..len]).unwrap().unwrap() else {
+        panic!("expected commandResult")
+    };
+    assert_eq!((r.command, r.status, r.detail), (CMD_SET_CLOCK, CommandStatus::Ok, 0));
+}
+
+/// `setClock` decode rejects every write a bad phone clock (or a wrong-length frame) would produce —
+/// each maps to `commandResult error` (§4.4). The plausibility gates live in the shared codec so the
+/// firmware and the iOS mirror agree on "valid".
+#[test]
+fn set_clock_decode_edges() {
+    use obc_ble::{SetClock, SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC};
+
+    let valid = |utc: u32, off: i16| {
+        let mut b = [0u8; 7];
+        SetClock::encode(utc, off, &mut b).unwrap();
+        b
+    };
+
+    // Short and long writes are both malformed — setClock has no variable tail, so exactly 7 bytes.
+    assert!(SetClock::decode(&[5, 0, 0, 0, 0, 0]).is_err(), "6 bytes: short");
+    assert!(SetClock::decode(&[5, 0, 0, 0, 0, 0, 0, 0]).is_err(), "8 bytes: trailing is malformed");
+    // A wrong command byte is refused.
+    assert!(SetClock::decode(&valid_cmd(4, SET_CLOCK_MIN_UTC, 0)).is_err(), "cmd 4 is not setClock");
+    // A pre-2020 UTC is a bogus phone clock.
+    assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC - 1, 0)).is_err(), "utc before 2020-01-01");
+    assert!(SetClock::decode(&valid(0, 0)).is_err(), "utc = 0");
+    // Offsets beyond ±14 h are rejected; the exact bounds (−12:00…+14:00 both hit ±840 here) pass.
+    assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, SET_CLOCK_MAX_OFFSET_MIN + 1)).is_err(), "offset > +840");
+    assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, -SET_CLOCK_MAX_OFFSET_MIN - 1)).is_err(), "offset < −840");
+    assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, SET_CLOCK_MAX_OFFSET_MIN)).is_ok(), "+840 is in range");
+    assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, -SET_CLOCK_MAX_OFFSET_MIN)).is_ok(), "−840 is in range");
+    assert!(SetClock::decode(&valid(SET_CLOCK_MIN_UTC, 0)).is_ok(), "the 2020 epoch itself is accepted");
+}
+
+/// Build a 7-byte setClock frame with an arbitrary leading command byte (for the wrong-command edge).
+fn valid_cmd(cmd: u8, utc: u32, offset_min: i16) -> [u8; 7] {
+    let mut b = [0u8; 7];
+    b[0] = cmd;
+    b[1..5].copy_from_slice(&utc.to_le_bytes());
+    b[5..7].copy_from_slice(&offset_min.to_le_bytes());
+    b
+}
+
 /// `ackRides` decode edges: a `count` promising more ids than the write carries is truncated; a
 /// wrong command byte is refused; an empty ack and ignored trailing bytes are both fine.
 #[test]

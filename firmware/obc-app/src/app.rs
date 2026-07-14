@@ -673,7 +673,9 @@ impl App {
         // "No GPS Fix" banner is still up. Funnels through `stamp_clock`, the one entry point that
         // owns the trusted-clock invariant (BLE `setClock` joins it in epic #638 S2).
         if let Some(t) = clock.and_then(|c| c.poll()) {
-            self.stamp_clock(t.utc, t.second, ClockTrust::Gps);
+            // GPS carries no timezone — pass `None` to leave the persisted offset untouched (BLE
+            // `setClock` is the only source that sets it).
+            self.stamp_clock(t.utc, t.second, None, ClockTrust::Gps);
         }
         // GPS fix → camera + map-match + ridden distance/time (only on a fresh fix, so a dropout
         // doesn't re-run the matcher or double-count). A *logged* fix also feeds the breadcrumb +
@@ -1445,24 +1447,33 @@ impl App {
     }
 
     /// The single entry point that establishes a **trusted** wall clock from a real time source —
-    /// GPS (`tick`) now, BLE `setClock` (epic #638 S2) next. Both funnel here so one place owns the
-    /// invariant. It: sets the persisted UTC `clock` anchor to `utc`; re-stamps the live
-    /// [`WallClock`] against the map-plane clock (`now_ms`), **back-dating the epoch by `second`**
-    /// (the fix's seconds-into-the-minute) so the displayed minute rolls at the true instant, not up
-    /// to a fix-interval late; persists the new set-point through the change-detected settings-save
-    /// path (only when the minute-resolution anchor actually moves, so a per-fix GPS stamp writes
-    /// RRAM at most once a minute, not every second); and records the trust `source`.
-    pub fn stamp_clock(&mut self, utc: DateTime, second: u8, source: ClockTrust) {
+    /// GPS (`tick`) and BLE `setClock` ([`stamp_clock_ble`](App::stamp_clock_ble), epic #638 S2).
+    /// Both funnel here so one place owns the invariant. It: optionally sets the persisted UTC
+    /// `offset` (BLE passes `Some`, GPS `None`); sets the persisted UTC `clock` anchor to `utc`;
+    /// re-stamps the live [`WallClock`] against the map-plane clock (`now_ms`), **back-dating the
+    /// epoch by `second`** (the fix's seconds-into-the-minute) so the displayed minute rolls at the
+    /// true instant, not up to a fix-interval late; persists the new set-point through the
+    /// change-detected settings-save path (armed only on the first trusted stamp of the boot or a
+    /// real offset change, so a per-fix GPS stamp never thrashes RRAM); and records the trust
+    /// `source`.
+    pub fn stamp_clock(&mut self, utc: DateTime, second: u8, offset: Option<i16>, source: ClockTrust) {
         // Persist the set-point only when it's worth an RRAM write. The persisted `clock` exists
         // solely to seed the *boot* display clock — which is untrusted until the next boot's first
         // stamp re-establishes it within seconds — so a mid-ride re-stamp buys only display-only,
         // untrusted precision nobody sees, at the cost of a store write (+ #810 revision bump) on
         // every displayed-minute roll for a whole ride. So arm a save only on the untrusted→trusted
         // transition (the first trusted stamp of the boot) or when the persisted UTC offset actually
-        // moves (GPS carries none, but S2's BLE `setClock` does — keep the guard general). Either
-        // way the live `WallClock` re-stamps below on *every* fix, so the displayed time stays exact.
+        // moves. GPS carries no offset (`None` — leave it untouched); BLE `setClock` carries the
+        // phone's live offset (`Some`) and MUST persist a change even on a same-boot reconnect (DST /
+        // travel), so the offset is applied **here, before** the change-check below fires the guard —
+        // setting `settings.utc_offset_min` in the BLE handler *before* calling this would hide the
+        // change from `offset_before` and drop the save. Either way the live `WallClock` re-stamps
+        // below on *every* stamp, so the displayed time stays exact.
         let first_trusted_this_boot = self.clock_trust == ClockTrust::Untrusted;
         let offset_before = self.settings.utc_offset_min;
+        if let Some(offset) = offset {
+            self.settings.utc_offset_min = offset;
+        }
         self.settings.clock = utc;
         let epoch = self.ui.now_ms.wrapping_sub(second as u32 * 1000);
         self.wall_clock.set(self.settings.local_clock(), epoch);
@@ -1470,6 +1481,22 @@ impl App {
             self.host.note_settings_edited();
         }
         self.clock_trust = source;
+    }
+
+    /// Stamp the wall clock from a BLE `setClock` (auto-expiry epic #638 S2, #642): the phone's UTC
+    /// **unix seconds** + its live local offset, arriving over the encrypted link on every connect.
+    /// The board crate's BLE plane validates the wire (spec §4.4) and hands the two decoded values
+    /// straight here, so the unix→`DateTime` split (and the seconds-into-the-minute back-date) stays
+    /// in `obc-app` beside [`stamp_clock`](App::stamp_clock), the one owner of that arithmetic — the
+    /// GPS path already carries a split `DateTime`+`second`, so only BLE needs the conversion.
+    ///
+    /// Passes the offset as `Some`, so a changed offset persists even when the clock is already
+    /// trusted this boot (a same-boot reconnect after a flight); records trust as
+    /// [`Ble`](ClockTrust::Ble).
+    pub fn stamp_clock_ble(&mut self, utc_unix: u32, offset_min: i16) {
+        let utc = DateTime::from_unix(utc_unix);
+        let second = (utc_unix % 60) as u8;
+        self.stamp_clock(utc, second, Some(offset_min), ClockTrust::Ble);
     }
 
     /// The current **UTC** unix seconds, from the wall clock. The clock's set-point is local time
@@ -2352,6 +2379,47 @@ mod tests {
             (14, 38),
             "but the live wall clock still re-stamps every fix",
         );
+    }
+
+    /// A BLE `setClock` (epic #638 S2, #642) stamps the wall clock from the phone's unix UTC + live
+    /// offset: the displayed time is UTC + offset, the raw UTC anchor is stored, the clock is trusted
+    /// as `Ble`, and — the first trusted stamp of the boot — it persists (offset included). The
+    /// unix→`DateTime` split + seconds-into-the-minute back-date happen in `stamp_clock_ble`.
+    #[test]
+    fn ble_setclock_stamps_trusts_and_persists() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::default());
+        assert!(!app.clock_trusted(), "untrusted before the first setClock");
+        // 2026-07-09T12:00:30Z, +02:00 — the protocol-vectors timestamp (unix 1783598400) plus 30 s to
+        // exercise the seconds-into-the-minute back-date.
+        app.stamp_clock_ble(1_783_598_400 + 30, 120);
+        let now = app.wall_clock_now();
+        assert_eq!((now.hour, now.minute), (14, 0), "UTC 12:00 + 02:00 → local 14:00");
+        assert_eq!(app.settings().clock, DateTime { year: 2026, month: 7, day: 9, hour: 12, minute: 0 });
+        assert_eq!(app.settings().utc_offset_min, 120, "the phone's offset is persisted");
+        assert_eq!(app.clock_trust, ClockTrust::Ble, "the trust source is BLE");
+        assert!(settings_dirty(&mut app), "the first trusted stamp of the boot persists once");
+    }
+
+    /// The offset-persistence invariant S2 must hold (#642): a second `setClock` in the **same boot**
+    /// carrying a *changed* offset (DST rolled, or the rider flew a timezone) re-persists even though
+    /// the clock is already trusted — the change-check sees the move because `stamp_clock` sets the
+    /// offset itself before testing it. A reconnect with the *same* offset re-stamps the live clock
+    /// but arms no save (no per-connect RRAM thrash).
+    #[test]
+    fn ble_setclock_persists_a_changed_offset_on_a_same_boot_reconnect() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::default());
+        app.stamp_clock_ble(1_783_598_400, 120);
+        assert!(settings_dirty(&mut app), "first trusted stamp persists (offset 120)");
+        // A later connect the same boot with a *changed* offset (e.g. +01:00 after a flight): already
+        // trusted, so `first_trusted_this_boot` is false — only the offset move can arm the save.
+        app.stamp_clock_ble(1_783_602_000, 60);
+        assert_eq!(app.settings().utc_offset_min, 60, "the new offset is adopted");
+        assert!(settings_dirty(&mut app), "a same-boot offset change persists even while already trusted");
+        // A reconnect with the same offset: no move, no save.
+        app.stamp_clock_ble(1_783_605_600, 60);
+        assert!(!settings_dirty(&mut app), "an unchanged offset on reconnect arms no save (no RRAM thrash)");
     }
 
     /// The seconds-into-the-minute back-date makes the displayed minute roll over at the true
