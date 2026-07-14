@@ -14,7 +14,8 @@
 //! - `A <meters>` — a barometric-altitude sample (float metres).
 //! - `C <deg>` — a compass heading (float degrees CW from north).
 //! - `H <bpm>` — a heart-rate sample (integer bpm, `u16`). Fake BLE sensor injection (epic #707
-//!   SE8): parsed and dispatched to the shared `sensor_values` mailboxes — the *same* ones the
+//!   SE8): parsed and dispatched through the board's [`SampleInjector`](crate::sensor_hub::SampleInjector)
+//!   into the shared [`SensorHub`](crate::sensor_hub::SensorHub) mailboxes — the *same* ones the
 //!   board's BLE central manager (SE6) feeds — so the app wiring is identical whether a value comes
 //!   from an injected line or a real strap (last-writer-wins).
 //! - `P <watts>` — a power sample (integer watts, `u16`; a signed meter reading is clamped at `0`
@@ -374,6 +375,8 @@ mod handoff {
     use obc_ports::{AltimeterSource, CompassSource, Fix, InputEvent, InputSource, LocationSource};
 
     use super::{LineReader, Msg, Telemetry};
+    #[cfg(feature = "sensor-link")]
+    use crate::sensor_hub::SampleInjector;
 
     /// Latest GPS fix, with fresh-fix semantics (`try_take` yields it once). See the module docs.
     static FIX: Signal<CriticalSectionRawMutex, Fix> = Signal::new();
@@ -412,8 +415,10 @@ mod handoff {
     static INPUT: Channel<CriticalSectionRawMutex, InputEvent, INPUT_QUEUE> = Channel::new();
 
     /// Route a decoded [`Msg`] to its signal/queue — the bridge from the link RX task to the app
-    /// poll. The board passes this to [`LineReader::feed`].
-    pub fn dispatch(msg: Msg) {
+    /// poll. Called for each parsed line by [`feed_bytes`]. HR/power/cadence route through the
+    /// caller-owned [`SampleInjector`] (behind `sensor-link`) so the debug-injected samples land in
+    /// the same hub the BLE manager feeds; everything else uses the debug link's own signals.
+    pub fn dispatch(msg: Msg, #[cfg(feature = "sensor-link")] injector: SampleInjector) {
         match msg {
             Msg::Fix(f) => {
                 FIX.signal(f);
@@ -427,30 +432,30 @@ mod handoff {
                 COMPASS.signal(c);
                 EVENT.signal(());
             }
-            // Fake BLE sensor injection (epic #707 SE8): route into the shared `sensor_values`
-            // mailboxes — the same ones the board's BLE central manager (SE6) feeds — so the app's
-            // `Sensors` wiring is identical for injected and radio values (last-writer-wins). Pulse
-            // the debug-link `EVENT` too: a `debug-uart` ride loop selects on *this* wake, so an
-            // injected sample must pull it out of warm sleep exactly like a fix does. (The
-            // `sensor_values` dispatch additionally pulses `sensor_link`'s wake, for the `ble`
+            // Fake BLE sensor injection (epic #707 SE8): route through the caller-owned injector into
+            // the shared hub mailboxes — the same ones the board's BLE central manager (SE6) feeds —
+            // so the app's `Sensors` wiring is identical for injected and radio values
+            // (last-writer-wins). Pulse the debug-link `EVENT` too: a `debug-uart` ride loop selects
+            // on *this* wake, so an injected sample must pull it out of warm sleep exactly like a fix
+            // does. (The injector's dispatch additionally pulses the hub's own event, for the `ble`
             // build whose loop selects on that instead.)
             Msg::Hr(bpm) => {
                 #[cfg(feature = "sensor-link")]
-                crate::sensor_values::dispatch_hr(bpm);
+                injector.dispatch_hr(bpm);
                 #[cfg(not(feature = "sensor-link"))]
                 let _ = bpm;
                 EVENT.signal(());
             }
             Msg::Power(w) => {
                 #[cfg(feature = "sensor-link")]
-                crate::sensor_values::dispatch_power(w);
+                injector.dispatch_power(w);
                 #[cfg(not(feature = "sensor-link"))]
                 let _ = w;
                 EVENT.signal(());
             }
             Msg::Cadence(rpm) => {
                 #[cfg(feature = "sensor-link")]
-                crate::sensor_values::dispatch_cadence(rpm);
+                injector.dispatch_cadence(rpm);
                 #[cfg(not(feature = "sensor-link"))]
                 let _ = rpm;
                 EVENT.signal(());
@@ -483,9 +488,17 @@ mod handoff {
     }
 
     /// Accumulate `bytes` and dispatch every complete line to the sensor signals. `reader` persists
-    /// across reads (it holds the partial-line buffer).
-    pub fn feed_bytes(reader: &mut LineReader, bytes: &[u8]) {
-        reader.feed(bytes, dispatch);
+    /// across reads (it holds the partial-line buffer). The caller passes its hub
+    /// [`SampleInjector`] (behind `sensor-link`) so injected HR/power/cadence lines land in the same
+    /// hub the BLE manager feeds.
+    pub fn feed_bytes(reader: &mut LineReader, bytes: &[u8], #[cfg(feature = "sensor-link")] injector: SampleInjector) {
+        reader.feed(bytes, |msg| {
+            dispatch(
+                msg,
+                #[cfg(feature = "sensor-link")]
+                injector,
+            )
+        });
     }
 
     /// The user's location, streamed over the debug link. Hand `&mut DebugLocation` to `Sensors::loc`.

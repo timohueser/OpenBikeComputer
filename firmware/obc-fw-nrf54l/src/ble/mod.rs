@@ -332,6 +332,11 @@ pub async fn run(
     cracen_p: Peri<'static, peripherals::CRACEN>,
     shared: &'static SharedStoreMutex,
     store_epoch: Option<u32>,
+    // The sensor hub's HR/power/cadence injector (#808), threaded from `main`'s `static SensorHub`
+    // through `spawn_ble_stack`: the central manager (SE6) decodes notifications and publishes
+    // through it into the same mailboxes the debug-uart path feeds (last-writer-wins). Ownership is
+    // visible at composition rather than reached through a global.
+    sensor_injector: obc_platform::sensor_hub::SampleInjector<'static>,
 ) -> ! {
     // The object store: the catalog/upload/revision semantics behind a RefCell — both BLE planes (GATT
     // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
@@ -476,7 +481,7 @@ pub async fn run(
     // at `join5`): its one central-role task scans / connects / subscribes / dispatches HR/power/
     // cadence, gated by the same #455 radio switch as the peripheral link.
     join(
-        sensors::run(stack, server),
+        sensors::run(stack, server, sensor_injector),
         join5(
             host_task(runner),
             // The trip cascade rides the route-delete slot (`join5` is embassy's ceiling): both are

@@ -26,14 +26,13 @@
 //! |---|---|---|
 //! | [`button_input`] | a [`ButtonInput`] debouncer over four [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture recognizer through [`InputSource`](obc_ports::InputSource); the `input-wait` edge-wake | `obc-ports`, `embedded-hal`, `heapless` (+ `embedded-hal-async`/`embassy-futures` behind `input-wait`) |
 //! | [`debug_link`] | the transport-agnostic fake-sensor debug protocol (#38): the always-compiled line codec + telemetry/fix encoders, and — behind `debug-link` — the embassy-sync `Signal`/`Channel` hand-off + `LocationSource`/`AltimeterSource`/`CompassSource` impls | `obc-ports`, `heapless` (+ `embassy-sync` behind `debug-link`) |
-//! | [`sensor_link`] | the embassy-sync `Signal` hand-off bridging the board's I²C sensor task ([`obc-sensors`](https://docs.rs/obc-sensors) decodes) to the app poll (the fresh-fix latch) — behind `sensor-link` | `obc-ports`, `embassy-sync` (`sensor-link`) |
-//! | [`sensor_values`] | the BLE-sensor (HR / power / cadence) value mailboxes, fed by both the BLE central manager and the `debug-uart` injection path — behind `sensor-link` | `obc-ports`, `embassy-sync` (`sensor-link`) |
+//! | [`sensor_hub`] | the instance-owned [`SensorHub`](sensor_hub::SensorHub) (#808): every cross-task sensor stream (GPS fix / baro / temp / GPS time / heading + BLE HR / power / cadence) owned by one composition object, split into typed producer/consumer/control handles bridging the board's I²C task ([`obc-sensors`](https://docs.rs/obc-sensors) decodes) + BLE manager / debug injection to the app poll — behind `sensor-link` | `obc-ports`, `embassy-sync` (`sensor-link`) |
 //! | [`synth`] | [`SynthLocation`], the board-agnostic synthetic moving [`LocationSource`](obc_ports::LocationSource) — the `debug-link`-off fallback fake GPS (always compiled) | `obc-ports`, `embassy-time` |
 //! | [`fuel`] | [`StubFuelGauge`], a fixed-level [`FuelGauge`](obc_ports::FuelGauge) stand-in until the nPM1300 PMIC fuel gauge is wired in | `obc-ports` |
 //!
 //! Nothing here depends on `obc-app` (the FAR-00 upward edge is gone), on the display seam, or on
-//! the SD stack — those moved to the sibling crates above. `sensor_link`/`sensor_values` keep the
-//! global mailbox handoff unchanged pending issue #808's instance-owned rework.
+//! the SD stack — those moved to the sibling crates above. The sensor hand-off is the instance-owned
+//! [`sensor_hub`] (#808): no process-global singleton mailboxes remain.
 //!
 //! ## Two-plane architecture — input/overlay vs. map (issue #48)
 //!
@@ -72,17 +71,17 @@ pub mod fuel;
 // Always compiled: the synthetic GPS is the `synth`-feature fallback, so it must exist without the
 // real-sensor / `sensor-link` features.
 pub mod synth;
-// The embassy-sync `Signal` hand-off bridging the board's I²C sensor task (decoded by the
-// `obc-sensors` crate) to the app's HAL poll — the real-hardware sibling of `debug_link`'s handoff.
-// Gated behind `sensor-link` (it pulls embassy-sync); the pure decode lives in `obc-sensors`.
+// The instance-owned sensor hub (#808): one `SensorHub` owns every cross-task sensor stream (GPS
+// fix / baro / temp / GPS time / heading, and the BLE HR / power / cadence), constructed once in
+// static storage by the board and split into typed producer/consumer/control handles — the
+// successor to the former global `sensor_link` + `sensor_values` mailboxes. Bridges the board's I²C
+// sensor task (decoded by `obc-sensors`) and BLE manager / debug injection (decoded by `obc-ble`) to
+// the app's HAL poll. Gated behind `sensor-link` (it pulls embassy-sync).
 #[cfg(feature = "sensor-link")]
-pub mod sensor_link;
-// The BLE-sensor (HR / power / cadence) value mailboxes — the raw-value sibling of `sensor_link`,
-// fed by both the board's BLE central manager (SE6) and the `debug-uart` injection path (SE8). Same
-// `sensor-link` gate (it pulls embassy-sync); the pure profile decode lives in `obc-ble`.
-#[cfg(feature = "sensor-link")]
-pub mod sensor_values;
+pub mod sensor_hub;
 
 pub use button_input::{ButtonInput, Timing};
 pub use fuel::StubFuelGauge;
+#[cfg(feature = "sensor-link")]
+pub use sensor_hub::SensorHub;
 pub use synth::SynthLocation;

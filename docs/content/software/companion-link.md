@@ -681,7 +681,7 @@ radio-free [`obc-ble`](src:firmware/obc-ble) crate — Heart Rate Measurement
 (`0x2A37`), Cycling Power Measurement (`0x2A63`), CSC Measurement (`0x2A5B`), and
 Battery Level (`0x2A19`), plus a crank-revolution→rpm accumulator — so it is
 host-tested with no radio in the loop. The dispatched value lands in an
-[`obc-platform`](src:firmware/obc-platform/src/sensor_values.rs) mailbox the app
+[`obc-platform`](src:firmware/obc-platform/src/sensor_hub.rs) mailbox the app
 drains like any other sensor — the **same** mailbox the simulator's sliders and
 the USB-injection `H`/`P`/`R` lines feed, so the app can't tell a real strap from
 an injected one (last-writer-wins). The app never learns BLE exists; to it a
@@ -734,7 +734,7 @@ of the data-formats page (normative bytes in the
 - On the device — the GATT server, connection lifecycle, and the CoC data plane: [`obc-fw-nrf54l/src/ble/`](src:firmware/obc-fw-nrf54l/src/ble)
 - The central-role **sensor manager** — scan / connect / subscribe / decode / dispatch, the `SENSOR_LINKS` cap and its budget: [`obc-fw-nrf54l/src/ble/sensors.rs`](src:firmware/obc-fw-nrf54l/src/ble/sensors.rs)
 - The radio-free sensor profile codecs, the advertisement classifier, and the crank→rpm accumulator: [`obc-ble`](src:firmware/obc-ble) (`sensors.rs`)
-- The app-facing sensor mailboxes both the radio manager and the injection path feed: [`obc-platform/src/sensor_values.rs`](src:firmware/obc-platform/src/sensor_values.rs)
+- The app-facing sensor mailboxes both the radio manager and the injection path feed — one instance-owned `SensorHub`, handed to each task at spawn: [`obc-platform/src/sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
 - Shared fixtures pinning the byte layouts on both sides: [`protocol-vectors/`](src:protocol-vectors)
