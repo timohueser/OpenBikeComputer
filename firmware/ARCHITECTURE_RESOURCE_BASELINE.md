@@ -87,9 +87,21 @@ python3 ../tools/resource_guard.py boot \
 
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
-| default | 200,768 B | 96 B | 200,864 B | 1,024 B | 625,200 B | 1 × 76,800 B | 52 B |
-| BLE | 208,240 B | 4,528 B | 212,768 B | 1,024 B | 1,055,284 B | 1 × 76,800 B | 6,240 B |
+| default | 201,680 B | 72 B | 201,752 B | 1,024 B | 647,000 B | 1 × 76,800 B | 52 B |
+| BLE | 209,168 B | 4,504 B | 213,672 B | 1,024 B | 1,085,508 B | 1 × 76,800 B | 6,240 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
+
+Auto-expiry (epic #638, S3 #643) added the retention runtime + sweep queue to
+`App`, per-route retention metas to `CatalogState`, and a `synced_at` to each
+resident `RideSummary`, growing `size_of::<App>()` 34,944 → 35,800 B and, with
+it, the linked resident: **default 200,868 → 201,752 B** and (stacked on #642's
++8 B setClock crossing signal) **BLE 212,796 → 213,672 B** — both ceilings
+re-baselined to those figures. The `ride_retention` byte also grew `Settings`, so
+the BLE object store (which embeds it) went 13,044 → 13,048 B and the BLE total
+32,102 → 32,106 B. Measured identically on the local rustc 1.96.0 and the CI
+floating-stable rustc 1.97.0 for BLE (213,672 B); the default links 201,744 B on
+1.97.0, 8 B under the 1.96.0 capture that sets the ceiling. Poll frames
+(52 B / 6,240 B) and the allocation report are unchanged in shape.
 
 The table is the reproducible rustc 1.96.0 capture. The first floating-stable CI
 run on rustc 1.97.0 (`2d8144b78 2026-07-07`) produced default `.bss` 200,772 B,
@@ -221,7 +233,7 @@ These are exact 32-bit target `size_of` values from the report-only ELF:
 | :-- | --: | --: |
 | framebuffer | 76,800 B | 76,800 B |
 | row diff | 1,284 B | 1,284 B |
-| `App` | 34,944 B | 34,944 B |
+| `App` | 35,800 B | 35,800 B |
 | map cache | 14,444 B | 14,444 B |
 | map tables | 4,060 B | 4,060 B |
 | route cache | 6,180 B | 6,180 B |
@@ -229,14 +241,16 @@ These are exact 32-bit target `size_of` values from the report-only ELF:
 | renderer (embedded in `App`) | 8,352 B | 8,352 B |
 | navigation scratch / tile cache / planner | 19,976 / 4,140 / 9,024 B | 19,976 / 4,140 / 9,024 B |
 | stack-reserve floor | 36,864 B | 36,864 B |
-| BLE total | 0 B | 32,102 B |
+| BLE total | 0 B | 32,106 B |
 | └ SDC memory / host resources / packet pool | 0 B | 8,704 / 3,960 / 4,036 B |
-| └ object store / server / GAP name / sensor manager | 0 B | 13,044 / 1,936 / 52 / 370 B |
+| └ object store / server / GAP name / sensor manager | 0 B | 13,048 / 1,936 / 52 / 370 B |
 | └ MPSL handle / Cracen handle | 0 B | 0 / 0 B (zero-sized handles) |
 
 The BLE object store (and so the BLE total) shrank 4 B — 13,048 → 13,044,
 32,106 → 32,102 — when `Settings::gps_time` was removed in #641 (the store embeds
-a `Settings`; `App` was unaffected, as `clock_trust` reclaimed the freed byte).
+a `Settings`; `App` was unaffected, as `clock_trust` reclaimed the freed byte),
+then grew the same 4 B back — 13,044 → 13,048, 32,102 → 32,106 — when the
+`ride_retention` setting was added in #643 (auto-expiry S3).
 
 Do not add this table to predict RAM. `App` embeds the renderer, the navigation
 types are described even where `has_nav` makes them non-resident, and the stack

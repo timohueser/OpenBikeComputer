@@ -69,7 +69,7 @@ pub fn finish_nav_plan(
     use obc_route::NavError;
     let result = outcome.and_then(|stats| {
         let id = store.write_nav_route(sink_bytes).ok_or(NavError::NoPath)?;
-        app.set_routes_with_ids(store.catalog(), store.ids());
+        app.set_routes_with_meta(store.catalog(), store.ids(), &store.retention_metas());
         // A re-route rewrites the nav bytes under an unchanged catalog index — force the
         // change-gated active-route read to re-open them.
         store.invalidate_active();
