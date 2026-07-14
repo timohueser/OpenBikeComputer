@@ -501,22 +501,11 @@ pub(crate) async fn run_app(
         obc_platform::debug_link::DebugAltimeter,
         obc_platform::debug_link::DebugCompass,
     );
-    // The shared BLE-sensor hub sources (epic #707 SE8): on a `debug-uart` build the host's
-    // `H`/`P`/`R` injection lines land in these hub mailboxes; the *same* sources the
-    // BLE central manager (SE6) will feed on a `ble` build (last-writer-wins), so the `Sensors`
-    // wiring below is identical either way. `debug-uart` always composes with `sensor-link` (it's a
-    // default leg), so this compiles on every documented flavor.
-    #[cfg(feature = "debug-uart")]
-    let (mut inj_hr, mut inj_power, mut inj_cadence) = (consumer.hr(), consumer.power(), consumer.cadence());
-    // On a real-sensor `ble` build (no `debug-uart`/`synth`), the BLE central manager (SE6) feeds
-    // these same shared hub mailboxes from decoded HR/power/cadence notifications — the exact sources
-    // the `debug-uart` leg wires, so the app's `Sensors` wiring is identical. Gated to match the
-    // real-sensor `Sensors { … }` site below (the only one that reads them).
-    #[cfg(all(feature = "ble", not(feature = "debug-uart"), not(feature = "synth")))]
-    let (mut inj_hr, mut inj_power, mut inj_cadence) = (consumer.hr(), consumer.power(), consumer.cadence());
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-    let (mut gps, mut baro, mut temp, mut gps_clock, mut mag_compass) =
-        (consumer.location(), consumer.altimeter(), consumer.temperature(), consumer.clock(), consumer.compass());
+    // The hub sources (`consumer.location()` etc.) are *not* bound here: they're stateless
+    // one-pointer drains, so each `app.tick` site below constructs them as call-expression
+    // temporaries. `tick` is synchronous, so the temporaries never live across an `await` — binding
+    // them for the loop's lifetime would park one hub pointer per source in this task's future
+    // (measured in #808: ~40 B of `__embassy_main` arena) for no behavioral difference.
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut synth = SynthLocation::new(cam_center.0, cam_center.1, Instant::now());
     // Battery: a fixed 75 % stand-in until the nPM1300 PMIC fuel gauge is wired in. Polled in `Sensors`
@@ -1353,9 +1342,9 @@ pub(crate) async fn run_app(
                     fuel: Some(&mut fuel),
                     // Host-injected `H`/`P`/`R` land in the shared hub mailboxes; on a
                     // `ble` + `debug-uart` build a real strap feeds the same ones (last-writer-wins).
-                    hr: Some(&mut inj_hr),
-                    power: Some(&mut inj_power),
-                    cadence: Some(&mut inj_cadence),
+                    hr: Some(&mut consumer.hr()),
+                    power: Some(&mut consumer.power()),
+                    cadence: Some(&mut consumer.cadence()),
                 },
                 route.as_ref(),
             );
@@ -1363,25 +1352,25 @@ pub(crate) async fn run_app(
             app.tick(
                 RideClock(now),
                 Sensors {
-                    loc: &mut gps,
-                    altimeter: Some(&mut baro),
-                    temperature: Some(&mut temp),
-                    clock: Some(&mut gps_clock), // SAM-M10Q UTC → the wall clock when "Set from GPS" is on
-                    compass: Some(&mut mag_compass), // ICM-20948 / AK09916 heading while stopped
+                    loc: &mut consumer.location(),
+                    altimeter: Some(&mut consumer.altimeter()),
+                    temperature: Some(&mut consumer.temperature()),
+                    clock: Some(&mut consumer.clock()), // SAM-M10Q UTC → the wall clock when "Set from GPS" is on
+                    compass: Some(&mut consumer.compass()), // ICM-20948 / AK09916 heading while stopped
                     track: track_dyn,
                     fuel: Some(&mut fuel),
                     // On a `ble` build the central manager (SE6) feeds the shared hub
                     // mailboxes; without `ble` there is no radio, so no sensor source.
                     #[cfg(feature = "ble")]
-                    hr: Some(&mut inj_hr),
+                    hr: Some(&mut consumer.hr()),
                     #[cfg(not(feature = "ble"))]
                     hr: None,
                     #[cfg(feature = "ble")]
-                    power: Some(&mut inj_power),
+                    power: Some(&mut consumer.power()),
                     #[cfg(not(feature = "ble"))]
                     power: None,
                     #[cfg(feature = "ble")]
-                    cadence: Some(&mut inj_cadence),
+                    cadence: Some(&mut consumer.cadence()),
                     #[cfg(not(feature = "ble"))]
                     cadence: None,
                 },
