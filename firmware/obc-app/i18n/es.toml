@@ -160,13 +160,10 @@ reset = "Restablecer"
 # --- Date & Time settings screen ---
 [datetime]
 title = "FECHA Y HORA"
-gps_clock = "Reloj GPS"
 gps_fix = "Fix GPS"
 searching = "Buscando fix"
 local_time = "Hora local"
 offset = "Desfase"
-date = "FECHA"
-time = "HORA"
 utc = "UTC "
 
 # --- Stats settings screen ---

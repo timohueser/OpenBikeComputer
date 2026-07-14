@@ -97,10 +97,10 @@ struct Args {
     /// Seed for the Home screensaver's contour pattern. On the device the seed is the
     /// wall-clock millis at each return to Home; this pins it for a headless render.
     home_seed: Option<u32>,
-    /// Headless `--png` only: seed the device's local wall-clock to `YYYY-MM-DDTHH:MM` (in manual
-    /// mode, so `local_clock()` returns it verbatim). Pins the POI-detail "today's hours" weekday +
-    /// the OPEN/CLOSED-now badge for a reproducible render. Defaults to the device default
-    /// (2025-01-01 12:00, a Wednesday noon).
+    /// Headless `--png` only: seed the device's UTC wall-clock anchor to `YYYY-MM-DDTHH:MM`. With
+    /// the default `+00:00` offset `local_clock()` returns it verbatim, pinning the POI-detail
+    /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
+    /// device default (2025-01-01 12:00, a Wednesday noon).
     clock: Option<obc_app::settings::DateTime>,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
@@ -845,9 +845,9 @@ fn main() {
         if let Some(seed) = args.home_seed {
             app.reseed_home(seed);
         }
-        // `--clock` / `--lang` seed the headless Settings. `--clock` pins the local wall-clock in
-        // manual mode (`gps_time = false` ⇒ `local_clock()` returns it verbatim) for the POI-detail
-        // weekday + OPEN/CLOSED-now badge; `--lang` selects the UI language (epic #602) so a scripted
+        // `--clock` / `--lang` seed the headless Settings. `--clock` pins the UTC wall-clock anchor;
+        // with the default `+00:00` offset `local_clock()` returns it verbatim for the POI-detail
+        // weekday + OPEN/CLOSED-now badge. `--lang` selects the UI language (epic #602) so a scripted
         // screen draws its de/fr/es copy. Both stay at the device default otherwise — with neither
         // flag `set_settings` isn't called, and `--clock` alone still leaves `language` English, so
         // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
@@ -855,7 +855,6 @@ fn main() {
         if args.clock.is_some() || args.lang.is_some() || args.sensors_demo || args.sensors_screen {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
-                settings.gps_time = false;
                 settings.clock = clock;
             }
             if let Some(lang) = args.lang {

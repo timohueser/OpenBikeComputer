@@ -365,8 +365,8 @@ async fn drain_and_publish(
     );
 
     // Publish the receiver's UTC time the moment it's valid + fully resolved — **before**
-    // the position-fix gate below, so "Set from GPS" can set the clock during acquisition, while
-    // there's still no usable fix. A `None` (unresolved) publishes nothing.
+    // the position-fix gate below, so the clock is set during acquisition, while there's still no
+    // usable fix (a GPS fix always stamps the clock, #641). A `None` (unresolved) publishes nothing.
     if let Some(t) = pvt.utc_time() {
         link.dispatch_time(t);
     }

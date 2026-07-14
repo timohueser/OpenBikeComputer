@@ -1471,7 +1471,7 @@ pub(crate) async fn run_app(
                     loc: &mut consumer.location(),
                     altimeter: Some(&mut consumer.altimeter()),
                     temperature: Some(&mut consumer.temperature()),
-                    clock: Some(&mut consumer.clock()), // SAM-M10Q UTC → the wall clock when "Set from GPS" is on
+                    clock: Some(&mut consumer.clock()), // SAM-M10Q UTC → the wall clock (always stamps; #641)
                     compass: Some(&mut consumer.compass()), // ICM-20948 / AK09916 heading while stopped
                     track: track_dyn,
                     fuel: Some(&mut fuel),

@@ -160,13 +160,10 @@ reset = "Réinitialiser"
 # --- Date & Time settings screen ---
 [datetime]
 title = "DATE & HEURE"
-gps_clock = "Horloge GPS"
 gps_fix = "Fix GPS"
 searching = "Recherche fix"
 local_time = "Heure locale"
 offset = "Décalage"
-date = "DATE"
-time = "HEURE"
 utc = "UTC "
 
 # --- Stats settings screen ---
