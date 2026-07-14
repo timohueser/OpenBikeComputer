@@ -10,7 +10,7 @@
 //!
 //! | Module | Owns | Depends on |
 //! |---|---|---|
-//! | [`sd`] | FatFs [`ByteSource`](obc_route::ByteSource)/[`ByteSink`](obc_route::ByteSink) and [`TrackSink`](obc_ports::TrackSink) adapters over an [`embedded_sdmmc`] volume — the general seek-per-read path plus the track record encode | `obc-route`, `obc-ports`, `embedded-sdmmc` |
+//! | [`sd`] | FatFs [`ByteSource`](obc_formats::io::ByteSource)/[`ByteSink`](obc_formats::io::ByteSink) and [`TrackSink`](obc_ports::TrackSink) adapters over an [`embedded_sdmmc`] volume — the general seek-per-read path plus the track record encode | `obc-formats`, `obc-ports`, `embedded-sdmmc` |
 //! | [`fat_extents`] | the map file's FAT chain resolved once into extent runs → direct-block `read_at` (#500): the fast path for the one big read-only file (`.obcm`) whose scattered reads dominate | `embedded-sdmmc` |
 
 #![no_std]
