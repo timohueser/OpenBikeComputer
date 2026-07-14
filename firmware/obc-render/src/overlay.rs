@@ -160,7 +160,7 @@ impl MapRenderer {
                 let projected = pts.iter().map(|&(lon, lat)| vp.project(lon, lat));
                 // Per-chunk `Stroker` (a handful of copies): it must drop before the chevron pass
                 // below borrows `xs` on its own.
-                route_drawn += Stroker::new(target, screen, xs, color, weight, w, h).stroke(projected);
+                route_drawn += Stroker::new(target, screen, color, weight, w, h).stroke(projected);
             });
         }
 
@@ -212,9 +212,10 @@ impl MapRenderer {
     {
         let (w, h) = (vp.w as i32, vp.h as i32);
         let projected = pts.into_iter().map(|(lon, lat)| vp.project(lon, lat));
-        // Split the borrow so the span fills can take `xs` while the run builds in `screen`.
-        let DrawScratch { screen, xs } = &mut self.draw;
-        Stroker::new(target, screen, xs, color, weight, w, h).stroke(projected);
+        // The thick-segment fill scan-converts from a stack edge record, so the stroker needs only
+        // `screen`; `xs` stays reserved for the general polygon/chevron fills elsewhere.
+        let DrawScratch { screen, .. } = &mut self.draw;
+        Stroker::new(target, screen, color, weight, w, h).stroke(projected);
     }
 }
 
