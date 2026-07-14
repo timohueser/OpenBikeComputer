@@ -9,13 +9,44 @@ use obc_app::screen::{
     RouteSwapScreen, Screen, ScreenTick, Stack, Transition,
 };
 use obc_app::{
-    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, InputClock, InputEvent, Mode, PanAxis, RouteSummary,
-    Settings, TrackAction, MAX_ROUTES,
+    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, HostCommand, HostMailbox, InputClock, InputEvent,
+    Mode, PanAxis, RouteSummary, Settings, TrackAction, MAX_ROUTES,
 };
 use obc_reader::{BBox, MapTables, SliceSource};
 
 mod common;
 use common::{build_min_obcm, build_min_obcm_profiles, keys, render_120, ReplayFix};
+
+/// The drained `DeleteRoute` id, if pending (the `take_route_delete` successor). FAR-19, #812. A
+/// co-pending derived preview cue re-emits, so discarding it in the drain is harmless.
+fn took_route_delete(app: &mut App) -> Option<u16> {
+    let mut mb: HostMailbox = HostMailbox::new();
+    let _ = app.drain_host_commands(&mut mb);
+    core::iter::from_fn(|| mb.pop()).find_map(|c| match c {
+        HostCommand::DeleteRoute { id } => Some(id),
+        _ => None,
+    })
+}
+
+/// The drained `RescanStore` commit count (0 if none) — the `take_store_changed` successor. #812.
+fn rescan_commits(app: &mut App) -> u32 {
+    let mut mb: HostMailbox = HostMailbox::new();
+    let _ = app.drain_host_commands(&mut mb);
+    core::iter::from_fn(|| mb.pop())
+        .find_map(|c| match c {
+            HostCommand::RescanStore { commits } => Some(commits),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+/// Whether leaving the settings subtree emitted a `PersistSettings` this pass — the emit-only
+/// `take_settings_dirty` successor. FAR-19, #812.
+fn settings_dirty(app: &mut App) -> bool {
+    let mut mb: HostMailbox = HostMailbox::new();
+    let _ = app.drain_host_commands(&mut mb);
+    core::iter::from_fn(|| mb.pop()).any(|c| matches!(c, HostCommand::PersistSettings { .. }))
+}
 
 /// A throwaway default [`Settings`] satisfying [`Ctx`]'s `&mut` borrow. The non-settings screens
 /// under test never touch it, so each call leaks a fresh (non-aliasing) block — fine in a short-lived
@@ -587,14 +618,13 @@ fn hold_delete_requests_the_highlighted_route_id() {
     app.apply_gesture(Gesture::Press); // Menu → Route menu
     app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
     app.apply_gesture(Gesture::Press); // Beta → Route overview
-    assert!(!app.has_route_delete(), "no request until the hold completes");
+    assert_eq!(took_route_delete(&mut app), None, "no request until the hold completes");
     app.apply_gesture(Gesture::Hold); // hold with START selected (the entry state) — round 2: no delete
-    assert!(!app.has_route_delete(), "a hold with START selected records nothing");
+    assert_eq!(took_route_delete(&mut app), None, "a hold with START selected records nothing");
     app.apply_gesture(Gesture::Turn(1)); // cursor → the Delete row
     app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = delete Beta
-    assert!(app.has_route_delete(), "the hold recorded a delete request");
-    assert_eq!(app.take_route_delete(), Some(20), "drained as Beta's durable id, not its index");
-    assert_eq!(app.take_route_delete(), None, "the one-shot drains");
+    assert_eq!(took_route_delete(&mut app), Some(20), "the hold recorded Beta's durable id, not its index");
+    assert_eq!(took_route_delete(&mut app), None, "the one-shot drains");
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the delete popped back to the Routes list");
 }
 
@@ -632,7 +662,7 @@ fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
     app.apply_gesture(Gesture::Press); // Gamma → Route overview
     app.apply_gesture(Gesture::Turn(1)); // cursor → the Delete row (round 2: no hold-anywhere)
     app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = request its delete
-    assert_eq!(app.take_route_delete(), Some(30));
+    assert_eq!(took_route_delete(&mut app), Some(30));
 
     // The delete popped back to the Routes list; the host deletes Gamma and re-feeds the catalog,
     // so the highlight clamps to the new last row.
@@ -686,16 +716,17 @@ fn rescan_cancels_a_swap_whose_pick_vanished() {
     assert_eq!(app.routes()[active].name.as_str(), "Alpha", "still navigating the original route");
 }
 
-/// The store-changed drain: `take_store_changed` returns the pending count once and resets it —
-/// the edge the board's live rescan keys on.
+/// The store-changed drain: the `RescanStore` command carries the pending count once and resets it
+/// — the edge the board's live rescan keys on. The `store_changed_pending` read-only observer sees
+/// the count without consuming it.
 #[test]
 fn take_store_changed_drains_the_pending_count() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    assert_eq!(app.take_store_changed(), 0);
-    app.notify_store_changed();
-    app.notify_store_changed();
+    assert_eq!(rescan_commits(&mut app), 0);
+    app.apply_event(obc_app::HostEvent::StoreChanged);
+    app.apply_event(obc_app::HostEvent::StoreChanged);
     assert_eq!(app.store_changed_pending(), 2, "the read-only observer still sees the count");
-    assert_eq!(app.take_store_changed(), 2);
+    assert_eq!(rescan_commits(&mut app), 2);
     assert_eq!(app.store_changed_pending(), 0, "drained");
 }
 
@@ -888,10 +919,10 @@ fn bike_type_cycles_and_persists_across_reboot() {
     assert_eq!(app.settings().bike_profile_idx, 2, "two detents from Road land on MTB");
 
     // The save is debounced to leaving the settings subtree (Bike type → Settings list → Menu).
-    assert!(!app.take_settings_dirty(), "no save cue while still inside Settings");
+    assert!(!settings_dirty(&mut app), "no save cue while still inside Settings");
     app.apply_gesture(Gesture::Back);
     app.apply_gesture(Gesture::Back); // → Menu (out of the subtree)
-    assert!(app.take_settings_dirty(), "leaving Settings fires the debounced save");
+    assert!(settings_dirty(&mut app), "leaving Settings fires the debounced save");
 
     // Simulated reboot: the persisted blob seeds a fresh App (the boot path of both hosts).
     let blob = obc_app::settings::encode(app.settings());

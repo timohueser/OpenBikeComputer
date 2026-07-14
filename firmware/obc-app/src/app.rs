@@ -131,7 +131,7 @@ pub struct AppState {
     /// screen's "Paired: yes/no" row. Fed by [`App::set_ble_status`] like [`ble_link`](AppState::ble_link).
     pub ble_paired: bool,
     /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
-    /// guarded hold, drained by the host via [`App::take_ble_forget`] — which clears the RRAM bond
+    /// guarded hold, drained by the host via [`App::drain_host_commands`] — which clears the RRAM bond
     /// slot and drops the bonded connection on the board, or clears the injected `paired` flag in
     /// the sim. A pending app→host command, carried here because `AppState` is the one mutable
     /// app-wide state a screen's `handle` reaches (the `TrackAction` pattern, one plane over).
@@ -409,7 +409,7 @@ pub struct App {
     map_obcm_version: u8,
     /// Free space on the SD card in bytes (T8 item 6), answered by the host's FAT free-cluster scan
     /// after the System screen posts its one-shot on entry
-    /// ([`take_card_scan_request`](App::take_card_scan_request) → [`set_card_free`](App::set_card_free)).
+    /// ([`take_card_scan_request`](App::drain_host_commands) → [`set_card_free`](App::apply_event)).
     /// `None` until the host answers — the screen shows `--`.
     card_free_bytes: Option<u64>,
 }
@@ -690,10 +690,10 @@ impl App {
                     // The host couldn't durably write the point (card pulled, write error, medium
                     // full) — the ride log now has a gap. Raise the recording-error advisory so the
                     // rider isn't left thinking the ride is being logged when it isn't (issue #11).
-                    // `notify_warning` latches it once per boot, so a whole ride of failing writes
+                    // `on_warning` latches it once per boot, so a whole ride of failing writes
                     // raises one dismissable card, not a per-fix nag.
                     if logged.is_err() {
-                        self.notify_warning(WarningFlags::REC_ERROR);
+                        self.on_warning(WarningFlags::REC_ERROR);
                     }
                 }
             }
@@ -903,23 +903,6 @@ impl App {
         self.map_obcm_version = obcm_version;
     }
 
-    /// Drain the one-shot **card-free scan request** (T8 item 6) the System settings screen posts on
-    /// entry — the board answers a `true` with a FAT free-cluster scan → [`set_card_free`](App::set_card_free).
-    ///
-    /// Compatibility adapter over [`HostCommand::ScanCardFree`] (#800); removal owned by #812.
-    pub fn take_card_scan_request(&mut self) -> bool {
-        self.drain_host_command(HostCommandClass::ScanCardFree).is_some()
-    }
-
-    /// Answer the card-free scan (T8 item 6): the host's free-space result in bytes, or `None` if the
-    /// scan failed / is unavailable (the System screen keeps showing `--`). Dirties the frame so an
-    /// open System screen repaints with the value.
-    ///
-    /// Compatibility adapter over [`HostEvent::CardScanned`] (#800); removal owned by #812.
-    pub fn set_card_free(&mut self, bytes: Option<u64>) {
-        self.apply_event(HostEvent::CardScanned { free_bytes: bytes });
-    }
-
     /// The loaded map's resident routing-profile names (read-only), for host inspection / tests.
     pub fn nav_profiles(&self) -> &crate::NavProfiles {
         &self.nav_profiles
@@ -1037,63 +1020,6 @@ impl App {
         self.catalogs.route_filed(idx)
     }
 
-    /// Drain the Route menu's pending route-delete request (epic #447, P6), resolved to the route's
-    /// **durable object id**. The host calls this once per pass; a `Some(id)` is its cue to delete
-    /// that route object (`ObjectStore::delete_route` on the board, the routes-dir file on the sim) —
-    /// the resulting store-changed edge re-feeds the catalog with the route gone, and P3's identity
-    /// remap keeps `active_route` / the menu selection pointing at the right routes.
-    ///
-    /// The request is recorded as a catalog **index** (what the screen holds) and translated here
-    /// against the live [`route_ids`](App::route_ids), so a rescan racing between the hold and this
-    /// drain can never resolve to the wrong route: a still-present index yields its id, an
-    /// out-of-range one (the route already vanished) drains to `None`.
-    ///
-    /// Compatibility adapter over [`HostCommand::DeleteRoute`] (#800); removal owned by #812.
-    pub fn take_route_delete(&mut self) -> Option<u16> {
-        match self.drain_host_command(HostCommandClass::DeleteRoute) {
-            Some(HostCommand::DeleteRoute { id }) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// Non-consuming peek at whether a route-delete request is pending — lets the board gate its
-    /// per-pass store work on actual change without draining the one-shot (mirrors
-    /// [`Activity::has_track_action`](crate::Activity::has_track_action)).
-    ///
-    /// Compatibility adapter over the [`HostCommand::DeleteRoute`] pendency (#800); removal owned by #812.
-    pub fn has_route_delete(&self) -> bool {
-        self.peek_host_command(HostCommandClass::DeleteRoute)
-    }
-
-    /// Drain the Route menu's pending **trip cascade-delete** request (epic #526, TR3), the trip's
-    /// durable **object id**. The host calls this once per pass; a `Some(id)` is its cue to delete
-    /// the trip object (`TP{id}.OBT` on the board / sim) **and every member route** it references,
-    /// then rescan + re-feed the route and trip catalogs — the folder disappears and its routes are
-    /// gone (locked: the on-device delete cascades — it's post-trip cleanup).
-    ///
-    /// Unlike [`take_route_delete`](App::take_route_delete) the request is already the durable id (the
-    /// confirm screen carries a trip's own counter id, not a menu index), so no catalog translation is
-    /// needed and a rescan racing the confirm is harmless — a vanished trip's id resolves to nothing
-    /// at the host. The host owns the member-route resolution (its trip store still holds the stage
-    /// ids), mirroring how it owns the file I/O for [`take_route_delete`](App::take_route_delete).
-    ///
-    /// Compatibility adapter over [`HostCommand::DeleteTrip`] (#800); removal owned by #812.
-    pub fn take_trip_delete(&mut self) -> Option<u16> {
-        match self.drain_host_command(HostCommandClass::DeleteTrip) {
-            Some(HostCommand::DeleteTrip { id }) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// Non-consuming peek at whether a trip-delete request is pending — lets the board gate its
-    /// per-pass store work on actual change without draining the one-shot (mirrors
-    /// [`has_route_delete`](App::has_route_delete)).
-    ///
-    /// Compatibility adapter over the [`HostCommand::DeleteTrip`] pendency (#800); removal owned by #812.
-    pub fn has_trip_delete(&self) -> bool {
-        self.peek_host_command(HostCommandClass::DeleteTrip)
-    }
-
     /// Replace the resident **ride** catalog from the host's store (epic #447, P7), carrying each
     /// ride's durable object id (`ids` parallel to `summaries`) and its `synced` flag (baked into the
     /// summary by the host from the SD synced-set sidecar). Re-points an open Rides-menu selection by
@@ -1134,50 +1060,7 @@ impl App {
         self.catalogs.ride_ids()
     }
 
-    /// Drain the Rides screen's pending ride-delete request (epic #447, P7), resolved to the ride's
-    /// **durable object id** — the ride-namespace twin of [`take_route_delete`](App::take_route_delete).
-    /// A `Some(id)` is the host's cue to delete that ride object (`ObjectStore::delete_ride` on the
-    /// board, the tracks-dir file on the sim); the store-changed edge re-feeds the ride catalog with
-    /// it gone. Resolved against the live [`ride_ids`](App::ride_ids), so a rescan racing the hold
-    /// drains a vanished ride to `None` rather than the wrong id.
-    ///
-    /// Compatibility adapter over [`HostCommand::DeleteRide`] (#800); removal owned by #812.
-    pub fn take_ride_delete(&mut self) -> Option<u16> {
-        match self.drain_host_command(HostCommandClass::DeleteRide) {
-            Some(HostCommand::DeleteRide { id }) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// Non-consuming peek at whether a ride-delete request is pending — lets the board gate its
-    /// per-pass store work without draining the one-shot.
-    ///
-    /// Compatibility adapter over the [`HostCommand::DeleteRide`] pendency (#800); removal owned by #812.
-    pub fn has_ride_delete(&self) -> bool {
-        self.peek_host_command(HostCommandClass::DeleteRide)
-    }
-
-    /// The Ride detail's pending **track request** (epic #678 T2 / #680): the durable object id of
-    /// the ride whose recorded track the open detail screen wants profiled, or `None` when no
-    /// detail is open / the resident buffer is already answered for it. The host's cue to stream
-    /// `RD{id}.ORD` **once** (in chunks — never resident) and answer with
-    /// [`set_ride_profile`](App::set_ride_profile) — obc-route's `ride_elevation_profile` is the
-    /// shared builder. Resolved against the live [`ride_ids`](App::ride_ids), so a rescan racing
-    /// the entry can't profile the wrong ride (a vanished index yields `None`, and the detail
-    /// screen is showing its missing-ride state anyway). Re-polls until answered; answer `None`
-    /// on a failed stream so a dead file isn't ground against every pass.
-    ///
-    /// Compatibility adapter over [`HostCommand::LoadRideTrack`] (#800) — a *derived level*, not a
-    /// stored one-shot (nothing is consumed; the cue clears when the answer lands). Removal owned
-    /// by #812.
-    pub fn take_ride_track_request(&mut self) -> Option<u16> {
-        match self.drain_host_command(HostCommandClass::LoadRideTrack) {
-            Some(HostCommand::LoadRideTrack { id }) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// Park the host's answer to [`take_ride_track_request`](App::take_ride_track_request) in the
+    /// Park the host's answer to [`take_ride_track_request`](App::ride_track_request) in the
     /// app's single resident ride-profile buffer, keyed to the currently-viewed ride (`None` =
     /// the stream failed; the band keeps its loading note and the request doesn't re-fire).
     /// Dirties the map once — the open detail's band appears with the answer.
@@ -1195,40 +1078,6 @@ impl App {
     pub fn set_ride_preview(&mut self, pts: &[(i32, i32)]) {
         self.catalogs.set_ride_preview(pts, self.activity.viewed_ride);
         self.ui.map_dirty = true;
-    }
-
-    /// Drain the pending **route-planning request** (epic #116, R4) — the POI create-route
-    /// confirm's one-shot. A `Some` is the host's cue to run
-    /// [`plan_route`](obc_route::nav::plan_route) from `from` to `to` against its map, write the
-    /// emitted OBCR to the reserved nav route (`/routes/_nav.obcr`), rescan the catalog
-    /// ([`set_routes_with_ids`](App::set_routes_with_ids)), and answer with
-    /// [`notify_nav_result`](App::notify_nav_result) — all within the same pass, so the confirm
-    /// screen is still up when the answer lands.
-    ///
-    /// Compatibility adapter over [`HostCommand::PlanRoute`] (#800); removal owned by #812.
-    pub fn take_nav_request(&mut self) -> Option<crate::activity::NavRequest> {
-        match self.drain_host_command(HostCommandClass::PlanRoute) {
-            Some(HostCommand::PlanRoute(req)) => Some(req),
-            _ => None,
-        }
-    }
-
-    /// Non-consuming peek at whether a route-planning request is pending — lets the board gate
-    /// its per-pass router work without draining the one-shot.
-    ///
-    /// Compatibility adapter over the [`HostCommand::PlanRoute`] pendency (#800); removal owned by #812.
-    pub fn has_nav_request(&self) -> bool {
-        self.peek_host_command(HostCommandClass::PlanRoute)
-    }
-
-    /// Post the **install-update request** (epic #615 S4/S5) — the one-shot the board's ride loop
-    /// drains to run the DFU armer (validate `UPDATE.BIN`, snapshot the rollback, arm the
-    /// boot-state page, reboot into the bootloader). The `dfu-install` debug-link command posts it
-    /// **directly** (no confirm screen); the S5 UI reaches the same [`DfuAction::Install`] through
-    /// the confirm screen instead. Posting records intent only — execution, guards (not
-    /// mid-recording), and errors are the drain's.
-    pub fn request_dfu_install(&mut self) {
-        self.activity.request_dfu(crate::activity::DfuAction::Install);
     }
 
     /// Open the on-glass DFU check flow from a **remote** request — the BLE `installFw` command
@@ -1268,74 +1117,6 @@ impl App {
         true
     }
 
-    /// Drain the pending [`DfuAction`](crate::activity::DfuAction) — the board's per-pass one-shot,
-    /// like [`take_nav_request`](App::take_nav_request). `Some(Scan)` runs the read-only validation
-    /// and answers via [`notify_dfu_scan_result`](App::notify_dfu_scan_result); `Some(Install)`
-    /// arms and reboots.
-    ///
-    /// Compatibility adapter over [`HostCommand::Dfu`] (#800); removal owned by #812.
-    pub fn take_dfu_request(&mut self) -> Option<crate::activity::DfuAction> {
-        match self.drain_host_command(HostCommandClass::Dfu) {
-            Some(HostCommand::Dfu(action)) => Some(action),
-            _ => None,
-        }
-    }
-
-    /// The board's answer to a drained [`DfuAction::Scan`](crate::activity::DfuAction) (epic #615
-    /// S5, #620) — the "Checking card..." wait's result. Mirrors
-    /// [`notify_nav_result`](App::notify_nav_result): the answer lands in the
-    /// [`DfuCheck`](crate::screen::DfuCheckScreen) screen the System menu pushed, **replacing** it
-    /// with the confirm screen (`Ok`) or the error card (`Err`). If that screen is gone — the rider
-    /// pressed Back out of the wait — the answer is dropped (nothing was armed; a scan costs
-    /// nothing).
-    ///
-    /// Compatibility adapter over [`HostEvent::DfuScanned`] (#800); removal owned by #812.
-    pub fn notify_dfu_scan_result(&mut self, result: Result<crate::dfu::DfuScanReport, crate::dfu::DfuScanError>) {
-        self.apply_event(HostEvent::DfuScanned(result));
-    }
-
-    /// Swap the "Preparing update..." spinner for the static, terminal
-    /// [`DfuInstalling`](crate::screen::DfuInstallingScreen) card — called by the board's install
-    /// drain the moment its guards pass, right before it paints its **last frame** and runs the
-    /// rollback snapshot + arm + warm reset. The Memory-in-Pixel panel then holds that frame
-    /// through the whole bootloader install (the bootloader never draws — it only keeps the panel's
-    /// COM wave alive), so this card *is* the install UI. With no spinner up (the `dfu-install`
-    /// debug command arms without the confirm flow) the card is pushed instead — the pre-reset
-    /// frame is right regardless of the door in.
-    ///
-    /// Compatibility adapter over [`HostEvent::DfuInstallBegan`] (#800); removal owned by #812.
-    pub fn show_dfu_installing(&mut self) {
-        self.apply_event(HostEvent::DfuInstallBegan);
-    }
-
-    /// The board's answer to a drained [`DfuAction::Install`](crate::activity::DfuAction) that
-    /// **did not reboot** (issue #755) — a refusal (recording / pending ride save / no card) or an
-    /// arm-time failure (a re-scan rejection, a rollback-snapshot IO error, a boot-state write
-    /// failure). Mirrors [`notify_dfu_scan_result`](App::notify_dfu_scan_result), but finds the
-    /// live wait the flow is showing — the [`DfuProgress`](crate::screen::DfuProgressScreen)
-    /// spinner for a pre-paint refusal, or the [`DfuInstalling`](crate::screen::DfuInstallingScreen)
-    /// card ([`show_dfu_installing`](App::show_dfu_installing)) for a failure inside the arm — and
-    /// **replaces** it with the error card, so a failed arm can no longer strand the rider on a
-    /// screen that ignores all input. If neither is up (nothing else pops them, but be symmetric
-    /// with the scan seam), the fact is dropped: nothing was armed. A successful arm never calls
-    /// this — it reboots into the bootloader instead, so these screens only outlive their pass when
-    /// the reset is genuinely imminent.
-    ///
-    /// Compatibility adapter over [`HostEvent::DfuInstallFailed`] (#800); removal owned by #812.
-    pub fn notify_dfu_install_failed(&mut self, reason: crate::dfu::DfuInstallError) {
-        self.apply_event(HostEvent::DfuInstallFailed(reason));
-    }
-
-    /// Record that this boot **confirmed a freshly-installed firmware update** (S4, #619): the
-    /// board calls this right after the trial confirm writes `Idle { installed }` at the health
-    /// anchor (first frame presented + SD mounted). `version` is the running image's OBCU
-    /// version string (≤ 32 bytes by the container format; longer input is truncated).
-    ///
-    /// Compatibility adapter over [`HostEvent::UpdateConfirmed`] (#800); removal owned by #812.
-    pub fn notify_update_confirmed(&mut self, version: &str) {
-        self.apply_event(HostEvent::UpdateConfirmed(crate::dfu::clamp(version)));
-    }
-
     /// Take the one-time "update confirmed" fact — the just-confirmed running version, if this
     /// boot set one. S5's toast is the consumer; taking it clears it (shown once).
     ///
@@ -1344,17 +1125,6 @@ impl App {
     /// exists for tests/introspection. Its disposition is owned by #812.
     pub fn take_update_confirmed(&mut self) -> Option<heapless::String<32>> {
         self.ui.update_confirmed.take()
-    }
-
-    /// Record that this boot **detected a failed firmware update** — the board's boot-outcome
-    /// reconcile found the armed update is not the running firmware (`why` says how far it got);
-    /// `staged` is the failed image's version string when the arm marker survived. The one-time
-    /// fact the "UPDATE FAILED" card takes, delivered by the same reconcile pass as the success
-    /// toast.
-    ///
-    /// Compatibility adapter over [`HostEvent::UpdateFailed`] (#800); removal owned by #812.
-    pub fn notify_update_failed(&mut self, why: crate::dfu::DfuFailure, staged: Option<&str>) {
-        self.apply_event(HostEvent::UpdateFailed { why, staged: staged.map(crate::dfu::clamp) });
     }
 
     /// **Debug bench** (#500): start a route plan from `from` to `to` (both `(lon, lat)` µdeg) exactly
@@ -1389,44 +1159,6 @@ impl App {
             *top = Screen::Climb(crate::screen::ClimbScreen::new());
         }
         self.ui.map_dirty = true;
-    }
-
-    /// Drain the pending **plan-cancel request** (#499) — recorded by the planning screen's Back
-    /// (which already popped back to the POI detail). A `true` is the host's cue to abort the
-    /// in-flight plan and discard the partial nav file; it answers **nothing** (there is no
-    /// planning screen left to answer into). Drained once per pass; a stale cancel with no plan
-    /// in flight is a no-op.
-    ///
-    /// Compatibility adapter over [`HostCommand::CancelRoutePlan`] (#800); removal owned by #812.
-    pub fn take_nav_cancel(&mut self) -> bool {
-        self.drain_host_command(HostCommandClass::CancelRoutePlan).is_some()
-    }
-
-    /// The host's answer to a drained [`take_nav_request`](App::take_nav_request) (epic #116, R4).
-    ///
-    /// `Ok(id)` is the committed nav route's **durable object id**, resolved against the already
-    /// rescanned catalog (the same ordering contract as
-    /// [`notify_route_uploaded`](App::notify_route_uploaded): rescan first, then this). The route
-    /// **activates** — [`Activity::active_route`] points at it so the host streams its geometry —
-    /// and the confirm screen is replaced by the computed-route
-    /// [overview](crate::screen::RouteOverviewScreen) (length only). Because the reserved nav file
-    /// is overwritten in place, a re-route can commit **new bytes under the same id**; every cache
-    /// derived from the old geometry (matcher lock, elevation profile, match readouts) is dropped
-    /// unconditionally, the forced-adoption discipline of an active replace.
-    ///
-    /// `Err` swaps the confirm for the failure card — the locked two tiers:
-    /// [`Exhausted`](obc_route::nav::NavError::Exhausted) → "Too far to route here." (there is no
-    /// distance cap — running out of the router's fixed table **is** the device's range limit),
-    /// everything else → "Couldn't find a route."
-    ///
-    /// The answer lands in the **planning screen** (#499 — the confirm swapped to it when the
-    /// request was recorded). If it's gone — the rider cancelled (Back popped it), or a
-    /// host-pushed card replaced it — the answer is dropped: a committed route is still in the
-    /// Route menu, and a cancel already told the host to abort before any answer.
-    ///
-    /// Compatibility adapter over [`HostEvent::NavPlanned`] (#800); removal owned by #812.
-    pub fn notify_nav_result(&mut self, result: Result<u16, obc_route::nav::NavError>) {
-        self.apply_event(HostEvent::NavPlanned(result));
     }
 
     /// [`HostEvent::NavPlanned`]: land the plan answer in the planning screen, or drop it.
@@ -1525,16 +1257,6 @@ impl App {
         self.ui.passkey_card_up()
     }
 
-    /// Drain the Bluetooth screen's pending **"Forget phone"** request (epic #447, P8): `true` at
-    /// most once per guarded hold. The board's ride loop rings the BLE plane (clear the RRAM bond
-    /// slot + drop the bonded connection); the sim clears its injected `paired` flag. The
-    /// `TrackAction` shape: a one-shot the host consumes, not a level.
-    ///
-    /// Compatibility adapter over [`HostCommand::ForgetBond`] (#800); removal owned by #812.
-    pub fn take_ble_forget(&mut self) -> bool {
-        self.drain_host_command(HostCommandClass::ForgetBond).is_some()
-    }
-
     /// The live BLE pairing passkey, or `None` when not pairing — [`BleStatus::passkey`](crate::BleStatus)
     /// as last fed to [`set_ble_status`](App::set_ble_status). Consumed by the passkey card in P2
     /// (#449); exposed now so the seam is observable end to end.
@@ -1586,77 +1308,12 @@ impl App {
         self.activity.sensor_scan_active()
     }
 
-    /// Signal that the object store committed or deleted an object (epic #447) — rung from the board's
-    /// `ObjectStore` commit/delete paths, the same edge that notifies the phone's `storeChanged`.
-    ///
-    /// Records the pending signal; the host drains it via
-    /// [`take_store_changed`](App::take_store_changed) and answers with a `/routes` rescan →
-    /// [`set_routes_with_ids`](App::set_routes_with_ids) (the live catalog + identity remap, #450).
-    ///
-    /// Compatibility adapter over [`HostEvent::StoreChanged`] (#800); removal owned by #812.
-    pub fn notify_store_changed(&mut self) {
-        self.apply_event(HostEvent::StoreChanged);
-    }
-
-    /// How many [`notify_store_changed`](App::notify_store_changed) signals are pending (not yet acted
+    /// How many [`notify_store_changed`](App::apply_event) signals are pending (not yet acted
     /// on). Non-zero once the store has moved since the last drain. A read-only observation hook for
     /// the board wiring and the seam tests; the acting consumer is
-    /// [`take_store_changed`](App::take_store_changed).
+    /// [`take_store_changed`](App::drain_host_commands).
     pub fn store_changed_pending(&self) -> u32 {
         self.host.store_changed_pending()
-    }
-
-    /// Drain the pending store-changed signals (#450): returns the count and resets it. The host
-    /// calls this once per pass and, when non-zero, rescans its store and re-feeds
-    /// [`set_routes_with_ids`](App::set_routes_with_ids). A count (not a bool) so a burst of
-    /// commits is observable, though one rescan covers them all.
-    ///
-    /// Compatibility adapter over [`HostCommand::RescanStore`] (#800); removal owned by #812.
-    pub fn take_store_changed(&mut self) -> u32 {
-        match self.drain_host_command(HostCommandClass::RescanStore) {
-            Some(HostCommand::RescanStore { commits }) => commits,
-            _ => 0,
-        }
-    }
-
-    /// A route upload **committed** to the host's store (epic #447, P4) — the event that raises
-    /// the route-upload popups. `id` is the committed route's durable object id; `replaced` says
-    /// the upload swapped the bytes of an already-stored route rather than adding a new one.
-    ///
-    /// **Ordering contract**: the host rings this *after* it has answered the accompanying
-    /// store-changed edge with the rescan → [`set_routes_with_ids`](App::set_routes_with_ids), so
-    /// `id` resolves against the fresh catalog (the board's ride loop drains the rescan first in
-    /// the same pass; the sim's inject button drives the same sequence).
-    ///
-    /// Two things happen here, deliberately decoupled:
-    ///
-    /// 1. **Forced adoption** (unconditional): if the replaced id is the actively-navigated route,
-    ///    the bytes under navigation just changed — the same-id remap kept the matcher/profile
-    ///    caches alive across the rescan, so they now describe *stale geometry*. Drop them: the
-    ///    matcher re-locks and re-runs map-matching from the current fix on the next tick, the
-    ///    profile rebuilds from the reopened geometry at the next render, and the match-derived
-    ///    readouts (progress / off-route / cross-track) clear until recomputed. The recording
-    ///    session is untouched. This runs even when the popup is suppressed.
-    /// 2. **The advisory prompt**: queued (single slot — consecutive uploads replace it, most
-    ///    recent wins) and delivered by [`reconcile_upload_prompt`](App::reconcile_upload_prompt):
-    ///    the info-only "ROUTE UPDATED" card for an active replace, the retitled
-    ///    [`RouteSwapScreen`](crate::screen::RouteSwapScreen) while tracking, or the idle
-    ///    "ROUTE RECEIVED" prompt. Dropped while the passkey card shows; deferred a tick while a
-    ///    hold charges.
-    ///
-    /// `elevation` is the route's mini sparkline ([`obc_route::elevation_sparkline`], `None` when
-    /// the route has no elevation), which the host builds from the just-committed OBCR at commit
-    /// time and the idle "ROUTE RECEIVED" card draws (#682). Carried with the event so a
-    /// hold-deferred delivery still has it; the swap / active-replace variants ignore it.
-    ///
-    /// Compatibility adapter over [`HostEvent::RouteUploaded`] (#800); removal owned by #812.
-    pub fn notify_route_uploaded(
-        &mut self,
-        id: u16,
-        replaced: bool,
-        elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
-    ) {
-        self.apply_event(HostEvent::RouteUploaded { id, replaced, elevation });
     }
 
     /// [`HostEvent::RouteUploaded`]: forced adoption on an active replace + the advisory prompt.
@@ -1675,18 +1332,6 @@ impl App {
             &self.catalogs,
             self.activity.is_tracking(),
         );
-    }
-
-    /// Raise one or more device [warnings](crate::screen::WarningScreen) (issue #504) — a missing
-    /// sensor the host's I²C probe never answered, or a map that loaded but reads slowly because
-    /// it's fragmented. Host-pushed, coalesced onto a single dismissable card; each distinct flag
-    /// is surfaced **once per boot** (a dismissed card doesn't nag, but a genuinely new flag
-    /// re-opens it). Call it whenever a fault is discovered — order and timing don't matter, the
-    /// flags accumulate. A no-op for [`WarningFlags::NONE`].
-    ///
-    /// Compatibility adapter over [`HostEvent::Warning`] (#800); removal owned by #812.
-    pub fn notify_warning(&mut self, flags: WarningFlags) {
-        self.apply_event(HostEvent::Warning(flags));
     }
 
     /// [`HostEvent::Warning`]: accumulate the flags and deliver (or defer) the advisory card.
@@ -1803,38 +1448,6 @@ impl App {
             avg_cadence: self.activity.avg_cadence(),
             avg_power: self.activity.avg_power(),
             max_power: self.activity.max_power(),
-        }
-    }
-
-    /// Whether a settings edit is pending persistence **and the user has left the settings
-    /// subtree** — the host's cue to persist [`settings`](App::settings), checked **once per frame**
-    /// after [`handle_input`](App::handle_input). Drains the flag when it fires.
-    ///
-    /// The save is **debounced to leaving the settings screens**: a stepper sweep would otherwise
-    /// drive one store write *per detent* — on the device, dozens of blocking in-place RRAM line
-    /// writes to the same address. This relies on the invariant that **only the settings screens
-    /// mutate [`settings`](App::settings)**; the trade-off is that an edit left un-exited when power
-    /// is cut is lost (which the single-slot store already tolerates).
-    ///
-    /// Emit-only compatibility peek over [`HostCommand::PersistSettings`]: `true` iff this call
-    /// emitted a persist request (dirty, outside the settings subtree, not already Awaiting/backing
-    /// off). It does **not** acknowledge the write — a host that actually persists must use
-    /// [`take_settings_persist`](App::take_settings_persist) and answer with the ack event, or the
-    /// revision stays Awaiting forever. Kept for the debounce/gating tests; removal owned by #812.
-    pub fn take_settings_dirty(&mut self) -> bool {
-        self.drain_host_command(HostCommandClass::PersistSettings).is_some()
-    }
-
-    /// Revision-aware compatibility drain for a host that persists settings **synchronously** in its
-    /// loop (the board ride loop): emit the pending [`HostCommand::PersistSettings`] and return its
-    /// `revision`, which the host must feed back via [`HostEvent::SettingsPersisted`] on a durable
-    /// write or [`HostEvent::SettingsPersistFailed`] on failure (#810). `None` when nothing is owed.
-    /// Reads [`settings`](App::settings) in the same pass under the snapshot-at-drain rule. Removal
-    /// owned by #812 (a fully typed host drains the command itself).
-    pub fn take_settings_persist(&mut self) -> Option<u16> {
-        match self.drain_host_command(HostCommandClass::PersistSettings) {
-            Some(HostCommand::PersistSettings { revision }) => Some(revision),
-            _ => None,
         }
     }
 
@@ -2313,11 +1926,11 @@ impl App {
 
 // ==================== The typed app↔host protocol (FAR-07, #800) ====================
 //
-// One vocabulary, one pending state. Every host-directed one-shot/counter the legacy `take_*` /
-// `has_*` methods expose is drained here as a typed [`HostCommand`], and every `notify_*` fact
-// lands here as a typed [`HostEvent`] — the per-latch methods above are compatibility adapters
-// over these two entry points (each drains/feeds the very same slot, so there is never a second
-// pending copy). Host-loop consolidation onto this seam is #801; adapter removal is #812.
+// One vocabulary, one pending state. Every host-directed one-shot/counter is drained here as a
+// typed [`HostCommand`] through `drain_host_commands`, and every host fact/answer lands here as a
+// typed [`HostEvent`] through `apply_event` — the only two doors, with the per-class pending state
+// living once inside `App` (a typed slot, a counter, or a derived predicate). The legacy per-latch
+// `take_*` / `has_*` / `notify_*` compatibility adapters were removed in FAR-19 (#812).
 
 impl App {
     /// Drain every pending host-directed command into the caller-owned mailbox, in the canonical
@@ -2471,10 +2084,18 @@ impl App {
 
     /// The Ride detail's derived track-fill cue (#680): the viewed ride's durable id while the
     /// resident profile buffer isn't answered for it — the shared predicate behind
-    /// [`take_ride_track_request`](App::take_ride_track_request) and
+    /// [`take_ride_track_request`](App::ride_track_request) and
     /// [`HostCommand::LoadRideTrack`]. Pure state derivation: nothing is stored, so nothing can go
     /// stale across a rescan (the identity remap moves the keys, and the cue follows).
-    fn ride_track_request(&self) -> Option<u16> {
+    ///
+    /// `pub` (with [`nav_preview_missing`](App::nav_preview_missing), already public) so a
+    /// fully-typed host answers the two **derived fill levels** at their fill sites off the pure
+    /// predicate — the mailbox pops [`LoadRideTrack`](crate::HostCommand::LoadRideTrack) /
+    /// [`RefreshNavPreview`](crate::HostCommand::RefreshNavPreview) and ignores them, because a cue
+    /// re-derived *after* the drain (a same-pass `nav_finish` creating a fresh
+    /// [`RefreshNavPreview`](crate::HostCommand::RefreshNavPreview) need) must still be seen this
+    /// pass (#812).
+    pub fn ride_track_request(&self) -> Option<u16> {
         let viewed = self.activity.viewed_ride?;
         if self.catalogs.ride_profile_answered_for(viewed) {
             return None; // already answered for this ride (profile or a recorded failure)
@@ -2495,6 +2116,48 @@ mod tests {
         fn poll(&mut self) -> Option<Fix> {
             self.0.take()
         }
+    }
+
+    // ── Typed-protocol test helpers (FAR-19, #812): the former `take_*` compat adapters these
+    // tests exercised are gone, so each helper drains its one class through the crate-internal
+    // per-class `drain_host_command` — exactly what the deleted adapter did, so per-class isolation
+    // (a test that drains nav then cancel separately) is preserved (a whole-mailbox drain would
+    // consume both at once).
+    use crate::host::HostCommandClass;
+
+    /// The drained [`DfuAction`], if a `Dfu` command was pending (the `take_dfu_request` successor).
+    fn drain_dfu(app: &mut App) -> Option<crate::activity::DfuAction> {
+        match app.drain_host_command(HostCommandClass::Dfu) {
+            Some(HostCommand::Dfu(a)) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// The drained plan request, if a `PlanRoute` was pending (the `take_nav_request` successor).
+    fn drain_nav(app: &mut App) -> Option<crate::activity::NavRequest> {
+        match app.drain_host_command(HostCommandClass::PlanRoute) {
+            Some(HostCommand::PlanRoute(req)) => Some(req),
+            _ => None,
+        }
+    }
+
+    /// Whether a `CancelRoutePlan` was pending (the `take_nav_cancel` successor).
+    fn drain_cancel(app: &mut App) -> bool {
+        app.drain_host_command(HostCommandClass::CancelRoutePlan).is_some()
+    }
+
+    /// The drained persist revision, if a `PersistSettings` was owed (the `take_settings_persist`
+    /// successor). `settings_dirty` is the emit-only bool successor of `take_settings_dirty`.
+    fn drain_persist(app: &mut App) -> Option<u16> {
+        match app.drain_host_command(HostCommandClass::PersistSettings) {
+            Some(HostCommand::PersistSettings { revision }) => Some(revision),
+            _ => None,
+        }
+    }
+
+    /// Whether leaving the settings subtree emitted a persist this pass (`take_settings_dirty`).
+    fn settings_dirty(app: &mut App) -> bool {
+        drain_persist(app).is_some()
     }
 
     /// The Home root's current backdrop seed.
@@ -2594,7 +2257,7 @@ mod tests {
         manual.set_settings(Settings { gps_time: false, clock: hand_set, ..Settings::default() });
         tick_clock(&mut manual, gps_time(14, 37, 0), 1000);
         assert_eq!(manual.wall_clock_now(), hand_set, "manual mode ignores GPS time");
-        assert!(!manual.take_settings_dirty(), "a GPS stamp never flags a settings save");
+        assert!(!settings_dirty(&mut manual), "a GPS stamp never flags a settings save");
 
         // GPS mode with a +02:00 offset: local = UTC anchor + offset = 16:37.
         let mut gps = App::new(AppState::new(0, 0, 1.0));
@@ -3261,20 +2924,20 @@ mod tests {
         app.apply_gesture(Gesture::Press); // → Settings list
         app.apply_gesture(Gesture::Turn(1)); // → Units row
         app.apply_gesture(Gesture::Press); // → Units screen
-        assert!(!app.take_settings_dirty(), "navigation changed no setting, so nothing to save");
+        assert!(!settings_dirty(&mut app), "navigation changed no setting, so nothing to save");
 
         let before = app.settings().units;
         app.apply_gesture(Gesture::Press); // flip units (live immediately, but persistence is debounced)
         assert_ne!(app.settings().units, before, "the Units screen flipped the system");
         assert_eq!(app.settings().units, Units::Imperial, "default Metric → Imperial");
-        assert!(!app.take_settings_dirty(), "still on a settings screen → the save is held, not fired per detent");
+        assert!(!settings_dirty(&mut app), "still on a settings screen → the save is held, not fired per detent");
 
         app.apply_gesture(Gesture::Back); // Units → Settings list (still inside the settings subtree)
-        assert!(!app.take_settings_dirty(), "the Settings list is itself a settings screen — save stays held");
+        assert!(!settings_dirty(&mut app), "the Settings list is itself a settings screen — save stays held");
 
         app.apply_gesture(Gesture::Back); // Settings list → Menu (left the settings subtree)
-        assert!(app.take_settings_dirty(), "leaving settings flushes the pending edit — one coalesced save");
-        assert!(!app.take_settings_dirty(), "and the flag drains — only saved once");
+        assert!(settings_dirty(&mut app), "leaving settings flushes the pending edit — one coalesced save");
+        assert!(!settings_dirty(&mut app), "and the flag drains — only saved once");
     }
 
     /// Belt-and-braces over [`ScreenKind`](crate::screen::ScreenKind): **every** settings screen
@@ -3344,7 +3007,7 @@ mod tests {
             } else {
                 assert_ne!(*app.settings(), before, "{name}: the edit script changed a setting");
             }
-            assert!(!app.take_settings_dirty(), "{name}: the save is held while the screen is on top");
+            assert!(!settings_dirty(&mut app), "{name}: the save is held while the screen is on top");
 
             // Back out to the Home root (closing any open field on the way); the save stays held
             // for as long as any settings screen remains on top, then flushes exactly once.
@@ -3352,12 +3015,12 @@ mod tests {
                 if app.ui.stack.len() == 1 {
                     break;
                 }
-                assert!(!app.take_settings_dirty(), "{name}: still inside the settings subtree — save held");
+                assert!(!settings_dirty(&mut app), "{name}: still inside the settings subtree — save held");
                 app.apply_gesture(Gesture::Back);
             }
             assert_eq!(app.ui.stack.len(), 1, "{name}: backed out to the Home root");
-            assert!(app.take_settings_dirty(), "{name}: leaving the settings subtree flushes the pending save");
-            assert!(!app.take_settings_dirty(), "{name}: the flag drains — exactly one save");
+            assert!(settings_dirty(&mut app), "{name}: leaving the settings subtree flushes the pending save");
+            assert!(!settings_dirty(&mut app), "{name}: the flag drains — exactly one save");
         }
     }
 
@@ -3376,18 +3039,18 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Home(_)));
 
         // An empty warning opens nothing.
-        app.notify_warning(WarningFlags::NONE);
+        app.apply_event(crate::HostEvent::Warning(WarningFlags::NONE));
         assert!(matches!(app.top_screen(), Screen::Home(_)), "an empty warning is a no-op");
 
         // The first flag opens the card.
-        app.notify_warning(WarningFlags::NO_GPS);
+        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
         match app.top_screen() {
             Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::NO_GPS)),
             _ => panic!("a raised warning opens the card"),
         }
 
         // A second flag while the card is up joins it — one card, both flags.
-        app.notify_warning(WarningFlags::MAP_SLOW);
+        app.apply_event(crate::HostEvent::Warning(WarningFlags::MAP_SLOW));
         assert_eq!(app.ui.stack.len(), 2, "the new flag joins the open card, not a second one");
         match app.top_screen() {
             Screen::Warning(w) => {
@@ -3402,11 +3065,11 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Home(_)), "dismiss pops the card");
 
         // A flag already shown doesn't nag again.
-        app.notify_warning(WarningFlags::NO_GPS);
+        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
         assert!(matches!(app.top_screen(), Screen::Home(_)), "an already-shown flag stays quiet");
 
         // A brand-new flag re-opens the card — showing only the fresh flag, not the acknowledged ones.
-        app.notify_warning(WarningFlags::NO_COMPASS);
+        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_COMPASS));
         match app.top_screen() {
             Screen::Warning(w) => {
                 assert!(w.flags().contains(WarningFlags::NO_COMPASS));
@@ -3424,7 +3087,7 @@ mod tests {
         let seeded = crate::settings::Settings { units: crate::settings::Units::Imperial, ..Default::default() };
         app.set_settings(seeded);
         assert_eq!(app.settings().units, crate::settings::Units::Imperial);
-        assert!(!app.take_settings_dirty(), "seeding the boot value must not trigger a write-back");
+        assert!(!settings_dirty(&mut app), "seeding the boot value must not trigger a write-back");
     }
 
     // --- the live wall clock ---
@@ -3955,13 +3618,13 @@ mod tests {
     fn dfu_request_and_confirmed_fact_are_take_once() {
         use crate::activity::DfuAction;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        assert_eq!(app.take_dfu_request(), None, "nothing pending at boot");
-        app.request_dfu_install();
-        assert_eq!(app.take_dfu_request(), Some(DfuAction::Install), "the posted request drains");
-        assert_eq!(app.take_dfu_request(), None, "…exactly once");
+        assert_eq!(drain_dfu(&mut app), None, "nothing pending at boot");
+        app.activity.request_dfu(DfuAction::Install);
+        assert_eq!(drain_dfu(&mut app), Some(DfuAction::Install), "the posted request drains");
+        assert_eq!(drain_dfu(&mut app), None, "…exactly once");
 
         assert_eq!(app.take_update_confirmed(), None, "no confirmed update on a normal boot");
-        app.notify_update_confirmed("v1.2.3-4-gabc1234");
+        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v1.2.3-4-gabc1234")));
         let v = app.take_update_confirmed().expect("the fact is set");
         assert_eq!(v.as_str(), "v1.2.3-4-gabc1234");
         assert_eq!(app.take_update_confirmed(), None, "taken once — the toast shows once");
@@ -3983,18 +3646,18 @@ mod tests {
 
         // No wait up → dropped.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.notify_dfu_scan_result(Ok(report.clone()));
+        app.apply_event(crate::HostEvent::DfuScanned(Ok(report.clone())));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuConfirm(_))), "no wait ⇒ answer dropped");
 
         // Wait up → Ok swaps in the confirm.
         let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        app.notify_dfu_scan_result(Ok(report));
+        app.apply_event(crate::HostEvent::DfuScanned(Ok(report)));
         assert!(matches!(app.top_screen(), Screen::DfuConfirm(_)), "Ok swaps the wait for the confirm");
 
         // Wait up → Err swaps in the error card, carrying the variant.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        app.notify_dfu_scan_result(Err(DfuScanError::TooFragmented));
+        app.apply_event(crate::HostEvent::DfuScanned(Err(DfuScanError::TooFragmented)));
         match app.top_screen() {
             Screen::DfuError(e) => {
                 assert_eq!(e.reason(), crate::screen::DfuErrorReason::Scan(DfuScanError::TooFragmented))
@@ -4015,13 +3678,13 @@ mod tests {
 
         // No progress spinner up → dropped.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.notify_dfu_install_failed(DfuInstallError::PendingSave);
+        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::PendingSave));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuError(_))), "no spinner ⇒ answer dropped");
 
         // A refusal replaces the spinner with the error card, carrying the reason.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.notify_dfu_install_failed(DfuInstallError::Recording);
+        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::Recording));
         match app.top_screen() {
             Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::Recording)),
             _ => panic!("a refusal swaps the spinner for the error card"),
@@ -4031,7 +3694,7 @@ mod tests {
         // An arm-time re-scan failure folds to a plain scan reason (shared copy).
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.notify_dfu_install_failed(DfuInstallError::Scan(crate::dfu::DfuScanError::Damaged));
+        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::Scan(crate::dfu::DfuScanError::Damaged)));
         match app.top_screen() {
             Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Scan(crate::dfu::DfuScanError::Damaged)),
             _ => panic!("the re-scan bucket lands the error card"),
@@ -4041,7 +3704,7 @@ mod tests {
         // spinner) lands the error card on the installing card the same way.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new()));
-        app.notify_dfu_install_failed(DfuInstallError::SnapshotFailed);
+        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::SnapshotFailed));
         match app.top_screen() {
             Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::SnapshotFailed)),
             _ => panic!("a post-swap failure swaps the installing card for the error card"),
@@ -4057,13 +3720,13 @@ mod tests {
         // The confirm flow: the spinner is up → swapped in place, never stacked.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.show_dfu_installing();
+        app.apply_event(crate::HostEvent::DfuInstallBegan);
         assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the spinner became the installing card");
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
 
         // The debug direct-arm door: no spinner → the card is pushed on top.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.show_dfu_installing();
+        app.apply_event(crate::HostEvent::DfuInstallBegan);
         assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "pushed with no spinner up");
     }
 
@@ -4077,8 +3740,8 @@ mod tests {
         assert!(app.open_remote_dfu_check(), "an idle app opens the flow");
         let checks = app.ui.stack.iter().filter(|s| matches!(s, Screen::DfuCheck(_))).count();
         assert_eq!(checks, 1, "exactly one wait screen pushed");
-        assert_eq!(app.take_dfu_request(), Some(DfuAction::Scan), "a Scan is posted — NEVER Install");
-        assert_eq!(app.take_dfu_request(), None, "…exactly once");
+        assert_eq!(drain_dfu(&mut app), Some(DfuAction::Scan), "a Scan is posted — NEVER Install");
+        assert_eq!(drain_dfu(&mut app), None, "…exactly once");
     }
 
     /// Remote-check deferral behind the passkey card (S6, #621): the request is *deferred*, not
@@ -4091,12 +3754,12 @@ mod tests {
         let _ = app.ui.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(123_456)));
         assert!(!app.open_remote_dfu_check(), "deferred while the pairing code shows");
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuCheck(_))), "nothing pushed");
-        assert_eq!(app.take_dfu_request(), None, "nothing posted");
+        assert_eq!(drain_dfu(&mut app), None, "nothing posted");
         // The card clears (pairing completed/failed) → the retried drain opens the flow.
         app.ui.stack.pop();
         assert!(app.open_remote_dfu_check(), "opens once the card cleared");
         assert!(matches!(app.top_screen(), Screen::DfuCheck(_)));
-        assert_eq!(app.take_dfu_request(), Some(DfuAction::Scan));
+        assert_eq!(drain_dfu(&mut app), Some(DfuAction::Scan));
     }
 
     /// Remote-check never double-opens (S6, #621): while any DFU screen is on the stack — the wait
@@ -4110,7 +3773,7 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         assert!(app.open_remote_dfu_check());
         assert!(!app.open_remote_dfu_check(), "undrained Scan + wait screen ⇒ deferred");
-        assert_eq!(app.take_dfu_request(), Some(DfuAction::Scan), "the one Scan");
+        assert_eq!(drain_dfu(&mut app), Some(DfuAction::Scan), "the one Scan");
         assert!(!app.open_remote_dfu_check(), "wait screen still up ⇒ still deferred");
         assert_eq!(app.ui.stack.iter().filter(|s| matches!(s, Screen::DfuCheck(_))).count(), 1);
 
@@ -4124,13 +3787,13 @@ mod tests {
         let report = crate::dfu::DfuScanReport { installed: mk("v1"), staged: mk("v2"), first_install: false };
         let _ = app.ui.stack.push(Screen::DfuConfirm(crate::screen::DfuConfirmScreen::new(report)));
         assert!(!app.open_remote_dfu_check(), "a confirm on the stack ⇒ deferred, never yanked");
-        assert_eq!(app.take_dfu_request(), None);
+        assert_eq!(drain_dfu(&mut app), None);
 
         // Recording defers (the arm ends in a reboot — a live ride would be lost).
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.activity.start_session();
         assert!(!app.open_remote_dfu_check(), "deferred while recording");
-        assert_eq!(app.take_dfu_request(), None);
+        assert_eq!(drain_dfu(&mut app), None);
     }
 
     /// The post-update toast (epic #615 S5): a confirmed-update fact surfaces the "Updated to vX"
@@ -4141,7 +3804,7 @@ mod tests {
         app.advance_animations(InputClock(1000));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuUpdated(_))), "a normal boot shows no toast");
 
-        app.notify_update_confirmed("v2.0.0-0-gccc");
+        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
         app.advance_animations(InputClock(2000));
         assert!(matches!(app.top_screen(), Screen::DfuUpdated(_)), "the confirmed update surfaces the toast");
         app.ui.stack.pop(); // dismiss
@@ -4157,7 +3820,10 @@ mod tests {
         app.advance_animations(InputClock(1000));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuFailed(_))), "a normal boot shows no failure card");
 
-        app.notify_update_failed(crate::dfu::DfuFailure::Reverted, Some("v2.0.0-0-gccc"));
+        app.apply_event(crate::HostEvent::UpdateFailed {
+            why: crate::dfu::DfuFailure::Reverted,
+            staged: Some(crate::dfu::clamp("v2.0.0-0-gccc")),
+        });
         app.advance_animations(InputClock(2000));
         match app.top_screen() {
             Screen::DfuFailed(card) => assert_eq!(card.why(), crate::dfu::DfuFailure::Reverted),
@@ -4185,25 +3851,25 @@ mod tests {
         };
         app.set_rides(&[ride("A"), ride("B")], &[7, 9]);
 
-        assert_eq!(app.take_ride_track_request(), None, "no detail open — no request");
+        assert_eq!(app.ride_track_request(), None, "no detail open — no request");
 
         app.activity.viewed_ride = Some(1); // the Rides press's entry side-effect
-        assert_eq!(app.take_ride_track_request(), Some(9), "the viewed ride's durable id");
-        assert_eq!(app.take_ride_track_request(), Some(9), "re-polls until the host answers");
+        assert_eq!(app.ride_track_request(), Some(9), "the viewed ride's durable id");
+        assert_eq!(app.ride_track_request(), Some(9), "re-polls until the host answers");
 
         app.set_ride_profile(None); // a failed stream still answers — no per-pass grind
-        assert_eq!(app.take_ride_track_request(), None, "answered for this ride");
+        assert_eq!(app.ride_track_request(), None, "answered for this ride");
 
         // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
         // follow by identity, so nothing re-fires.
         app.set_rides(&[ride("B")], &[9]);
         assert_eq!(app.activity.viewed_ride, Some(0), "the viewed index follows the id");
-        assert_eq!(app.take_ride_track_request(), None, "the answer moved with it");
+        assert_eq!(app.ride_track_request(), None, "the answer moved with it");
 
         // The viewed ride itself vanishing clears the keys — nothing left to request.
         app.set_rides(&[ride("A")], &[7]);
         assert_eq!(app.activity.viewed_ride, None);
-        assert_eq!(app.take_ride_track_request(), None);
+        assert_eq!(app.ride_track_request(), None);
     }
 
     // ==================== The typed host protocol (FAR-07, #800) ====================
@@ -4250,8 +3916,8 @@ mod tests {
         app.state.ble_forget_pending = true;
         app.activity.request_card_scan();
         app.activity.request_track(TrackAction::Save);
-        app.notify_store_changed();
-        app.notify_store_changed();
+        app.apply_event(crate::HostEvent::StoreChanged);
+        app.apply_event(crate::HostEvent::StoreChanged);
         app.activity.request_nav_cancel(); // posted before the plan — a later cancel annihilates it
         app.activity.request_nav(NavRequest::new((0, 0), (500, 500), "To the col"));
         app.activity.request_dfu(DfuAction::Scan);
@@ -4353,10 +4019,10 @@ mod tests {
         app.activity.viewed_ride = Some(0);
 
         let mut mailbox: HostMailbox = HostMailbox::new();
-        app.notify_store_changed();
+        app.apply_event(crate::HostEvent::StoreChanged);
         let _ = app.drain_host_commands(&mut mailbox);
-        app.notify_store_changed();
-        app.notify_store_changed();
+        app.apply_event(crate::HostEvent::StoreChanged);
+        app.apply_event(crate::HostEvent::StoreChanged);
         let _ = app.drain_host_commands(&mut mailbox); // re-drain without popping
         assert_eq!(mailbox.len(), 2, "RescanStore folded, LoadRideTrack deduped");
         assert_eq!(mailbox.pop(), Some(HostCommand::RescanStore { commits: 3 }), "the burst count sums — never lost");
@@ -4371,8 +4037,8 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.activity.request_dfu(DfuAction::Scan);
         app.activity.request_dfu(DfuAction::Install);
-        assert_eq!(app.take_dfu_request(), Some(DfuAction::Install), "the later phase superseded");
-        assert_eq!(app.take_dfu_request(), None);
+        assert_eq!(drain_dfu(&mut app), Some(DfuAction::Install), "the later phase superseded");
+        assert_eq!(drain_dfu(&mut app), None);
     }
 
     /// `PersistSettings` stays gated on leaving the settings subtree — a dirty value under an open
@@ -4386,13 +4052,13 @@ mod tests {
         let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
         app.arm_settings_save(); // rev → 1
         assert!(!app.has_pending_host_command(), "still editing — no command yet");
-        assert!(!app.take_settings_dirty(), "the compat adapter agrees");
+        assert!(!settings_dirty(&mut app), "the compat adapter agrees");
 
         app.ui.stack.pop(); // leave the subtree
         let mut mailbox: HostMailbox = HostMailbox::new();
         let _ = app.drain_host_commands(&mut mailbox);
         assert_eq!(mailbox.pop(), Some(HostCommand::PersistSettings { revision: 1 }));
-        assert!(!app.take_settings_dirty(), "one emit, then Awaiting — no second pending state");
+        assert!(!settings_dirty(&mut app), "one emit, then Awaiting — no second pending state");
     }
 
     // ==================== #810: acknowledged, retryable settings persistence ====================
@@ -4411,11 +4077,11 @@ mod tests {
         // A sweep of edits while inside the subtree: several revisions, but never an emit.
         for _ in 0..5 {
             app.arm_settings_save();
-            assert_eq!(app.take_settings_persist(), None, "held while a settings screen is on top");
+            assert_eq!(drain_persist(&mut app), None, "held while a settings screen is on top");
         }
         app.ui.stack.pop(); // leave the subtree
-        assert_eq!(app.take_settings_persist(), Some(5), "one coalesced emit for the latest revision");
-        assert_eq!(app.take_settings_persist(), None, "and only once — now Awaiting the ack");
+        assert_eq!(drain_persist(&mut app), Some(5), "one coalesced emit for the latest revision");
+        assert_eq!(drain_persist(&mut app), None, "and only once — now Awaiting the ack");
     }
 
     /// Success: the emitted revision's ack clears the dirty state, and nothing re-emits afterward.
@@ -4423,9 +4089,9 @@ mod tests {
     fn persist_success_clears_the_dirty_state() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.arm_settings_save();
-        assert_eq!(app.take_settings_persist(), Some(1));
+        assert_eq!(drain_persist(&mut app), Some(1));
         app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
-        assert_eq!(app.take_settings_persist(), None, "acked → Clean, nothing owed");
+        assert_eq!(drain_persist(&mut app), None, "acked → Clean, nothing owed");
         assert!(!app.has_pending_host_command());
     }
 
@@ -4437,7 +4103,7 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.ui.now_ms = 10_000;
         app.arm_settings_save();
-        assert_eq!(app.take_settings_persist(), Some(1));
+        assert_eq!(drain_persist(&mut app), Some(1));
         app.apply_event(HostEvent::SettingsPersistFailed { revision: 1, error: obc_ports::SettingsSaveError::Backend });
         // Failure is observable on the advisory card, not just logged.
         assert!(
@@ -4447,11 +4113,11 @@ mod tests {
                 .any(|s| matches!(s, Screen::Warning(w) if w.flags().contains(WarningFlags::SETTINGS_ERROR))),
             "a failed persist raises the settings advisory",
         );
-        assert_eq!(app.take_settings_persist(), None, "inside the backoff window — no retry yet");
+        assert_eq!(drain_persist(&mut app), None, "inside the backoff window — no retry yet");
         app.ui.now_ms += SETTINGS_RETRY_BACKOFF_MS; // window elapsed
-        assert_eq!(app.take_settings_persist(), Some(1), "the same revision is retried, not lost");
+        assert_eq!(drain_persist(&mut app), Some(1), "the same revision is retried, not lost");
         app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
-        assert_eq!(app.take_settings_persist(), None, "the retry's ack finally clears it");
+        assert_eq!(drain_persist(&mut app), None, "the retry's ack finally clears it");
     }
 
     /// Repeated failure paces retries: exactly one emit per backoff window, never a per-pass storm of
@@ -4462,7 +4128,7 @@ mod tests {
         app.ui.now_ms = 1_000;
         app.arm_settings_save();
         for round in 0..3 {
-            assert_eq!(app.take_settings_persist(), Some(1), "one emit at the start of round {round}");
+            assert_eq!(drain_persist(&mut app), Some(1), "one emit at the start of round {round}");
             app.apply_event(HostEvent::SettingsPersistFailed {
                 revision: 1,
                 error: obc_ports::SettingsSaveError::Backend,
@@ -4470,7 +4136,7 @@ mod tests {
             // Several passes inside the window yield nothing — the pacing guard.
             for _ in 0..4 {
                 app.ui.now_ms += 100;
-                assert_eq!(app.take_settings_persist(), None, "no re-emit inside the backoff window");
+                assert_eq!(drain_persist(&mut app), None, "no re-emit inside the backoff window");
             }
             app.ui.now_ms += SETTINGS_RETRY_BACKOFF_MS; // cross into the next window
         }
@@ -4482,13 +4148,13 @@ mod tests {
     fn newer_edit_supersedes_and_a_stale_ack_is_ignored() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.arm_settings_save(); // rev 1
-        assert_eq!(app.take_settings_persist(), Some(1)); // Awaiting(1)
+        assert_eq!(drain_persist(&mut app), Some(1)); // Awaiting(1)
         app.arm_settings_save(); // a fresh edit while pending → rev 2, Dirty
                                  // The old save's ack lands late — it is for a superseded revision and must be ignored.
         app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
-        assert_eq!(app.take_settings_persist(), Some(2), "the newer revision still needs persisting");
+        assert_eq!(drain_persist(&mut app), Some(2), "the newer revision still needs persisting");
         app.apply_event(HostEvent::SettingsPersisted { revision: 2 });
-        assert_eq!(app.take_settings_persist(), None, "only the latest ack clears it");
+        assert_eq!(drain_persist(&mut app), None, "only the latest ack clears it");
     }
 
     /// BLE merge under a pending device edit: `merge_ble_settings` adopts the phone's owned fields
@@ -4510,12 +4176,12 @@ mod tests {
         assert_eq!(app.settings().units, Units::Imperial, "the phone's units are adopted");
         assert_eq!(app.settings().fix_interval_s, 9, "the pending device edit is untouched");
         // The save still fires and writes the merged blob — neither side lost.
-        assert_eq!(app.take_settings_persist(), Some(1), "the pending save survives the BLE merge");
+        assert_eq!(drain_persist(&mut app), Some(1), "the pending save survives the BLE merge");
 
         // The clean-case twin: a BLE merge with nothing pending adds no redundant write.
         app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
         app.merge_ble_settings(&Settings { units: Units::Metric, ..Settings::default() });
-        assert_eq!(app.take_settings_persist(), None, "BLE fields are already persisted — no re-write owed");
+        assert_eq!(drain_persist(&mut app), None, "BLE fields are already persisted — no re-write owed");
     }
 
     /// Reboot-load fallback: seeding the boot value from the store (or the default when the store is
@@ -4525,7 +4191,7 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.arm_settings_save(); // pretend a stale dirty state survived somehow
         app.set_settings(Settings::default()); // boot seed (store load or default)
-        assert_eq!(app.take_settings_persist(), None, "a seeded boot value is already persisted");
+        assert_eq!(drain_persist(&mut app), None, "a seeded boot value is already persisted");
     }
 
     /// Compat adapters and the typed drain consume the **same** pending slot, in both directions:
@@ -4540,7 +4206,7 @@ mod tests {
 
         // Compat first → typed drain sees nothing.
         app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
-        assert!(app.take_nav_request().is_some());
+        assert!(drain_nav(&mut app).is_some());
         let _ = app.drain_host_commands(&mut mailbox);
         assert!(mailbox.is_empty(), "the compat take consumed the typed slot");
 
@@ -4548,7 +4214,7 @@ mod tests {
         app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "B"));
         let _ = app.drain_host_commands(&mut mailbox);
         assert_eq!(mailbox.len(), 1);
-        assert!(app.take_nav_request().is_none(), "the typed drain consumed the compat slot");
+        assert!(drain_nav(&mut app).is_none(), "the typed drain consumed the compat slot");
     }
 
     /// Same-batch confirm→Back (review F1): a cancel posted while the plan request is still
@@ -4575,13 +4241,13 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
         app.activity.request_nav_cancel();
-        assert_eq!(app.take_nav_request(), None, "annihilated before any host saw it");
-        assert!(app.take_nav_cancel(), "the cancel still latches (a stale cancel is a host no-op)");
+        assert_eq!(drain_nav(&mut app), None, "annihilated before any host saw it");
+        assert!(drain_cancel(&mut app), "the cancel still latches (a stale cancel is a host no-op)");
 
         // Three gestures in one batch: Back on in-flight A's spinner, confirm B, Back on B's.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
-        assert!(app.take_nav_request().is_some(), "the host already holds plan A");
+        assert!(drain_nav(&mut app).is_some(), "the host already holds plan A");
         app.activity.request_nav_cancel(); // Back on A's spinner — nothing undrained to annihilate
         app.activity.request_nav(NavRequest::new((0, 0), (2, 2), "B")); // confirm B
         app.activity.request_nav_cancel(); // Back on B's spinner — annihilates the undrained B

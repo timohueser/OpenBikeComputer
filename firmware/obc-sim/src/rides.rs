@@ -89,7 +89,7 @@ impl RideStore {
 
     /// Build the ride with durable id `id`'s recorded-track elevation [`Profile`] — the Ride
     /// detail's band fill (epic #678 T2 / #680), answering
-    /// [`App::take_ride_track_request`](obc_app::App::take_ride_track_request). One read of the
+    /// [`App::ride_track_request`](obc_app::App::ride_track_request). One read of the
     /// stored `RD{id}.ORD` through the shared `ride_elevation_profile` (the firmware streams the
     /// same bytes off SD in chunks). `None` = unknown id / unreadable file — the caller parks the
     /// failure via `set_ride_profile(None)`.
@@ -101,7 +101,7 @@ impl RideStore {
 
     /// Build the ride with durable id `id`'s decimated recorded-track shape polyline (#678
     /// rework 3), answering the preview half of the same
-    /// [`App::take_ride_track_request`](obc_app::App::take_ride_track_request) drain — one more
+    /// [`App::ride_track_request`](obc_app::App::ride_track_request) drain — one more
     /// read of the stored `RD{id}.ORD` through the shared `ride_preview_polyline` (the firmware
     /// streams the same bytes off SD in blocks). Empty = unknown id / unreadable file — the Ride
     /// detail's track page just leaves its slot blank.

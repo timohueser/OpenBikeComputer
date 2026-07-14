@@ -193,7 +193,9 @@ pub(crate) fn load_trips(storage: &mut sd::Storage, app: &mut App) {
 /// (the fill runs sequentially with, never beneath, the render).
 #[inline(never)]
 fn fill_ride_profile(storage: &mut Option<sd::Storage>, app: &mut App) {
-    let Some(id) = app.take_ride_track_request() else { return };
+    // The `LoadRideTrack` derived fill level, answered off the pure predicate (#812): nothing is
+    // consumed, so a missed pass re-asks and the cue clears the moment `set_ride_profile` lands.
+    let Some(id) = app.ride_track_request() else { return };
     let profile = storage.as_mut().and_then(|s| s.ride_profile_by_id(id));
     if profile.is_none() {
         defmt::warn!("ride profile: fill for id {=u16} failed — the detail's band stays empty", id);
@@ -320,7 +322,7 @@ fn nav_step(
 /// Finish a **completed** plan: flush/patch or delete the reserved file, rescan + re-feed the
 /// id-carrying catalog on success (sequential with — never nested under — the step frames, the
 /// #496 de-nesting kept), emit the one `nav route:` RTT line with the per-phase breakdown
-/// (issue #499's DoD), and answer the app — `notify_nav_result` activates the route and swaps
+/// (issue #499's DoD), and answer the app — the `NavPlanned` event activates the route and swaps
 /// the planning screen for the computed-route overview (or the failure card).
 ///
 /// The RTT line (grep `nav route:`): outcome; route length; `total_ms` = wall time from the
@@ -388,7 +390,7 @@ fn nav_finish(
         hw,
         stackmeter::total()
     );
-    app.notify_nav_result(result.map(|(id, _)| id));
+    app.apply_event(obc_app::HostEvent::NavPlanned(result.map(|(id, _)| id)));
 }
 
 /// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb
@@ -412,6 +414,59 @@ struct RenderedFrame {
     needs_map: bool,
     stats: obc_render::RenderStats,
     render_us: u64,
+}
+
+/// Everything this pass's [`App::drain_host_commands`](obc_app::App::drain_host_commands) produced,
+/// popped off the caller-owned [`HostMailbox`](obc_app::HostMailbox) **synchronously** into
+/// board-local storage before the pass's first `.await` (FAR-19, #812). The mailbox itself — a
+/// ~600 B `Deque<HostCommand>` — is a stack temporary that must never enter the ride-loop task
+/// future (it would re-inflate the #808 poll frame it took care to shrink); only this small struct
+/// of ids/bools/small-enums (~30 B — deliberately **no** `NavRequest`, whose 44 B would dominate:
+/// the planner slot is written from it synchronously at the drain instead — see `plan_armed`) is
+/// what survives across the pass's awaits (the bulge push, the DFU install, the store lock) to
+/// each command's original consumption site.
+///
+/// The two **derived fill levels** (`LoadRideTrack` / `RefreshNavPreview`) are deliberately *not*
+/// staged: they are answered at their fill sites off the pure predicates
+/// [`App::ride_track_request`](obc_app::App::ride_track_request) /
+/// [`App::nav_preview_missing`](obc_app::App::nav_preview_missing), because a `nav_finish` **this
+/// pass** — which runs *after* the drain — can create a fresh `RefreshNavPreview` need that a
+/// drain-time snapshot would miss. The mailbox re-emits and coalesces them each drain; the pop
+/// loop discards them (the same shape `obc-host-core::HostLoop` uses).
+#[derive(Default)]
+struct HostPass {
+    /// `RescanStore` — re-scan the object store and re-feed the catalogs. BLE-only: the
+    /// store-changed edge is raised solely by the BLE plane's commit/delete path.
+    #[cfg(feature = "ble")]
+    rescan: bool,
+    /// `CancelRoutePlan` — abort the in-flight route plan.
+    cancel_plan: bool,
+    /// `DeleteRoute { id }` — the durable id (index-resolved at drain).
+    delete_route: Option<u16>,
+    /// `DeleteTrip { id }` — cascade-delete the trip and its member routes.
+    delete_trip: Option<u16>,
+    /// `DeleteRide { id }` — the durable ride id (index-resolved at drain).
+    delete_ride: Option<u16>,
+    /// `FinishTrack(action)` — close the open ride log (Save / Discard).
+    finish: Option<obc_app::TrackAction>,
+    /// `PlanRoute` was drained — the router should begin a plan this pass. The 44-byte `NavRequest`
+    /// itself is **not** staged across the pass's awaits (it would dominate this struct and re-inflate
+    /// the task future, #808/#812): the planner's `.bss` slot is written from it synchronously at the
+    /// drain (`nav_begin` needs no store lock), and only this flag rides into the store phase, where
+    /// `nav_route_begin` opens the reserved file and arms the run. The `ble` image (no router) answers
+    /// the failure tier at the drain instead, so it never sets this.
+    #[cfg(has_nav)]
+    plan_armed: bool,
+    /// `Dfu(action)` — most-recent-wins: the `dfu-install` debug post overwrites the drained value
+    /// *after* the drain (behaviour-identical to the old slot's most-recent-wins overwrite).
+    dfu: Option<obc_app::DfuAction>,
+    /// `ForgetBond` — clear the phone bond. BLE-only (there is no bond store without the radio).
+    #[cfg(feature = "ble")]
+    forget: bool,
+    /// `PersistSettings { revision }` — the revision to persist and later acknowledge.
+    persist: Option<u16>,
+    /// `ScanCardFree` — run the FAT free-cluster scan.
+    card_scan: bool,
 }
 
 /// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
@@ -687,7 +742,7 @@ pub(crate) async fn run_app(
         // ── Sensor presence → warning (issue #504), real-sensor build, once ──
         // The sensor task publishes its boot I²C probe result a moment after boot; map any chip that
         // didn't answer to a dismissable warning card. `try_take` yields once, so this fires a single
-        // pass; `notify_warning(NONE)` (all present) is a no-op.
+        // pass; `Warning(NONE)` (all present) is a no-op.
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         if let Some(p) = consumer.take_presence() {
             let mut w = obc_app::WarningFlags::NONE;
@@ -700,13 +755,14 @@ pub(crate) async fn run_app(
             if !p.compass {
                 w |= obc_app::WarningFlags::NO_COMPASS;
             }
-            app.notify_warning(w);
+            app.apply_event(obc_app::HostEvent::Warning(w));
         }
 
-        // ── BLE → app seam (epic #447), once per pass, cheap ──
+        // ── BLE → app seam (epic #447), POSTING half: everything that *posts* an app command or
+        // event runs before the typed drain below, so the drain sees it this pass ──
         // Feed the link snapshot (connected + passkey) — a couple of atomic reads distilled to the
         // app's own `BleStatus`; `set_ble_status` compares against the last and dirties nothing on the
-        // steady state. Then drain the object-store movement edge and ring `notify_store_changed` per
+        // steady state. Then drain the object-store movement edge and apply a `StoreChanged` event per
         // commit/delete (the same edge that notifies the phone). Both `ble`-only: the map build has no
         // radio and no `object_store`, so the app simply stays disconnected there.
         #[cfg(feature = "ble")]
@@ -727,16 +783,77 @@ pub(crate) async fn run_app(
                 let _ = crate::object_store::take_dfu_install_ble();
             }
             for _ in 0..crate::object_store::take_store_changed() {
-                app.notify_store_changed();
+                app.apply_event(obc_app::HostEvent::StoreChanged);
             }
             // The settings→radio switch (#455): push the persisted Bluetooth toggle across the
             // plane boundary — one atomic swap; the radio plane wakes only on a change (off = stop
             // advertising + drop the link; on = the normal lifecycle). Fire-and-forget by design:
             // this loop never blocks on the radio winding down, so no wake source here can go dead
-            // with the radio off (#438's lesson). Then drain the Bluetooth screen's Forget-phone
-            // hold and ring the bond clear the same way.
+            // with the radio off (#438's lesson).
             crate::ble::set_radio_enabled(app.settings().ble_enabled);
-            if app.take_ble_forget() {
+        }
+
+        // ── Typed host-command drain (FAR-19, #812): the pass's single `drain_host_commands`, run
+        // unconditionally here so it captures every gesture-posted command (applied above) plus the
+        // BLE posting half's `open_remote_dfu_check` Scan and store-changed edge — and precedes
+        // *every* consumer (the BLE consuming half's Forget below, the DFU match, and the whole
+        // store phase). The mailbox is a stack temporary scoped to this block and dropped at its
+        // close, before the pass's first `.await`, so the ~600 B `Deque` never enters the task
+        // future (only the small `HostPass` survives across the awaits). The two derived fill levels
+        // are popped and discarded — answered at their fill sites off pure predicates (see
+        // `HostPass`). ──
+        let mut host_pass = HostPass::default();
+        {
+            let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
+            let _ = app.drain_host_commands(&mut mailbox);
+            while let Some(cmd) = mailbox.pop() {
+                match cmd {
+                    #[cfg(feature = "ble")]
+                    obc_app::HostCommand::RescanStore { .. } => host_pass.rescan = true,
+                    obc_app::HostCommand::CancelRoutePlan => host_pass.cancel_plan = true,
+                    obc_app::HostCommand::DeleteRoute { id } => host_pass.delete_route = Some(id),
+                    obc_app::HostCommand::DeleteTrip { id } => host_pass.delete_trip = Some(id),
+                    obc_app::HostCommand::DeleteRide { id } => host_pass.delete_ride = Some(id),
+                    obc_app::HostCommand::FinishTrack(action) => host_pass.finish = Some(action),
+                    obc_app::HostCommand::PlanRoute(_req) => {
+                        // Write the planner's `.bss` slot from the request **now** (synchronously,
+                        // no store lock needed) so the 44-byte `NavRequest` never rides into the
+                        // store phase across the pass's awaits (#808/#812) — only the flag does; the
+                        // store phase opens the reserved file and arms the run. The `ble` image ships
+                        // without the router, so it answers the failure tier here instead of arming.
+                        #[cfg(has_nav)]
+                        {
+                            nav_begin(&mut nav, &_req, app.settings().bike_profile_idx);
+                            host_pass.plan_armed = true;
+                        }
+                        #[cfg(not(has_nav))]
+                        {
+                            defmt::warn!(
+                                "nav: router not built into the ble image (256K DK) — answering the failure tier"
+                            );
+                            app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
+                        }
+                    }
+                    obc_app::HostCommand::Dfu(action) => host_pass.dfu = Some(action),
+                    #[cfg(feature = "ble")]
+                    obc_app::HostCommand::ForgetBond => host_pass.forget = true,
+                    obc_app::HostCommand::PersistSettings { revision } => host_pass.persist = Some(revision),
+                    obc_app::HostCommand::ScanCardFree => host_pass.card_scan = true,
+                    // The derived fill levels (`LoadRideTrack` / `RefreshNavPreview`) are answered at
+                    // their fill sites off pure predicates, not staged; in the non-ble image
+                    // `RescanStore`/`ForgetBond` are never posted and their fields don't exist, so
+                    // they fall here too.
+                    _ => {}
+                }
+            }
+        }
+
+        // ── BLE → app seam, CONSUMING half: acts on the drained `HostPass` + the sensor seam ──
+        #[cfg(feature = "ble")]
+        {
+            // Drain the Bluetooth screen's Forget-phone hold and ring the bond clear (clear the RRAM
+            // bond slot + drop the bonded connection).
+            if host_pass.forget {
                 crate::ble::request_forget_bond();
             }
 
@@ -817,21 +934,24 @@ pub(crate) async fn run_app(
         let (overlay_dirty, overlay_span) = display.poll_overlay();
         display.present_bulge(overlay_span, overlay_dirty).await;
 
-        // ── DFU install / scan requests (epic #615 S4/S5), drained BEFORE the store phase ──
-        // The `dfu-install` debug command posts the *same app-level request* the S5 update screen
-        // posts; this drain is the single execution path either way. It sits outside the store
-        // phase (#809) so the "Installing update" card's present runs guard-free: the store is
-        // locked briefly for the go/no-go checks, released across the card's render + present,
-        // then re-locked for the arm itself — which then holds it exclusively across its whole
-        // SD→flash stream, deliberately (a BLE `UPDATE.BIN` write must not interleave with the arm).
+        // ── DFU install / scan requests (epic #615 S4/S5), acted on BEFORE the store phase ──
+        // The `dfu-install` debug command reaches the *same execution path* the S5 update screen's
+        // drained `Dfu` command does; staging it straight into `host_pass.dfu` here — **after** the
+        // typed drain above — is behaviour-identical to the old most-recent-wins slot overwrite (it
+        // supersedes any `Scan` the drain placed there). This block sits outside the store phase
+        // (#809) so the "Installing update" card's present runs guard-free: the store is locked
+        // briefly for the go/no-go checks, released across the card's render + present, then
+        // re-locked for the arm itself — which then holds it exclusively across its whole SD→flash
+        // stream, deliberately (a BLE `UPDATE.BIN` write must not interleave with the arm).
         #[cfg(feature = "debug-uart")]
         if obc_platform::debug_link::take_dfu_install() {
-            app.request_dfu_install();
+            host_pass.dfu = Some(obc_app::DfuAction::Install);
         }
-        // Two phases share this one-shot slot (epic #615 S5, #620): the S5 UI posts `Scan` first
-        // (read-only validation → answer the app, which shows the confirm screen), then `Install`
-        // from the confirm; the `dfu-install` debug command posts `Install` directly (no confirm).
-        match app.take_dfu_request() {
+        // Two phases share the drained `Dfu` command (epic #615 S5, #620): the S5 UI posts `Scan`
+        // first (read-only validation → answer the app, which shows the confirm screen), then
+        // `Install` from the confirm; the `dfu-install` debug command posts `Install` directly (no
+        // confirm).
+        match host_pass.dfu {
             Some(obc_app::DfuAction::Install) => {
                 // The irreversible arm-and-reboot. Guards mirror what the System menu greys out:
                 // never mid-recording (the arm ends in a reboot — a live ride would be lost) and
@@ -873,8 +993,8 @@ pub(crate) async fn run_app(
                     // and with the store guard released (#809 — the card render reads no storage).
                     // A failed present (stalled FLPR) deliberately doesn't guard the arm — the
                     // install matters more than the frame, and the arm failure path repaints
-                    // normally via `notify_dfu_install_failed`.
-                    app.show_dfu_installing();
+                    // normally via the `DfuInstallFailed` event.
+                    app.apply_event(obc_app::HostEvent::DfuInstallBegan);
                     app.set_render_clip(None);
                     display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                         let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
@@ -908,7 +1028,7 @@ pub(crate) async fn run_app(
                     }
                 };
                 if let Some(reason) = outcome {
-                    app.notify_dfu_install_failed(reason);
+                    app.apply_event(obc_app::HostEvent::DfuInstallFailed(reason));
                 }
             }
             Some(obc_app::DfuAction::Scan) => {
@@ -936,7 +1056,7 @@ pub(crate) async fn run_app(
                         Err(e)
                     }
                 };
-                app.notify_dfu_scan_result(report);
+                app.apply_event(obc_app::HostEvent::DfuScanned(report));
             }
             None => {}
         }
@@ -966,7 +1086,7 @@ pub(crate) async fn run_app(
             // swapped the bytes under the open geometry handle — close it and let the reconcile
             // reopen + re-index off the fresh scan.
             #[cfg(feature = "ble")]
-            if app.take_store_changed() > 0 {
+            if host_pass.rescan {
                 if let Some(s) = storage.as_mut() {
                     // Close the active route's geometry handle BEFORE the scan: embedded-sdmmc
                     // refuses a second open of an open file (`FileAlreadyOpen`, even ReadOnly), so a
@@ -1002,24 +1122,22 @@ pub(crate) async fn run_app(
             // phone is connected or the device is parked advertising — that keeps the whole delete on the
             // one `ObjectStore`, revision-and-notify coherent, and RefCell-legal (the ride loop never
             // borrows the store). The rescan comes back on the resulting `STORE_CHANGED` edge above.
-            if app.has_route_delete() {
-                if let Some(_id) = app.take_route_delete() {
-                    #[cfg(feature = "ble")]
-                    crate::object_store::request_route_delete(_id);
-                    // Map-only build: no `ObjectStore`/radio, so delete the file directly and re-scan the
-                    // catalog locally (the same `load_routes` machinery the store-changed edge runs).
-                    // Geometry handle closed FIRST, for the same two reasons as the store-changed
-                    // rescan above: an open file can't be deleted, and a scan that meets it silently
-                    // drops it from the catalog (#480).
-                    #[cfg(not(feature = "ble"))]
-                    if let Some(s) = storage.as_mut() {
-                        s.reconcile_route(None);
-                        if s.delete_route_by_id(_id) {
-                            load_routes(s, app);
-                        }
-                        prev_active = None; // force the reconcile below to re-derive off the new indexing
-                        index_route = None;
+            if let Some(_id) = host_pass.delete_route {
+                #[cfg(feature = "ble")]
+                crate::object_store::request_route_delete(_id);
+                // Map-only build: no `ObjectStore`/radio, so delete the file directly and re-scan the
+                // catalog locally (the same `load_routes` machinery the store-changed edge runs).
+                // Geometry handle closed FIRST, for the same two reasons as the store-changed
+                // rescan above: an open file can't be deleted, and a scan that meets it silently
+                // drops it from the catalog (#480).
+                #[cfg(not(feature = "ble"))]
+                if let Some(s) = storage.as_mut() {
+                    s.reconcile_route(None);
+                    if s.delete_route_by_id(_id) {
+                        load_routes(s, app);
                     }
+                    prev_active = None; // force the reconcile below to re-derive off the new indexing
+                    index_route = None;
                 }
             }
 
@@ -1031,27 +1149,27 @@ pub(crate) async fn run_app(
             // coherently and the rescan returns on the STORE_CHANGED edge); map-only builds sweep the
             // files directly and re-feed both catalogs locally. A member route may be the actively-open
             // one, so the map-only arm resets the active-route reconcile exactly like a route delete.
-            if app.has_trip_delete() {
-                if let Some(_id) = app.take_trip_delete() {
-                    #[cfg(feature = "ble")]
-                    crate::object_store::request_trip_cascade(_id);
-                    #[cfg(not(feature = "ble"))]
-                    if let Some(s) = storage.as_mut() {
-                        if s.delete_trip_cascade_by_id(_id) {
-                            load_routes(s, app);
-                            load_trips(s, app);
-                        }
-                        prev_active = None; // a deleted member may have been the active route
-                        index_route = None;
+            if let Some(_id) = host_pass.delete_trip {
+                #[cfg(feature = "ble")]
+                crate::object_store::request_trip_cascade(_id);
+                #[cfg(not(feature = "ble"))]
+                if let Some(s) = storage.as_mut() {
+                    if s.delete_trip_cascade_by_id(_id) {
+                        load_routes(s, app);
+                        load_trips(s, app);
                     }
+                    prev_active = None; // a deleted member may have been the active route
+                    index_route = None;
                 }
             }
 
             // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
-            // one bounded FAT free-cluster read off the card and answers through `set_card_free` (or a
-            // `None` → the screen keeps `--` when there's no card / no FSInfo free count).
-            if app.take_card_scan_request() {
-                app.set_card_free(storage.as_ref().and_then(|s| s.card_free_bytes()));
+            // one bounded FAT free-cluster read off the card and answers through the `CardScanned`
+            // event (or a `None` → the screen keeps `--` when there's no card / no FSInfo free count).
+            if host_pass.card_scan {
+                app.apply_event(obc_app::HostEvent::CardScanned {
+                    free_bytes: storage.as_ref().and_then(|s| s.card_free_bytes()),
+                });
             }
 
             // ── On-device ride delete (epic #447, P7 / #454), on the Rides-menu hold-to-delete edge ──
@@ -1062,15 +1180,13 @@ pub(crate) async fn run_app(
             // Map-only: delete the `RD{id}.ORD` directly (retiring its synced-set flag) and re-feed the
             // Rides menu locally. The greying while recording already keeps the delete legal (no open
             // TRACK.OBT / pending save collides).
-            if app.has_ride_delete() {
-                if let Some(_id) = app.take_ride_delete() {
-                    #[cfg(feature = "ble")]
-                    crate::object_store::request_ride_delete(_id);
-                    #[cfg(not(feature = "ble"))]
-                    if let Some(s) = storage.as_mut() {
-                        if s.delete_ride_by_id(_id) {
-                            load_rides(s, app);
-                        }
+            if let Some(_id) = host_pass.delete_ride {
+                #[cfg(feature = "ble")]
+                crate::object_store::request_ride_delete(_id);
+                #[cfg(not(feature = "ble"))]
+                if let Some(s) = storage.as_mut() {
+                    if s.delete_ride_by_id(_id) {
+                        load_rides(s, app);
                     }
                 }
             }
@@ -1096,22 +1212,24 @@ pub(crate) async fn run_app(
             // `not(has_nav)` (the `ble` build, whose image ships without the router — see build.rs):
             // the request is still drained and answered with the generic failure tier ("Couldn't find
             // a route."), so the POI confirm never hangs. The LM20 deletes that arm.
-            let nav_cancel = app.take_nav_cancel();
+            let nav_cancel = host_pass.cancel_plan;
             #[cfg(has_nav)]
             {
-                if let Some(req) = app.take_nav_request() {
-                    // A request while a plan is somehow still in flight replaces it (can't happen
-                    // through the UI — the planning screen blocks a second confirm — but stay safe).
+                if host_pass.plan_armed {
+                    // The planner slot was already written from the request at the pass-top drain
+                    // (`nav_begin`, no store lock); here we just open the reserved file and arm the
+                    // run against it. A request while a plan is somehow still in flight replaces it
+                    // (can't happen through the UI — the planning screen blocks a second confirm —
+                    // but stay safe; the drain already overwrote the slot for the new plan).
                     if let (Some(run), Some(s)) = (nav_run.take(), storage.as_mut()) {
                         s.nav_route_finish(run.file, false);
                     }
                     match storage.as_mut().and_then(|s| s.nav_route_begin()) {
                         Some(file) => {
-                            nav_begin(&mut nav, &req, app.settings().bike_profile_idx);
                             nav_run = Some(NavRun { file, t0: Instant::now(), phase_us: [0; 3] });
                         }
                         // No card / no dir: nothing to route against — the generic failure tier.
-                        None => app.notify_nav_result(Err(obc_route::NavError::NoPath)),
+                        None => app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath))),
                     }
                 }
                 if nav_cancel {
@@ -1147,16 +1265,13 @@ pub(crate) async fn run_app(
             #[cfg(not(has_nav))]
             {
                 let _ = nav_cancel; // no plan can be in flight — the cancel is inert here
-                if let Some(req) = app.take_nav_request() {
-                    let _: &NavBuffers = &nav; // the unit stand-in — nothing to plan with
-                    let _ = &req;
-                    defmt::warn!("nav: router not built into the ble image (256K DK) — answering the failure tier");
-                    app.notify_nav_result(Err(obc_route::NavError::NoPath));
-                }
+                let _: &NavBuffers = &nav; // the unit stand-in — nothing to plan with
+                                           // A `PlanRoute` was already answered with the failure tier at the pass-top drain (the
+                                           // `ble` image ships no router), so nothing to do here.
             }
 
-            // The upload-arrived event (#451), drained strictly **after** the rescan above so the id
-            // resolves against the fresh catalog. `notify_route_uploaded` raises the right popup
+            // The upload-arrived event (#451), applied strictly **after** the rescan above so the id
+            // resolves against the fresh catalog. The `RouteUploaded` event raises the right popup
             // (idle prompt / mid-ride swap / active-replaced info card) and — on a replace of the
             // navigated route — drops the app's stale matcher progress + elevation profile, while the
             // rescan block already closed the open geometry handle and the reconcile below reopens +
@@ -1167,7 +1282,7 @@ pub(crate) async fn run_app(
                 // stream at commit time — so the idle received card can draw it (the swap / active-
                 // replace variants ignore it). A missing store or a no-elevation route yields `None`.
                 let elevation = storage.as_mut().and_then(|s| s.route_elevation_sparkline(id));
-                app.notify_route_uploaded(id, replaced, elevation);
+                app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
             }
 
             // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
@@ -1188,7 +1303,7 @@ pub(crate) async fn run_app(
             // 16-byte RRAM line, skipped when nothing is owed. The write is acknowledged back to the app
             // by revision (#810) — a durable write clears the dirty state; a failed one keeps it retryable
             // (the app re-arms a bounded backoff) and surfaces the advisory warning card.
-            if let Some(revision) = app.take_settings_persist() {
+            if let Some(revision) = host_pass.persist {
                 match settings_store.save(app.settings()) {
                     Ok(()) => {
                         app.apply_event(obc_app::HostEvent::SettingsPersisted { revision });
@@ -1253,11 +1368,12 @@ pub(crate) async fn run_app(
             // the active route.
             // Gated on the same edges `reconcile_*` test internally (a route swap, a session change, or a
             // pending track action) so the dominant static frame does no per-tick `String<64>` copy or
-            // state re-walk. `has_track_action` is a non-consuming peek; `take_track_action` stays inside,
-            // so the one-shot is drained only when processed.
+            // state re-walk. The `FinishTrack` one-shot was drained into `host_pass.finish` at the pass
+            // top; reading it here is equivalent to the old peek-then-take (a drained action is consumed
+            // exactly once, this pass, only when the reconcile runs).
             let session = app.activity.session();
-            if active != prev_active || session != prev_session || app.activity.has_track_action() {
-                let action = app.activity.take_track_action();
+            if active != prev_active || session != prev_session || host_pass.finish.is_some() {
+                let action = host_pass.finish;
                 let mut name: heapless::String<64> = heapless::String::new();
                 if let Some(r) = active.and_then(|i| app.routes().get(i)) {
                     let _ = name.push_str(&r.name);
@@ -1599,7 +1715,9 @@ pub(crate) async fn run_app(
             if trial_confirm_pending && presented_ok {
                 trial_confirm_pending = false;
                 if let Some(installed) = crate::dfu::confirm_trial(settings_store) {
-                    app.notify_update_confirmed(installed.fw_version_str());
+                    app.apply_event(obc_app::HostEvent::UpdateConfirmed(obc_app::dfu::clamp(
+                        installed.fw_version_str(),
+                    )));
                 }
             }
 

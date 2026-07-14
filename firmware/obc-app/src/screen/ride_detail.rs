@@ -11,7 +11,7 @@
 //!
 //! The band's profile **and** the track shape come from the host: entering the screen sets
 //! [`Activity::viewed_ride`](crate::Activity::viewed_ride) (the Rides screen's press does), the
-//! host drains [`App::take_ride_track_request`](crate::App::take_ride_track_request), streams
+//! host drains [`App::ride_track_request`](crate::App::ride_track_request), streams
 //! the ride's `RD{id}.ORD` into the app's resident ride-profile + ride-preview buffers
 //! ([`App::set_ride_profile`](crate::App::set_ride_profile) /
 //! [`App::set_ride_preview`](crate::App::set_ride_preview)), and Back/delete clears `viewed_ride`

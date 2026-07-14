@@ -28,7 +28,7 @@ use crate::input_plane::InputPlane;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack, WarningFlags};
 use crate::settings::{DateTime, Settings};
 
-/// One committed route upload, as [`App::notify_route_uploaded`](crate::App::notify_route_uploaded)
+/// One committed route upload, as [`App::apply_event`](crate::App::apply_event)
 /// queues it for prompt delivery (epic #447, P4).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UploadEvent {
@@ -140,7 +140,7 @@ pub(crate) struct UiRuntime {
     /// outside a scan; replaced wholesale each pass while one runs.
     pub(crate) sensor_scan_hits: crate::sensors::SensorScanHits,
     /// The one **pending route-upload prompt** (epic #447, P4), set by
-    /// [`notify_route_uploaded`](App::notify_route_uploaded) and delivered (or dropped) by
+    /// [`notify_route_uploaded`](App::apply_event) and delivered (or dropped) by
     /// [`reconcile_upload_prompt`](App::reconcile_upload_prompt). Deliberately a single slot:
     /// consecutive uploads replace it — most recent wins, the popup rule. Carried by **durable
     /// object id**, never a catalog index, so a rescan between arrival and a hold-deferred
@@ -148,7 +148,7 @@ pub(crate) struct UiRuntime {
     pub(crate) pending_upload: Option<UploadEvent>,
     /// Device warnings **discovered but not yet shown** on the advisory card (issue #504) — a
     /// missing-sensor probe result, or the map-slow flag. Accumulated by
-    /// [`notify_warning`](App::notify_warning) and delivered (or deferred behind a passkey card /
+    /// [`notify_warning`](App::apply_event) and delivered (or deferred behind a passkey card /
     /// hold) by [`reconcile_warning`](App::reconcile_warning), like [`pending_upload`].
     pub(crate) pending_warnings: WarningFlags,
     /// Warnings **already shown** on a card this session, so each flag is surfaced once and a
@@ -615,7 +615,7 @@ impl UiRuntime {
         self.reconcile_warning();
     }
 
-    /// Deliver (or defer) the pending [warnings](App::notify_warning). Called on arrival and once
+    /// Deliver (or defer) the pending [warnings](App::apply_event). Called on arrival and once
     /// per [`advance_animations`](App::advance_animations) pass, so a warning deferred behind a
     /// passkey card or a live hold lands on a later tick — the [`reconcile_upload_prompt`] pattern.
     /// Only the not-yet-shown subset is surfaced (`pending & !warned`); it ORs into an open card or
@@ -656,8 +656,8 @@ impl UiRuntime {
     /// Surface the one-time post-update verdict — the "Updated to vX" toast (epic #615 S5, #620)
     /// if this boot confirmed a freshly-installed update, or its failure twin, the "UPDATE FAILED"
     /// card, if the boot-outcome reconcile found the armed update is not what's running. The board
-    /// calls [`notify_update_confirmed`](App::notify_update_confirmed) at the health anchor (the
-    /// first frame with the SD mounted) or [`notify_update_failed`](App::notify_update_failed) at
+    /// calls [`notify_update_confirmed`](App::apply_event) at the health anchor (the
+    /// first frame with the SD mounted) or [`notify_update_failed`](App::apply_event) at
     /// boot; the next [`advance_animations`](App::advance_animations) pass drains the fact and
     /// pushes the card once. Deferred behind a
     /// passkey card or a live hold like [`reconcile_warning`](App::reconcile_warning), so it never
@@ -717,7 +717,7 @@ impl UiRuntime {
     }
 
     /// Whether the top (input-receiving) screen is one of the settings screens — the gate
-    /// [`take_settings_dirty`](App::take_settings_dirty) uses to hold a pending save until exit.
+    /// [`take_settings_dirty`](App::drain_host_commands) uses to hold a pending save until exit.
     /// Reads the [`ScreenKind`](crate::screen::ScreenKind) each screen declares in its `screens!`
     /// table row, so a new settings screen can't be forgotten here.
     pub(crate) fn top_is_settings(&self) -> bool {

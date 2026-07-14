@@ -301,7 +301,7 @@ pub struct Render<'a, 'd> {
     /// The loaded map's OBCM format version — the right half of the `Map` row (`0` = no map yet).
     pub map_obcm_version: u8,
     /// Free space on the SD card in bytes (T8 item 6), or `None` until the host answers the System
-    /// screen's on-entry scan ([`App::set_card_free`](crate::App::set_card_free)).
+    /// screen's on-entry scan ([`App::apply_event`](crate::App::apply_event)).
     pub card_free_bytes: Option<u64>,
 }
 
@@ -348,7 +348,7 @@ pub struct Prepare<'a, 'd> {
 /// the enum. The two kinds behavior hangs off: [`Overlay`](ScreenKind::Overlay) screens composite
 /// over the screen below instead of replacing the view, and [`Settings`](ScreenKind::Settings)
 /// screens gate the debounced settings save
-/// ([`App::take_settings_dirty`](crate::App::take_settings_dirty)). `Riding` (the live sensor
+/// ([`App::drain_host_commands`](crate::App::drain_host_commands)). `Riding` (the live sensor
 /// views) and `Nav` (Home + the menus/prompts) carry no behavior yet — they exist so every row
 /// states what its screen *is*.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -652,8 +652,8 @@ screens! {
     /// [`NavRequest`](crate::activity::NavRequest) and swaps to the planning screen.
     NavConfirm(NavConfirmScreen) => Caps::nav(),
     /// The route-**planning** screen (#499): the spinning-needle wait while the host steps the
-    /// resumable router; Back cancels (pops to the detail + rings [`App::take_nav_cancel`]). The
-    /// host's answer ([`App::notify_nav_result`]) replaces it with the computed-route overview
+    /// resumable router; Back cancels (pops to the detail + rings [`App::drain_host_commands`]). The
+    /// host's answer ([`App::apply_event`]) replaces it with the computed-route overview
     /// or the failure card.
     NavPlanning(NavPlanningScreen) => Caps::modal().timed(),
     /// The route-planning failure card (epic #116, R4): the locked two-tier copy ("Too far to
@@ -675,7 +675,7 @@ screens! {
     RouteOverview(RouteOverviewScreen) => Caps::nav().timed().hold_fill().remap(RemapKind::Route),
     RouteSwap(RouteSwapScreen) => Caps::nav().exempt().timed().hold_fill().remap(RemapKind::Route),
     /// The idle route-upload prompt (epic #447, P4): "ROUTE RECEIVED" — Start navigation / Dismiss.
-    /// **Host-pushed** by [`App::notify_route_uploaded`]; auto-closes (= dismisses) after
+    /// **Host-pushed** by [`App::apply_event`]; auto-closes (= dismisses) after
     /// [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory — the route is already committed and in the Route menu.
     RouteReceived(RouteReceivedScreen) => Caps::modal().timed().remap(RemapKind::Route),
     /// The active-route-replaced info card (epic #447, P4). Adoption already happened when it
@@ -686,7 +686,7 @@ screens! {
     /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
     Passkey(PasskeyScreen) => Caps::modal(),
     /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
-    /// **Host-pushed** by [`App::notify_warning`], coalesced, dismissed on any press.
+    /// **Host-pushed** by [`App::apply_event`], coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
     Settings(SettingsScreen) => Caps::settings(),
     DateTime(DateTimeScreen) => Caps::settings(),

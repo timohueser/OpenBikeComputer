@@ -916,7 +916,7 @@ impl Storage {
 
     /// Build the stored ride `id`'s recorded-track elevation [`Profile`] — the Ride detail's band
     /// fill (epic #678 T2 / #680), answering
-    /// [`App::take_ride_track_request`](obc_app::App::take_ride_track_request). Resolves the id
+    /// [`App::ride_track_request`](obc_app::App::ride_track_request). Resolves the id
     /// through the scan-parallel [`ride_ids`](Storage::ride_ids)/[`ride_files`](Storage::ride_files)
     /// tables and streams the `RD{id}.ORD` once through the shared `ride_elevation_profile`
     /// (~448 B per SD read, no whole-track buffer — the ~36 KB stack budget's discipline; the

@@ -142,7 +142,7 @@ impl RouteStore {
 
     /// Duplicate route `i`'s file under a fresh name — the control panel's "**new** upload"
     /// stand-in (a real upload writes a new file to `/routes`) — then rescan and return the new
-    /// file's session id, ready for `App::notify_route_uploaded(id, false)`.
+    /// file's session id, ready for `App::apply_event(id, false)`.
     pub fn duplicate_route(&mut self, i: usize) -> Option<u16> {
         let src = self.paths.get(i)?.clone();
         let bytes = std::fs::read(&src).ok()?;
@@ -157,7 +157,7 @@ impl RouteStore {
     /// Rewrite route `i`'s file in place with its own bytes — the control panel's
     /// "**replace-by-id** upload" stand-in (same id, the bytes on disk swapped under any open
     /// handle, as the device's replace-commit does). Returns the route's (unchanged) id for
-    /// `App::notify_route_uploaded(id, true)`.
+    /// `App::apply_event(id, true)`.
     pub fn touch_route(&mut self, i: usize) -> Option<u16> {
         let path = self.paths.get(i)?.clone();
         let bytes = std::fs::read(&path).ok()?;

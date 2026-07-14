@@ -12,9 +12,12 @@
 //! - [`HostEvent`] — every host answer/fact, applied through
 //!   [`App::apply_event`](crate::App::apply_event).
 //!
-//! The legacy per-latch methods remain as **compatibility adapters** over this protocol (each one
-//! drains/feeds the same single pending state — there is deliberately no second copy anywhere);
-//! their removal is owned by #812 once #801 has moved the hosts onto the typed drain.
+//! The legacy per-feature `take_*` / `has_*` / `notify_*` latch methods that this protocol
+//! superseded have been **removed** (FAR-19, #812): every host — the board ride loop, the sim, the
+//! `obc-host-core` dispatcher, and the tests — drains [`HostCommand`]s through
+//! [`App::drain_host_commands`](crate::App::drain_host_commands) and applies [`HostEvent`]s through
+//! [`App::apply_event`](crate::App::apply_event). The per-class pending state lives once inside
+//! `App` (a typed slot, a counter, or a derived predicate — no second copy anywhere).
 //!
 //! ## What is deliberately *not* in the protocol
 //!
@@ -71,7 +74,6 @@ pub enum HostCommand {
     /// ([`set_routes_with_ids`](crate::App::set_routes_with_ids) + trips/rides): `commits` store
     /// commits/deletes landed since the last drain. **Counted** — a burst between drains raises
     /// the count (saturating), never a lost edge; one rescan covers them all.
-    /// Compat adapter: [`take_store_changed`](crate::App::take_store_changed).
     RescanStore { commits: u32 },
     /// Abort the in-flight route plan and discard the partial nav file (#499). Answers nothing —
     /// the planning screen is already gone. One-shot, drained before [`PlanRoute`]; the two slots
@@ -80,7 +82,6 @@ pub enum HostCommand {
     /// execute a plan whose spinner the rider already dismissed and commit a ghost route), so a
     /// drained cancel always refers to a plan the host already holds, and any `PlanRoute` behind
     /// it in the mailbox was posted **after** the cancel.
-    /// Compat adapter: [`take_nav_cancel`](crate::App::take_nav_cancel).
     ///
     /// [`PlanRoute`]: HostCommand::PlanRoute
     CancelRoutePlan,
@@ -88,23 +89,19 @@ pub enum HostCommand {
     /// re-feeds the catalog. The pending state is the menu's catalog *index*, resolved to the id
     /// at drain against the live catalog — a request whose route vanished drains to nothing.
     /// One-shot, modal-flow-guarded (hold-to-delete → per-pass drain).
-    /// Compat adapter: [`take_route_delete`](crate::App::take_route_delete).
     DeleteRoute { id: u16 },
     /// Cascade-delete the trip with durable object id `id` **and every member route** (epic #526,
     /// TR3). Already id-shaped (a trip id is durable); a vanished trip is a host-side no-op.
     /// One-shot, modal-flow-guarded.
-    /// Compat adapter: [`take_trip_delete`](crate::App::take_trip_delete).
     DeleteTrip { id: u16 },
     /// Delete the ride with durable object id `id` (epic #447, P7) — the ride-namespace twin of
     /// [`DeleteRoute`](HostCommand::DeleteRoute), index-resolved at drain the same way.
     /// One-shot, modal-flow-guarded.
-    /// Compat adapter: [`take_ride_delete`](crate::App::take_ride_delete).
     DeleteRide { id: u16 },
     /// Close the open ride log: finalise it to the host's saved-ride artifact
     /// ([`TrackAction::Save`]) or throw it away ([`TrackAction::Discard`]). Persistence-critical
     /// one-shot; the host reads [`ride_stats`](crate::App::ride_stats) in the same pass so the
     /// wall-clock anchor pairs with the log's last points.
-    /// Compat adapter: [`Activity::take_track_action`](crate::Activity::take_track_action).
     FinishTrack(TrackAction),
     /// Run the on-device router from `from` to `to` (epic #116, R4): write the emitted OBCR to the
     /// reserved nav route, rescan, and answer with [`HostEvent::NavPlanned`]. One-shot; the
@@ -112,7 +109,6 @@ pub enum HostCommand {
     /// [`CancelRoutePlan`](HostCommand::CancelRoutePlan) posted while this request is still
     /// undrained **annihilates it** (see that variant) — a request the host receives was never
     /// cancelled before it left the app.
-    /// Compat adapter: [`take_nav_request`](crate::App::take_nav_request).
     PlanRoute(NavRequest),
     /// Run a DFU phase (epic #615): validate `UPDATE.BIN` ([`DfuAction::Scan`], answered by
     /// [`HostEvent::DfuScanned`]) or arm-and-reboot ([`DfuAction::Install`], which either never
@@ -120,11 +116,9 @@ pub enum HostCommand {
     /// design**: there is never more than one DFU phase in flight, and a later rider post
     /// supersedes an undrained earlier one (the remote BLE door defers instead — see
     /// [`open_remote_dfu_check`](crate::App::open_remote_dfu_check)).
-    /// Compat adapter: [`take_dfu_request`](crate::App::take_dfu_request).
     Dfu(DfuAction),
     /// Forget the paired phone (epic #447, P8): clear the bond store and drop the bonded
     /// connection. One-shot, guarded-hold-posted.
-    /// Compat adapter: [`take_ble_forget`](crate::App::take_ble_forget).
     ForgetBond,
     /// Persist the live [`settings`](crate::App::settings) at revision `revision` (#810). Emitted
     /// once when an edited settings value leaves the settings subtree (the save is debounced to
@@ -138,12 +132,9 @@ pub enum HostCommand {
     /// A host that drains this command but never acks it (the web demo has no persistent store)
     /// leaves the app parked in Awaiting terminally — by design: harmless (edits stay live in RAM
     /// and keep superseding), honest (nothing pretends the write landed), no re-emission.
-    /// Compat adapters: [`take_settings_persist`](crate::App::take_settings_persist) (revision-aware)
-    /// and [`take_settings_dirty`](crate::App::take_settings_dirty) (emit-only bool).
     PersistSettings { revision: u16 },
     /// Run the FAT free-cluster scan and answer with [`HostEvent::CardScanned`] (T8 item 6).
     /// One-shot per System-screen entry; idempotent refresh.
-    /// Compat adapter: [`take_card_scan_request`](crate::App::take_card_scan_request).
     ScanCardFree,
     /// Stream ride `id`'s recorded track once and answer with
     /// [`set_ride_profile`](crate::App::set_ride_profile) /
@@ -151,13 +142,11 @@ pub enum HostCommand {
     /// one-shot**: re-emitted on every drain while the open Ride detail's viewed ride is
     /// unanswered, and gone the moment the answer (even a failure's `None`) parks under the viewed
     /// key — so a missed pass re-asks and a dead file never grinds.
-    /// Compat adapter: [`take_ride_track_request`](crate::App::take_ride_track_request).
     LoadRideTrack { id: u16 },
     /// Decimate the active route's shape polyline and hand it to
     /// [`set_nav_preview`](crate::App::set_nav_preview) (#685 §4). **Derived level** like
     /// [`LoadRideTrack`](HostCommand::LoadRideTrack): re-emitted while a Route overview is up
     /// without its preview.
-    /// Compat adapter: [`nav_preview_missing`](crate::App::nav_preview_missing).
     RefreshNavPreview,
 }
 
@@ -241,43 +230,35 @@ impl HostCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostEvent {
     /// The object store committed or deleted an object (epic #447) — raises the counted
-    /// [`HostCommand::RescanStore`] cue. Compat adapter:
-    /// [`notify_store_changed`](crate::App::notify_store_changed).
+    /// [`HostCommand::RescanStore`] cue.
     StoreChanged,
     /// A route upload committed to the store (epic #447, P4): `id` is the durable object id
     /// (resolved against the **already rescanned** catalog — the rescan-then-resolve ordering
     /// contract), `replaced` says the bytes of a stored route were swapped, `elevation` is the
     /// commit-time mini sparkline for the idle prompt. The advisory prompt keeps its documented
-    /// single-slot **most-recent-wins** delivery. Compat adapter:
-    /// [`notify_route_uploaded`](crate::App::notify_route_uploaded).
+    /// single-slot **most-recent-wins** delivery.
     RouteUploaded { id: u16, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]> },
     /// One or more device warnings were discovered (issue #504); flags accumulate onto the single
-    /// dismissable card, each surfaced once per boot. Compat adapter:
-    /// [`notify_warning`](crate::App::notify_warning).
+    /// dismissable card, each surfaced once per boot.
     Warning(WarningFlags),
     /// The answer to [`HostCommand::PlanRoute`]: the committed nav route's durable id, or the
     /// typed failure. Lands in the planning screen; dropped if the rider already cancelled.
-    /// Compat adapter: [`notify_nav_result`](crate::App::notify_nav_result).
     NavPlanned(Result<u16, obc_route::nav::NavError>),
     /// The answer to [`HostCommand::ScanCardFree`]: free bytes, or `None` when the scan
-    /// failed/is unavailable. Compat adapter: [`set_card_free`](crate::App::set_card_free).
+    /// failed/is unavailable.
     CardScanned { free_bytes: Option<u64> },
-    /// The answer to a drained [`DfuAction::Scan`]. Compat adapter:
-    /// [`notify_dfu_scan_result`](crate::App::notify_dfu_scan_result).
+    /// The answer to a drained [`DfuAction::Scan`].
     DfuScanned(Result<DfuScanReport, DfuScanError>),
     /// A drained [`DfuAction::Install`] refused or failed to arm without rebooting (issue #755).
-    /// Compat adapter: [`notify_dfu_install_failed`](crate::App::notify_dfu_install_failed).
     DfuInstallFailed(DfuInstallError),
     /// The install drain's guards passed and the arm + reboot is imminent — swap in the terminal
-    /// "Installing update" card the panel holds through the bootloader. Compat adapter:
-    /// [`show_dfu_installing`](crate::App::show_dfu_installing).
+    /// "Installing update" card the panel holds through the bootloader.
     DfuInstallBegan,
     /// This boot confirmed a freshly-installed firmware update (S4, #619): the running image's
-    /// version. Compat adapter: [`notify_update_confirmed`](crate::App::notify_update_confirmed).
+    /// version.
     UpdateConfirmed(Version),
     /// This boot detected a failed firmware update: the typed verdict plus the staged version if
-    /// the arm marker survived. Compat adapter:
-    /// [`notify_update_failed`](crate::App::notify_update_failed).
+    /// the arm marker survived.
     UpdateFailed { why: DfuFailure, staged: Option<Version> },
     /// The answer to a drained [`HostCommand::PersistSettings`]: the host wrote `revision` to durable
     /// storage (#810). Clears the app's dirty state **iff `revision` is still the latest** — a stale

@@ -4,7 +4,7 @@
 //! guarded) finalises the current track (the host's Save) and starts a new session; **Cancel** (back)
 //! returns. Reached from [`RouteMenuScreen`](super::RouteMenuScreen) when a session is active and a
 //! *different* route is chosen — or **host-pushed** by
-//! [`App::notify_route_uploaded`](crate::App::notify_route_uploaded) when a route arrives over BLE
+//! [`App::apply_event`](crate::App::apply_event) when a route arrives over BLE
 //! mid-ride (epic #447, P4): the [`received`](RouteSwapScreen::received) constructor retitles the
 //! same screen ("ROUTE RECEIVED", named subtitle) and arms the popups' 30 s auto-close (timeout =
 //! Cancel — advisory, the route is in the menu either way). Parameterized, not forked: the
