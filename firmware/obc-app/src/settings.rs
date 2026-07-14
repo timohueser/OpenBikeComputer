@@ -17,24 +17,16 @@ pub const DATETIME_MIN_YEAR: u16 = 2020;
 /// Last year accepted by the settings codec and Date & Time editor.
 pub const DATETIME_MAX_YEAR: u16 = 2099;
 
-/// App-owned editing and persisted-value policy for the dependency-neutral [`DateTime`].
+/// App-owned persisted-value policy for the dependency-neutral [`DateTime`].
 ///
 /// Calendar arithmetic (`add_minutes`, UTC offsets, leap years) stays inherent on `DateTime` in
-/// `obc-ports`; these methods are available when this trait is in scope because their wrapping and
-/// sanitising ranges are UI/storage choices specific to OpenBikeComputer.
+/// `obc-ports`; [`sanitize`](DateTimeEditorExt::sanitize) is available when this trait is in scope
+/// because its storage range (2020–2099) is a choice specific to OpenBikeComputer. (Manual
+/// date/time editing — and its per-field wrapping steppers — was removed in #641; only `sanitize`
+/// remains, applied after a settings decode.)
 pub trait DateTimeEditorExt {
-    /// Force every field into the range accepted by the settings codec and editor.
+    /// Force every field into the range accepted by the settings codec.
     fn sanitize(&mut self);
-    /// Step the year, wrapping through the app-supported range and re-clamping the day.
-    fn step_year(&mut self, n: i32);
-    /// Step the month, wrapping 1–12 and re-clamping the day.
-    fn step_month(&mut self, n: i32);
-    /// Step the day, wrapping within the current month.
-    fn step_day(&mut self, n: i32);
-    /// Step the hour, wrapping 0–23.
-    fn step_hour(&mut self, n: i32);
-    /// Step the minute, wrapping 0–59.
-    fn step_minute(&mut self, n: i32);
 }
 
 impl DateTimeEditorExt for DateTime {
@@ -45,38 +37,10 @@ impl DateTimeEditorExt for DateTime {
         self.minute = self.minute.min(59);
         clamp_day(self);
     }
-
-    fn step_year(&mut self, n: i32) {
-        self.year = wrap_inclusive(self.year, n, DATETIME_MIN_YEAR, DATETIME_MAX_YEAR);
-        clamp_day(self);
-    }
-
-    fn step_month(&mut self, n: i32) {
-        self.month = wrap_inclusive(self.month as u16, n, 1, 12) as u8;
-        clamp_day(self);
-    }
-
-    fn step_day(&mut self, n: i32) {
-        self.day = wrap_inclusive(self.day as u16, n, 1, DateTime::month_len(self.year, self.month) as u16) as u8;
-    }
-
-    fn step_hour(&mut self, n: i32) {
-        self.hour = wrap_inclusive(self.hour as u16, n, 0, 23) as u8;
-    }
-
-    fn step_minute(&mut self, n: i32) {
-        self.minute = wrap_inclusive(self.minute as u16, n, 0, 59) as u8;
-    }
 }
 
 fn clamp_day(date: &mut DateTime) {
     date.day = date.day.clamp(1, DateTime::month_len(date.year, date.month));
-}
-
-fn wrap_inclusive(value: u16, step: i32, lo: u16, hi: u16) -> u16 {
-    let span = (hi - lo) as i32 + 1;
-    let offset = (value as i32 - lo as i32 + step).rem_euclid(span);
-    (lo as i32 + offset) as u16
 }
 
 fn clamp_app_year(date: DateTime) -> DateTime {
@@ -1437,8 +1401,8 @@ mod tests {
         assert_eq!((d.year, d.month, d.day, d.hour, d.minute), (1970, 1, 1, 0, 0));
     }
 
-    /// February's day count follows the leap rule, and stepping the month off Jan 31 re-pins
-    /// the day to the (possibly leap) Feb length rather than leaving an impossible Feb 31.
+    /// February's day count follows the leap rule (checked directly, and through `sanitize`, which
+    /// re-pins an impossible Feb 31 to the month's real length).
     #[test]
     fn datetime_month_length_is_leap_aware() {
         assert_eq!(DateTime::month_len(2024, 2), 29, "2024 is a leap year");
@@ -1446,31 +1410,15 @@ mod tests {
         assert_eq!(DateTime::month_len(2000, 2), 29, "div-by-400 is a leap year");
         assert_eq!(DateTime::month_len(2100, 2), 28, "div-by-100-not-400 is not");
 
-        let mut leap = DateTime { year: 2024, month: 1, day: 31, hour: 0, minute: 0 };
-        leap.step_month(1); // Jan 31 → Feb
-        assert_eq!((leap.month, leap.day), (2, 29), "Feb 29 in a leap year");
-        let mut common = DateTime { year: 2025, month: 1, day: 31, hour: 0, minute: 0 };
-        common.step_month(1);
-        assert_eq!((common.month, common.day), (2, 28), "Feb 28 in a common year");
+        let mut leap = DateTime { year: 2024, month: 2, day: 31, hour: 0, minute: 0 };
+        leap.sanitize();
+        assert_eq!(leap.day, 29, "Feb 31 in a leap year re-pins to Feb 29");
+        let mut common = DateTime { year: 2025, month: 2, day: 31, hour: 0, minute: 0 };
+        common.sanitize();
+        assert_eq!(common.day, 28, "Feb 31 in a common year re-pins to Feb 28");
     }
 
-    /// Every field stepper wraps at its bounds rather than running off the end.
-    #[test]
-    fn datetime_steppers_wrap() {
-        let mut d = DateTime { year: DATETIME_MAX_YEAR, month: 12, day: 30, hour: 23, minute: 59 };
-        d.step_year(1);
-        assert_eq!(d.year, DATETIME_MIN_YEAR, "year wraps 2099 → 2020");
-        d.step_month(1);
-        assert_eq!(d.month, 1, "month wraps 12 → 1");
-        d.step_hour(1);
-        assert_eq!(d.hour, 0, "hour wraps 23 → 0");
-        d.step_minute(1);
-        assert_eq!(d.minute, 0, "minute wraps 59 → 0");
-        d.step_year(-1);
-        assert_eq!(d.year, DATETIME_MAX_YEAR, "and backward off the bottom wraps to the top");
-    }
-
-    /// `add_minutes` carries across every boundary the field steppers deliberately *don't*:
+    /// `add_minutes` carries across every boundary a live app clock deliberately advances through:
     /// minute → hour → day → month → year, and through the leap-day specifically.
     #[test]
     fn datetime_add_minutes_carries_across_fields() {

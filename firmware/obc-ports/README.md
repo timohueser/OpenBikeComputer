@@ -17,9 +17,9 @@ the application/UI layer.
 
 `DateTime` exposes semantic Gregorian arithmetic (`add_minutes`, signed UTC
 offsets, Unix conversion) without an app year range. OpenBikeComputer's
-2020–2099 storage/editor bounds, sanitising, and wrapping steppers live in
-`obc_app::DateTimeEditorExt`; those UI-policy methods are intentionally not
-inherent methods on the foundation value.
+2020–2099 storage bounds and sanitising live in `obc_app::DateTimeEditorExt`;
+that storage-policy method is intentionally not an inherent method on the
+foundation value.
 
 The manifest has no dependencies. The workspace classifies `obc-ports` in the
 `foundation` allowlist in `tools/dependency_rules.json`, which rejects
