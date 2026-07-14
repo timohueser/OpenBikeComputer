@@ -67,16 +67,8 @@ mod tests {
         };
         assert_eq!(decode_record(&encode_record(&p)), p);
         // Absent sensor fields round-trip back to None through the sentinels.
-        let bare = TrackPoint {
-            lon: 0,
-            lat: 0,
-            ele: 0,
-            t_ms: 0,
-            segment_start: false,
-            hr: None,
-            cadence: None,
-            power: None,
-        };
+        let bare =
+            TrackPoint { lon: 0, lat: 0, ele: 0, t_ms: 0, segment_start: false, hr: None, cadence: None, power: None };
         assert_eq!(decode_record(&encode_record(&bare)), bare);
     }
 }
