@@ -212,10 +212,14 @@ These are exact 32-bit target `size_of` values from the report-only ELF:
 | renderer (embedded in `App`) | 8,352 B | 8,352 B |
 | navigation scratch / tile cache / planner | 19,976 / 4,140 / 9,024 B | 19,976 / 4,140 / 9,024 B |
 | stack-reserve floor | 36,864 B | 36,864 B |
-| BLE total | 0 B | 32,106 B |
+| BLE total | 0 B | 32,102 B |
 | └ SDC memory / host resources / packet pool | 0 B | 8,704 / 3,960 / 4,036 B |
-| └ object store / server / GAP name / sensor manager | 0 B | 13,048 / 1,936 / 52 / 370 B |
+| └ object store / server / GAP name / sensor manager | 0 B | 13,044 / 1,936 / 52 / 370 B |
 | └ MPSL handle / Cracen handle | 0 B | 0 / 0 B (zero-sized handles) |
+
+The BLE object store (and so the BLE total) shrank 4 B — 13,048 → 13,044,
+32,106 → 32,102 — when `Settings::gps_time` was removed in #641 (the store embeds
+a `Settings`; `App` was unaffected, as `clock_trust` reclaimed the freed byte).
 
 Do not add this table to predict RAM. `App` embeds the renderer, the navigation
 types are described even where `has_nav` makes them non-resident, and the stack

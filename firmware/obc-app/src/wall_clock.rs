@@ -13,8 +13,8 @@ use crate::settings::{add_minutes_bounded, DateTime};
 /// Derives the current wall-clock [`DateTime`] from a set-point (`base`) and the monotonic millis
 /// at which that set-point was true (`epoch_ms`). [`now`](WallClock::now) is **recomputed from the
 /// set-point every call**, so it can never accumulate drift. [`set`](WallClock::set) re-stamps both
-/// halves (the Date & Time editor today, a GPS fix later). Owned by [`App`](crate::App); screens
-/// get the already-computed `now` and never see the epoch.
+/// halves (a GPS fix, a BLE `setClock`, or the boot restore of the persisted set-point). Owned by
+/// [`App`](crate::App); screens get the already-computed `now` and never see the epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WallClock {
     /// The set-point: the time that was true at [`epoch_ms`](WallClock::epoch_ms).
@@ -22,8 +22,8 @@ pub struct WallClock {
     /// The monotonic millis at which [`base`](WallClock::base) was established.
     epoch_ms: u32,
     /// Whether a set-point has ever been **established** — false for the bare boot construction, true
-    /// once [`set`](WallClock::set) has run (the persisted clock restored at boot, a manual edit, or
-    /// a GPS/BLE re-stamp). Distinguishes "the device has been told a time" from a fresh clock that
+    /// once [`set`](WallClock::set) has run (the persisted clock restored at boot, or a GPS/BLE
+    /// re-stamp). Distinguishes "the device has been told a time" from a fresh clock that
     /// has never known one; the Home date line (#683) hides while this is false, since a date with no
     /// trusted origin would mislead. (Finer GPS/BLE-only trust is auto-expiry epic #638's job.)
     established: bool,

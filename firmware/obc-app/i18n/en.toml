@@ -174,13 +174,10 @@ reset = "Reset"
 # --- Date & Time settings screen ---
 [datetime]
 title = "DATE & TIME"
-gps_clock = "GPS clock"
 gps_fix = "GPS fix"
 searching = "Searching for fix"
 local_time = "Local time"
 offset = "Offset"
-date = "DATE"
-time = "TIME"
 utc = "UTC "
 
 # --- Stats settings screen ---
