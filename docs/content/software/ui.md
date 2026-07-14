@@ -59,48 +59,51 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
 </figure>
 
 ```rust
-// The one screen table. Each row declares a variant, its state type, and its kind; a dumb local
-// macro expands it into the Screen enum, the handle/draw delegation matches, and Screen::kind().
+// The one screen table. Each row declares a variant, its state type, and its capabilities (Caps);
+// a dumb local macro expands it into the Screen enum, the handle/draw/prepare delegation matches,
+// and the per-screen Caps table that every cross-cutting UI policy reads.
 screens! {
-    Home(HomeScreen) => Nav,
-    Map(MapScreen) => Riding,
-    Statistics(StatisticsScreen) => Riding,
-    RideControl(RideControl) => Nav,       // the Paused page: ride-so-far ledger + Resume/Finish/Discard
-    RideStart(RideStartScreen) => Nav,     // the browse map's start card: Start ride / Back (route-less ride)
-    Menu(MenuScreen) => Nav,               // the compass dial
-    PoiMenu(PoiMenuScreen) => Nav,         // POIs browser: the category list
-    PoiList(PoiListScreen) => Nav,         // one category's nearest-16, with live bearing arrows
-    PoiDetail(PoiDetailScreen) => Nav,     // one POI: full name, subtype, arrow, today's hours + open/closed
-    RouteMenu(RouteMenuScreen) => Nav,
-    Rides(RidesScreen) => Nav,             // stored rides: name + sync glyph over date-metadata rows
-    RideDetail(RideDetailScreen) => Nav,   // one ride: track/elevation pager + guarded Delete ride
-    RouteOverview(RouteOverviewScreen) => Nav, // look-before-you-ride: track/elevation pager + START
-    RouteSwap(RouteSwapScreen) => Nav,
+    Home(HomeScreen) => Caps::nav().timed(),         // screensaver clock ticks each minute → timed
+    Map(MapScreen) => Caps::map().timed(),           // reads the map Reader; a ride view + browse-exempt
+    Statistics(StatisticsScreen) => Caps::riding().timed(),
+    RideControl(RideControl) => Caps::nav().ride_view().hold_fill(), // the Paused page; guarded Finish/Discard
+    RideStart(RideStartScreen) => Caps::nav(),       // the browse map's start card (route-less ride)
+    Menu(MenuScreen) => Caps::nav().timed(),          // the compass dial sweeps its needle → timed
+    PoiMenu(PoiMenuScreen) => Caps::nav(),           // POIs browser: the category list
+    PoiList(PoiListScreen) => Caps::nav().reader(ReaderNeed::PoiSnapshot),  // one-shot nearest-16 query
+    PoiDetail(PoiDetailScreen) => Caps::nav().reader(ReaderNeed::PoiHours), // one-shot opening-hours read
+    RouteMenu(RouteMenuScreen) => Caps::nav().remap(RemapKind::Route),      // holds a route index (rescan remap)
+    Rides(RidesScreen) => Caps::nav().remap(RemapKind::Ride),
+    RideDetail(RideDetailScreen) => Caps::nav().timed().hold_fill().remap(RemapKind::Ride),
+    RouteOverview(RouteOverviewScreen) => Caps::nav().timed().hold_fill().remap(RemapKind::Route),
+    RouteSwap(RouteSwapScreen) => Caps::nav().exempt().timed().hold_fill().remap(RemapKind::Route),
     // Event-opened cards — raised by something happening, not a gesture: the BLE seam (route uploads
     // + pairing, see "Screens the companion link pushes") or the storage/sensor path (the warning
-    // card — a missing sensor and a slow map are found at boot, a ride-log write error mid-ride).
-    RouteReceived(RouteReceivedScreen) => Nav, // idle "ROUTE RECEIVED" — View route / Dismiss
-    RouteUpdated(RouteUpdatedScreen) => Nav,   // info-only: the actively-navigated route was replaced
-    Passkey(PasskeyScreen) => Nav,             // the 6-digit pairing code, modal + non-dismissible
-    Warning(WarningScreen) => Nav,             // advisory: missing sensor / slow map / ride-log write error — dismissable
-    // The Settings tree — a list plus one screen each for Date & Time, Units, Display, Power,
-    // Bluetooth, Sensors, Language, Reset, and Stats (which opens onto Fields → AddField, the stat-grid panel manager).
-    // The `Settings` kind is what holds the debounced settings save while one of these is on top.
-    Settings(SettingsScreen) => Settings,  DateTime(DateTimeScreen) => Settings,
-    Units(UnitsScreen) => Settings,        Stats(StatsScreen) => Settings,
-    StatFields(StatFieldsScreen) => Settings, AddField(AddFieldScreen) => Settings,
-    Display(DisplayScreen) => Settings,    Power(PowerScreen) => Settings,
-    Bluetooth(BluetoothScreen) => Settings, Sensors(SensorsScreen) => Settings,
-    SensorScan(SensorScanScreen) => Settings, Language(LanguageScreen) => Settings,
-    Reset(ResetScreen) => Settings,
+    // card). `modal()` = idle-return exempt: the timeout never yanks one away until it's dismissed.
+    RouteReceived(RouteReceivedScreen) => Caps::modal().timed().remap(RemapKind::Route),
+    Passkey(PasskeyScreen) => Caps::modal(),          // the 6-digit pairing code, modal + non-dismissible
+    Warning(WarningScreen) => Caps::modal(),          // advisory: missing sensor / slow map / write error
+    // The Settings tree. `settings()` is what holds the debounced settings save while one is on top;
+    // a guarded row adds `.hold_fill()` (the factory Reset, Forget phone, Fields delete, forget sensor).
+    Settings(SettingsScreen) => Caps::settings(),      Units(UnitsScreen) => Caps::settings(),
+    Reset(ResetScreen) => Caps::settings().hold_fill(), Bluetooth(BluetoothScreen) => Caps::settings().hold_fill(),
+    // …Date&Time, Display, Power, Sensors, Language, Stats → Fields → AddField, all Caps::settings().
 }
 
-// Each variant is a module with typed state and exactly two methods:
+// Each variant is a module with typed state and two methods (plus an optional third for the two POI
+// screens — `prepare`, which resolves a Reader-backed one-shot before drawing, see "the POIs browser").
 impl MenuScreen {
     fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition { /* logic  */ }
     fn draw(&self, cv: &mut impl Surface, rx: &mut Render)       { /* pixels */ }
 }
 ```
+
+Every cross-cutting behavior — which screen counts as live data, which is idle-return exempt, which
+needs the map `Reader`, which has a timer or a guarded hold, which remaps catalog indices after a
+rescan — is a **capability on the row**, not a `matches!` scattered across the app. Adding a
+cross-cutting policy is an explicit new field on `Caps`, exhaustively matched, so a screen can't be
+silently forgotten; the invariant tests enumerate the whole table and check the combinations are
+consistent (a Reader-needing map screen, a modal that isn't a ride view, and so on).
 
 ## Navigation is a return value
 
@@ -420,7 +423,7 @@ That cleanup is a **long-press** on the folder. Unlike the in-place [hold-to-del
 
 ### A static list with one live element
 
-The list is a **static snapshot**, frozen the moment you enter. Membership, order and distances don't move — rows never reshuffle under the cursor as you turn, and the SD card isn't re-scanned every frame. Re-enter the category to refresh it against your current position. Under the hood the [nearest-16 query](../formats/#pois-a-nearest-list-not-a-map-layer) needs the streaming map `Reader`, which lives only in the [`draw` context](#logic-and-drawing-get-different-views-of-the-world) — so the snapshot is taken *lazily on the first draw* that has both a reader and a fix, into a single buffer the app owns (holding it per-screen would inflate every slot of the screen stack). Opening a list invalidates that buffer, so the next draw re-queries.
+The list is a **static snapshot**, frozen the moment you enter. Membership, order and distances don't move — rows never reshuffle under the cursor as you turn, and the SD card isn't re-scanned every frame. Re-enter the category to refresh it against your current position. Under the hood the [nearest-16 query](../formats/#pois-a-nearest-list-not-a-map-layer) needs the streaming map `Reader`, which the host only builds for the frame that needs it — so the snapshot is taken in a small **pre-draw `prepare` pass** (the one place both the `Reader` and the fix are in hand), the first time both are present, into a single buffer the app owns (holding it per-screen would inflate every slot of the screen stack). Drawing then just *reads* that frozen buffer; the query is a side effect, and side effects don't belong in `draw` (see [Logic and drawing get different views](#logic-and-drawing-get-different-views-of-the-world)). Opening a list invalidates the buffer, so the next `prepare` re-queries.
 
 The one thing that *is* live is the **bearing arrow** — recomputed every frame from the POI's stored coordinates and the rider's current heading, pure trig with zero SD access. It points from you toward the POI **relative to your heading**, so "straight up" means "dead ahead." The drawn glyph **snaps to eight compass directions** (45° steps) and is a full arrow — shaft plus barbs, double-stroked to a 2 px line: at ~11 px a degree-true arrow just smudges, while the eight snapped shapes read without focusing. That heading has two sources, and which one is used depends on whether you're moving:
 
@@ -510,7 +513,7 @@ Pressing a list row opens the **detail view** for that POI — one more `Nav` sc
   <text class="d-sub" x="610" y="208" style="font-size:9.5px;fill:#a9501c">is_open?</text>
   <text class="d-sub" x="308" y="226" style="font-size:9px">read live every frame — the one part that isn't frozen</text>
 </svg>
-<figcaption>The hours block reads the POI's [pooled schedule](../formats/#opening-hours-a-pooled-weekly-schedule) once (lazily, on the first draw with a map <code>Reader</code> — the same reader-in-draw seam the list snapshot uses), then picks <b>today's</b> intervals. Three states: <b>Today</b> with the day's one or two ranges stacked (<code>08:00-12:00</code> / <code>14:00-18:00</code> — stacked because a two-range line won't fit the 240 px panel); <b>Closed today</b> when the schedule has no interval for this weekday; and <b>Hours not listed</b> when the POI had no parseable hours at all. The <b>OPEN / CLOSED</b> pill (green fill open, warning-red closed — a state, not just quieter text) is the only live piece — recomputed every frame from the device's local wall-clock. That local time comes from the user's <b>UTC offset</b> plus the <b>GPS clock</b> (the same clock that sets the ride time), and <code>weekday_from_ymd</code> (Zeller's congruence, Mon = 0) picks today's row; the minute-of-day then decides open vs. closed, including overnight intervals that opened last evening.</figcaption>
+<figcaption>The hours block reads the POI's [pooled schedule](../formats/#opening-hours-a-pooled-weekly-schedule) once (in the same pre-draw <code>prepare</code> pass the list snapshot uses — the one place the map <code>Reader</code> is in hand — then cached), then picks <b>today's</b> intervals. Three states: <b>Today</b> with the day's one or two ranges stacked (<code>08:00-12:00</code> / <code>14:00-18:00</code> — stacked because a two-range line won't fit the 240 px panel); <b>Closed today</b> when the schedule has no interval for this weekday; and <b>Hours not listed</b> when the POI had no parseable hours at all. The <b>OPEN / CLOSED</b> pill (green fill open, warning-red closed — a state, not just quieter text) is the only live piece — recomputed every frame from the device's local wall-clock. That local time comes from the user's <b>UTC offset</b> plus the <b>GPS clock</b> (the same clock that sets the ride time), and <code>weekday_from_ymd</code> (Zeller's congruence, Mon = 0) picks today's row; the minute-of-day then decides open vs. closed, including overnight intervals that opened last evening.</figcaption>
 </figure>
 
 ## Settings: a second level of focus
@@ -603,7 +606,9 @@ The words are translated; the *formats* are not. The 24-hour clock, ISO / `Mon D
 
 ## Logic and drawing get different views of the world
 
-`handle` and `draw` are handed deliberately different contexts. `handle` gets `Ctx` — the **mutable** slice of app state a screen is allowed to change (the camera, the ride mode, the clock). `draw` gets `Render` — a **read-only** view plus the resources it needs to paint (the map reader, the renderer, the active route, its elevation profile, the active climb, the breadcrumb, the in-flight hold-progress). A screen literally cannot mutate state while drawing, because it isn't given the means to.
+`handle` and `draw` are handed deliberately different contexts. `handle` gets `Ctx` — the **mutable** slice of app state a screen is allowed to change (the camera, the ride mode, the clock). `draw` gets `Render` — a **read-only** view plus the resources it needs to paint (the map reader, the renderer, the active route, its elevation profile, the active climb, the breadcrumb, the in-flight hold-progress). A screen literally cannot mutate state while drawing, because it isn't given the means to — `Render` carries no mutable state at all, so a frame's only outputs are pixels and the map's render statistics.
+
+The one thing that used to break that rule was the POI browser: its snapshot and hours reads needed the map `Reader`, which lives in the draw path, so they wrote back into the draw context mid-paint. That acquisition now happens in a third, even narrower context — **`Prepare`**, handed to a screen's optional `prepare` method in a pass that runs *before* the draw loop, carrying just the `Reader`, the shared POI buffer, and the fix. `prepare` does the side-effectful read; `draw` consumes the frozen result read-only. So the split is now clean in both directions: `prepare` may touch the `Reader`-backed one-shots, `handle` may change app state, and `draw` may do neither.
 
 <figure class="fig">
 <svg viewBox="0 0 720 220" role="img" aria-label="Two side-by-side contexts. On the left, handle receives Ctx, the mutable half: app state (camera, zoom, pan), the activity (ride mode), the route catalog, and the clock. On the right, draw receives Render, the read-only half: the map reader, the renderer, read-only state, the active route, its elevation profile, the breadcrumb, size, and hold-progress.">
