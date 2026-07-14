@@ -1119,10 +1119,10 @@ async fn main(_spawner: Spawner) {
             }
             // Issue #504: the map loaded but its extent table was refused (fragmented past the cap /
             // failed verification), so reads fall back to the slow FAT-seek path. Surface it once as a
-            // dismissable notice — `notify_warning` pushes the card over Home; the ride loop shows it on
-            // the first frame. A contiguous map (the common case) sets nothing.
+            // dismissable notice — the `Warning` event pushes the card over Home; the ride loop shows it
+            // on the first frame. A contiguous map (the common case) sets nothing.
             if storage.map_degraded() {
-                app.notify_warning(obc_app::WarningFlags::MAP_SLOW);
+                app.apply_event(obc_app::HostEvent::Warning(obc_app::WarningFlags::MAP_SLOW));
             }
         }
 

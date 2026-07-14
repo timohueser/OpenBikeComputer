@@ -83,9 +83,9 @@ pub fn finish_nav_plan(
     if let Err(e) = &result {
         eprintln!("nav route: failed ({e:?})");
     }
-    app.notify_nav_result(result);
+    app.apply_event(obc_app::HostEvent::NavPlanned(result));
     // The computed-route overview's shape preview (#685 §4), decimated host-side from the
-    // just-committed bytes. After `notify_nav_result` (which activates the route and clears any
+    // just-committed bytes. After the `NavPlanned` answer (which activates the route and clears any
     // stale preview) so the copy keys to the fresh `active_route`. Skipped when the answer was
     // dropped (rider cancelled — no overview is up to draw it).
     if result.is_ok() && app.nav_preview_missing() {

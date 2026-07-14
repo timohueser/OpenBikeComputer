@@ -302,8 +302,10 @@ impl SimGui {
         // Drop/remove an `.obcr` in the routes folder, then click — a mid-session upload/delete
         // without a radio (P4 adds the full inject-upload popup flow on top of this edge).
         if ui.button("Store changed (rescan routes + rides)").clicked() {
-            self.app.notify_store_changed();
-            let _ = self.app.take_store_changed();
+            // The store-changed edge (#450) is the manual rescan + id-carrying re-feed below — the
+            // whole mechanism a `StoreChanged` event + drained `RescanStore` would drive on the
+            // board. (No app-side `StoreChanged` is raised here: the counted cue would otherwise sit
+            // pending for the GUI's next `HostLoop` frame to redundantly re-scan.)
             self.store.rescan();
             self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
             // The same edge covers the trips (epic #526): a dropped-in / removed `.obt` re-groups
@@ -403,15 +405,16 @@ impl SimGui {
     fn inject_upload(&mut self, sel: usize, replace: bool) {
         let id = if replace { self.store.touch_route(sel) } else { self.store.duplicate_route(sel) };
         let Some(id) = id else { return };
-        self.app.notify_store_changed();
-        let _ = self.app.take_store_changed();
+        // The store-changed edge is the rescan + id-carrying re-feed (see the "Store changed"
+        // button); then the `RouteUploaded` event carries the durable id — the rescan-then-resolve
+        // ordering the board's ride loop and the app both rely on.
         self.store.rescan();
         self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
         if replace {
             self.store.sync_active(None); // force the geometry reopen off the fresh bytes
         }
         let elevation = self.store.elevation_sparkline(id);
-        self.app.notify_route_uploaded(id, replace, elevation);
+        self.app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced: replace, elevation });
     }
 
     /// The synthetic BLE-sensor controls (epic #707 SE8): the sim's face of the HR / power /

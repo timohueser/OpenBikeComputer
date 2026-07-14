@@ -180,7 +180,7 @@ macro_rules! statusf {
 ///
 /// Returns only on failure (the state page is then untouched; the device keeps riding): the typed
 /// [`DfuInstallError`](obc_app::DfuInstallError) the caller hands to
-/// [`App::notify_dfu_install_failed`](obc_app::App::notify_dfu_install_failed) so the "Preparing
+/// [`App::apply_event`](obc_app::App::apply_event) so the "Preparing
 /// update..." spinner is replaced by the error card instead of hanging (issue #755). On success the
 /// call diverges into the reset, so the `Ok` arm has no return value.
 pub(crate) async fn run_install(
@@ -241,7 +241,7 @@ pub(crate) async fn run_install(
 /// nothing, and reads the boot-state page for the pre-arm no-rollback fact, returning the
 /// app-native [`DfuScanReport`](obc_app::DfuScanReport) the confirm screen shows — or a mapped
 /// [`DfuScanError`](obc_app::DfuScanError) for the error card. The board answers the app through
-/// [`App::notify_dfu_scan_result`](obc_app::App::notify_dfu_scan_result); a failed scan, like the
+/// [`App::apply_event`](obc_app::App::apply_event); a failed scan, like the
 /// arm's, costs nothing.
 ///
 /// Returns the [`StagedRef`] alongside the report so the caller can park it next to its pending-DFU
@@ -361,7 +361,7 @@ pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut Rram
             // Confirmed is only returned with a marker present (see `verdict`), so `staged` is set.
             let staged = marker.as_ref().map(|m| m.staged.as_str()).unwrap_or("");
             defmt::info!("dfu: staged {=str} accepted after an unconfirmed trial", staged);
-            app.notify_update_confirmed(staged);
+            app.apply_event(obc_app::HostEvent::UpdateConfirmed(obc_app::dfu::clamp(staged)));
         }
         obc_dfu::Verdict::Reverted => {
             settings.clear_arm_marker();
@@ -372,7 +372,10 @@ pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut Rram
                 Some(v) => defmt::warn!("dfu: staged {=str} is not the running image — rejected or rolled back", v),
                 None => defmt::warn!("dfu: staged update is not the running image — rejected or rolled back"),
             }
-            app.notify_update_failed(obc_app::DfuFailure::Reverted, staged);
+            app.apply_event(obc_app::HostEvent::UpdateFailed {
+                why: obc_app::DfuFailure::Reverted,
+                staged: staged.map(obc_app::dfu::clamp),
+            });
         }
         obc_dfu::Verdict::NotStarted => {
             defmt::warn!("dfu: Armed record survived into the app — bootloader never ran the install");
@@ -384,7 +387,10 @@ pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut Rram
             };
             settings.write_boot_state(&BootState::Idle { installed, last_outcome: None });
             settings.clear_arm_marker();
-            app.notify_update_failed(obc_app::DfuFailure::NotStarted, staged.as_ref().map(|h| h.fw_version_str()));
+            app.apply_event(obc_app::HostEvent::UpdateFailed {
+                why: obc_app::DfuFailure::NotStarted,
+                staged: staged.as_ref().map(|h| obc_app::dfu::clamp(h.fw_version_str())),
+            });
         }
     }
 }

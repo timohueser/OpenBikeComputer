@@ -106,7 +106,7 @@ impl RouteOverviewScreen {
     }
 
     /// Preview a **computed** route (the router's output): length only — no elevation band, no
-    /// climb/descent rows. Opened by [`App::notify_nav_result`](crate::App::notify_nav_result).
+    /// climb/descent rows. Opened by [`App::apply_event`](crate::App::apply_event).
     pub fn computed(route: usize, prev_active: Option<usize>) -> Self {
         RouteOverviewScreen { route, prev_active, computed: true, page: 0, last_flip_ms: None, selected: START }
     }

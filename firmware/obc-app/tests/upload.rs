@@ -1,4 +1,4 @@
-//! The route-upload popups (epic #447, P4): [`App::notify_route_uploaded`] and the locked popup
+//! The route-upload popups (epic #447, P4): the `RouteUploaded` event and the locked popup
 //! rules — the three variants (idle "ROUTE RECEIVED" / tracking swap prompt / active-replaced
 //! info card), replace-not-stack on consecutive uploads (by object id, selection reset), the 30 s
 //! auto-close = dismiss, passkey priority in both directions, hold deferral, deleted-route
@@ -9,9 +9,22 @@ mod common;
 use common::{down, keys, up};
 use obc_app::screen::UPLOAD_POPUP_TIMEOUT_MS;
 use obc_app::{
-    App, AppState, BleLink, BleStatus, Button, Gesture, IdleReturn, InputClock, Mode, RouteSummary, Screen, Settings,
+    App, AppState, BleLink, BleStatus, Button, Gesture, HostCommand, HostMailbox, IdleReturn, InputClock, Mode,
+    RouteSummary, Screen, Settings,
 };
 use obc_reader::BBox;
+
+/// The drained `DeleteRoute` id, if one is pending (the `take_route_delete` successor): drain the
+/// typed protocol and pick the delete out of the mailbox (the co-pending derived preview cue
+/// re-emits, so discarding it here is harmless). FAR-19, #812.
+fn took_route_delete(app: &mut App) -> Option<u16> {
+    let mut mb: HostMailbox = HostMailbox::new();
+    let _ = app.drain_host_commands(&mut mb);
+    core::iter::from_fn(|| mb.pop()).find_map(|c| match c {
+        HostCommand::DeleteRoute { id } => Some(id),
+        _ => None,
+    })
+}
 
 /// A three-route catalog with deliberately non-positional durable ids (10 / 11 / 12), so any test
 /// passing an *id* where an *index* is expected fails loudly.
@@ -65,7 +78,7 @@ fn start_riding(app: &mut App) {
 #[test]
 fn idle_upload_opens_the_prompt_and_view_route_opens_the_overview() {
     let mut app = idle_app();
-    app.notify_route_uploaded(11, false, None); // id 11 = catalog index 1 ("Beta")
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None }); // id 11 = catalog index 1 ("Beta")
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)), "idle upload → ROUTE RECEIVED");
     assert!(app.take_dirty().map, "the popup covers the screen below — one repaint");
 
@@ -88,13 +101,13 @@ fn idle_upload_opens_the_prompt_and_view_route_opens_the_overview() {
 fn idle_prompt_dismisses_on_back_and_on_the_dismiss_row() {
     // Back = dismiss; nothing is lost (the route stays in the catalog / menu).
     let mut app = idle_app();
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Home(_)), "Back dismisses to what was underneath");
     assert_eq!(app.mode(), Mode::Idle, "dismissing navigates nothing");
 
     // The Dismiss row (turn down, press) does the same.
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     app.apply_gesture(Gesture::Turn(1));
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Home(_)));
@@ -110,7 +123,7 @@ fn tracking_upload_opens_the_swap_prompt_and_swap_keeps_the_session() {
     start_riding(&mut app);
     let session = app.activity.session();
 
-    app.notify_route_uploaded(12, false, None); // id 12 = index 2 ("Gamma") arrives mid-ride
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None }); // id 12 = index 2 ("Gamma") arrives mid-ride
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "tracking upload → the swap prompt");
 
     // "Swap route" (row 0, press): re-navigate onto the received route, session untouched.
@@ -124,7 +137,7 @@ fn tracking_upload_opens_the_swap_prompt_and_swap_keeps_the_session() {
 fn tracking_swap_prompt_cancel_keeps_the_current_route() {
     let mut app = idle_app();
     start_riding(&mut app);
-    app.notify_route_uploaded(12, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None });
     app.apply_gesture(Gesture::Back); // Back = Cancel
     assert!(matches!(app.top_screen(), Screen::Map(_)), "cancel returns to the ride");
     assert_eq!(app.active_route_index(), Some(0), "still navigating the original route");
@@ -142,7 +155,7 @@ fn active_replace_shows_the_info_card_and_drops_stale_match_state() {
     app.activity.off_route = true;
     app.activity.dist_to_route_m = 55;
 
-    app.notify_route_uploaded(10, true, None); // the navigated id re-uploaded — bytes swapped
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 10, replaced: true, elevation: None }); // the navigated id re-uploaded — bytes swapped
     assert!(matches!(app.top_screen(), Screen::RouteUpdated(_)), "active replace → the info-only card");
     // Forced adoption: everything derived from the old bytes is dropped — the matcher re-runs
     // from the current fix, the readouts clear until recomputed.
@@ -168,7 +181,7 @@ fn active_replace_adoption_happens_even_when_the_prompt_is_suppressed() {
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(42), paired: false });
     assert!(app.passkey_card_up());
 
-    app.notify_route_uploaded(10, true, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 10, replaced: true, elevation: None });
     assert_eq!(app.activity.progress_m, 0, "adoption is not optional — stale state drops regardless");
     assert!(app.passkey_card_up(), "the card stays; no popup landed under or over it");
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: false });
@@ -182,7 +195,7 @@ fn replace_of_a_non_active_route_is_not_the_info_card() {
     let mut app = idle_app();
     start_riding(&mut app); // riding id 10
     app.activity.progress_m = 777;
-    app.notify_route_uploaded(11, true, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: true, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "non-active replace → the swap prompt");
     assert_eq!(app.activity.progress_m, 777, "the active route's match state is untouched");
 }
@@ -192,9 +205,9 @@ fn replace_of_a_non_active_route_is_not_the_info_card() {
 #[test]
 fn consecutive_uploads_replace_the_popup_most_recent_wins() {
     let mut app = idle_app();
-    app.notify_route_uploaded(10, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 10, replaced: false, elevation: None });
     app.apply_gesture(Gesture::Turn(1)); // move the highlight to Dismiss…
-    app.notify_route_uploaded(11, false, None); // …then a newer upload lands
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None }); // …then a newer upload lands
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)));
 
     // Selection reset with the fresh screen: press fires *View route* (row 0 again), opening the
@@ -207,8 +220,8 @@ fn consecutive_uploads_replace_the_popup_most_recent_wins() {
 #[test]
 fn a_second_upload_does_not_stack_a_second_popup() {
     let mut app = idle_app();
-    app.notify_route_uploaded(10, false, None);
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 10, replaced: false, elevation: None });
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     app.apply_gesture(Gesture::Back); // dismiss the (single) popup
     assert!(matches!(app.top_screen(), Screen::Home(_)), "one dismiss clears it — nothing was stacked");
 }
@@ -226,7 +239,7 @@ fn an_upload_replaces_the_manual_swap_prompt_too() {
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "the manual swap prompt is up");
 
     // An upload lands: the incoming popup replaces the manual prompt in place (same rule).
-    app.notify_route_uploaded(12, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "still the swap shape, now the received one");
 
     // Proof it's the received popup, not the manual prompt: it auto-closes (a manual prompt
@@ -241,7 +254,7 @@ fn an_upload_replaces_the_manual_swap_prompt_too() {
 fn auto_close_timeout_is_a_dismiss() {
     let mut app = idle_app();
     app.advance_animations(InputClock(1_000)); // pin the popup's open anchor
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     let _ = app.take_dirty();
 
     app.advance_animations(InputClock(1_000 + UPLOAD_POPUP_TIMEOUT_MS - 1));
@@ -260,7 +273,7 @@ fn the_popup_arms_a_timed_wake_for_its_deadline() {
     // deadline through the shared tick machinery, no new timer path.
     let mut app = idle_app();
     app.advance_animations(InputClock(2_000));
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     app.advance_animations(InputClock(2_000)); // same-frame re-poll now that the popup is up
     assert_eq!(app.ms_until_next_wake(2_000), Some(UPLOAD_POPUP_TIMEOUT_MS), "the whole window remains");
     app.advance_animations(InputClock(2_000 + 10_000));
@@ -275,7 +288,7 @@ fn a_prompt_is_dropped_not_queued_while_the_passkey_card_shows() {
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(123), paired: false });
     assert!(app.passkey_card_up());
 
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the card outranks — no popup lands");
 
     // Pairing ends: the card closes and the suppressed prompt must NOT surface (dropped, the
@@ -288,7 +301,7 @@ fn a_prompt_is_dropped_not_queued_while_the_passkey_card_shows() {
 #[test]
 fn a_passkey_replaces_an_open_route_popup() {
     let mut app = idle_app();
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)));
 
     // Pairing starts: the card outranks — it replaces the popup rather than stacking over it.
@@ -322,7 +335,7 @@ fn a_passkey_does_not_remove_the_manual_swap_prompt() {
 fn a_charging_hold_defers_the_prompt_a_tick() {
     let mut app = idle_app();
     app.set_hold_progress(0.5); // a hold is charging (the two-plane firmware's live feed)
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no host-pushed screen lands mid-hold");
 
     // The hold settles; the next pass delivers the pending prompt.
@@ -335,7 +348,7 @@ fn a_charging_hold_defers_the_prompt_a_tick() {
 fn a_charging_hold_defers_the_auto_close_too() {
     let mut app = idle_app();
     app.advance_animations(InputClock(1_000));
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
 
     // The deadline passes mid-hold: never pop a screen out from under a charging hold.
     app.set_hold_progress(0.7);
@@ -352,7 +365,7 @@ fn a_charging_hold_defers_the_auto_close_too() {
 #[test]
 fn a_route_deleted_under_the_popup_dismisses_on_action() {
     let mut app = idle_app();
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)));
 
     // The phone deletes the route while the popup is open: the rescan removes id 11 and the
@@ -373,7 +386,7 @@ fn a_pending_deferred_prompt_for_a_deleted_route_is_dropped() {
     // resolves in the catalog, so the prompt is dropped entirely.
     let mut app = idle_app();
     app.set_hold_progress(0.5);
-    app.notify_route_uploaded(11, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     let r = routes();
     app.set_routes_with_ids(&[r[0].clone(), r[2].clone()], &[10, 12]);
 
@@ -402,7 +415,7 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
     // A route lands while idle: the "ROUTE RECEIVED" popup covers the overview.
-    app.notify_route_uploaded(12, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)));
 
     // Encoder down (the hold starts charging on the popup)…
@@ -415,7 +428,7 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     // The encoder hold crosses its 500 ms threshold — over the Route overview now. It was aimed at
     // the popup, so it must be cancelled by the transition, not delivered as a delete.
     app.handle_input(InputClock(1_700), &mut keys(&[]));
-    assert_eq!(app.take_route_delete(), None, "a stray hold must never delete the previewed route");
+    assert_eq!(took_route_delete(&mut app), None, "a stray hold must never delete the previewed route");
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
     // And the eventual release stays silent — no surprise Press either.
@@ -427,7 +440,7 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     app.apply_gesture(Gesture::Turn(1));
     app.handle_input(InputClock(2_000), &mut keys(&[down(Button::Encoder)]));
     app.handle_input(InputClock(2_600), &mut keys(&[]));
-    assert_eq!(app.take_route_delete(), Some(11), "a real hold on the overview still requests its delete");
+    assert_eq!(took_route_delete(&mut app), Some(11), "a real hold on the overview still requests its delete");
 }
 
 /// The same rule holds within one recognition batch: a `Hold` recognised *behind* the
@@ -440,7 +453,7 @@ fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
     app.apply_gesture(Gesture::BackHold);
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Turn(1));
-    app.notify_route_uploaded(12, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)));
 
     // One long-unpolled frame delivers everything at once: the encoder went down at 1 000; at
@@ -449,7 +462,7 @@ fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
     app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Encoder)]));
     app.handle_input(InputClock(1_700), &mut keys(&[down(Button::Back), up(Button::Back)]));
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "Back dismissed the popup");
-    assert_eq!(app.take_route_delete(), None, "the batched stray hold is dropped too");
+    assert_eq!(took_route_delete(&mut app), None, "the batched stray hold is dropped too");
 }
 
 /// The two-plane firmware's surface for the same rule: a gesture that changes the screen stack
@@ -471,6 +484,6 @@ fn an_upload_for_an_unknown_id_is_dropped() {
     // Defensive: the ordering contract says the rescan lands first, so an unknown id means the
     // route vanished again already — advisory, drop it.
     let mut app = idle_app();
-    app.notify_route_uploaded(99, false, None);
+    app.apply_event(obc_app::HostEvent::RouteUploaded { id: 99, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no popup for an id the catalog doesn't hold");
 }
