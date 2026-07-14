@@ -35,6 +35,7 @@ pub mod sensors;
 pub mod settings;
 pub mod stat_fields;
 pub mod trip;
+pub(crate) mod ui_runtime;
 pub mod wall_clock;
 
 pub use activity::{Activity, DfuAction, Mode, NavRequest, TrackAction};
