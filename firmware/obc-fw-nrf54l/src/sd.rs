@@ -46,7 +46,7 @@ use embedded_sdmmc::{
 use heapless::{String, Vec};
 use obc_app::{
     decode_route_crcs, decode_route_retention, decode_store_epoch, decode_synced_rides, encode_route_crcs,
-    encode_route_retention, encode_store_epoch, encode_synced_rides, RouteCrcs, RouteRetentionMeta,
+    encode_route_retention, encode_store_epoch, encode_synced_rides, Retention, RouteCrcs, RouteRetentionMeta,
     RouteRetentionStore, SyncedRides, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, ROUTE_CRCS_MAX_LEN,
     ROUTE_RETENTION_MAX_LEN, STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
@@ -874,13 +874,20 @@ impl Storage {
         out
     }
 
-    /// Set route `id`'s whole retention meta in the sidecar (the app's `setRouteRetention` command,
-    /// S4), persisting only when it actually changed. Read-modify-write within the call.
-    pub fn set_route_retention(&mut self, id: u16, meta: RouteRetentionMeta) {
+    /// Set route `id`'s retention **level** in the sidecar (the app's `setRouteRetention` command,
+    /// §4.4 cmd 6 / epic #638 S4) **without touching `last_used`** — changing retention never resets
+    /// the usage clock. Read-modify-write within the call; persists (truncating rewrite) only when the
+    /// level actually changed, and returns whether it did so the caller bumps the route store revision
+    /// on a real change only (setting the same value twice is a no-op — the idempotence pin). A row
+    /// that reverts to `Never` with `last_used == 0` is dropped (the empty default reads that way).
+    pub fn set_route_retention_level(&mut self, id: u16, retention: Retention) -> bool {
         let mut store = self.load_route_retention();
-        if store.set(id, meta) {
+        let meta = RouteRetentionMeta { retention, last_used_utc: store.get(id).last_used_utc };
+        let changed = store.set(id, meta);
+        if changed {
             self.write_route_retention(&store);
         }
+        changed
     }
 
     /// Stamp route `id`'s `last_used` in the sidecar (auto-expiry epic #638, S3 — the sweep's

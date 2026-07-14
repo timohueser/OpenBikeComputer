@@ -1,17 +1,22 @@
 //! The `routeList` / `rideList` object codecs — the CoC-downloaded catalogs that outgrow the
 //! 512-byte ATT attribute cap. Shared shape: a 6-byte [`ListHeader`] + fixed entries, so entry `k`
-//! sits at `6 + entry_len·k` — O(1) indexing, no string scanning. In protocol v2 the two list types
-//! **differ in entry length** (`routeList` 76 bytes with its content CRC, `rideList` 72), so the
-//! entry size is per-type ([`RouteListEntry::ENTRY_LEN`] / [`RideListEntry::ENTRY_LEN`]) and travels
-//! on the wire in the header's `entry_len` byte — there is no single shared entry-length constant.
+//! sits at `6 + entry_len·k` — O(1) indexing, no string scanning. In protocol v2 the list types
+//! **differ in entry length** (`routeList` 84 bytes, `rideList` 72, `tripList` 76), so the entry size
+//! is per-type ([`RouteListEntry::ENTRY_LEN`] / [`RideListEntry::ENTRY_LEN`]) and travels on the wire
+//! in the header's `entry_len` byte — there is no single shared entry-length constant.
 
 use crate::descriptor::DescriptorError;
 
-/// `routeList` entry size (protocol v2): 72 v1 bytes + the trailing content `crc32`.
-const ROUTE_ENTRY_LEN: usize = 76;
+/// `routeList` entry size: 76 v2 bytes (72 v1 fields + content `crc32`) + the auto-expiry tail
+/// (`expires_at u32 · retention u8 · reserved u8[3]`, epic #638 S4 #644). The tail sits **after** the
+/// content `crc32` — it is device-computed volatile state (recomputed each encode), never part of the
+/// route-content fingerprint — so the 76-byte v2 prefix stays byte-identical and readers that step by
+/// `entry_len` decode the prefix they know.
+const ROUTE_ENTRY_LEN: usize = 84;
 /// `rideList` entry size — unchanged from v1.
 const RIDE_ENTRY_LEN: usize = 72;
-/// `tripList` entry size (spec §7.4) — mirrors `routeList` (76 bytes, same trailing content `crc32`).
+/// `tripList` entry size (spec §7.4) — mirrors `routeList`'s v2 core (76 bytes, same trailing content
+/// `crc32`); it carries **no** expiry tail (trips have no per-object retention).
 const TRIP_ENTRY_LEN: usize = 76;
 
 /// The smallest entry length any list type uses (`rideList` at [`RideListEntry::ENTRY_LEN`]) — the
@@ -99,9 +104,17 @@ impl ListHeader {
     }
 }
 
-/// One `routeList` entry — from the stored OBCR header. **76 bytes in protocol v2** (up from 72):
-/// the trailing `crc32` is the whole-object CRC-32 of the stored OBCR bytes, letting the app verify
-/// *what* a linked id points at (identity-verified badges) and adopt an identical unlinked copy.
+/// One `routeList` entry — from the stored OBCR header. **84 bytes** (protocol v2 core 76 + the
+/// auto-expiry tail, epic #638 S4 #644). The `crc32` at offset 72 is the whole-object CRC-32 of the
+/// stored OBCR bytes — the content fingerprint letting the app verify *what* a linked id points at
+/// (identity-verified badges) and adopt an identical unlinked copy.
+///
+/// The two trailing fields — **`expires_at`** and **`retention`** — are device-computed **volatile**
+/// state, recomputed on every list build (`expires_at = last_used + retention days`; extend-on-use
+/// moves it), so they are deliberately placed **after** the content `crc32` and are **not** covered by
+/// it: a route whose expiry merely ticked must not read as "content changed". The 76-byte v2 prefix is
+/// byte-identical to before, and a reader that steps by `entry_len` (§7.4) decodes just the prefix it
+/// knows — the designed additive path; the list header `version` stays `2` (unchanged).
 ///
 /// ```text
 ///   object_id       u16
@@ -114,7 +127,10 @@ impl ListHeader {
 ///   name_len        u8   ≤ 48
 ///   name            char[48]  UTF-8, zero-padded
 ///   reserved        u8   = 0
-///   crc32           u32  whole-object CRC-32 of the stored OBCR bytes · 0 = unknown
+///   crc32           u32  whole-object CRC-32 of the stored OBCR bytes · 0 = unknown   (offset 72)
+///   expires_at      u32  unix seconds the route auto-deletes at · 0 = never / not yet started  (76)
+///   retention       u8   the stored retention enum value (0 never … 5 = 2 months)     (offset 80)
+///   reserved        u8[3]  = 0                                                          (offset 81)
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RouteListEntry<'a> {
@@ -131,12 +147,21 @@ pub struct RouteListEntry<'a> {
     /// against its `uploadedCRC32` record. `0` = unknown (e.g. a side-loaded file not yet
     /// fingerprinted; the device fills it lazily at first list build).
     pub crc32: u32,
+    /// The UTC unix-seconds instant the route auto-deletes at (`last_used + retention days`), computed
+    /// at list-encode time (auto-expiry epic #638 S4). `0` = never (a `Never` retention) or not yet
+    /// started (`last_used == 0`). **Device-computed volatile state — outside the content `crc32`.**
+    pub expires_at: u32,
+    /// The stored retention enum byte (`0` never · `1` 1 day · `2` 1 week · `3` 2 weeks · `4` 1 month ·
+    /// `5` 2 months), mirroring `obc_app::Retention`. Set by the `setRouteRetention` command (§4.4 cmd
+    /// 6). **Device-computed volatile state — outside the content `crc32`.**
+    pub retention: u8,
 }
 
 impl<'a> RouteListEntry<'a> {
     /// The name cap (matches the OBCR route-name field).
     pub const MAX_NAME: usize = 48;
-    /// This entry's on-wire size (protocol v2). Carried in the list header's `entry_len`.
+    /// This entry's on-wire size (protocol v2 core + the auto-expiry tail). Carried in the list
+    /// header's `entry_len`.
     pub const ENTRY_LEN: usize = ROUTE_ENTRY_LEN;
     /// Sentinel for an unknown content CRC (side-loaded file not yet fingerprinted).
     pub const CRC_UNKNOWN: u32 = 0;
@@ -155,6 +180,10 @@ impl<'a> RouteListEntry<'a> {
         b[23..23 + n].copy_from_slice(&self.name[..n]);
         // b[23 + n .. 71] zero padding; b[71] reserved = 0.
         b[72..76].copy_from_slice(&self.crc32.to_le_bytes());
+        // The auto-expiry tail (epic #638 S4) — outside the content crc32.
+        b[76..80].copy_from_slice(&self.expires_at.to_le_bytes());
+        b[80] = self.retention;
+        // b[81..84] reserved = 0.
         b
     }
 
@@ -174,6 +203,8 @@ impl<'a> RouteListEntry<'a> {
             waypoint_count: u16::from_le_bytes([data[20], data[21]]),
             name: &data[23..23 + name_len],
             crc32: u32::from_le_bytes([data[72], data[73], data[74], data[75]]),
+            expires_at: u32::from_le_bytes([data[76], data[77], data[78], data[79]]),
+            retention: data[80],
         })
     }
 }
