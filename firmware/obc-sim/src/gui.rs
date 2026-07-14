@@ -1,12 +1,12 @@
 //! The eframe host window — the device "screen".
 //!
 //! The desktop counterpart to the firmware's main loop: each frame it polls the
-//! [`SimLocationSource`], advances the shared [`obc_app::App`], renders the
-//! firmware-identical path into the [`Present`] backend's resident device-64 frame, pushes it
-//! through the [`obc_platform::DisplayDriver`] seam (the same seam the firmware presents through),
-//! and blits the reconstructed texture to a GPU texture at integer scale (nearest-neighbor, so the
-//! pixel grid stays crisp). The firmware does the same with a real GPS driver and the LS021B7DD02
-//! panel. Because the GUI now goes through the device-64 backend, the interactive window shows the
+//! [`SimLocationSource`], advances the shared [`obc_app::App`], renders the firmware-identical
+//! path into the resident device-64 frame it owns next to its [`Present`] presenter (the display
+//! contracts' render-vs-present split — the same shape as the firmware's map plane), presents it
+//! through the presenter's self-diffing engine, and blits the reconstructed texture to a GPU
+//! texture at integer scale (nearest-neighbor, so the pixel grid stays crisp). The firmware does
+//! the same with a real GPS driver and the LS021B7DD02 panel. Because the GUI now goes through the device-64 backend, the interactive window shows the
 //! panel's true 64-colour gamut; `--true-color` (the un-quantized reference) stays on the headless
 //! `--png` path.
 //!
@@ -19,7 +19,7 @@ use eframe::egui;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::{App, AppState, CameraMode, Dirty, HostCommand, HostEvent};
 use obc_host_core::{fill_nav_preview, HostLoop};
-use obc_platform::{DisplayDriver, FbDevice64};
+use obc_platform::FbDevice64;
 use obc_ports::{Button, Fix, InputClock, RideClock, Sensors, SettingsStore};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 use obc_route::RouteReader;
@@ -129,9 +129,11 @@ struct SimGui {
     /// each settings change so they survive a relaunch.
     settings_store: FileSettingsStore,
     loc: SimLocationSource,
-    /// The simulator's [`obc_platform::DisplayDriver`] backend: the app renders the whole frame into
-    /// its resident device-64 plane ([`fb_mut`](DisplayDriver::fb_mut)), then [`present`] self-diffs
-    /// it (pushing only the changed spans into the uploaded texture) under an exact-diff oracle. Its
+    /// The resident device-64 frame the app renders the whole frame into — owned by the GUI next
+    /// to its presenter (the contracts' borrow split); runtime-sized because the device resolution
+    /// is a CLI knob (`--size`).
+    fb: Vec<u8>,
+    /// The simulator's presenter: [`Present::present_now`] self-diffs the resident frame (pushing only the changed spans into the uploaded texture) under an exact-diff oracle. Its
     /// [`stats`](Present::stats) feed the panel.
     present: Present,
     dev_w: u32,
@@ -273,6 +275,7 @@ impl SimGui {
             tracks,
             settings_store,
             loc,
+            fb: vec![0u8; (args.width * args.height) as usize],
             present: Present::new(args.width, args.height),
             dev_w: args.width,
             dev_h: args.height,
@@ -493,7 +496,7 @@ impl SimGui {
         // pack), exactly as the firmware's map plane draws into its `FbDevice64`.
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
-        let mut fbdev = FbDevice64::new(self.present.fb_mut(), dev_w, dev_h);
+        let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
         let mut stats = self.app.render_frame(&mut fbdev, &reader, route.as_ref(), dev_w as f32, dev_h as f32, |c| {
             Rgb565::from(RawU16::new(c))
         });
@@ -503,11 +506,12 @@ impl SimGui {
         // doesn't gate drawing).
         self.last_dirty = self.app.take_dirty();
 
-        // Present through the seam: the backend self-diffs the resident frame and pushes only the
-        // changed spans into its reconstructed texture (under the exact-diff oracle). Uploading *that*
-        // — not a whole-frame copy — means a diff bug shows as a stale row on glass, not just a failed
-        // assert. The async seam completes synchronously on the host, driven by a minimal block-on.
-        pollster::block_on(self.present.present(None));
+        // Present: the presenter self-diffs the resident frame and pushes only the changed spans
+        // into its reconstructed texture (under the exact-diff oracle). Uploading *that* — not a
+        // whole-frame copy — means a diff bug shows as a stale row on glass, not just a failed
+        // assert. `present_now` is the same engine the display-contract impls delegate to (the
+        // contracts type geometry at compile time; the GUI's device size is the `--size` knob).
+        self.present.present_now(&self.fb, None);
         let image = egui::ColorImage::from_rgb([dev_w as usize, dev_h as usize], self.present.texture());
         let opts = egui::TextureOptions::NEAREST;
         match &mut self.texture {

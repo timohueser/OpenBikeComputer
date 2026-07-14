@@ -4,7 +4,7 @@
 //! what the project ships on — the **only** display path. This crate ports the
 //! shared `obc-app` onto it (load route → ride → save the ride object). Nothing app-facing lives here:
 //! `obc-render` / `obc-app` / `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic;
-//! only the nRF HAL wiring + the display `DisplayDriver` backends are board-specific.
+//! only the nRF HAL wiring + the display presenter backend are board-specific.
 //!
 //! **The `ble` build** (`cargo run --release --no-default-features --features ble`): the same
 //! firmware with the BLE stack folded in (`ble/`: MPSL, the SoftDevice Controller, TrouBLE) —
@@ -49,7 +49,8 @@
 //!   GPIO on the P2 header") — no soldering on current board revisions. The panel's logic wants
 //!   3–5 V, so the DK I/O rail is raised from its 1.8 V default to **3.3 V** (VDDM, also in the
 //!   Board Configurator — HW guide §2.2.1). The display path presents through the board-agnostic
-//!   `DisplayDriver` seam (`obc_platform::display`), so the rendering stack never couples to the panel.
+//!   display contracts (`obc_platform::display_contracts`), so the rendering stack never couples to
+//!   the panel.
 //!   (SERIAL00 / SPIM00 — the only 32 MHz instance — is now unused; the FLPR needs no SPI bus.)
 //!
 //! ## microSD SPIM — map/route/track storage
@@ -113,7 +114,7 @@
 
 mod sd;
 // LS021 FLPR backend — the display: `main.rs` runs the real app on the reflective LS021
-// panel via the FLPR (the VPR coprocessor). The FLPR `DisplayDriver` backend + launch live in
+// panel via the FLPR (the VPR coprocessor). The FLPR presenter backend + launch live in
 // `ls021_flpr`; `com::com_task` free-runs the COM lines (the FLPR drives frames; only the COM
 // electrode square wave stays on the M33).
 mod com;
@@ -128,7 +129,7 @@ mod com_hw;
 // double-consume error.
 #[cfg(all(feature = "com-hw", feature = "debug-uart"))]
 compile_error!("`com-hw` and `debug-uart` both claim P1.04/P1.05 — the hardware-COM build is the production low-power path, not the host-feed dev build");
-// The LS021/FLPR panel — this crate's `obc_platform::DisplayDriver` backend (the impl is folded in
+// The LS021/FLPR panel — this crate's display-contract presenter backend (the impls are folded in
 // at the bottom of the module), the single screen-write interface the map plane drives through
 // (`fb_mut` + `present`). The seam itself + the other backend (the simulator) live in obc-platform.
 mod ls021_flpr;
@@ -201,20 +202,21 @@ use embassy_sync::mutex::Mutex;
 // The map/ride half of obc-app, alongside the shared `InputPlane`.
 use obc_app::InputPlane;
 use obc_app::{App, AppState};
-use obc_platform::{ButtonInput, RowDiff, FRAME_H, FRAME_W};
+use obc_platform::ls021::{RowDiff, FRAME_H, FRAME_W};
+use obc_platform::ButtonInput;
 use obc_reader::{MapCache, MapTables};
 use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
 use obc_route::RouteCache;
 
-// LS021 FLPR backend: the resident-framebuffer `DisplayDriver` backend + its launch, and the
+// LS021 FLPR backend: the resident-framebuffer presenter backend + its launch, and the
 // free-running COM driver. The M33 `com_task` is the DK/default path; the `com-hw` build drives COM
 // from hardware instead, so the task isn't spawned there.
 #[cfg(not(feature = "com-hw"))]
 use com::com_task;
 #[cfg(feature = "com-hw")]
 use com_hw::HwCom;
-use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Ls021Flpr};
+use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Frame64, Ls021Flpr};
 // The two planes' entry points `main` reaches: the input plane's executor + task + gesture channel,
 // and the map plane's display handle + boot-fault screen. (Unqualified so the input-plane items don't
 // read against the `input_plane` value binding constructed below — they're different namespaces, but
@@ -929,16 +931,19 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // The resident RGB222 plane the app renders into and the FLPR packs to the wire, plus the
-            // self-diffing present store the masked push derives its dirty rows from.
-            // SAFETY: sole references to FB / ROW_DIFF; held by `panel` for the rest of the program (the
-            // map plane is their only owner), never aliased.
+            // The resident RGB222 plane the app renders into and the FLPR packs to the wire —
+            // wrapped as the contracts' `Frame64` and owned by the map plane *next to* the
+            // presenter — plus the self-diffing present store the masked push derives its dirty
+            // rows from.
+            // SAFETY: sole references to FB / ROW_DIFF; held by the map plane's frame/panel pair
+            // for the rest of the program (the map plane is their only owner), never aliased.
             let fb: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FB) };
             let diff: &'static mut RowDiff<FRAME_H> = unsafe { &mut *core::ptr::addr_of_mut!(ROW_DIFF) };
-            let mut panel = Ls021Flpr::new_fb(fb, diff);
+            let frame = Frame64::new(fb);
+            let mut panel = Ls021Flpr::new(diff);
             // Datasheet Initial #0: an INTB-framed all-black frame (FB boots zeroed = black) while COM is
             // still held `Lo`. Then T4 ≥ 30 µs, then start COM — from here it free-runs forever.
-            panel.push_frame().await;
+            panel.push_frame(&frame).await;
             Timer::after_micros(50).await;
 
             // The shared `InputPlane`: `input_task` recognises + animates the bulge under this lock; the
@@ -968,6 +973,7 @@ async fn main(_spawner: Spawner) {
             hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender())));
             info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven, #219)");
             MapDisplay {
+                frame,
                 panel,
                 input_plane,
                 last_overlay_span: None,

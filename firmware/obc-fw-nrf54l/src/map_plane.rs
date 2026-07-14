@@ -12,9 +12,11 @@
 //!
 //! The FLPR owns the panel outright (whole-frame scan per push → no shared bus), so the map plane
 //! pushes both the clean frame and the bulge itself; the input plane only recognises gestures. The
-//! seam it goes through, [`DisplayDriver`](obc_platform::DisplayDriver), lives in obc-platform and is
-//! the deliberate panel-swap point — the simulator is its second backend, so the abstraction stays
-//! honest off-device too.
+//! seam it goes through is the generic display contracts (`obc_platform::display_contracts`): the
+//! map plane owns the ([`Frame64`], [`Ls021Flpr`]) pairing — the frame *next to* the presenter, so
+//! render (`&mut Frame64`) and present (`&Frame64` across the whole FLPR scan) are statically
+//! exclusive — and the simulator presenter is the contracts' second backend, so the abstraction
+//! stays honest off-device too.
 //!
 //! The one piece shared with the input plane is the `&'static BlockingMutex<…, RefCell<InputPlane>>`
 //! handle both take as a parameter (constructed and owned by `main`): the input plane advances the
@@ -28,29 +30,31 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_time::Instant;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::InputPlane;
-// `Band` is the frame-absolute draw view the map plane's `present_overlay` drawer paints the
-// hold bulge into.
-use obc_platform::{Band, DisplayDriver, FbDevice64, OverlayRegion, FRAME_H, FRAME_W};
+// `Band` is the frame-absolute draw view the map plane's overlay drawer paints the hold bulge into;
+// `RowDamage`/`RowWindow` are the LS021 pairing's damage/region vocabulary behind the contracts.
+use obc_platform::display_contracts::{OverlayPresenter, Presenter};
+use obc_platform::ls021::{RowDamage, RowWindow, FRAME_H, FRAME_W};
+use obc_platform::{Band, FbDevice64};
 use obc_render::RenderStats;
 
 #[cfg(feature = "com-hw")]
 use crate::com_hw::HwCom;
-use crate::ls021_flpr::{relaunch_flpr, Ls021Flpr};
+use crate::ls021_flpr::{relaunch_flpr, Frame64, Ls021Flpr};
 
 // The hold-bulge's right-edge overlay **columns**. Both bulges erupt from the right screen edge ≤12 px
 // deep, so this fixed 16-px column band bounds them with margin. The map plane re-presents the bulge
-// through `DisplayDriver::present_overlay` over the clean framebuffer, addressing only the live bulge's
-// *rows* (`InputPlane::overlay_rows`: encoder ≈ 59–171, Back ≈ 182–246) — the FLPR the full-width rows
-// of that span (it has its own `MAX_OVERLAY_*` bound in `Ls021Flpr::push_overlay`).
+// through the presenter's `present_overlay` over the clean framebuffer, addressing only the live
+// bulge's *rows* (`InputPlane::overlay_rows`: encoder ≈ 59–171, Back ≈ 182–246) — the FLPR the
+// full-width rows of that span (the presenter has its own `MAX_OVERLAY_*` scratch bound).
 /// First overlay column: the rightmost 16 px (bulge depth ≤12 + margin).
 const OVL_X0: u16 = (FRAME_W - 16) as u16;
 /// Overlay window width (columns).
 const OVL_W: u16 = 16;
 
 // The live-bulge "present the rows *around* it" discipline lives **inside** the self-diffing present:
-// the map plane passes the bulge's row span to the seam's `DisplayDriver::present(exclude)`, which
-// clips it out of the changed-row spans it pushes (`obc_platform::RowDiff::diff_clipped`), leaving
-// those rows for the map plane's own `MapDisplay::present_bulge`.
+// the map plane presents with `damage_around(bulge window)`, which clips the bulge's rows out of the
+// changed-row spans it pushes (`obc_platform::ls021::RowDiff::diff_clipped`), leaving those rows for
+// the map plane's own `MapDisplay::present_bulge`.
 
 /// What [`MapDisplay::render_present`] reports for one map frame: whether the push reached glass
 /// (`false` → a transport fault to retry, #66), the render's [`RenderStats`], and the render / push
@@ -74,8 +78,8 @@ pub(crate) struct FramePresent {
 pub(crate) async fn show_boot_fault(display: &mut MapDisplay, fault: obc_app::BootFault) {
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
     display
-        .render_present(None, |d| {
-            let mut fbdev = FbDevice64::new(d.fb_mut(), FRAME_W as u32, FRAME_H as u32);
+        .render_present(None, |f| {
+            let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
             obc_app::draw_boot_fault(&mut fbdev, FRAME_W as i32, FRAME_H as i32, color_fn, fault);
             RenderStats::default()
         })
@@ -90,10 +94,14 @@ const PUSH_FAILS_PER_RELAUNCH: u8 = 3;
 /// out) before the device stops touching the FLPR and degrades to the heartbeat idle (#349).
 const MAX_CONSEC_RELAUNCHES: u8 = 3;
 
-/// The map plane's display handle: the `Ls021Flpr` panel owned outright (whole-frame scan per push →
-/// no shared bus), plus the shared `InputPlane` it composites the bulge from and the gate/source GPIO
-/// lines it must keep driven for the program's life.
+/// The map plane's display handle: the (`Frame64`, `Ls021Flpr`) pairing owned outright — the
+/// resident frame *next to* its presenter, per the contracts' borrow model; whole-frame scan per
+/// push → no shared bus — plus the shared `InputPlane` it composites the bulge from and the
+/// gate/source GPIO lines it must keep driven for the program's life.
 pub(crate) struct MapDisplay {
+    /// The resident device-64 frame (`main`'s `FB` static). Rendering borrows it mutably; a base
+    /// present shares it with the FLPR for the whole scan.
+    pub(crate) frame: Frame64,
     pub(crate) panel: Ls021Flpr<'static>,
     pub(crate) input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
     /// The last live bulge's rows, so the trailing clear wipes exactly them, not the whole hint band.
@@ -162,21 +170,22 @@ impl MapDisplay {
         self.input_plane.lock(|c| c.borrow_mut().cancel_holds());
     }
 
-    /// Render the clean frame into the owned panel and **self-diff** it to glass: push only the rows
-    /// that changed since the last present. With a live bulge, the seam's `present(exclude)` clips its
-    /// rows out (`overlay_span`) and leaves them for `present_bulge` — the FLPR's ~44 ms full-frame
-    /// scan would otherwise blank the bulge for that whole scan (the pop-flicker), and even a partial
-    /// clean push would flash it off. No shared bus: the map plane owns every push here. Marked
-    /// `#[inline(always)]` with a generic (non-`dyn`) `render` so the deep render folds into the
-    /// caller's frame rather than nesting another (the stack regression).
+    /// Render the clean frame into the owned `Frame64` and **self-diff** it to glass: push only the
+    /// rows that changed since the last present. With a live bulge, presenting with
+    /// `damage_around(bulge window)` clips its rows out (`overlay_span`) and leaves them for
+    /// `present_bulge` — the FLPR's ~44 ms full-frame scan would otherwise blank the bulge for that
+    /// whole scan (the pop-flicker), and even a partial clean push would flash it off. No shared
+    /// bus: the map plane owns every push here. Marked `#[inline(always)]` with a generic
+    /// (non-`dyn`) `render` so the deep render folds into the caller's frame rather than nesting
+    /// another (the stack regression).
     #[inline(always)]
     pub(crate) async fn render_present(
         &mut self,
         overlay_span: Option<(u16, u16)>,
-        mut render: impl FnMut(&mut dyn DisplayDriver) -> RenderStats,
+        mut render: impl FnMut(&mut Frame64) -> RenderStats,
     ) -> FramePresent {
         let t_render = Instant::now();
-        let stats = render(&mut self.panel);
+        let stats = render(&mut self.frame);
         let render_us = t_render.elapsed().as_micros();
         if self.degraded {
             // Terminal FLPR-down mode (#349): don't spin a frame deadline against a dead core —
@@ -186,11 +195,13 @@ impl MapDisplay {
             return FramePresent { ok: true, stats, render_us, push_us: 0 };
         }
         let t_push = Instant::now();
-        // Self-diffing present through the seam, clipped around a live bulge's rows so
-        // `present_bulge` owns them (issue #163/#201/#345). The await frees the M33 for the whole
-        // scan (#347) — and suspending the map plane here is exactly what guarantees the
-        // framebuffer stays untouched while the FLPR reads it.
-        let ok = self.panel.present(overlay_span).await;
+        // Self-diffing present through the contracts, clipped around a live bulge's rows so
+        // `present_bulge` owns them (issue #163/#201/#345). This is board-composition-edge code for
+        // the concrete pairing, so it names the pairing's damage type directly (generic hosts go
+        // through the neutral constructors). The await frees the M33 for the whole scan (#347) —
+        // and the shared `&self.frame` borrow held across it (plus the map plane being suspended
+        // here) is what guarantees the framebuffer stays untouched while the FLPR reads it.
+        let ok = self.panel.present(&self.frame, RowDamage::SelfDiff { exclude: overlay_span }).await.is_ok();
         if !ok {
             // The push didn't reach glass (a stalled FLPR), but the self-diffing present already
             // advanced its row-hash store to this frame — so the caller's latched `pending_map_redraw`
@@ -226,7 +237,7 @@ impl MapDisplay {
         }
         if let Some((y0, rows)) = overlay_span {
             let t_push = Instant::now();
-            let ok = Self::composite_push(&mut self.panel, self.input_plane, y0, rows).await;
+            let ok = Self::composite_push(&mut self.panel, &mut self.frame, self.input_plane, y0, rows).await;
             let push_us = t_push.elapsed().as_micros();
             self.last_overlay_span = Some((y0, rows));
             if ok {
@@ -241,7 +252,7 @@ impl MapDisplay {
             // map restored under the just-gone bulge (the self-diffing map present may have skipped
             // them, so this is what actually wipes the bulge — see the method docs). Drop
             // `last_overlay_span` only when the push lands, so a stalled FLPR retries next frame.
-            let ok = Self::composite_push(&mut self.panel, self.input_plane, y0, rows).await;
+            let ok = Self::composite_push(&mut self.panel, &mut self.frame, self.input_plane, y0, rows).await;
             if ok {
                 self.last_overlay_span = None;
             } else {
@@ -251,23 +262,25 @@ impl MapDisplay {
         }
     }
 
-    /// One overlay composite + push of the bulge band's rows `[y0, y0+rows)` through the seam —
-    /// shared by the live-bulge repaint and the trailing clear above. An associated fn (not a
-    /// closure — closures can't await) taking the panel + plane apart so `present_bulge` can call
-    /// it around its `&mut self` borrows.
+    /// One overlay composite + push of the bulge band's rows `[y0, y0+rows)` through the contracts
+    /// — shared by the live-bulge repaint and the trailing clear above. An associated fn (not a
+    /// closure — closures can't await) taking the frame + panel + plane apart so `present_bulge`
+    /// can call it around its `&mut self` borrows (the borrows split at the field level).
     #[inline(always)]
     async fn composite_push(
         panel: &mut Ls021Flpr<'static>,
+        frame: &mut Frame64,
         input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
         y0: u16,
         rows: u16,
     ) -> bool {
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
         panel
-            .present_overlay(OverlayRegion { x0: OVL_X0, y0, w: OVL_W, rows }, &mut |band: &mut Band| {
+            .present_overlay(frame, RowWindow { x0: OVL_X0, y0, w: OVL_W, rows }, |band: &mut Band| {
                 input_plane.lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
             })
             .await
+            .is_ok()
     }
 
     /// Fold one push outcome into the **relaunch escalation** (#349) — every FLPR push (map present,
