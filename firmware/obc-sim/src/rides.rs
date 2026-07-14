@@ -58,7 +58,8 @@ impl RideStore {
                 let Some(id) = ride_id_in(&p) else { continue };
                 if let Ok(bytes) = std::fs::read(&p) {
                     if let Ok(info) = RideInfo::read(&SliceSource(&bytes)) {
-                        rows.push((id, p, RideSummary::from_info(&info, synced.contains(id))));
+                        let sum = RideSummary::from_info(&info, synced.contains(id), synced.synced_at(id));
+                        rows.push((id, p, sum));
                     }
                 }
             }
@@ -114,6 +115,27 @@ impl RideStore {
             .unwrap_or_default()
     }
 
+    /// Mark ride `id` as synced at `utc` (the phone `ackRides` stand-in, epic #638 S3): insert it
+    /// into the sidecar with a `synced_at` stamp so the auto-expiry sweep can later delete it. A
+    /// no-op if already synced (first-sync time is kept). Rescans so the summary reflects it.
+    pub fn mark_synced(&mut self, id: u16, utc: u32) {
+        let mut set = self.load_synced();
+        if set.insert(id, utc) {
+            self.save_synced(&set);
+            self.rescan();
+        }
+    }
+
+    /// Stamp a **legacy** synced-without-timestamp ride's `synced_at` (the sweep's countdown-start,
+    /// [`StampRideSynced`](obc_app::HostCommand::StampRideSynced)). Only ever fills a `0` stamp.
+    pub fn stamp_synced_at(&mut self, id: u16, utc: u32) {
+        let mut set = self.load_synced();
+        if set.stamp_synced_at(id, utc) {
+            self.save_synced(&set);
+            self.rescan();
+        }
+    }
+
     /// Read the synced-ride sidecar into a [`SyncedRides`] set (empty on a missing/torn file).
     fn load_synced(&self) -> SyncedRides {
         match std::fs::read(self.dir.join(SYNCED_SET)) {
@@ -152,6 +174,9 @@ impl obc_host_core::RideRepository for RideStore {
     /// A `Save` just wrote a fresh `RD{id}.ORD`; re-scan so it appears in the Rides menu live.
     fn refresh(&mut self) {
         self.rescan();
+    }
+    fn stamp_synced_at(&mut self, id: u16, utc: u32) {
+        self.stamp_synced_at(id, utc)
     }
 }
 

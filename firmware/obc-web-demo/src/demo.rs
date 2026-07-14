@@ -391,6 +391,7 @@ fn demo_rides() -> Vec<obc_app::RideSummary> {
         moving_time_s: mv,
         climb_m: climb,
         synced,
+        synced_at_utc: 0,
     };
     vec![
         mk("Grimsel Climb", 1_720_100_000, 48_200, 3 * 3600 + 40 * 60, 1620, true),

@@ -151,6 +151,7 @@ mod tests {
                 moving_time_s: 5,
                 climb_m: 1,
                 synced: false,
+                synced_at_utc: 0,
             },
             RideSummary {
                 name: Default::default(),
@@ -159,6 +160,7 @@ mod tests {
                 moving_time_s: 6,
                 climb_m: 2,
                 synced: true,
+                synced_at_utc: 0,
             },
         ];
         let mut repo = MemRideStore::new(rides);

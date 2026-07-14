@@ -18,6 +18,13 @@ use crate::{
     finish_nav_plan, ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackRepository, TripCatalog,
 };
 
+/// Feed the app the route catalog **with** its retention metas (epic #638, S3) — the shared re-feed
+/// after a scan/delete so the auto-expiry sweep always reads device-truth retention alongside the
+/// summaries. A retention-less repository returns empty metas → every route reads `Never`.
+fn feed_routes(app: &mut App, routes: &dyn RouteRepository) {
+    app.set_routes_with_meta(routes.catalog(), routes.ids(), &routes.retention_metas());
+}
+
 /// The shared host-loop state: the drain mailbox, the in-flight route plan (stepped once per pass),
 /// and the resident active-route parse. A host owns one for its lifetime.
 #[derive(Default)]
@@ -96,7 +103,7 @@ impl HostLoop {
         while let Some(cmd) = self.mailbox.pop() {
             match cmd {
                 HostCommand::RescanStore { .. } => {
-                    app.set_routes_with_ids(routes.catalog(), routes.ids());
+                    feed_routes(app, routes);
                     trips.rescan();
                     trips.refeed(app); // after the routes, so stage ids resolve
                     rides.refresh();
@@ -104,7 +111,7 @@ impl HostLoop {
                 }
                 HostCommand::DeleteRoute { id } => {
                     if routes.delete_by_id(id) {
-                        app.set_routes_with_ids(routes.catalog(), routes.ids());
+                        feed_routes(app, routes);
                     }
                 }
                 HostCommand::DeleteRide { id } => {
@@ -119,10 +126,14 @@ impl HostLoop {
                         routes.delete_by_id(rid);
                     }
                     if trips.delete_by_id(id) {
-                        app.set_routes_with_ids(routes.catalog(), routes.ids());
+                        feed_routes(app, routes);
                         trips.refeed(app);
                     }
                 }
+                // Auto-expiry sidecar stamps (epic #638, S3): apply to the host's retention store —
+                // the app already mirrored the value optimistically, so no re-feed is needed here.
+                HostCommand::StampRouteUsed { id, utc } => routes.stamp_route_used(id, utc),
+                HostCommand::StampRideSynced { id, utc } => rides.stamp_synced_at(id, utc),
                 HostCommand::CancelRoutePlan => self.nav = None,
                 HostCommand::PlanRoute(req) => {
                     self.nav = Some(NavPlan::start(&req, app.settings().bike_profile_idx));

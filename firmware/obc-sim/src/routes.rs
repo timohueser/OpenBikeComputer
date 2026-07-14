@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use obc_app::{Retention, RouteRetentionMeta, RouteRetentionStore};
 use obc_formats::io::SliceSource;
 use obc_route::gpx_to_obcr;
 use obc_route::{RouteStats, RouteSummary};
@@ -37,6 +38,11 @@ pub struct RouteStore {
     next_id: u16,
     active: Option<usize>,
     active_bytes: Option<Vec<u8>>,
+    /// The in-memory route-retention sidecar (epic #638, S3): route id → (retention, last_used).
+    /// Session-lived, mirroring the device's `ROUTES.RET` sidecar — the auto-expiry sweep reads it
+    /// through [`retention_metas`](RouteStore::retention_metas), and the host's stamp/set commands
+    /// write it. New in this session; a route with no entry reads `Never` (nothing expires).
+    retention: RouteRetentionStore,
 }
 
 impl RouteStore {
@@ -52,9 +58,33 @@ impl RouteStore {
             next_id: 0,
             active: None,
             active_bytes: None,
+            retention: RouteRetentionStore::new(),
         };
         s.rescan();
         s
+    }
+
+    /// Each catalog entry's retention meta, parallel to [`ids`](RouteStore::ids) — fed to the app
+    /// alongside the catalog so the auto-expiry sweep reads device-truth retention (epic #638, S3).
+    pub fn retention_metas(&self) -> Vec<RouteRetentionMeta> {
+        self.ids.iter().map(|&id| self.retention.get(id)).collect()
+    }
+
+    /// Set route `id`'s retention level (the control panel's stand-in for the phone's
+    /// `setRouteRetention` command until S4 gives it a wire), keeping any existing `last_used`.
+    pub fn set_retention(&mut self, id: u16, retention: Retention) {
+        let meta = RouteRetentionMeta { retention, last_used_utc: self.retention.get(id).last_used_utc };
+        self.retention.set(id, meta);
+    }
+
+    /// This route's current retention meta (for the control-panel readout).
+    pub fn retention_of(&self, id: u16) -> RouteRetentionMeta {
+        self.retention.get(id)
+    }
+
+    /// Stamp route `id`'s `last_used` (the sweep / activation stamp the host applies to the sidecar).
+    pub fn stamp_route_used(&mut self, id: u16, utc: u32) {
+        self.retention.stamp_last_used(id, utc);
     }
 
     /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
@@ -98,6 +128,9 @@ impl RouteStore {
             self.active = None;
             self.active_bytes = None;
         }
+        // Retire retention rows for routes that no longer exist (a delete/reshuffle) — the sidecar
+        // never carries retention for a vanished route (ids never reuse, so belt-and-braces).
+        self.retention.retain_ids(&self.ids);
     }
 
     /// The session id for `path`: registered, or freshly assigned. Append-only for the session —
@@ -241,6 +274,12 @@ impl obc_host_core::RouteRepository for RouteStore {
     }
     fn invalidate_active(&mut self) {
         self.invalidate_active()
+    }
+    fn retention_metas(&self) -> Vec<RouteRetentionMeta> {
+        self.retention_metas()
+    }
+    fn stamp_route_used(&mut self, id: u16, utc: u32) {
+        self.stamp_route_used(id, utc)
     }
 }
 

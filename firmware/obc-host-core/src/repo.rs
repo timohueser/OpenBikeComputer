@@ -9,7 +9,7 @@
 //! board-specific — #801 non-goal, #809 owns the board loop); the *command/event semantics* it
 //! shares are pinned by protocol tests instead.
 
-use obc_app::{App, RideSummary, TrackAction};
+use obc_app::{App, RideSummary, RouteRetentionMeta, TrackAction};
 use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
 use obc_route::{Profile, RideStats, RouteSummary};
@@ -37,6 +37,21 @@ pub trait RouteRepository {
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)
     /// even under an unchanged index — a re-route rewrites the nav bytes beneath the same catalog slot.
     fn invalidate_active(&mut self);
+    /// Each catalog entry's device-local retention meta (epic #638, S3), parallel to
+    /// [`ids`](RouteRepository::ids) — fed alongside the catalog through
+    /// [`App::set_routes_with_meta`](obc_app::App::set_routes_with_meta) so the auto-expiry sweep
+    /// reads device truth. Defaults to empty → every route reads
+    /// [`Never`](obc_app::Retention::Never) (nothing expires), which a retention-less host keeps.
+    fn retention_metas(&self) -> Vec<RouteRetentionMeta> {
+        Vec::new()
+    }
+    /// Stamp route `id`'s `last_used` to `utc` in the retention sidecar — the sweep's clock-start /
+    /// active re-stamp, and the once-per-activation stamp
+    /// ([`StampRouteUsed`](obc_app::HostCommand::StampRouteUsed)). Default no-op (a retention-less
+    /// host has no sidecar).
+    fn stamp_route_used(&mut self, id: u16, utc: u32) {
+        let _ = (id, utc);
+    }
 }
 
 /// The ride catalog (the Rides screen) plus the per-ride track reads its detail draws.
@@ -56,6 +71,12 @@ pub trait RideRepository {
     /// Re-scan the catalog after a ride was just saved (a folder store picks up the new `RD{id}.ORD`);
     /// a static in-memory catalog is a no-op.
     fn refresh(&mut self) {}
+    /// Stamp ride `id`'s `synced_at` to `utc` in the synced sidecar (epic #638, S3) — the sweep's
+    /// legacy synced-without-stamp countdown start
+    /// ([`StampRideSynced`](obc_app::HostCommand::StampRideSynced)). Default no-op.
+    fn stamp_synced_at(&mut self, id: u16, utc: u32) {
+        let _ = (id, utc);
+    }
 }
 
 /// The open ride log the app records into while riding — reconciled to the app's tracking intent
