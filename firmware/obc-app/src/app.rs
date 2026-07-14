@@ -1952,6 +1952,10 @@ impl App {
         // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.ui.now_ms);
         let clock_set = self.wall_clock.is_established();
+        // The UTC instant the Route overview's expiry row counts down from. Display-only, so
+        // (unlike the sweep) it isn't gated on the clock being trusted — a stale set-point just
+        // yields a stale readout.
+        let now_utc = self.wall_unix_now();
         let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
@@ -1990,6 +1994,7 @@ impl App {
             activity,
             settings,
             routes: catalogs.routes(),
+            route_metas: catalogs.route_metas(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             nav_profiles,
@@ -2007,6 +2012,7 @@ impl App {
             w: w as i32,
             h: h as i32,
             now_ms: ui.now_ms,
+            now_utc,
             now,
             clock_set,
             hold_progress,
@@ -3220,11 +3226,12 @@ mod tests {
     fn a_settings_edit_flags_dirty_on_leaving_the_settings_subtree() {
         use crate::settings::Units;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        // Walk to the Units screen (Menu = Routes/POIs/Map/Settings; Settings list = Date&Time/Units/…).
+        // Walk to the Units screen (Menu = Routes/POIs/Map/Settings; Settings list =
+        // Date&Time/Auto-delete/Units/…, so Units is two detents down).
         app.apply_gesture(Gesture::BackHold); // Home → Menu
         app.apply_gesture(Gesture::Turn(-1)); // → Settings entry (wraps back from Routes)
         app.apply_gesture(Gesture::Press); // → Settings list
-        app.apply_gesture(Gesture::Turn(1)); // → Units row
+        app.apply_gesture(Gesture::Turn(2)); // → Units row (past Auto-delete)
         app.apply_gesture(Gesture::Press); // → Units screen
         assert!(!settings_dirty(&mut app), "navigation changed no setting, so nothing to save");
 
@@ -3251,8 +3258,8 @@ mod tests {
     #[test]
     fn every_settings_screen_holds_a_pending_save_until_exit() {
         use crate::screen::{
-            apply, AddFieldScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen, StatFieldsScreen,
-            StatsScreen, Transition, UnitsScreen,
+            apply, AddFieldScreen, AutoDeleteScreen, DateTimeScreen, PowerScreen, ResetScreen, SettingsScreen,
+            StatFieldsScreen, StatsScreen, Transition, UnitsScreen,
         };
         use crate::settings::Units;
 
@@ -3264,12 +3271,14 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 8] = [
+        let cases: [Case; 9] = [
             // Pure navigation — no edit gesture of its own.
             ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
             // Open the UTC-offset stepper (#641: the one editable row), +one step — and leave the
             // field open, so Back must still close it then exit.
             ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Turn(1)]),
+            // A turn walks the synced-ride retention stepper (epic #638 S5).
+            ("Auto-delete", || one(Screen::AutoDelete(AutoDeleteScreen::new())), &[Gesture::Turn(1)]),
             // Press flips metric ↔ imperial.
             ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
             // Open the page-cycle stepper, +1 s (and leave the field open — Back must still exit).
