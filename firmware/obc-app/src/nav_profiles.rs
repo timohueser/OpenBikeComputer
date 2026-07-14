@@ -20,7 +20,8 @@
 
 use core::fmt::Write;
 
-use obc_reader::{MapProfile, NAV_MAX_PROFILES, NAV_PROFILE_NAME_LEN};
+use obc_formats::obcm::{NAV_MAX_PROFILES, NAV_PROFILE_NAME_LEN};
+use obc_reader::MapProfile;
 
 /// One profile name, sized to the §8.6 12-byte name field.
 type ProfileName = heapless::String<NAV_PROFILE_NAME_LEN>;

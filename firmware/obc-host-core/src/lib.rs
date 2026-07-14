@@ -13,7 +13,7 @@
 //! - [`NavPlan`] / [`finish_nav_plan`] — the resumable route planner held across frames (one
 //!   bounded step per frame, the board's one-step-per-pass shape) and the shared commit/answer
 //!   tail, generic over a host's route store via [`RouteRepository`].
-//! - [`VecSink`] — the in-memory [`ByteSink`](obc_route::ByteSink) OBCR/GPX output collects into.
+//! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
 //! - [`MemRouteStore`] / [`MemRideStore`] / [`MemTrackStore`] — the in-memory store family for a
 //!   host without a filesystem (the web demo; also handy in tests). Same surfaces as `obc-sim`'s
 //!   folder-backed stores, so host code drives either shape identically.

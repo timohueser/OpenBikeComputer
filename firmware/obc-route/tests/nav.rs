@@ -476,8 +476,8 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
 /// is Miri over this suite (see the module doc).
 #[test]
 fn record_stride_keeps_odd_offsets_exercised() {
-    assert_eq!(obc_reader::NAV_NODE_FIXED_LEN % 2, 1, "the fixed record head is odd-length");
-    assert_eq!(obc_reader::NAV_NEIGHBOR_LEN, 15, "v9 neighbor entries are 15 bytes");
+    assert_eq!(obc_formats::obcm::NAV_NODE_FIXED_LEN % 2, 1, "the fixed record head is odd-length");
+    assert_eq!(obc_formats::obcm::NAV_NEIGHBOR_LEN, 15, "v9 neighbor entries are 15 bytes");
     // ⇒ every record's first neighbor entry begins at record_start + 13 (odd), so its multi-byte
     // fields decode at odd, unaligned offsets. The 15-byte entry keeps consecutive record starts
     // parity-varying, so record heads are exercised at odd offsets in multi-record chunks too.

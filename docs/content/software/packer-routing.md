@@ -284,7 +284,7 @@ pub const POI_TABLE: [PoiKind; 18] = [
 ];
 ```
 
-The subtype *ids* are normative and shared: the packer owns only the OSM `key=value` half of the table, while each subtype's category and fallback label live once in [`obc-reader`'s `poi_table`](src:firmware/obc-reader/src/poi_table.rs) — the same table the device reads — so the two crates can't drift, and a pinning test asserts every row agrees. The extracted, deduped, name-folded POIs are handed to the serializer, which builds the [per-category quadtrees](../formats/#pois-a-nearest-list-not-a-map-layer) of the POI section.
+The subtype *ids* are normative and shared: the packer owns only the OSM `key=value` half of the table, while each subtype's category and fallback label live once in [`obc-formats`'s POI table](src:firmware/obc-formats/src/obcm.rs) — the same table the device reads through `obc-reader` — so the two crates can't drift, and a pinning test asserts every row agrees. The extracted, deduped, name-folded POIs are handed to the serializer, which builds the [per-category quadtrees](../formats/#pois-a-nearest-list-not-a-map-layer) of the POI section.
 
 ### Parsing opening hours
 

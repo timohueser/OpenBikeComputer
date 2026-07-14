@@ -2,7 +2,8 @@
 //! equal its spec-derived builder byte-for-byte, and the route vectors must load and
 //! ride through `obc-route`. The app's `swift test` consumes the same files.
 
-use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
+use obc_formats::io::SliceSource;
+use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_vectors::{all, crc32, dir, ride_v1, ride_v2, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -147,7 +148,7 @@ fn ride_vector_reads_through_the_production_codec() {
         (None, None, None, None, None),
         "a v1 object has no sensor summary"
     );
-    assert_eq!(v1.len() as u32, obc_route::ride_object_len(info.version, info.name.len(), info.point_count));
+    assert_eq!(v1.len() as u32, obc_formats::ride::object_len(info.version, info.name.len(), info.point_count));
 
     let v2 = fixture("ride-v2.bin");
     let info = obc_route::RideInfo::read(&SliceSource(&v2)).unwrap();
@@ -164,7 +165,7 @@ fn ride_vector_reads_through_the_production_codec() {
         (Some(142), Some(176), Some(85), Some(210), Some(480)),
         "v2 carries the per-ride sensor summary"
     );
-    assert_eq!(v2.len() as u32, obc_route::ride_object_len(info.version, info.name.len(), info.point_count));
+    assert_eq!(v2.len() as u32, obc_formats::ride::object_len(info.version, info.name.len(), info.point_count));
 
     // The elevation profile reader streams the v2 object's points (p2's ele sentinel is skipped).
     let p = obc_route::ride_elevation_profile(&SliceSource(&v2)).unwrap();

@@ -15,10 +15,9 @@ use heapless::{String, Vec};
 use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error};
 use obc_reader::BBox;
 
-// Compatibility paths for existing module/root exports. Remove in the #812 final audit.
-pub use obc_formats::obcr::{
-    CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, NAME_CAP, WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_CAP,
-};
+// The OBCR format constants this reader parses against are owned by `obc-formats`; imported here.
+// Not re-exported — consumers reach the format authority via `obc_formats::obcr`.
+use obc_formats::obcr::{CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, NAME_CAP, WAYPOINT_LEN, WAYPOINT_NAME_CAP};
 use obc_formats::obcr::{MAGIC, POINT_RECORD_LEN, VERSIONS, VERSION_V2};
 /// The device's waypoint cap — one number for both roles: the converter's `<wpt>` emission cap
 /// ([`gpx_to_obcr`](crate::gpx_to_obcr)) and the resident [`Waypoints`] table the ride loop holds
@@ -772,7 +771,7 @@ pub struct Waypoint {
     /// The waypoint's own coordinate (microdegrees) — may sit off the polyline.
     pub lon: i32,
     pub lat: i32,
-    /// Elevation in meters; [`WAYPOINT_ELE_NONE`] when the source carried none.
+    /// Elevation in meters; [`WAYPOINT_ELE_NONE`](obc_formats::obcr::WAYPOINT_ELE_NONE) when the source carried none.
     pub ele: i16,
     /// Category byte (§4); `0` = generic. Render unknown values as generic.
     pub kind: u8,

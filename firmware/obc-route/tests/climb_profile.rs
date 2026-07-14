@@ -17,9 +17,8 @@
 
 use core::cell::RefCell;
 
-use obc_route::{
-    ground_dist_m, ByteSource, ClimbProfile, ClimbSeg, Error, RouteIndex, RouteReader, SliceSource, CLIMB_PROFILE_COLS,
-};
+use obc_formats::io::{ByteSource, Error, SliceSource};
+use obc_route::{ground_dist_m, ClimbProfile, ClimbSeg, RouteIndex, RouteReader, CLIMB_PROFILE_COLS};
 
 // -------------------------------------------------------------------------------------------
 // A hand-rolled OBCR writer with explicit chunk control.

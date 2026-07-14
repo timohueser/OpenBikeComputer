@@ -10,7 +10,11 @@
 //! real GPS chip + GPIO or the simulator's control panel + GPX replay. The host injects an
 //! implementation; the app stays identical. This crate re-exports those names for compatibility.
 
-#![no_std]
+// `no_std` for every real target (board + sim build `not(test)`); the crate's own in-crate test
+// build re-enables `std` so the relocated screen/upload staging harnesses (FAR-19, #812) — which
+// reach `Activity`'s `pub(crate)` fields directly — can use `Vec`/`Box`, the same pattern
+// `obc-reader` uses. Production code paths are `not(test)` and stay strictly `no_std`.
+#![cfg_attr(not(test), no_std)]
 
 pub mod activity;
 pub mod app;
@@ -21,6 +25,8 @@ pub mod dfu;
 pub mod dirty;
 pub mod fault;
 pub mod hal;
+#[cfg(test)]
+mod harness;
 pub mod hold_hint;
 pub mod host;
 pub mod i18n;

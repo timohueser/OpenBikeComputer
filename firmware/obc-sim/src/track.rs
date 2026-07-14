@@ -13,9 +13,10 @@ use std::path::PathBuf;
 use obc_app::TrackAction;
 use obc_ports::{TrackPoint, TrackSink};
 use {
+    obc_formats::io::SliceSource,
     obc_host_core::VecSink,
     obc_ports::TrackError,
-    obc_route::{encode_record, track_to_gpx, track_to_ride, RideStats, SliceSource},
+    obc_route::{encode_record, track_to_gpx, track_to_ride, RideStats},
     std::fs::{self, File, OpenOptions},
     std::io::Write,
 };

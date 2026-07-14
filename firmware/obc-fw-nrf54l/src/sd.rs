@@ -50,9 +50,11 @@ use obc_app::{
     STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
 };
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
+use obc_formats::io::ByteSource;
+use obc_formats::obcr::NAME_CAP;
 use obc_route::{
-    ride_elevation_profile, ride_preview_polyline, track_to_ride, ByteSource, Profile, RideInfo, RideStats, RouteIndex,
-    RouteObjectInfo, RouteSummary, TripMeta, TripSummary, NAME_CAP,
+    ride_elevation_profile, ride_preview_polyline, track_to_ride, Profile, RideInfo, RideStats, RouteIndex,
+    RouteObjectInfo, RouteSummary, TripMeta, TripSummary,
 };
 use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
@@ -196,7 +198,7 @@ impl ByteSource for MapSource<'_> {
     // arms' machinery) out of those frames' locals, whatever the inliner decides later; a call
     // per multi-ms SD read is free. See the matching note on `ExtentSource::read_at`.
     #[inline(never)]
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_route::Error> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
         match self {
             MapSource::Extent(s) => s.read_at(offset, buf),
             MapSource::Seek(s) => s.read_at(offset, buf),
@@ -1142,7 +1144,7 @@ impl Storage {
         true
     }
 
-    /// A [`ByteSource`](obc_route::ByteSource) over the open map file, for reading the header
+    /// A [`ByteSource`](obc_formats::io::ByteSource) over the open map file, for reading the header
     /// ([`obc_reader::read_header`]) or building a per-frame [`Reader`](obc_reader::Reader). `None` if
     /// no map was opened ([`open_map`](Self::open_map) returned `None`). Cheap — the source just wraps
     /// the already-open handle, so it's rebuilt every redraw, keeping no borrow across the `&mut self`
@@ -1186,7 +1188,7 @@ impl Storage {
         }
     }
 
-    /// A [`ByteSource`](obc_route::ByteSource) over the active route's open file, for opening a
+    /// A [`ByteSource`](obc_formats::io::ByteSource) over the active route's open file, for opening a
     /// [`RouteReader`](obc_route::RouteReader) to stream geometry from. `None` when no route is
     /// loaded.
     pub fn route_source(&self) -> Option<Source<'_>> {
@@ -1246,7 +1248,7 @@ impl Storage {
         self.vmgr.open_file_in_dir(dir, NAV_ROUTE_FILE, Mode::ReadWriteCreateOrTruncate).ok()
     }
 
-    /// A [`ByteSink`](obc_route::ByteSink) over the open nav-route file — what
+    /// A [`ByteSink`](obc_formats::io::ByteSink) over the open nav-route file — what
     /// [`plan_route`](obc_route::plan_route) streams the emitted OBCR through.
     pub fn nav_sink(&self, file: RawFile) -> Sink<'_> {
         SdByteSink::new(&self.vmgr, file)
@@ -2108,7 +2110,7 @@ impl Storage {
         Some(len)
     }
 
-    /// A [`ByteSource`](obc_route::ByteSource) over the open object — the CRC pre-pass and the
+    /// A [`ByteSource`](obc_formats::io::ByteSource) over the open object — the CRC pre-pass and the
     /// chunked sends both read through it.
     pub fn object_source(&self) -> Option<Source<'_>> {
         self.open_object.as_ref().map(|(_, f, len)| SdByteSource::new(&self.vmgr, *f, *len))

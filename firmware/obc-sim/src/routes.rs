@@ -1,15 +1,16 @@
 //! The simulator's route store — a stand-in for the device's SD card.
 //!
 //! The **host** side of the [`obc_route`] abstraction: routes live in a folder instead of
-//! `.obcr` files on an SD card. Backs [`ByteSource`](obc_route::ByteSource) with `std` file
+//! `.obcr` files on an SD card. Backs [`ByteSource`](obc_formats::io::ByteSource) with `std` file
 //! I/O, scans the folder into a [`RouteSummary`] catalog, converts imported GPX, and serves
 //! the active route's bytes to stream. The firmware provides the same surface over FatFs;
 //! nothing above this (`obc-app`, `obc-render`) knows it's a folder.
 
 use std::path::{Path, PathBuf};
 
+use obc_formats::io::SliceSource;
 use obc_route::gpx_to_obcr;
-use obc_route::{RouteStats, RouteSummary, SliceSource};
+use obc_route::{RouteStats, RouteSummary};
 
 use obc_host_core::VecSink;
 
@@ -209,7 +210,7 @@ impl RouteStore {
         self.active_bytes = None;
     }
 
-    /// A [`ByteSource`](obc_route::ByteSource) over the active route's bytes, for
+    /// A [`ByteSource`](obc_formats::io::ByteSource) over the active route's bytes, for
     /// opening a [`RouteReader`](obc_route::RouteReader) to stream geometry from.
     pub fn active_source(&self) -> Option<SliceSource<'_>> {
         self.active_bytes.as_deref().map(SliceSource)
