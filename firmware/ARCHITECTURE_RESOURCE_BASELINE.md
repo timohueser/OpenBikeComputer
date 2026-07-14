@@ -184,6 +184,23 @@ format constants through a reader/route re-export — `obc-app`, `obc-fw-nrf54l`
 `obc-route` re-exports only `Error`, solely so its own `track_to_gpx`/`ByteSink`
 writer signatures can name it. No upward edge exists; CI rejects every removed one.
 
+FAR-642 (#642, the BLE `setClock` command — the phone stamps the device's UTC
+clock + offset on every connect, auto-expiry epic #638 S2) grew resident RAM by a
+measured **+8 B on BLE / +0 B on default** against develop on pinned rustc 1.96.0.
+The +8 B is the `BLE_CLOCK_SET` crossing signal — a `Signal<_, (u32, i16)>` the
+command handler posts and the ride loop drains into `App::stamp_clock_ble` (the
+same lock-free module-static hand-off the other BLE→ride-loop crossings use). BLE
+`.bss` 208,280 → 208,288 B (`.data` unchanged 4,504 B), so resident 212,784 →
+212,792 B; the **BLE resident ceiling was bumped 212,788 → 212,796 B** (the 1.96.0
+measurement + the repo's 4 B floating-toolchain headroom, matching the FAR-19
+part-2 convention). **Default is byte-identical** (`.bss 200,800 + .data 72 =
+200,872 B`): the same static is linker-GC-stripped there because `post_ble_clock`
+/`take_ble_clock` are only reachable under `--features ble`, so its ceiling stays
+200,868 B and the local-1.96.0 200,872 B overage remains the documented
+toolchain-artifact trap, not new drift. The compile-time allocation report is
+unchanged on both profiles — the signal is a module static, not a field of `App`
+or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
+
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B
 after default `.bss + .data + .uninit` and 40,160 B after BLE. Those residuals
