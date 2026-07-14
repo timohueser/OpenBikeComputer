@@ -124,38 +124,70 @@ impl MapScene for Reader<'_> {
         }
 
         let walk = self.for_each_chunk(lod, view, |cid, node| {
-            let mut refetched = false;
-            for i in 0..selected.len() {
-                if !selected.is_pending(i) {
-                    continue;
-                }
-                let Some(token) = selected.token(i) else {
-                    continue;
-                };
-                let (wanted_cid, offset) = token_parts(token);
-                if wanted_cid != cid {
-                    continue;
-                }
-                match self.decode_feature_at(lod, cid, offset, &node, points, ring_lens) {
-                    Ok(feature) => {
-                        refetched |= selected.decoded(
-                            i,
-                            Feature::new(
-                                feature.style_id,
-                                feature.kind,
-                                feature.points(),
-                                feature.ring_lens(),
-                                feature.bbox(),
-                            ),
-                        );
-                    }
-                    Err(error) => {
-                        let _ = selected.failed(i, feature_error(error));
-                    }
-                }
+            // Keep the existing `for visible chunk -> scan selected tokens` matching loop (making it
+            // linear in chunks + winners is the dependent #849): first find whether this visited
+            // chunk owns *any* pending winner, so a chunk with no winner is never loaded in pass B.
+            let owns_winner = (0..selected.len())
+                .any(|i| selected.is_pending(i) && selected.token(i).is_some_and(|t| token_parts(t).0 == cid));
+            if !owns_winner {
+                return;
             }
-            if refetched {
-                report.chunks_refetched += 1;
+
+            // Load/borrow this winning chunk **once** and decode every selected offset that belongs
+            // to it while the bytes are resident — one cache lookup / borrow / LRU update for the
+            // whole batch instead of one per winner (#848). The batch borrow is held across the
+            // callback exactly like `for_each_feature_filtered`.
+            let mut refetched = false;
+            let outcome = self.with_feature_chunk(lod, cid, &node, |chunk| {
+                for i in 0..selected.len() {
+                    if !selected.is_pending(i) {
+                        continue;
+                    }
+                    let Some(token) = selected.token(i) else {
+                        continue;
+                    };
+                    let (wanted_cid, offset) = token_parts(token);
+                    if wanted_cid != cid {
+                        continue;
+                    }
+                    match chunk.decode(offset, points, ring_lens) {
+                        Ok(feature) => {
+                            refetched |= selected.decoded(
+                                i,
+                                Feature::new(
+                                    feature.style_id,
+                                    feature.kind,
+                                    feature.points(),
+                                    feature.ring_lens(),
+                                    feature.bbox(),
+                                ),
+                            );
+                        }
+                        // The bytes are already resident, so `decode` only ever returns a per-feature
+                        // decode error (malformed/capacity) here — never a `Read`. Same typed outcome
+                        // the per-winner `decode_feature_at` produced, scratch left empty on failure.
+                        Err(error) => {
+                            let _ = selected.failed(i, feature_error(error));
+                        }
+                    }
+                }
+            });
+            match outcome {
+                // `chunks_refetched` stays the count of chunks that successfully publish ≥1 feature.
+                Ok(()) => {
+                    if refetched {
+                        report.chunks_refetched += 1;
+                    }
+                }
+                // A single load failure records exactly one read failure for the whole chunk — no
+                // per-winner retry of the same failed load — mirroring the pass-A chunk-read-failure
+                // path in `visit_candidates`. Every winner of this chunk is failed the same way: none
+                // publishes, so all stay unresolved (skipped by the pass-B compaction) rather than
+                // one being marked and the rest lingering. Recording per token instead would re-count
+                // the single I/O failure once per winner (the inflation this task removes).
+                Err(error) => {
+                    report.read_failures.record(read_error(error));
+                }
             }
         });
         if let Err(error) = walk {

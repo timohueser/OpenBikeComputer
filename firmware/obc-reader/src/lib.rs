@@ -57,10 +57,11 @@ pub use obc_formats::io::{ByteSink, ByteSource, SliceSource};
 // lookups (`poi_category_of` / `poi_label_of` / `poi_subtype_row`) are imported from `obc_formats`.
 pub use obc_formats::obcm::{PoiCategory, PoiSubtype};
 pub use reader::{
-    read_header, CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef,
-    Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavNeighbor,
-    NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
-    MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES, NAV_TILE_SLOTS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
+    read_header, CacheError, CacheStats, CapacityError, ChunkDecoder, DecodeStatus, FeatureDecodeError,
+    FeatureReadError, FeatureRef, Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats,
+    NavDirectory, NavNeighbor, NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, MAX_CHUNK_BYTES,
+    MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES, NAV_TILE_SLOTS, POI_MAX_CATEGORIES,
+    POI_MAX_CHUNK_BYTES,
 };
 
 // Compatibility paths: neutral scene/geometry primitives now live below the concrete OBCM reader.

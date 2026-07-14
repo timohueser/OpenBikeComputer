@@ -503,3 +503,282 @@ fn polygon_exterior_overflow_drops_whole_feature() {
     assert_eq!(status.capacity_dropped, 1);
     assert_eq!(status.malformed, 0);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Pass-B resident-chunk batching (issue #848): `Reader::with_feature_chunk` loads/borrows a chunk
+// **once** and decodes every selected offset through the held borrow — one cache request for the
+// whole batch instead of one per winner. These pin the primitive directly; the scene-level
+// `decode_selected` batching (one request per winning chunk) is covered below.
+// ---------------------------------------------------------------------------------------------
+
+/// A chunk with several selected offsets costs exactly **one** cache request in a batch: a cold
+/// `with_feature_chunk` decoding all three winners is a single miss, and a second batch over the
+/// same resident chunk is a single hit — not one request per feature (the pre-#848 inflation).
+#[test]
+fn with_feature_chunk_batches_offsets_under_one_cache_request() {
+    const CS: usize = 256; // < CACHE_SLOT_BYTES → cacheable (resident-slot path)
+    let feat0 = pack_line(1, 100, 100, &[(10, 0), (0, 10)]);
+    let feat1 = pack_line(1, 120, 120, &[(5, 5)]);
+    let feat2 = pack_line(2, 140, 140, &[(-5, 5), (5, 0)]);
+    let offsets = [0usize, feat0.len(), feat0.len() + feat1.len()];
+    let mut chunk = feat0.clone();
+    chunk.extend_from_slice(&feat1);
+    chunk.extend_from_slice(&feat2);
+    let bytes = single_leaf(GLOBAL, chunk, CS);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+
+    // Cold batch: all three offsets decode under a single load of chunk 0.
+    let before = r.chunk_cache_stats();
+    let mut decoded = 0;
+    r.with_feature_chunk(0, 0, &r.bbox, |chunk| {
+        let mut points = heapless::Vec::<(i32, i32), MAX_FEAT_PTS>::new();
+        let mut ring_lens = heapless::Vec::<usize, MAX_FEAT_RINGS>::new();
+        for &off in &offsets {
+            let f = chunk.decode(off, &mut points, &mut ring_lens).unwrap();
+            assert!(!f.exterior().is_empty());
+            decoded += 1;
+        }
+    })
+    .unwrap();
+    let after = r.chunk_cache_stats();
+    assert_eq!(decoded, 3);
+    assert_eq!(after.chunk_misses, before.chunk_misses + 1, "cold batch is a single miss for all three winners");
+    assert_eq!(after.chunk_hits, before.chunk_hits, "no hit inside the batch");
+
+    // Warm batch: the resident chunk serves all three offsets as one hit, no further miss.
+    let before = r.chunk_cache_stats();
+    r.with_feature_chunk(0, 0, &r.bbox, |chunk| {
+        let mut points = heapless::Vec::<(i32, i32), MAX_FEAT_PTS>::new();
+        let mut ring_lens = heapless::Vec::<usize, MAX_FEAT_RINGS>::new();
+        for &off in &offsets {
+            let _ = chunk.decode(off, &mut points, &mut ring_lens).unwrap();
+        }
+    })
+    .unwrap();
+    let after = r.chunk_cache_stats();
+    assert_eq!(after.chunk_hits, before.chunk_hits + 1, "warm batch is a single hit for all three winners");
+    assert_eq!(after.chunk_misses, before.chunk_misses, "no further miss");
+}
+
+/// An oversized chunk (past the cache slot) decodes through the uncached scratch: every batch is a
+/// fresh miss, never a hit — the resident-slot invariant, but through the batch primitive.
+#[test]
+fn with_feature_chunk_oversized_chunk_uses_scratch_each_batch() {
+    const CS: usize = 8192; // > CACHE_SLOT_BYTES (4096) → scratch path
+    let chunk = pack_line(1, 100, 200, &[(10, 0), (0, 10)]);
+    let bytes = single_leaf(GLOBAL, chunk, CS);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    assert_eq!(r.lods()[0].chunk_size, CS);
+
+    for _ in 0..2 {
+        let before = r.chunk_cache_stats();
+        r.with_feature_chunk(0, 0, &r.bbox, |chunk| {
+            let mut points = heapless::Vec::<(i32, i32), MAX_FEAT_PTS>::new();
+            let mut ring_lens = heapless::Vec::<usize, MAX_FEAT_RINGS>::new();
+            let f = chunk.decode(0, &mut points, &mut ring_lens).unwrap();
+            assert_eq!(f.exterior().len(), 3);
+        })
+        .unwrap();
+        let after = r.chunk_cache_stats();
+        assert_eq!(after.chunk_misses, before.chunk_misses + 1, "the oversized chunk re-reads (a miss) every batch");
+        assert_eq!(after.chunk_hits, before.chunk_hits, "an oversized chunk never registers a hit");
+    }
+}
+
+/// Stale, out-of-range, `CHUNK_END`, and capacity-dropping offsets keep their typed outcomes inside
+/// a batch and leave the caller scratch empty after each failure — the per-feature whole-feature
+/// contract, unchanged under batching.
+#[test]
+fn with_feature_chunk_rejects_bad_offsets_and_empties_scratch() {
+    const CS: usize = 128;
+    let chunk = pack_line(1, 100, 100, &[(10, 0), (0, 10), (5, 5)]); // 4 exterior points
+    let real_len = chunk.len();
+    let bytes = single_leaf(GLOBAL, chunk, CS);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+
+    r.with_feature_chunk(0, 0, &r.bbox, |chunk| {
+        let mut points = heapless::Vec::<(i32, i32), MAX_FEAT_PTS>::new();
+        let mut ring_lens = heapless::Vec::<usize, MAX_FEAT_RINGS>::new();
+
+        // An offset at the chunk length is outside the validated chunk → Decode(Malformed).
+        points.push((-1, -1)).unwrap();
+        ring_lens.push(9).unwrap();
+        assert!(matches!(
+            chunk.decode(CS, &mut points, &mut ring_lens),
+            Err(obc_reader::FeatureReadError::Decode(obc_reader::FeatureDecodeError::Malformed))
+        ));
+        assert!(points.is_empty() && ring_lens.is_empty(), "an out-of-range offset leaves scratch empty");
+
+        // An offset landing on the 0xFF pad (the CHUNK_END marker) → Decode(Malformed).
+        points.push((-2, -2)).unwrap();
+        assert!(matches!(
+            chunk.decode(real_len, &mut points, &mut ring_lens),
+            Err(obc_reader::FeatureReadError::Decode(obc_reader::FeatureDecodeError::Malformed))
+        ));
+        assert!(points.is_empty() && ring_lens.is_empty(), "a CHUNK_END offset leaves scratch empty");
+
+        // A valid offset still decodes under the same held borrow — partial-success within a batch.
+        let f = chunk.decode(0, &mut points, &mut ring_lens).unwrap();
+        assert_eq!(f.exterior().len(), 4);
+    })
+    .unwrap();
+
+    // A tiny caller scratch drops the 4-point feature with a typed capacity outcome, scratch empty.
+    r.with_feature_chunk(0, 0, &r.bbox, |chunk| {
+        let mut points = heapless::Vec::<(i32, i32), 2>::new();
+        let mut ring_lens = heapless::Vec::<usize, 4>::new();
+        assert!(matches!(
+            chunk.decode(0, &mut points, &mut ring_lens),
+            Err(obc_reader::FeatureReadError::Decode(obc_reader::FeatureDecodeError::Capacity(
+                obc_reader::CapacityError::Points
+            )))
+        ));
+        assert!(points.is_empty() && ring_lens.is_empty(), "a capacity drop leaves scratch empty");
+    })
+    .unwrap();
+}
+
+/// The batch borrow is held across the callback exactly like `for_each_feature_filtered`: resident
+/// style-table reads stay allowed, but a nested streaming/cache op returns a typed `Busy` error —
+/// never a `RefCell` panic.
+#[test]
+fn nested_cache_op_inside_batch_returns_busy_not_panic() {
+    const CS: usize = 128;
+    let chunk = pack_line(1, 100, 100, &[(10, 0)]);
+    let bytes = single_leaf(GLOBAL, chunk, CS);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+
+    r.with_feature_chunk(0, 0, &r.bbox, |chunk| {
+        // Decoding a resident offset takes no new borrow, so it succeeds inside the batch.
+        let mut points = heapless::Vec::<(i32, i32), MAX_FEAT_PTS>::new();
+        let mut ring_lens = heapless::Vec::<usize, MAX_FEAT_RINGS>::new();
+        assert!(chunk.decode(0, &mut points, &mut ring_lens).is_ok());
+
+        // A nested single-feature refetch must return a typed cache-busy Read error, not panic.
+        let mut p2 = heapless::Vec::<(i32, i32), MAX_FEAT_PTS>::new();
+        let mut r2 = heapless::Vec::<usize, MAX_FEAT_RINGS>::new();
+        assert!(matches!(
+            r.decode_feature_at(0, 0, 0, &r.bbox, &mut p2, &mut r2),
+            Err(obc_reader::FeatureReadError::Read(obc_reader::MapReadError::Cache(obc_reader::CacheError::Busy)))
+        ));
+
+        // A nested batch is likewise Busy, not a panic.
+        assert!(matches!(
+            r.with_feature_chunk(0, 0, &r.bbox, |_| ()),
+            Err(obc_reader::MapReadError::Cache(obc_reader::CacheError::Busy))
+        ));
+
+        // Resident style-table reads remain available under the held borrow.
+        assert!(r.style(1).is_some());
+    })
+    .unwrap();
+}
+
+/// Scene-level pass B (`MapScene::decode_selected`): selecting winners across two chunks costs
+/// exactly **one** cache request per winning chunk — two requests for four winners — and both
+/// chunks report a refetch. This is the batching #848 delivers end-to-end through the semantic seam.
+#[test]
+fn decode_selected_loads_each_winning_chunk_once() {
+    use obc_map_scene::{
+        DecodeReport, Feature, FeatureError as SceneFeatureError, FeatureToken, MapScene, SelectedFeatures,
+    };
+
+    /// Minimal `SelectedFeatures`: a fixed token list with a per-index outcome slot.
+    struct Sink {
+        tokens: Vec<FeatureToken>,
+        done: Vec<Option<Result<(), SceneFeatureError>>>,
+    }
+    impl Sink {
+        fn new(tokens: Vec<FeatureToken>) -> Self {
+            let n = tokens.len();
+            Sink { tokens, done: vec![None; n] }
+        }
+    }
+    impl SelectedFeatures for Sink {
+        fn len(&self) -> usize {
+            self.tokens.len()
+        }
+        fn is_pending(&self, index: usize) -> bool {
+            self.done.get(index).is_some_and(Option::is_none)
+        }
+        fn token(&self, index: usize) -> Option<FeatureToken> {
+            self.is_pending(index).then(|| self.tokens[index])
+        }
+        fn decoded(&mut self, index: usize, feature: Feature<'_>) -> bool {
+            if !self.is_pending(index) || !feature.has_valid_rings() {
+                return false;
+            }
+            self.done[index] = Some(Ok(()));
+            true
+        }
+        fn failed(&mut self, index: usize, error: SceneFeatureError) -> bool {
+            if !self.is_pending(index) {
+                return false;
+            }
+            self.done[index] = Some(Err(error));
+            true
+        }
+    }
+
+    const CS: usize = 256;
+    // Two chunks, each two features.
+    let a0 = pack_line(1, 100, 100, &[(10, 0), (0, 10)]);
+    let a1 = pack_line(2, 120, 120, &[(5, 5)]);
+    let mut chunk_a = a0.clone();
+    chunk_a.extend_from_slice(&a1);
+    let a_off = [0u16, a0.len() as u16];
+
+    let b0 = pack_line(1, 300, 300, &[(-5, 5)]);
+    let b1 = pack_line(2, 320, 320, &[(5, 0), (0, 5)]);
+    let mut chunk_b = b0.clone();
+    chunk_b.extend_from_slice(&b1);
+    let b_off = [0u16, b0.len() as u16];
+
+    // Root branch (child base 1) with NW=chunk 0, NE=chunk 1, SW/SE empty — both leaves overlap the
+    // whole-bbox view, so `for_each_chunk` visits chunk 0 then chunk 1.
+    const EMPTY_LEAF: u32 = 0x7FFF_FFFF; // obc_formats::obcm::EMPTY_LEAF (!BRANCH_BIT)
+    let index = vec![0x8000_0000u32 | 1, 0, 1, EMPTY_LEAF, EMPTY_LEAF];
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index, chunks: vec![pad(chunk_a, CS), pad(chunk_b, CS)], chunk_size: CS }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+
+    // All four winners, two per chunk. `FeatureToken` packs (cid_lo, cid_hi, offset).
+    let mut sink = Sink::new(vec![
+        FeatureToken::from_source_words([0, 0, a_off[0]]),
+        FeatureToken::from_source_words([0, 0, a_off[1]]),
+        FeatureToken::from_source_words([1, 0, b_off[0]]),
+        FeatureToken::from_source_words([1, 0, b_off[1]]),
+    ]);
+
+    let mut points = heapless::Vec::<(i32, i32), MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<usize, MAX_FEAT_RINGS>::new();
+    let before = r.chunk_cache_stats();
+    let report: DecodeReport = r.decode_selected(0, &r.bbox, &mut points, &mut ring_lens, &mut sink);
+    let after = r.chunk_cache_stats();
+
+    // Two winning chunks → two pass-B cache requests (cold misses), not four (one per winner).
+    assert_eq!(after.chunk_misses, before.chunk_misses + 2, "one load per winning chunk, not per winner");
+    assert_eq!(after.chunk_hits, before.chunk_hits, "no hit within a single cold pass");
+    assert_eq!(report.chunks_refetched, 2, "both chunks publish at least one selected feature");
+    assert_eq!(report.read_failures, Default::default(), "a clean pass records no read failure");
+    // Every winner published exactly once.
+    assert!(sink.done.iter().all(|d| matches!(d, Some(Ok(())))));
+}

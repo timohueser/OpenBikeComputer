@@ -1609,24 +1609,90 @@ impl<'a> Reader<'a> {
         Ok(decode_chunk_into(chunk, node, points, ring_lens, should_decode, visit))
     }
 
+    /// Load/borrow chunk `cid` of `lod` **once**, hold the cache borrow, and run `body` against an
+    /// opaque [`ChunkDecoder`] over the resident bytes — the batch primitive pass B uses to decode
+    /// every winning feature of one chunk under a single cache lookup, `RefCell` borrow, and LRU
+    /// update (issue #848). [`Reader::decode_feature_at`] is the one-feature wrapper over this.
+    ///
+    /// The once-per-chunk work done here — before `body` sees a single offset — is exactly what
+    /// [`Reader::decode_feature_at`] used to repeat per winner: validate the LOD, the `chunk_range`,
+    /// the source length, and the [`MAX_CHUNK_BYTES`] scratch bound; `try_borrow_mut` the cache; one
+    /// [`load_chunk`](MapCacheInner::load_chunk); pick the resident slot or the oversized scratch.
+    /// That borrow is then held for the whole `body` call, so every [`ChunkDecoder::decode`] reads
+    /// already-resident bytes with no further cache traffic. `node` is the leaf bbox
+    /// [`Reader::for_each_chunk`] yields for `cid` (the per-feature anchor base).
+    ///
+    /// Validation failures (an out-of-range `lod`/`cid`, an offset overflow, or a chunk past
+    /// [`MAX_CHUNK_BYTES`]) surface as [`MapReadError::Malformed`], a contended cache as
+    /// [`MapReadError::Cache`], and a source read failure as [`MapReadError::Source`] — `body` runs
+    /// only once the chunk's bytes are resident, so a load that fails fails the whole batch once
+    /// rather than per winner.
+    ///
+    /// # Reentrancy
+    ///
+    /// Identical to [`Reader::for_each_feature_filtered`]: the cache borrow is held for the entire
+    /// `body` call, so resident style-table reads and renderer callbacks stay available but a nested
+    /// streaming/cache operation returns [`CacheError::Busy`] rather than panicking. The
+    /// [`ChunkDecoder`] exposes **only** validated feature decode into caller scratch, never the raw
+    /// resident bytes, and each [`FeatureRef`] it returns borrows that caller scratch (not the cache),
+    /// so it is consumed before the next `decode` — no `unsafe`, and no cache bytes escape the borrow.
+    pub fn with_feature_chunk<T>(
+        &self,
+        lod: usize,
+        cid: u32,
+        node: &BBox,
+        body: impl FnOnce(&ChunkDecoder<'_>) -> T,
+    ) -> Result<T, MapReadError> {
+        let l = self.tables.lods.get(lod).ok_or(MapReadError::Malformed)?;
+        // `cid` is unvalidated file/token data: reject an out-of-range id or an offset overflowing
+        // `usize` (32-bit on device) instead of panicking or decoding an adjacent region.
+        let (start, end) = l.chunk_range(cid).ok_or(MapReadError::Malformed)?;
+        if end > self.src.len() as usize {
+            return Err(MapReadError::Malformed);
+        }
+        // `chunk_size` was capped at `MAX_CHUNK_BYTES` in `parse`; this defensive check keeps a
+        // corrupt LOD from indexing past the decode scratch.
+        let len = end - start;
+        if len > MAX_CHUNK_BYTES {
+            return Err(MapReadError::Malformed);
+        }
+        if !self.cache_ready {
+            return Err(MapReadError::Cache(CacheError::Busy));
+        }
+        // One `try_borrow_mut` + `load_chunk` for the whole batch; the borrow is held across `body`,
+        // so the resident bytes stay valid for every `decode` and a nested cache op returns `Busy`.
+        let mut cache = self.cache.try_borrow_mut().map_err(MapReadError::Cache)?;
+        let loc = cache.load_chunk(self.src, lod as u8, cid, start as u32, len).map_err(MapReadError::Source)?;
+        let chunk = match loc {
+            ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
+            ChunkLoc::Scratch => &cache.scratch[..len],
+        };
+        // The decoder borrows the resident bytes; each `FeatureRef` it yields borrows the *caller's*
+        // scratch, so nothing tied to this held `cache` borrow escapes `body`'s return value.
+        let decoder = ChunkDecoder { chunk, node: *node };
+        Ok(body(&decoder))
+    }
+
     /// Decode exactly the feature at byte `offset` within chunk `cid` of `lod`, into the caller's
     /// `points`/`ring_lens` scratch, returning its [`FeatureRef`]. The renderer's two-phase collect
     /// (issue #564) uses this in pass B to re-materialize a *winning* feature's geometry — one it
     /// selected in pass A by a lightweight stub ([`FeatureRef::offset`]) — without re-decoding the
     /// rest of the chunk.
     ///
-    /// `node` is the leaf bbox [`Reader::for_each_chunk`] yields for `cid` (the per-feature anchor
-    /// base). `offset` came from a [`FeatureRef::offset`] earlier this frame, but it is still
-    /// validated against the chunk length and the `0xFF` end-marker, so a stale/corrupt offset
-    /// yields [`FeatureReadError::Decode`], never a panic or an out-of-chunk read. Fetches the chunk
-    /// through the same cache as the full walk, so consecutive calls for one `cid` (pass B visits a
-    /// chunk's winners together) hit the resident slot instead of re-reading it.
+    /// A thin compatibility wrapper over the shared [`Reader::with_feature_chunk`] batch primitive:
+    /// it loads/borrows the chunk once and decodes this single offset through it. `node` is the leaf
+    /// bbox [`Reader::for_each_chunk`] yields for `cid`. `offset` came from a [`FeatureRef::offset`]
+    /// earlier this frame, but it is still validated against the chunk length and the `0xFF`
+    /// end-marker, so a stale/corrupt offset yields [`FeatureReadError::Decode`], never a panic or an
+    /// out-of-chunk read. Fetches the chunk through the same cache as the full walk, so consecutive
+    /// calls for one `cid` hit the resident slot instead of re-reading it — though pass B now batches
+    /// a chunk's winners under one [`Reader::with_feature_chunk`] borrow instead.
     ///
     /// # Reentrancy
     ///
-    /// Same rule as [`Reader::for_each_feature_filtered`]: this borrows the internal cache for the
-    /// fetch + decode. Calling it from [`Reader::for_each_chunk`] is the normal pass-B path; legal
-    /// re-entry from a `for_each_feature*` callback returns a typed cache error.
+    /// Same rule as [`Reader::with_feature_chunk`]: this borrows the internal cache for the fetch +
+    /// decode. Calling it from [`Reader::for_each_chunk`] is the normal pass-B path; legal re-entry
+    /// from a `for_each_feature*` callback returns a typed cache error.
     pub fn decode_feature_at<'p, const P: usize, const R: usize>(
         &self,
         lod: usize,
@@ -1636,36 +1702,71 @@ impl<'a> Reader<'a> {
         points: &'p mut Vec<(i32, i32), P>,
         ring_lens: &'p mut Vec<usize, R>,
     ) -> Result<FeatureRef<'p>, FeatureReadError> {
-        // Every error leaves caller scratch empty. Besides making retries deterministic, this is
-        // the public expression of the whole-feature contract: no stale geometry from a previous
-        // success and no prefix decoded before a malformed hole may escape through these buffers.
+        // Every error leaves caller scratch empty. Besides making retries deterministic, this is the
+        // public expression of the whole-feature contract: no stale geometry from a previous success
+        // and no prefix decoded before a malformed hole may escape. Clearing *before* the batch call
+        // also covers the validation failures `with_feature_chunk` rejects before `body` runs (a bad
+        // `lod`/`cid`/length); `ChunkDecoder::decode` re-clears before decoding the resident chunk.
         points.clear();
         ring_lens.clear();
-        let l = self.tables.lods.get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
-        let (start, end) = l.chunk_range(cid).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
-        if end > self.src.len() as usize {
+        match self.with_feature_chunk(lod, cid, node, |chunk| chunk.decode(offset, points, ring_lens)) {
+            Ok(result) => result,
+            // Preserve the split `decode_feature_at` has always returned: a chunk-selection failure
+            // (stale/corrupt `lod`/`cid`/`offset`) is a `Decode(Malformed)`, while a borrow/source
+            // failure is a `Read` retaining the cache-vs-source identity.
+            Err(MapReadError::Malformed) => Err(FeatureReadError::Decode(FeatureDecodeError::Malformed)),
+            Err(error) => Err(FeatureReadError::Read(error)),
+        }
+    }
+}
+
+/// The opaque, resident-chunk decoder [`Reader::with_feature_chunk`] hands its callback: it owns a
+/// borrow of one already-loaded chunk's bytes (via the reader's held cache borrow) and exposes
+/// **only** validated single-feature decode — never the raw bytes. [`ChunkDecoder::decode`]
+/// re-decodes one winning feature by its in-chunk offset into caller scratch, so pass B can batch
+/// every winner of a chunk under the single cache lookup / borrow / LRU update the enclosing
+/// [`Reader::with_feature_chunk`] performed once.
+pub struct ChunkDecoder<'a> {
+    /// The resident chunk bytes (a slice of the reader's held cache borrow); `len == chunk_size`,
+    /// already validated `<= MAX_CHUNK_BYTES` and in-file.
+    chunk: &'a [u8],
+    /// The leaf bbox for this chunk — the per-feature anchor base, copied so the decoder holds no
+    /// borrow of the caller's `&BBox`.
+    node: BBox,
+}
+
+impl ChunkDecoder<'_> {
+    /// Decode exactly the feature at byte `offset` within this resident chunk into the caller's
+    /// `points`/`ring_lens` scratch (cleared first), returning its [`FeatureRef`]. This is the
+    /// per-winner step of the pass-B batch: no cache lookup, borrow, or LRU update — the bytes are
+    /// already resident under [`Reader::with_feature_chunk`]'s held borrow.
+    ///
+    /// `offset` typically came from a [`FeatureRef::offset`] earlier this frame, but it is still
+    /// validated against the chunk length and the `0xFF` [`CHUNK_END`] marker, so a stale/corrupt
+    /// offset yields [`FeatureReadError::Decode`], never a panic or an out-of-chunk read. The decode
+    /// runs through the same [`decode_one_feature`] the full-chunk walk uses, so a feature decodes
+    /// byte-for-byte identically either way, publishes only when complete, and returns the identical
+    /// malformed/capacity classification. Every error path leaves the caller scratch empty.
+    ///
+    /// The returned [`FeatureRef`] borrows the caller's `points`/`ring_lens` (its coordinates are
+    /// copied there), **not** the resident chunk bytes — so it must be consumed before the next
+    /// `decode`, and the enclosing cache borrow never escapes into it.
+    #[inline]
+    pub fn decode<'p, const P: usize, const R: usize>(
+        &self,
+        offset: usize,
+        points: &'p mut Vec<(i32, i32), P>,
+        ring_lens: &'p mut Vec<usize, R>,
+    ) -> Result<FeatureRef<'p>, FeatureReadError> {
+        // Clear on every path — including the reject below — so an error leaves caller scratch empty.
+        points.clear();
+        ring_lens.clear();
+        // Reject an offset outside the validated chunk before touching bytes; `decode_one_feature`
+        // handles the `CHUNK_END` marker and the header-length bound inside.
+        if offset >= self.chunk.len() {
             return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed));
         }
-        let len = end - start;
-        // Same corrupt-chunk guards as the full walk, plus the offset must land inside the chunk.
-        if len > MAX_CHUNK_BYTES || offset >= len {
-            return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed));
-        }
-        if !self.cache_ready {
-            return Err(FeatureReadError::Read(MapReadError::Cache(CacheError::Busy)));
-        }
-        let mut cache =
-            self.cache.try_borrow_mut().map_err(|error| FeatureReadError::Read(MapReadError::Cache(error)))?;
-        let loc = cache
-            .load_chunk(self.src, lod as u8, cid, start as u32, len)
-            .map_err(|error| FeatureReadError::Read(MapReadError::Source(error)))?;
-        let chunk = match loc {
-            ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
-            ChunkLoc::Scratch => &cache.scratch[..len],
-        };
-        // The `FeatureRef` borrows `points`/`ring_lens` (its coordinates are copied there), not the
-        // cache bytes, so it outlives the `cache` borrow dropped at return.
-        match decode_one_feature(chunk, offset, node, points, ring_lens) {
+        match decode_one_feature(self.chunk, offset, &self.node, points, ring_lens) {
             DecodeOne::Complete(fref, _) => Ok(fref),
             DecodeOne::Dropped(error, _) => Err(FeatureReadError::Decode(error)),
         }
