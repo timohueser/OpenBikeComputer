@@ -1,10 +1,12 @@
 //! Integration tests for the on-device POIs browser (#425): the Menu → category → list navigation,
-//! the lazy static snapshot (populates from a `Reader` on the first draw, then stays frozen), the
-//! empty-category and no-fix states, and that the reader-build seam ([`App::base_needs_reader`])
-//! reports correctly for the POI list vs the frozen snapshot.
+//! the lazy static snapshot (populates from a `Reader` in the pre-draw `prepare` pass — #803 moved
+//! it out of `draw` — then stays frozen), the empty-category and no-fix states, and that the
+//! reader-build seam ([`App::base_needs_reader`]) reports correctly for the POI list vs the frozen
+//! snapshot.
 //!
 //! Screens are driven through the real gesture path (`App::apply_gesture`), then a frame is rendered
-//! with `App::render_frame` (which always passes `Some(reader)`, like the sim) so the snapshot fills.
+//! with `App::render_frame` (which always passes `Some(reader)`, like the sim); its pre-draw
+//! `prepare` pass fills the snapshot, and `draw` then consumes it read-only.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::Screen;
