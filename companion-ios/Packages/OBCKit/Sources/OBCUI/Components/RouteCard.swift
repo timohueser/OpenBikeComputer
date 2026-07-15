@@ -23,28 +23,37 @@ public struct RouteCard: View {
     /// the card's rhythm). `nil` — the default — is the plain top-level card
     /// everywhere else, byte-identical to before.
     let stageAccent: Color?
+    /// The auto-expiry countdown footnote (epic #638 S7) — "Expires in 2 days" —
+    /// shown only when the route is on the device and within ≤ 3 days of deletion
+    /// (the caller decides; `nil` otherwise). Subdued secondary text, not a
+    /// warning color: expiry is by design.
+    let expiryBadge: String?
 
     public init(
         title: String, subtitle: String, preview: TrackPreview?,
-        onDevice: OnDeviceState = .notOnDevice, stageAccent: Color? = nil
+        onDevice: OnDeviceState = .notOnDevice, stageAccent: Color? = nil,
+        expiryBadge: String? = nil
     ) {
         self.title = title
         self.subtitle = subtitle
         self.preview = preview
         self.onDevice = onDevice
         self.stageAccent = stageAccent
+        self.expiryBadge = expiryBadge
     }
 
     /// Planned-route row: "62.4 km · 840 m ↑ · 3h 20m".
     public init(
-        route: RouteSummary, onDevice: OnDeviceState = .notOnDevice, stageAccent: Color? = nil
+        route: RouteSummary, onDevice: OnDeviceState = .notOnDevice, stageAccent: Color? = nil,
+        expiryBadge: String? = nil
     ) {
         self.init(
             title: route.name,
             subtitle: OBCFormat.plannedSubtitle(route),
             preview: route.trackPreview,
             onDevice: onDevice,
-            stageAccent: stageAccent
+            stageAccent: stageAccent,
+            expiryBadge: expiryBadge
         )
     }
 
@@ -87,6 +96,17 @@ public struct RouteCard: View {
                     .foregroundStyle(OBCTheme.inkFaint)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
+                if let expiryBadge {
+                    HStack(spacing: 5) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 10, weight: .medium))
+                        Text(expiryBadge)
+                            .font(.obcMono(size: 11))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(OBCTheme.inkFaint)
+                    .accessibilityIdentifier("routeCard.expiry")
+                }
             }
             .padding(.vertical, 13)
             .padding(.horizontal, 15)

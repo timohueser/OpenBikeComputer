@@ -19,6 +19,7 @@ struct SettingsScreen: View {
     init(
         transport: any DeviceTransport,
         bondStore: any BondStore,
+        retentionDefaults: any RetentionDefaultsStore,
         onDeviceRenamed: @escaping (String) -> Void,
         onForget: @escaping () -> Void,
         onOpenFirmwareUpdate: @escaping () -> Void,
@@ -27,6 +28,7 @@ struct SettingsScreen: View {
         _model = State(initialValue: SettingsModel(
             transport: transport,
             bondStore: bondStore,
+            retentionDefaults: retentionDefaults,
             onDeviceRenamed: onDeviceRenamed,
             onForget: onForget
         ))
@@ -92,7 +94,12 @@ struct RouteDetailScreen: View {
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
-    private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
+    private let onUploaded: ((DeviceObjectID?, UInt32, Retention) -> Void)?
+    /// Retention (epic #638 S7): the level the upload sheet seeds from, whether the
+    /// device is capable (hides the row/skips the confirm), and the detail-edit sink.
+    private let uploadRetentionSeed: Retention
+    private let supportsRetention: Bool
+    private let onEditRetention: ((Retention) -> Void)?
     private let isRide: Bool
     /// TR7 trip filing (planned only): the existing trips, this route's current
     /// trip (nil = loose → Add; non-nil → Move + Remove), and the two edits.
@@ -112,9 +119,15 @@ struct RouteDetailScreen: View {
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         deviceName: String,
+        retention: Retention? = nil,
+        deviceRetention: Retention? = nil,
+        deviceExpiresAt: Date? = nil,
+        uploadRetentionSeed: Retention = .appDefault,
+        supportsRetention: Bool = false,
+        onEditRetention: ((Retention) -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
-        onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
+        onUploaded: ((DeviceObjectID?, UInt32, Retention) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
         currentTripID: TripID? = nil,
         onAddToTrip: ((TripSelection) -> Void)? = nil,
@@ -124,11 +137,17 @@ struct RouteDetailScreen: View {
             transport: transport, dressing: dressing,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
             deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
+            retention: retention, deviceRetention: deviceRetention,
+            deviceExpiresAt: deviceExpiresAt,
+            supportsRetention: supportsRetention, onEditRetention: onEditRetention,
             rideGeometry: rideGeometry
         ))
         self.transport = transport
         self.activity = activity
         self.deviceName = deviceName
+        self.uploadRetentionSeed = uploadRetentionSeed
+        self.supportsRetention = supportsRetention
+        self.onEditRetention = onEditRetention
         self.onDelete = onDelete
         self.onRename = onRename
         self.onUploaded = onUploaded
@@ -148,13 +167,15 @@ struct RouteDetailScreen: View {
                     transport: transport,
                     blob: model.makeUploadBlob(),
                     deviceName: deviceName,
+                    retention: uploadRetentionSeed,
+                    supportsRetention: supportsRetention,
                     activity: activity,
-                    onCompleted: { [model] objectID, crc in
+                    onCompleted: { [model] objectID, crc, retention in
                         // Pin the committed id + fingerprint on the live model
                         // too — a second Upload on this same screen must
                         // replace, never duplicate.
                         if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
-                        onUploaded?(objectID, crc)
+                        onUploaded?(objectID, crc, retention)
                     }
                 ))
             },
@@ -235,8 +256,12 @@ struct ImportLandingHost: View {
     /// Existing trips for the TR7 import row's picker (empty = no trips yet, so
     /// the row still offers New trip…).
     private let tripPickerItems: [TripPickerItem]
+    /// Retention (epic #638 S7): the level a fresh upload's Auto-delete row seeds
+    /// from, and whether the device honours it.
+    private let uploadRetentionSeed: Retention
+    private let supportsRetention: Bool
     private let onSave: (RouteDetail, TripSelection) -> Void
-    private let onUploaded: (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void
+    private let onUploaded: (RouteDetail, TripSelection, DeviceObjectID?, UInt32, Retention) -> Void
     private let onPair: (RouteDetail, TripSelection) -> Void
     private let onCancel: () -> Void
 
@@ -263,8 +288,10 @@ struct ImportLandingHost: View {
         // reads "up to date" only on the same proof the list badge uses, never
         // on a stale link.
         replacingProvenCRC: UInt32? = nil,
+        uploadRetentionSeed: Retention = .appDefault,
+        supportsRetention: Bool = false,
         onSave: @escaping (RouteDetail, TripSelection) -> Void,
-        onUploaded: @escaping (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void,
+        onUploaded: @escaping (RouteDetail, TripSelection, DeviceObjectID?, UInt32, Retention) -> Void,
         onPair: @escaping (RouteDetail, TripSelection) -> Void,
         onCancel: @escaping () -> Void
     ) {
@@ -280,6 +307,8 @@ struct ImportLandingHost: View {
         self.deviceName = deviceName
         self.noDevicePaired = noDevicePaired
         self.tripPickerItems = tripPickerItems
+        self.uploadRetentionSeed = uploadRetentionSeed
+        self.supportsRetention = supportsRetention
         self.onSave = onSave
         self.onUploaded = onUploaded
         self.onPair = onPair
@@ -295,11 +324,13 @@ struct ImportLandingHost: View {
                     transport: transport,
                     blob: model.makeUploadBlob(),
                     deviceName: deviceName,
+                    retention: uploadRetentionSeed,
+                    supportsRetention: supportsRetention,
                     activity: activity,
-                    onCompleted: { [model] objectID, crc in
+                    onCompleted: { [model] objectID, crc, retention in
                         uploadCompleted = true
                         if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
-                        onUploaded(model.makeDetail(), tripSelection, objectID, crc)
+                        onUploaded(model.makeDetail(), tripSelection, objectID, crc, retention)
                     }
                 ))
             },

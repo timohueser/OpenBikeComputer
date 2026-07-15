@@ -21,6 +21,8 @@ public struct UploadSheetView: View {
     public var body: some View {
         OBCSheetContainer {
             switch model.phase {
+            case .ready:
+                readyContent
             case .uploading:
                 progressContent(interrupted: false)
             case .interrupted:
@@ -48,10 +50,56 @@ public struct UploadSheetView: View {
     /// one extra button, F₂ the taller centered confirm.
     private var sheetHeight: CGFloat {
         switch model.phase {
+        case .ready: model.supportsRetention ? 320 : 260
         case .uploading: 280
         case .interrupted: 340
         case .done: 320
         case .failed: 310
+        }
+    }
+
+    // MARK: Ready — the pre-transfer confirm (epic #638 S7)
+
+    private var readyContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 13) {
+                iconTile(systemImage: "square.and.arrow.up", color: OBCTheme.forest)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Upload to \(model.deviceName)")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(OBCTheme.ink)
+                        .accessibilityIdentifier("upload.readyTitle")
+                    Text(model.readySizeLine)
+                        .font(.obcMono(size: 12.5))
+                        .foregroundStyle(OBCTheme.inkFaint)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.bottom, 16)
+
+            // The Auto-delete row — hidden on a device without retention capability
+            // (S6 flag), which also skips the `.ready` confirm entirely.
+            if model.supportsRetention {
+                OBCGroupedSection {
+                    OBCRetentionRow(
+                        selection: model.retention,
+                        showsDivider: false,
+                        accessibilityID: "upload.autoDelete",
+                        onSelect: { model.selectRetention($0) }
+                    )
+                }
+                .padding(.bottom, 4)
+            }
+
+            Button("Upload to \(model.deviceName)") { model.beginUpload() }
+                .buttonStyle(.obcPrimary)
+                .disabled(!model.canUpload)
+                .accessibilityIdentifier("upload.begin")
+                .padding(.top, 14)
+            Button("Cancel") { model.dismiss() }
+                .buttonStyle(.obcGhost)
+                .accessibilityIdentifier("upload.cancel")
+                .padding(.top, 10)
         }
     }
 

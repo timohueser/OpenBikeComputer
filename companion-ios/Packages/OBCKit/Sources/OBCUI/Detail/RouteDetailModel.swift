@@ -45,6 +45,11 @@ public final class RouteDetailModel {
     /// Whether Upload can act right now.
     public var canUpload: Bool { connection == .connected }
 
+    /// The **desired** app-side retention for this route (epic #638 S7), editable
+    /// via ``editRetention(_:)``; `nil` reads as "Never". Only meaningful for a
+    /// planned route on the device — see ``showsRetentionRow``.
+    public private(set) var retention: Retention?
+
     // MARK: Fixed per-dressing facts
 
     public private(set) var preview: TrackPreview?
@@ -116,6 +121,52 @@ public final class RouteDetailModel {
     /// save/upload, so an import doesn't have to round-trip through Planned.
     public var isRenamable: Bool { true }
 
+    // MARK: Retention (epic #638 S7)
+
+    /// Whether the connected device honours retention (S6 flag) — with the
+    /// on-device check, gates the Auto-delete row.
+    @ObservationIgnored private let supportsRetention: Bool
+    /// The device's actual retention level (`nil` = unknown / pre-expiry firmware),
+    /// display-only. The row's value falls back to this when no desired level is
+    /// set, so the row tells the truth about what the device will do rather than
+    /// claiming "Never" over a live expiry.
+    @ObservationIgnored private let deviceRetention: Retention?
+    /// The device's expiry truth (`expires_at`), display-only — formatted into the
+    /// row's "Expires …" line, day granularity (extend-on-use makes it approximate).
+    @ObservationIgnored private let deviceExpiresAt: Date?
+    /// Propagates an edit back to the library/device (the main model pushes live or
+    /// at the next reconcile); `nil` in previews / dressings without an owner.
+    @ObservationIgnored private let onEditRetention: ((Retention) -> Void)?
+    @ObservationIgnored private let now: () -> Date
+
+    /// Show the Auto-delete row: the route is on the device (any `OnDeviceState`
+    /// except `notOnDevice`) **and** the device is capable. Off device, retention
+    /// is chosen at upload — the upload sheet owns that moment.
+    public var showsRetentionRow: Bool {
+        supportsRetention && deviceCopyState != .notOnDevice
+    }
+
+    /// The row's value — the **desired** level when set, else the device's actual
+    /// level when known (so the row tells the truth about what will happen, not a
+    /// misleading "Never" over a live expiry), else "Never". Display-only: a nil
+    /// desired still pushes nothing at reconcile (invariant 6); the picker opening
+    /// on this value just means an edit starts from the truth.
+    public var retentionValue: Retention { retention ?? deviceRetention ?? .never }
+
+    /// The row's device-truth detail line ("Expires in 2 days" / "Expires Jul 23"),
+    /// or `nil` when the device reports no expiry (omit the line, don't show 0).
+    public var expiryLine: String? {
+        deviceExpiresAt.map { OBCFormat.routeExpiry($0, relativeTo: now()) }
+    }
+
+    /// Edit the route's retention from the detail (S7): update the shown value and
+    /// hand the choice to the owner, which stores it and pushes (live when
+    /// connected, else at the next reconcile). No "pending" chrome.
+    public func editRetention(_ retention: Retention) {
+        self.retention = retention
+        onEditRetention?(retention)
+    }
+
     // MARK: Wiring
 
     private let transport: any DeviceTransport
@@ -133,6 +184,15 @@ public final class RouteDetailModel {
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         importedRouteID: RouteID? = nil,
+        // Retention (epic #638 S7): the desired level to show/edit, the device's
+        // actual level + expiry truth to phrase, the capability flag, and the edit
+        // sink. All meaningful only for a planned route on the device.
+        retention: Retention? = nil,
+        deviceRetention: Retention? = nil,
+        deviceExpiresAt: Date? = nil,
+        supportsRetention: Bool = false,
+        onEditRetention: ((Retention) -> Void)? = nil,
+        now: @escaping () -> Date = Date.init,
         // The tracked dressing's full tracklog (#294 follow-up), threaded from
         // the library's synced `Ride.points` — a ride carries no ImportedRoute,
         // so it can't ride along on `uploadGeometry` the way planned/imported do.
@@ -142,6 +202,12 @@ public final class RouteDetailModel {
         self.dressing = dressing
         self.uploadTargetObjectID = deviceObjectID
         self.provenCommittedCRC = provenCommittedCRC
+        self.retention = retention
+        self.deviceRetention = deviceRetention
+        self.deviceExpiresAt = deviceExpiresAt
+        self.supportsRetention = supportsRetention
+        self.onEditRetention = onEditRetention
+        self.now = now
         self.importedID = importedRouteID ?? RouteID("imported-\(UUID().uuidString.lowercased())")
         switch dressing {
         case .imported(let route, _): uploadGeometry = route  // E1 carries its own geometry
