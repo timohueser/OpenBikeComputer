@@ -173,23 +173,36 @@ final class ProtocolVectorTests: XCTestCase {
 
     func testRouteListVectorDecodesAndReEncodesByteExactly() throws {
         let bytes = try fixture("route-list.bin")
+        // The regenerated fixture (epic #638 S4): a 6-byte header advertising
+        // **entry_len 84** and 3 entries — the 76-byte v2 core + the auto-expiry
+        // tail (`expires_at u32 · retention u8 · reserved[3]`), decoded here by the
+        // header's `entry_len`, not a hard-coded length (the S6-fixed decoder).
+        XCTAssertEqual(bytes[bytes.startIndex + 1], 84, "entry_len is 84 in the v2+expiry fixture")
         let entries = try RouteList.decode(bytes)
-        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries.count, 3)
 
         // Entry fields come from the stored routes' OBCR headers (ids continue the transcript's
         // assigned id 7); byte_len sizes each stored file. v2 appends the whole-object `crc32`
-        // (the content fingerprint) to each 76-byte entry.
+        // (the content fingerprint); the expiry tail sits **after** it, outside its coverage.
         let waypointsRoute = try fixture("route-waypoints.obcr")
         let plainRoute = try fixture("route-plain.obcr")
+        // Entry 0 — a live countdown: `expires_at` non-zero, retention = 3 (two weeks).
         XCTAssertEqual(entries[0], RouteListEntry(
             objectID: 7, byteLen: UInt32(waypointsRoute.count), distanceMeters: 2207,
             ascentMeters: 76, pointCount: 9, waypointCount: 2, name: "Vector Loop",
-            crc32: CRC32.checksum(waypointsRoute)
+            crc32: CRC32.checksum(waypointsRoute), expiresAt: 1_784_808_000, retention: 3
         ))
+        // Entry 1 — clock not started (`last_used == 0` → `expires_at == 0` → nil), retention = 1.
         XCTAssertEqual(entries[1], RouteListEntry(
             objectID: 8, byteLen: UInt32(plainRoute.count), distanceMeters: 2207,
             ascentMeters: 76, pointCount: 9, waypointCount: 0, name: "Vector Loop",
-            crc32: CRC32.checksum(plainRoute)
+            crc32: CRC32.checksum(plainRoute), expiresAt: nil, retention: 1
+        ))
+        // Entry 2 — retention "never" (0), no expiry.
+        XCTAssertEqual(entries[2], RouteListEntry(
+            objectID: 9, byteLen: UInt32(plainRoute.count), distanceMeters: 2207,
+            ascentMeters: 76, pointCount: 9, waypointCount: 0, name: "Vector Loop",
+            crc32: 0xEBD7_D5B6, expiresAt: nil, retention: 0
         ))
         // The CRC is the OBCR object's own — the app can re-derive it to verify identity (V6).
         XCTAssertEqual(entries[0].crc32, 0x1F66_C051)

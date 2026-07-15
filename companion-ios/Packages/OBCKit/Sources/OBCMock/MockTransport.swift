@@ -156,6 +156,27 @@ public struct MockTransport: DeviceTransport {
         control.recordAckedRides(ids)
     }
 
+    public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome {
+        // `setClock` (spec §4.4 cmd 5, epic #638). Same prelude as every
+        // control-plane op, so an unreachable link or armed fault behaves like the
+        // real write. Records the sample (the connect-time stamp tests assert it),
+        // and answers `unsupported` in the old-firmware scenario (the gated state
+        // S7 UI-tests) — validating like the firmware otherwise.
+        try await preludeThrowing()
+        return control.recordSetClock(sample)
+    }
+
+    public func setRouteRetention(
+        _ id: DeviceObjectID, _ retention: Retention
+    ) async throws -> RetentionWriteOutcome {
+        // `setRouteRetention` (spec §4.4 cmd 6, epic #638). Validates like the
+        // firmware: `unsupported` on the old-firmware knob, `notFound` for an id
+        // the device doesn't hold, else applies the level (recording it so the
+        // next `listRoutes()` reflects the fresh `expires_at`).
+        try await preludeThrowing()
+        return control.applyRouteRetention(id, retention)
+    }
+
     public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
         // A device object id, exactly like the real transport ("download the
         // route object"). Library-saved routes answer E2 from their own record

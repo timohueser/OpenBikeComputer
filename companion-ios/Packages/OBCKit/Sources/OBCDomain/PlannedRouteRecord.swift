@@ -64,6 +64,23 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     /// when an upload's result lands; `nil` when the copy's content is unknown
     /// (pre-fingerprint library), which reads as outdated until the next push.
     public var uploadedCRC32: UInt32?
+    /// The **desired** app-side retention for this route (epic #638) — what the
+    /// app pushes via `setRouteRetention` at upload and reconcile. **`nil` means
+    /// "not set"** and pushes *nothing* (invariant 6: a route uploaded before this
+    /// feature existed must never surprise-delete — it migrates as nil → the device
+    /// keeps its `Never` default). An upload opts a `nil` record into
+    /// ``Retention/appDefault`` (see the upload push). Distinct from the device's
+    /// reported level below.
+    public var retention: Retention?
+    /// Device truth from the last `routeList` reconcile: when the device will
+    /// auto-delete this route (`nil` = never / not started / pre-expiry firmware).
+    /// **Display-only** — it goes stale gracefully (extend-on-use moves it), so S7
+    /// shows day granularity, not a live countdown.
+    public var deviceExpiresAt: Date?
+    /// Device truth from the last reconcile: the retention level the device
+    /// currently stores for this route (`nil` = unknown / pre-expiry firmware).
+    /// The reconcile compares it against ``retention`` to decide whether to push.
+    public var deviceRetention: Retention?
     /// When the route entered the library — newest-first list order.
     public var addedAt: Date
 
@@ -79,6 +96,9 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
         sourceFileData: Data,
         deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
+        retention: Retention? = nil,
+        deviceExpiresAt: Date? = nil,
+        deviceRetention: Retention? = nil,
         addedAt: Date = Date()
     ) {
         self.summary = summary
@@ -87,6 +107,9 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
         self.sourceFileData = sourceFileData
         self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
+        self.retention = retention
+        self.deviceExpiresAt = deviceExpiresAt
+        self.deviceRetention = deviceRetention
         self.addedAt = addedAt
     }
 

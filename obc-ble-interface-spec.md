@@ -1066,13 +1066,13 @@ changes on v2, not part of the v1→v2 break above:
   `entry_len` mechanism. The 76-byte v2 core is byte-identical; `rideList` (72) and
   `tripList` (76) are untouched.
 
-Their iOS mirror repin — send `setClock`/`setRouteRetention` at the documented
-times, decode the 84-byte `routeList` entry by `entry_len`, and pin the
+Their iOS mirror repin — `setClock`/`setRouteRetention` sent at the documented
+times, the 84-byte `routeList` entry decoded by `entry_len`, and the
 `command-set-clock.bin` / `command-set-route-retention.bin` / regenerated
-`route-list.bin` fixtures — lands with **S6 (#646)**, the epic's iOS transport
-sub-issue. Until then the iOS `routeList` decoder must keep passing by stepping over
-`entry_len` (it reads the 76-byte prefix it knows); a decoder that hard-codes the
-entry length is an S6 fix.
+`route-list.bin` fixtures pinned — **landed in S6 (#646)**, the epic's iOS
+transport sub-issue. The iOS `routeList` decoder is `entry_len`-driven (it reads
+the 76-byte core it knows and fills the expiry tail when the entry carries it), so
+a pre-expiry 76-byte device and an 84-byte device both decode.
 
 ## Reference implementation
 

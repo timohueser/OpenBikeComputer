@@ -86,7 +86,7 @@ not be reused**:
 
 | `XXXX` | Characteristic | Properties | Role |
 |---|---|---|---|
-| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16` — routes (1) and trips (9); a trip delete is **non-cascading**, members become top-level, unknown id → `notFound`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below), `forgetBond` (cmd 4: no args — dissolve the device-side bond, below) — spec §4.4 |
+| `0001` | `command` | write | small imperatives: `deleteObject` (cmd 1: `type u8 · id u16` — routes (1) and trips (9); a trip delete is **non-cascading**, members become top-level, unknown id → `notFound`), `ackRides` (cmd 2: `count u8 · count × id u16` — the ride-possession ack, below), `installFw` (cmd 3: no args — request installing the staged `/UPDATE.BIN`, S7 below), `forgetBond` (cmd 4: no args — dissolve the device-side bond, below), `setClock` (cmd 5: `utc u32 · offset_min i16` — stamp the trusted wall clock every connect, auto-expiry below), `setRouteRetention` (cmd 6: `object_id u16 · retention u8` — set a route's expiry policy, below) — spec §4.4 |
 | `0002` | `status` | notify | typed device → app messages (`StatusMessage`: transferResult / storeChanged / commandResult / **downloadAnnounce**) — the **sole** device → app channel, spec §4.3 |
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
 | `0005` | `transferControl` | **write** | open / abort a CoC object transfer (§ below) — **write-only, no CCCD** in v2 |
@@ -264,6 +264,24 @@ ride the phone already holds was never synced. `deleteObject` for a ride
 (type 2) stays **reserved** — the app tombstones synced rides locally so a
 re-sync can't resurrect them.
 
+**Route auto-expiry — `setClock` + `setRouteRetention` (epic #638, spec §4.4 cmd
+5/6, S6).** Additive on protocol v2 (no version bump). The device has no RTC, so
+its clock is untrusted at boot and **nothing deletes from an untrusted clock**;
+the app stamps a trusted clock on **every connect, after encryption and before the
+first `ackRides` / reconcile write** — `setClock` = `utc u32 · offset_min i16`
+(unix seconds + the phone's local UTC offset, DST folded in). A route's
+**retention** (`0` never · `1` 1 day · `2` 1 week · `3` 2 weeks · `4` 1 month ·
+`5` 2 months) is device-local state the app sets with `setRouteRetention` =
+`object_id u16 · retention u8` — after an upload commits (the route opts into the
+app default, two weeks) and whenever the desired level diverges from the device's
+at reconcile. `expiry = last_used + retention` is computed device-side; the app
+**displays** the device's `expires_at` (the `routeList` tail, below) and never runs
+the math. A device predating expiry answers both commands `unknownCommand` → the
+app reads a **capability flag** (`supportsRetention = false`), hides the expiry UI,
+and sends no retention — a supported peer, not an error. `nil` desired retention
+(every route imported before the feature) pushes nothing, so shipping expiry can't
+surprise-delete an old route.
+
 **Firmware delivery — `fwImage` + `installFw` (S7, spec §7.6 / §4.4).** The app
 imports an `UPDATE.BIN` (a Files pick — the whole OBCU container, `OBCU_Spec.md`
 §1), validates its 64-byte header **and both CRC-32s** before offering it, then
@@ -312,12 +330,18 @@ Routes and rides both cross the wire as **compact binary**, never XML:
   catalog size before the device's `MAX_RIDES`/`MAX_ROUTES` cap, so the list is
   **truncated iff `total > count`** — the app surfaces a one-line warning instead
   of silently answering "up to date". Entry length is now **per-list**: `routeList`
-  entries are **76 bytes** (a trailing whole-object `crc32`, `0` = unknown — the
-  content fingerprint for identity-verified route badges + adopt-by-content, V6
-  #770), `rideList` entries stay 72. A stored route whose genuine CRC-32 happens
-  to be `0` (probability 2⁻³²) is indistinguishable from "unknown" and is read as
-  unknown — merely "no badge until re-upload", the conservative direction; don't
-  special-case it. **diagnostics** is a CoC text blob (spec §7.5).
+    entries are **76 bytes** in the v2 core (a trailing whole-object `crc32`, `0` =
+  unknown — the content fingerprint for identity-verified route badges +
+  adopt-by-content, V6 #770), and grow to **84 bytes** with the auto-expiry tail
+  (epic #638, spec §7.4): `expires_at u32 · retention u8 · reserved u8[3]`,
+  appended **after** the `crc32` (outside its coverage — device-computed volatile
+  state). The decoder is **`entry_len`-driven**: a pre-expiry 76-byte device reads
+  the tail as `nil`/`nil`, an 84-byte device fills it, and a longer future entry's
+  extra tail is skipped. `rideList` (72) and `tripList` (76) are untouched. A
+  stored route whose genuine CRC-32 happens to be `0` (probability 2⁻³²) is
+  indistinguishable from "unknown" and is read as unknown — merely "no badge until
+  re-upload", the conservative direction; don't special-case it. **diagnostics**
+  is a CoC text blob (spec §7.5).
 - **Trips** — a **trip object v1** (type 9, spec §7.7) groups routes: a 56-byte
   header (`version 1 · stage_count u16 · name ≤ 48`) + `stage_count × u16` route
   object **ids** in ride order. It **references** routes, never carries route bytes;
