@@ -93,6 +93,13 @@ ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:sta
 name = "ble_central_repro"
 required-features = ["ble"]
 
+# Throwaway microSD read-speed harness (renderer is SD-bound): sweeps SPI clock (M8/M16) ×
+# block-batch (CMD17 vs CMD18) × read-shape (seq / rand-4k / rand-512) against the real `.obcm`
+# on the card, with an FNV integrity guard. Builds on the default (map-only) features.
+#   cargo run --release --bin sd_bench
+[[bin]]
+name = "sd_bench"
+
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
