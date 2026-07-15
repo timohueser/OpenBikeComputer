@@ -97,6 +97,14 @@ public final class MainScreenModel {
     /// here: the possession ack filter, route-link minting on upload, the
     /// badge reconcile, and the legacy-claim migration.
     public private(set) var connectedScope: LibraryScope?
+    /// Whether the connected device understands **auto-expiry** (epic #638) —
+    /// settled by each connection's `setClock` in the prologue (`.stamped` → true,
+    /// `.unsupported` → false; a thrown/absent stamp leaves the last verdict, so a
+    /// flaky reconnect doesn't hide a known-capable device). Optimistic before the
+    /// first stamp. **S7 hides the expiry UI behind this**, and the retention
+    /// pushes are gated on it. A device predating expiry is a supported peer, not
+    /// an error.
+    public private(set) var supportsRetention = true
     /// Whether the identity read has settled this session (with an answer *or*
     /// a failed read) — the other half of the `canSync` gate, so an id-keyed
     /// write can never run ahead of the #303 verdict. See `runIdentityCheck`.
@@ -448,6 +456,11 @@ public final class MainScreenModel {
         // Unknown until proven, every connection: the device may have been
         // wiped (new epoch) or swapped since the last read.
         connectedScope = nil
+        // Stamp the device's trusted wall clock (epic #638) on **every connect,
+        // before the first ack / reconcile write** (spec §4.4): the sweep's ride
+        // `synced_at` stamping assumes a trusted clock, and this is what
+        // establishes it. Also settles `supportsRetention` for the connection.
+        await stampDeviceClock()
         if let info = try? await transport.deviceInfo() {
             deviceName = info.name
             if case let .protocolMismatch(expected, found)? =
@@ -509,6 +522,58 @@ public final class MainScreenModel {
         trashedRides = trashedList()
     }
 
+    /// Stamp the device's trusted wall clock (`setClock`, epic #638) with the
+    /// phone's current time + local UTC offset, and settle `supportsRetention` for
+    /// the connection. `.unsupported` (a device predating expiry) is a supported
+    /// peer — no error surfaced. A thrown/absent stamp (a link dying mid-prologue)
+    /// leaves the last verdict untouched: the next connect re-stamps, and a flaky
+    /// reconnect must not flip a known-capable device to "hidden".
+    private func stampDeviceClock() async {
+        guard let outcome = try? await transport.setClock(WallClockSample()) else { return }
+        supportsRetention = (outcome == .stamped)
+    }
+
+    /// The reconcile half of route retention (epic #638): land the device's
+    /// reported `expires_at`/`retention` on each linked record (display-only) and
+    /// push the desired level when it diverges. Capability-gated — a device
+    /// predating expiry reports `nil` retention, so nothing pushes — and a `nil`
+    /// **desired** level never pushes (invariant 6: a route uploaded before this
+    /// feature migrates as "not set" and can't be surprise-deleted). Scope-gated
+    /// via the same valid-link predicate the badge reconcile uses.
+    private func reconcileRetention(scope: LibraryScope, catalog: [RouteCatalogEntry]) {
+        let byID = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for (id, record) in plannedRecords {
+            guard let link = record.deviceLink, link.matches(scope),
+                let entry = byID[link.objectID] else { continue }
+            var updated = record
+            // Device truth, refreshed wholesale from the catalog (display-only).
+            updated.deviceExpiresAt = entry.expiresAt
+            updated.deviceRetention = entry.retention
+            // Push the desired level when it's set and diverges from the device's.
+            // `entry.retention != nil` is the capability signal (a pre-expiry
+            // device reports no retention), belt-and-braces with the flag.
+            if supportsRetention, let desired = record.retention,
+                entry.retention != nil, desired != entry.retention {
+                pushRetention(desired, to: link.objectID)
+                updated.deviceRetention = desired  // optimistic; a later list confirms
+            }
+            if updated != record {
+                plannedRecords[id] = updated
+                library.savePlannedRoute(updated)
+            }
+        }
+    }
+
+    /// Fire-and-forget `setRouteRetention` (epic #638) — best-effort like the
+    /// possession ack / name reconcile: a failed push self-heals at the next
+    /// reconcile (the desired level still diverges) or on reconnect, so the error
+    /// is dropped rather than surfaced. Captures only the transport.
+    private func pushRetention(_ retention: Retention, to objectID: DeviceObjectID) {
+        Task { [transport] in
+            _ = try? await transport.setRouteRetention(objectID, retention)
+        }
+    }
+
     /// True-up every record's `deviceLink` against the device's live catalog
     /// (device object ids **and** content CRCs — #770), then adopt-by-content.
     /// Absence, or a catalog CRC that disagrees with what we committed, drops
@@ -553,6 +618,9 @@ public final class MainScreenModel {
         // 2) Adopt-by-content — heal identical unlinked copies (app reinstall,
         //    device switch-back) without a re-upload.
         adoptByContent(scope: scope, catalog: deviceRoutes)
+        // 3) Retention (epic #638): land the device's expiry truth on each linked
+        //    record and push the desired level where it diverges.
+        reconcileRetention(scope: scope, catalog: deviceRoutes)
         refreshOnDeviceStates()
     }
 
@@ -1300,6 +1368,19 @@ public final class MainScreenModel {
             // before the next `listRoutes()` catches up. A later catalog read
             // overwrites this with what the device actually reports.
             deviceRouteCRCs[objectID] = crc32
+            // Retention opt-in on upload (epic #638): an upload is an explicit
+            // "put this on the device now", so a route with no desired level yet
+            // takes the app default; an existing choice is kept. Push it so the
+            // fresh route gets its expiry without a second upload — the device
+            // stamps `last_used = now` at commit, so `expires_at = now +
+            // retention`. Capability-gated (skipped, but the desired level is
+            // still recorded for a later reconcile push against newer firmware).
+            let retention = record.retention ?? .appDefault
+            record.retention = retention
+            if supportsRetention {
+                pushRetention(retention, to: objectID)
+                record.deviceRetention = retention  // optimistic; a later list confirms
+            }
         } else {
             record.deviceLink = nil
             record.uploadedCRC32 = nil

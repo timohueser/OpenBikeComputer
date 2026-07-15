@@ -1,8 +1,13 @@
 import Foundation
 
 /// The `routeList` object (spec §7.4) — the catalog the device serves over the CoC (it outgrows the
-/// 512-byte ATT cap fast). A 6-byte header + fixed **76-byte** entries, so entry `k` sits at
-/// `6 + 76k` — O(1) indexing, no string scanning.
+/// 512-byte ATT cap fast). A 6-byte header + fixed-size entries, so entry `k` sits at
+/// `6 + entryLen·k` — O(1) indexing, no string scanning. The entry grew to **84 bytes** with the
+/// auto-expiry tail (epic #638): the 76-byte v2 core (through `crc32`) plus `expires_at u32 ·
+/// retention u8 · reserved u8[3]`, appended **after** the content `crc32` (outside its coverage —
+/// device-computed volatile state). Decode is `entryLen`-driven: a pre-expiry **76-byte** device
+/// reads the core with both tail fields `nil`, an 84-byte device fills them, and a longer future
+/// entry has its known 76-byte prefix decoded and its tail skipped.
 ///
 /// The device encodes (its catalog scan → the wire); the app decodes (`listRoutes`). This mirrors
 /// the firmware `obc-ble` `list` codec field-for-field and is pinned byte-for-byte by
@@ -23,16 +28,33 @@ public struct RouteListEntry: Equatable, Sendable {
     /// `0` = unknown (a not-yet-filled side-load sidecar, or a genuine CRC of `0`,
     /// read the same by spec — no special-casing).
     public var crc32: UInt32
+    /// The device's computed auto-delete instant, unix seconds (epic #638, the
+    /// entry's `expires_at` tail at offset 76). `nil` when the entry carried no
+    /// tail (a pre-expiry 76-byte device); a wire `0` (never / countdown not
+    /// started) also decodes to `nil` — the app can't tell those apart and treats
+    /// both as "no known expiry".
+    public var expiresAt: UInt32?
+    /// The device's stored retention level (epic #638, the entry's `retention`
+    /// tail byte at offset 80). `nil` when the entry carried no tail; a byte is
+    /// kept raw here (0…5) and sanitised at the domain boundary
+    /// (``Retention/init(safeRawValue:)``).
+    public var retention: UInt8?
 
-    /// The fixed entry size (spec §7.4). Readers step by the header's `entryLen`, not this constant,
-    /// so a future longer entry stays forward-compatible; this is what *this* codec writes.
-    public static let encodedLength = 76
+    /// The v2 **core** entry size (spec §7.4, through `crc32`) — the smallest slot
+    /// this codec can decode, and the `minEntryLen` the list walk enforces. A
+    /// device advertising a shorter `entryLen` is rejected.
+    public static let coreLength = 76
+    /// The entry size *this codec writes* (the v2 core + the epic-#638 expiry
+    /// tail). Readers step by the header's `entryLen`, not this constant, so a
+    /// device serving the 76-byte core or a longer future entry both decode.
+    public static let encodedLength = 84
     /// The name-field cap (§7.4, matches the OBCR route-name field).
     public static let maxNameLength = 48
 
     public init(
         objectID: UInt16, byteLen: UInt32, distanceMeters: UInt32, ascentMeters: UInt32,
-        pointCount: UInt32, waypointCount: UInt16, name: String, crc32: UInt32 = 0
+        pointCount: UInt32, waypointCount: UInt16, name: String, crc32: UInt32 = 0,
+        expiresAt: UInt32? = nil, retention: UInt8? = nil
     ) {
         self.objectID = objectID
         self.byteLen = byteLen
@@ -42,6 +64,8 @@ public struct RouteListEntry: Equatable, Sendable {
         self.waypointCount = waypointCount
         self.name = name
         self.crc32 = crc32
+        self.expiresAt = expiresAt
+        self.retention = retention
     }
 
     public func encode() -> Data {
@@ -58,15 +82,24 @@ public struct RouteListEntry: Equatable, Sendable {
         for (i, byte) in nameBytes.enumerated() { data[data.startIndex + 23 + i] = byte }
         // 23+n .. 71 zero padding
         data.putLE(crc32, at: 72)
+        // The auto-expiry tail (epic #638), after the content crc32: `nil` writes
+        // `0` (the wire's "no known expiry" / "keep forever"), 76..80 zero padding.
+        data.putLE(expiresAt ?? 0, at: 76)
+        data[data.startIndex + 80] = retention ?? 0
         return data
     }
 
-    /// Decode one entry from the first ``encodedLength`` bytes of an entry slot (a longer future
-    /// entry's tail is ignored, per the header's `entryLen` rule).
+    /// Decode one entry from an entry slot. Reads the 76-byte v2 core it always
+    /// knows, then the epic-#638 expiry tail iff the slot carries it (`entryLen ≥
+    /// 84`): `expires_at` (u32 LE @ 76; `0` → `nil`) + `retention` (u8 @ 80). A
+    /// 76-byte slot leaves both `nil`; a longer future entry's extra tail is
+    /// ignored, per the header's `entryLen` rule.
     public init(decoding data: Data) throws {
-        guard data.count >= Self.encodedLength else { throw DescriptorError.truncated }
+        guard data.count >= Self.coreLength else { throw DescriptorError.truncated }
         let b = data.startIndex
         let nameLen = Int(min(data[b + 22], UInt8(Self.maxNameLength)))
+        let hasExpiryTail = data.count >= Self.encodedLength
+        let rawExpiry: UInt32? = hasExpiryTail ? data.getLE(at: 76) : nil
         self.init(
             objectID: data.getLE(at: 0),
             byteLen: data.getLE(at: 4),
@@ -75,7 +108,9 @@ public struct RouteListEntry: Equatable, Sendable {
             pointCount: data.getLE(at: 16),
             waypointCount: data.getLE(at: 20),
             name: String(decoding: data[(b + 23)..<(b + 23 + nameLen)], as: UTF8.self),
-            crc32: data.getLE(at: 72)
+            crc32: data.getLE(at: 72),
+            expiresAt: (rawExpiry ?? 0) == 0 ? nil : rawExpiry,
+            retention: hasExpiryTail ? data[b + 80] : nil
         )
     }
 }
@@ -90,11 +125,15 @@ public enum RouteList {
     /// The header's `total` is decoded but not surfaced here — routes don't warn on truncation
     /// in v2 (only rides do, via ``RideList``); `crc32` per entry is the identity signal V6 uses.
     public static func decode(_ data: Data) throws -> [RouteListEntry] {
-        try decodeList(data, minEntryLen: RouteListEntry.encodedLength) { try RouteListEntry(decoding: $0) }.entries
+        // `minEntryLen` is the v2 **core** (76), not what this codec writes (84):
+        // a pre-expiry device serving 76-byte entries must still decode (both tail
+        // fields `nil`), and the walk steps by the header's own `entryLen`.
+        try decodeList(data, minEntryLen: RouteListEntry.coreLength) { try RouteListEntry(decoding: $0) }.entries
     }
 
-    /// Encode a `routeList` object (header + packed 76-byte entries) — the device's job, here for the
-    /// vector round-trip pin. `total` = `count` (a round-trip never models truncation).
+    /// Encode a `routeList` object (header + packed 84-byte entries, the v2 core + the epic-#638
+    /// expiry tail) — the device's job, here for the vector round-trip pin. `total` = `count` (a
+    /// round-trip never models truncation).
     public static func encode(_ entries: [RouteListEntry]) -> Data {
         var data = Data([version, UInt8(RouteListEntry.encodedLength)])
         data.appendLE(UInt16(entries.count))

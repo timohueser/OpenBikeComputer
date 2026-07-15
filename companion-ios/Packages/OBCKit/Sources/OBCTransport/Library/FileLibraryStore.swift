@@ -429,6 +429,16 @@ private struct PlannedRouteFile: Codable {
     /// Optional-decoded: a pre-fingerprint file loads as "content unknown",
     /// which reads as outdated and self-heals on the next upload.
     var uploadedCRC32: UInt32?
+    /// The **desired** app-side retention level (epic #638) — a bare `u8` on disk,
+    /// wrapped into the domain's `Retention` at the boundary. **Optional-decoded:
+    /// a pre-expiry file loads as `nil`** (= "not set", pushes nothing — invariant
+    /// 6, no surprise deletes). Additive; no schema bump (unknown keys are skipped).
+    var retention: UInt8?
+    /// Device truth from the last reconcile — display-only, additive/optional.
+    /// Kept across launches so the detail screen shows a plausible expiry before
+    /// the first reconnect reconcile refreshes it; `nil` on a pre-expiry file.
+    var deviceExpiresAt: Date?
+    var deviceRetention: UInt8?
     var addedAt: Date
 
     init(_ record: PlannedRouteRecord) {
@@ -440,6 +450,9 @@ private struct PlannedRouteFile: Codable {
         deviceSerial = record.deviceLink?.serial
         deviceStoreEpoch = record.deviceLink?.epoch
         uploadedCRC32 = record.uploadedCRC32
+        retention = record.retention?.rawValue
+        deviceExpiresAt = record.deviceExpiresAt
+        deviceRetention = record.deviceRetention?.rawValue
         addedAt = record.addedAt
     }
 
@@ -459,6 +472,11 @@ private struct PlannedRouteFile: Codable {
             sourceFileData: sourceFileData,
             deviceLink: link,
             uploadedCRC32: uploadedCRC32,
+            // A desired level is kept as-set (nil stays nil — pushes nothing); the
+            // device fields sanitise an unknown byte to `.never` on read.
+            retention: retention.map(Retention.init(safeRawValue:)),
+            deviceExpiresAt: deviceExpiresAt,
+            deviceRetention: deviceRetention.map(Retention.init(safeRawValue:)),
             addedAt: addedAt
         )
     }
