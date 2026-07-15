@@ -120,6 +120,7 @@ struct RouteDetailScreen: View {
         provenCommittedCRC: UInt32? = nil,
         deviceName: String,
         retention: Retention? = nil,
+        deviceRetention: Retention? = nil,
         deviceExpiresAt: Date? = nil,
         uploadRetentionSeed: Retention = .appDefault,
         supportsRetention: Bool = false,
@@ -136,7 +137,8 @@ struct RouteDetailScreen: View {
             transport: transport, dressing: dressing,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
             deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
-            retention: retention, deviceExpiresAt: deviceExpiresAt,
+            retention: retention, deviceRetention: deviceRetention,
+            deviceExpiresAt: deviceExpiresAt,
             supportsRetention: supportsRetention, onEditRetention: onEditRetention,
             rideGeometry: rideGeometry
         ))

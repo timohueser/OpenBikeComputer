@@ -320,6 +320,7 @@ struct RootView: View {
                     // sheet, the capability gate, and the edit sink (pushes live
                     // or at the next reconcile).
                     retention: mainModel.plannedRetention(for: id),
+                    deviceRetention: mainModel.plannedDeviceRetention(for: id),
                     deviceExpiresAt: mainModel.plannedDeviceExpiresAt(for: id),
                     uploadRetentionSeed: mainModel.plannedRetention(for: id) ?? mainModel.defaultRetention,
                     supportsRetention: mainModel.supportsRetention,

@@ -1368,6 +1368,14 @@ public final class MainScreenModel {
         return OBCFormat.routeExpiryBadge(expiresAt, relativeTo: now())
     }
 
+    /// The device's actual retention level for this route (`nil` = unknown /
+    /// pre-expiry firmware) — the route detail falls back to it for the row value
+    /// when no desired level is set, so the row doesn't claim "Never" over a live
+    /// expiry. Display-only; the push still gates on the *desired* level.
+    public func plannedDeviceRetention(for id: RouteID) -> Retention? {
+        plannedRecords[id]?.deviceRetention
+    }
+
     /// The device's expiry truth for this route (`nil` = never / not started /
     /// pre-expiry firmware) — the route detail formats it into its "Expires …"
     /// line. Display-only; it goes stale gracefully (extend-on-use moves it).

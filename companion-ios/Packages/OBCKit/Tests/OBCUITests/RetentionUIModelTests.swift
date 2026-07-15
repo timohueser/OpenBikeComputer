@@ -136,7 +136,8 @@ import OBCTransport
     // MARK: Route detail — gating + expiry line
 
     private func detailModel(
-        onDevice: Bool, supportsRetention: Bool, retention: Retention?, expiresAt: Date?,
+        onDevice: Bool, supportsRetention: Bool, retention: Retention?,
+        deviceRetention: Retention? = nil, expiresAt: Date?,
         onEdit: ((Retention) -> Void)? = nil, now: @escaping () -> Date = Date.init
     ) -> RouteDetailModel {
         RouteDetailModel(
@@ -144,7 +145,7 @@ import OBCTransport
             dressing: .planned(RouteSummary(
                 id: RouteID("r"), name: "R", distanceMeters: 1, elevationGainMeters: 1)),
             provenCommittedCRC: onDevice ? 42 : nil,
-            retention: retention, deviceExpiresAt: expiresAt,
+            retention: retention, deviceRetention: deviceRetention, deviceExpiresAt: expiresAt,
             supportsRetention: supportsRetention, onEditRetention: onEdit, now: now)
     }
 
@@ -157,9 +158,39 @@ import OBCTransport
             .showsRetentionRow)
     }
 
-    @Test func detailRowValueDefaultsToNeverWhenUnset() {
-        #expect(detailModel(onDevice: true, supportsRetention: true, retention: nil, expiresAt: nil)
-            .retentionValue == .never)
+    /// The row value follows the truth in three steps: desired when set, else the
+    /// device's actual level when known, else "Never".
+    @Test func detailRowValueUsesDesiredWhenSet() {
+        // Desired wins even when the device reports a different level.
+        #expect(detailModel(
+            onDevice: true, supportsRetention: true, retention: .twoWeeks,
+            deviceRetention: .oneWeek, expiresAt: nil).retentionValue == .twoWeeks)
+    }
+
+    @Test func detailRowValueFallsBackToDeviceRetentionWhenDesiredNil() {
+        #expect(detailModel(
+            onDevice: true, supportsRetention: true, retention: nil,
+            deviceRetention: .oneWeek, expiresAt: nil).retentionValue == .oneWeek)
+    }
+
+    @Test func detailRowValueIsNeverWhenNeitherIsSet() {
+        #expect(detailModel(
+            onDevice: true, supportsRetention: true, retention: nil,
+            deviceRetention: nil, expiresAt: nil).retentionValue == .never)
+    }
+
+    /// The regression the owner flagged: a route with no desired level but a live
+    /// device expiry must NOT read "Never" over "Expires in 1 day" — the value now
+    /// shows the device's actual level while the expiry line still renders.
+    @Test func detailRowNeverReadsNeverOverALiveExpiry() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let model = detailModel(
+            onDevice: true, supportsRetention: true, retention: nil,
+            deviceRetention: .oneWeek, expiresAt: now.addingTimeInterval(20 * 3_600),
+            now: { now })
+        #expect(model.retentionValue == .oneWeek)     // not .never
+        #expect(model.retentionValue != .never)
+        #expect(model.expiryLine == "Expires today")  // the live expiry still shows
     }
 
     @Test func detailExpiryLineOmittedWhenNoDeviceExpiry() {
