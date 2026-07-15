@@ -31,6 +31,7 @@ use super::{palette, Ctx, Render, Screen, Transition};
 pub(super) use super::empty_state;
 
 mod add_field;
+mod autodelete;
 /// Shared with the route-less ride-start card (T6, #684), which draws the selected profile's hero
 /// bike from the same sprites + colours the Bike-type screen uses.
 pub(crate) mod bike_icons;
@@ -48,6 +49,7 @@ mod system;
 mod units;
 
 pub use add_field::AddFieldScreen;
+pub use autodelete::AutoDeleteScreen;
 pub use bike_type::BikeTypeScreen;
 pub use bluetooth::BluetoothScreen;
 pub use datetime::DateTimeScreen;
@@ -62,9 +64,11 @@ pub use system::SystemScreen;
 pub use units::UnitsScreen;
 
 /// The number of Settings list entries. The row *labels* are looked up per-language at draw time
-/// (see [`SettingsScreen::draw`]); Sensors (BLE sensors, epic #707) sits just under Bluetooth, and
-/// System (the firmware-update door, epic #615 S5) just above the terminal (destructive) Reset row.
-const N_ITEMS: usize = 11;
+/// (see [`SettingsScreen::draw`]); Auto-delete (route auto-expiry, epic #638 S5) sits just under
+/// Date & Time (both are clock-anchored device housekeeping), Sensors (BLE sensors, epic #707) just
+/// under Bluetooth, and System (the firmware-update door, epic #615 S5) just above the terminal
+/// (destructive) Reset row.
+const N_ITEMS: usize = 12;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -83,15 +87,16 @@ impl SettingsScreen {
             Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::DateTime(DateTimeScreen::new())),
-                1 => Transition::Push(Screen::Units(UnitsScreen::new())),
-                2 => Transition::Push(Screen::BikeType(BikeTypeScreen::new())),
-                3 => Transition::Push(Screen::Stats(StatsScreen::new())),
-                4 => Transition::Push(Screen::Display(DisplayScreen::new())),
-                5 => Transition::Push(Screen::Power(PowerScreen::new())),
-                6 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
-                7 => Transition::Push(Screen::Sensors(SensorsScreen::new())),
-                8 => Transition::Push(Screen::Language(LanguageScreen::new())),
-                9 => {
+                1 => Transition::Push(Screen::AutoDelete(AutoDeleteScreen::new())),
+                2 => Transition::Push(Screen::Units(UnitsScreen::new())),
+                3 => Transition::Push(Screen::BikeType(BikeTypeScreen::new())),
+                4 => Transition::Push(Screen::Stats(StatsScreen::new())),
+                5 => Transition::Push(Screen::Display(DisplayScreen::new())),
+                6 => Transition::Push(Screen::Power(PowerScreen::new())),
+                7 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
+                8 => Transition::Push(Screen::Sensors(SensorsScreen::new())),
+                9 => Transition::Push(Screen::Language(LanguageScreen::new())),
+                10 => {
                     // Opening System triggers the one-shot card-free scan (T8 item 6): the host runs
                     // the FAT free-cluster scan once on entry and answers via `App::apply_event`.
                     cx.activity.request_card_scan();
@@ -109,6 +114,7 @@ impl SettingsScreen {
         // are language-dependent); the order matches the `handle` press arms above.
         let items: [&str; N_ITEMS] = [
             rx.t(Msg::SettingsDatetime),
+            rx.t(Msg::SettingsAutodelete),
             rx.t(Msg::SettingsUnits),
             rx.t(Msg::SettingsBikeType),
             rx.t(Msg::SettingsStats),

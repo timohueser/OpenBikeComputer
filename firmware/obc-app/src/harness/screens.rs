@@ -904,11 +904,11 @@ fn bike_type_cycles_and_persists_across_reboot() {
     assert_eq!(app.nav_profiles().len(), 4, "all four §8.6 names resident");
     assert_eq!(app.nav_profiles().name(2), Some("MTB"));
 
-    // Home → Menu → Settings list → the Bike type row (index 2) → its screen.
+    // Home → Menu → Settings list → the Bike type row (index 3) → its screen.
     app.apply_gesture(Gesture::BackHold); // → Menu
     app.apply_gesture(Gesture::Turn(-1)); // compass: one ccw detent to Settings
     app.apply_gesture(Gesture::Press); // → Settings list
-    app.apply_gesture(Gesture::Turn(2)); // Date & Time → Units → Bike type
+    app.apply_gesture(Gesture::Turn(3)); // Date & Time → Auto-delete → Units → Bike type
     app.apply_gesture(Gesture::Press); // → Bike type screen
     assert!(matches!(app.top_screen(), crate::Screen::BikeType(_)), "navigated to the Bike type screen");
 
