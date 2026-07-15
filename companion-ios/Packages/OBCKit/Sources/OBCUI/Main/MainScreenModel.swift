@@ -951,13 +951,15 @@ public final class MainScreenModel {
                         guard let self, let blob = self.makeStageBlob(routeID, target: target) else { return nil }
                         return (self.transport.uploadRoute(blob), CRC32.checksum(blob.payload))
                     },
-                    commit: { [weak self] objectID, crc in
+                    commit: { [weak self] objectID, crc, retention in
                         guard let objectID else { return }
                         // adopt: false — the queue pushes the trip object itself, last.
-                        // No per-stage retention choice (no upload sheet): the
-                        // stage takes its existing level or the app default.
+                        // The trip sheet's chosen retention (epic #638) is applied to
+                        // every stage, overriding any per-route level (a trip is one
+                        // unit) — passed explicitly so `markRouteUploaded` sets and
+                        // pushes it rather than falling back to the record's own value.
                         self?.markRouteUploaded(
-                            routeID, objectID: objectID, crc32: crc, retention: nil, adopt: false)
+                            routeID, objectID: objectID, crc32: crc, retention: retention, adopt: false)
                     }
                 ))
             }
@@ -975,14 +977,21 @@ public final class MainScreenModel {
                     guard let self, let blob = self.makeTripBlob(id, target: target) else { return nil }
                     return (self.transport.uploadTrip(blob), CRC32.checksum(blob.payload))
                 },
-                commit: { [weak self] objectID, crc in
+                commit: { [weak self] objectID, crc, _ in
+                    // The trip object carries no retention (trips have no expiry) —
+                    // the trip's chosen level rode to the member stages above.
                     self?.markTripUploaded(id, objectID: objectID, crc32: crc)
                 }
             ))
         }
         return TripUploadModel(
             transport: transport, tripName: trip.name, deviceName: deviceName,
-            precheck: plan.precheck, steps: steps, timing: timing, activity: transferActivity
+            precheck: plan.precheck, steps: steps,
+            // The whole trip's Auto-delete choice seeds from the app default and
+            // applies to every member route (epic #638); capability-gated so old
+            // firmware shows no row and the flow is unchanged.
+            retention: defaultRetention, supportsRetention: supportsRetention,
+            timing: timing, activity: transferActivity
         )
     }
 
