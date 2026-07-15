@@ -127,7 +127,12 @@ final class RouteDetailTests: XCTestCase {
         let app = launch()
         openPlannedDetail(app)
 
-        app.buttons["detail.delete"].tap()
+        // Kettle Moraine is on the device, so the S7 Auto-delete row sits above
+        // the actions — the Delete button can fall below the fold; scroll if so.
+        let delete = app.buttons["detail.delete"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5), "delete action missing")
+        for _ in 0..<4 where !delete.isHittable { app.swipeUp(velocity: .fast) }
+        delete.tap()
         // Scoped to the sheet — the inline action shares the "Delete route" label.
         let confirm = app.sheets.buttons["Delete route"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")

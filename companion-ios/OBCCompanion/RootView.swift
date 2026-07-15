@@ -30,6 +30,10 @@ struct RootView: View {
 
     private let transport: any DeviceTransport
     private let bondStore: any BondStore
+    /// The app-local default-retention preference (epic #638) — shared by the main
+    /// model (upload seeding) and the Settings model (the Auto-delete picker), so a
+    /// change in Settings seeds the next upload.
+    private let retentionDefaults: any RetentionDefaultsStore
     /// The in-flight transfer ledger (#459) — shared by the upload sheets and
     /// the ride-sync coordinator (the writers) and the lifecycle model (the
     /// reader draining before a background disconnect).
@@ -50,6 +54,7 @@ struct RootView: View {
         transport: any DeviceTransport,
         bondStore: any BondStore,
         library: any LibraryStore = InMemoryLibraryStore(),
+        retentionDefaults: any RetentionDefaultsStore = InMemoryRetentionDefaultsStore(),
         reachability: any NetworkReachability = PathMonitorReachability(),
         backgroundTasks: any BackgroundTaskRunner = UIKitBackgroundTaskRunner(),
         importAtLaunch: (data: Data, fileName: String)? = nil,
@@ -57,6 +62,7 @@ struct RootView: View {
     ) {
         self.transport = transport
         self.bondStore = bondStore
+        self.retentionDefaults = retentionDefaults
         self.importAtLaunch = importAtLaunch
         self.firmwareDemoAtLaunch = firmwareDemoAtLaunch
         let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
@@ -69,6 +75,7 @@ struct RootView: View {
         ))
         _mainModel = State(initialValue: MainScreenModel(
             transport: transport, library: library,
+            retentionDefaults: retentionDefaults,
             // The rename self-heal (#361): once per established connection,
             // push the bond record's desired name if the device config
             // disagrees (a rename whose write never landed).
@@ -224,6 +231,12 @@ struct RootView: View {
             replacingProvenCRC: pending.replacing.flatMap {
                 mainModel.plannedProvenCommittedCRC(for: $0.id)
             },
+            // Retention (epic #638 S7): a fresh import's upload sheet seeds its
+            // Auto-delete row from the app default (a replace keeps the replaced
+            // route's level); the capability gate hides the row on old firmware.
+            uploadRetentionSeed: pending.replacing.flatMap { mainModel.plannedRetention(for: $0.id) }
+                ?? mainModel.defaultRetention,
+            supportsRetention: mainModel.supportsRetention,
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 // File into the chosen trip as its last stage (TR7); `.none`
@@ -237,11 +250,12 @@ struct RootView: View {
             // after F₂. The link is recorded through `markRouteUploaded` —
             // the model scopes it to the connected device's (serial, epoch)
             // identity (#769); `record(for:)` itself never mints links.
-            onUploaded: { detail, tripSelection, objectID, crc in
+            onUploaded: { detail, tripSelection, objectID, crc, retention in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 if let objectID {
-                    mainModel.markRouteUploaded(detail.summary.id, objectID: objectID, crc32: crc)
+                    mainModel.markRouteUploaded(
+                        detail.summary.id, objectID: objectID, crc32: crc, retention: retention)
                 }
             },
             // H4 "Pair a device": save first (a pairing detour must not
@@ -301,15 +315,29 @@ struct RootView: View {
                     deviceObjectID: mainModel.plannedDeviceObjectID(for: id),
                     provenCommittedCRC: mainModel.plannedProvenCommittedCRC(for: id),
                     deviceName: mainModel.deviceName,
+                    // Retention (epic #638 S7): the desired level + the device's
+                    // expiry truth for the detail row, the seed for the upload
+                    // sheet, the capability gate, and the edit sink (pushes live
+                    // or at the next reconcile).
+                    retention: mainModel.plannedRetention(for: id),
+                    deviceRetention: mainModel.plannedDeviceRetention(for: id),
+                    deviceExpiresAt: mainModel.plannedDeviceExpiresAt(for: id),
+                    uploadRetentionSeed: mainModel.plannedRetention(for: id) ?? mainModel.defaultRetention,
+                    supportsRetention: mainModel.supportsRetention,
+                    onEditRetention: { mainModel.setRouteRetention(id, $0) },
                     onDelete: {
                         mainModel.deleteRoute(id)
                         path.removeAll()
                     },
                     onRename: { mainModel.renameRoute(id, to: $0) },
                     // A completed upload: record the device object id +
-                    // fingerprint it landed under (the badge + in-place replace).
-                    onUploaded: { objectID, crc in
-                        if let objectID { mainModel.markRouteUploaded(id, objectID: objectID, crc32: crc) }
+                    // fingerprint it landed under (the badge + in-place replace),
+                    // and the rider's chosen retention (S6 pushes it post-commit).
+                    onUploaded: { objectID, crc, retention in
+                        if let objectID {
+                            mainModel.markRouteUploaded(
+                                id, objectID: objectID, crc32: crc, retention: retention)
+                        }
                     },
                     // TR7 route menu (detail overflow): Add to trip… on a loose
                     // route, Move to trip… + Remove from trip on a filed one.
@@ -359,6 +387,7 @@ struct RootView: View {
             SettingsScreen(
                 transport: transport,
                 bondStore: bondStore,
+                retentionDefaults: retentionDefaults,
                 onDeviceRenamed: { mainModel.deviceRenamed(to: $0) },
                 // H2: bond is cleared + link dropped by the model; pop the
                 // stack and hand the launch flow back to the D1 prompt.

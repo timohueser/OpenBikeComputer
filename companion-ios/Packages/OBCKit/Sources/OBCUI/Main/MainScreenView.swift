@@ -452,7 +452,11 @@ public struct MainScreenView: View {
                         Button {
                             toggleSelection(route.id)
                         } label: {
-                            RouteCard(route: route, onDevice: model.onDeviceState(route.id))
+                            RouteCard(
+                                route: route,
+                                onDevice: model.onDeviceState(route.id),
+                                expiryBadge: model.expiryBadge(for: route.id)
+                            )
                                 .overlay(alignment: .topTrailing) {
                                     selectionCheck(on: route.id)
                                 }
@@ -465,7 +469,11 @@ public struct MainScreenView: View {
                         Button {
                             onSelectRoute(route)
                         } label: {
-                            RouteCard(route: route, onDevice: model.onDeviceState(route.id))
+                            RouteCard(
+                                route: route,
+                                onDevice: model.onDeviceState(route.id),
+                                expiryBadge: model.expiryBadge(for: route.id)
+                            )
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("main.card.\(route.id.rawValue)")
