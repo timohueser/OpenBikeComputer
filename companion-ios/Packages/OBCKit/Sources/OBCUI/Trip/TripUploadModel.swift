@@ -20,6 +20,14 @@ public final class TripUploadModel: Identifiable {
     public nonisolated let id = UUID()
 
     public enum Phase: Equatable, Sendable {
+        /// The pre-transfer confirm (epic #638) — the trip + the **Auto-delete**
+        /// row, seeded from the app default and changeable before any bytes, then
+        /// **Upload trip**. The queue (precheck included) starts on that tap, not on
+        /// present, so the chosen level is set *before* the first stage commits. A
+        /// trip is one unit: its level applies to **every** member route, overriding
+        /// any per-route choice. Skipped straight to `.uploading` for a device with
+        /// no retention capability, which has nothing to configure.
+        case ready
         case uploading
         case interrupted
         case done
@@ -50,7 +58,12 @@ public final class TripUploadModel: Identifiable {
         let title: String
         let skip: Bool
         let makeTransfer: (@MainActor @Sendable () -> (handle: TransferHandle, committedCRC: UInt32)?)?
-        let commit: (@MainActor @Sendable (DeviceObjectID?, UInt32) -> Void)?
+        /// Commit the landed object's link. The third argument is the **trip's**
+        /// chosen retention (epic #638), read from the model at execution time and
+        /// passed to every stage's commit so the trip level overrides each member
+        /// route's own choice (a trip is one unit). The trip-object step ignores it
+        /// (trips carry no retention).
+        let commit: (@MainActor @Sendable (DeviceObjectID?, UInt32, Retention) -> Void)?
 
         /// A stage already up-to-date on the device — flashes by, tallied.
         public static func skip(title: String) -> QueueStep {
@@ -61,7 +74,7 @@ public final class TripUploadModel: Identifiable {
         public static func transfer(
             title: String,
             makeTransfer: @escaping @MainActor @Sendable () -> (handle: TransferHandle, committedCRC: UInt32)?,
-            commit: @escaping @MainActor @Sendable (DeviceObjectID?, UInt32) -> Void
+            commit: @escaping @MainActor @Sendable (DeviceObjectID?, UInt32, Retention) -> Void
         ) -> QueueStep {
             QueueStep(title: title, skip: false, makeTransfer: makeTransfer, commit: commit)
         }
@@ -69,10 +82,17 @@ public final class TripUploadModel: Identifiable {
 
     // MARK: Observable state
 
-    public private(set) var phase: Phase = .uploading
+    public private(set) var phase: Phase
     public private(set) var progress = TransferProgress(bytesDone: 0, total: 1)
     public private(set) var failure: Failure?
     public private(set) var shouldDismiss = false
+    /// The retention every member route lands under (epic #638) — seeded from the
+    /// app default, changeable in the `.ready` confirm, applied to the whole trip.
+    /// Meaningless when `supportsRetention` is false (the row is hidden).
+    public private(set) var retention: Retention
+    /// The live link state — the `.ready` confirm's Upload button dims when the
+    /// link drops (the route sheet's rule), matching the trip page's Upload button.
+    public private(set) var connection: ConnectionState = .connected
     /// The current queue step (0-based) — drives the "Stage X of Y" header.
     public private(set) var stepIndex = 0
     /// Stages skipped because the device already held them, current — the done
@@ -87,6 +107,12 @@ public final class TripUploadModel: Identifiable {
     public let deviceName: String
     /// Total queue steps (skips + uploads + trip object) — the "of Y" denominator.
     public let stepCount: Int
+    /// Whether the connected device honours retention (epic #638) — hides the
+    /// Auto-delete row and skips the `.ready` confirm when false (nothing to set).
+    public let supportsRetention: Bool
+
+    /// Whether the `.ready` confirm's Upload button can act right now (link up).
+    public var canUpload: Bool { connection == .connected }
 
     // MARK: Wiring
 
@@ -109,6 +135,8 @@ public final class TripUploadModel: Identifiable {
         deviceName: String,
         precheck: TripUploadPrecheck,
         steps: [QueueStep],
+        retention: Retention = .appDefault,
+        supportsRetention: Bool = true,
         timing: Timing = Timing(),
         activity: TransferActivity? = nil
     ) {
@@ -118,8 +146,14 @@ public final class TripUploadModel: Identifiable {
         self.precheck = precheck
         self.steps = steps
         self.stepCount = steps.count
+        self.retention = retention
+        self.supportsRetention = supportsRetention
         self.timing = timing
         self.activity = activity
+        // A retention-capable device opens on the `.ready` confirm so the level is
+        // chosen before any bytes; without it there's nothing to configure, so the
+        // queue starts straight away (the prior behaviour).
+        self.phase = supportsRetention ? .ready : .uploading
     }
 
     // MARK: Derived lines
@@ -181,21 +215,14 @@ public final class TripUploadModel: Identifiable {
         guard !started else { return }
         started = true
 
-        // Precheck before any bytes (issue #657): a trip that can't fit fails
-        // upfront — never a partial upload that hits storageFull at the last stage.
-        guard precheck.fits else {
-            phase = .failed
-            failure = .storagePrecheck(routeDeficit: precheck.routeSlotDeficit)
-            return
-        }
-
-        setActive(true)
-        // The link watcher spans the whole queue: a drop mid-stage stalls the
-        // current transfer (restart-current-stage), a regain lets the tick watcher
-        // flip back to uploading.
+        // The link watcher spans the whole sheet: it tracks `connection` so the
+        // `.ready` confirm's Upload button dims on a drop, and once the queue is
+        // moving a drop mid-stage stalls the current transfer (restart-current-stage),
+        // a regain lets the tick watcher flip back to uploading.
         linkWatcher = Task { [weak self, transport] in
             for await state in transport.state {
                 guard let self else { return }
+                connection = state
                 let dropped = state == .outOfRange || state == .disconnected
                 linkUp = !dropped
                 if dropped, phase == .uploading, currentHandle?.currentOutcome == nil {
@@ -204,6 +231,37 @@ public final class TripUploadModel: Identifiable {
                 }
             }
         }
+
+        // A capable device holds on `.ready` (the Auto-delete confirm) until the
+        // rider taps Upload; without capability there's nothing to configure, so
+        // the queue begins now (the prior behaviour, row hidden).
+        if phase != .ready { beginQueue() }
+    }
+
+    /// Pick the trip's Auto-delete level in the `.ready` confirm (epic #638) — a
+    /// plain setter; the value rides to every member route's commit.
+    public func selectRetention(_ retention: Retention) {
+        self.retention = retention
+    }
+
+    /// Leave the `.ready` confirm and start the queued upload (the Upload button).
+    /// No-op once the queue is already under way.
+    public func beginUpload() {
+        guard phase == .ready else { return }
+        beginQueue()
+    }
+
+    /// Precheck, then start the queue. The precheck runs before any bytes (issue
+    /// #657): a trip that can't fit fails upfront — never a partial upload that
+    /// hits storageFull at the last stage.
+    private func beginQueue() {
+        guard precheck.fits else {
+            phase = .failed
+            failure = .storagePrecheck(routeDeficit: precheck.routeSlotDeficit)
+            return
+        }
+        phase = .uploading
+        setActive(true)
         driver = Task { [weak self] in await self?.runQueue() }
     }
 
@@ -268,7 +326,10 @@ public final class TripUploadModel: Identifiable {
             switch outcome {
             case .completed:
                 let objectID = await handle.assignedObjectID
-                step.commit?(objectID, committedCRC)
+                // The trip's chosen retention rides to every stage commit, read
+                // here at execution time (after the rider confirmed) — it overrides
+                // each member route's own level (a trip is one unit).
+                step.commit?(objectID, committedCRC, retention)
                 committedCount += 1
                 stepIndex += 1
             case .canceled:

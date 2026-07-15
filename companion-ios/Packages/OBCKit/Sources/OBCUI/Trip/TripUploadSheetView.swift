@@ -18,6 +18,8 @@ public struct TripUploadSheetView: View {
     public var body: some View {
         OBCSheetContainer {
             switch model.phase {
+            case .ready:
+                readyContent
             case .uploading:
                 progressContent(interrupted: false)
             case .interrupted:
@@ -41,10 +43,61 @@ public struct TripUploadSheetView: View {
 
     private var sheetHeight: CGFloat {
         switch model.phase {
+        case .ready: 330
         case .uploading: 300
         case .interrupted: 360
         case .done: 330
         case .failed: 320
+        }
+    }
+
+    // MARK: Ready — the pre-transfer confirm (epic #638)
+
+    /// The Auto-delete confirm for the whole trip: the trip + the retention row
+    /// (the trip's level applies to every member route), then **Upload trip**. The
+    /// queue starts on that tap. Only reached on a retention-capable device — an
+    /// incapable one skips straight to `.uploading` (the row hidden).
+    private var readyContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 13) {
+                iconTile(systemImage: "square.and.arrow.up", color: OBCTheme.forest)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Upload to \(model.deviceName)")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(OBCTheme.ink)
+                        .accessibilityIdentifier("tripUpload.readyTitle")
+                    Text(model.tripName)
+                        .font(.obcMono(size: 12.5))
+                        .foregroundStyle(OBCTheme.inkFaint)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.bottom, 16)
+
+            // The Auto-delete row — the whole trip's level, applied to every member
+            // route. Hidden on a device without retention capability (which also
+            // skips this confirm entirely).
+            if model.supportsRetention {
+                OBCGroupedSection {
+                    OBCRetentionRow(
+                        selection: model.retention,
+                        showsDivider: false,
+                        accessibilityID: "tripUpload.autoDelete",
+                        onSelect: { model.selectRetention($0) }
+                    )
+                }
+                .padding(.bottom, 4)
+            }
+
+            Button("Upload trip") { model.beginUpload() }
+                .buttonStyle(.obcPrimary)
+                .disabled(!model.canUpload)
+                .accessibilityIdentifier("tripUpload.begin")
+                .padding(.top, 14)
+            Button("Cancel") { model.dismiss() }
+                .buttonStyle(.obcGhost)
+                .accessibilityIdentifier("tripUpload.cancelReady")
+                .padding(.top, 10)
         }
     }
 
