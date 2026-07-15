@@ -190,6 +190,13 @@ struct Args {
     /// `App::apply_event` seam, tagged with this version, so the "Updated to vX" card
     /// renders (the first-healthy-boot toast).
     dfu_confirmed: Option<String>,
+    /// Headless `--png` only: stamp every loaded route's retention meta (epic #638 S5), so the
+    /// Route overview's expiry row renders for a snapshot. `LEVEL:AGE` — `LEVEL` is the retention
+    /// `u8` (0 Never · 1 1d · 2 1wk · 3 2wk · 4 1mo · 5 2mo), `AGE` the route's `last_used` as a
+    /// duration *ago* from the (`--clock`-pinned) wall clock (`2d` / `19h` / `3600s` / bare seconds),
+    /// or `unknown` for "clock never started" (→ the row's `--`). Stands in for the SD retention
+    /// sidecar the board reads; without it every route stays `Never` and the row is absent.
+    route_retention: Option<(u8, Option<u32>)>,
 }
 
 impl Default for Args {
@@ -242,6 +249,7 @@ impl Default for Args {
             dfu_installing: false,
             dfu_error: None,
             dfu_confirmed: None,
+            route_retention: None,
         }
     }
 }
@@ -275,6 +283,29 @@ fn parse_clock(s: &str) -> Result<obc_app::settings::DateTime, String> {
     let hour = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock hour")?;
     let minute = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock minute")?;
     Ok(obc_app::settings::DateTime { year, month, day, hour, minute })
+}
+
+/// Parse a `--route-retention LEVEL:AGE` value (epic #638 S5). `LEVEL` is the retention `u8`; `AGE`
+/// is a `last_used` age *before now* (`2d` / `19h` / `3600s` / bare seconds), or `unknown` for
+/// "clock never started" (`last_used == 0`). Returns `(level, Some(secs_ago))` / `(level, None)`.
+fn parse_route_retention(s: &str) -> Result<(u8, Option<u32>), String> {
+    let (level, age) = s.split_once(':').ok_or("--route-retention format is LEVEL:AGE (e.g. 3:2d or 2:unknown)")?;
+    let level: u8 = level.parse().map_err(|_| "bad --route-retention LEVEL (0..5)")?;
+    let age = if age == "unknown" { None } else { Some(parse_duration_secs(age)?) };
+    Ok((level, age))
+}
+
+/// Parse a duration like `2d` / `19h` / `3600s` (bare = seconds) into whole seconds.
+fn parse_duration_secs(s: &str) -> Result<u32, String> {
+    let (num, mult) = match s.strip_suffix('d') {
+        Some(n) => (n, 86_400),
+        None => match s.strip_suffix('h') {
+            Some(n) => (n, 3_600),
+            None => (s.strip_suffix('s').unwrap_or(s), 1),
+        },
+    };
+    let v: u32 = num.parse().map_err(|_| "bad --route-retention AGE duration")?;
+    Ok(v.saturating_mul(mult))
 }
 
 /// Parse a `--lang` value into a [`Language`](obc_app::settings::Language). Accepts the four
@@ -339,6 +370,10 @@ fn parse_args() -> Result<Args, String> {
             }
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
+            }
+            "--route-retention" => {
+                a.route_retention =
+                    Some(parse_route_retention(&it.next().ok_or("--route-retention needs LEVEL:AGE")?)?);
             }
             "--lang" => {
                 a.lang = Some(parse_lang(&it.next().ok_or("--lang needs en|de|fr|es")?)?);
@@ -704,7 +739,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
             std::process::exit(2);
         }
     };
@@ -903,6 +938,17 @@ fn main() {
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
         app.set_routes_with_ids(store.catalog(), store.ids());
+        // `--route-retention` (epic #638 S5): overlay every route's retention meta so the Route
+        // overview's expiry row renders (the board reads this from the SD retention sidecar). The
+        // `last_used` stamp is anchored to the wall clock — `AGE` seconds before now — so the
+        // countdown is deterministic regardless of the absolute `--clock`; `unknown` leaves it 0.
+        if let Some((level, age)) = args.route_retention {
+            let now = app.wall_unix_now();
+            let last_used = age.map_or(0, |secs| now.saturating_sub(secs));
+            let meta = obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(level), last_used);
+            let metas = vec![meta; app.route_metas().len()];
+            app.set_route_meta(&metas);
+        }
         // Scan the `.obt` trips beside the routes (epic #526, TR2) — grouped-route folders. Fed
         // **after** the routes so the stage ids resolve against the catalog. The TR3 menu draws the
         // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
