@@ -159,18 +159,11 @@ grade = "grade "
 # --- The Settings list ---
 [settings]
 title = "SETTINGS"
-datetime = "Date & Time"
-autodelete = "Auto-delete"
-units = "Units"
-bike_type = "Bike type"
-stats = "Stats"
+ride = "Ride"
 display = "Display"
+connections = "Connections"
 power = "Power"
-bluetooth = "Bluetooth"
-sensors = "Sensors"
-language = "Language"
 system = "System"
-reset = "Reset"
 
 # --- Date & Time settings screen ---
 [datetime]
@@ -181,22 +174,21 @@ local_time = "Local time"
 offset = "Offset"
 utc = "UTC "
 
-# --- Auto-delete settings screen (route auto-expiry + ride auto-delete, epic #638 S5) ---
+# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
 [autodelete]
-title = "AUTO-DELETE"
-synced_rides = "SYNCED RIDES"
 never = "Never"
 day1 = "1 day"
 week1 = "1 week"
 month1 = "1 month"
 
-# --- Stats settings screen ---
-[set_stats]
-title = "STATS"
+# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+[ride]
+title = "RIDE"
+bike_type = "Bike type"
+fields = "Data fields"
+fields_sub = "panels & order"
 pages = "Pages"
 pages_sub = "auto-flip"
-fields = "Fields"
-fields_sub = "panels & order"
 climb = "Climb"
 # "panel", not "climb panel": the mode value + its ◄ cue share this sub-caption line (owner
 # review round 1), and the longer caption can't clear the 7-char "Manuell"/"Desact." values
@@ -204,6 +196,8 @@ climb = "Climb"
 climb_sub = "panel"
 waypoints = "Waypoints"
 waypoints_sub = "chip"
+autodelete = "Auto-delete"
+autodelete_sub = "rides"
 
 # --- Display settings screen ---
 [display]
@@ -222,6 +216,12 @@ gps_fix = "GPS Fix"
 gps_fix_sub = "interval"
 power_save = "Power save"
 power_save_sub = "low power"
+
+# --- Connections settings menu (Phone / Sensors) ---
+[connections]
+title = "CONNECTIONS"
+phone = "Phone"
+sensors = "Sensors"
 
 # --- Bluetooth settings screen ---
 [bluetooth]
@@ -410,9 +410,18 @@ battery = "Battery"
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
 title = "SYSTEM"
+units = "Units"
+datetime = "Date & Time"
+language = "Language"
+update = "Firmware"
+reset = "Reset"
+
+# --- Firmware page (device info ledger + the SD-sideload install action) ---
+[firmware]
+title = "FIRMWARE"
 install_update = "Install update from card"
 recording = "Recording"
-firmware = "Firmware"
+version = "Firmware"
 map = "Map"
 card_free = "Card free"
 

@@ -3,7 +3,7 @@
 //! draws (same [`page_fields`](stat_fields::page_fields) placement, same [`tile`](crate::screen)
 //! renderer, live values), so what you arrange here is exactly what the ride shows. The cursor is
 //! the amber tile; walking past a page's last tile flips to the next page (`page / pages` in the
-//! title bar). Reached from the [`Stats`](super::StatsScreen) screen's *Fields* row. Two idioms on
+//! title bar). Reached from the [`Ride`](super::RideScreen) screen's *Data fields* row. Two idioms on
 //! top of the shared two-level encoder model:
 //!
 //! - **Reordering.** *Press* grabs the highlighted tile (move arrows appear); rotating moves it,

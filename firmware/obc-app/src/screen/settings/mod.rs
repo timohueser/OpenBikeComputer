@@ -31,44 +31,45 @@ use super::{palette, Ctx, Render, Screen, Transition};
 pub(super) use super::empty_state;
 
 mod add_field;
-mod autodelete;
 /// Shared with the route-less ride-start card (T6, #684), which draws the selected profile's hero
 /// bike from the same sprites + colours the Bike-type screen uses.
 pub(crate) mod bike_icons;
 mod bike_type;
 mod bluetooth;
+mod connections;
 mod datetime;
 mod display;
 mod fields;
+mod firmware;
 mod language;
 mod power;
 mod reset;
+mod ride;
 mod sensors;
-mod stats;
 mod system;
 mod units;
 
 pub use add_field::AddFieldScreen;
-pub use autodelete::AutoDeleteScreen;
 pub use bike_type::BikeTypeScreen;
 pub use bluetooth::BluetoothScreen;
+pub use connections::ConnectionsScreen;
 pub use datetime::DateTimeScreen;
 pub use display::DisplayScreen;
 pub use fields::StatFieldsScreen;
+pub use firmware::FirmwareScreen;
 pub use language::LanguageScreen;
 pub use power::PowerScreen;
 pub use reset::ResetScreen;
+pub use ride::RideScreen;
 pub use sensors::{SensorScanScreen, SensorsScreen};
-pub use stats::StatsScreen;
 pub use system::SystemScreen;
 pub use units::UnitsScreen;
 
-/// The number of Settings list entries. The row *labels* are looked up per-language at draw time
-/// (see [`SettingsScreen::draw`]); Auto-delete (route auto-expiry, epic #638 S5) sits just under
-/// Date & Time (both are clock-anchored device housekeeping), Sensors (BLE sensors, epic #707) just
-/// under Bluetooth, and System (the firmware-update door, epic #615 S5) just above the terminal
-/// (destructive) Reset row.
-const N_ITEMS: usize = 12;
+/// The number of Settings list entries — five themed groups. The row *labels* are looked up
+/// per-language at draw time (see [`SettingsScreen::draw`]). Each row opens a group screen: Ride
+/// (routing + the riding grid + retention), Display, Connections (Phone + Sensors), Power, and
+/// System (Units / Date & Time / Language / Firmware update / Reset).
+const N_ITEMS: usize = 5;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -82,27 +83,15 @@ impl SettingsScreen {
         SettingsScreen { selected: 0 }
     }
 
-    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
-                0 => Transition::Push(Screen::DateTime(DateTimeScreen::new())),
-                1 => Transition::Push(Screen::AutoDelete(AutoDeleteScreen::new())),
-                2 => Transition::Push(Screen::Units(UnitsScreen::new())),
-                3 => Transition::Push(Screen::BikeType(BikeTypeScreen::new())),
-                4 => Transition::Push(Screen::Stats(StatsScreen::new())),
-                5 => Transition::Push(Screen::Display(DisplayScreen::new())),
-                6 => Transition::Push(Screen::Power(PowerScreen::new())),
-                7 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
-                8 => Transition::Push(Screen::Sensors(SensorsScreen::new())),
-                9 => Transition::Push(Screen::Language(LanguageScreen::new())),
-                10 => {
-                    // Opening System triggers the one-shot card-free scan (T8 item 6): the host runs
-                    // the FAT free-cluster scan once on entry and answers via `App::apply_event`.
-                    cx.activity.request_card_scan();
-                    Transition::Push(Screen::System(SystemScreen::new()))
-                }
-                _ => Transition::Push(Screen::Reset(ResetScreen::new())),
+                0 => Transition::Push(Screen::Ride(RideScreen::new())),
+                1 => Transition::Push(Screen::Display(DisplayScreen::new())),
+                2 => Transition::Push(Screen::Connections(ConnectionsScreen::new())),
+                3 => Transition::Push(Screen::Power(PowerScreen::new())),
+                _ => Transition::Push(Screen::System(SystemScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu
             Gesture::Hold | Gesture::BackHold => Transition::None,
@@ -113,18 +102,11 @@ impl SettingsScreen {
         // Built per-frame from the catalog (the old `const ITEMS` couldn't stay const once the labels
         // are language-dependent); the order matches the `handle` press arms above.
         let items: [&str; N_ITEMS] = [
-            rx.t(Msg::SettingsDatetime),
-            rx.t(Msg::SettingsAutodelete),
-            rx.t(Msg::SettingsUnits),
-            rx.t(Msg::SettingsBikeType),
-            rx.t(Msg::SettingsStats),
+            rx.t(Msg::SettingsRide),
             rx.t(Msg::SettingsDisplay),
+            rx.t(Msg::SettingsConnections),
             rx.t(Msg::SettingsPower),
-            rx.t(Msg::SettingsBluetooth),
-            rx.t(Msg::SettingsSensors),
-            rx.t(Msg::SettingsLanguage),
             rx.t(Msg::SettingsSystem),
-            rx.t(Msg::SettingsReset),
         ];
         list::nav_list(cv, rx.w, rx.h, rx.t(Msg::SettingsTitle), &items, self.selected);
     }
