@@ -84,6 +84,17 @@ public struct RouteEntry: Sendable {
     /// copy's committed CRC is); a real upload pins the committed payload's CRC
     /// here so a re-listed copy proves against the same fingerprint.
     public var crc32: UInt32?
+    /// The retention level the (mock) **device** reports for this copy in its v2
+    /// `routeList` (epic #638), when the device holds it (`deviceObjectID != nil`).
+    /// `nil` → the device serves `.never` (invariant 6 — a pre-existing route
+    /// migrates as Never). Only meaningful with a `deviceObjectID`.
+    public var deviceRetention: Retention?
+    /// How long ago (in days) the device last used this route — the `last_used`
+    /// anchor the `expires_at` countdown runs from. `nil` → no anchor (the device
+    /// reports `expires_at = 0`). A near-expiry fixture pairs a short retention
+    /// with a `lastUsedDaysAgo` close to it (`oneWeek` + `5` → expires in ~2 d) so
+    /// S7 can exercise the ≤ 3-day list badge.
+    public var lastUsedDaysAgo: Double?
 
     public init(
         summary: RouteSummary,
@@ -93,7 +104,9 @@ public struct RouteEntry: Sendable {
         maxGradePercent: Double? = nil,
         payloadByteCount: Int,
         deviceObjectID: DeviceObjectID? = nil,
-        crc32: UInt32? = nil
+        crc32: UInt32? = nil,
+        deviceRetention: Retention? = nil,
+        lastUsedDaysAgo: Double? = nil
     ) {
         self.summary = summary
         self.points = points
@@ -103,6 +116,8 @@ public struct RouteEntry: Sendable {
         self.payloadByteCount = payloadByteCount
         self.deviceObjectID = deviceObjectID
         self.crc32 = crc32
+        self.deviceRetention = deviceRetention
+        self.lastUsedDaysAgo = lastUsedDaysAgo
     }
 
     /// The full uploadable route, with a deterministic synthesized payload.
@@ -381,6 +396,12 @@ private struct RouteDTO: Decodable {
     /// badge and puts the route in `listRoutes()`. Absent = phone-library only.
     /// A bare number in the JSON, wrapped into the domain's `DeviceObjectID`.
     let deviceObjectID: DeviceObjectID?
+    /// The device's retention level for this copy (epic #638) — the wire byte
+    /// (`0` never … `5` two months). Absent → the device serves `.never`.
+    let deviceRetention: UInt8?
+    /// The `last_used` anchor as "days ago" — a near-expiry fixture pairs it with
+    /// a short `deviceRetention`. Absent → no anchor (`expires_at = 0`).
+    let lastUsedDaysAgo: Double?
     let track: [GeoDTO]
     let waypoints: [WaypointDTO]?
 
@@ -410,7 +431,9 @@ private struct RouteDTO: Decodable {
                           elevationProfile: track.compactMap(\.ele),
                           maxGradePercent: maxGradePercent,
                           payloadByteCount: payloadBytes ?? max(1, Int(distanceMeters)),
-                          deviceObjectID: deviceObjectID)
+                          deviceObjectID: deviceObjectID,
+                          deviceRetention: deviceRetention.map(Retention.init(safeRawValue:)),
+                          lastUsedDaysAgo: lastUsedDaysAgo)
     }
 }
 
