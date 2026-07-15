@@ -108,15 +108,30 @@ struct Geometry {
     cluster_count: u32,
 }
 
-/// The resolved file: its extent runs plus a resident one-block bounce buffer for the unaligned
-/// head/tail of a read. The bounce lives *here* — sized once, resident with the table — rather
-/// than on the read path's stack: `read_at` is reached from the deepest render frames, where the
-/// tight ride-stack budget has no spare 512 bytes (see the board crate's stack notes). For the
-/// same reason the board keeps the whole table in a `.bss` slot and never moves it by value.
+/// Blocks read per `BlockDevice::read` on the batched path — the CMD18 span size. A read of
+/// `k > 1` disk-contiguous blocks issues **one** CMD18 (`embedded-sdmmc` dispatches multi-block
+/// slices to CMD18+CMD12) instead of `k` CMD17s, amortising the per-command handshake (command
+/// frame + R1 poll + `wait_not_busy`) — measured on glass at ~260 µs/block on the reference card,
+/// so a 4 KB (8-block) chunk read drops from 8 commands to 1. Benefit is steeply diminishing past
+/// a few blocks (the per-block data-token + payload cost is irreducible), so `8` = one CMD18 for a
+/// packer-default 4 KB chunk, two for the 8 KB `MAX_CHUNK_BYTES` ceiling. Tunable: the whole cost
+/// is [`SCRATCH`](ExtentTable::scratch)'s resident RAM (`READ_BATCH × 512` bytes, held for the map
+/// session) traded against commands saved — halve it to 4 and a chunk pays 1 extra command for
+/// 2 KB less resident.
+pub const READ_BATCH: usize = 8;
+
+/// The resolved file: its extent runs plus a resident [`READ_BATCH`]-block scratch. Reads of one
+/// disk-contiguous span land in the scratch in a single CMD18 (or CMD17 for a lone block) and are
+/// copied into the caller's buffer — the caller's `&[u8]` can't be handed to `BlockDevice::read`
+/// (which needs `&[Block]`, a cast `Block`'s `repr(Rust)` layout doesn't license), and the copy is
+/// noise beside the multi-ms SD read. The scratch lives *here* — sized once, resident with the
+/// table — rather than on the read path's stack: `read_at` is reached from the deepest render
+/// frames, where the tight ride-stack budget has no spare 4 KB (see the board crate's stack notes).
+/// For the same reason the board keeps the whole table in a `.bss` slot and never moves it by value.
 pub struct ExtentTable {
     runs: heapless::Vec<Run, MAX_EXTENTS>,
     len: u32,
-    bounce: RefCell<Block>,
+    scratch: RefCell<[Block; READ_BATCH]>,
 }
 
 impl ExtentTable {
@@ -250,7 +265,7 @@ impl ExtentTable {
         if run_count as usize > MAX_EXTENTS {
             return Err(BuildError::TooFragmented(run_count));
         }
-        Ok(ExtentTable { runs, len: expected_len, bounce: RefCell::new(Block::new()) })
+        Ok(ExtentTable { runs, len: expected_len, scratch: RefCell::new(core::array::from_fn(|_| Block::new())) })
     }
 
     /// How many extent runs the file resolved to — 1 = fully contiguous. The number #500's open
@@ -276,12 +291,15 @@ impl ExtentTable {
         self.runs.is_empty()
     }
 
-    /// Absolute LBA of file block `file_block`, or `None` past the mapped extents.
-    fn lba_of(&self, file_block: u32) -> Option<u32> {
+    /// Absolute LBA of file block `file_block`, **and** how many blocks stay disk-contiguous from
+    /// it (to the end of its extent run) — the cap on a single CMD18 batch, since a run boundary is
+    /// an LBA discontinuity one multi-block read can't cross. `None` past the mapped extents.
+    fn lba_run_of(&self, file_block: u32) -> Option<(u32, u32)> {
         // Runs are sorted by construction; binary-search the covering run.
         let i = self.runs.partition_point(|r| r.file_block <= file_block).checked_sub(1)?;
         let r = &self.runs[i];
-        (file_block - r.file_block < r.blocks).then(|| r.lba + (file_block - r.file_block))
+        let into = file_block - r.file_block;
+        (into < r.blocks).then(|| (r.lba + into, r.blocks - into))
     }
 }
 
@@ -312,21 +330,36 @@ impl<D: BlockDevice> ByteSource for ExtentSource<'_, D> {
         if end > self.table.len {
             return Err(Error::BadOffset);
         }
-        // Block-at-a-time through the table's resident bounce buffer (see its field doc for why
-        // it isn't a stack local here). Single-block CMD17s already cut the measured per-chunk
-        // cost ~30× (the FAT walk was the cost, not the data blocks); batching contiguous spans
-        // into one CMD18 is a further ~2× left on the table if a read path ever needs it.
-        let mut bounce = self.table.bounce.borrow_mut();
+        // Batched through the table's resident scratch (see its field doc for why it isn't a stack
+        // local). Each turn reads as many disk-contiguous blocks as fit — capped by the scratch
+        // ([`READ_BATCH`]) and the current extent run's tail — in one `BlockDevice::read`, so a
+        // multi-block span issues one CMD18 rather than a CMD17 per block; the aligned interior
+        // copies whole, the first/last block honour the unaligned head/tail. Maximally-fragmented
+        // (1-block runs) degrades to the old per-block CMD17 with no extra cost.
+        let mut scratch = self.table.scratch.borrow_mut();
         let mut off = offset;
         let mut done = 0usize;
         while done < buf.len() {
-            let lba = self.table.lba_of(off / 512).ok_or(Error::BadOffset)?;
-            self.dev.read(core::slice::from_mut(&mut *bounce), BlockIdx(lba)).map_err(|_| Error::Io)?;
+            let (lba, run_left) = self.table.lba_run_of(off / 512).ok_or(Error::BadOffset)?;
+            // Blocks this request still spans from the current block (rounding the tail up), capped
+            // by the run and the scratch.
             let in_block = (off % 512) as usize;
-            let n = (512 - in_block).min(buf.len() - done);
-            buf[done..done + n].copy_from_slice(&bounce.contents[in_block..in_block + n]);
-            done += n;
-            off += n as u32;
+            let blocks_needed = (in_block + (buf.len() - done)).div_ceil(512) as u32;
+            let k = blocks_needed.min(run_left).min(READ_BATCH as u32) as usize;
+            self.dev.read(&mut scratch[..k], BlockIdx(lba)).map_err(|_| Error::Io)?;
+            // Copy the covered bytes out: the first block starts at `in_block`, the rest at 0; stop
+            // when the caller's buffer is full.
+            let mut boff = in_block;
+            for blk in scratch[..k].iter() {
+                let n = (512 - boff).min(buf.len() - done);
+                buf[done..done + n].copy_from_slice(&blk.contents[boff..boff + n]);
+                done += n;
+                off += n as u32;
+                boff = 0;
+                if done == buf.len() {
+                    break;
+                }
+            }
         }
         Ok(())
     }
@@ -592,8 +625,23 @@ mod tests {
 
         let src = ExtentSource::new(fs.disk, &table);
         let file = fs.vmgr.open_file_in_dir(fs.root, "MAP.BIN", Mode::ReadOnly).unwrap();
-        let windows: &[(u32, usize)] =
-            &[(0, 512), (0, len as usize), (1, 511), (7, 1300), (509, 8), (512, 512), (len - 700, 700), (len - 1, 1)];
+        // Windows cover: sub-block, whole-file, unaligned head/tail, cross-block, cross-extent, and
+        // — for the batched CMD18 path — an exactly-`READ_BATCH`-aligned span (512, 4096) and an
+        // unaligned span longer than one batch (3, 4090) that forces multiple `read` turns and, in
+        // the fragmented cases, a batch clamped to each single-block run. All fit the smallest
+        // fixture (fat16, len 6144).
+        let windows: &[(u32, usize)] = &[
+            (0, 512),
+            (0, len as usize),
+            (1, 511),
+            (7, 1300),
+            (509, 8),
+            (512, 512),
+            (512, 4096),
+            (3, 4090),
+            (len - 700, 700),
+            (len - 1, 1),
+        ];
         for &(off, n) in windows {
             let mut got = vec![0u8; n];
             src.read_at(off, &mut got).unwrap();
