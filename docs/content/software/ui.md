@@ -584,6 +584,75 @@ pub trait SettingsStore {
 
 The nominal trait lives in dependency-free `obc-ports`; its associated value keeps that foundation from learning the app's `Settings` model. The simulator's [`FileSettingsStore`](src:firmware/obc-sim/src/settings_store.rs) and the board's [`RramSettingsStore`](src:firmware/obc-fw-nrf54l/src/settings.rs) implement that port directly. The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
 
+## Self-cleaning storage: routes and rides expire
+
+Uploading a route takes ten seconds; deleting one takes a discipline nobody has. After a season the Route menu is thirty stale routes deep, and rides you long since pulled to the phone still sit on the card. So stored objects **clean themselves up** — but only ever when it is provably safe to.
+
+The rule is anchored to *use*, not upload. A route is deleted once it has gone **unused** for its **retention** window — a per-route "keep this for…" the app picks at upload time (default two weeks; from *Never* up to two months). "Used" means *becoming the active navigation route*, so a weekly commute loop renews itself forever and a route can never expire mid-tour underneath you: when the housekeeping pass finds the route you're navigating about to expire, it re-stamps it instead of deleting it. Rides are simpler and device-side — a ride is deleted a set time **after it was verifiably synced** to the phone (the [`ackRides` reconcile](../companion-link/#synced-rides-reconciled-state-not-event-inference) is the proof it's safely off the device), and an unsynced ride is never touched, at any age.
+
+### The device has no clock — so deletion waits for a trusted one
+
+None of that can run on a guess about the date. The device has **no RTC**: at boot the wall clock resumes from a persisted set-point that is stale by however long the device was powered off — fine for showing `HH:MM`, useless for deciding whether a route has sat idle for two weeks. So the whole feature rests on a single gate — **nothing is deleted, and no expiry timestamp is written, unless the clock was freshly established *this boot*** by one of exactly two real sources: a **GPS fix** (whose payload carries full UTC) or the phone's **`setClock`** on connect. Until one of them stamps, the boot set-point is display-only and the housekeeping pass does nothing at all.
+
+<figure class="fig">
+<svg viewBox="0 0 720 232" role="img" aria-label="Auto-expiry as a left-to-right flow. On the left are the only two trusted time sources: a GPS fix, which carries full UTC, and the phone's setClock command, sent on every connect with UTC and a local offset. Both feed a central gate — is the clock trusted this boot? A note below the gate reads: untrusted means nothing is stamped and nothing is deleted, because the persisted boot set-point is display-only. When trusted, the gate enables the roughly-hourly housekeeping sweep, which runs only while no ride is recording. The sweep's outcomes are listed on the right: a route unused too long is deleted; the active or not-yet-started route is re-stamped instead of deleted; and a ride synced to the phone and aged past the Auto-delete setting is deleted.">
+  <defs>
+    <marker id="ax-f" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="20">Auto-expiry — a trusted clock gates every delete</text>
+
+  <!-- the only two time sources -->
+  <text class="d-sub" x="16" y="46" style="fill:#6b7758">the only two trusted sources</text>
+  <rect class="d-panel" x="16" y="56" width="180" height="50" rx="10" />
+  <text class="d-label" x="106" y="78" text-anchor="middle">GPS fix</text>
+  <text class="d-sub" x="106" y="95" text-anchor="middle">carries full UTC</text>
+  <rect class="d-panel" x="16" y="120" width="180" height="50" rx="10" />
+  <text class="d-label" x="106" y="142" text-anchor="middle">phone setClock</text>
+  <text class="d-sub" x="106" y="159" text-anchor="middle">UTC + offset · every connect</text>
+
+  <!-- arrows into the gate -->
+  <line class="d-flow" x1="196" y1="82" x2="252" y2="108" marker-end="url(#ax-f)" />
+  <line class="d-flow" x1="196" y1="144" x2="252" y2="118" marker-end="url(#ax-f)" />
+
+  <!-- the trust gate (coral = safety-critical) -->
+  <rect class="d-hot" x="254" y="78" width="166" height="70" rx="12" fill="#f8efe4" />
+  <text class="d-label" x="337" y="107" text-anchor="middle" style="fill:#a9501c">clock trusted</text>
+  <text class="d-sub" x="337" y="127" text-anchor="middle">this boot?</text>
+
+  <!-- untrusted note -->
+  <text class="d-sub" x="337" y="178" text-anchor="middle" style="fill:#a9501c">untrusted → nothing stamped, nothing deleted</text>
+  <text class="d-sub" x="337" y="194" text-anchor="middle">(the boot set-point is display-only)</text>
+
+  <!-- arrow gate → sweep -->
+  <line class="d-flow" x1="420" y1="113" x2="484" y2="92" marker-end="url(#ax-f)" />
+  <text class="d-sub" x="452" y="86" text-anchor="middle" style="font-size:9px">trusted</text>
+
+  <!-- the sweep + its outcomes -->
+  <rect class="d-panel-2" x="486" y="72" width="218" height="40" rx="9" />
+  <text class="d-label" x="595" y="90" text-anchor="middle">roughly-hourly sweep</text>
+  <text class="d-sub" x="595" y="105" text-anchor="middle">only while not recording</text>
+
+  <line class="d-flow" x1="595" y1="112" x2="595" y2="122" marker-end="url(#ax-f)" />
+
+  <rect class="d-panel" x="486" y="124" width="218" height="90" rx="10" />
+  <text class="d-sub" x="502" y="147" style="font-size:9.5px">route unused too long &nbsp;→&nbsp; delete</text>
+  <text class="d-sub" x="502" y="171" style="font-size:9.5px">active / unstarted route &nbsp;→&nbsp; re-stamp</text>
+  <text class="d-sub" x="502" y="195" style="font-size:9.5px">synced ride, aged out &nbsp;→&nbsp; delete</text>
+</svg>
+<figcaption>The safety core in one picture: a <b>GPS fix</b> or the phone's <b>setClock</b> are the only two sources that can establish a <em>trusted</em> clock for the boot, and the roughly-hourly housekeeping sweep refuses to stamp or delete anything until one of them has — and never runs while a ride is recording. Once trusted, it deletes routes idle past their retention and synced rides aged past the Auto-delete setting, but <b>re-stamps</b> rather than deletes the active route and any route whose usage clock was never started. A boot with neither source stays entirely hands-off.</figcaption>
+</figure>
+
+That gate is also why the **Date & Time** screen no longer lets you hand-set the clock — a fat-fingered year must never be able to trigger a mass delete. It's now three rows: a read-only *GPS fix* (the UTC anchor), a read-only *Local time*, and the one **UTC offset** stepper, which shifts only the *displayed* hour. Expiry arithmetic is pure UTC, so a wrong offset is purely cosmetic — after a flight you nudge the stepper once, or the next phone connect refreshes it silently.
+
+### What the rider sees
+
+Almost all of this is invisible, which is the point. Two surfaces show it:
+
+- The **Auto-delete** settings screen — a single stepper, *Synced rides*, choosing how long a synced ride survives before the device removes it (Never / 1 day / 1 week / 1 month, default 1 week). It reuses the one-value picker idiom of Units or Language: a turn walks the four values, a press cycles one forward, `back` is the save. Route retention has **no** device editor — it's per-route and set on the phone; the device only ever displays it.
+- The **Route overview**'s expiry line — a small caption above the route's stats: a muted `Auto-delete` label beside the ink value (`in 3 d`), two-tone and space-separated (no separator glyph — the device font has no middot). It's deliberately *not* an always-on countdown: it appears **only once the route is within five days of deletion** (a deadline already past, before the hourly pass collects it, reads `soon`), so it reads as a *heads-up that this route is about to go*, not standing chrome. A route that never expires, or whose usage clock hasn't started, shows no line at all.
+
+Where that per-route state actually lives — an SD sidecar beside the catalog, never inside the byte-pinned route file, reached over BLE as a command rather than a re-upload — is a [companion-link](../companion-link/#the-trusted-clock-and-route-retention) design note.
+
 ## The UI speaks four languages
 
 Every user-facing word — English, German, French, Spanish — is a *lookup*, not a literal. The **language** is a runtime setting, not a build flag: it lives in the same persisted `Settings` value as Units, RRAM-backed and switchable on-glass from the **Language** settings screen (a one-row value picker showing each language's own name — `English` / `Deutsch` / `Français` / `Español`, so the row reads to someone who can't yet read the current UI). Language and Units are orthogonal — English + Metric is a perfectly good combo.
