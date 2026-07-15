@@ -63,6 +63,15 @@ public struct OBCComponentGallery: View {
                         subtitle: "Fri · 79.0 km · 4:12 · 18.8 kph",
                         preview: .obcSample
                     )
+                    // Auto-expiry countdown footnote (epic #638 S7) — on device,
+                    // within ≤ 3 days of deletion.
+                    RouteCard(
+                        title: "Sugar River Trail",
+                        subtitle: "38.1 km · 210 m ↑ · 1h 55m",
+                        preview: .obcSample,
+                        onDevice: .upToDate,
+                        expiryBadge: "Expires in 2 days"
+                    )
                     RouteCardFullBleed(
                         title: "Kettle Moraine Loop",
                         subtitle: "Southern Unit · gravel & forest doubletrack",
@@ -74,6 +83,21 @@ public struct OBCComponentGallery: View {
                         ],
                         tag: "Planned"
                     )
+                }
+
+                section("Auto-delete (epic #638)") {
+                    OBCGroupedSection("Routes", footer: "New routes auto-delete on the device after this long without use.") {
+                        OBCRetentionRow(
+                            label: "Auto-delete new routes",
+                            selection: .twoWeeks, showsDivider: false,
+                            accessibilityID: "gallery.settings.autoDelete", onSelect: { _ in })
+                    }
+                    OBCGroupedSection {
+                        OBCRetentionRow(
+                            selection: .oneWeek, detailLine: "Expires in 2 days",
+                            showsDivider: false,
+                            accessibilityID: "gallery.detail.autoDelete", onSelect: { _ in })
+                    }
                 }
 
                 section("Skeleton Loader") {

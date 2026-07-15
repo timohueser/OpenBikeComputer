@@ -40,6 +40,7 @@ struct OBCCompanionApp: App {
                 transport: Self.makeTransport(),
                 bondStore: Self.makeBondStore(),
                 library: Self.makeLibraryStore(),
+                retentionDefaults: Self.makeRetentionDefaultsStore(),
                 reachability: Self.makeReachability(),
                 importAtLaunch: Self.launchImport(),
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo()
@@ -136,5 +137,17 @@ struct OBCCompanionApp: App {
         if let mockControl { return MockBondStore(control: mockControl) }
         #endif
         return UserDefaultsBondStore()
+    }
+
+    /// The default-retention preference (epic #638). Mock runs stay **in-memory**
+    /// — every scenario-driven launch (XCUITests, previews, demos) starts from the
+    /// documented default (`After 2 weeks`), never a prior run's saved choice, the
+    /// same determinism the library store keeps. The real path persists in
+    /// `UserDefaults`.
+    static func makeRetentionDefaultsStore() -> any RetentionDefaultsStore {
+        #if DEBUG
+        if mockControl != nil { return InMemoryRetentionDefaultsStore() }
+        #endif
+        return UserDefaultsRetentionDefaultsStore()
     }
 }
