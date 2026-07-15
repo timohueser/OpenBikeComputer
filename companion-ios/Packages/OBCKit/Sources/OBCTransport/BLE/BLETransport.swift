@@ -366,10 +366,46 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
+    public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome {
+        // `setClock` (cmd 5, spec §4.4, epic #638): stamp the device's trusted
+        // wall clock. Slot-held + `clearPendingStatuses` for `deleteRoute`'s reason
+        // (#302) — command and transfer results share one `pendingStatuses` buffer.
+        let slot = await acquireTransferSlot("command setClock")
+        defer { releaseTransferSlot(slot) }
+        clearPendingStatuses()
+        try await write(SetClockCommand.encode(sample), to: GATT.command)
+        switch try await bounded({ try await nextCommandResult() }).status {
+        case .ok: return .stamped
+        // A device predating expiry answers `unknownCommand` (§4.4 compat) — a
+        // supported peer, not a failure: the app degrades gracefully.
+        case .unknownCommand: return .unsupported
+        // `error` (bad length / bogus utc / out-of-range offset) is a real write
+        // failure — the sample is `WallClockSample`-clamped, so this shouldn't happen.
+        default: throw DeviceError.writeFailed
+        }
+    }
+
+    public func setRouteRetention(
+        _ id: DeviceObjectID, _ retention: Retention
+    ) async throws -> RetentionWriteOutcome {
+        // `setRouteRetention` (cmd 6, spec §4.4, epic #638): set a stored route's
+        // expiry policy without re-uploading. Slot-held for the same #302 reason.
+        let slot = await acquireTransferSlot("command setRouteRetention id=\(id.raw)")
+        defer { releaseTransferSlot(slot) }
+        clearPendingStatuses()
+        try await write(SetRouteRetentionCommand.encode(objectID: id, retention: retention), to: GATT.command)
+        switch try await bounded({ try await nextCommandResult() }).status {
+        case .ok: return .applied
+        case .notFound: return .notFound
+        case .unknownCommand: return .unsupported
+        default: throw DeviceError.writeFailed
+        }
+    }
+
     public func listRoutes() async throws -> [RouteCatalogEntry] {
         // The `routeList` object (type 6, spec §7.4) over the CoC → the catalog.
-        // Consumed for reconcile (the "on device" badge), never as list rows —
-        // the Planned list is library-first (#289).
+        // Consumed for reconcile (the "on device" badge + the expiry display,
+        // epic #638), never as list rows — the Planned list is library-first (#289).
         let entries = try RouteList.decode(try await downloadObject(type: .routeList, objectID: 0))
         return entries.map { entry in
             RouteCatalogEntry(
@@ -378,7 +414,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 distanceMeters: Double(entry.distanceMeters),
                 elevationGainMeters: Double(entry.ascentMeters),
                 pointCount: Int(entry.pointCount),
-                crc32: entry.crc32
+                crc32: entry.crc32,
+                // The auto-expiry tail (nil for a pre-expiry 76-byte device); the
+                // retention byte is sanitised to `.never` if it's an unknown value.
+                expiresAt: entry.expiresAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                retention: entry.retention.map(Retention.init(safeRawValue:))
             )
         }
     }

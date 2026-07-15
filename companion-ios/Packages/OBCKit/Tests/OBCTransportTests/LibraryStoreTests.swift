@@ -193,6 +193,12 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(loaded.summary.name, "Schwarzwald Tour")
         XCTAssertEqual(loaded.route.waypoints.count, 1)
         XCTAssertEqual(loaded.addedAt, Date(timeIntervalSince1970: 1_000))
+        // Auto-expiry (epic #638) is additive: a pre-expiry file has no retention
+        // fields, so all three load `nil` — a `nil` desired level pushes nothing
+        // (invariant 6: shipping expiry must not surprise-delete an old route).
+        XCTAssertNil(loaded.retention, "a pre-expiry file has no desired retention")
+        XCTAssertNil(loaded.deviceExpiresAt)
+        XCTAssertNil(loaded.deviceRetention)
 
         // …and the schema version stays 1 across a re-save (#359's rule: the
         // scope fields are additive, optional-decoded — no bump).
@@ -220,6 +226,30 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertFalse(
             loaded.deviceLink?.matches(LibraryScope(serial: "OBC-24-000317", epoch: 0xDEAD_0002)) == true,
             "an era change invalidates the link")
+    }
+
+    func testRetentionFieldsRoundTripThroughDisk() throws {
+        // The auto-expiry fields persist additively (epic #638): a desired level
+        // and the device's reported truth survive a save/load, still at schema v1.
+        let (store, dir) = makeFileStore()
+        var record = makeRecord(id: "with-retention")
+        record.retention = .twoWeeks
+        record.deviceRetention = .oneMonth
+        record.deviceExpiresAt = Date(timeIntervalSince1970: 1_784_808_000)
+        store.savePlannedRoute(record)
+
+        let loaded = try XCTUnwrap(
+            FileLibraryStore(directory: dir).plannedRoutes().first { $0.id == record.id })
+        XCTAssertEqual(loaded.retention, .twoWeeks)
+        XCTAssertEqual(loaded.deviceRetention, .oneMonth)
+        XCTAssertEqual(loaded.deviceExpiresAt, Date(timeIntervalSince1970: 1_784_808_000))
+
+        // A record with no retention set round-trips as nil (not a defaulted level).
+        let plain = makeRecord(id: "no-retention")
+        store.savePlannedRoute(plain)
+        let reloaded = try XCTUnwrap(
+            FileLibraryStore(directory: dir).plannedRoutes().first { $0.id == plain.id })
+        XCTAssertNil(reloaded.retention)
     }
 
     // MARK: Rides + the synced set (H9/H10) — split summary/points (#360)
