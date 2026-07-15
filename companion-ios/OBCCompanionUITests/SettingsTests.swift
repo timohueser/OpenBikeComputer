@@ -37,7 +37,9 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(screen.waitForExistence(timeout: 5), "settings screen missing")
     }
 
-    /// G: every group renders — device identity, the coming-soon rows, About.
+    /// G: every group renders — device identity, the S7 Routes default, the
+    /// coming-soon rows, About. The screen scrolls past a fold now, so reveal the
+    /// lower groups before asserting them.
     @MainActor
     func testSettingsShowsTheFourDesignGroups() {
         let app = launch()
@@ -48,15 +50,24 @@ final class SettingsTests: XCTestCase {
                       "device status line missing")
         XCTAssertTrue(app.staticTexts["Rename device"].exists)
         XCTAssertTrue(app.staticTexts["Forget device"].exists)
-        XCTAssertTrue(app.staticTexts["Update over the air"].exists)
-        XCTAssertTrue(app.staticTexts["v0.4.2 · latest"].exists, "firmware line missing")
-        XCTAssertTrue(app.staticTexts["Strava sync"].exists)
-        XCTAssertTrue(app.staticTexts["Komoot sync"].exists)
-        XCTAssertTrue(app.staticTexts["Auto-sync on import"].exists)
-        XCTAssertTrue(app.staticTexts["OpenBikeComputer on GitHub"].exists)
-        XCTAssertTrue(app.staticTexts["No account. No subscription. No cloud."].exists,
-                      "the no-cloud footer is the epic's promise — keep it")
+        // The S7 default-retention row (epic #638).
+        XCTAssertTrue(app.staticTexts["Auto-delete new routes"].exists, "the routes default row is missing")
         snap(app, "G-settings")
+
+        // The screen now scrolls past a fold — reveal each lower group in turn
+        // (each scrolls off the top as the next comes up, so assert as it appears).
+        reveal(app, "Update firmware")                         // firmware group
+        reveal(app, "Strava sync")                             // connected services
+        reveal(app, "OpenBikeComputer on GitHub")              // about
+        reveal(app, "No account. No subscription. No cloud.")  // the no-cloud promise
+    }
+
+    /// Swipe up until the labelled row enters the tree, then assert it.
+    @MainActor
+    private func reveal(_ app: XCUIApplication, _ label: String) {
+        let element = app.staticTexts[label]
+        for _ in 0..<6 where !element.exists { app.swipeUp(velocity: .fast) }
+        XCTAssertTrue(element.exists, "\(label) row missing")
     }
 
     /// H3: rename via the text-field alert; the new name shows in Settings and
