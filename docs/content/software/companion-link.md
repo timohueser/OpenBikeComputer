@@ -397,6 +397,32 @@ Rides screen's cue updates live. The flag becomes *"the phone has confirmed it
 holds this"*, self-healing on every reconnect rather than riding on a single
 download event landing.
 
+### The trusted clock and route retention
+
+Two more things ride every connect, both from the storage auto-expiry work
+([#638](https://github.com/timohueser/OpenBikeComputer/issues/638)). First:
+immediately after encryption and **before the first `ackRides`**, the phone sends
+a **`setClock`** command — the current UTC plus the phone's local offset. The
+device has no battery-backed clock, so this (or a GPS fix) is what establishes a
+*trusted* wall clock for the boot, the safety gate the device's [auto-delete
+sweep](../ui/#the-device-has-no-clock-so-deletion-waits-for-a-trusted-one) won't
+act without. The ordering is deliberate: because `setClock` lands first, the
+`ackRides` that flags a ride synced runs under a trusted clock, so the moment it
+stamps as that ride's *synced-at* — the anchor for the ride's eventual
+auto-delete — is a real timestamp, not a stale set-point.
+
+Second: a route's **retention** — its "delete after this long unused" window — is
+set from the app with a **`setRouteRetention`** command (object id + level), *not*
+by re-uploading the route. That split is the interesting part. The [OBCR route
+file](../formats/) is **byte-pinned** — an upload's payload is exactly the route's
+bytes, and stays that way — but retention is mutable device-local state that
+changes without the geometry changing. So it never enters the file: it lives in an
+SD sidecar (route id → level + last-used), travels as a command, and the device
+reports each route's computed `expires_at` back in its `routeList` entry — which
+grew a small tail to carry it. Formats stay pinned; the mutable state routes
+*around* them. The command layouts, the connect-ordering rules, and the 84-byte
+list entry are the [BLE interface spec §4.4 / §7.4](src:obc-ble-interface-spec.md).
+
 ## Store epochs — which id era you're talking to
 
 Everything above trusts durable ids to keep meaning the same object next connect.
