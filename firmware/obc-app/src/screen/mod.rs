@@ -75,9 +75,9 @@ pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AddFieldScreen, AutoDeleteScreen, BikeTypeScreen, BluetoothScreen, DateTimeScreen, DisplayScreen, LanguageScreen,
-    PowerScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsScreen, StatFieldsScreen, StatsScreen,
-    SystemScreen, UnitsScreen,
+    AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen, FirmwareScreen,
+    LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen, SettingsScreen,
+    StatFieldsScreen, SystemScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -699,20 +699,20 @@ screens! {
     /// **Host-pushed** by [`App::apply_event`], coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
     Settings(SettingsScreen) => Caps::settings(),
+    /// The Ride settings screen: routing profile + the riding stats grid (page cycle, fields, climb,
+    /// waypoints) + the synced-ride retention ring. The one settings screen that scrolls (6 rows).
+    Ride(RideScreen) => Caps::settings(),
     DateTime(DateTimeScreen) => Caps::settings(),
-    /// The Auto-delete screen (route auto-expiry + ride auto-delete, epic #638 S5): one stepper for
-    /// synced-ride retention (Never / 1 day / 1 week / 1 month). Route retention is app-controlled
-    /// and has no device editor.
-    AutoDelete(AutoDeleteScreen) => Caps::settings(),
     Units(UnitsScreen) => Caps::settings(),
     /// The Bike type screen: cycles the routing profile (§8.6) the planner weights edges by, by name
     /// from the loaded map (routing-v2 N5, epic #533).
     BikeType(BikeTypeScreen) => Caps::settings(),
-    Stats(StatsScreen) => Caps::settings(),
     StatFields(StatFieldsScreen) => Caps::settings().hold_fill(),
     AddField(AddFieldScreen) => Caps::settings(),
     /// The Display screen: the Map's clock + scale-bar overlay toggles and the idle-return timeout.
     Display(DisplayScreen) => Caps::settings(),
+    /// The Connections settings menu: Phone (Bluetooth pairing) + Sensors (BLE sensors scan).
+    Connections(ConnectionsScreen) => Caps::settings(),
     Power(PowerScreen) => Caps::settings(),
     /// The Bluetooth screen: radio on/off, status line, Paired row, hold-guarded Forget phone.
     Bluetooth(BluetoothScreen) => Caps::settings().hold_fill(),
@@ -724,9 +724,12 @@ screens! {
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Caps::settings(),
-    /// The System settings screen (epic #615 S5): the "Install update from card" door into the
-    /// SD-sideload firmware-update flow.
+    /// The System settings menu: Units / Date & Time / Language / Firmware update / Reset — a thin
+    /// nav list whose rows open those pages.
     System(SystemScreen) => Caps::settings(),
+    /// The Firmware page (epic #615 S5): the device-info ledger + the "Install update from card"
+    /// door into the SD-sideload firmware-update flow.
+    Firmware(FirmwareScreen) => Caps::settings(),
     Reset(ResetScreen) => Caps::settings().hold_fill(),
     /// The "Checking card..." scan wait (epic #615 S5): a spinner up while the board validates
     /// `UPDATE.BIN`; the board's answer replaces it with the confirm screen or an error card.

@@ -164,7 +164,7 @@ impl DateTimeScreen {
                     let mut v: heapless::String<24> = heapless::String::new();
                     let _ = write!(
                         v,
-                        "{} {} {}  {:02}:{:02}",
+                        "{} {} {} {:02}:{:02}",
                         local.year,
                         crate::settings::month_name(local, lang),
                         local.day,
