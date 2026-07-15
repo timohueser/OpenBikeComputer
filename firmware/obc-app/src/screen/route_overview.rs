@@ -34,7 +34,7 @@ use obc_render::{
 
 use crate::activity::Activity;
 use crate::input::Gesture;
-use crate::retention::{Retention, RouteRetentionMeta, DAY_SECS};
+use crate::retention::{RouteRetentionMeta, DAY_SECS};
 use crate::route::RouteSummary;
 use crate::screen::ScreenTick;
 use crate::Msg;
@@ -411,26 +411,21 @@ fn action_rows_top(h: i32) -> i32 {
     h - 10 - 2 * OPTION_ROW_H - OPTION_GAP
 }
 
+/// How close to its deletion deadline a route must be for the Auto-delete row to appear (epic #638
+/// S5, owner review): **5 days**. The row is a "this route is about to be auto-deleted" heads-up,
+/// not an always-on countdown — beyond this window it stays absent, reclaiming the vertical space.
+/// Past-due (a deadline already elapsed, before the hourly sweep collects it) is inside the window.
+const EXPIRY_SHOW_WINDOW: u32 = 5 * DAY_SECS;
+
 /// The Route overview's **Auto-delete** row value for `meta` at `now_utc` (epic #638 S5), or `None`
-/// when the route never expires (retention [`Never`](Retention::Never) → the row is absent
-/// entirely, per the locked UI — no "Never" noise). A retention-bearing route whose clock was never
-/// started (`last_used == 0`, so [`expires_at`](RouteRetentionMeta::expires_at) is `None`) reads
-/// `--`; otherwise the remaining time from [`fmt_remaining`].
+/// when the row is **absent**. It shows **only** for a route with a *started* deadline
+/// ([`expires_at`](RouteRetentionMeta::expires_at) is `Some` — retention ≠ `Never`
+/// **and** `last_used != 0`) falling **within [`EXPIRY_SHOW_WINDOW`]** (past-due included). A `Never`
+/// route, an unstarted clock (`last_used == 0`), and a deadline more than 5 days out all read `None`.
+/// The value itself is [`fmt_remaining`]'s locked format ("in N d" / "in N h" / "soon").
 fn expiry_value(meta: RouteRetentionMeta, now_utc: u32) -> Option<heapless::String<12>> {
-    if matches!(meta.retention, Retention::Never) {
-        return None;
-    }
-    let mut s = heapless::String::new();
-    match meta.expires_at() {
-        // Retention set, but the clock has never been established for this route — show a neutral
-        // placeholder rather than a bogus countdown (matches the page's existing `--` for a missing
-        // descent). The em dash the epic sketches isn't in the font's Latin repertoire, so `--`.
-        None => {
-            let _ = s.push_str("--");
-        }
-        Some(deadline) => s = fmt_remaining(deadline, now_utc),
-    }
-    Some(s)
+    let deadline = meta.expires_at()?; // Never, or clock never started → absent
+    (deadline.saturating_sub(now_utc) <= EXPIRY_SHOW_WINDOW).then(|| fmt_remaining(deadline, now_utc))
 }
 
 /// The time left until `deadline` from `now_utc`, in the Route overview's locked format (epic #638
@@ -566,6 +561,7 @@ pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &s
 mod tests {
     use super::*;
     use crate::activity::Mode;
+    use crate::retention::Retention;
     use crate::route::RouteSummary;
     use crate::screen::PoiScratch;
     use crate::settings::Settings;
@@ -718,19 +714,29 @@ mod tests {
         assert_eq!(fmt_remaining(now - DAY_SECS, now).as_str(), "soon", "past-due → soon (saturating)");
     }
 
-    /// The Auto-delete row's presence rule: absent for `Never`, "--" for a retention-set route whose
-    /// clock never started, and the countdown once it has.
+    /// The Auto-delete row's ≤ 5-day presence gate (owner review): absent for `Never`, absent for an
+    /// unstarted clock, absent for a deadline more than 5 days out, and shown (with the locked
+    /// format) once the deadline is within 5 days — past-due included as "soon".
     #[test]
-    fn expiry_value_states() {
-        let now = 1_000_000;
-        // Never → no row at all (locked: no "Never" noise).
+    fn expiry_value_gated_to_five_days() {
+        let now = 100_000_000; // well past a month of seconds, so the `now - N*DAY_SECS` stamps don't underflow
+                               // Never → absent.
         assert_eq!(expiry_value(RouteRetentionMeta::new(Retention::Never, now), now), None);
-        assert_eq!(expiry_value(RouteRetentionMeta::new(Retention::Never, 0), now), None);
-        // Retention set but last_used == 0 (clock never started) → "--".
-        let unknown = expiry_value(RouteRetentionMeta::new(Retention::Week1, 0), now);
-        assert_eq!(unknown.as_deref(), Some("--"));
-        // Retention set with a real last_used → the countdown ("in 12 d" for a 14-day route used 2 d ago).
-        let counting = expiry_value(RouteRetentionMeta::new(Retention::Week2, now - 2 * DAY_SECS), now);
-        assert_eq!(counting.as_deref(), Some("in 12 d"));
+        // Retention set but the clock never started (last_used == 0) → absent (no more "--" state).
+        assert_eq!(expiry_value(RouteRetentionMeta::new(Retention::Week1, 0), now), None);
+        // A started deadline more than 5 days out → absent (30-day route used 24 days ago = 6 d left).
+        let far = RouteRetentionMeta::new(Retention::Month1, now - 24 * DAY_SECS);
+        assert_eq!(expiry_value(far, now), None, "6 days out → absent");
+        // Exactly 5 days out → shown as "in 5 d" (30-day route used 25 days ago).
+        let five = RouteRetentionMeta::new(Retention::Month1, now - 25 * DAY_SECS);
+        assert_eq!(expiry_value(five, now).as_deref(), Some("in 5 d"), "exactly 5 days is inside the window");
+        // A ≤ 48 h case → hours (1-day route used 19 h ago = 5 h left).
+        let hours = RouteRetentionMeta::new(Retention::Day1, now - (DAY_SECS - 5 * 3600));
+        assert_eq!(expiry_value(hours, now).as_deref(), Some("in 5 h"));
+        // Sub-hour and past-due both fold to "soon", both inside the window.
+        let subhour = RouteRetentionMeta::new(Retention::Day1, now - (DAY_SECS - 1800));
+        assert_eq!(expiry_value(subhour, now).as_deref(), Some("soon"));
+        let overdue = RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS);
+        assert_eq!(expiry_value(overdue, now).as_deref(), Some("soon"), "past-due is inside the window → soon");
     }
 }

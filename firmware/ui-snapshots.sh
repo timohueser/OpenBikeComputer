@@ -249,20 +249,31 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
 # Entry shows the content-paired pager's page A (owner review round 3): the route's track-shape
 # preview (host-decimated, start disc + destination diamond) over its DISTANCE row.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --png "$OUT/routeoverview.png"
-# The Auto-delete expiry row (epic #638 S5). It is absent above (every route defaults to retention
-# Never — `routeoverview.png` is the "no row" state, byte-unchanged). `--route-retention LEVEL:AGE`
-# stamps every route's meta off the (--clock-pinned) wall clock: level 3 = 2 weeks used 2 days ago →
-# "in 12 d"; level 2 = 1 week with the clock never started (`unknown`) → the neutral "--". The row
-# tucks under the title and the media band starts lower to make room.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 3:2d \
+# The Auto-delete expiry row (epic #638 S5). It is a "this route is about to be deleted" heads-up,
+# shown ONLY when a *started* deadline is ≤ 5 days out; `routeoverview.png` above is the absent
+# state (every route defaults to retention Never — byte-unchanged). `--route-retention LEVEL:AGE`
+# stamps every route's meta off the (--clock-pinned) wall clock. The three ≤5-day states — the row
+# tucks under the title in the smallest (Label) font, muted label + ink value, and the media band
+# starts lower to make room: level 2 = 1 week used 2 days ago → "in 5 d"; level 1 = 1 day used 19 h
+# ago → "in 5 h"; level 1 used 25 h ago (past due, before the sweep) → "soon".
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
     --script "p p p" --png "$OUT/routeoverview-expiry.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 1:19h \
+    --script "p p p" --png "$OUT/routeoverview-expiry-hours.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 1:25h \
+    --script "p p p" --png "$OUT/routeoverview-expiry-soon.png"
+# The gate's two "absent" cases must render exactly like `routeoverview.png` (no row, full band):
+# a started deadline MORE than 5 days out (level 4 = 1 month used 20 days ago → 10 days left), and a
+# route whose clock never started (`unknown` → no deadline).
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 4:20d \
+    --script "p p p" --png "$OUT/routeoverview-expiry-far-absent.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:unknown \
-    --script "p p p" --png "$OUT/routeoverview-expiry-unknown.png"
+    --script "p p p" --png "$OUT/routeoverview-expiry-unstarted-absent.png"
 # Page B after the 5 s dwell (each `w` elapses ~800 ms; seven cross the flip): the elevation band
 # over CLIMB + DESCENT — the same band slot, so nothing jumps.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p w w w w w w w" --png "$OUT/routeoverview-elevation.png"
 # The expiry row on the elevation page: the band's lowered top applies on both pager pages.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 3:2d \
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
     --script "p p p w w w w w w w" --png "$OUT/routeoverview-expiry-elevation.png"
 # The cursor on the Delete row (idle): `r` moves the selection onto it, nothing charging.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p r"   --png "$OUT/routeoverview-delete-selected.png"
@@ -404,9 +415,9 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p"      --png "$OUT/map-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --png "$OUT/routeoverview-$lang.png"
-    # The Route overview's Auto-delete expiry row per-language (epic #638 S5) — eyeball the label
-    # ("Auto-delete" / "Auto-Lösch" / "Suppr. auto" / "Autoborrado") against the right-aligned "in N d".
-    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 3:2d \
+    # The Route overview's Auto-delete expiry row per-language (epic #638 S5) — a ≤5-day heads-up;
+    # eyeball the label ("Auto-Lösch" / "Suppr. auto" / "Autoborrado") beside the ink "in 5 d".
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
         --script "p p p" --png "$OUT/routeoverview-expiry-$lang.png"
     # The trip cascade-delete confirm (epic #526, TR3), per-language — the wrapped warning line + the
     # shortened "Delete all" button are the copy to eyeball for clipping in the longer translations.
