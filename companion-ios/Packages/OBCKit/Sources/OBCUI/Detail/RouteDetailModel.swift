@@ -126,6 +126,11 @@ public final class RouteDetailModel {
     /// Whether the connected device honours retention (S6 flag) — with the
     /// on-device check, gates the Auto-delete row.
     @ObservationIgnored private let supportsRetention: Bool
+    /// The device's actual retention level (`nil` = unknown / pre-expiry firmware),
+    /// display-only. The row's value falls back to this when no desired level is
+    /// set, so the row tells the truth about what the device will do rather than
+    /// claiming "Never" over a live expiry.
+    @ObservationIgnored private let deviceRetention: Retention?
     /// The device's expiry truth (`expires_at`), display-only — formatted into the
     /// row's "Expires …" line, day granularity (extend-on-use makes it approximate).
     @ObservationIgnored private let deviceExpiresAt: Date?
@@ -141,8 +146,12 @@ public final class RouteDetailModel {
         supportsRetention && deviceCopyState != .notOnDevice
     }
 
-    /// The row's value — the desired level, "Never" when unset.
-    public var retentionValue: Retention { retention ?? .never }
+    /// The row's value — the **desired** level when set, else the device's actual
+    /// level when known (so the row tells the truth about what will happen, not a
+    /// misleading "Never" over a live expiry), else "Never". Display-only: a nil
+    /// desired still pushes nothing at reconcile (invariant 6); the picker opening
+    /// on this value just means an edit starts from the truth.
+    public var retentionValue: Retention { retention ?? deviceRetention ?? .never }
 
     /// The row's device-truth detail line ("Expires in 2 days" / "Expires Jul 23"),
     /// or `nil` when the device reports no expiry (omit the line, don't show 0).
@@ -176,9 +185,10 @@ public final class RouteDetailModel {
         provenCommittedCRC: UInt32? = nil,
         importedRouteID: RouteID? = nil,
         // Retention (epic #638 S7): the desired level to show/edit, the device's
-        // expiry truth to phrase, the capability flag, and the edit sink. All
-        // meaningful only for a planned route on the device.
+        // actual level + expiry truth to phrase, the capability flag, and the edit
+        // sink. All meaningful only for a planned route on the device.
         retention: Retention? = nil,
+        deviceRetention: Retention? = nil,
         deviceExpiresAt: Date? = nil,
         supportsRetention: Bool = false,
         onEditRetention: ((Retention) -> Void)? = nil,
@@ -193,6 +203,7 @@ public final class RouteDetailModel {
         self.uploadTargetObjectID = deviceObjectID
         self.provenCommittedCRC = provenCommittedCRC
         self.retention = retention
+        self.deviceRetention = deviceRetention
         self.deviceExpiresAt = deviceExpiresAt
         self.supportsRetention = supportsRetention
         self.onEditRetention = onEditRetention
