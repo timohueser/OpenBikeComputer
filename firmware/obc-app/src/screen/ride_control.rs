@@ -15,7 +15,7 @@ use crate::input::Gesture;
 use crate::stat_fields::{fmt_hms, fmt_km};
 use crate::Msg;
 
-use super::{ledger_row, list, palette, title_frame, Ctx, MenuItem, Render, Transition};
+use super::{ledger_row, list, palette, title_frame, Ctx, MenuItem, Render, RideMenuScreen, Screen, Transition};
 
 /// The ride-so-far ledger: three caption/value rows under the title bar.
 const ROWS_TOP: i32 = 50;
@@ -76,7 +76,7 @@ impl RideControl {
                 cx.activity.mode = Mode::Riding; // back = Resume (cancel the pause)
                 Transition::Pop
             }
-            Gesture::BackHold => Transition::None,
+            Gesture::BackHold => Transition::Push(Screen::RideMenu(RideMenuScreen::new())),
         }
     }
 

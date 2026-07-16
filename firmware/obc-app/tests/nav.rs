@@ -209,7 +209,7 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     assert!(app.activity.is_tracking());
     let session = app.activity.session();
 
-    // Mid-ride: Menu → POIs → detail → confirm → create → (host answers).
+    // Mid-ride: Ride menu → POIs → detail → confirm → create → (host answers).
     app.apply_gesture(Gesture::BackHold);
     app.apply_gesture(Gesture::Turn(2));
     app.apply_gesture(Gesture::Press);

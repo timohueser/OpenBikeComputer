@@ -7,7 +7,7 @@
 //!   the live position after a few seconds idle. `hold` enters Zoom mode.
 //! - **Zoom mode:** `turn` zooms centred on the frozen cursor (a magnifying-glass icon marks the
 //!   mode). It does not spring back while zooming. `hold` or `back` exits, springing back.
-//! - Shared: `press` = pause → Ride control, `back` (cursor mode) = the sibling Map, `back-hold` = Menu.
+//! - Shared: `press` = pause → Ride control, `back` (cursor mode) = the sibling Map, `back-hold` = Ride menu.
 //!
 //! Zoom is cheap: the profile is a load-time [`Profile`] pyramid, so a step is just
 //! [`Profile::window`] picking a level + sub-range — no route re-read. Going off-route freezes the

@@ -46,8 +46,8 @@ const ROW_H: i32 = 64;
 /// # Storage decision (issue #425)
 ///
 /// A `heapless::Vec<Poi, 16>` is ~776 B. The [`Screen`](super::Screen) enum is a union sized to its
-/// largest variant (measured 40 B without this) held in a `Vec<Screen, MAX_DEPTH=8>` in `.bss`, so
-/// an inline snapshot would inflate **every** stack slot: 8 × ~784 B ≈ 6.3 KB resident. Held once in
+/// largest variant (measured 40 B without this) held in a `Vec<Screen, MAX_DEPTH=10>` in `.bss`, so
+/// an inline snapshot would inflate **every** stack slot: 10 × ~784 B ≈ 7.7 KB resident. Held once in
 /// `App` it costs the buffer **once** (~800 B). Only one POI list is ever visible, and the
 /// static-snapshot contract already forbids two live snapshots, so the single buffer loses nothing.
 pub struct PoiScratch {
