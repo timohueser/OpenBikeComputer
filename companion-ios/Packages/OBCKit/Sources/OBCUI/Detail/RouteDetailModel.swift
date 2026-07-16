@@ -10,10 +10,12 @@ import OBCTransport
 ///   • `.tracked`  — E3, a device-recorded ride from the Tracked list
 ///   • `.imported` — E1, the landing for a just-parsed route file
 ///
-/// Planned/tracked render their list summary immediately and fill in waypoints
-/// + elevation when `routeDetail`/`rideDetail` land (a failed detail read
-/// degrades quietly — the summary stats never depend on it). Imported computes
-/// everything up front from the parsed geometry (`RouteStats`).
+/// Planned routes are **library-first** (#289): the waypoints + profile come in
+/// as `preloadedDetail`, derived from the saved record's own geometry — E2
+/// never asks the device for a route the phone already holds. Tracked renders
+/// its summary immediately and fills the profile when `rideDetail` lands (a
+/// failed read degrades quietly). Imported computes everything up front from
+/// the parsed geometry (`RouteStats`).
 @MainActor @Observable
 public final class RouteDetailModel {
     /// Which of the three design dressings this instance wears.
@@ -27,7 +29,7 @@ public final class RouteDetailModel {
 
     // MARK: Observable state
 
-    /// Title — editable via `rename(to:)` on planned/tracked (H12).
+    /// Title — editable via `rename(to:)` on every dressing (H12).
     public private(set) var name: String
     /// Waypoints in ride order (W1); empty until the detail read lands.
     public private(set) var waypoints: [Waypoint] = []
@@ -35,10 +37,31 @@ public final class RouteDetailModel {
     public private(set) var elevationProfile: [Double] = []
     /// E2's MAX stat, when the source knows it.
     public private(set) var maxGradePercent: Double?
+    /// The live link state — Upload is link-bound, so the button dims with it
+    /// (the S4 rule). Starts optimistic; the stream's replayed value corrects
+    /// it before the first frame on every transport.
+    public private(set) var connection: ConnectionState = .connected
+
+    /// Whether Upload can act right now.
+    public var canUpload: Bool { connection == .connected }
+
+    /// The **desired** app-side retention for this route (epic #638 S7), editable
+    /// via ``editRetention(_:)``; `nil` reads as "Never". Only meaningful for a
+    /// planned route on the device — see ``showsRetentionRow``.
+    public private(set) var retention: Retention?
 
     // MARK: Fixed per-dressing facts
 
     public private(set) var preview: TrackPreview?
+    /// The track the interactive map (#294) draws — full resolution when it's
+    /// available (imported/planned always; tracked when `rideGeometry` was
+    /// threaded in), else the preview's own downsampled coordinates. Never
+    /// empty when `preview` has geometry, so `canExpandMap`-style checks can
+    /// key on it directly.
+    public var mapCoordinates: [Coordinate] {
+        !fullTrackCoordinates.isEmpty ? fullTrackCoordinates : (preview?.coordinates ?? [])
+    }
+    @ObservationIgnored private let fullTrackCoordinates: [Coordinate]
     /// The soft line under the title (E3's "Yesterday, 8:12 AM"; E1's file name).
     public let subtitle: String?
     public private(set) var distanceMeters: Double = 0
@@ -48,18 +71,107 @@ public final class RouteDetailModel {
     private var pointCount = 0
     /// Stats computed for an imported file (E1) — also what `makeSummary` saves.
     private var importedStats: RouteStats?
+    /// The canonical geometry an upload encodes to OBCR. The imported dressing
+    /// carries its own; a planned route's is threaded from the library (the device
+    /// wire blob is re-encoded from it, per the B1S format rule). Planned routes
+    /// are library-first (#289), so this is always present where Upload shows;
+    /// a defensive `nil` yields an empty payload the transports reject loudly.
+    @ObservationIgnored private let uploadGeometry: ImportedRoute?
+    /// The device object id to replace on upload — non-nil when re-uploading a
+    /// route already on the device (an edited Komoot re-import, or a planned
+    /// re-push) so it updates in place instead of duplicating. **Mutable**: the
+    /// moment an upload commits, `recordUploaded` pins the assigned id here, so
+    /// pressing Upload again on the same screen replaces that object instead of
+    /// creating another copy.
+    private var uploadTargetObjectID: DeviceObjectID?
+    /// The CRC the device is **proven** to currently hold for this route (#770)
+    /// — threaded from the main model's identity-verified reconcile (a scoped
+    /// link + a matching non-zero catalog CRC), or set by `recordUploaded` when
+    /// an upload just verified it. `nil` = unproven → the button reads Upload,
+    /// never a checkmark on presence alone.
+    private var provenCommittedCRC: UInt32?
+    /// The current payload's CRC, encoded lazily and cached — a rename
+    /// invalidates it (the name is part of the payload).
+    @ObservationIgnored private var cachedPayloadCRC: UInt32?
 
-    public var isRenamable: Bool {
-        switch dressing {
-        case .planned, .tracked: true
-        case .imported: false  // the name saves with the route; no pencil on E1
-        }
+    /// The device-copy state behind the Upload ↔ Update ↔ up-to-date button.
+    public var deviceCopyState: OnDeviceState {
+        OnDeviceState.determine(
+            provenCommittedCRC: provenCommittedCRC,
+            currentCRC: { currentPayloadCRC() }
+        )
+    }
+
+    /// An upload committed under `objectID`: pin the id + the verified
+    /// fingerprint (proof the device now holds it) so the button flips to
+    /// up-to-date and any further upload replaces in place.
+    public func recordUploaded(objectID: DeviceObjectID, crc32: UInt32) {
+        uploadTargetObjectID = objectID
+        provenCommittedCRC = crc32
+    }
+
+    private func currentPayloadCRC() -> UInt32 {
+        if let cached = cachedPayloadCRC { return cached }
+        let crc = CRC32.checksum(uploadPayload())
+        cachedPayloadCRC = crc
+        return crc
+    }
+
+    /// Every dressing renames (H12) — on E1 the pencil fixes the name *before*
+    /// save/upload, so an import doesn't have to round-trip through Planned.
+    public var isRenamable: Bool { true }
+
+    // MARK: Retention (epic #638 S7)
+
+    /// Whether the connected device honours retention (S6 flag) — with the
+    /// on-device check, gates the Auto-delete row.
+    @ObservationIgnored private let supportsRetention: Bool
+    /// The device's actual retention level (`nil` = unknown / pre-expiry firmware),
+    /// display-only. The row's value falls back to this when no desired level is
+    /// set, so the row tells the truth about what the device will do rather than
+    /// claiming "Never" over a live expiry.
+    @ObservationIgnored private let deviceRetention: Retention?
+    /// The device's expiry truth (`expires_at`), display-only — formatted into the
+    /// row's "Expires …" line, day granularity (extend-on-use makes it approximate).
+    @ObservationIgnored private let deviceExpiresAt: Date?
+    /// Propagates an edit back to the library/device (the main model pushes live or
+    /// at the next reconcile); `nil` in previews / dressings without an owner.
+    @ObservationIgnored private let onEditRetention: ((Retention) -> Void)?
+    @ObservationIgnored private let now: () -> Date
+
+    /// Show the Auto-delete row: the route is on the device (any `OnDeviceState`
+    /// except `notOnDevice`) **and** the device is capable. Off device, retention
+    /// is chosen at upload — the upload sheet owns that moment.
+    public var showsRetentionRow: Bool {
+        supportsRetention && deviceCopyState != .notOnDevice
+    }
+
+    /// The row's value — the **desired** level when set, else the device's actual
+    /// level when known (so the row tells the truth about what will happen, not a
+    /// misleading "Never" over a live expiry), else "Never". Display-only: a nil
+    /// desired still pushes nothing at reconcile (invariant 6); the picker opening
+    /// on this value just means an edit starts from the truth.
+    public var retentionValue: Retention { retention ?? deviceRetention ?? .never }
+
+    /// The row's device-truth detail line ("Expires in 2 days" / "Expires Jul 23"),
+    /// or `nil` when the device reports no expiry (omit the line, don't show 0).
+    public var expiryLine: String? {
+        deviceExpiresAt.map { OBCFormat.routeExpiry($0, relativeTo: now()) }
+    }
+
+    /// Edit the route's retention from the detail (S7): update the shown value and
+    /// hand the choice to the owner, which stores it and pushes (live when
+    /// connected, else at the next reconcile). No "pending" chrome.
+    public func editRetention(_ retention: Retention) {
+        self.retention = retention
+        onEditRetention?(retention)
     }
 
     // MARK: Wiring
 
     private let transport: any DeviceTransport
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var connectionWatch: Task<Void, Never>?
 
     /// `preloadedDetail` short-circuits the transport fetch — the composition
     /// root passes it for routes saved from an import this session, whose
@@ -67,10 +179,47 @@ public final class RouteDetailModel {
     public init(
         transport: any DeviceTransport,
         dressing: Dressing,
-        preloadedDetail: RouteDetail? = nil
+        preloadedDetail: RouteDetail? = nil,
+        plannedGeometry: ImportedRoute? = nil,
+        deviceObjectID: DeviceObjectID? = nil,
+        provenCommittedCRC: UInt32? = nil,
+        importedRouteID: RouteID? = nil,
+        // Retention (epic #638 S7): the desired level to show/edit, the device's
+        // actual level + expiry truth to phrase, the capability flag, and the edit
+        // sink. All meaningful only for a planned route on the device.
+        retention: Retention? = nil,
+        deviceRetention: Retention? = nil,
+        deviceExpiresAt: Date? = nil,
+        supportsRetention: Bool = false,
+        onEditRetention: ((Retention) -> Void)? = nil,
+        now: @escaping () -> Date = Date.init,
+        // The tracked dressing's full tracklog (#294 follow-up), threaded from
+        // the library's synced `Ride.points` — a ride carries no ImportedRoute,
+        // so it can't ride along on `uploadGeometry` the way planned/imported do.
+        rideGeometry: [Coordinate]? = nil
     ) {
         self.transport = transport
         self.dressing = dressing
+        self.uploadTargetObjectID = deviceObjectID
+        self.provenCommittedCRC = provenCommittedCRC
+        self.retention = retention
+        self.deviceRetention = deviceRetention
+        self.deviceExpiresAt = deviceExpiresAt
+        self.supportsRetention = supportsRetention
+        self.onEditRetention = onEditRetention
+        self.now = now
+        self.importedID = importedRouteID ?? RouteID("imported-\(UUID().uuidString.lowercased())")
+        switch dressing {
+        case .imported(let route, _): uploadGeometry = route  // E1 carries its own geometry
+        default: uploadGeometry = plannedGeometry
+        }
+        // The interactive map (#294) draws this, never the downsampled `preview`
+        // — full resolution is already in memory for imported/planned (it's the
+        // same geometry `uploadGeometry` carries); `rideGeometry` threads it in
+        // for tracked. Falls back to the preview's coordinates when neither is
+        // available (a ride synced before this geometry was threaded through) —
+        // a coarser map, not a missing one.
+        fullTrackCoordinates = uploadGeometry?.points.map(\.coordinate) ?? rideGeometry ?? []
 
         switch dressing {
         case .planned(let route):
@@ -85,7 +234,6 @@ public final class RouteDetailModel {
                 waypoints = detail.waypoints
                 elevationProfile = detail.elevationProfile
                 maxGradePercent = detail.maxGradePercent
-                started = true  // nothing left to fetch
             }
 
         case .tracked(let ride):
@@ -112,27 +260,32 @@ public final class RouteDetailModel {
         }
     }
 
-    /// Fetch the detail read for planned/tracked (call once, from `.task`).
-    /// Imported already has everything; failures degrade quietly.
+    /// Fetch the tracked dressing's detail read (call once, from `.task`);
+    /// failures degrade quietly. Planned and imported already have everything —
+    /// planned from its library record (`preloadedDetail`), imported from the
+    /// parsed geometry.
     public func start() {
         guard !started else { return }
         started = true
-        switch dressing {
-        case .planned(let route):
-            Task { [transport] in
-                guard let detail = try? await transport.routeDetail(route.id) else { return }
-                waypoints = detail.waypoints
-                elevationProfile = detail.elevationProfile
-                maxGradePercent = detail.maxGradePercent
+        connectionWatch = Task { [weak self, transport] in
+            for await state in transport.state {
+                guard let self else { return }
+                connection = state
             }
+        }
+        switch dressing {
+        case .planned, .imported:
+            break
         case .tracked(let ride):
             Task { [transport] in
                 guard let detail = try? await transport.rideDetail(ride.id) else { return }
                 elevationProfile = detail.elevationProfile
             }
-        case .imported:
-            break
         }
+    }
+
+    deinit {
+        connectionWatch?.cancel()
     }
 
     // MARK: Header dressing
@@ -187,6 +340,30 @@ public final class RouteDetailModel {
         }
     }
 
+    // MARK: Ride sensor summary (E3 only)
+
+    /// One plain label→value row of the per-ride BLE-sensor summary (epic #707).
+    public struct SensorRow: Identifiable, Equatable, Sendable {
+        public let label: String
+        public let value: String
+        public var id: String { label }
+    }
+
+    /// The tracked ride's sensor-summary rows (E3), in the design's fixed order —
+    /// one row per value the ride actually carries, nothing at all when it
+    /// carries none (a v1 ride, or one recorded with no sensors paired). No dead
+    /// rows for an absent value (`ios-copy-tone-plain`).
+    public var sensorRows: [SensorRow] {
+        guard case .tracked(let ride) = dressing else { return [] }
+        var rows: [SensorRow] = []
+        if let v = ride.avgHeartRate { rows.append(SensorRow(label: "Avg heart rate", value: "\(v) bpm")) }
+        if let v = ride.maxHeartRate { rows.append(SensorRow(label: "Max heart rate", value: "\(v) bpm")) }
+        if let v = ride.avgPower { rows.append(SensorRow(label: "Avg power", value: "\(v) W")) }
+        if let v = ride.maxPower { rows.append(SensorRow(label: "Max power", value: "\(v) W")) }
+        if let v = ride.avgCadence { rows.append(SensorRow(label: "Avg cadence", value: "\(v) rpm")) }
+        return rows
+    }
+
     // MARK: Actions
 
     /// H12 — local rename; the caller propagates it to the list (and the
@@ -195,13 +372,17 @@ public final class RouteDetailModel {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         name = trimmed
+        // The name rides in the payload: a rename out-dates the device copy
+        // until the next upload pushes it.
+        cachedPayloadCRC = nil
         return true
     }
 
     /// The id an E1 save/upload lands under — stable per landing, so the
-    /// uploaded blob and the saved library entry are the same route.
-    @ObservationIgnored private lazy var importedID =
-        RouteID("imported-\(UUID().uuidString.lowercased())")
+    /// uploaded blob and the saved library entry are the same route. A re-import
+    /// **replacing** an existing route reuses that route's id (passed in) so the
+    /// save overwrites it rather than adding a duplicate.
+    @ObservationIgnored private let importedID: RouteID
 
     /// The `RouteSummary` an E1 save/upload lands in the library — the parsed
     /// geometry's stats under a fresh (per-landing) id.
@@ -224,12 +405,11 @@ public final class RouteDetailModel {
         )
     }
 
-    /// The `RouteBlob` the upload sheet (B5) sends — the current name +
-    /// waypoints over a **placeholder payload** until the S0 route encoder
-    /// lands in `OBCTransport/Codecs` (real path, A6). The placeholder is
-    /// sized off the route length at the design's scale (2.3 MB for the
-    /// 62.4 km route ≈ 37 B/m), so the mock's pacing and the sheet's MB
-    /// readout stay realistic; the mock counts the bytes, never reads them.
+    /// The `RouteBlob` the upload sheet (B5) sends — the current name + waypoints
+    /// over the **real OBCR v2 payload** the device stores verbatim and rides
+    /// (`RouteObjectCodec`, spec §7.1). The geometry is the imported route's (E1)
+    /// or the library record's for a planned route (#289: every planned row is a
+    /// library save, so it's always there).
     public func makeUploadBlob() -> RouteBlob {
         let summary: RouteSummary
         switch dressing {
@@ -240,10 +420,17 @@ public final class RouteDetailModel {
             summary = makeSummary()
         }
         return RouteBlob(
-            summary: summary,
-            waypoints: waypoints,
-            payload: Data(count: max(1, Int(distanceMeters * 37)))
+            summary: summary, waypoints: waypoints, payload: uploadPayload(),
+            targetObjectID: uploadTargetObjectID
         )
+    }
+
+    /// The OBCR payload an upload sends — also what `deviceCopyState`
+    /// fingerprints, so "up to date" always means byte-identical to this.
+    private func uploadPayload() -> Data {
+        uploadGeometry.map {
+            RouteObjectCodec.encode(points: $0.points, waypoints: waypoints, name: name)
+        } ?? Data()
     }
 
     /// The full `RouteDetail` an E1 save keeps app-side — reopening the saved

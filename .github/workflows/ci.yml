@@ -1,25 +1,26 @@
 name: CI
 
 # Unified correctness gate for the firmware (host workspace + the workspace-excluded board
-# crate), the wasm sim, and the docs site. Build surfaces and their structural gotchas:
+# crate), the wasm sim, the docs site, and the iOS companion app. Build surfaces and their
+# structural gotchas:
 #
 #   * The firmware/ manifest is a *virtual* workspace (no targets of its own) → workspace
 #     commands need `--workspace` / `--all`.
-#   * obc-fw-nrf54l is the **real device target** (nRF54L15; the default display is the LS021 panel
-#     via the FLPR coprocessor, with the ST7789 as the opt-in `tft` backend). It's `exclude`d from
-#     that workspace and is its own cargo root → it needs its own invocation, run from inside the
-#     crate dir so its .cargo/config.toml selects the thumbv8m target (a `--manifest-path` from
-#     the root would build it for the host and fail on embassy-nrf). It has its own Cargo.lock,
-#     and no test harness (no_std on bare metal), so it gets `clippy`/`build` but not
-#     `--all-targets`/`test`. Its two display backends are **mutually exclusive** — `tft`
-#     swaps the FLPR backend for the ST7789 — so each is linted on its own; there is no valid
-#     `--all-features` build (it would mix the two backends and flag dead code). The default
-#     LS021/FLPR legs cross-compile a RISC-V blob (see `embedded`).
+#   * obc-fw-nrf54l is the **real device target** (nRF54L15; the display is the LS021 panel driven
+#     by the FLPR coprocessor). It's `exclude`d from that workspace and is its own cargo root → it
+#     needs its own invocation, run from inside the crate dir so its .cargo/config.toml selects the
+#     thumbv8m target (a `--manifest-path` from the root would build it for the host and fail on
+#     embassy-nrf). It has its own Cargo.lock, and no test harness (no_std on bare metal), so it gets
+#     `clippy`/`build` but not `--all-targets`/`test`. No `--all-features` build (the `debug-uart`
+#     and `synth` source overrides are mutually exclusive, and `ble` needs `--no-default-features`),
+#     so each config is linted on its own. Every leg cross-compiles a RISC-V blob (see `embedded`).
 #   * nRF is the only board in the tree — optimise the shared crates for nRF freely.
 #   * There is no board in CI, so every embedded target is build-only.
-#   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is pinned once in
-#     //rust-toolchain.toml and shared with local dev; jobs install from it.
-#   * `--locked` everywhere so a stale Cargo.lock (either of the two) fails CI.
+#   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is declared once in
+#     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
+#   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
+#     board crate; its job adds a flash-size guard against the 32 KB slot.
+#   * `--locked` everywhere so a stale Cargo.lock (any of the three) fails CI.
 
 on:
   pull_request:
@@ -44,6 +45,8 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       docs: ${{ steps.filter.outputs.docs }}
       wasm: ${{ steps.filter.outputs.wasm }}
+      ios: ${{ steps.filter.outputs.ios }}
+      web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -52,6 +55,7 @@ jobs:
           filters: |
             rust:
               - 'firmware/**'
+              - 'packer/presets/**'
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - '.github/workflows/ci.yml'
@@ -62,11 +66,22 @@ jobs:
             wasm:
               - 'firmware/**'
               - 'docs/**'
+              # The root cargo config is gone (`MapCache::new_boxed` removed the wasm
+              # shadow-stack flag it carried — PRs #661/#666), but rustflags placed there
+              # reach the wasm build via cargo's config walk-up, so a re-introduced file
+              # must still rebuild the demo or a stack regression lands unbuilt.
+              - '.cargo/config.toml'
+              - '.github/workflows/ci.yml'
+            ios:
+              - 'companion-ios/**'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'packer/web_builder/frontend/**'
               - '.github/workflows/ci.yml'
 
-  # cargo fmt --check for both manifests. rustfmt walks up from each file and finds the shared
-  # firmware/rustfmt.toml, so the excluded board crate inherits it; the virtual workspace
-  # manifest needs `--all`, the board crate is checked on its own. (Folds the old fmt.yml.)
+  # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
+  # shared firmware/rustfmt.toml, so the excluded crates inherit it; the virtual workspace
+  # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -76,7 +91,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      - name: cargo fmt --check (host workspace + standalone board crate)
+      - name: cargo fmt --check (host workspace + standalone board crate + obc-boot)
         run: |
           rc=0
           echo "::group::firmware workspace"
@@ -84,6 +99,9 @@ jobs:
           echo "::endgroup::"
           echo "::group::obc-fw-nrf54l (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml || rc=1
+          echo "::endgroup::"
+          echo "::group::obc-boot (workspace-excluded)"
+          cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -126,17 +144,25 @@ jobs:
       - uses: ./.github/actions/setup-host-deps
       - name: cargo test (workspace, all features)
         run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
+      - name: firmware resource/dependency tool unit tests
+        run: python3 -m unittest discover -s firmware/tools/tests -v
+      - name: firmware production dependency direction
+        run: python3 firmware/tools/check_dependencies.py
+      # Renderer pixel-hash tripwire (issue #327): re-render the 7 fixed bench scenes over the
+      # deterministic testkit fixture and fail if any frame hash drifts from the committed golden
+      # file. Timings are printed to the log but never gated (shared runners are noisy); an
+      # intentional rendering change regenerates hashes.txt (--write-hashes) in the same PR.
+      - name: obc-bench --check (render pixel-hash tripwire)
+        run: cargo run --manifest-path firmware/Cargo.toml -p obc-bench --release --locked -- --check firmware/obc-bench/hashes.txt
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
-  # dir so .cargo/config.toml selects thumbv8m. The two backends are mutually exclusive (`tft` swaps
-  # the FLPR backend for the ST7789), so each is linted on its own — no `--all-features` (it would
-  # flag the unused backend's helpers).
+  # dir so .cargo/config.toml selects thumbv8m. No `--all-features` (the `debug-uart`/`synth` source
+  # overrides are mutually exclusive and `ble` needs `--no-default-features`), so each config is
+  # linted on its own.
   #
-  # The **default** build is the LS021 panel via the FLPR (the VPR RISC-V coprocessor, issue #173):
-  # it cross-compiles a `rv32emc` C blob via `build.rs`, so those legs (`flpr: true`) install a
-  # RISC-V gcc first. The `tft` (ST7789) leg skips it — it keeps the full 256 KB and needs no
-  # RISC-V toolchain.
+  # The display is the LS021 panel via the FLPR (the VPR RISC-V coprocessor, issue #173): every leg
+  # cross-compiles a `rv32emc` C blob via `build.rs`, so the RISC-V gcc is installed first for all.
   embedded:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -146,19 +172,15 @@ jobs:
       matrix:
         include:
           # default = the shipping LS021/FLPR map + two-plane path (square-loop GPS, no host feed).
-          - { name: "clippy (default = LS021/FLPR)", cmd: "cargo clippy --locked -- -D warnings", flpr: true }
+          - { name: "clippy (default = LS021/FLPR)", cmd: "cargo clippy --locked -- -D warnings" }
           # debug-uart = default + the VCOM host sensor/telemetry feed (the obc-platform debug codec).
-          - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings", flpr: true }
-          # tft = the opt-in ST7789 backend driving the same map + ride path (no FLPR, no RISC-V gcc).
-          - { name: "clippy (tft)", cmd: "cargo clippy --locked --features tft -- -D warnings", flpr: false }
+          - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings" }
           # The real flashed default artifact (LS021/FLPR) under fat LTO + the N3 RAM-budget assert.
-          - { name: "build (default = LS021/FLPR, release)", cmd: "cargo build --release --locked", flpr: true }
-          # The shipping ST7789 artifact under fat LTO (keeps the opt-in TFT path building).
-          - { name: "build (tft, release)", cmd: "cargo build --release --locked --features tft", flpr: false }
+          - { name: "build (default = LS021/FLPR, release)", cmd: "cargo build --release --locked" }
           # The BLE build (issue #270): the map plane cfg'd out, the nrf-sdc/MPSL/TrouBLE stack +
           # status UI in. Needs --no-default-features (MPSL provides the critical-section impl).
-          - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings", flpr: true }
-          - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble", flpr: true }
+          - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }
+          - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -168,14 +190,98 @@ jobs:
         with:
           workspaces: firmware/obc-fw-nrf54l
           key: thumbv8m-nrf
-      # The FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an rv32emc GNU gcc; the
-      # apt package ships `riscv64-unknown-elf-gcc` (+ matching objcopy), which build.rs auto-detects.
+      # The FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an rv32emc GNU gcc;
+      # build.rs auto-detects the xPack `riscv-none-elf-gcc` (+ matching objcopy).
+      #
+      # Deliberately NOT the apt package: the runner's azure.archive.ubuntu.com mirror kept
+      # stalling on the ~51 MB `gcc-riscv64-unknown-elf` — first wedging jobs until the 6 h
+      # default timeout, then (after per-request timeouts + retries) still burning the 10-minute
+      # step budget on a mirror that *trickles* instead of stalling, which apt's idle timeout
+      # never trips. So: a version-pinned xPack toolchain tarball from GitHub's own release CDN
+      # (runner-to-GitHub, no Ubuntu mirror involved), SHA-256-verified, restored from the
+      # actions cache on every run after the first. The curl retries + step timeout stay as the
+      # cache-miss backstop; worst case is a fast visible failure, never a stuck run.
+      - name: Cache the RISC-V GCC toolchain (xPack)
+        id: riscv-gcc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/xpack-riscv-none-elf-gcc-13.2.0-2
+          key: xpack-riscv-none-elf-gcc-13.2.0-2-linux-x64
       - name: Install RISC-V GCC for the FLPR blob
-        if: matrix.flpr
-        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
+        if: steps.riscv-gcc-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        run: |
+          url="https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v13.2.0-2/xpack-riscv-none-elf-gcc-13.2.0-2-linux-x64.tar.gz"
+          sha256="52545afb900200fbf65fe05f7ce7090b8a42c64091f4f5d43cae6bb68ea2434a"
+          curl -fL --retry 3 --retry-all-errors --max-time 300 -o /tmp/riscv-gcc.tar.gz "$url"
+          echo "$sha256  /tmp/riscv-gcc.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/riscv-gcc.tar.gz -C "$HOME"
+      - name: Put the RISC-V GCC on PATH
+        run: echo "$HOME/xpack-riscv-none-elf-gcc-13.2.0-2/bin" >> "$GITHUB_PATH"
       - name: "obc-fw-nrf54l: ${{ matrix.name }}"
         working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}
+      # FAR-00's one ELF parser extends the pre-existing boot/poll guards with actual linked
+      # `.bss + .data`, exact framebuffer count/size, and the report-only target `size_of` table.
+      # Run against the production ELF first; the resource-report rebuild is a separate diagnostic
+      # artifact and never changes what ships.
+      - name: "obc-fw-nrf54l: default resource baseline"
+        if: matrix.name == 'build (default = LS021/FLPR, release)'
+        working-directory: firmware/obc-fw-nrf54l
+        run: |
+          rustup component add llvm-tools
+          python3 ../tools/resource_guard.py board --profile default \
+            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+          cargo build --release --locked --features resource-report
+          python3 ../tools/resource_guard.py report --profile default \
+            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+      # The BLE board guard also subsumes #677's steady-state poll-frame parser: largest single
+      # `sub sp` in every `TaskStorage<F>::poll`, still capped at 12 KiB, now with stale-symbol and
+      # stale-instruction diagnostics covered by unit tests.
+      - name: "obc-fw-nrf54l: BLE resource + poll-frame baseline"
+        if: matrix.name == 'build (ble, release)'
+        working-directory: firmware/obc-fw-nrf54l
+        run: |
+          rustup component add llvm-tools
+          python3 ../tools/resource_guard.py board --profile ble \
+            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+          cargo build --release --locked --no-default-features --features ble,resource-report
+          python3 ../tools/resource_guard.py report --profile ble \
+            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
+
+  # The obc-boot bootloader (epic #615, #617): workspace-excluded like the board crate, built
+  # from its own directory so its .cargo/config.toml selects thumbv8m. No test harness and no
+  # FLPR blob (no RISC-V gcc needed). The size guard is the real gate: the shipping (default,
+  # no-rtt) release image's flash footprint — .vector_table + .text + .rodata + .data — must fit
+  # the 32 KB slot below the app (see firmware/obc-boot/memory.x), with the measured number in
+  # the failure so a regression is diagnosable from the log.
+  boot:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/obc-boot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/obc-boot
+          key: thumbv8m-boot
+      - name: "obc-boot: clippy (default)"
+        run: cargo clippy --locked -- -D warnings
+      - name: "obc-boot: clippy (rtt)"
+        run: cargo clippy --locked --features rtt -- -D warnings
+      - name: "obc-boot: build (release)"
+        run: cargo build --release --locked
+      - name: "obc-boot: 32 KB size guard"
+        run: |
+          rustup component add llvm-tools
+          python3 ../tools/resource_guard.py boot \
+            --elf target/thumbv8m.main-none-eabihf/release/obc-boot
 
   # std-creep guard for the real device: the shared no_std stack (obc-app pulls in reader /
   # route / render) must still compile for the nRF54L's thumbv8m target.
@@ -194,6 +300,8 @@ jobs:
           key: thumbv8m
       - name: cargo build -p obc-app (thumbv8m.main, nRF54L)
         run: cargo build --manifest-path firmware/Cargo.toml -p obc-app --target thumbv8m.main-none-eabihf --locked
+      - name: thumbv8m +strict-align backend probe
+        run: python3 firmware/tools/resource_guard.py strict-align
 
   # Supply-chain gate: advisories + licenses + bans + sources, for both lockfiles (deny.toml).
   deny:
@@ -209,13 +317,16 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
-        run: cargo deny --manifest-path firmware/Cargo.toml --all-features check --config deny.toml
+        run: cargo deny --manifest-path firmware/Cargo.toml --all-features --config deny.toml check
       - name: cargo-deny (obc-fw-nrf54l board crate)
-        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features check --config deny.toml
+        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
+      - name: cargo-deny (obc-boot bootloader)
+        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config deny.toml check
 
-  # The web sim is the firmware's own render path compiled to wasm; build it on PRs (not just on
-  # the deploy-to-Pages push) so a stack-size regression in firmware/.cargo/config.toml — which
-  # makes the sim silently trap at startup — is caught before merge.
+  # The web demo (firmware/obc-web-demo) is the firmware's own render path compiled to wasm
+  # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
+  # wasm-only breakage — bindgen surface, embedded assets, Trunk config — is caught before merge.
+  # (The `wasm` path filter's firmware/** covers firmware/obc-web-demo/** and every shared crate.)
   wasm:
     needs: changes
     if: needs.changes.outputs.wasm == 'true'
@@ -232,7 +343,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: trunk@0.21.14
-      - name: trunk build (obc-sim → wasm)
+      - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
@@ -247,11 +358,98 @@ jobs:
       - name: build_docs.py --check-links
         run: python3 docs/build_docs.py --check-links
 
+  # iOS companion, fast tier: the OBCKit package suite on the macOS host (no simulator).
+  # This is what enforces the architecture rules that are otherwise only "test-enforced"
+  # locally — CoreBluetoothSeamTests (CoreBluetooth stays inside OBCTransport/BLE/), the
+  # protocol vector/contract tests, and every model test.
+  #
+  # DEVELOPER_DIR pins the Xcode toolchain (project floor is Xcode 26.x, see
+  # companion-ios/CLAUDE.md) so a runner-image update can't silently move it — when the
+  # image drops this version the job fails loudly and the pin gets bumped on purpose.
+  ios-unit:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift test (OBCKit package, host)
+        run: swift test --package-path companion-ios/Packages/OBCKit
+
+  # iOS companion, app tier: xcodegen + a simulator-SDK build of the app target (build-only —
+  # XCUITests on a booted sim are deliberately deferred; they'd be the slow/flaky tier).
+  # The pbxproj is gitignored, so running xcodegen here also validates the fresh-clone setup
+  # and catches project.yml drift. The Debug/Release pair doubles as the mock-seam gate:
+  # OBCMock's build marker must be present in the Debug binary (proves the grep isn't
+  # vacuous) and absent from Release (mock/dev-panel code must never ship).
+  ios-app:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: xcodegen generate
+        working-directory: companion-ios
+        run: xcodegen generate
+      - name: Build (Debug, simulator SDK)
+        working-directory: companion-ios
+        run: |
+          xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion \
+            -configuration Debug -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
+      # -r -a over the whole bundle: in Debug the app code lives in the debug dylib
+      # (OBCCompanion.debug.dylib), not the stub executable; -a forces byte matching in
+      # binaries regardless of grep flavor.
+      - name: Mock marker present in Debug
+        working-directory: companion-ios
+        run: grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Debug-iphonesimulator/OBCCompanion.app
+      - name: Build (Release, simulator SDK)
+        working-directory: companion-ios
+        run: |
+          xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion \
+            -configuration Release -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
+      - name: Mock marker absent from Release
+        working-directory: companion-ios
+        run: |
+          if grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Release-iphonesimulator/OBCCompanion.app; then
+            echo "::error::OBCMock build marker found in the Release binary — mock code is shipping"
+            exit 1
+          fi
+
   # Single aggregate gate: make THIS the required status check on main/develop. It succeeds
   # only if no needed job failed or was cancelled; jobs skipped by the path filters are fine.
+  # The web builder's Svelte frontend: type-check, unit tests, production build.
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packer/web_builder/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+      - run: npm ci
+      - name: svelte-check
+        run: npm run check
+      - name: vitest
+        run: npm test
+      - name: production build
+        run: npm run build
+
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, device, deny, wasm, docs]
+    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, docs, ios-unit, ios-app, web]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)

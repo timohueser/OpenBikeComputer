@@ -1,10 +1,8 @@
 //! GPX replay as a simulated GPS sensor.
 //!
 //! [`GpxPlayer`] is the host's stand-in for the device's GPS chip when replaying a recorded
-//! [`Track`]: it implements [`LocationSource`] exactly like a real receiver's driver would, so
-//! the shared [`App`](obc_app::App) can't tell a replay from a live fix. This is why the whole
-//! feature stays host-side — `obc-render`/`obc-app` never learn what a GPX file is; they just
-//! consume [`Fix`]es.
+//! [`Track`]: it implements [`LocationSource`] like a real receiver's driver would, so the
+//! shared app can't tell a replay from a live fix.
 //!
 //! ## Fidelity
 //! GPX stores only position + time, never course or speed, so they're derived the
@@ -21,7 +19,7 @@
 //! time (scaled by the playback-speed multiplier). Keeping the clock external
 //! makes the interpolation unit-testable without a real timer.
 
-use obc_app::{Fix, LocationSource};
+use obc_ports::{Fix, LocationSource};
 
 use crate::gpx::Track;
 
@@ -156,10 +154,7 @@ impl GpxPlayer {
     /// toward `hi`. Before the first / after the last point both indices collapse to that
     /// endpoint (so any interpolation reproduces it), and a zero-span segment uses `f = 0`.
     /// `None` only for an empty track. `t` is assumed already clamped to `[0, duration]`.
-    ///
-    /// `partition_point` gives the count of points at or before `t`, so the bracketing
-    /// segment is `[idx-1, idx]`. Times are sorted ascending, so the predicate is monotone
-    /// as required.
+    /// Uses `partition_point`, so it relies on points being sorted ascending by `t`.
     fn bracket(&self, t: f64) -> Option<(usize, usize, f64)> {
         let pts = &self.track.points;
         let idx = pts.partition_point(|p| p.t <= t);
@@ -417,11 +412,8 @@ mod tests {
         assert!(p.is_playing());
     }
 
-    /// Item 11 — **a single-point track has zero duration** (`Track::duration` returns the last
-    /// point's `t`, which is the only point's rebased `0.0`). A degenerate one-fix recording
-    /// (GPS got one fix then stopped) must not divide by a zero span or panic: `fix_at` returns
-    /// that lone point and the player parks at `t=0`. Pins the `duration()==0` edge the timed
-    /// fixtures never hit.
+    /// A single-point track has zero duration: `fix_at` must return the lone point and park at
+    /// `t=0` without dividing by a zero span or panicking.
     #[test]
     fn single_point_track_has_zero_duration() {
         let p = GpxPlayer::new(track(&[(1_000, 2_000, 0.0)]));
@@ -432,13 +424,9 @@ mod tests {
         assert_eq!(f.course, None, "no span to derive a heading from");
     }
 
-    /// Item 11 (precondition) — **`interp_pos` / `elevation_at` assume `points` are sorted
-    /// ascending by `t`.** Both use `partition_point(|p| p.t <= t)`, which is only correct on a
-    /// monotone predicate, i.e. ascending times — `Track::parse` guarantees this from real GPX
-    /// timestamps. This test DOCUMENTS the precondition: with deliberately out-of-order times
-    /// the result is unspecified, so we only assert the player stays memory-safe (returns a
-    /// point that exists, no panic), not that it interpolates sensibly. It exists so the
-    /// precondition is recorded in the suite, per item 11.
+    /// `interp_pos` / `elevation_at` assume `points` are sorted ascending by `t` (both use
+    /// `partition_point`, correct only on a monotone predicate). With out-of-order times the
+    /// result is unspecified; we assert only that the player stays memory-safe, not sensible.
     #[test]
     fn non_monotonic_times_are_a_documented_precondition() {
         // Times descend then jump — violating the sorted-`t` precondition on purpose.
@@ -449,12 +437,9 @@ mod tests {
         assert!((0..=20_000).contains(&f.lat), "stays within the track's points, got lat {}", f.lat);
     }
 
-    /// Item 12 — **`elevation_at` with no elevation on one or both bracketing points.** Every
-    /// existing elevation test puts `Some` on both ends, so the `(Some, None)` / `(None, Some)`
-    /// / `(None, None)` arms (`gpx_player.rs`, the `match (a.ele, b.ele)`) were untested. A real
-    /// track can carry `<ele>` on only some points: a lone elevation on either side of the
-    /// bracket still gives a reading (the barometer holds the last good value), but a gap with
-    /// *no* elevation on either side must return `None` so the baro reports "no reading", not 0.
+    /// `elevation_at` with elevation missing on one or both bracketing points: a lone elevation
+    /// on either side still reads (last good value), but a gap with none on either side returns
+    /// `None` so the baro reports "no reading", not 0.
     #[test]
     fn elevation_at_handles_missing_endpoints() {
         let ele = |a: Option<f32>, b: Option<f32>| {
@@ -473,12 +458,9 @@ mod tests {
         assert_eq!(ele(None, None), None, "a gap with no elevation either side returns None");
     }
 
-    /// Item 13 — **the course look-behind keeps the heading pointing forward at the track end.**
     /// Within `LOOK_AHEAD_S` of the end there's no forward window, so `course_speed` looks
-    /// *behind* and (`gpx_player.rs`) reverses the endpoints so the bearing still points the way
-    /// the rider is travelling. Only the forward window at `t=0` was tested; a sign-flip here
-    /// would point the heading-up map *backward* at the finish. On a due-east track the course
-    /// at the very last fix must still read ~90°, not ~270°.
+    /// *behind* and reverses the endpoints so the bearing still points forward. On a due-east
+    /// track the course at the last fix must read ~90°, not ~270° (a sign-flip).
     #[test]
     fn course_at_track_end_still_points_forward() {
         // Due east, three points over 10 s; sample the final fix (look-behind territory).

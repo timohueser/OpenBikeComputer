@@ -1,32 +1,22 @@
-//! Shared helpers for the `obc-app` integration tests.
+//! Shared helpers for the `obc-app` integration tests:
 //!
-//! Three families of fixtures were copy-pasted across the per-test files; this module
-//! is the single source so identical names can't drift into different behaviour:
+//! - [`Buf`] — a recording `Rgb888` `DrawTarget` with per-test accessors ([`Buf::count`],
+//!   [`Buf::get`], [`Buf::edge_halves`]).
+//! - [`build_min_obcm`] — the minimal flat-backdrop `.obcm` builder.
+//! - The scripted hardware: [`Keys`] / [`keys`] / [`down`] / [`up`] / [`turn`] / [`tap`] inputs, and
+//!   the [`LocationSource`] stand-ins [`ReplayFix`] (replay forever) vs [`OnceFix`] (emit once).
 //!
-//! - [`Buf`] — the recording `Rgb888` `DrawTarget` (was duplicated in `marker.rs`,
-//!   `hold_hint.rs`, `overlay_plane.rs`, `screens.rs`). It carries the superset of the
-//!   per-test accessors ([`Buf::count`], [`Buf::get`], [`Buf::edge_halves`]).
-//! - [`build_min_obcm`] — the minimal flat-backdrop `.obcm` builder (was duplicated in
-//!   `marker.rs` / `screens.rs`, and as a marker-less variant in `hold_hint.rs` /
-//!   `overlay_plane.rs`; those now pass `0`).
-//! - The scripted hardware: [`Keys`] / [`keys`] / [`down`] / [`up`] / [`turn`] / [`tap`]
-//!   inputs, and the [`LocationSource`] stand-ins. The two replay disciplines that used
-//!   to share names ("replay this fix forever" vs "emit it once") are now the distinct
-//!   [`ReplayFix`] and [`OnceFix`], so a name means one thing.
-//!
-//! Not every test uses every helper, so `#[allow(dead_code)]` keeps the
-//! unused-per-binary items from warning.
+//! `#[allow(dead_code)]` keeps unused-per-binary items from warning.
 
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obc_app::{Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource};
+use obc_app::{App, Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource, RideClock, Sensors};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
-// ---------------------------------------------------------------------------
 // Recording DrawTarget.
-// ---------------------------------------------------------------------------
 
 /// A `w`×`h` `Rgb888` buffer implementing `DrawTarget`, with clipped writes.
 pub struct Buf {
@@ -101,23 +91,30 @@ impl DrawTarget for Buf {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Minimal OBCM fixture.
-// ---------------------------------------------------------------------------
 
-/// A minimal valid v5 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf
-/// and no chunks. The map renders as a flat backdrop, so the only non-backdrop pixels
-/// come from whatever is drawn on top — making overlays/markers trivial to detect.
-/// `marker` is the header's marker color (pass `0` when the test ignores it).
+/// A minimal valid v10 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
+/// chunks, an empty POI directory (six empty categories), and an empty hours pool. It renders as a
+/// flat backdrop, so the only non-backdrop pixels come from whatever is drawn on top — making
+/// overlays/markers trivial to detect. `marker` is the header's marker color (pass `0` when ignored).
 pub fn build_min_obcm(marker: u16) -> Vec<u8> {
-    let style_off: u32 = 32;
-    // Style table: count=1, then (id=1, z=0, color=0x001F blue sea, weight=1, flags=0).
+    build_min_obcm_profiles(marker, &["Default"])
+}
+
+/// [`build_min_obcm`] with a caller-chosen §8.6 profile table (1..=8 names, every multiplier the
+/// neutral 1.0×) — for the N5 bike-type tests, which need a map carrying several named profiles.
+pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
+    // v8 header is 40 bytes; the style table follows immediately.
+    let style_off: u32 = 40;
+    // Style table (v10, 8-byte record): count=1, then (id=1, z=0, color=0x001F blue sea, weight=1,
+    // flags=0, color2=0x0000 — solid, no secondary color).
     let mut styles = vec![1u8];
     styles.push(1);
     styles.push(0);
     styles.extend_from_slice(&0x001Fu16.to_le_bytes());
     styles.push(1);
     styles.push(0); // flags byte
+    styles.extend_from_slice(&0x0000u16.to_le_bytes()); // color2 (absent ⇒ 0x0000)
 
     let lod_tab_off = style_off as usize + styles.len();
     let index_off = lod_tab_off + 18; // one 18-byte LOD entry
@@ -133,9 +130,54 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     // Index: a single empty leaf (no chunk).
     let index = 0x7FFF_FFFFu32.to_le_bytes();
 
+    // POI section starts right after the index (no LOD chunks here). Empty directory:
+    // count=6, chunk_size=512, six 13-byte entries (all node_count/chunk_count 0), then the two
+    // v7 pool fields (hours_pool_offset u32 + hours_pool_count u16), then an empty hours pool
+    // (a bare `count 0`). The directory length is 3 + 6*13 + 6 = 87.
+    let poi_section_off = index_off + index.len();
+    let dir_len = 3 + 6 * 13 + 6;
+    let after_dir = (poi_section_off + dir_len) as u32; // where the empty pool's `count` sits
+    let mut poi_dir = vec![6u8]; // category_count
+    poi_dir.extend_from_slice(&512u16.to_le_bytes()); // shared chunk_size
+    for id in 1u8..=6 {
+        poi_dir.push(id);
+        poi_dir.extend_from_slice(&after_dir.to_le_bytes()); // index_offset (zero-length here)
+        poi_dir.extend_from_slice(&0u32.to_le_bytes()); // node_count
+        poi_dir.extend_from_slice(&0u32.to_le_bytes()); // chunk_count
+    }
+    poi_dir.extend_from_slice(&after_dir.to_le_bytes()); // hours_pool_offset
+    poi_dir.extend_from_slice(&0u16.to_le_bytes()); // hours_pool_count = 0
+    poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
+
+    // Empty v9 nav section at the tail: the 28-byte directory + the always-present §8.6 profile
+    // table (the caller's names, every multiplier 16 = 1.0×). Zero-length index + edge pool
+    // "start" just past the profile table.
+    let nav_section_off = poi_section_off + poi_dir.len();
+    let profile_table_off = (nav_section_off + 28) as u32;
+    let mut profile_table = Vec::new();
+    for name in profiles {
+        let base = profile_table.len();
+        profile_table.extend_from_slice(name.as_bytes());
+        profile_table.resize(base + 12, 0xFF); // 0xFF-padded 12-byte name
+        profile_table.extend_from_slice(&[16u8; 32]); // highway multipliers (1.0×)
+        profile_table.extend_from_slice(&[16u8; 8]); // surface multipliers (1.0×)
+    }
+    let after_nav = profile_table_off + profile_table.len() as u32;
+    let mut nav_dir = Vec::new();
+    nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // index_offset (zero-length)
+    nav_dir.extend_from_slice(&0u32.to_le_bytes()); // index_node_count
+    nav_dir.extend_from_slice(&0u32.to_le_bytes()); // node_chunk_count
+    nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // edge_pool_offset (zero-length)
+    nav_dir.extend_from_slice(&0u32.to_le_bytes()); // edge_chunk_count
+    nav_dir.extend_from_slice(&512u16.to_le_bytes()); // chunk_size (pinned)
+    nav_dir.extend_from_slice(&profile_table_off.to_le_bytes()); // profile_table_offset
+    nav_dir.push(profiles.len() as u8); // profile_count
+    nav_dir.push(0); // reserved
+    nav_dir.extend_from_slice(&profile_table);
+
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(5);
+    f.push(10);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }
@@ -143,15 +185,17 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
     f.push(1); // lod count
     f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
     f.extend_from_slice(&marker.to_le_bytes());
+    f.extend_from_slice(&(poi_section_off as u32).to_le_bytes());
+    f.extend_from_slice(&(nav_section_off as u32).to_le_bytes());
     f.extend_from_slice(&styles);
     f.extend_from_slice(&table);
     f.extend_from_slice(&index);
+    f.extend_from_slice(&poi_dir);
+    f.extend_from_slice(&nav_dir);
     f
 }
 
-// ---------------------------------------------------------------------------
 // Scripted hardware.
-// ---------------------------------------------------------------------------
 
 /// A scripted `InputSource` draining a queue of raw input events, one per `poll`.
 pub struct Keys(pub VecDeque<InputEvent>);
@@ -181,12 +225,10 @@ pub fn tap(b: Button) -> [InputEvent; 2] {
     [down(b), up(b)]
 }
 
-// ---------------------------------------------------------------------------
 // Location sources. Two disciplines, kept under distinct names.
-// ---------------------------------------------------------------------------
 
-/// A `LocationSource` that replays the same fix on **every** poll — stands in for the
-/// simulator's control-panel override (which holds the last value).
+/// A `LocationSource` that replays the same fix on every poll — stands in for the simulator's
+/// control-panel override.
 pub struct ReplayFix(pub Option<Fix>);
 impl LocationSource for ReplayFix {
     fn poll(&mut self) -> Option<Fix> {
@@ -209,4 +251,38 @@ impl LocationSource for NoFix {
     fn poll(&mut self) -> Option<Fix> {
         None
     }
+}
+
+// Frame rendering.
+
+/// Tick once with no fix / no sensors, then composite one frame of `app` over `bytes` into a
+/// `120×120` recording [`Buf`] — the shared "drive to a screen, snapshot it" helper the screen and
+/// i18n suites use for their compositing assertions.
+pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
+    app.tick(
+        RideClock(0),
+        Sensors {
+            loc: &mut NoFix,
+            altimeter: None,
+            temperature: None,
+            clock: None,
+            compass: None,
+            track: None,
+            fuel: None,
+            hr: None,
+            power: None,
+            cadence: None,
+        },
+        None,
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(bytes);
+    let tables = MapTables::parse(&src).expect("valid obcm");
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut buf = Buf::new(120, 120);
+    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
+        let (r, g, b) = rgb565_to_rgb888(c);
+        Rgb888::new(r, g, b)
+    });
+    buf
 }

@@ -403,6 +403,10 @@ def main():
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
+    # The committed placeholder keeping OUT present on fresh checkouts (trunk
+    # canonicalizes its [watch] ignore path at startup, before this hook runs, #625).
+    # Recreate it so a build doesn't delete the tracked file.
+    (OUT / ".gitkeep").touch()
     shutil.copytree(ASSETS, OUT / "assets")
 
     rendered = {}

@@ -1,37 +1,22 @@
-//! The global long-press hint — an on-screen "frame bulge" that surfaces the
-//! device's central hold gesture wherever it's available.
+//! The global long-press hint — an on-screen "frame bulge" surfacing the device's central hold
+//! gesture. [`App`](crate::app::App) folds each frame's encoder/Back hold-progress into
+//! [`HoldHints`] and draws it on top of the screen stack.
 //!
-//! Long-press is the spine of the input model. This is the one shared layer that
-//! surfaces it everywhere: [`App`](crate::app::App) folds each frame's encoder/Back
-//! hold-progress into [`HoldHints`] and draws it on top of the screen stack.
+//! Per control a black hump swells inward from the screen edge nearest its physical button (both on
+//! the right today), so it reads as the black bezel *bulging into* the display. The hump has a
+//! **fixed base width** along the edge ([`Style::base_half`]) and only its inward *depth* tracks the
+//! hold. Its silhouette is a flat-topped bump — a [`Style::flat_half`]-wide flat shelf with quartic
+//! shoulders easing into the edge — rasterized as edge-perpendicular strips. A completed hold
+//! **pops** (a quick deeper lunge that eases back out); an early release retracts it.
 //!
-//! Per control a black hump swells inward from the screen edge nearest its physical
-//! button (both on the right today — encoder up top, Back below), so it reads as the
-//! black bezel *bulging into* the display — the iOS volume/lock-button press effect.
-//! The hump has a **fixed base width** along the edge ([`Style::base_half`], per
-//! control) and only its inward *depth* tracks the hold, so holding pushes it deeper
-//! in place rather than fanning it wider. Its silhouette is a flat-topped bump — a
-//! [`Style::flat_half`]-wide flat shelf at the apex with quartic shoulders easing
-//! into the edge (deliberately
-//! *not* a round circular cap or a pointed parabola) — rasterized as edge-
-//! perpendicular strips. A completed hold **pops** — a quick deeper lunge that eases
-//! back out — and an early release retracts it.
-//!
-//! Drawn in [`palette::HUD`] (the near-black frame colour), so it needs no gradient
-//! or alpha and renders on the real 8-color panel exactly as in the simulator. The
-//! panel has no alpha and the frame is fully redrawn, so the bulge is opaque and
-//! simply absent once an animation ends — no fades, no ghosting.
-//!
-//! Encoder vs. Back is told apart by *position* (the bulge erupts next to the button
-//! held), not colour. Relocating a bulge is a one-line edit to its [`Style::anchor`].
+//! Drawn in [`palette::HUD`] (the near-black frame colour), so it needs no alpha and renders on the
+//! real 8-color panel. Encoder vs. Back is told apart by *position*, not colour; relocating a bulge
+//! is a one-line edit to its [`Style::anchor`].
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
-use obc_render::{rect, Canvas};
+use obc_render::{rect, Canvas, Surface};
 
 use crate::screen::palette;
-
-// The bulge's base / flat-top widths and its charge / pop depths are per-control
-// (encoder vs. Back can differ); see [`Style`] on the ENCODER / BACK constants.
 
 /// Pop animation duration (ms).
 const POP_MS: u32 = 220;
@@ -47,7 +32,7 @@ const CANCEL_MS: u32 = 150;
 const DEAD: f32 = 0.30;
 
 /// Which screen edge a bulge erupts from. Both controls live on [`Right`](Edge::Right)
-/// today; the other three are the supported relocations (change a [`Style::anchor`]).
+/// today; the other three are supported relocations (change a [`Style::anchor`]).
 #[allow(dead_code)] // Left / Top / Bottom are the relocation options, not dead.
 #[derive(Clone, Copy)]
 enum Edge {
@@ -160,12 +145,9 @@ impl Hint {
         self.prev = progress;
     }
 
-    /// Whether this hint has something to draw at `now`: a bulge charging past the
-    /// dead zone, or a pop / retract still in flight. Mirrors the [`draw`](Hint::draw)
-    /// decision exactly (a finished animation is retired to [`Anim::Idle`] on the next
-    /// [`update`](Hint::update), so a stale-`now` query degrades gracefully to the
-    /// animation's own time check) so a host can repaint the overlay precisely when —
-    /// and only when — it would change a pixel.
+    /// Whether this hint has something to draw at `now`: a bulge charging past the dead zone, or a
+    /// pop / retract still in flight. Mirrors the [`draw`](Hint::draw) decision exactly, so a host
+    /// repaints the overlay precisely when — and only when — it would change a pixel.
     fn active(&self, now: u32) -> bool {
         match self.anim {
             Anim::Pop { t0 } => frac(now, t0, POP_MS) < 1.0,
@@ -175,11 +157,7 @@ impl Hint {
     }
 
     /// Draw the hint for this control, or nothing when idle and uncharged.
-    fn draw<D, F>(&self, cv: &mut Canvas<D, F>, style: &Style, now: u32, w: i32, h: i32)
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    fn draw(&self, cv: &mut impl Surface, style: &Style, now: u32, w: i32, h: i32) {
         let (base_half, flat_half) = (style.base_half, style.flat_half);
         let (charge_depth, pop_depth) = (style.depth, style.pop_depth);
         let place = style.anchor.place(w, h, base_half);
@@ -231,11 +209,7 @@ fn top_profile(i: i32, base_half: i32, flat_half: i32) -> f32 {
 /// Draw the bulge: a black hump of `base_half` base width with a `flat_half`-wide
 /// flat top, poking `depth` px inward from the edge, rasterized as edge-perpendicular
 /// strips (see [`top_profile`]). Nothing when uncharged.
-fn bulge<D, F>(cv: &mut Canvas<D, F>, place: &Place, depth: f32, base_half: i32, flat_half: i32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+fn bulge(cv: &mut impl Surface, place: &Place, depth: f32, base_half: i32, flat_half: i32) {
     if depth < 0.5 {
         return;
     }
@@ -255,11 +229,9 @@ struct Style {
     /// Half the base width (px) along the edge — the hump spans `2 * base_half`
     /// regardless of depth, so size along the edge and inward depth are independent.
     base_half: i32,
-    /// Half the flat *top* width (px): strips within `±flat_half` of the centre sit
-    /// at full depth (a flat shelf at the apex), and the quartic shoulder eases to
-    /// zero only across the remaining `base_half - flat_half` on each side — so the
-    /// top reads as a flat edge rather than a parabola's point. `0` is a pure quartic
-    /// bump; keep it `< base_half` to leave room for the shoulders.
+    /// Half the flat *top* width (px): strips within `±flat_half` sit at full depth (a flat shelf),
+    /// and the quartic shoulder eases to zero across the remaining `base_half - flat_half` per side.
+    /// `0` is a pure quartic bump; keep it `< base_half` to leave room for the shoulders.
     flat_half: i32,
     /// Inward depth (px) the bulge reaches at a full charge, just before the threshold.
     depth: f32,
@@ -318,10 +290,9 @@ impl HoldHints {
     }
 
     /// The bounding **rows** `[y0, y0 + rows)` of every hint live at `now` — the dirty region a
-    /// partial-overlay host re-presents (issue #163), so it re-pushes only the active bulge's rows
-    /// (encoder ≈ 59–171, Back ≈ 182–246) instead of the whole hint band. `None` exactly when
-    /// [`active`](HoldHints::active) is `false`. Both current bulges sit on the right edge (vertical),
-    /// so each spans `cc ± base_half` rows; a horizontal relocation maps to the edge's `pop_depth`
+    /// partial-overlay host re-presents, so it re-pushes only the active bulge's rows instead of the
+    /// whole hint band. `None` exactly when [`active`](HoldHints::active) is `false`. Right-edge
+    /// (vertical) bulges span `cc ± base_half` rows; a horizontal relocation maps to `pop_depth`
     /// rows instead, kept correct here so the region tracks the bulge if an anchor moves.
     pub fn active_rows(&self, now: u32, w: i32, h: i32) -> Option<(u16, u16)> {
         let span = |hint: &Hint, style: &Style| -> Option<(i32, i32)> {

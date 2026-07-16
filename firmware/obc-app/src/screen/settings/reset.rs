@@ -1,27 +1,25 @@
-//! The Factory Reset screen — the one guarded, destructive action. The encoder long-press fires
-//! at a fixed ~500 ms threshold (a global gesture constant, not tunable per screen), which is too
-//! short to feel safe on its own, so reset is **two deliberate steps**: *press* to arm, then
-//! *hold* to erase. A stray hold on an un-armed screen does nothing; on completion the settings
-//! drop back to [`Settings::default`] and a brief "done" state shows.
+//! The Factory Reset screen — the one guarded, destructive action. The long-press threshold (~500 ms)
+//! is too short to feel safe on its own, so reset is two deliberate steps: *press* to arm, then
+//! *hold* to erase. A stray hold on an un-armed screen does nothing; on completion the settings drop
+//! back to [`Settings::default`] and a brief "done" state shows.
 //!
-//! Scope note: this resets the **persisted settings** (units, clock, intervals) — it does *not*
-//! delete routes or saved tracks from the SD card (that destructive filesystem wipe is a
-//! deliberate follow-up). The copy says exactly what it does.
+//! Scope: this resets the persisted settings — it does *not* delete routes or saved tracks from the
+//! SD card (a deliberate follow-up).
 //!
-//! The hold bar is driven by [`Render::hold_progress`](crate::screen::Render) — the same in-flight
-//! encoder-hold value the [`RideControl`](crate::screen::RideControl) confirm uses; the global
-//! hold-bulge overlay is the always-live feedback and this bar is the on-screen echo.
+//! The hold bar is driven by [`Render::hold_progress`](crate::screen::Render), the on-screen echo of
+//! the global hold-bulge overlay.
 
-use embedded_graphics::prelude::{DrawTarget, Point};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, RenderStats,
+    Surface,
 };
 
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
+use crate::screen::{card_check, card_triangle, palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
 use crate::settings::Settings;
+use crate::Msg;
 
 /// The Factory Reset screen. `armed` is set by the first press (you must arm before a hold can
 /// erase); `done` is set once the hold completes and the reset has been applied.
@@ -36,23 +34,29 @@ impl ResetScreen {
         ResetScreen { armed: false, done: false }
     }
 
+    /// True while the hold-to-erase bar is on screen (armed, not yet done) — it fills with the live
+    /// hold progress, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a
+    /// charging hold as worth repainting here.
+    pub(crate) fn hold_fill_active(&self) -> bool {
+        self.armed && !self.done
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         if self.done {
-            // The reset is applied; any key clears the whole stack back to Home (the device would
-            // reboot here; the sim just lands home).
+            // Reset applied; any key clears back to Home (the device would reboot here).
             return match g {
                 Gesture::Press | Gesture::Back => Transition::Home,
                 _ => Transition::None,
             };
         }
         match g {
-            // Step 1: press arms the screen (does nothing destructive on its own).
+            // Step 1: press arms the screen.
             Gesture::Press if !self.armed => {
                 self.armed = true;
                 Transition::None
             }
-            // Step 2: once armed, a completed hold erases the settings to defaults. The before/after
-            // diff in `apply_gesture` then flags the host to persist the cleared blob.
+            // Step 2: once armed, a completed hold erases to defaults. The before/after diff in
+            // `apply_gesture` flags the host to persist the cleared blob.
             Gesture::Hold if self.armed => {
                 *cx.settings = Settings::default();
                 self.done = true;
@@ -64,52 +68,57 @@ impl ResetScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let mut cv = Canvas::new(target, color_fn);
-        title_frame(&mut cv, w, h, "RESET", "");
-        // All body content is positioned from the title bar (not the panel centre), so the
-        // armed/idle layouts stack cleanly without colliding.
+        let (w, h) = (rx.w, rx.h);
+        title_frame(cv, w, h, rx.t(Msg::ResetTitle), "");
+        // Body content is positioned from the title bar so the armed/idle layouts stack cleanly.
 
         if self.done {
-            draw_check(&mut cv, w / 2, TITLE_BAR_H + 64, 26);
-            cv.text("Reset complete", Point::new(w / 2, TITLE_BAR_H + 110), Font::Body, TextAlign::Center, INK);
-            cv.text("Restarting", Point::new(w / 2, TITLE_BAR_H + 142), Font::Label, TextAlign::Center, SUBTEXT);
-            return RenderStats::default();
+            card_check(cv, Point::new(w / 2, TITLE_BAR_H + 64), 26);
+            cv.text(rx.t(Msg::ResetComplete), Point::new(w / 2, TITLE_BAR_H + 110), Font::Body, TextAlign::Center, INK);
+            cv.text(
+                rx.t(Msg::ResetRestarting),
+                Point::new(w / 2, TITLE_BAR_H + 142),
+                Font::Label,
+                TextAlign::Center,
+                SUBTEXT,
+            );
+            return;
         }
 
         // Warning icon + title (kept short so nothing overruns the 240 px panel).
-        draw_warning(&mut cv, w / 2, TITLE_BAR_H + 50, 24);
-        cv.text("Factory reset", Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
+        card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 50), 24);
+        cv.text(rx.t(Msg::ResetFactory), Point::new(w / 2, TITLE_BAR_H + 90), Font::Body, TextAlign::Center, WARNING);
 
         if !self.armed {
-            // Step 1: the consequence + the arm prompt. (Back exits — no need to say so.)
+            // Step 1: the consequence + the arm prompt.
             cv.text(
-                "Erases all settings",
+                rx.t(Msg::ResetErases),
                 Point::new(w / 2, TITLE_BAR_H + 124),
                 Font::Label,
                 TextAlign::Center,
                 SUBTEXT,
             );
-            cv.text("& saved time.", Point::new(w / 2, TITLE_BAR_H + 144), Font::Label, TextAlign::Center, SUBTEXT);
-            // The arm action drawn as a button: an amber rounded button with ink text. Short
-            // label so it stays an inset button rather than a full-width bar.
-            let label = "Confirm";
+            cv.text(
+                rx.t(Msg::ResetSavedTime),
+                Point::new(w / 2, TITLE_BAR_H + 144),
+                Font::Label,
+                TextAlign::Center,
+                SUBTEXT,
+            );
+            // The arm action as an amber inset button.
+            let label = rx.t(Msg::ResetConfirm);
             let (bw, bh) = (text_width(label, Font::Body) as i32 + 44, 42);
             let (bx, by) = (w / 2 - bw / 2, TITLE_BAR_H + 170);
             cv.round(rect(bx, by, bw, bh), 8, AMBER);
-            cv.text(label, Point::new(w / 2, by + (bh - 22) / 2), Font::Body, TextAlign::Center, INK);
-            return RenderStats::default();
+            cv.text_vcentered(label, w / 2, (by, bh), Font::Body, TextAlign::Center, INK);
+            return;
         }
 
         // Step 2: armed → the hold-to-erase prompt over a bar that fills with the live encoder hold.
         let p = rx.hold_progress.clamp(0.0, 1.0);
-        let prompt = if p > 0.02 { "Keep holding" } else { "Hold to erase" };
+        let prompt = if p > 0.02 { rx.t(Msg::ResetKeepHolding) } else { rx.t(Msg::ResetHoldToErase) };
         cv.text(prompt, Point::new(w / 2, TITLE_BAR_H + 150), Font::Body, TextAlign::Center, INK);
         let (bx, bw, by, bh) = (40, w - 80, TITLE_BAR_H + 184, 16);
         let radius = (bh / 2) as u32;
@@ -118,42 +127,7 @@ impl ResetScreen {
         if fill > 0 {
             cv.round(rect(bx, by, fill, bh), radius, WARNING);
         }
-        RenderStats::default()
     }
-}
-
-/// Draw a warning sign — an amber triangle (apex up) with an ink exclamation — centred at
-/// `(cx, cy)` with half-size `sz`.
-fn draw_warning<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, sz: i32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
-    use palette::*;
-    cv.triangle(Point::new(cx, cy - sz), Point::new(cx - sz, cy + sz), Point::new(cx + sz, cy + sz), AMBER);
-    // Exclamation: a short vertical bar over a dot, in ink so it reads on the amber.
-    cv.vline(cx, cy - sz / 4, sz / 2, 3, INK);
-    cv.disc(Point::new(cx, cy + sz / 2 + 1), 2, INK);
-}
-
-/// Draw a check mark in amber, centred near `(cx, cy)` with half-size `sz` — two thick strokes
-/// stepped out of discs (the canvas has no diagonal line primitive).
-fn draw_check<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, sz: i32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
-    let seg = |cv: &mut Canvas<D, F>, a: (i32, i32), b: (i32, i32)| {
-        const N: i32 = 14;
-        for k in 0..=N {
-            let x = a.0 + (b.0 - a.0) * k / N;
-            let y = a.1 + (b.1 - a.1) * k / N;
-            cv.disc(Point::new(x, y), 3, palette::AMBER);
-        }
-    };
-    // Short down-stroke to the low point, then the long up-stroke to the top-right.
-    seg(cv, (cx - sz, cy), (cx - sz / 3, cy + sz * 2 / 3));
-    seg(cv, (cx - sz / 3, cy + sz * 2 / 3), (cx + sz, cy - sz * 2 / 3));
 }
 
 #[cfg(test)]
@@ -165,7 +139,19 @@ mod tests {
     fn run(scr: &mut ResetScreen, s: &mut Settings, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
-        let mut cx = Ctx { state: &mut st, activity: &mut act, settings: s, routes: &[], now_ms: 0 };
+        let scratch = crate::screen::PoiScratch::new();
+        let mut cx = Ctx {
+            state: &mut st,
+            activity: &mut act,
+            settings: s,
+            routes: &[],
+            rides: &[],
+            trips: &[],
+            nav_profiles: &crate::NavProfiles::EMPTY,
+            poi_scratch: &scratch,
+            sensor_scan_hits: &[],
+            now_ms: 0,
+        };
         scr.handle(g, &mut cx)
     }
 

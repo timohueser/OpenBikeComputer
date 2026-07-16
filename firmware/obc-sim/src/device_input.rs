@@ -1,22 +1,17 @@
-//! Host-side device-input emulation — the on-housing encoder / Back controls and
-//! the keyboard, turned into raw [`InputEvent`]s for the app.
+//! Host-side device-input emulation — the on-housing encoder / Back controls and the
+//! keyboard, turned into raw [`InputEvent`]s for the app.
 //!
-//! [`crate::gui`] pushes raw events here each frame (mouse-wheel over the scroll-wheel
-//! → [`InputEvent::Turn`] detents; clicking the encoder / Back and the Enter/Backspace
-//! keys → button edges). [`DeviceInput`] implements [`InputSource`], so it drops
-//! straight into [`obc_app::App::handle_input`], which runs the *shared* gesture
-//! recognizer and dispatches the gestures to the screen stack — the exact path the
-//! firmware uses with real GPIO. It also owns the millis clock (since construction)
-//! and the visual knob angle for drawing the wheel.
+//! [`crate::gui`] pushes raw events here each frame. [`DeviceInput`] implements
+//! [`InputSource`], so it drops straight into [`obc_app::App::handle_input`] and its
+//! *shared* gesture recognizer — the exact path the firmware uses with real GPIO. It also
+//! owns the millis clock and the visual knob angle for drawing the wheel.
 
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
 
-// web_time::Instant is std's on native and a JS-clock shim on wasm (std's panics
-// in the browser), so the device millis clock works in the web build unchanged.
-use web_time::Instant;
+use std::time::Instant;
 
-use obc_app::{Button, ButtonEvent, InputEvent, InputSource};
+use obc_ports::{Button, ButtonEvent, InputEvent, InputSource};
 
 /// Radians of knob rotation per emitted detent (~15° ⇒ ~24 detents per turn,
 /// a typical encoder). Shared by drag and scroll so both feel the same.
@@ -164,10 +159,8 @@ mod tests {
         assert_eq!(d.poll(), None);
     }
 
-    /// Item 15 (`turn(0)` no-op, `turn` ~62 `if detents != 0`): a zero-detent turn must
-    /// queue nothing and leave the visual knob angle untouched, so a frame with no rotation
-    /// doesn't emit a spurious `Turn(0)` (which would still wake the app / redraw). Guards
-    /// the `!= 0` gate.
+    /// A zero-detent turn must queue nothing and leave the knob angle untouched — a frame with
+    /// no rotation mustn't emit a spurious `Turn(0)` (which would still wake the app / redraw).
     #[test]
     fn turn_zero_is_a_no_op() {
         let mut d = DeviceInput::new();
@@ -177,11 +170,8 @@ mod tests {
         assert_eq!(d.knob_angle(), before, "knob angle unchanged by a zero turn");
     }
 
-    /// Item 15 (negative-scroll remainder carry, `take_detents` ~91-101): the sub-detent
-    /// accumulator must carry its *negative* remainder across `scroll` calls, exactly as
-    /// the positive path does — a 1.5-detent scroll-down emits one detent now and carries
-    /// −0.5, so a following 0.6-detent scroll-down (−1.1 total) emits the next. Without the
-    /// carry, partial scrolls down a list would silently lose motion.
+    /// The accumulator must carry its *negative* remainder across `scroll` calls, as the
+    /// positive path does — else partial scrolls down a list silently lose motion.
     #[test]
     fn negative_scroll_carries_the_remainder() {
         let mut d = DeviceInput::new();
@@ -193,11 +183,9 @@ mod tests {
         assert_eq!(d.poll(), None);
     }
 
-    /// Item 15 (Encoder vs Back field independence, `set_button` ~78-82): `set_button`
-    /// selects `enc_down` / `back_down` by the button arm. Driving *only* Back must toggle
-    /// the Back field and emit Back edges, leaving Encoder untouched — a swapped-field bug
-    /// (Back writing `enc_down`) would surface here as a wrong-button edge or a missing one.
-    /// No existing test drives Back at all.
+    /// Driving *only* Back must toggle the Back field and emit Back edges, leaving Encoder
+    /// untouched — a swapped-field bug (Back writing `enc_down`) would surface as a wrong or
+    /// missing edge.
     #[test]
     fn back_button_is_independent_of_encoder() {
         let mut d = DeviceInput::new();

@@ -8,8 +8,10 @@ render pipeline, formats, UI) read the docs site:
 in the [repo README](../README.md#repository-layout).
 
 The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
-(`obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
-(`obc-sim`), the map packer (`obc-pack`), and the test/host helpers. The
+(`obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
+(`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
+both simulator hosts share in `obc-host-core`), the map packer (`obc-pack`),
+and the test/host helpers. The
 **board crate** — `obc-fw-nrf54l` — is **`exclude`d** from the workspace (it has
 its own MCU target + `.cargo/config.toml`) and is built on its own; see
 [`obc-fw-nrf54l/README.md`](obc-fw-nrf54l/README.md) for the real-hardware target.
@@ -40,7 +42,16 @@ silently targets the host and fails):
 
 ```sh
 cd obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
+
+# The BLE build (companion-app link): the same firmware with the nrf-sdc + TrouBLE stack
+# folded in. The board crate README has the pins, flashing, and on-glass verify.
+cd obc-fw-nrf54l && cargo build --release --no-default-features --features ble
 ```
+
+The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
+`cargo test` below already exercises it. The wire contract those bytes cross to the phone
+is [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md); the concepts are on the docs
+site under [the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/).
 
 ## Test
 
@@ -51,17 +62,48 @@ cargo test -p obc-pack    # just the packer (fixtures under ../packer/tests/corp
 
 `cargo test` does **not** touch the excluded board crate.
 
+### Render benchmark + pixel-hash tripwire
+
+`obc-bench` renders seven fixed scenes (riding / mid / overview × north-up /
+rotated, plus route) through the real reader → renderer pipeline over a deterministic
+fixture and prints per-stage timings plus a frame hash per scene. CI re-renders
+them and fails if any hash drifts from the committed golden file — timings are
+printed but never gated.
+
+```sh
+cargo run -p obc-bench --release                                  # the timing/hash table
+cargo run -p obc-bench --release -- --check obc-bench/hashes.txt  # what CI runs
+cargo run -p obc-bench --release -- --repeat 9                    # stable local timing sample
+```
+
+A pure refactor must leave the hashes untouched. An **intentional** rendering
+change regenerates the golden file in the same PR (that's the review signal):
+
+```sh
+cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt
+```
+
+One-off runs against a real map:
+`cargo run -p obc-bench --release -- --map ../freiburg.obcm --mpp 4 --heading 35`.
+
+The frozen firmware resource numbers, dependency-direction contract, benchmark
+reference host, and repeatable on-device capture procedure live in
+[`ARCHITECTURE_RESOURCE_BASELINE.md`](ARCHITECTURE_RESOURCE_BASELINE.md). Read it
+before approving a resource-baseline change: report-only firmware is diagnostic
+and must never be flashed as the shipping artifact.
+
 ## Format
 
 `rustfmt.toml` is committed (`max_width = 120`, `use_small_heuristics = "Max"`),
-so let rustfmt own style — don't hand-format. Formatting takes **two
-invocations**, and CI checks both (the workspace is a *virtual* manifest, so
-`--all` is required or it formats nothing; the board crate is excluded, so
-`--all` skips it):
+so let rustfmt own style — don't hand-format. Formatting takes **three
+invocations**, and CI checks all of them (the workspace is a *virtual* manifest,
+so `--all` is required or it formats nothing; the board crate and the bootloader
+are excluded, so `--all` skips them):
 
 ```sh
 cargo fmt --all                                    # the workspace
 cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml # the board crate, separately
+cargo fmt --manifest-path obc-boot/Cargo.toml      # the bootloader, separately
 ```
 
 ## Run the simulator
@@ -84,3 +126,62 @@ firmware runs. `../freiburg.obcm` is a current sample.
 Run `obc-sim --help` for the full flag set (routes/tracks folders, `--import`,
 `--physical`/`--calibrate`, `--script`/`--boot`, headless `--center`/`--zoom`).
 Packing maps and the web builder are covered in the [repo README](../README.md).
+
+## Run the web demo (`obc-web-demo`)
+
+The landing page's live demo is the same shared crates compiled to wasm behind a
+small `obc_demo_*` API (no egui/wgpu — the page's JS owns the frame loop). Trunk
+drives the build from the site config (`rustup target add wasm32-unknown-unknown`
++ `cargo install trunk` once):
+
+```sh
+# From the repo root. Dev server with rebuild-on-change:
+trunk serve --config docs/Trunk.toml           # http://127.0.0.1:8080/
+
+# The shipped, wasm-opt'd binary (what CI + Pages deploy build):
+trunk build --release --config docs/Trunk.toml # → docs/dist/
+```
+
+The demo core is target-independent, so its unit tests run in the plain
+`cargo test` above — no browser needed for the logic.
+
+## Firmware update images (OBCU)
+
+Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header
+plus the raw app image — dropped on the SD card as `/UPDATE.BIN`. The byte format is
+[`OBCU_Spec.md`](../OBCU_Spec.md); the shared codec + boot-decision logic live in
+`obc-dfu` (a `no_std` workspace member, host-tested by the `cargo test` above). The
+producer is `obc-mkimage`.
+
+The pipeline is **objcopy → wrap**. Strip the board ELF to a raw binary (vector table
+first), then wrap it:
+
+```sh
+# From the board crate — its .cargo/config.toml selects the nRF54L target (see its README).
+# cargo-binutils provides `cargo objcopy`; `-O binary` emits the raw image in LMA order.
+cd obc-fw-nrf54l
+cargo objcopy --release -- -O binary app.bin
+# (equivalently, on the ELF: llvm-objcopy -O binary target/<triple>/release/obc-fw-nrf54l app.bin)
+
+# Wrap into an OBCU container tagged with the build's git describe.
+cargo run -p obc-mkimage -- wrap \
+    --bin app.bin \
+    --version "$(git describe --always --dirty)" \
+    --out UPDATE.BIN
+
+# Inspect: decode + verify both CRCs (non-zero exit if invalid).
+cargo run -p obc-mkimage -- inspect UPDATE.BIN
+```
+
+`wrap` refuses an image over the app-slot limit (`MAX_IMAGE_LEN`, 1,480,000 bytes)
+and **warns** if the binary's first word isn't a plausible initial stack pointer in
+RAM (`0x2000_0000 … 0x2004_0000`) — a raw `.bin` starts with the vector table, so a
+failed check usually means an ELF or a wrong-section-order strip slipped through.
+
+Installing a staged `UPDATE.BIN` on the device is the app-side armer (S4, #619): copy
+the file to the card root and trigger the install — from the S5 UI once it lands, or
+today over the debug VCOM link (`dfu-install`; recipe in the
+[board README](obc-fw-nrf54l/README.md#triggering-a-firmware-update-over-the-vcom-dfu-install-s4-619)).
+The armer validates the file, snapshots the running image to `/ROLLBACK.BIN`, arms the
+boot-state page, and resets into `obc-boot`, which does the actual flash
+([its README](obc-boot/README.md) has the LED codes).

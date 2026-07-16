@@ -13,7 +13,10 @@ import OBCDomain
 /// are never reordered or resized, and unknown trailing bytes are ignored.
 enum ConfigObjectCodec {
     static func encode(_ config: DeviceConfig) -> Data {
-        let name = Data(config.name.utf8)
+        // Cap at the S0 name limit on a Character boundary: an over-cap name would
+        // otherwise wrap the u16 length (≥ 65536 → a tiny/zero value) into a
+        // corrupt blob the decoder misreads.
+        let name = Data(config.name.truncatedToUTF8Bytes(DeviceConfig.maxNameUTF8Bytes).utf8)
         var data = Data()
         data.append(UInt8(name.count & 0xFF))
         data.append(UInt8((name.count >> 8) & 0xFF))

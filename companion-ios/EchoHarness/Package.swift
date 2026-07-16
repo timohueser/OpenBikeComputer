@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 // EchoHarness — a macOS command-line rig that drives the firmware's A5 L2CAP CoC echo
@@ -20,8 +20,13 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "EchoHarness",
-            dependencies: [.product(name: "OBCTransport", package: "OBCKit")],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            dependencies: [
+                .product(name: "OBCTransport", package: "OBCKit"),
+                // OBCDomain for `DeviceObjectID` — the trip codecs (`TripObjectCodec`, `TripList`)
+                // speak device object ids, which the trip-soak scenario constructs directly.
+                .product(name: "OBCDomain", package: "OBCKit"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )

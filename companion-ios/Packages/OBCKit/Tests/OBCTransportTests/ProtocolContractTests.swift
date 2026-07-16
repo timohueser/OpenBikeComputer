@@ -6,8 +6,9 @@ import OBCDomain
 /// contract checks, not behavior — the real transport/codec coverage is `B1`.
 final class ProtocolContractTests: XCTestCase {
     func testProtocolVersionIsPinned() {
-        // Bump deliberately, in lockstep with firmware S0 — not by accident.
-        XCTAssertEqual(OBCProtocol.version, 1)
+        // Bump deliberately, in lockstep with the firmware wire — not by accident.
+        // v2 is the one coordinated wire break (epic #632).
+        XCTAssertEqual(OBCProtocol.version, 2)
     }
 
     func testDeviceInfoDefaultsToTheExpectedProtocolVersion() {
@@ -21,10 +22,32 @@ final class ProtocolContractTests: XCTestCase {
         XCTAssertNotEqual(err, .protocolMismatch(expected: 1, found: 3))
     }
 
+    func testDeviceObjectIDCodesAsABareNumber() throws {
+        // Persisted DTOs stored the raw u16 — the typed wrapper must not
+        // change their JSON shape (#359's no-schema-bump rule).
+        XCTAssertEqual(
+            String(decoding: try JSONEncoder().encode([DeviceObjectID(7)]), as: UTF8.self), "[7]")
+        XCTAssertEqual(
+            try JSONDecoder().decode([DeviceObjectID].self, from: Data("[7]".utf8)),
+            [DeviceObjectID(7)])
+    }
+
+    func testRideIDBridgesTheDeviceNamespace() {
+        // Ride identity is deliberately shared across the BLE boundary
+        // (#289/#290): a device-minted id round-trips through the typed
+        // accessors…
+        let id = RideID(deviceObjectID: DeviceObjectID(42))
+        XCTAssertEqual(id, RideID("42"))
+        XCTAssertEqual(id.deviceObjectID, DeviceObjectID(42))
+        // …and a library-only id (mock fixtures, tests) honestly reports that
+        // it never came from a device catalog.
+        XCTAssertNil(RideID("ride-kettle-moraine").deviceObjectID)
+    }
+
     func testTransferProgressFraction() {
-        XCTAssertEqual(TransferProgress(bytesDone: 25, total: 100, offset: 25).fraction, 0.25)
+        XCTAssertEqual(TransferProgress(bytesDone: 25, total: 100).fraction, 0.25)
         // Unknown total → 0, never a divide-by-zero.
-        XCTAssertEqual(TransferProgress(bytesDone: 5, total: 0, offset: 0).fraction, 0)
+        XCTAssertEqual(TransferProgress(bytesDone: 5, total: 0).fraction, 0)
     }
 
     func testDomainSkeletonsConstruct() {

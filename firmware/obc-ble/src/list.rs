@@ -1,0 +1,360 @@
+//! The `routeList` / `rideList` object codecs — the CoC-downloaded catalogs that outgrow the
+//! 512-byte ATT attribute cap. Shared shape: a 6-byte [`ListHeader`] + fixed entries, so entry `k`
+//! sits at `6 + entry_len·k` — O(1) indexing, no string scanning. In protocol v2 the list types
+//! **differ in entry length** (`routeList` 84 bytes, `rideList` 72, `tripList` 76), so the entry size
+//! is per-type ([`RouteListEntry::ENTRY_LEN`] / [`RideListEntry::ENTRY_LEN`]) and travels on the wire
+//! in the header's `entry_len` byte — there is no single shared entry-length constant.
+
+use crate::descriptor::DescriptorError;
+
+/// `routeList` entry size: 76 v2 bytes (72 v1 fields + content `crc32`) + the auto-expiry tail
+/// (`expires_at u32 · retention u8 · reserved u8[3]`, epic #638 S4 #644). The tail sits **after** the
+/// content `crc32` — it is device-computed volatile state (recomputed each encode), never part of the
+/// route-content fingerprint — so the 76-byte v2 prefix stays byte-identical and readers that step by
+/// `entry_len` decode the prefix they know.
+const ROUTE_ENTRY_LEN: usize = 84;
+/// `rideList` entry size — unchanged from v1.
+const RIDE_ENTRY_LEN: usize = 72;
+/// `tripList` entry size (spec §7.4) — mirrors `routeList`'s v2 core (76 bytes, same trailing content
+/// `crc32`); it carries **no** expiry tail (trips have no per-object retention).
+const TRIP_ENTRY_LEN: usize = 76;
+
+/// The smallest entry length any list type uses (`rideList` at [`RideListEntry::ENTRY_LEN`]) — the
+/// header decoder's floor sanity-check. A future entry growth appends fields and bumps the header's
+/// `entry_len`; an old reader steps by the announced length and decodes the prefix it knows.
+pub const MIN_LIST_ENTRY_LEN: usize = RIDE_ENTRY_LEN;
+
+/// The 6-byte header both list objects share (protocol v2, epic #632 item 7).
+///
+/// ```text
+///   version    u8   = 2
+///   entry_len  u8   the entry size (76 routeList · 72 rideList); readers step by it, not a constant
+///   count      u16  entries actually in this object (after the MAX_RIDES / MAX_ROUTES cap)
+///   total      u16  full catalog size BEFORE the cap — truncated iff total > count
+/// ```
+///
+/// `total` makes a >`MAX_RIDES` (or >`MAX_ROUTES`) truncation visible on the wire: the device
+/// dropped `total - count` entries in FAT order, and the app surfaces a one-line warning instead of
+/// silently answering "up to date".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListHeader {
+    pub count: u16,
+    /// Full catalog size before the `MAX_RIDES`/`MAX_ROUTES` cap. Equal to `count` when nothing was
+    /// dropped; greater when the object is truncated.
+    pub total: u16,
+}
+
+impl ListHeader {
+    pub const ENCODED_LEN: usize = 6;
+    pub const VERSION: u8 = 2;
+
+    /// Encode the header. `entry_len` is the per-type entry size the entries that follow use
+    /// ([`RouteListEntry::ENTRY_LEN`] / [`RideListEntry::ENTRY_LEN`]).
+    pub fn encode(&self, entry_len: u8) -> [u8; Self::ENCODED_LEN] {
+        let mut b = [0u8; Self::ENCODED_LEN];
+        b[0] = Self::VERSION;
+        b[1] = entry_len;
+        b[2..4].copy_from_slice(&self.count.to_le_bytes());
+        b[4..6].copy_from_slice(&self.total.to_le_bytes());
+        b
+    }
+
+    /// Decode a list header, rejecting an unknown version or an `entry_len` below the smallest a list
+    /// entry can be ([`MIN_LIST_ENTRY_LEN`]). The returned `entry_len` may *exceed* the type's own —
+    /// forward compatibility: step by it, decode the prefix you know.
+    pub fn decode(data: &[u8]) -> Result<(Self, usize), DescriptorError> {
+        if data.len() < Self::ENCODED_LEN {
+            return Err(DescriptorError::Truncated);
+        }
+        if data[0] != Self::VERSION {
+            return Err(DescriptorError::UnknownStatus(data[0]));
+        }
+        let entry_len = data[1] as usize;
+        if entry_len < MIN_LIST_ENTRY_LEN {
+            return Err(DescriptorError::UnknownStatus(data[1]));
+        }
+        Ok((
+            Self { count: u16::from_le_bytes([data[2], data[3]]), total: u16::from_le_bytes([data[4], data[5]]) },
+            entry_len,
+        ))
+    }
+
+    /// Whether this list is truncated — the device dropped `total - count` entries at the cap.
+    pub const fn is_truncated(&self) -> bool {
+        self.total > self.count
+    }
+
+    /// Byte offset of entry `k`, given the per-type `entry_len`.
+    pub const fn entry_offset(k: usize, entry_len: usize) -> usize {
+        Self::ENCODED_LEN + k * entry_len
+    }
+
+    /// The whole encoded object's size for `count` entries of `entry_len` bytes.
+    pub const fn object_len(count: usize, entry_len: usize) -> usize {
+        Self::ENCODED_LEN + count * entry_len
+    }
+
+    /// The bounds-checked slot for entry `k`, given the header's announced `entry_len`. `None` when
+    /// the object is shorter than `count` claims — `decode` reads only the 6-byte header and can't
+    /// police `count`; this guards the walk from slicing past the buffer. Pass the slice straight to
+    /// `RouteListEntry`/`RideListEntry::decode`.
+    pub fn entry_slice(data: &[u8], k: usize, entry_len: usize) -> Option<&[u8]> {
+        let off = Self::ENCODED_LEN + k * entry_len;
+        data.get(off..off.checked_add(entry_len)?)
+    }
+}
+
+/// One `routeList` entry — from the stored OBCR header. **84 bytes** (protocol v2 core 76 + the
+/// auto-expiry tail, epic #638 S4 #644). The `crc32` at offset 72 is the whole-object CRC-32 of the
+/// stored OBCR bytes — the content fingerprint letting the app verify *what* a linked id points at
+/// (identity-verified badges) and adopt an identical unlinked copy.
+///
+/// The two trailing fields — **`expires_at`** and **`retention`** — are device-computed **volatile**
+/// state, recomputed on every list build (`expires_at = last_used + retention days`; extend-on-use
+/// moves it), so they are deliberately placed **after** the content `crc32` and are **not** covered by
+/// it: a route whose expiry merely ticked must not read as "content changed". The 76-byte v2 prefix is
+/// byte-identical to before, and a reader that steps by `entry_len` (§7.4) decodes just the prefix it
+/// knows — the designed additive path; the list header `version` stays `2` (unchanged).
+///
+/// ```text
+///   object_id       u16
+///   reserved        u16  = 0
+///   byte_len        u32  stored file size (upload/detail sizing)
+///   distance_m      u32
+///   ascent_m        u32
+///   point_count     u32
+///   waypoint_count  u16
+///   name_len        u8   ≤ 48
+///   name            char[48]  UTF-8, zero-padded
+///   reserved        u8   = 0
+///   crc32           u32  whole-object CRC-32 of the stored OBCR bytes · 0 = unknown   (offset 72)
+///   expires_at      u32  unix seconds the route auto-deletes at · 0 = never / not yet started  (76)
+///   retention       u8   the stored retention enum value (0 never … 5 = 2 months)     (offset 80)
+///   reserved        u8[3]  = 0                                                          (offset 81)
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RouteListEntry<'a> {
+    pub object_id: u16,
+    pub byte_len: u32,
+    pub distance_m: u32,
+    pub ascent_m: u32,
+    pub point_count: u32,
+    pub waypoint_count: u16,
+    /// UTF-8, ≤ [`RouteListEntry::MAX_NAME`] bytes (the OBCR route-name cap); over-long input is
+    /// truncated at encode.
+    pub name: &'a [u8],
+    /// Whole-object CRC-32/IEEE of the stored OBCR bytes — the content fingerprint the app matches
+    /// against its `uploadedCRC32` record. `0` = unknown (e.g. a side-loaded file not yet
+    /// fingerprinted; the device fills it lazily at first list build).
+    pub crc32: u32,
+    /// The UTC unix-seconds instant the route auto-deletes at (`last_used + retention days`), computed
+    /// at list-encode time (auto-expiry epic #638 S4). `0` = never (a `Never` retention) or not yet
+    /// started (`last_used == 0`). **Device-computed volatile state — outside the content `crc32`.**
+    pub expires_at: u32,
+    /// The stored retention enum byte (`0` never · `1` 1 day · `2` 1 week · `3` 2 weeks · `4` 1 month ·
+    /// `5` 2 months), mirroring `obc_app::Retention`. Set by the `setRouteRetention` command (§4.4 cmd
+    /// 6). **Device-computed volatile state — outside the content `crc32`.**
+    pub retention: u8,
+}
+
+impl<'a> RouteListEntry<'a> {
+    /// The name cap (matches the OBCR route-name field).
+    pub const MAX_NAME: usize = 48;
+    /// This entry's on-wire size (protocol v2 core + the auto-expiry tail). Carried in the list
+    /// header's `entry_len`.
+    pub const ENTRY_LEN: usize = ROUTE_ENTRY_LEN;
+    /// Sentinel for an unknown content CRC (side-loaded file not yet fingerprinted).
+    pub const CRC_UNKNOWN: u32 = 0;
+
+    pub fn encode(&self) -> [u8; ROUTE_ENTRY_LEN] {
+        let mut b = [0u8; ROUTE_ENTRY_LEN];
+        b[0..2].copy_from_slice(&self.object_id.to_le_bytes());
+        // b[2..4] reserved = 0.
+        b[4..8].copy_from_slice(&self.byte_len.to_le_bytes());
+        b[8..12].copy_from_slice(&self.distance_m.to_le_bytes());
+        b[12..16].copy_from_slice(&self.ascent_m.to_le_bytes());
+        b[16..20].copy_from_slice(&self.point_count.to_le_bytes());
+        b[20..22].copy_from_slice(&self.waypoint_count.to_le_bytes());
+        let n = self.name.len().min(Self::MAX_NAME);
+        b[22] = n as u8;
+        b[23..23 + n].copy_from_slice(&self.name[..n]);
+        // b[23 + n .. 71] zero padding; b[71] reserved = 0.
+        b[72..76].copy_from_slice(&self.crc32.to_le_bytes());
+        // The auto-expiry tail (epic #638 S4) — outside the content crc32.
+        b[76..80].copy_from_slice(&self.expires_at.to_le_bytes());
+        b[80] = self.retention;
+        // b[81..84] reserved = 0.
+        b
+    }
+
+    /// Decode one entry from the first [`ENTRY_LEN`](Self::ENTRY_LEN) bytes of a slot — a longer
+    /// future entry's tail is ignored.
+    pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
+        if data.len() < Self::ENTRY_LEN {
+            return Err(DescriptorError::Truncated);
+        }
+        let name_len = (data[22] as usize).min(Self::MAX_NAME);
+        Ok(Self {
+            object_id: u16::from_le_bytes([data[0], data[1]]),
+            byte_len: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            distance_m: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+            ascent_m: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+            point_count: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
+            waypoint_count: u16::from_le_bytes([data[20], data[21]]),
+            name: &data[23..23 + name_len],
+            crc32: u32::from_le_bytes([data[72], data[73], data[74], data[75]]),
+            expires_at: u32::from_le_bytes([data[76], data[77], data[78], data[79]]),
+            retention: data[80],
+        })
+    }
+}
+
+/// One `rideList` entry — from the stored ride-object header.
+///
+/// ```text
+///   object_id      u16
+///   reserved       u16  = 0
+///   byte_len       u32  stored file size
+///   start_time     u32  unix seconds
+///   distance_m     u32
+///   moving_time_s  u32
+///   avg_speed_cms  u16
+///   climb_m        u16
+///   name_len       u8   ≤ 47
+///   name           char[47]  UTF-8, zero-padded
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RideListEntry<'a> {
+    pub object_id: u16,
+    pub byte_len: u32,
+    pub start_time: u32,
+    pub distance_m: u32,
+    pub moving_time_s: u32,
+    pub avg_speed_cms: u16,
+    pub climb_m: u16,
+    /// UTF-8, ≤ [`RideListEntry::MAX_NAME`] bytes; over-long input is truncated at encode.
+    pub name: &'a [u8],
+}
+
+impl<'a> RideListEntry<'a> {
+    /// One byte shorter than the route's — the fixed fields take one more.
+    pub const MAX_NAME: usize = 47;
+    /// This entry's on-wire size. Unchanged from v1 (72 bytes); `routeList` grew, `rideList` did
+    /// not, which is why the entry length is now per-type. Carried in the header's `entry_len`.
+    pub const ENTRY_LEN: usize = RIDE_ENTRY_LEN;
+
+    pub fn encode(&self) -> [u8; RIDE_ENTRY_LEN] {
+        let mut b = [0u8; RIDE_ENTRY_LEN];
+        b[0..2].copy_from_slice(&self.object_id.to_le_bytes());
+        // b[2..4] reserved = 0.
+        b[4..8].copy_from_slice(&self.byte_len.to_le_bytes());
+        b[8..12].copy_from_slice(&self.start_time.to_le_bytes());
+        b[12..16].copy_from_slice(&self.distance_m.to_le_bytes());
+        b[16..20].copy_from_slice(&self.moving_time_s.to_le_bytes());
+        b[20..22].copy_from_slice(&self.avg_speed_cms.to_le_bytes());
+        b[22..24].copy_from_slice(&self.climb_m.to_le_bytes());
+        let n = self.name.len().min(Self::MAX_NAME);
+        b[24] = n as u8;
+        b[25..25 + n].copy_from_slice(&self.name[..n]);
+        b
+    }
+
+    /// Decode one entry (prefix of an entry slot, like [`RouteListEntry::decode`]).
+    pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
+        if data.len() < Self::ENTRY_LEN {
+            return Err(DescriptorError::Truncated);
+        }
+        let name_len = (data[24] as usize).min(Self::MAX_NAME);
+        Ok(Self {
+            object_id: u16::from_le_bytes([data[0], data[1]]),
+            byte_len: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            start_time: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+            distance_m: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+            moving_time_s: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
+            avg_speed_cms: u16::from_le_bytes([data[20], data[21]]),
+            climb_m: u16::from_le_bytes([data[22], data[23]]),
+            name: &data[25..25 + name_len],
+        })
+    }
+}
+
+/// One `tripList` entry — from the stored trip object (§7.7). **76 bytes**, mirroring
+/// [`RouteListEntry`]: the same trailing whole-object `crc32`, so the app's identity /
+/// outdated-copy machinery works on trips exactly as on routes (a stage reorder changes neither
+/// `byte_len` nor `name`, so only the `crc32` reveals it).
+///
+/// ```text
+///   object_id         u16
+///   reserved          u16  = 0
+///   byte_len          u32  stored trip file size
+///   total_distance_m  u32  summed over resolvable stages (device-computed)
+///   total_ascent_m    u32  summed over resolvable stages
+///   stage_count       u16  as stored (incl. dangling refs)
+///   reserved          u16  = 0
+///   name_len          u8   ≤ 48
+///   name              char[48]  UTF-8, zero-padded
+///   reserved          u8[3]  = 0
+///   crc32             u32  whole-object CRC-32 of the stored trip bytes · 0 = unknown
+/// ```
+///
+/// `total_*` are summed over the trip's **resolvable** stages (a dangling ref contributes nothing),
+/// while `stage_count` counts every stored stage — so `stage_count` can exceed the number the totals
+/// drew from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TripListEntry<'a> {
+    pub object_id: u16,
+    pub byte_len: u32,
+    pub total_distance_m: u32,
+    pub total_ascent_m: u32,
+    pub stage_count: u16,
+    /// UTF-8, ≤ [`TripListEntry::MAX_NAME`] bytes (the trip-object name cap); over-long input is
+    /// truncated at encode.
+    pub name: &'a [u8],
+    /// Whole-object CRC-32/IEEE of the stored trip bytes — the content fingerprint. `0` = unknown
+    /// (a side-loaded trip not yet fingerprinted; the device fills it lazily at first list build).
+    pub crc32: u32,
+}
+
+impl<'a> TripListEntry<'a> {
+    /// The name cap (matches the trip object's name field).
+    pub const MAX_NAME: usize = 48;
+    /// This entry's on-wire size (spec §7.4). Carried in the list header's `entry_len`.
+    pub const ENTRY_LEN: usize = TRIP_ENTRY_LEN;
+    /// Sentinel for an unknown content CRC (side-loaded trip not yet fingerprinted).
+    pub const CRC_UNKNOWN: u32 = 0;
+
+    pub fn encode(&self) -> [u8; TRIP_ENTRY_LEN] {
+        let mut b = [0u8; TRIP_ENTRY_LEN];
+        b[0..2].copy_from_slice(&self.object_id.to_le_bytes());
+        // b[2..4] reserved = 0.
+        b[4..8].copy_from_slice(&self.byte_len.to_le_bytes());
+        b[8..12].copy_from_slice(&self.total_distance_m.to_le_bytes());
+        b[12..16].copy_from_slice(&self.total_ascent_m.to_le_bytes());
+        b[16..18].copy_from_slice(&self.stage_count.to_le_bytes());
+        // b[18..20] reserved = 0.
+        let n = self.name.len().min(Self::MAX_NAME);
+        b[20] = n as u8;
+        b[21..21 + n].copy_from_slice(&self.name[..n]);
+        // b[21 + n .. 69] zero padding; b[69..72] reserved = 0.
+        b[72..76].copy_from_slice(&self.crc32.to_le_bytes());
+        b
+    }
+
+    /// Decode one entry from the first [`ENTRY_LEN`](Self::ENTRY_LEN) bytes of a slot — a longer
+    /// future entry's tail is ignored.
+    pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
+        if data.len() < Self::ENTRY_LEN {
+            return Err(DescriptorError::Truncated);
+        }
+        let name_len = (data[20] as usize).min(Self::MAX_NAME);
+        Ok(Self {
+            object_id: u16::from_le_bytes([data[0], data[1]]),
+            byte_len: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            total_distance_m: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+            total_ascent_m: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+            stage_count: u16::from_le_bytes([data[16], data[17]]),
+            name: &data[21..21 + name_len],
+            crc32: u32::from_le_bytes([data[72], data[73], data[74], data[75]]),
+        })
+    }
+}

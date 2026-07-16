@@ -1,4 +1,5 @@
 import XCTest
+import OBCDomain
 @testable import OBCTransport
 
 /// The control-plane descriptors that carry all transfer metadata (so the CoC is
@@ -7,29 +8,64 @@ import XCTest
 /// the shared fixtures lives in `ProtocolVectorTests`; this suite covers the
 /// round-trip + rejection behavior.
 final class TransferDescriptorTests: XCTestCase {
+    func testTransferResultMapsTheNoObjectSentinelToNil() throws {
+        // A failed fresh upload echoes 0xFFFF ("no object", spec §4.3) — the
+        // codec surfaces it as a nil `objectID`, and encoding a nil restores
+        // the exact sentinel byte pair.
+        let msg = StatusMessage.transferResult(
+            TransferResult(objectID: nil, status: .error, committedOffset: 0))
+        let bytes = msg.encode()
+        XCTAssertEqual(bytes[bytes.startIndex + 1], 0xFF)
+        XCTAssertEqual(bytes[bytes.startIndex + 2], 0xFF)
+        XCTAssertEqual(try StatusMessage(decoding: bytes), msg)
+    }
+
     func testTransferControlRoundTrips() throws {
         for op in TransferControl.Op.allCases {
             let control = TransferControl(
-                op: op, type: .route, objectID: 0xBEEF, totalLen: 123_456, crc32: 0xDEAD_C0DE, offset: 4_096
+                op: op, type: .route, objectID: 0xBEEF, totalLen: 123_456, crc32: 0xDEAD_C0DE
             )
             let encoded = control.encode()
-            XCTAssertEqual(encoded.count, TransferControl.encodedLength)
+            XCTAssertEqual(encoded.count, TransferControl.encodedLength)  // 12 in v2
             XCTAssertEqual(try TransferControl(decoding: encoded), control)
         }
     }
 
     func testTransferControlDefaultsToFreshTransfer() {
-        let control = TransferControl(op: .upload, type: .ride, objectID: 1, totalLen: 10, crc32: 0)
-        XCTAssertEqual(control.offset, 0)
         // A download request carries no length/CRC — the device's announce fills them.
         let request = TransferControl(op: .download, type: .rideList, objectID: 0)
         XCTAssertEqual(request.totalLen, 0)
         XCTAssertEqual(request.crc32, 0)
     }
 
+    func testExchangeCorrelationRejectsLateOrCrossedAnswers() {
+        let download = TransferControl(op: .download, type: .routeList, objectID: 0)
+        XCTAssertTrue(download.acceptsDownloadAnnounce(TransferControl(
+            op: .download, type: .routeList, objectID: 0, totalLen: 310, crc32: 1)))
+        XCTAssertFalse(download.acceptsDownloadAnnounce(TransferControl(
+            op: .download, type: .tripList, objectID: 0, totalLen: 64, crc32: 2)))
+        XCTAssertTrue(download.acceptsCommittedResult(
+            TransferResult(objectID: DeviceObjectID(0), status: .committed, committedOffset: 310),
+            byteCount: 310))
+        XCTAssertFalse(download.acceptsCommittedResult(
+            TransferResult(objectID: DeviceObjectID(0), status: .committed, committedOffset: 234),
+            byteCount: 310))
+
+        let upload = TransferControl(
+            op: .upload, type: .route, objectID: .max, totalLen: 9_360, crc32: 3)
+        XCTAssertTrue(upload.acceptsCommittedResult(
+            TransferResult(objectID: DeviceObjectID(86), status: .committed, committedOffset: 9_360),
+            byteCount: 9_360))
+        // The exact crossed result from the RTT failure: a preceding 310-byte
+        // list close must never complete the following 9,360-byte upload.
+        XCTAssertFalse(upload.acceptsCommittedResult(
+            TransferResult(objectID: DeviceObjectID(0), status: .committed, committedOffset: 310),
+            byteCount: 9_360))
+    }
+
     func testStatusMessageRoundTrips() throws {
         for status in TransferResult.Status.allCases {
-            let msg = StatusMessage.transferResult(TransferResult(objectID: 7, status: status, committedOffset: 2_048))
+            let msg = StatusMessage.transferResult(TransferResult(objectID: DeviceObjectID(7), status: status, committedOffset: 2_048))
             let encoded = msg.encode()
             XCTAssertEqual(encoded.count, 8)
             XCTAssertEqual(try StatusMessage(decoding: encoded), msg)
@@ -44,6 +80,13 @@ final class TransferDescriptorTests: XCTestCase {
             XCTAssertEqual(msg.encode().count, 4)
             XCTAssertEqual(try StatusMessage(decoding: msg.encode()), msg)
         }
+
+        // v2: the download announce (msg 4) wraps the 12-byte descriptor → 13 bytes.
+        let announce = StatusMessage.downloadAnnounce(
+            TransferControl(op: .download, type: .ride, objectID: 9, totalLen: 4_096, crc32: 0xABCD_1234))
+        let encodedAnnounce = announce.encode()
+        XCTAssertEqual(encodedAnnounce.count, 1 + TransferControl.encodedLength)
+        XCTAssertEqual(try StatusMessage(decoding: encodedAnnounce), announce)
     }
 
     func testUnknownStatusMessageIsIgnorableNotFatal() throws {
@@ -52,11 +95,24 @@ final class TransferDescriptorTests: XCTestCase {
         XCTAssertEqual(try StatusMessage(decoding: Data([0x7F, 1, 2, 3])), .unknown(0x7F))
     }
 
-    func testObjectStoreDigestRoundTrips() throws {
-        let digest = ObjectStoreDigest(revision: 42, routeCount: 3, rideCount: 5)
-        let encoded = digest.encode()
-        XCTAssertEqual(encoded.count, ObjectStoreDigest.encodedLength)
-        XCTAssertEqual(try ObjectStoreDigest(decoding: encoded), digest)
+    func testShortDownloadAnnounceIsADecodeError() {
+        // A *known* discriminator (msg 4) with a truncated descriptor body is a
+        // decode error — unlike an unknown discriminator, which is ignored. The
+        // wrapped `TransferControl(decoding:)` needs the full 12 bytes.
+        XCTAssertThrowsError(try StatusMessage(decoding: Data([4, 2, 1, 7, 0]))) {
+            XCTAssertEqual($0 as? DescriptorError, .truncated)
+        }
+    }
+
+    func testUnknownTransferStatusDecodesAsGenericErrorNotThrow() throws {
+        // Forward compatibility (spec §4.3): an unrecognized *transfer status* code
+        // (e.g. 0x63) is NOT a decode failure — the transferResult still delivers
+        // and folds to the generic `.error` status, so a future reject the app
+        // doesn't know can't wedge a transfer or fail the link.
+        let bytes = Data([1, 0x07, 0x00, 0x63, 0x00, 0x00, 0x00, 0x00])  // msg 1, id 7, status 0x63
+        let message = try StatusMessage(decoding: bytes)
+        XCTAssertEqual(message, .transferResult(
+            TransferResult(objectID: DeviceObjectID(7), status: .error, committedOffset: 0)))
     }
 
     func testRejectsTruncated() {
@@ -67,9 +123,6 @@ final class TransferDescriptorTests: XCTestCase {
             XCTAssertEqual($0 as? DescriptorError, .truncated)
         }
         XCTAssertThrowsError(try StatusMessage(decoding: Data([1, 2]))) {
-            XCTAssertEqual($0 as? DescriptorError, .truncated)
-        }
-        XCTAssertThrowsError(try ObjectStoreDigest(decoding: Data([1, 2]))) {
             XCTAssertEqual($0 as? DescriptorError, .truncated)
         }
     }
@@ -87,9 +140,12 @@ final class TransferDescriptorTests: XCTestCase {
             XCTAssertEqual($0 as? DescriptorError, .unknownType(0x7F))
         }
 
-        var result = StatusMessage.transferResult(TransferResult(objectID: 1, status: .committed, committedOffset: 0)).encode()
-        result[result.startIndex + 3] = 0x7F
-        XCTAssertThrowsError(try StatusMessage(decoding: result)) {
+        // A transfer status is deliberately forward-compatible (unknown → generic
+        // error, not a throw) — pinned by `testUnknownTransferStatusDecodesAsGenericErrorNotThrow`.
+        // The *command* result status stays strict: an unknown command status throws.
+        var command = StatusMessage.commandResult(CommandResult(command: 1, status: .ok)).encode()
+        command[command.startIndex + 2] = 0x7F
+        XCTAssertThrowsError(try StatusMessage(decoding: command)) {
             XCTAssertEqual($0 as? DescriptorError, .unknownStatus(0x7F))
         }
     }

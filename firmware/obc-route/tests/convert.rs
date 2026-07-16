@@ -1,7 +1,8 @@
 //! GPX → OBCR conversion tests: convert an in-memory GPX, read it back with the
 //! reader, and check the geometry round-trips and the stats are exact.
 
-use obc_route::{gpx_to_obcr, Error, RouteIndex, RoutePoint, RouteReader, SliceSource};
+use obc_formats::io::{Error, SliceSource};
+use obc_route::{gpx_to_obcr, RouteIndex, RoutePoint, RouteReader};
 
 mod common;
 use common::{convert, decode, VecSink};
@@ -92,12 +93,8 @@ fn gpx(pts: &[(f64, f64, Option<f64>)]) -> String {
     s
 }
 
-/// Item 8 (decimation tolerance) — **a vertex *just inside* `EPSILON_M` is dropped.** The
-/// existing `STRAIGHT` fixture is perfectly collinear, so the perpendicular-distance test
-/// (`convert.rs`, `EPSILON_M=1.0`) never actually fires on a non-zero deviation. Here the
-/// middle point bulges 0.8 m off the A→C chord — inside the 1 m tolerance — so the decimator
-/// must drop it, leaving just the two endpoints. This is the branch that decides whether a
-/// near-straight road keeps spurious wobble vertices (storage) or smooths them.
+/// A vertex just inside `EPSILON_M` (1 m) is dropped: the middle point bulges 0.8 m off the
+/// A→C chord, so the decimator must drop it, leaving the two endpoints.
 #[test]
 fn vertex_just_inside_epsilon_is_decimated() {
     let dlat = 0.8 / 111_320.0; // ~0.8 m north — inside EPSILON_M = 1.0 m
@@ -120,10 +117,8 @@ fn vertex_just_inside_epsilon_is_decimated() {
     );
 }
 
-/// Item 8 (decimation tolerance) — **a vertex *just outside* `EPSILON_M` is kept.** The
-/// companion to the test above: bump the same middle point to 1.5 m off the chord — past the
-/// 1 m tolerance — and the decimator must keep all three, preserving the bend. Together the
-/// two pin both sides of the `perp > EPSILON_M` decision the collinear fixture never reached.
+/// A vertex just outside `EPSILON_M` (1.5 m off the chord) is kept, preserving the bend — the
+/// other side of the `perp > EPSILON_M` decision.
 #[test]
 fn vertex_just_outside_epsilon_is_kept() {
     let dlat = 1.5 / 111_320.0; // ~1.5 m north — outside EPSILON_M = 1.0 m
@@ -141,12 +136,9 @@ fn vertex_just_outside_epsilon_is_kept() {
     assert_eq!(pts[1], RoutePoint { lon: 7_801_000, lat: 48_000_013, ele: 100 });
 }
 
-/// Item 8 (densification / `MAX_SPAN_M`) — **a long collinear run keeps an intermediate vertex
-/// so deltas stay inside `int16`.** `MAX_SPAN_M=1200` forces a kept vertex at least that often,
-/// which also bounds the stored `(Δlon, Δlat)` to the `int16` range. Three collinear points
-/// 0.03° apart (~2234 m/segment) would, if the middle were dropped as collinear, leave a single
-/// segment whose Δ overflows `int16`; the span rule keeps the middle, so the decoded geometry
-/// round-trips exactly. Guards against the silent geometry corruption item 8 warns about.
+/// A long collinear run keeps an intermediate vertex (`MAX_SPAN_M`=1200), which also bounds the
+/// stored `(Δlon, Δlat)` to `int16`. Three collinear points 0.03° apart (~2234 m/segment) would,
+/// if the middle were dropped, leave a segment whose Δ overflows `int16`; the span rule keeps it.
 #[test]
 fn long_collinear_run_keeps_an_intermediate_vertex() {
     let bytes = convert(
@@ -171,14 +163,10 @@ fn long_collinear_run_keeps_an_intermediate_vertex() {
     );
 }
 
-/// Item 8 (densification / int16 safety) — **a single oversized segment with no intermediate
-/// raw candidate is split so the stored Δ never wraps** (issue #110). `MAX_SPAN_M` only
-/// force-keeps a *pending* candidate between two kept points; a 2-point GPX has none, so a 0.04°
-/// (~3.3 km) lon step (40_000 µdeg) used to be stored as `40000 as i16`, wrapping to `-25_536`
-/// and decoding to a corrupt 7_774_464. The converter now densifies the span itself — splitting
-/// it into ≤`MAX_SEGMENT_UDEG` (30_000) pieces with interpolated vertices — so the geometry
-/// round-trips exactly. This test asserts the *fixed* behaviour (was `…_overflows_int16_today`,
-/// which pinned the bug).
+/// A single oversized segment with no intermediate raw candidate is split so the stored Δ never
+/// wraps. `MAX_SPAN_M` only force-keeps a *pending* candidate; a 2-point GPX has none, so a
+/// 0.04° (40_000 µdeg) lon step would wrap `int16`. The converter densifies the span itself into
+/// ≤`MAX_SEGMENT_UDEG` (30_000) pieces, so the geometry round-trips exactly.
 #[test]
 fn single_oversized_segment_is_densified() {
     let bytes = convert("Densified", &gpx(&[(48.0, 7.80, Some(100.0)), (48.0, 7.84, Some(100.0))]));
@@ -196,11 +184,9 @@ fn single_oversized_segment_is_densified() {
     assert!(pts.iter().all(|p| p.lat == 48_000_000 && p.ele == 100), "interpolated vertices stay on the line");
 }
 
-/// Item 8 (densification, multi-step + diagonal) — **a span far past one `MAX_SEGMENT_UDEG`
-/// piece is split into several, interpolating both axes and elevation.** A 2-point diagonal of
-/// 0.09° (90_000 µdeg) in lon *and* lat needs `90_000 / 30_000 + 1 = 4` pieces (three synthetic
-/// vertices). Pins that every consecutive Δ stays inside `int16`, the endpoints round-trip
-/// exactly, and elevation is carried linearly across the inserted vertices.
+/// A span far past one `MAX_SEGMENT_UDEG` piece splits into several, interpolating both axes and
+/// elevation. A 0.09° (90_000 µdeg) diagonal needs 4 pieces (three synthetic vertices); every
+/// consecutive Δ stays inside `int16`, the endpoints round-trip, and elevation carries linearly.
 #[test]
 fn oversized_diagonal_span_splits_into_several() {
     let bytes = convert("Diagonal", &gpx(&[(48.0, 7.80, Some(100.0)), (48.09, 7.89, Some(200.0))]));
@@ -227,11 +213,8 @@ fn oversized_diagonal_span_splits_into_several() {
     }
 }
 
-/// Item 10 (convert: carry-last-known elevation) — **a point missing `<ele>` carries the last
-/// known height** (`convert.rs`, the `if let Some(e) = p.ele` carry). Every existing fixture
-/// has `<ele>` on every point, so this path — common when a planner drops elevation partway —
-/// was untested. Here points 1–2 climb 200→250 m and point 3 omits `<ele>`: it must inherit
-/// 250 m (not reset to 0), so the stored geometry and the ascent stat stay sane.
+/// A point missing `<ele>` carries the last known height. Points 1–2 climb 200→250 m and point 3
+/// omits `<ele>`: it must inherit 250 m (not reset to 0), so geometry and ascent stay sane.
 #[test]
 fn missing_elevation_carries_last_known() {
     let dlat = 5.0 / 111_320.0; // zigzag north so all three vertices survive decimation
@@ -250,11 +233,9 @@ fn missing_elevation_carries_last_known() {
     assert_eq!(pts[2].ele, 250, "the <ele>-less third point carries the last known 250 m, not 0");
 }
 
-/// Item 10 (convert: no elevation at all) — **a route with no `<ele>` anywhere** (a bare
-/// planner GPX). The carry starts at 0 and never updates, and `min_ele > max_ele` after the
-/// sweep, so the converter falls back to a 0..0 range. Distance/geometry are still computed
-/// from the positions; only elevation is flat zero. Pins that a no-elevation route converts
-/// cleanly rather than producing garbage ele extremes.
+/// A route with no `<ele>` anywhere (bare planner GPX): `min_ele > max_ele` after the sweep, so
+/// the converter falls back to a 0..0 range. Distance/geometry still come from the positions;
+/// only elevation is flat zero.
 #[test]
 fn no_elevation_anywhere_yields_zero_range() {
     let bytes = convert("No Ele", &gpx(&[(48.0, 7.80, None), (48.005, 7.80, None), (48.01, 7.80, None)]));

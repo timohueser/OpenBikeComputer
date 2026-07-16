@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "standalone_manifests": [
+    "obc-fw-nrf54l/Cargo.toml",
+    "obc-boot/Cargo.toml"
+  ],
+  "groups": {
+    "foundation": [
+      "obc-formats",
+      "obc-map-scene",
+      "obc-ports"
+    ],
+    "core": [
+      "obc-ble",
+      "obc-dfu",
+      "obc-reader",
+      "obc-render",
+      "obc-route"
+    ],
+    "app": [
+      "obc-app"
+    ],
+    "platform": [
+      "obc-platform",
+      "obc-display",
+      "obc-sensors",
+      "obc-storage"
+    ],
+    "host": [
+      "obc-bench",
+      "obc-host-core",
+      "obc-mkimage",
+      "obc-pack",
+      "obc-replay",
+      "obc-sim",
+      "obc-usb-host",
+      "obc-vectors",
+      "obc-web-demo",
+      "obcm-testkit"
+    ],
+    "standalone": [
+      "obc-boot",
+      "obc-fw-nrf54l"
+    ]
+  },
+  "forbidden": [
+    {
+      "from_group": "foundation",
+      "to_group": "core",
+      "reason": "foundation crates own dependency-light formats/ports and must not depend on algorithms"
+    },
+    {
+      "from_group": "foundation",
+      "to_group": "app",
+      "reason": "foundation crates must not depend upward on application policy"
+    },
+    {
+      "from_group": "foundation",
+      "to_group": "platform",
+      "reason": "foundation crates must not depend on adapters or board policy"
+    },
+    {
+      "from_group": "foundation",
+      "to_group": "host",
+      "reason": "foundation crates must remain no_std and host-framework independent"
+    },
+    {
+      "from_group": "foundation",
+      "to_group": "standalone",
+      "reason": "foundation crates must not depend upward on standalone firmware composition roots"
+    },
+    {
+      "from_group": "core",
+      "to_group": "app",
+      "reason": "shared algorithms must not depend upward on the app facade"
+    },
+    {
+      "from_group": "core",
+      "to_group": "platform",
+      "reason": "shared algorithms must not depend on platform adapters"
+    },
+    {
+      "from_group": "core",
+      "to_group": "host",
+      "reason": "shared no_std algorithms must not depend on host tools or shells"
+    },
+    {
+      "from_group": "core",
+      "to_group": "standalone",
+      "reason": "shared algorithms must not depend upward on standalone firmware composition roots"
+    },
+    {
+      "from_group": "app",
+      "to_group": "platform",
+      "reason": "the app consumes semantic ports, not concrete platform adapters"
+    },
+    {
+      "from_group": "app",
+      "to_group": "host",
+      "reason": "the app facade must remain host-independent"
+    },
+    {
+      "from_group": "app",
+      "to_group": "standalone",
+      "reason": "the app facade must not depend upward on standalone firmware composition roots"
+    },
+    {
+      "from_group": "platform",
+      "to_group": "app",
+      "reason": "platform adapters belong below the app facade"
+    },
+    {
+      "from_group": "platform",
+      "to_group": "host",
+      "reason": "platform adapters must not depend on host orchestration"
+    },
+    {
+      "from_group": "platform",
+      "to_group": "standalone",
+      "reason": "platform adapters must not depend upward on standalone firmware composition roots"
+    },
+    {
+      "from_group": "host",
+      "to_group": "standalone",
+      "reason": "host tools must not depend on standalone firmware composition roots"
+    }
+  ],
+  "exceptions": []
+}

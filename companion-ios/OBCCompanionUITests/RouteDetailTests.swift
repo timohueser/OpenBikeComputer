@@ -1,7 +1,7 @@
 import XCTest
 
 /// B4 acceptance on the simulator: the three detail dressings (E2 planned /
-/// E3 tracked / E1 import landing), the W1 waypoints push, H12 rename, the
+/// E3 tracked / E1 import landing), the W1 waypoints dropdown, H12 rename, the
 /// delete-through-H1 path, and the upload seam. Host-side logic lives in
 /// `RouteDetailModelTests`; this proves the navigation wiring end to end —
 /// including the real GPX decoder on the bundled Komoot sample (E1).
@@ -53,7 +53,12 @@ final class RouteDetailTests: XCTestCase {
         // A stat renders value+unit as one text element: "62.4 km".
         XCTAssertTrue(app.staticTexts["62.4 km"].exists, "distance stat missing")
         XCTAssertTrue(app.staticTexts["3:20"].exists, "est. time stat missing")
-        XCTAssertTrue(app.staticTexts["9 %"].waitForExistence(timeout: 5), "max grade stat missing")
+        // MAX derives from the saved record's geometry (library-first E2, #289) —
+        // pin the shape ("N %"), not a fixture constant.
+        let maxGrade = app.staticTexts.matching(
+            NSPredicate(format: "label MATCHES %@", "\\d+ %")
+        ).firstMatch
+        XCTAssertTrue(maxGrade.waitForExistence(timeout: 5), "max grade stat missing")
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5), "waypoints disclosure missing")
@@ -62,9 +67,10 @@ final class RouteDetailTests: XCTestCase {
         snap(app, "E2-route-detail")
     }
 
-    /// W1: the disclosure pushes the waypoint list in ride order.
+    /// W1: the disclosure folds the waypoint list out in place — and folds it
+    /// back on a second tap (no pushed screen).
     @MainActor
-    func testWaypointsRowPushesW1() {
+    func testWaypointsRowExpandsAndCollapsesInline() {
         let app = launch()
         openPlannedDetail(app)
 
@@ -72,13 +78,23 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5))
         waypointsRow.tap()
 
-        XCTAssertTrue(app.descendants(matching: .any)["waypoints.screen"].firstMatch.waitForExistence(timeout: 5), "W1 missing")
-        XCTAssertTrue(app.staticTexts["Ottawa Lake trailhead"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Ottawa Lake trailhead"].waitForExistence(timeout: 5), "W1 rows missing")
         XCTAssertTrue(app.staticTexts["Emma Carlin junction"].exists)
-        snap(app, "W1-waypoints")
+        // Still the detail screen — the dropdown must not navigate.
+        XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.exists)
+        snap(app, "W1-waypoints-expanded")
 
-        app.navigationBars.buttons.firstMatch.tap()  // back to the detail
-        XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
+        waypointsRow.tap()  // collapse
+        XCTAssertTrue(waitForDisappearance(app.staticTexts["Ottawa Lake trailhead"]), "dropdown should fold back")
+    }
+
+    /// The dropdown collapse has an animation window — poll briefly.
+    @MainActor
+    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval = 5) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: element
+        )
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
     /// H12: pencil → rename alert → the title and the list row both update.
@@ -111,7 +127,12 @@ final class RouteDetailTests: XCTestCase {
         let app = launch()
         openPlannedDetail(app)
 
-        app.buttons["detail.delete"].tap()
+        // Kettle Moraine is on the device, so the S7 Auto-delete row sits above
+        // the actions — the Delete button can fall below the fold; scroll if so.
+        let delete = app.buttons["detail.delete"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5), "delete action missing")
+        for _ in 0..<4 where !delete.isHittable { app.swipeUp(velocity: .fast) }
+        delete.tap()
         // Scoped to the sheet — the inline action shares the "Delete route" label.
         let confirm = app.sheets.buttons["Delete route"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
@@ -134,9 +155,11 @@ final class RouteDetailTests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         app.buttons["Tracked"].tap()
+        // Tracked is library-first (#296): sync to pull the ride in first.
+        app.buttons["topbar.sync"].tap()
 
         let card = app.buttons["main.card.ride-kettle-moraine"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        XCTAssertTrue(card.waitForExistence(timeout: 30))
         card.tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
 
@@ -155,9 +178,11 @@ final class RouteDetailTests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         app.buttons["Tracked"].tap()
+        // Tracked is library-first (#296): sync to pull the ride in first.
+        app.buttons["topbar.sync"].tap()
 
         let card = app.buttons["main.card.ride-kettle-moraine"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        XCTAssertTrue(card.waitForExistence(timeout: 30))
         card.tap()
 
         let delete = app.buttons["detail.delete"]
@@ -209,6 +234,35 @@ final class RouteDetailTests: XCTestCase {
                       "saved import lost its waypoints")
         XCTAssertTrue(app.staticTexts["ELEVATION PROFILE"].exists, "saved import lost its profile")
         snap(app, "E2-saved-import")
+    }
+
+    /// E1 rename: the pencil works on the landing itself, so the route saves
+    /// under the new name — no save-then-reopen round trip.
+    @MainActor
+    func testImportRenamesOnTheLandingAndSavesUnderTheNewName() {
+        let app = launch(importSample: true)
+
+        let rename = app.buttons["detail.rename"]
+        XCTAssertTrue(rename.waitForExistence(timeout: 10), "E1 must offer the rename pencil")
+        rename.tap()
+        let alert = app.alerts["Rename route"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "H12 alert missing on E1")
+
+        let field = alert.textFields.firstMatch
+        // Tap past the text's right end — a center tap lands the caret
+        // mid-name (this one is long), and clearText only deletes backwards.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
+        field.clearText()
+        field.typeText("Schwarzwald Gravel")
+        alert.buttons["Save"].tap()
+
+        XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5), "E1 title kept the old name")
+        snap(app, "E1-renamed")
+
+        app.buttons["detail.saveToPlanned"].tap()
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5),
+                      "the renamed import must land in Planned under the new name")
     }
 
     /// E1 Cancel discards — nothing lands in the library.

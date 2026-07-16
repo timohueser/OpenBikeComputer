@@ -13,11 +13,12 @@ import OBCDomain
 /// | `coldRead` | S2 (skeletons) |
 /// | `readError` | S3 |
 /// | `outOfRange` | S4 + disconnected banner |
+/// | `deviceUnreachable` | A-timeout connect-failed screen (bonded, device silent) |
 /// | `noDevice` | D1→D4 pairing flow; H4 on import |
 /// | `pairingTimeout` / `pairingRejected` | D5 |
 /// | `bluetoothOff` / `permissionDenied` | H8 / H7 |
 /// | `syncUpToDate` / `syncDrop` | H9 / H10 |
-/// | `uploadDrop` | F interrupted → resume |
+/// | `uploadDrop` | F interrupted → restart |
 /// | `unsupportedFile` | H5 |
 ///
 /// Some rows are pure UI-layer states the transport can't originate — `unsupportedFile`
@@ -29,6 +30,7 @@ public enum Scenario: String, CaseIterable, Sendable {
     case coldRead
     case readError
     case outOfRange
+    case deviceUnreachable
     case noDevice
     case pairingTimeout
     case pairingRejected
@@ -38,6 +40,10 @@ public enum Scenario: String, CaseIterable, Sendable {
     case syncDrop
     case uploadDrop
     case unsupportedFile
+    /// A device that predates auto-expiry (epic #638): `setClock` /
+    /// `setRouteRetention` answer `unsupported` and `routeList` entries carry no
+    /// expiry tail — S7 UI-tests the capability-gated (hidden) state against it.
+    case oldFirmware
 }
 
 /// The concrete knob values a `Scenario` expands to. Public so B1P / tests can
@@ -63,6 +69,10 @@ public struct ScenarioPreset: Sendable {
     public var pairingFail: PairingFail?
     /// A drop point armed on the next transfer, as a fraction 0…1 (nil = none).
     public var dropAtFraction: Double?
+    /// Whether the modelled device understands auto-expiry (epic #638). `false`
+    /// is the old-firmware knob (`setClock`/`setRouteRetention` → `unsupported`,
+    /// no `routeList` expiry tail).
+    public var supportsExpiry: Bool
 
     public init(
         fixtures: String = "default",
@@ -73,7 +83,8 @@ public struct ScenarioPreset: Sendable {
         throughputBytesPerSec: Int = 500_000,
         pendingFailure: DeviceError? = nil,
         pairingFail: PairingFail? = nil,
-        dropAtFraction: Double? = nil
+        dropAtFraction: Double? = nil,
+        supportsExpiry: Bool = true
     ) {
         self.fixtures = fixtures
         self.connection = connection
@@ -84,6 +95,7 @@ public struct ScenarioPreset: Sendable {
         self.pendingFailure = pendingFailure
         self.pairingFail = pairingFail
         self.dropAtFraction = dropAtFraction
+        self.supportsExpiry = supportsExpiry
     }
 }
 
@@ -103,6 +115,11 @@ extension Scenario {
             return ScenarioPreset(pendingFailure: .readFailed)
         case .outOfRange:
             return ScenarioPreset(connection: .outOfRange)
+        case .deviceUnreachable:
+            // Bonded but the device never answers: connect() parks on the huge
+            // latency the way the real transport's scan parks on an absent
+            // peripheral — the launch flow must time out, not hang.
+            return ScenarioPreset(connection: .disconnected, latency: .seconds(3_600))
         case .noDevice:
             return ScenarioPreset(connection: .disconnected, bonded: false)
         case .pairingTimeout:
@@ -121,6 +138,9 @@ extension Scenario {
             return ScenarioPreset(dropAtFraction: 0.62)
         case .unsupportedFile:
             return ScenarioPreset()
+        case .oldFirmware:
+            // A supported peer that predates expiry — a happy link otherwise.
+            return ScenarioPreset(supportsExpiry: false)
         }
     }
 }

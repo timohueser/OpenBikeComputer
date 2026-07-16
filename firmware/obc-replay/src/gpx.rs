@@ -4,7 +4,7 @@
 //! recorded track is purely a host convenience, so this lives in this host crate (it
 //! needs `std`) and produces nothing the shared crates know about — the
 //! [`GpxPlayer`](crate::gpx_player::GpxPlayer) turns a [`Track`] into the same
-//! [`Fix`](obc_app::Fix)es a GPS driver would emit.
+//! [`Fix`](obc_ports::Fix)es a GPS driver would emit.
 //!
 //! The parser is a small hand-rolled scan rather than a full XML stack: GPX track
 //! points are a regular `<trkpt lat=".." lon="..">` with an optional `<ele>` and
@@ -224,15 +224,9 @@ mod tests {
         assert!(Track::parse("<gpx></gpx>").is_err());
     }
 
-    /// Item 14 (malformed) — **`Track::parse` errors on a `<trkpt>` missing a coordinate.** A
-    /// point without `lat` or `lon` can't be placed, and the simulator's parser is strict: it
-    /// returns the exact `Err` (`gpx.rs`, the `.ok_or("trkpt missing …")` arms) rather than
-    /// silently dropping the point. Pinning the *message* documents the contract a UI surfaces
-    /// when a hand-edited GPX is loaded for replay.
-    ///
-    /// **Divergence (item 14):** `obc-route`'s `GpxScanner` *skips* this same lon-less point and
-    /// converts the rest (see its `scanner_skips_a_missing_coordinate` test). Same GPX, two
-    /// outcomes — both now pinned; which one is "right" is a separate decision (PR note for #94).
+    /// `Track::parse` is strict: a `<trkpt>` missing `lat`/`lon` errors with the exact message
+    /// (a UI surfaces it) rather than dropping the point. Divergence: `obc-route`'s `GpxScanner`
+    /// *skips* the same point (see its `scanner_skips_a_missing_coordinate`).
     #[test]
     fn missing_coordinate_is_an_error() {
         // Missing lon → Err, and specifically the "missing lon" message.
@@ -247,11 +241,9 @@ mod tests {
         assert!(Track::parse(r#"<gpx><trkpt lat="48.0" lon="7.8"/><trkpt lat="48.1"/></gpx>"#).is_err());
     }
 
-    /// Item 14 (malformed) — **`Track::parse` errors on an unterminated `<trkpt>` tag/element.**
-    /// A truncated opening tag (no `>`) gives `Err("unterminated <trkpt> tag")`, and an opening
-    /// tag with no matching `</trkpt>` gives `Err("unterminated <trkpt> element")` (`gpx.rs`, the
-    /// two `.ok_or(...)` finds). A corrupt/half-written GPX fails loudly here rather than
-    /// replaying a partial track.
+    /// A truncated opening tag (no `>`) and an opening tag with no matching `</trkpt>` each error
+    /// with their distinct message, so a half-written GPX fails loudly rather than replaying a
+    /// partial track.
     #[test]
     fn unterminated_tag_is_an_error() {
         // No '>' closing the opening tag at end of input.

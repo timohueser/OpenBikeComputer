@@ -15,8 +15,8 @@
 
 use heapless::String;
 
-use crate::byte_io::{ByteSource, Error};
-use crate::reader::WAYPOINT_NAME_CAP;
+use obc_formats::io::{ByteSource, Error};
+use obc_formats::obcr::WAYPOINT_NAME_CAP;
 
 /// Scan buffer size. Must comfortably exceed one `<trkpt>…</trkpt>` / `<wpt>…</wpt>`
 /// element (a few hundred bytes) so at least one whole element is always resident
@@ -250,8 +250,8 @@ fn parse_latlon(tag: &[u8]) -> (Option<f64>, Option<f64>) {
     (attr_f64(s, "lat"), attr_f64(s, "lon"))
 }
 
-/// Read a quoted attribute (`name="…"` / `name='…'`) as `f64`, matching `name` only as
-/// a whole token. Ported from the simulator's GPX parser.
+/// Read a quoted attribute (`name="…"` / `name='…'`) as `f64`, matching `name` only as a
+/// whole token.
 fn attr_f64(tag: &str, name: &str) -> Option<f64> {
     let mut search = tag;
     loop {

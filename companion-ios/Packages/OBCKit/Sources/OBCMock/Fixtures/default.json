@@ -4,7 +4,8 @@
     "firmwareVersion": "0.4.2",
     "hardwareVersion": "nRF54LM20 rev B",
     "serial": "OBC-24-000317",
-    "protocolVersion": 1
+    "storeEpoch": 197132289,
+    "protocolVersion": 2
   },
   "config": { "name": "Trailhead", "units": "metric" },
   "battery": 82,
@@ -12,6 +13,9 @@
   "routes": [
     {
       "id": "kettle-moraine-loop",
+      "deviceObjectID": 7,
+      "deviceRetention": 2,
+      "lastUsedDaysAgo": 5,
       "name": "Kettle Moraine Loop",
       "distanceMeters": 62400,
       "elevationGainMeters": 840,
@@ -40,6 +44,9 @@
     },
     {
       "id": "sugar-river-trail",
+      "deviceObjectID": 12,
+      "deviceRetention": 4,
+      "lastUsedDaysAgo": 3,
       "name": "Sugar River Trail",
       "distanceMeters": 38100,
       "elevationGainMeters": 210,

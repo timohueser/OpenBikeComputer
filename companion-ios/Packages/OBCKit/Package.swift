@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 // OBCKit — the domain + transport core of the OBC companion app, kept OUTSIDE the
@@ -14,12 +14,14 @@ import PackageDescription
 //                OBCDomain + OBCTransport (feature view models consume the
 //                DeviceTransport protocol — never OBCMock, never CoreBluetooth)
 //
-// Strict concurrency is on for every target (see `strictConcurrency` below).
+// Every target compiles in the Swift 6 language mode (see `languageMode` below).
 
-// Complete concurrency checking without jumping to the Swift 6 language mode
-// (issue B0: "Swift 5.9+, strict concurrency on").
-let strictConcurrency: [SwiftSetting] = [
-    .enableExperimentalFeature("StrictConcurrency")
+// Swift 6 language mode — full data-race safety as a language guarantee, not an
+// experimental flag. tools-6 defaults to v6 anyway; setting it per target keeps
+// the choice explicit (and lets a single target stage back to .v5 if it ever
+// has to, without flipping the whole package).
+let languageMode: [SwiftSetting] = [
+    .swiftLanguageMode(.v6)
 ]
 
 let package = Package(
@@ -38,17 +40,17 @@ let package = Package(
     targets: [
         .target(
             name: "OBCDomain",
-            swiftSettings: strictConcurrency
+            swiftSettings: languageMode
         ),
         .target(
             name: "OBCTransport",
             dependencies: ["OBCDomain"],
-            swiftSettings: strictConcurrency
+            swiftSettings: languageMode
         ),
         .target(
             name: "OBCFormats",
             dependencies: ["OBCDomain"],
-            swiftSettings: strictConcurrency
+            swiftSettings: languageMode
         ),
         .target(
             name: "OBCMock",
@@ -56,34 +58,39 @@ let package = Package(
             // Editable JSON fixture sets (routes/rides/config/diagnostics) the mock
             // serves. The Swift that loads them is `#if DEBUG`; these are inert data.
             resources: [.process("Fixtures")],
-            swiftSettings: strictConcurrency
+            swiftSettings: languageMode
         ),
         .target(
             name: "OBCUI",
             dependencies: ["OBCDomain", "OBCTransport"],
-            swiftSettings: strictConcurrency
+            swiftSettings: languageMode
         ),
         .testTarget(
             name: "OBCTransportTests",
-            dependencies: ["OBCTransport"],
-            swiftSettings: strictConcurrency
+            // OBCFormats so the route-encoder test can decode a real GPX export
+            // through the production decoder and encode it to OBCR end to end.
+            dependencies: ["OBCTransport", "OBCFormats"],
+            // Checked-in library files from older app versions (e.g. the v1
+            // planned-route JSON) — the persistence-compat pins.
+            resources: [.copy("Fixtures")],
+            swiftSettings: languageMode
         ),
         .testTarget(
             name: "OBCFormatsTests",
             dependencies: ["OBCFormats"],
-            swiftSettings: strictConcurrency
+            swiftSettings: languageMode
         ),
         .testTarget(
             name: "OBCMockTests",
             dependencies: ["OBCMock"],
-            swiftSettings: strictConcurrency
+            swiftSettings: languageMode
         ),
         .testTarget(
             name: "OBCUITests",
             // OBCMock so the launch-flow model tests drive real scenarios
             // through MockTransport (host-side, no simulator).
             dependencies: ["OBCUI", "OBCMock"],
-            swiftSettings: strictConcurrency
+            swiftSettings: languageMode
         ),
     ]
 )

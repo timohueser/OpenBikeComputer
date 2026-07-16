@@ -21,14 +21,20 @@ A drift on either side fails that side's tests — the files are the contract.
 | `route-waypoints.obcr` | OBCR v2 | "Vector Loop", 9-point track at 48°N, 2 waypoints (`Brunnen` @ 0 m with ele 238, `Pass Summit` mid-route without ele) |
 | `route-plain.obcr` | OBCR v2 | the same track, no waypoints — must ride identically |
 | `ride-v1.bin` | ride object v1 (spec §7.2) | "Höhenweg", 3 points, the last without elevation |
+| `ride-v2.bin` | ride object v2 (spec §7.2, epic #707) | "Sensor Ride", 3 points, BLE-sensor summary + per-point hr/cad/pwr with mixed present/absent (0xFF/0xFFFF sentinels) — the app must accept v1 **and** v2 |
 | `config-v1.bin` | Config v1 (spec §7.3) | name "OBC Tourer", metric |
-| `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
-| `transfer-upload-resume.bin` | `transferControl` §4.2 | the same upload resumed mid-object after a drop |
-| `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object |
-| `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload |
+| `version-read.bin` | `protocolVersion` read §1 | the widened identity read: `version u16` = 2 · `store_epoch u32` = `0xA1B2C3D4` |
+| `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); **12-byte v2 descriptor** (no `offset`); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
+| `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object (12 bytes) |
+| `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload (12 bytes) |
+| `status-download-announce.bin` | `status` msg 4 §4.3 | the download announce — `msg` byte + the 12-byte descriptor (`op` = download, id 7, size + CRC of `route-waypoints.obcr`); protocol v2 moves the announce off `transferControl` |
 | `status-transfer-result.bin` | `status` msg 1 §4.3 | `committed`, assigned id 7, all bytes durable |
+| `status-transfer-storage-full.bin` | `status` msg 1 §4.3 | `storageFull` (6) — new-route upload (id `0xFFFF`) rejected at descriptor-open time, catalog full, nothing committed |
 | `status-store-changed.bin` | `status` msg 2 §4.3 | route store changed, revision 42 |
-| `object-store.bin` | `objectStore` §4.5 | revision 42 · 3 routes · 5 rides |
+| `route-list.bin` | `routeList` object §7.4 | both stored route fixtures as catalog entries (ids 7 + 8, fields from their OBCR headers, each with its whole-object `crc32`); **6-byte v2 header** (`total` = `count` = 2) + **76-byte entries** |
+| `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1) | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader` |
+| `trip-v1.bin` | trip object v1 (spec §7.7) | "Alpen Traverse", 3 stages referencing route ids 7 + 8 (the two `route-list.bin` entries) **plus one deliberately dangling id (99)** — pins read-tolerance; 56-byte header + 2 bytes/stage |
+| `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
 
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, UUIDs, and the CRC-32 check value) so a test suite can assert

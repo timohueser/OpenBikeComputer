@@ -18,6 +18,13 @@ public struct GPXRouteDecoder: RouteFileDecoder {
             let line = parser.parserError.map { " (\($0.localizedDescription))" } ?? ""
             throw FormatError.malformed(reason: "not valid XML\(line)")
         }
+        // A present-but-invalid coordinate (non-finite or out of WGS-84 range)
+        // is a hard reject, not a silent skip: it would poison distance math
+        // (NaN) and the waypoint sort (#304). Checked before the empty guard so
+        // a file whose only points are bad throws the precise reason.
+        guard !collector.malformed else {
+            throw FormatError.malformed(reason: "coordinate is not finite or out of range")
+        }
         guard !collector.points.isEmpty else {
             throw FormatError.malformed(reason: "no track or route points")
         }
@@ -38,6 +45,9 @@ final class GPXCollector: NSObject, XMLParserDelegate {
     private(set) var routeName: String?
     private(set) var points: [RoutePoint] = []
     private(set) var rawWaypoints: [RawWaypoint] = []
+    /// Set when a `<trkpt>`/`<rtept>`/`<wpt>` carried a parseable but invalid
+    /// coordinate — the decoder rejects the whole file (#304).
+    private(set) var malformed = false
 
     // Walk state.
     private var path: [String] = []
@@ -59,7 +69,7 @@ final class GPXCollector: NSObject, XMLParserDelegate {
         case "gpx":
             creator = attributes["creator"]
         case "trkpt", "rtept", "wpt":
-            pendingCoordinate = Self.coordinate(from: attributes)
+            pendingCoordinate = coordinate(from: attributes)
             pendingElevation = nil
             pendingWaypointName = nil
             pendingWaypointNote = nil
@@ -80,7 +90,9 @@ final class GPXCollector: NSObject, XMLParserDelegate {
         path.removeLast()
         switch element {
         case "ele":
-            pendingElevation = Double(value)
+            // A non-finite <ele> ("inf"/"nan") is dropped to nil (no elevation),
+            // not stored — it would poison ascent math (#304).
+            pendingElevation = Double(value).flatMap { $0.isFinite ? $0 : nil }
         case "name":
             switch path.last {
             case "wpt": pendingWaypointName = value
@@ -117,11 +129,19 @@ final class GPXCollector: NSObject, XMLParserDelegate {
         if points.isEmpty { points = routePointFallback }
     }
 
-    private static func coordinate(from attributes: [String: String]) -> Coordinate? {
+    /// A `lat`/`lon` absent (or unparseable) → `nil`, skipping the point as
+    /// before. Present but invalid (non-finite / out of range, e.g. `lat="inf"`
+    /// or `lat="999"`) → flags `malformed`, which rejects the whole file (#304).
+    private func coordinate(from attributes: [String: String]) -> Coordinate? {
         guard
             let lat = attributes["lat"].flatMap(Double.init),
             let lon = attributes["lon"].flatMap(Double.init)
         else { return nil }
-        return Coordinate(latitude: lat, longitude: lon)
+        let coordinate = Coordinate(latitude: lat, longitude: lon)
+        guard coordinate.isValidGeographic else {
+            malformed = true
+            return nil
+        }
+        return coordinate
     }
 }

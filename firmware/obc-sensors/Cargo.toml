@@ -1,0 +1,16 @@
+[package]
+name = "obc-sensors"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
+description = "Pure no_std sensor chip/protocol decoders — the host-testable half of the OBC sensor stack: UBX (u-blox SAM-M10Q GNSS), BMP581 barometric altitude, ICM-20948 IMU, and AK09916 compass heading. Byte/math only (obc-ports sample types + libm); no embassy, no I²C/bus transactions, no app state, so every decoder unit-tests on the host without any signal/transport feature."
+
+[dependencies]
+# The dependency-light semantic sample types the decoders emit (`Fix`, `DateTime`, `GpsTime`, …) —
+# the foundation port contract, never an upward app/UI dependency.
+obc-ports = { path = "../obc-ports" }
+
+# `powf`/`atan2f` for the BMP581 barometric pressure→altitude formula and the compass heading: no
+# `std` in this no_std crate, so transcendental math goes through libm — the same 0.2 obc-render /
+# obc-route already use.
+libm = { version = "0.2", default-features = false } # no arch asm — see the obc-reader edge (Miri tripwire)

@@ -14,19 +14,46 @@ public struct RouteCard: View {
     let title: String
     let subtitle: String
     let preview: TrackPreview?
+    /// The device-copy state — picks the small C1 badge (check = up to date,
+    /// refresh = on device but out of date, nothing when not on the device).
+    let onDevice: OnDeviceState
+    /// A trip stage's palette color (TR6), drawn as the divider bar between the
+    /// track cell and the text block so a route reads as stage *N* on the trip
+    /// page (owner pick 2026-07-13 — the earlier leading-edge sliver sat outside
+    /// the card's rhythm). `nil` — the default — is the plain top-level card
+    /// everywhere else, byte-identical to before.
+    let stageAccent: Color?
+    /// The auto-expiry countdown footnote (epic #638 S7) — "Expires in 2 days" —
+    /// shown only when the route is on the device and within ≤ 3 days of deletion
+    /// (the caller decides; `nil` otherwise). Subdued secondary text, not a
+    /// warning color: expiry is by design.
+    let expiryBadge: String?
 
-    public init(title: String, subtitle: String, preview: TrackPreview?) {
+    public init(
+        title: String, subtitle: String, preview: TrackPreview?,
+        onDevice: OnDeviceState = .notOnDevice, stageAccent: Color? = nil,
+        expiryBadge: String? = nil
+    ) {
         self.title = title
         self.subtitle = subtitle
         self.preview = preview
+        self.onDevice = onDevice
+        self.stageAccent = stageAccent
+        self.expiryBadge = expiryBadge
     }
 
     /// Planned-route row: "62.4 km · 840 m ↑ · 3h 20m".
-    public init(route: RouteSummary) {
+    public init(
+        route: RouteSummary, onDevice: OnDeviceState = .notOnDevice, stageAccent: Color? = nil,
+        expiryBadge: String? = nil
+    ) {
         self.init(
             title: route.name,
             subtitle: OBCFormat.plannedSubtitle(route),
-            preview: route.trackPreview
+            preview: route.trackPreview,
+            onDevice: onDevice,
+            stageAccent: stageAccent,
+            expiryBadge: expiryBadge
         )
     }
 
@@ -41,20 +68,45 @@ public struct RouteCard: View {
 
     public var body: some View {
         HStack(spacing: 0) {
-            TrackPreviewView(preview, showsChrome: false)
+            MapTrackPreviewView(preview, showsChrome: false)
                 .frame(width: 128)
-                .overlay(alignment: .trailing) { OBCTheme.line.frame(width: 1) }
+                .overlay(alignment: .trailing) {
+                    if stageAccent == nil { OBCTheme.line.frame(width: 1) }
+                }
+
+            // The stage's palette color as the map/text divider — in place of
+            // the hairline, so the color reads as part of the card, not a
+            // sticker on its edge.
+            if let stageAccent {
+                stageAccent
+                    .frame(width: 4)
+                    .accessibilityIdentifier("routeCard.stageAccent")
+            }
 
             VStack(alignment: .leading, spacing: 9) {
-                Text(title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(OBCTheme.ink)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(OBCTheme.ink)
+                        .lineLimit(1)
+                    if onDevice != .notOnDevice { OBCOnDeviceBadge(upToDate: onDevice == .upToDate) }
+                }
                 Text(subtitle)
                     .font(.obcMono(size: 12))
                     .foregroundStyle(OBCTheme.inkFaint)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
+                if let expiryBadge {
+                    HStack(spacing: 5) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 10, weight: .medium))
+                        Text(expiryBadge)
+                            .font(.obcMono(size: 11))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(OBCTheme.inkFaint)
+                    .accessibilityIdentifier("routeCard.expiry")
+                }
             }
             .padding(.vertical, 13)
             .padding(.horizontal, 15)
@@ -64,6 +116,27 @@ public struct RouteCard: View {
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
         .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusCard).strokeBorder(OBCTheme.line))
         .shadow(color: OBCTheme.ink.opacity(0.05), radius: 3, y: 2)
+    }
+}
+
+/// The small "on device" badge next to a planned route's title (C1 / E2).
+/// A forest check = the device's copy is up to date; an amber refresh ring = the
+/// device holds this route but the phone's version has moved on (rename,
+/// re-import) — uploading again updates it in place. Deliberately quiet: the
+/// app only tracks routes to push them, so this is the one device fact it shows.
+public struct OBCOnDeviceBadge: View {
+    let upToDate: Bool
+
+    public init(upToDate: Bool = true) {
+        self.upToDate = upToDate
+    }
+
+    public var body: some View {
+        Image(systemName: upToDate ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath.circle.fill")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(upToDate ? OBCTheme.forest : OBCTheme.amber)
+            .accessibilityLabel(upToDate ? "On device" : "On device, out of date")
+            .accessibilityIdentifier(upToDate ? "route.onDeviceBadge" : "route.onDeviceBadge.outdated")
     }
 }
 
@@ -92,7 +165,7 @@ public struct RouteCardFullBleed: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TrackPreviewView(preview, style: .hero, tag: tag, showsChrome: false)
+            MapTrackPreviewView(preview, style: .hero, tag: tag, showsChrome: false)
                 .frame(height: 160)
                 .overlay(alignment: .bottom) { OBCTheme.line.frame(height: 1) }
 

@@ -113,6 +113,21 @@ public enum OBCFormat {
         ].joined(separator: " · ")
     }
 
+    /// Trip card stat line: "2 stages · 141 km · 2,050 m ↑" (TR6) — the summed
+    /// distance/climb over a trip's resolvable stages, led by the stage count.
+    public static func tripSubtitle(
+        stageCount: Int,
+        distanceMeters: Double,
+        elevationGainMeters: Double,
+        locale: Locale = .current
+    ) -> String {
+        [
+            stageCount == 1 ? "1 stage" : "\(stageCount) stages",
+            distance(meters: distanceMeters, locale: locale),
+            climb(meters: elevationGainMeters, locale: locale),
+        ].joined(separator: " · ")
+    }
+
     // ------------------------------------------------------------- stat-strip parts
     // The detail stat strips (E1–E3) render value and unit separately (`OBCStat`);
     // these are the same numbers the joined lines above use, without the unit.
@@ -158,6 +173,87 @@ public enum OBCFormat {
         return "\(rideDay(date, relativeTo: now, calendar: calendar, locale: locale)), \(time)"
     }
 
+    // ------------------------------------------------------------- retention (epic #638)
+
+    /// The picker/value label for a retention level (S7): "Never", "After 1 day",
+    /// "After 1 week", "After 2 weeks", "After 1 month", "After 2 months". Shared
+    /// by the Settings default row, the upload sheet's Auto-delete row, and the
+    /// route-detail control, so every surface reads the level identically.
+    public static func retentionLabel(_ retention: Retention) -> String {
+        switch retention {
+        case .never: "Never"
+        case .oneDay: "After 1 day"
+        case .oneWeek: "After 1 week"
+        case .twoWeeks: "After 2 weeks"
+        case .oneMonth: "After 1 month"
+        case .twoMonths: "After 2 months"
+        }
+    }
+
+    /// The route-detail expiry line from the device's `expires_at` (S7): the near
+    /// form "Expires today" / "Expires in 2 days" inside the badge window, the
+    /// absolute "Expires Jul 23" beyond it. Day granularity by design — the device
+    /// extends expiry on use, so a live countdown would lie; "today" covers the
+    /// last day (< 24 h). Deliberately approximate, matching the device's own
+    /// "Auto-delete · in 12 d". `now` is injectable so tests can pin it.
+    public static func routeExpiry(
+        _ expiresAt: Date,
+        relativeTo now: Date = Date(),
+        calendar: Calendar = .current,
+        locale: Locale = .current
+    ) -> String {
+        let days = expiryDaysAway(expiresAt, from: now)
+        if days <= Self.expiryBadgeDayWindow {
+            return "Expires \(relativeExpiryPhrase(days: days))"
+        }
+        var calendar = calendar
+        calendar.locale = locale
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return "Expires \(formatter.string(from: expiresAt))"
+    }
+
+    /// The library-card countdown footnote (S7): non-nil **only** when the route
+    /// is expiring within the badge window (≤ 3 days), so a far-off expiry shows
+    /// nothing on the card — "Expires today" / "Expires in 2 days". Same near form
+    /// as ``routeExpiry(_:relativeTo:calendar:locale:)`` so the card and the detail
+    /// agree in that window.
+    public static func routeExpiryBadge(
+        _ expiresAt: Date?,
+        relativeTo now: Date = Date()
+    ) -> String? {
+        guard let expiresAt else { return nil }
+        let days = expiryDaysAway(expiresAt, from: now)
+        guard days <= Self.expiryBadgeDayWindow else { return nil }
+        return "Expires \(relativeExpiryPhrase(days: days))"
+    }
+
+    /// The library card shows the countdown only inside this many days of expiry
+    /// (epic #638: "only when ≤ 3 days"); the detail uses the same window to pick
+    /// the relative phrasing over an absolute date.
+    static let expiryBadgeDayWindow = 3
+
+    /// Whole days until `expiresAt`, floored and never negative — 0 for anything
+    /// inside the last 24 h (or already past, which the reconcile removes before
+    /// it can render). Floored so "in 2 days" holds until the 2-day mark passes.
+    private static func expiryDaysAway(_ expiresAt: Date, from now: Date) -> Int {
+        let seconds = expiresAt.timeIntervalSince(now)
+        guard seconds > 0 else { return 0 }
+        return Int(seconds / 86_400)
+    }
+
+    /// "today" / "in 1 day" / "in N days" — the tail of the near-expiry phrase.
+    private static func relativeExpiryPhrase(days: Int) -> String {
+        switch days {
+        case ..<1: "today"
+        case 1: "in 1 day"
+        default: "in \(days) days"
+        }
+    }
+
     // ------------------------------------------------------------- transfers (B5/B7)
 
     /// "2.3" from bytes — plain-English megabytes, one decimal (pair with "MB").
@@ -169,16 +265,44 @@ public enum OBCFormat {
         return formatter.string(from: NSNumber(value: mb)) ?? "\(mb)"
     }
 
-    /// The upload sheet's size readout: "1.4 / 2.3 MB · route + waypoints"
-    /// (design F) — never raw byte counts.
+    /// The unit the transfer readout uses, chosen from the total: real OBCR routes
+    /// are tens of kB (MB would read "0.0"); rides/large payloads stay in MB.
+    private static func transferUnit(forTotalBytes total: Int) -> (label: String, divisor: Double, decimals: Int) {
+        total >= 1_000_000 ? ("MB", 1_000_000, 1) : ("kB", 1_000, 0)
+    }
+
+    private static func sizeValue(_ bytes: Int, divisor: Double, decimals: Int, locale: Locale) -> String {
+        let formatter = numberFormatter(locale: locale)
+        formatter.maximumFractionDigits = decimals
+        formatter.minimumFractionDigits = decimals
+        return formatter.string(from: NSNumber(value: Double(max(0, bytes)) / divisor)) ?? "0"
+    }
+
+    /// The upload sheet's size readout: "1.4 / 2.3 MB · route + waypoints" for a
+    /// large payload, "18 / 24 kB · route" for a real OBCR route (design F) —
+    /// never raw byte counts, and never a misleading "0.0 MB".
     public static func transferSizeLine(
         bytesDone: Int,
         totalBytes: Int,
         hasWaypoints: Bool,
         locale: Locale = .current
     ) -> String {
-        let counts = "\(megabytesValue(bytesDone, locale: locale)) / \(megabytesValue(totalBytes, locale: locale)) MB"
-        return "\(counts) · \(hasWaypoints ? "route + waypoints" : "route")"
+        let unit = transferUnit(forTotalBytes: totalBytes)
+        let done = sizeValue(bytesDone, divisor: unit.divisor, decimals: unit.decimals, locale: locale)
+        let total = sizeValue(totalBytes, divisor: unit.divisor, decimals: unit.decimals, locale: locale)
+        return "\(done) / \(total) \(unit.label) · \(hasWaypoints ? "route + waypoints" : "route")"
+    }
+
+    /// The upload confirm's size line (S7 `.ready`): "24 kB · route + waypoints" —
+    /// the total only, no running "done /" prefix (nothing has moved yet).
+    public static func transferTotalSizeLine(
+        totalBytes: Int,
+        hasWaypoints: Bool,
+        locale: Locale = .current
+    ) -> String {
+        let unit = transferUnit(forTotalBytes: totalBytes)
+        let total = sizeValue(totalBytes, divisor: unit.divisor, decimals: unit.decimals, locale: locale)
+        return "\(total) \(unit.label) · \(hasWaypoints ? "route + waypoints" : "route")"
     }
 
     private static func numberFormatter(locale: Locale) -> NumberFormatter {

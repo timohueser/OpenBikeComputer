@@ -1,42 +1,46 @@
-//! The S0 BLE data-plane core (`obc-ble-interface-spec.md`, epic #267): the control-plane
-//! descriptor codecs, CRC-32/IEEE, and the whole-object transfer state machine — everything the
-//! link needs *except* the radio. It is `no_std`, no-alloc, and holds **no** trouble-host / SDC
-//! types, so it builds and tests on the host (`cargo test`) before it ever touches the DK — the
-//! `debug_link` discipline applied to BLE.
+//! The S0 BLE data-plane core: control-plane descriptor codecs, CRC-32/IEEE, and the whole-object
+//! transfer state machine — everything the link needs *except* the radio. `no_std`, no-alloc, and
+//! free of any trouble-host / SDC type, so it builds and `cargo test`s on the host.
 //!
-//! ## The two planes (spec §1 design principles)
+//! The wire has two planes and this crate models both halves:
 //!
-//! The wire has two planes and this crate models both halves of the contract:
-//!
-//! - **Control plane** (GATT, small + typed): the fixed 16-byte [`TransferControl`] descriptor
-//!   (`descriptor`) announces a transfer; the device answers with the [`StatusMessage`] envelope
-//!   (`transferResult` / `storeChanged` / `commandResult`). These are the "frame codec" the S0
-//!   freeze pins — there is **no per-chunk header on the CoC**.
+//! - **Control plane** (GATT, small + typed): the fixed 12-byte [`TransferControl`] descriptor (the
+//!   app writes it to open a transfer) and the [`StatusMessage`] envelope (the sole device → app
+//!   channel — it even carries a download's announce). There is **no per-chunk header on the CoC**.
 //! - **Data plane** (L2CAP CoC, raw bytes): the channel carries exactly the object's payload bytes.
 //!   [`Receiver`] sinks them with a running [`Crc32`] and verifies **one** whole-object CRC at
-//!   commit; [`Sender`] streams an object out the same way. Both are offset-resumable and
-//!   cancellable, and neither buffers the whole object — the RAM-limited MCU CRCs as it writes.
+//!   commit; [`StreamSender`] streams an object out the same way. Both restart rather than resume,
+//!   and neither buffers the whole object.
 //!
-//! The board crate (`obc-fw-nrf54l`, `ble` feature) owns the trouble-host `L2capChannel` and the
-//! GATT attribute table; it decodes writes and encodes notifications through `descriptor`, and
-//! drives the CoC bytes through `transfer`. The companion app's Swift mirror
-//! (`OBCKit/OBCTransport`) implements the same layouts; the shared `protocol-vectors/` fixtures
-//! pin both, and `tests/vectors.rs` here runs this crate's *production* codecs against them.
+//! The board crate owns the `L2capChannel` and GATT table; the companion app's Swift mirror
+//! implements the same layouts, and the shared `protocol-vectors/` fixtures pin both.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 pub mod crc32;
 pub mod descriptor;
+pub mod list;
+pub mod sensors;
 pub mod transfer;
 
 pub use crc32::Crc32;
 pub use descriptor::{
-    CommandResult, CommandStatus, Config, DescriptorError, ObjectStoreDigest, ObjectType, Op, StatusMessage,
-    StoreChanged, TransferControl, TransferResult, TransferStatus,
+    install_fw_reply, AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectType, Op, SetClock,
+    SetRouteRetention, StatusMessage, StoreChanged, TransferControl, TransferResult, TransferStatus, VersionRead,
+    CMD_ACK_RIDES, CMD_DELETE_OBJECT, CMD_FORGET_BOND, CMD_INSTALL_FW, CMD_SET_CLOCK, CMD_SET_ROUTE_RETENTION,
+    SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC, SET_ROUTE_RETENTION_MAX,
 };
-pub use transfer::{Receiver, ReceiverError, Sender, TransferError};
+pub use list::{ListHeader, RideListEntry, RouteListEntry, TripListEntry, MIN_LIST_ENTRY_LEN};
+pub use sensors::{
+    classify_advertisement, parse_battery_level, parse_csc_measurement, parse_hr_measurement, parse_power_measurement,
+    power_crank_feeds_cadence, AdvMatch, CrankCadence, CrankRevs, CscSample, HrSample, PowerSample, SensorKind,
+    WheelRevs, UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT, UUID_CSC_SERVICE,
+    UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
+};
+pub use transfer::{Receiver, StreamSender, TransferError};
 
-/// The protocol version this crate implements (spec §1). The board serves it on the
-/// `protocolVersion` characteristic; the app reads it on connect and stops on a mismatch.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// The protocol version this crate implements. The app reads it (with the store epoch, as a
+/// [`VersionRead`]) on connect and stops on a mismatch — a v1 peer sees this `u16 = 2` first and
+/// surfaces its mismatch path. There is no dual-version serving.
+pub const PROTOCOL_VERSION: u16 = 2;

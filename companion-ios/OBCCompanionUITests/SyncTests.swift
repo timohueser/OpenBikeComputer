@@ -36,8 +36,8 @@ final class SyncTests: XCTestCase {
         let app = launch(scenario: "syncDrop")
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
         app.buttons["Tracked"].tap()
-        XCTAssertTrue(app.staticTexts["Sunday Coffee Spin"].waitForExistence(timeout: 10))
-
+        // Tracked is library-first (#296): no rows until sync — and this sync
+        // drops mid-batch, so the rows aren't the subject here, the H10 banner is.
         app.buttons["topbar.sync"].tap()
 
         // The drop lands ~42% in (a few seconds of mock throughput). Title and

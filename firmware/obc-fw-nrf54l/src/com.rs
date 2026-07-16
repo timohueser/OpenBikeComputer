@@ -1,45 +1,34 @@
 //! **LS021B7DD02 COM (common-electrode) driver** — the free-running `VCOM`/`VB`/`VA` square wave.
 //!
-//! This is the one piece of the M33-direct bring-up (epic #139) that survives into the shipping
-//! firmware. The pixel-side gate-scan / source-shift driver (`PanelBus`) + the `ls021_bringup` bench
-//! bin (issue #176), and the `ls021_flpr_bringup` FLPR bench bin (issue #177), were all retired once
-//! the FLPR path ([`crate::ls021_flpr`]) took over driving frames — but COM is **panel-board-agnostic
-//! infrastructure** that must run no matter who clocks the pixels, so it stays on the M33 here, driven
-//! by the default FLPR app build.
+//! COM is panel-board-agnostic infrastructure that must run no matter who clocks the pixels, so it
+//! stays on the M33 here (the FLPR drives frames).
 //!
 //! ## Why COM has to free-run
 //!
-//! The Memory-in-Pixel cells must never see a **DC bias**, so `VCOM`/`VB`/`VA` have to
-//! alternate forever (~60 Hz, ~50 % duty) the *whole* time the panel is powered and
-//! driven — even on a perfectly static image. `VB` is **in phase** with `VCOM`; `VA` is
-//! its **exact inverse**.
+//! The Memory-in-Pixel cells must never see a **DC bias**, so `VCOM`/`VB`/`VA` have to alternate
+//! forever (~60 Hz, ~50 % duty) the *whole* time the panel is powered and driven — even on a perfectly
+//! static image. `VB` is **in phase** with `VCOM`; `VA` is its **exact inverse**.
 //!
 //! ### Why a GPIO toggle on a timer, not a PWM peripheral
 //!
-//! A PWM peripheral would be the textbook choice (zero-CPU, glitch-free). But on this part
-//! **PWM20 will not drive the COM pins** `P2.07/08/10`: with the PWM running, the analyzer
-//! showed the lines dead `Lo`, while a plain `gpio::Output` on the *same* pins toggles them
-//! cleanly (as L0's signal-walk already proved). The PWM output simply does not route onto
-//! that GPIO port here. So COM is generated the way the L1 issue explicitly sanctions as the
-//! fallback — a **GRTC/timer-backed GPIO square wave**: [`com_task`] flips the three lines
-//! and `await`s half a period, forever.
+//! **PWM20 will not drive the COM pins** `P2.07/08/10`: with the PWM running, the analyzer shows the
+//! lines dead `Lo`, while a plain `gpio::Output` on the *same* pins toggles them cleanly — the PWM
+//! output does not route onto that GPIO port here. So COM is a **GRTC/timer-backed GPIO square wave**:
+//! [`com_task`] flips the three lines and `await`s half a period, forever.
 //!
-//! To keep it free-running **while the M33 is busy elsewhere**, spawn `com_task` on a
-//! **high-priority `InterruptExecutor`** (see the callers): the GRTC wakeup pends that executor
-//! and preempts thread-mode, so COM never stalls behind a long-running thread-mode loop. The
-//! crossings are effectively simultaneous — three back-to-back register writes, tens of ns apart,
-//! far below the ~100 µs edge spec — so there is no meaningful overlap glitch.
+//! To keep it free-running **while the M33 is busy elsewhere**, spawn `com_task` on a **high-priority
+//! `InterruptExecutor`** (see the callers): the GRTC wakeup pends that executor and preempts
+//! thread-mode, so COM never stalls behind a long-running thread-mode loop. The crossings are
+//! effectively simultaneous — three back-to-back register writes, tens of ns apart, far below the
+//! ~100 µs edge spec — so there is no meaningful overlap glitch.
 //!
-//! Built as a task rather than a struct so the COM pins move into it and toggle for the
-//! life of the program. The "hold COM `Lo` during init, then start" enable is just *when* it is
-//! spawned: the pins boot `Output(Lo)` and stay `Lo` until the task runs.
+//! Built as a task so the COM pins move into it and toggle for the life of the program. "Hold COM `Lo`
+//! during init, then start" is just *when* it is spawned: the pins boot `Output(Lo)` and stay `Lo`
+//! until the task runs.
 //!
-//! Each COM line is a real **56–77 nF** load, so the caller configures the three as
-//! **high-drive (H0H1)** GPIO to slew it inside the datasheet ≤100 µs rise/fall (~2.5 mA).
-//! If the analyzer shows rounded edges into the real load, external buffering is the
-//! documented fallback (see the spec doc).
-//!
-//! [#141]: https://github.com/timohueser/OpenBikeComputer/issues/141
+//! Each COM line is a real **56–77 nF** load, so the caller configures the three as **high-drive
+//! (H0H1)** GPIO to slew it inside the datasheet ≤100 µs rise/fall (~2.5 mA). If the analyzer shows
+//! rounded edges into the real load, external buffering is the documented fallback.
 
 use embassy_nrf::gpio::Output;
 use embassy_time::Timer;

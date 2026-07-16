@@ -12,7 +12,7 @@ Colour is **RGB222** — 2 bits per channel → **64 colours** — and the panel
 1. **The interface is parallel, not SPI.** Pixel data goes out on a **6-bit parallel source bus** plus a handful of control lines.
 2. **The stored bits don't drive the liquid crystal directly.** A separate, *continuously running* AC waveform does; the stored bit only chooses which way each subpixel leans.
 
-This page is the protocol — conceptual model first, then the mechanical detail and the signal reference. The firmware that implements it is split three ways: the M33 [COM-waveform driver](src:firmware/obc-fw-nrf54l/src/com.rs), the [FLPR scan blob](src:firmware/obc-fw-nrf54l/src/flpr/flpr_pingpong.c) that clocks the gate and source buses, and the host-tested [wire-format packer](src:firmware/obc-platform/src/ls021_wire.rs).
+This page is the protocol — conceptual model first, then the mechanical detail and the signal reference. The firmware that implements it is split three ways: the M33 [COM-waveform driver](src:firmware/obc-fw-nrf54l/src/com.rs), the [FLPR scan blob](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c) that clocks the gate and source buses, and the host-tested [wire-format packer](src:firmware/obc-display/src/ls021/wire.rs).
 
 ## Two signal paths that never meet
 
@@ -266,7 +266,7 @@ The panel itself is nearly free at rest; cost scales with how often you rewrite 
 ## Where this lives
 
 - The COM polarity waveform on the M33 — and its zero-CPU [`TIMER→DPPI→GPIOTE`](src:firmware/obc-fw-nrf54l/src/com_hw.rs) variant: [`obc-fw-nrf54l/src/com.rs`](src:firmware/obc-fw-nrf54l/src/com.rs)
-- The gate/source scan that writes a frame — the [`FLPR`](src:firmware/obc-fw-nrf54l/src/ls021_flpr.rs) coprocessor blob: [`flpr/flpr_pingpong.c`](src:firmware/obc-fw-nrf54l/src/flpr/flpr_pingpong.c)
-- The host-tested wire-format pack (the area-gradation bit packing this page describes): [`obc-platform/src/ls021_wire.rs`](src:firmware/obc-platform/src/ls021_wire.rs)
+- The gate/source scan that writes a frame — the [`FLPR`](src:firmware/obc-fw-nrf54l/src/ls021_flpr.rs) coprocessor blob: [`flpr/flpr_scan.c`](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c)
+- The host-tested wire-format pack (the area-gradation bit packing this page describes): [`obc-display/src/ls021/wire.rs`](src:firmware/obc-display/src/ls021/wire.rs)
 - How a rendered frame reaches the panel — the banded push and the RGB222 framebuffer: [rendering pipeline](../../software/rendering/)
 - The hardware overview: [Hardware](../)

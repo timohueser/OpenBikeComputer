@@ -10,6 +10,11 @@ to OBCR before a BLE upload (see
 [`obc-ble-interface-spec.md`](obc-ble-interface-spec.md)) — and read back by the
 same `no_std` Rust code that the firmware runs (`firmware/obc-route`).
 
+This document is the normative byte contract. `firmware/obc-formats/src/obcr.rs`
+is its code authority for versions, fixed lengths, magic, and sentinels;
+`firmware/obc-formats/src/io.rs` owns the neutral byte-source/sink traits and checked
+little-endian primitives used by both producer and reader.
+
 **Versions.** v2 (current) adds a 16-byte header extension and the waypoints
 section; both are reached only via explicit offsets, so a v2 route loads and
 rides through the unchanged v1 read path — readers accept both versions, and a
@@ -217,12 +222,14 @@ carry no ride-order of their own).
 
 ## Reference implementation
 
-`firmware/obc-route` (`no_std`): `byte_io.rs` ([`ByteSource`](#bytesource)/`ByteSink`),
-`reader.rs` (`RouteReader`, `RouteSummary`, `ChunkMeta`, `Waypoint` +
-`for_each_waypoint`), `convert.rs` (GPX → OBCR), `gpx.rs` (streaming `<trkpt>` +
-`<wpt>` scans). Format-contract tests build synthetic `.obcr` bytes by hand,
-mirroring this layout (`obc-route/tests/format.rs` + `tests/waypoints.rs`); shared
-phone↔firmware fixtures live in `protocol-vectors/`.
+`firmware/obc-formats` (`no_std`): `obcr.rs` (normative version, sizes, magic, and
+sentinels) and `io.rs` ([`ByteSource`](#bytesource)/`ByteSink` + endian primitives).
+`firmware/obc-route` (`no_std`): `reader.rs` (`RouteReader`, `RouteSummary`,
+`ChunkMeta`, `Waypoint` + `for_each_waypoint`), `convert.rs` (GPX → OBCR), and
+`gpx.rs` (streaming `<trkpt>` + `<wpt>` scans). Its `byte_io.rs` remains only as a
+temporary source-compatibility re-export. Format-contract tests build synthetic
+`.obcr` bytes by hand, mirroring this layout (`obc-route/tests/format.rs` +
+`tests/waypoints.rs`); shared phone↔firmware fixtures live in `protocol-vectors/`.
 
 ### ByteSource
 

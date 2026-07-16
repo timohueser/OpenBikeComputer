@@ -1,18 +1,18 @@
-//! The transfer state machine, exercised end-to-end over an in-memory byte stream — the
-//! host-verified half of the A5 data plane, before any of it touches the radio. Covers the happy
-//! path, resume from every offset (property-style), CRC-corruption rejection, arbitrary CoC
-//! segmentation, over-run, and the echo loopback the board wires on glass.
+//! The transfer state machine, exercised end-to-end over an in-memory byte stream. Covers the happy
+//! path, wrong-op rejection in both directions (transfers restart, not resume — the v2 descriptor
+//! has no offset to reject), CRC-corruption rejection, arbitrary CoC segmentation, over-run, and the
+//! echo loopback.
 
 use obc_ble::descriptor::{ObjectType, Op, TransferControl, TransferStatus};
 use obc_ble::transfer::TransferError;
-use obc_ble::{Crc32, Receiver, Sender};
+use obc_ble::{Crc32, Receiver, StreamSender};
 
 /// A deterministic pseudo-random payload of `n` bytes (a route-sized object).
 fn payload(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i.wrapping_mul(31).wrapping_add(7)) as u8).collect()
 }
 
-/// A fresh upload descriptor for `object` (echo id 0, offset 0), CRC from the production hasher.
+/// A fresh upload descriptor for `object` (echo id 0), CRC from the production hasher.
 fn upload_desc(object: &[u8]) -> TransferControl {
     TransferControl {
         op: Op::Upload,
@@ -20,7 +20,6 @@ fn upload_desc(object: &[u8]) -> TransferControl {
         object_id: 0,
         total_len: object.len() as u32,
         crc32: Crc32::checksum(object),
-        offset: 0,
     }
 }
 
@@ -43,7 +42,7 @@ fn upload_happy_path_commits() {
 
 #[test]
 fn upload_accepts_any_segmentation() {
-    // The CoC delivers arbitrary byte runs (spec §5): every chunk split must reach the same commit.
+    // The CoC delivers arbitrary byte runs: every chunk split must reach the same commit.
     let object = payload(257);
     for chunk in [1usize, 2, 7, 64, 244, 256, 300] {
         let mut rx = Receiver::new(&upload_desc(&object)).unwrap();
@@ -51,29 +50,6 @@ fn upload_accepts_any_segmentation() {
             assert_eq!(rx.push(part), part.len());
         }
         assert_eq!(rx.outcome().unwrap().status, TransferStatus::Committed);
-    }
-}
-
-#[test]
-fn resume_from_every_offset_commits() {
-    // Property-style: drop after k bytes, resume from k with the committed-prefix CRC, finish — the
-    // whole-object CRC must still verify at every split (spec §4.2 "keeps its running CRC state").
-    let object = payload(200);
-    let whole = upload_desc(&object);
-    for k in 0..=object.len() {
-        let mut first = Receiver::new(&whole).unwrap();
-        assert_eq!(first.push(&object[..k]), k);
-        assert_eq!(first.committed_offset(), k as u32);
-
-        // The resume descriptor differs only in offset; seed the CRC from the committed prefix.
-        let resume_desc = TransferControl { offset: k as u32, ..whole };
-        let mut second = Receiver::resumed(&resume_desc, first.crc()).unwrap();
-        assert_eq!(second.remaining(), (object.len() - k) as u32);
-        second.push(&object[k..]);
-
-        let result = second.outcome().unwrap_or_else(|| panic!("incomplete at k={k}"));
-        assert_eq!(result.status, TransferStatus::Committed, "resume at {k}");
-        assert_eq!(result.committed_offset, object.len() as u32);
     }
 }
 
@@ -92,8 +68,8 @@ fn crc_corruption_is_rejected_typed() {
 
 #[test]
 fn corrupt_payload_same_len_is_rejected() {
-    // The link delivered the right length but a wrong byte — the whole-object CRC is exactly what
-    // catches this (the on-air CRC can't; spec §6).
+    // The link delivered the right length but a wrong byte — the whole-object CRC catches this where
+    // the on-air CRC can't.
     let object = payload(128);
     let desc = upload_desc(&object);
     let mut corrupt = object.clone();
@@ -126,19 +102,16 @@ fn incomplete_has_no_outcome() {
 }
 
 #[test]
-fn receiver_rejects_wrong_op_and_bad_offset() {
+fn receiver_rejects_wrong_op() {
     let object = payload(100);
     let download = TransferControl { op: Op::Download, ..upload_desc(&object) };
     assert_eq!(Receiver::new(&download).unwrap_err(), TransferError::WrongOp);
-
-    let bad_offset = TransferControl { offset: 101, ..upload_desc(&object) };
-    assert_eq!(Receiver::new(&bad_offset).unwrap_err(), TransferError::OffsetPastTotal);
 }
 
 #[test]
 fn echo_loopback_round_trips() {
-    // The A5 loopback: the device receives an echo object and streams back exactly what it received,
-    // CRC-verified — modeled here as Receiver.push → echo the consumed bytes → compare.
+    // The loopback: the device receives an echo object and streams back exactly what it received,
+    // CRC-verified — modeled as Receiver.push → echo the consumed bytes → compare.
     let object = payload(1024);
     let mut rx = Receiver::new(&upload_desc(&object)).unwrap();
     let mut echoed = Vec::with_capacity(object.len());
@@ -150,27 +123,37 @@ fn echo_loopback_round_trips() {
     assert_eq!(rx.outcome().unwrap().status, TransferStatus::Committed);
 }
 
-// ---- Sender (download direction) ----
+// ---- StreamSender (download direction) ----
 
-fn download_request(ty: ObjectType, offset: u32) -> TransferControl {
-    TransferControl { op: Op::Download, ty, object_id: 0, total_len: 0, crc32: 0, offset }
+fn download_request(ty: ObjectType) -> TransferControl {
+    TransferControl { op: Op::Download, ty, object_id: 0, total_len: 0, crc32: 0 }
 }
 
 #[test]
 fn download_announces_and_streams() {
+    // The download direction: StreamSender owns the announce + chunk sequencing + close, while the
+    // bytes live outside the core (the board reads them from the SD card, or here from a slice). A
+    // read closure stands in for that storage read — object[position .. position + n].
     let object = payload(500);
-    let mut tx = Sender::new(&download_request(ObjectType::RideList, 0), &object).unwrap();
+    let crc = Crc32::checksum(&object);
+    let read = |at: usize, n: usize| &object[at..at + n];
+    let mut tx = StreamSender::new(&download_request(ObjectType::RideList), object.len() as u32, crc).unwrap();
 
     let announce = tx.announce();
     assert_eq!(announce.op, Op::Download);
     assert_eq!(announce.total_len, 500);
-    assert_eq!(announce.crc32, Crc32::checksum(&object));
-    assert_eq!(announce.offset, 0);
+    assert_eq!(announce.crc32, crc);
 
     let mut sent = Vec::new();
-    while let Some(chunk) = tx.next_chunk(244) {
+    loop {
+        let n = tx.next_chunk_len(244);
+        if n == 0 {
+            break;
+        }
+        let chunk = read(tx.position() as usize, n);
         assert!(chunk.len() <= 244);
         sent.extend_from_slice(chunk);
+        tx.advance(n);
     }
     assert_eq!(sent, object);
     assert_eq!(tx.outcome().unwrap().status, TransferStatus::Committed);
@@ -178,26 +161,9 @@ fn download_announces_and_streams() {
 }
 
 #[test]
-fn download_resume_streams_the_tail() {
-    let object = payload(500);
-    let offset = 200;
-    let mut tx = Sender::new(&download_request(ObjectType::Ride, offset), &object).unwrap();
-    assert_eq!(tx.announce().offset, offset);
-    assert_eq!(tx.announce().total_len, 500); // CRC still covers the whole object
-
-    let mut sent = Vec::new();
-    while let Some(chunk) = tx.next_chunk(244) {
-        sent.extend_from_slice(chunk);
-    }
-    assert_eq!(sent, &object[offset as usize..]);
-    assert!(tx.is_complete());
-}
-
-#[test]
-fn sender_rejects_wrong_op_and_bad_offset() {
-    let object = payload(100);
-    let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Ride, 0) };
-    assert_eq!(Sender::new(&upload, &object).unwrap_err(), TransferError::WrongOp);
-    let bad = download_request(ObjectType::Ride, 101);
-    assert_eq!(Sender::new(&bad, &object).unwrap_err(), TransferError::OffsetPastTotal);
+fn download_rejects_wrong_op() {
+    // Downloads restart whole, exactly like uploads: a wrong op is rejected typed, and an
+    // interrupted download is simply re-requested from the start (no offset on the v2 wire).
+    let upload = TransferControl { op: Op::Upload, ..download_request(ObjectType::Route) };
+    assert_eq!(StreamSender::new(&upload, 100, 0).unwrap_err(), TransferError::WrongOp);
 }

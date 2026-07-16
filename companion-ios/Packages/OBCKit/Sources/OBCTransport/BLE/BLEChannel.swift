@@ -7,15 +7,17 @@ import OBCDomain
 /// (`TransferControl`/`StatusMessage` over GATT), so the MCU can sink bytes straight
 /// to flash and CRC them in one pass, with no reassembly buffer.
 ///
-/// Chunking here is purely **write / progress / resume granularity** (aligned to the
-/// CoC PDU), not framing. The transfer is **resumable** by offset and **cancelable**
-/// (channel teardown). `MockTransport` bypasses this entirely.
+/// Chunking here is purely **write / progress granularity** (aligned to the CoC
+/// PDU), not framing. Interrupted transfers are not resumed at this layer — they
+/// restart whole (spec §1 principle 4) — so both directions are plain one-shot
+/// async calls, cancelable via task cancellation. `MockTransport` bypasses this
+/// entirely.
 public struct BLEChannel: Sendable {
     private let channel: any ByteChannel
     private let chunkSize: Int
 
     /// One CoC SDU on a 2M-PHY + DLE link (251-byte PDU − L2CAP header) — the write
-    /// and resume granularity. `OBCProtocol.md` → *Data plane*.
+    /// and progress granularity. `OBCProtocol.md` → *Data plane*.
     public static let defaultChunkSize = 244
 
     public init(channel: any ByteChannel, chunkSize: Int = BLEChannel.defaultChunkSize) {
@@ -23,145 +25,53 @@ public struct BLEChannel: Sendable {
         self.chunkSize = max(1, chunkSize)
     }
 
-    /// Stream `object[offset...]` as raw bytes (app → device). The caller has already
+    /// Stream the whole object as raw bytes (app → device). The caller has already
     /// announced the transfer (`TransferControl`, incl. the whole-object CRC) on the
-    /// control plane. Returns the handle the UI observes; `resume()` restarts from the
-    /// last committed offset.
-    public func upload(_ object: Data, from offset: Int = 0) -> TransferHandle {
-        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
-        let outcome = AsyncPromise<TransferOutcome>()
-        let transfer = Uploader(channel: channel, chunkSize: chunkSize, object: object,
-                                startOffset: offset, progress: continuation, outcome: outcome)
-        Task { await transfer.start() }
-        return TransferHandle(
-            progress: stream,
-            outcome: outcome,
-            onCancel: { Task { await transfer.cancel() } },
-            onResume: { Task { await transfer.resume() } }
-        )
+    /// control plane and awaits the device's closing `transferResult` afterwards —
+    /// returning from here only means every byte was handed to the channel.
+    /// Throws `ChannelDropped` on a dead link and `CancellationError` on cancel.
+    public func send(
+        _ object: Data, progress: @Sendable (TransferProgress) -> Void = { _ in }
+    ) async throws {
+        var done = 0
+        while done < object.count {
+            try Task.checkCancellation()
+            let end = min(done + chunkSize, object.count)
+            try await channel.write(object.subdata(in: (object.startIndex + done)..<(object.startIndex + end)))
+            done = end
+            progress(TransferProgress(bytesDone: done, total: object.count))
+        }
     }
 
-    /// Read `length` raw bytes (device → app), CRC-ing as they arrive and rejecting on
-    /// mismatch (`DeviceError.crcMismatch`) — the object is never committed on a bad
-    /// CRC. Returns the handle plus a task resolving to the verified object.
-    public func download(length: Int, expectedCRC: UInt32) -> (handle: TransferHandle, result: Task<Data, Error>) {
-        let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
-        let outcome = AsyncPromise<TransferOutcome>()
-        let ch = channel
-        let cs = chunkSize
-        let task = Task<Data, Error> {
-            var buffer = Data(capacity: length)
-            var hasher = CRC32.Hasher()
+    /// Read `length` raw bytes (device → app), CRC-ing as they arrive and rejecting
+    /// on mismatch (`DeviceError.crcMismatch`) — the object is never committed on a
+    /// bad CRC. Throws `DeviceError.transferDropped` on EOF before `length`.
+    public func receive(
+        length: Int, expectedCRC: UInt32,
+        progress: @Sendable (TransferProgress) -> Void = { _ in }
+    ) async throws -> Data {
+        var buffer = Data(capacity: length)
+        var hasher = CRC32.Hasher()
+        while buffer.count < length {
+            try Task.checkCancellation()
+            let chunk: Data
             do {
-                while buffer.count < length {
-                    let chunk = try await ch.read(maxLength: min(cs, length - buffer.count))
-                    if chunk.isEmpty { throw DeviceError.transferDropped }  // EOF before `length`
-                    hasher.update(chunk)
-                    buffer.append(chunk)
-                    continuation.yield(TransferProgress(bytesDone: buffer.count, total: length, offset: buffer.count))
-                }
+                chunk = try await channel.read(maxLength: min(chunkSize, length - buffer.count))
             } catch {
-                continuation.finish()
-                let failure = (error as? DeviceError) ?? .transferDropped
-                outcome.fulfill(.failed(failure))   // a no-op if cancel() resolved it first
-                throw failure
+                throw (error as? DeviceError) ?? DeviceError.transferDropped
             }
-            continuation.finish()
-            guard hasher.finalize() == expectedCRC else {
-                outcome.fulfill(.failed(.crcMismatch))
-                throw DeviceError.crcMismatch
-            }
-            outcome.fulfill(.completed)
-            return buffer
+            if chunk.isEmpty { throw DeviceError.transferDropped }  // EOF before `length`
+            hasher.update(chunk)
+            buffer.append(chunk)
+            progress(TransferProgress(bytesDone: buffer.count, total: length))
         }
-        return (
-            TransferHandle(
-                progress: stream,
-                outcome: outcome,
-                onCancel: { outcome.fulfill(.canceled); task.cancel(); Task { await ch.close() } },
-                onResume: {}  // download resume re-opens the CoC at the transport level (A5-gated)
-            ),
-            task
-        )
-    }
-}
-
-/// One in-flight upload. An actor so `cancel()`/`resume()` and the send loop don't
-/// race. `committed` = bytes fully handed to the channel — the resume anchor after a
-/// drop (a chunk that failed to write is never committed, so resume re-sends it).
-private actor Uploader {
-    let channel: any ByteChannel
-    let chunkSize: Int
-    let object: Data
-    let progress: AsyncStream<TransferProgress>.Continuation
-    let outcome: AsyncPromise<TransferOutcome>
-
-    var committed: Int
-    var running = false
-    var canceled = false
-    var torndown = false
-
-    init(channel: any ByteChannel, chunkSize: Int, object: Data, startOffset: Int,
-         progress: AsyncStream<TransferProgress>.Continuation,
-         outcome: AsyncPromise<TransferOutcome>) {
-        self.channel = channel
-        self.chunkSize = chunkSize
-        self.object = object
-        self.committed = min(max(0, startOffset), object.count)
-        self.progress = progress
-        self.outcome = outcome
+        guard hasher.finalize() == expectedCRC else { throw DeviceError.crcMismatch }
+        return buffer
     }
 
-    func start() async { await pump() }
-
-    private func pump() async {
-        guard !running, !canceled, !torndown else { return }
-        running = true
-        let total = object.count
-
-        while committed < total {
-            if canceled { break }
-            let end = min(committed + chunkSize, total)
-            let chunk = object.subdata(in: (object.startIndex + committed)..<(object.startIndex + end))
-            do {
-                try await channel.write(chunk)
-            } catch {
-                // Drop (or a cancel that closed the channel): stop with `committed` at
-                // the last good boundary. The stream stays open so `resume()` can
-                // continue into it.
-                running = false
-                return
-            }
-            committed = end
-            progress.yield(TransferProgress(bytesDone: committed, total: total, offset: committed))
-        }
-
-        running = false
-        if canceled {
-            await teardown()
-        } else {
-            progress.finish()  // complete
-            outcome.fulfill(.completed)
-        }
-    }
-
-    func cancel() async {
-        canceled = true
-        // Always tear down: closing the channel also unblocks a write parked on
-        // backpressure, so the pump can't be stranded mid-transfer.
-        await teardown()
-    }
-
-    func resume() async {
-        guard !canceled, !torndown, committed < object.count else { return }
-        await pump()
-    }
-
-    private func teardown() async {
-        guard !torndown else { return }
-        torndown = true
+    /// Tear the underlying channel down (idempotent) — unblocks a peer parked on
+    /// backpressure and, on the real path, makes the device discard its partial.
+    public func close() async {
         await channel.close()
-        progress.finish()
-        outcome.fulfill(.canceled)
     }
 }

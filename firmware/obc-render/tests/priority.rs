@@ -1,23 +1,18 @@
-//! Render-level test for priority rendering under buffer saturation.
+//! Render-level test for priority rendering under buffer saturation: **when the frame buffers
+//! saturate, the highest-priority features survive and the lowest-priority ones are dropped —
+//! across chunks**.
 //!
-//! The reader-level invariants (`filtered_decode_skips_without_drifting`,
-//! `for_each_chunk_has_no_cap` in `obc-reader/tests/format.rs`) cover decoding,
-//! but nothing asserts the actual payoff of the priority passes in
-//! [`MapRenderer::render`]: **when the frame buffers saturate, the highest-priority
-//! features survive and the lowest-priority ones are dropped — across chunks**.
-//!
-//! The setup is the worst case for any chunk-order collector: a *late* chunk holds
-//! the single priority-1 polygon while an *early* chunk is packed with enough
-//! priority-4 polygons to overflow `MAX_SPANS` on its own. A renderer that dropped
-//! in chunk order would fill the buffer from the early chunk and drop the late
-//! priority-1 polygon entirely (no red pixels). The priority passes collect level 1
-//! first, across all chunks, so the priority-1 polygon survives. This test fails if
-//! collection ever reverts to chunk-order (non-priority) dropping.
+//! The setup is the worst case for any chunk-order collector: a *late* chunk holds the single
+//! priority-1 polygon while an *early* chunk is packed with enough priority-4 polygons to overflow
+//! `MAX_SPANS` on its own. A chunk-order dropper would fill the buffer from the early chunk and drop
+//! the late priority-1 polygon (no red pixels). Stub-select ranks candidates by priority globally
+//! across all chunks before budgeting, so the late priority-1 polygon wins over the early
+//! priority-4 crowd and survives.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
-use obc_render::{MapRenderer, Viewport, MAX_SPANS};
+use obc_render::{MapRenderer, Viewport, MAX_FRAME_POINTS, MAX_SPANS};
 use obcm_testkit::{build_priority_tree, pack_poly, Style};
 
 mod common;
@@ -33,10 +28,6 @@ const BLUE: Rgb888 = Rgb888::new(0, 0, 255);
 /// own, so the buffer is already full before the late chunk is even reached.
 const NUM_LOW: usize = MAX_SPANS + 64;
 
-// The byte builders (`build_priority_tree`, `pack_poly`) now live in `obcm-testkit`,
-// imported above — the same single source the reader's format tests use, so a format
-// bump edits one place.
-
 #[test]
 fn priority_one_survives_saturation_across_chunks() {
     // Global bbox (0,0,1000,1000); root branch midpoints (500,500). The early
@@ -44,8 +35,8 @@ fn priority_one_survives_saturation_across_chunks() {
     // left and right halves of the screen respectively, so their colors never
     // overlap and can be counted independently.
     let styles: &[Style] = &[
-        (1, 0, LOW_565, 1, 4),  // priority 4 (lowest) — the bulk, in the early chunk
-        (2, 1, HIGH_565, 1, 1), // priority 1 (highest) — one polygon, in the late chunk
+        (1, 0, LOW_565, 1, 4, false, None), // priority 4 (lowest) — the bulk, in the early chunk
+        (2, 1, HIGH_565, 1, 1, false, None), // priority 1 (highest) — one polygon, in the late chunk
     ];
 
     // Early chunks (the four NW leaves, all in the left/upper quadrant): NUM_LOW small
@@ -81,6 +72,10 @@ fn priority_one_survives_saturation_across_chunks() {
     // The setup must actually saturate, or the test proves nothing.
     assert_eq!(stats.features_tried, NUM_LOW + 1, "all features visited");
     assert!(stats.features_dropped > 0, "buffers must saturate for this test to mean anything");
+    assert_eq!(stats.feature_decode_capacity_drops, 0);
+    assert_eq!(stats.malformed_features, 0);
+    assert_eq!(stats.map_structure_failures, 0);
+    assert_eq!(stats.map_read_failures, 0);
     assert_eq!(
         stats.features_drawn + stats.features_dropped,
         stats.features_tried,
@@ -96,4 +91,57 @@ fn priority_one_survives_saturation_across_chunks() {
     // Sanity: priority-4 features are drawn too (just not all of them) — saturation
     // dropped the overflow, not the whole low-priority layer.
     assert!(buf.count(BLUE) > 0, "some priority-4 features are still drawn");
+}
+
+/// The other saturation dimension: the **point** buffer (`MAX_FRAME_POINTS`) fills before the span
+/// buffer does. The stub-select collector's `select` phase admits by exact per-feature point count
+/// in priority order, so the lone priority-1 polygon — again in the *late* chunk, behind enough
+/// vertex-heavy priority-4 polygons to exhaust the point budget — must still be admitted (a naive
+/// arrival-order point-budget fill would spend the budget on the early priority-4 features and drop
+/// it). Pins the `select` knapsack the span-count test above doesn't exercise (issue #564).
+#[test]
+fn priority_one_survives_point_budget_saturation() {
+    let styles: &[Style] = &[
+        (1, 0, LOW_565, 1, 4, false, None), // priority 4 (lowest) — vertex-heavy, in the early chunks
+        (2, 1, HIGH_565, 1, 1, false, None), // priority 1 (highest) — one small polygon, in the late chunk
+    ];
+
+    // Each low polygon carries ~60 vertices, so relatively few of them overflow the point buffer
+    // while the span buffer stays far from full — isolating point-budget saturation.
+    let low_deltas: Vec<(i8, i8)> = (0..59).map(|i| if i % 2 == 0 { (2i8, 1i8) } else { (1i8, -2i8) }).collect();
+    let pts_per = 1 + low_deltas.len(); // exterior anchor + deltas
+    let num_low = MAX_FRAME_POINTS / pts_per + 64; // overflow the point budget…
+    assert!(num_low < MAX_SPANS, "the setup must saturate points, not spans");
+    let one_low = pack_poly(1, 50, 50, &low_deltas);
+    let make = |n: usize| -> Vec<u8> { (0..n).flat_map(|_| one_low.clone()).collect() };
+    let base = num_low / 4;
+    let nw_chunks = [make(base), make(base), make(base), make(num_low - 3 * base)];
+    let chunk_size = nw_chunks.iter().map(Vec::len).max().unwrap() + 64;
+
+    // Late chunk (NE): one priority-1 triangle, big enough for an unmistakable red fill.
+    let ne = pack_poly(2, 50, 50, &[(120, 0), (0, 120), (-120, 0)]);
+
+    let bytes = build_priority_tree((0, 0, 1000, 1000), styles, chunk_size, nw_chunks, ne);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).expect("valid file");
+    let reader = Reader::new(&src, &tables, &cache);
+
+    let vp = Viewport::new(200.0, 200.0, 500, 500, 0.15);
+    let mut buf = Buf::new(200, 200);
+    let mut renderer = MapRenderer::new();
+    let stats = renderer.render(&mut buf, &reader, &vp, Rgb888::BLACK, |c| {
+        let (r, g, b) = rgb565_to_rgb888(c);
+        Rgb888::new(r, g, b)
+    });
+
+    // It must be the *point* buffer that saturates, not the span buffer — else this proves nothing
+    // the span-count test didn't.
+    assert!(stats.features_dropped > 0, "point buffer must saturate");
+    assert_eq!(stats.feature_decode_capacity_drops, 0);
+    assert!(stats.span_utilization < 1.0, "spans must not be the limiting buffer");
+    assert!(stats.point_utilization > 0.9, "the point buffer is the one that saturates");
+
+    // The payoff: the priority-1 polygon survives the point-budget cut and is painted.
+    assert!(buf.count(RED) > 100, "priority-1 polygon must survive point saturation (got {} red px)", buf.count(RED));
 }

@@ -1,10 +1,8 @@
 //! The two-plane input decomposition ([`InputPlane`] + [`App::apply_gesture`] +
-//! [`App::advance_animations`], issue #48). Pins the contract the firmware's preemptive split
-//! relies on: driving the app through the *decomposed* path (recognise on a standalone
-//! `InputPlane`, apply each gesture, advance animations) is behaviour-identical to the
-//! single-call [`App::handle_input`] the simulator uses — so relocating the recogniser off
-//! `App` changed nothing observable, and the overlay the firmware drives on its own plane stays
-//! in lock-step with the gestures the map plane applies.
+//! [`App::advance_animations`], issue #48). Driving the app through the decomposed path (recognise on
+//! a standalone `InputPlane`, apply each gesture, advance animations) must be behaviour-identical to
+//! the single-call [`App::handle_input`] the simulator uses, with the firmware's own-plane overlay
+//! staying in lock-step with the gestures the map plane applies.
 
 use obc_app::{App, AppState, Button, Gesture, InputClock, InputEvent, InputPlane, RouteSummary};
 use obc_reader::BBox;
@@ -39,9 +37,9 @@ fn drive_split(app: &mut App, plane: &mut InputPlane, t: u32, evs: &[InputEvent]
 fn script() -> Vec<(u32, Vec<InputEvent>)> {
     vec![
         (0, vec![down(Button::Encoder)]),
-        (80, vec![up(Button::Encoder)]),     // Home press → Route menu
+        (80, vec![up(Button::Encoder)]),     // Home press → Menu (Routes selected)
         (200, vec![down(Button::Encoder)]),  //
-        (280, vec![up(Button::Encoder)]),    // load route → Map (riding)
+        (280, vec![up(Button::Encoder)]),    // press Routes → Route menu
         (400, vec![turn(1)]),                // Map zoom in
         (450, vec![turn(-1)]),               // Map zoom out
         (600, vec![down(Button::Encoder)]),  // begin an encoder hold…
@@ -89,9 +87,8 @@ fn split_path_matches_handle_input_state_and_map_dirty() {
         assert_eq!(plane.overlay_active(), single.overlay_active(), "overlay liveness diverged at t={t} (evs={evs:?})");
     }
 
-    // `last_gesture` is a readout of the recogniser, so on the two-plane path it lives on the
-    // standalone `plane` (the firmware's high-priority plane), not on the map-plane `App` whose
-    // own recogniser stays dormant there. Read it from the plane that actually recognised.
+    // `last_gesture` reads the recogniser, so on the two-plane path it lives on the standalone
+    // `plane`, not on the map-plane `App` whose own recogniser stays dormant.
     assert_eq!(plane.last_gesture(), single.last_gesture());
     assert!(split.last_gesture().is_none(), "the map plane's own recogniser stays dormant");
 }
@@ -118,12 +115,9 @@ fn standalone_input_plane_recognizes_the_same_gestures_as_handle_input() {
     assert_eq!(got, vec![Gesture::Turn(3)], "turn fires immediately; the post-hold release is silent");
 }
 
-/// In-frame ordering within one poll batch (issue #93 item 7). `recognize` drains the whole
-/// frame's input in a `while let` loop (input_plane.rs ~92), emitting one gesture per event **in
-/// arrival order**. The existing two-button tests run across frames; this pins that several events
-/// queued in a *single* poll — multiple turn detents plus a press-and-release — all surface, in
-/// order, from one `recognize` call. A regression that stopped after the first event would drop
-/// the rest of a fast burst.
+/// `recognize` drains the whole frame's input, emitting one gesture per event in arrival order. Pins
+/// that several events queued in a single poll all surface, in order — a regression that stopped
+/// after the first would drop the rest of a fast burst.
 #[test]
 fn multiple_events_in_one_poll_all_fire_in_order() {
     let mut plane = InputPlane::new();

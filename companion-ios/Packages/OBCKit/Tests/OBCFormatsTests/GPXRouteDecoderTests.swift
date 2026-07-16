@@ -78,6 +78,78 @@ final class GPXRouteDecoderTests: XCTestCase {
         }
     }
 
+    // MARK: Coordinate / elevation validation (#304)
+
+    /// A non-finite coordinate (`lat="inf"`) parses as a `Double` but must be
+    /// rejected as a clean `.malformed`, never built into a poisoning `NaN`
+    /// coordinate.
+    func testNonFiniteCoordinateRejectsTheFile() {
+        let bad = """
+            <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
+              <trk><trkseg>
+                <trkpt lat="inf" lon="0.0"><ele>500</ele></trkpt>
+              </trkseg></trk>
+            </gpx>
+            """
+        assertMalformed(bad)
+    }
+
+    /// An out-of-range coordinate (`lat="999"`) is finite but not a valid
+    /// latitude — also a clean reject.
+    func testOutOfRangeCoordinateRejectsTheFile() {
+        let bad = """
+            <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
+              <trk><trkseg>
+                <trkpt lat="999" lon="0.0"></trkpt>
+                <trkpt lat="47.01" lon="11.0"></trkpt>
+              </trkseg></trk>
+            </gpx>
+            """
+        assertMalformed(bad)
+    }
+
+    /// The original crash path: a bad track coordinate poisons the cumulative
+    /// distance → a `NaN` waypoint `along` → `sorted` traps. Rejecting the
+    /// coordinate at the edge throws cleanly instead — no crash.
+    func testBadCoordinateWithWaypointThrowsInsteadOfCrashing() {
+        let bad = """
+            <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
+              <wpt lat="47.005" lon="11.0002"><name>Bakery</name></wpt>
+              <trk><trkseg>
+                <trkpt lat="47.000" lon="11.000"></trkpt>
+                <trkpt lat="nan" lon="11.000"></trkpt>
+                <trkpt lat="47.010" lon="11.000"></trkpt>
+              </trkseg></trk>
+            </gpx>
+            """
+        assertMalformed(bad)
+    }
+
+    /// A non-finite `<ele>` is dropped to `nil` (no elevation) — the route still
+    /// imports, it just carries no altitude for that point.
+    func testNonFiniteElevationBecomesNil() throws {
+        let mixed = """
+            <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
+              <trk><trkseg>
+                <trkpt lat="47.000" lon="11.000"><ele>inf</ele></trkpt>
+                <trkpt lat="47.010" lon="11.000"><ele>540.0</ele></trkpt>
+              </trkseg></trk>
+            </gpx>
+            """
+        let route = try decoder.decode(Data(mixed.utf8))
+        XCTAssertEqual(route.points.count, 2)
+        XCTAssertNil(route.points[0].elevationMeters, "a non-finite <ele> is dropped, not stored")
+        XCTAssertEqual(route.points[1].elevationMeters, 540.0)
+    }
+
+    private func assertMalformed(_ xml: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertThrowsError(try decoder.decode(Data(xml.utf8)), file: file, line: line) { error in
+            guard case FormatError.malformed = error else {
+                return XCTFail("expected .malformed, got \(error)", file: file, line: line)
+            }
+        }
+    }
+
     /// End-to-end on the real bundled sample (`OBCMock/Fixtures/sample-import.gpx`,
     /// the `-OBCImportSample` file) — read via the repo path so this pins the
     /// exact bytes the E1 XCUITest imports.

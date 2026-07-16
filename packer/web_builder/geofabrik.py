@@ -15,10 +15,12 @@ import time
 import requests
 from shapely.geometry import shape, mapping
 
+from . import paths
+
 INDEX_URL = "https://download.geofabrik.de/index-v1.json"
 
-# Mirror the cache-dir convention used by obcm/land_ingest.py.
-CACHE_DIR = os.path.expanduser("~/.cache/obcm/geofabrik")
+# Derived from OBCM_CACHE_DIR (see paths.py).
+CACHE_DIR = paths.GEOFABRIK_CACHE
 RAW_PATH = os.path.join(CACHE_DIR, "index-v1.json")
 SIMPLIFIED_PATH = os.path.join(CACHE_DIR, "regions-simplified.json")
 

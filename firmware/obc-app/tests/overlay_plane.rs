@@ -1,14 +1,10 @@
-//! The map / overlay plane split ([`App::render_map`] + [`App::render_overlay`],
-//! issue #45). Two contracts are pinned here:
+//! The map / overlay plane split ([`App::render_map`] + [`App::render_overlay`], issue #45). Two
+//! contracts:
 //!
-//! 1. **Compositing isolation** — `render_overlay` over an already-rendered map must
-//!    touch *only* its own pixels (the hold bulge), never clear or repaint the map. We
-//!    render the map, snapshot it, draw the overlay over it, and assert every changed
-//!    pixel is in the right-edge overlay band and is the bulge colour — so the whole
-//!    map area is byte-identical with and without the overlay.
-//! 2. **Liveness** — `App::overlay_active()` is true exactly across a hold's
-//!    charge → pop (and across an early-release retract), and false otherwise, so a
-//!    host can repaint the overlay layer only when it would change a pixel.
+//! 1. **Compositing isolation** — `render_overlay` over an already-rendered map touches only its own
+//!    pixels (the hold bulge), never clearing or repainting the map.
+//! 2. **Liveness** — `App::overlay_active()` is true exactly across a hold's charge → pop (and an
+//!    early-release retract), so a host repaints the overlay layer only when it would change a pixel.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
@@ -29,7 +25,7 @@ fn render_overlay_touches_only_overlay_pixels() {
     let bytes = build_min_obcm(0);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
     let hud = rgb(palette::HUD); // the near-black bulge color
@@ -46,9 +42,8 @@ fn render_overlay_touches_only_overlay_pixels() {
     let map_only = buf.px.clone();
     app.render_overlay(&mut buf, w as f32, h as f32, rgb);
 
-    // Everything left of the right-edge band must be byte-identical: the overlay never
-    // clears or repaints the map. Inside the band, the only changes are the bulge's own
-    // HUD-coloured pixels — and there must be some, or we proved nothing.
+    // Everything left of the right-edge band must be byte-identical; inside the band, the only
+    // changes are the bulge's own HUD-coloured pixels — and there must be some.
     let band_x = w - 20; // the bulge pokes in from x = w, at most pop_depth (12) px
     let mut changed_in_band = 0usize;
     for y in 0..h {
@@ -71,13 +66,12 @@ fn render_frame_equals_map_then_overlay() {
     let bytes = build_min_obcm(0);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
-    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let (w, h) = (240i32, 320i32);
 
-    // Same app state rendered two ways: the thin `render_frame` convenience vs. the
-    // explicit `render_map` + `render_overlay` a dual-layer host would call. Draw order
-    // is preserved, so the single-target results must be byte-identical.
+    // The thin `render_frame` convenience vs. the explicit `render_map` + `render_overlay` a
+    // dual-layer host calls. Draw order is preserved, so the results must be byte-identical.
     let make_app = || {
         let mut app = App::new(AppState::new(0, 0, 0.05));
         app.handle_input(InputClock(0), &mut keys(&[down(Button::Encoder)]));

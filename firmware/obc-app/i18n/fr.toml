@@ -1,0 +1,437 @@
+# OpenBikeComputer UI translation catalog - FRENCH.
+#
+# Real French content (epic #602, L4 #606). Every key in en.toml appears here in the
+# SAME order (the build enforces presence); see en.toml for the key->Msg naming
+# convention and the #601 font repertoire (Latin-1 + Latin Extended-A) rule.
+# Fixed-width layouts (stat-tile captions, settings values, the waypoint panel) are
+# abbreviated to fit; format glue (leading/trailing spaces, \n) is preserved verbatim.
+
+# --- The Menu overlay ---
+[menu]
+title = "MENU"
+routes = "Parcours"
+rides = "Sorties"
+pois = "POIs"
+map = "Carte"
+settings = "Réglages"
+
+# --- Units: the `Units` enum name + the Units settings screen ---
+[units]
+metric = "Métrique"
+imperial = "Impérial"
+title = "UNITÉS"
+distance = "Distance"
+speed = "Vitesse"
+elevation = "Altitude"
+
+# --- ClimbMode enum labels (Stats settings row) ---
+[climb_mode]
+off = "Arrêt"
+manual = "Manuel"
+auto = "Auto"
+
+# --- WaypointMode enum labels (Stats settings row) ---
+[waypoint_mode]
+off = "Arrêt"
+approach = "Approche"
+always = "Toujours"
+
+# --- IdleReturn enum labels (Power settings picker) ---
+[idle]
+s15 = "15 s"
+s30 = "30 s"
+m1 = "1 min"
+m5 = "5 min"
+never = "Jamais"
+
+# --- Month abbreviations (Date & Time local-time row) ---
+[month]
+jan = "janv"
+feb = "févr"
+mar = "mars"
+apr = "avr"
+may = "mai"
+jun = "juin"
+jul = "juil"
+aug = "août"
+sep = "sept"
+oct = "oct"
+nov = "nov"
+dec = "déc"
+
+# --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
+# line (T5, #683: abbreviated weekday + day + month, day-first). Months generic; the seven
+# weekday abbreviations (Monday-first) were added for the Home line ---
+[date]
+jan = "JAN"
+feb = "FÉV"
+mar = "MAR"
+apr = "AVR"
+may = "MAI"
+jun = "JUIN"
+jul = "JUIL"
+aug = "AOÛT"
+sep = "SEP"
+oct = "OCT"
+nov = "NOV"
+dec = "DÉC"
+mon = "LUN"
+tue = "MAR"
+wed = "MER"
+thu = "JEU"
+fri = "VEN"
+sat = "SAM"
+sun = "DIM"
+
+# --- StatField names (the Add-field picker / Fields list) ---
+[statfield]
+speed = "Vitesse"
+avg_speed = "Vit. moy."
+dist_done = "Parcourue"
+dist_to_go = "Restante"
+climbed = "Montée"
+to_climb = "Reste montée"
+grade = "Pente"
+elevation = "Altitude"
+ride_time = "Durée"
+clock = "Heure"
+next_waypoint = "Point suiv."
+waypoint_list = "Liste PT"
+heart_rate = "Fréq. card."
+power = "Puissance"
+cadence = "Cadence"
+
+# --- Statistics-grid tile captions (word fragments; the unit symbol stays glued) ---
+[tile]
+avg = "MOY "
+done = " FAIT"
+to_go = " REST"
+climbed = "MONTÉE"
+to_climb = "À MONTER"
+grade = "PENTE"
+elev = "ALT "
+ride = "DURÉE"
+time = "HEURE"
+next_wpt = "PT SUIV"
+waypoints = "POINTS"
+hr = "FC"
+pwr = "PUISS"
+rpm = "CAD"
+
+# --- The Climb (ClimbPro) riding screen ---
+[climb]
+title = "MONTÉE"
+no_climb = "Pas de montée"
+not_on_climb = "Hors montée"
+to_climb = "À MONTER"
+to_go = " REST"
+grade = "PENTE"
+avg_grad = "PENTE M."
+
+# --- The riding Map ---
+[map]
+no_gps_fix = "Pas de GPS"
+off_route = "hors route "
+press_to_start = "Appuyer pour partir"
+
+# --- The Statistics riding screen ---
+[stats]
+title = "STATS"
+no_gps = "pas GPS"
+no_route = "Aucun parcours"
+off = "hors "
+grade = "pente "
+
+# --- The Settings list ---
+[settings]
+title = "RÉGLAGES"
+datetime = "Date & heure"
+autodelete = "Suppr. auto"
+units = "Unités"
+bike_type = "Type de vélo"
+stats = "Statistiques"
+display = "Affichage"
+power = "Énergie"
+bluetooth = "Bluetooth"
+sensors = "Capteurs"
+language = "Langue"
+system = "Système"
+reset = "Réinitialiser"
+
+# --- Date & Time settings screen ---
+[datetime]
+title = "DATE & HEURE"
+gps_fix = "Fix GPS"
+searching = "Recherche fix"
+local_time = "Heure locale"
+offset = "Décalage"
+utc = "UTC "
+
+# --- Auto-delete settings screen (route auto-expiry + ride auto-delete, epic #638 S5) ---
+[autodelete]
+title = "SUPPR. AUTO"
+synced_rides = "SORTIES SYNC."
+never = "Jamais"
+day1 = "1 jour"
+week1 = "1 sem."
+month1 = "1 mois"
+
+# --- Stats settings screen ---
+[set_stats]
+title = "STATS"
+pages = "Pages"
+pages_sub = "auto-défil."
+fields = "Champs"
+fields_sub = "disposition"
+climb = "Montée"
+climb_sub = "panneau"
+waypoints = "Points"
+waypoints_sub = "puce"
+
+# --- Display settings screen ---
+[display]
+title = "AFFICHAGE"
+clock = "Horloge"
+clock_sub = "sur carte"
+scale_bar = "Échelle"
+scale_bar_sub = "sur carte"
+idle = "Veille"
+idle_sub = "délai"
+
+# --- Power settings screen ---
+[power]
+title = "ÉNERGIE"
+gps_fix = "Fix GPS"
+gps_fix_sub = "intervalle"
+power_save = "Économie"
+power_save_sub = "basse conso"
+
+# --- Bluetooth settings screen ---
+[bluetooth]
+title = "BLUETOOTH"
+radio = "Bluetooth"
+radio_sub = "radio"
+status = "État"
+paired = "Appairé"
+yes = "oui"
+no = "non"
+forget = "Oublier tél."
+off = "Arrêt"
+connected = "Connecté"
+advertising = "Visible"
+
+# --- Sensors settings screen (BLE sensors epic #707) ---
+[sensors]
+title = "CAPTEURS"
+heart_rate = "Fréq. cardiaque"
+power = "Puissance"
+cadence = "Cadence"
+not_set = "Non défini"
+searching = "Recherche"
+connecting = "Connexion"
+connected = "Connecté"
+scanning = "Recherche..."
+forget = "Oublier"
+
+# --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
+[language]
+title = "LANGUE"
+
+# --- Stat Fields editor screen ---
+[fields]
+title = "CHAMPS"
+add = "AJOUT"
+
+# --- Add-field picker screen ---
+[add_field]
+title = "AJOUTER"
+all_added = "Tous ajoutés"
+all_added_sub = "Retirez-en un"
+
+# --- Factory-reset settings screen ---
+[reset]
+title = "RÉINITIALISER"
+complete = "Réinitialisé"
+restarting = "Redémarrage"
+factory = "Réinit. usine"
+erases = "Efface les réglages"
+saved_time = "& l'heure."
+confirm = "Confirmer"
+keep_holding = "Maintenez"
+hold_to_erase = "Tenez: effacer"
+
+# --- Bike-type settings screen ---
+[bike_type]
+title = "TYPE DE VÉLO"
+routing_uses = "Le routage utilise ce profil"
+no_profiles = "Aucun profil"
+no_profiles_sub = "Charger une carte"
+
+# --- POI category menu ---
+[poi_menu]
+title = "POIS"
+
+# --- POI list screen ---
+[poi_list]
+no_position = "Aucune position"
+no_position_sub = "Pas encore de fix"
+no_pois = "Aucun POI"
+no_pois_sub = "Aucun à proximité"
+
+# --- POI detail screen ---
+[poi_detail]
+title = "POI"
+hours_not_listed = "Horaires inconnus"
+closed_today = "Fermé auj."
+today = "Auj."
+open = "OUVERT"
+closed = "FERMÉ"
+route_here = "Itinéraire ici"
+
+# --- BLE pairing passkey card ---
+[passkey]
+title = "APPAIRAGE"
+enter_code = "Entrez ce code"
+on_phone = "sur le tél."
+
+# --- Rides list screen ---
+[rides]
+title = "SORTIES"
+no_rides = "Aucune sortie"
+no_rides_sub = "Faites une sortie"
+not_synced = "non sync."
+
+# --- Ride detail screen ---
+[ride_detail]
+synced = "sync."
+delete_ride = "Supprimer"
+
+# --- Route menu screen ---
+[route_menu]
+title = "PARCOURS"
+no_routes = "Aucun parcours"
+no_routes_sub = "Importez un GPX"
+folder_empty_sub = "Ce voyage n'a aucun parcours"
+
+# --- Trip cascade-delete confirm (epic #526, TR3) ---
+[trip_delete]
+title = "SUPPRIMER VOYAGE"
+warn = "Supprime le voyage et ses parcours"
+confirm = "Tout supprimer"
+cancel = "Annuler"
+
+# --- Route overview screen ---
+[route_overview]
+title = "PARCOURS"
+no_route = "Aucun parcours"
+no_route_sub = "Retour à la liste"
+distance = "DISTANCE"
+climb = "MONTÉE"
+descent = "DESCENTE"
+bike_type = "TYPE VÉLO"
+start_ride = "DÉMARRER"
+loading_profile = "Chargement"
+delete = "Supprimer"
+new_route = "NOUV. PARCOURS"
+auto_delete = "Suppr. auto"
+
+# --- Route-received / route-updated popups ---
+[route_received]
+title = "PARCOURS REÇU"
+view_route = "Voir parcours"
+dismiss = "Ignorer"
+route_removed = "Parcours retiré"
+updated_title = "PARCOURS MAJ"
+active_route = "Parcours actif"
+nav_follows = "Le guidage suit"
+new_version = "la nouvelle version"
+
+# --- Route swap / active-route prompt ---
+[route_swap]
+received_title = "PARCOURS REÇU"
+active_title = "PARCOURS ACTIF"
+swap = "Remplacer"
+finish_new = "Finir & nouv."
+cancel = "Annuler"
+route_removed = "Parcours retiré"
+recording = "Sortie en cours"
+
+# --- Create-route (nav) confirm / planning / fail cards ---
+[nav_route]
+create_route = "Créer parcours"
+cancel = "Annuler"
+away = "de distance"
+title = "CRÉER PARCOURS"
+finding = "Recherche..."
+too_far = "Trop loin pour router."
+too_far_hint = "Essayez une destination plus proche."
+not_found = "Aucun parcours trouvé."
+not_found_hint = "Aucune voie proche - partez d'une route."
+
+# --- Ride-control (pause) page ---
+[ride_control]
+title = "PAUSE"
+resume = "Reprendre"
+finish = "Terminer"
+discard = "Abandonner"
+ride_time = "DURÉE"
+distance = "DISTANCE"
+climb = "MONTÉE"
+
+# --- Route-less ride start card ---
+[ride_start]
+title = "SORTIE"
+start_ride = "Démarrer"
+back = "Retour"
+gps = "GPS"
+fix = "fixe"
+searching = "recherche.."
+battery = "Batterie"
+
+# --- System settings screen (epic #615 S5, #620) ---
+[system]
+title = "SYSTÈME"
+install_update = "Installer la mise à jour depuis la carte"
+recording = "Enreg."
+firmware = "Micrologiciel"
+map = "Carte"
+card_free = "Carte libre"
+
+# --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
+[dfu]
+checking = "Vérification de la carte..."
+installed = "Installée"
+staged = "Mise à jour"
+confirm_title = "MISE À JOUR"
+same_version = "Cette version est déjà installée."
+no_undo = "Pas d'annulation automatique."
+install = "Installer"
+cancel = "Annuler"
+preparing = "Préparation de la mise à jour..."
+installing = "Installation de la mise à jour"
+installing_body = "La LED clignote pendant l'installation. L'appareil redémarre ensuite."
+installing_power = "Ne pas éteindre."
+updated_title = "MIS À JOUR"
+updated = "Mis à jour vers"
+failed_title = "ÉCHEC DE LA MISE À JOUR"
+failed_not_started = "La mise à jour n'a pas démarré."
+failed_reverted = "L'ancien firmware est toujours installé."
+title = "MISE À JOUR"
+not_found = "Aucun UPDATE.BIN sur la carte."
+unreadable = "Impossible de lire le fichier de mise à jour."
+damaged = "Le fichier de mise à jour est endommagé."
+too_large = "Le fichier de mise à jour est trop volumineux pour cet appareil."
+fragmented = "Le fichier de mise à jour est trop fragmenté. Supprimez UPDATE.BIN et recopiez-le sur la carte."
+install_recording = "Terminez et enregistrez votre sortie avant d'installer une mise à jour."
+install_pending_save = "Une sortie est encore en cours d'enregistrement. Réessayez dans un instant."
+install_no_card = "Aucune carte trouvée. Insérez la carte et réessayez."
+install_snapshot_failed = "Impossible d'écrire une copie de secours sur la carte. Mise à jour non installée."
+install_state_write = "Impossible de préparer la mise à jour. Rien n'a été modifié."
+# --- Boot-fault cards (pre-app; the device renders the English column) ---
+[fault]
+nocard_what = "Pas de carte SD"
+nocard_fix = "Insérez une carte avec un fichier carte"
+nomap_what = "Aucune carte"
+nomap_fix = "Ajoutez un fichier carte"
+badmap_what = "Carte illisible"
+badmap_fix = "Recopiez-le sur la carte"

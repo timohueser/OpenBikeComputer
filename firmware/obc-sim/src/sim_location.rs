@@ -1,17 +1,14 @@
-//! The simulator's [`LocationSource`] — a manually-set fix the control panel
-//! edits. This is the host-side mirror of what, on the device, will be a GPS UART
-//! driver: same trait, same `Fix`, so [`obc_app::App`] can't tell them apart.
+//! The simulator's [`LocationSource`] — a manually-set fix the control panel edits, the
+//! host-side mirror of the device's GPS UART driver (same trait, same `Fix`, so
+//! [`obc_app::App`] can't tell them apart).
 
-use obc_app::{Fix, LocationSource};
+use obc_ports::{Fix, LocationSource};
 
-/// A location source backed by a single overridable fix. The control panel writes
-/// to it via the setters; a future GPX player would swap in its own
-/// [`LocationSource`] implementation without touching the app.
+/// A location source backed by a single overridable fix, written via the setters.
 pub struct SimLocationSource {
     fix: Option<Fix>,
 }
 
-// The setters are the control panel's write API; the loop reads through `poll`.
 impl SimLocationSource {
     pub fn new(fix: Option<Fix>) -> Self {
         SimLocationSource { fix }
@@ -43,12 +40,10 @@ impl SimLocationSource {
 }
 
 impl LocationSource for SimLocationSource {
-    // This deliberately returns the same fix on every poll, which is *not* the fresh-fix cadence
-    // a real sensor (or the [`GpxPlayer`](obc_replay::GpxPlayer)) follows — but the manual panel is
-    // a position *override* for free-roaming, not a ride-recording source. Replaying one fix means
-    // a stationary user books no distance and a drag to a new spot reads as a teleport (dropped) —
-    // both acceptable here. Ride recording exercises the fresh-fix path via the GPX player; see
-    // [`LocationSource::poll`]'s contract.
+    // Deliberately returns the same fix on every poll — *not* the fresh-fix cadence a real sensor
+    // (or the GpxPlayer) follows. The manual panel is a position *override* for free-roaming, not a
+    // ride-recording source: a stationary user books no distance and a drag reads as a teleport
+    // (dropped), both acceptable. Ride recording exercises the fresh-fix path via the GPX player.
     fn poll(&mut self) -> Option<Fix> {
         self.fix
     }

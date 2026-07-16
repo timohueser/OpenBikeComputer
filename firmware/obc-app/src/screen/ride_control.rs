@@ -1,34 +1,39 @@
-//! The Ride control overlay — the pause menu: Resume / Finish / Discard.
+//! The Paused page — a full screen (no longer the small overlay): the ride-so-far as a stat
+//! ledger (ride time / distance / climb, the Route overview's pane-free look) over the pause
+//! menu's option rows, Resume / Finish / Discard.
 //!
-//! This screen carries the **guarded-action** pattern the brief wants to be
-//! reusable: each option has a `guard` flag. Non-guarded options (Resume) fire on
-//! `press`; guarded, irreversible ones (Finish, Discard) fire only on a completed
-//! `hold`, and their row fills with a warning bar as the encoder is held (release
-//! early — no `Hold` gesture — and nothing happens). `back` resumes (cancels the
-//! pause). Drawn as an overlay on top of the still-visible map.
+//! Each option has a `guard` flag: non-guarded (Resume) fire on `press`; guarded, irreversible ones
+//! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
+//! encoder is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
 
-use embedded_graphics::prelude::{DrawTarget, Point};
-use obc_render::{
-    rect,
-    text::{Font, TextAlign},
-    Canvas, RenderStats,
-};
+use core::fmt::Write;
+
+use obc_render::Surface;
 
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
+use crate::stat_fields::{fmt_hms, fmt_km};
+use crate::Msg;
 
-use super::{palette, Ctx, MenuItem, Render, Transition};
+use super::{ledger_row, list, palette, title_frame, Ctx, MenuItem, Render, Transition};
 
-const ITEMS: [MenuItem; 3] = [
-    MenuItem { label: "Resume", guard: false },
-    MenuItem { label: "Finish", guard: true },
-    MenuItem { label: "Discard", guard: true },
-];
+/// The ride-so-far ledger: three caption/value rows under the title bar.
+const ROWS_TOP: i32 = 50;
+const ROW_PITCH: i32 = 42;
+
+/// The option rows: sized so three rows end just above the bottom frame margin.
+const OPTIONS_TOP: i32 = 178;
+const OPTION_ROW_H: i32 = 38;
+const OPTION_GAP: i32 = 8;
+
+/// Per-row guard flags (Finish / Discard are irreversible). Labels are looked up per language at
+/// draw time (see [`RideControl::draw`]) — the old `const ITEMS` couldn't stay const.
+const GUARDS: [bool; 3] = [false, true, true];
 
 const FINISH: usize = 1;
 const DISCARD: usize = 2;
 
-/// The pause overlay. State is just the highlighted option.
+/// The Paused page. State is just the highlighted option.
 #[derive(Debug, Default)]
 pub struct RideControl {
     selected: usize,
@@ -39,21 +44,19 @@ impl RideControl {
         RideControl { selected: 0 }
     }
 
-    /// True if the highlighted option is guarded (needs a hold) — the host reads
-    /// this to know whether to fill the confirm ring while the encoder is held.
+    /// True if the highlighted option is guarded (needs a hold): its row fills with the live hold
+    /// progress in `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports
+    /// a charging hold as worth repainting here.
     pub fn selection_is_guarded(&self) -> bool {
-        ITEMS[self.selected].guard
+        GUARDS[self.selected.min(GUARDS.len() - 1)]
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
-                self.selected = super::step_selection(self.selected, n, ITEMS.len());
-                Transition::None
-            }
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, GUARDS.len()),
             Gesture::Press => {
-                // Activate instant (non-guarded) options only — i.e. Resume.
-                if ITEMS[self.selected].guard {
+                // Instant (non-guarded) options only — i.e. Resume.
+                if GUARDS[self.selected.min(GUARDS.len() - 1)] {
                     Transition::None
                 } else {
                     cx.activity.mode = Mode::Riding;
@@ -61,13 +64,12 @@ impl RideControl {
                 }
             }
             Gesture::Hold => {
-                // Confirm guarded options only — Finish / Discard. The recognizer
-                // emits `Hold` exactly when the hold completes, so reaching here
-                // *is* the confirmation; releasing early never produces it.
+                // Confirm guarded options. The recognizer emits `Hold` only when the hold completes,
+                // so reaching here *is* the confirmation; releasing early never produces it.
                 match self.selected {
                     FINISH => self.end_ride(cx, TrackAction::Save),
                     DISCARD => self.end_ride(cx, TrackAction::Discard),
-                    _ => Transition::None, // Resume isn't guarded — hold does nothing
+                    _ => Transition::None,
                 }
             }
             Gesture::Back => {
@@ -78,7 +80,7 @@ impl RideControl {
         }
     }
 
-    /// End the tracking session: record the log's disposition (Save → GPX / Discard → drop,
+    /// End the tracking session: record the log's disposition (Save → the saved ride / Discard → drop,
     /// performed by the host), end the session, go Idle, clear the route, and return Home.
     fn end_ride(&self, cx: &mut Ctx, action: TrackAction) -> Transition {
         cx.activity.request_track(action);
@@ -88,31 +90,49 @@ impl RideControl {
         Transition::Home
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let (pw, ph) = (210, 176);
-        let (px, py) = (w / 2 - pw / 2, h / 2 - ph / 2);
-        let mut cv = Canvas::new(target, color_fn);
+        let (w, h) = (rx.w, rx.h);
+        title_frame(cv, w, h, rx.t(Msg::RideControlTitle), "");
 
-        // Parchment panel + dark HUD title strip over the map.
-        cv.round(rect(px, py, pw, ph), 8, PARCHMENT);
-        cv.fill(rect(px, py, pw, 32), HUD);
-        cv.text("PAUSED", Point::new(w / 2, py + 7), Font::Label, TextAlign::Center, PARCHMENT);
+        // The ride so far, in the shared pane-free ledger: what you're about to Finish (or throw
+        // away with Discard) is on screen while the option rows are armed below.
+        let units = rx.settings.units;
+        let act = rx.activity;
+        let time = fmt_hms(act.moving_s);
+        let dist = fmt_km(units.dist(act.ridden_m / 1000.0));
+        let dist_unit = if units.is_imperial() { "mi" } else { "km" };
+        let mut climb: heapless::String<8> = heapless::String::new();
+        let _ = write!(climb, "{}", units.elev(act.climb_m()) as u32);
 
-        // The options, each a highlighted row when selected. Guarded rows fill with
-        // a warning bar tracking the hold-progress; instant ones get a solid amber.
-        let (row_h, gap, first) = (38, 6, py + 40);
-        for (i, item) in ITEMS.iter().enumerate() {
-            let y = first + i as i32 * (row_h + gap);
-            let row = rect(px + 10, y, pw - 20, row_h);
-            super::confirm_row(&mut cv, row, i == self.selected, item.guard, rx.hold_progress, WARNING, 6);
-            cv.text(item.label, Point::new(px + 22, y + 5), Font::Body, TextAlign::Left, INK);
+        let rows: [(&str, &str, &str, Option<bool>); 3] = [
+            (rx.t(Msg::RideControlRideTime), &time, "", None),
+            (rx.t(Msg::RideControlDistance), &dist, dist_unit, None),
+            (rx.t(Msg::RideControlClimb), &climb, units.elev_label(), Some(true)),
+        ];
+        for (i, (caption, value, unit, arrow)) in rows.iter().enumerate() {
+            let y = ROWS_TOP + i as i32 * ROW_PITCH;
+            ledger_row(cv, w, y, caption, value, unit, *arrow);
+            if i + 1 < rows.len() {
+                cv.hline(16, y + ROW_PITCH - 4, w - 32, RULE);
+            }
         }
-        RenderStats::default()
+
+        // Guarded rows fill warning-red — Finish/Discard are irreversible.
+        let geo = super::GuardedRowsGeometry {
+            x: 14,
+            w: w - 28,
+            top: OPTIONS_TOP,
+            row_h: OPTION_ROW_H,
+            gap: OPTION_GAP,
+            label_dx: 12,
+            label_dy: 5,
+        };
+        let items = [
+            MenuItem { label: rx.t(Msg::RideControlResume), guard: GUARDS[0] },
+            MenuItem { label: rx.t(Msg::RideControlFinish), guard: GUARDS[1] },
+            MenuItem { label: rx.t(Msg::RideControlDiscard), guard: GUARDS[2] },
+        ];
+        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, geo);
     }
 }
