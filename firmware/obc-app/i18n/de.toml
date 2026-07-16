@@ -145,18 +145,11 @@ grade = "Steig. "
 # --- The Settings list ---
 [settings]
 title = "OPTIONEN"
-datetime = "Datum & Zeit"
-autodelete = "Auto-Löschen"
-units = "Einheiten"
-bike_type = "Fahrradtyp"
-stats = "Statistik"
+ride = "Fahrt"
 display = "Anzeige"
+connections = "Verbindungen"
 power = "Energie"
-bluetooth = "Bluetooth"
-sensors = "Sensoren"
-language = "Sprache"
 system = "System"
-reset = "Zurücksetzen"
 
 # --- Date & Time settings screen ---
 [datetime]
@@ -167,26 +160,27 @@ local_time = "Ortszeit"
 offset = "Offset"
 utc = "UTC "
 
-# --- Auto-delete settings screen (route auto-expiry + ride auto-delete, epic #638 S5) ---
+# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
 [autodelete]
-title = "AUTO-LÖSCHEN"
-synced_rides = "SYNC. FAHRTEN"
 never = "Nie"
 day1 = "1 Tag"
 week1 = "1 Woche"
 month1 = "1 Monat"
 
-# --- Stats settings screen ---
-[set_stats]
-title = "STATISTIK"
+# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+[ride]
+title = "FAHRT"
+bike_type = "Fahrradtyp"
+fields = "Datenfelder"
+fields_sub = "Anordnung"
 pages = "Seiten"
 pages_sub = "autom."
-fields = "Felder"
-fields_sub = "Anordnung"
 climb = "Anstieg"
 climb_sub = "Panel"
 waypoints = "Wegpunkte"
 waypoints_sub = "Chip"
+autodelete = "Auto-Löschen"
+autodelete_sub = "Fahrten"
 
 # --- Display settings screen ---
 [display]
@@ -205,6 +199,12 @@ gps_fix = "GPS-Fix"
 gps_fix_sub = "Intervall"
 power_save = "Sparmodus"
 power_save_sub = "wenig Strom"
+
+# --- Connections settings menu (Phone / Sensors) ---
+[connections]
+title = "VERBINDUNG"
+phone = "Telefon"
+sensors = "Sensoren"
 
 # --- Bluetooth settings screen ---
 [bluetooth]
@@ -391,9 +391,18 @@ battery = "Akku"
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
 title = "SYSTEM"
+units = "Einheiten"
+datetime = "Datum & Zeit"
+language = "Sprache"
+update = "Firmware"
+reset = "Zurücksetzen"
+
+# --- Firmware page (device info ledger + the SD-sideload install action) ---
+[firmware]
+title = "FIRMWARE"
 install_update = "Update von Karte installieren"
 recording = "Aufnahme"
-firmware = "Firmware"
+version = "Firmware"
 map = "Karte"
 card_free = "Karte frei"
 
