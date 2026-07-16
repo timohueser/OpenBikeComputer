@@ -875,7 +875,7 @@ mod tests {
     /// sequences — the ambient ride, a demo-style app rebuild + mid-climb `GpxPlayer::seek` per
     /// `enter`, the climb demo's Back-cycle, the reroute-to-POI demo including the frame-stepped
     /// planner, and the ambient reset's backward seek — dwelling ≥300 presents on each tour screen
-    /// (Map, Statistics, Climb, Menu, PoiList, PoiDetail, RouteOverview). Every frame presents
+    /// (Map, Statistics, Climb, Ride menu, PoiList, PoiDetail, RouteOverview). Every frame presents
     /// under the oracle (debug asserts on) *and* the full byte-equality postcondition in
     /// [`tour_frame`], so any diff miss — the pre-fix panic — fails here with row diagnostics.
     #[test]
@@ -1017,7 +1017,7 @@ mod tests {
         player.play();
         until_then_dwell!(&mut app, "reroute: Map", Screen::Map(_), 60);
         app.apply_gesture(Gesture::BackHold);
-        until_then_dwell!(&mut app, "reroute: Menu", Screen::Menu(_), 300);
+        until_then_dwell!(&mut app, "reroute: RideMenu", Screen::RideMenu(_), 300);
         app.apply_gesture(Gesture::Turn(2));
         app.apply_gesture(Gesture::Press);
         until_then_dwell!(&mut app, "reroute: PoiMenu", Screen::PoiMenu(_), 45);

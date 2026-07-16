@@ -3346,9 +3346,47 @@ mod tests {
 
     /// Upper bound of `Back` presses needed to unwind any settings case above (open field + the
     /// stacked screens), safely under test control rather than looping forever on a regression.
-    const MAX_DEPTH_BACKOUT: usize = 8;
+    const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
 
     // --- device warning card (issue #504) ---
+
+    /// The deepest ordinary mid-ride settings path leaves the same two-slot reserve the stack had
+    /// before the ride-scoped and main-menu ancestors were added. Walk the real navigation with
+    /// gestures, then prove a host-pushed warning can still land instead of being silently dropped.
+    #[test]
+    fn deepest_mid_ride_settings_path_keeps_room_for_host_warning() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Alpha")], &[10]);
+
+        app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
+        app.apply_gesture(Gesture::Press); // Menu → Route menu
+        app.apply_gesture(Gesture::Press); // Route menu → Overview
+        app.apply_gesture(Gesture::Press); // START → [Home, Map]
+        assert!(matches!(app.top_screen(), Screen::Map(_)));
+
+        app.apply_gesture(Gesture::BackHold); // Map → Ride menu
+        app.apply_gesture(Gesture::Turn(-1)); // Waypoints → Main menu
+        app.apply_gesture(Gesture::Press); // Ride menu → Menu (Push, preserving ride caller)
+        app.apply_gesture(Gesture::Turn(-1)); // Routes → Settings
+        app.apply_gesture(Gesture::Press); // Menu → Settings
+        app.apply_gesture(Gesture::Press); // Settings → Ride
+        app.apply_gesture(Gesture::Turn(1)); // Bike type → Data fields
+        app.apply_gesture(Gesture::Press); // Ride → Fields
+        let field_count = app.settings().stat_fields.len();
+        app.apply_gesture(Gesture::Turn(field_count as i32)); // first field → trailing Add tile
+        app.apply_gesture(Gesture::Press); // Fields → Add field
+
+        assert!(matches!(app.top_screen(), Screen::AddField(_)), "the deepest normal path is open");
+        assert_eq!(app.ui.stack.len(), 8, "the full mid-ride settings path occupies eight slots");
+        assert_eq!(crate::screen::MAX_DEPTH - app.ui.stack.len(), 2, "two host-card slots stay reserved");
+
+        app.apply_event(crate::HostEvent::Warning(WarningFlags::REC_ERROR));
+        assert_eq!(app.ui.stack.len(), 9, "the host warning pushes over the deepest normal path");
+        match app.top_screen() {
+            Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::REC_ERROR)),
+            _ => panic!("the recording-error warning must not be dropped at maximum normal depth"),
+        }
+    }
 
     /// The `notify_warning` contract: a raised flag opens the card, further flags coalesce onto the
     /// open one (never a second card), any press dismisses it, and each flag is shown **once** — an

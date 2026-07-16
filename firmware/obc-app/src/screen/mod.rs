@@ -41,6 +41,7 @@ mod poi_list;
 mod poi_menu;
 mod ride_control;
 mod ride_detail;
+mod ride_menu;
 mod ride_start;
 mod rides;
 mod route_menu;
@@ -68,6 +69,7 @@ pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
+pub use ride_menu::{RideMenuScreen, RideWaypointsScreen, SkipAheadScreen};
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
@@ -83,8 +85,10 @@ pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 pub use warning::{WarningFlags, WarningScreen};
 
-/// Maximum overlay depth. Sized with headroom; the real flow never nests more than a few deep.
-pub const MAX_DEPTH: usize = 8;
+/// Maximum overlay depth. The deepest normal path is eight screens
+/// (`Home → Map → Ride menu → Menu → Settings → Ride → Fields → Add field`); keep two more slots
+/// for host-pushed cards such as a warning arriving while that path is open.
+pub const MAX_DEPTH: usize = 10;
 
 /// The screen stack: the bottom is the always-present root (Home), the top is the
 /// screen currently receiving input.
@@ -652,6 +656,12 @@ screens! {
     /// tracking session with no route via [`start_ride_routeless`].
     RideStart(RideStartScreen) => Caps::nav(),
     Menu(MenuScreen) => Caps::nav().timed(),
+    /// The five-station mid-ride compass: Waypoints / Skip ahead / POIs / Routes / Main menu.
+    RideMenu(RideMenuScreen) => Caps::nav().timed(),
+    /// RM1's Waypoints station stub; a real child screen so the later browser can replace its body.
+    RideWaypoints(RideWaypointsScreen) => Caps::nav(),
+    /// RM1's Skip-ahead station stub; RM3 / #788 grows the distance chooser here.
+    SkipAhead(SkipAheadScreen) => Caps::nav(),
     /// The POIs browser's category list (Menu → POIs).
     PoiMenu(PoiMenuScreen) => Caps::nav(),
     /// One category's distance-sorted nearest-16 with live bearing arrows.
@@ -846,6 +856,7 @@ impl Screen {
                 s.tick_timers(now_ms, now, ms_to_next_minute, w, pan_active, settings.map_clock, tracking)
             }
             Screen::Menu(s) => s.tick_timers(now_ms),
+            Screen::RideMenu(s) => s.tick_timers(now_ms),
             // The route-upload popups' 30 s auto-close deadline (epic #447, P4): the residual
             // wake keeps the event-driven host armed so the timeout-dismiss fires from warm
             // sleep; the removal itself runs in `App::advance_animations`' popup sweep.
@@ -1020,8 +1031,8 @@ fn begin_riding_session(cx: &mut Ctx, lon: i32, lat: i32) -> Transition {
     Transition::Root(Screen::Map(MapScreen::new()))
 }
 
-/// The gestures the two riding views (Map and Statistics) bind identically: `press` pauses
-/// tracking and opens the Ride-control overlay, `back-hold` opens the Menu. Each riding screen
+/// The gestures the riding views bind identically: `press` pauses tracking and opens the
+/// Ride-control page, `back-hold` opens the ride-scoped compass Menu. Each riding screen
 /// calls this from its `Press | BackHold` arm.
 pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
@@ -1029,7 +1040,7 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
             cx.activity.mode = Mode::Paused;
             Transition::Push(Screen::RideControl(RideControl::new()))
         }
-        Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
+        Gesture::BackHold => Transition::Push(Screen::RideMenu(RideMenuScreen::new())),
         _ => Transition::None,
     }
 }

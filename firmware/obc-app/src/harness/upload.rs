@@ -228,9 +228,10 @@ fn a_second_upload_does_not_stack_a_second_popup() {
 fn an_upload_replaces_the_manual_swap_prompt_too() {
     let mut app = idle_app();
     start_riding(&mut app);
-    // Open the *manual* swap prompt from the menu: Map → Menu (BackHold) → Routes (press) →
+    // Open the *manual* swap prompt from the ride menu: Map → Ride menu (BackHold) → Routes →
     // highlight route 1 (turn) → press (tracking + different route ⇒ the swap prompt).
     app.apply_gesture(Gesture::BackHold);
+    app.apply_gesture(Gesture::Turn(3));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Turn(1));
     app.apply_gesture(Gesture::Press);
@@ -316,6 +317,7 @@ fn a_passkey_does_not_remove_the_manual_swap_prompt() {
     let mut app = idle_app();
     start_riding(&mut app);
     app.apply_gesture(Gesture::BackHold);
+    app.apply_gesture(Gesture::Turn(3));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Turn(1));
     app.apply_gesture(Gesture::Press);
@@ -449,6 +451,7 @@ fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
     let mut app = idle_app();
     start_riding(&mut app);
     app.apply_gesture(Gesture::BackHold);
+    app.apply_gesture(Gesture::Turn(3));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Turn(1));
     app.apply_event(crate::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None });
