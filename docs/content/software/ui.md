@@ -111,7 +111,7 @@ consistent (a Reader-needing map screen, a modal that isn't a ride view, and so 
 
 ## Navigation is a return value
 
-A screen never reaches out and changes the UI. It *returns* what it wants — a `Transition` — and a tiny `apply` function runs that against the screen **stack** (a `heapless::Vec<Screen, 8>`). The bottom of the stack is always Home, which is never popped, so `back` always has somewhere to go and the stack can never empty.
+A screen never reaches out and changes the UI. It *returns* what it wants — a `Transition` — and a tiny `apply` function runs that against the screen **stack** (a `heapless::Vec<Screen, 10>`). The bottom of the stack is always Home, which is never popped, so `back` always has somewhere to go and the stack can never empty.
 
 <figure class="fig">
 <svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Ride menu on top. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
@@ -973,10 +973,10 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <line x1="324" y1="180" x2="408" y2="180" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="332" y="173" style="fill:#a9501c;font-size:9px">START · Root</text>
   <!-- Map <-> Statistics -->
   <line x1="514" y1="170" x2="583" y2="170" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" />
-  <line x1="585" y1="190" x2="516" y2="190" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="550" y="212" text-anchor="middle" style="font-size:9px">back ⇄</text>
-  <!-- Statistics <-> Climb (the third stop exists only while on a climb) -->
+  <line x1="585" y1="190" x2="516" y2="190" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="550" y="212" text-anchor="middle" style="font-size:9px">off-climb return</text>
+  <!-- On-climb ring: Statistics -> Climb -> Map. Off-climb, Statistics returns directly to Map. -->
   <line x1="700" y1="170" x2="753" y2="170" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" />
-  <line x1="755" y1="190" x2="702" y2="190" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" /><text class="d-sub" x="728" y="212" text-anchor="middle" style="font-size:9px">back ring</text>
+  <path d="M810 200 C 810 248, 560 248, 516 196" fill="none" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" /><text class="d-sub" x="700" y="260" text-anchor="middle" style="font-size:9px">on-climb back ring</text>
   <!-- Map -> Paused -->
   <line x1="454" y1="160" x2="454" y2="92" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="366" y="128" style="fill:#a9501c;font-size:9px">press · pause</text>
   <!-- Paused -> Map (resume) -->
