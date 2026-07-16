@@ -314,9 +314,8 @@ impl UiRuntime {
         self.base_content() != BaseContent::Chrome
     }
 
-    /// Whether the base (lowest opaque) screen draws the **map** — the [`Map`](crate::screen::map)
-    /// screen ([`BaseContent::Map`]), the only one that reads the streamed-map [`Reader`]. A
-    /// render-on-demand host polls this to skip the whole map pipeline on a non-map frame: don't
+    /// Whether the base (lowest opaque) screen draws the **map** — any [`BaseContent::Map`] screen.
+    /// A render-on-demand host polls this to skip the whole map pipeline on a non-map frame: don't
     /// build the `Reader` (an SD style-table parse + its stack spike), pass `None` to
     /// [`render_map_timed`](App::render_map_timed), and a menu / Home redraw draws only its own
     /// chrome with zero map I/O.
@@ -326,8 +325,8 @@ impl UiRuntime {
 
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
     /// [`render_map_timed`](App::render_map_timed) — a superset of [`base_draws_map`](App::base_draws_map).
-    /// Chosen from the base screen's declared [`ReaderNeed`]: the Map always needs it; the **POI
-    /// list** screen (issue #425) does too, but only until it has taken its one-shot snapshot; and
+    /// Chosen from the base screen's declared [`ReaderNeed`]: map-base screens always need it; the
+    /// **POI list** screen (issue #425) does too, but only until it has taken its one-shot snapshot; and
     /// the **POI detail** screen (issue #444) does until it has resolved its one hours read. Both
     /// take their one-shot read in the pre-draw [`prepare`](crate::screen::Screen::prepare) pass off
     /// the `Reader`, so a render-on-demand host (the board's two-plane loop) must build the `Reader`
@@ -352,15 +351,30 @@ impl UiRuntime {
     }
 
     /// Run the base (lowest-opaque) screen's pre-draw acquisition (#803): hand it the frame's
-    /// `Reader` and fix so it resolves any reader-backed one-shot state (the POI snapshot / hours)
-    /// into immutable prepared state before the draw loop. A no-op for every non-POI base — only the
-    /// two POI screens' [`prepare`](crate::screen::Screen::prepare) acts. Called by
+    /// `Reader`, streamed route, and fix so it resolves reader-backed state (POI snapshot / hours,
+    /// or Skip-ahead geometry) into immutable prepared state before the draw loop. Called by
     /// [`render_map_timed`](App::render_map_timed) ahead of building the draw context, so `Render`
     /// carries the POI scratch read-only and draw stays side-effect-free.
-    pub(crate) fn prepare_base(&mut self, reader: Option<&Reader>, user_fix: Option<Fix>) {
+    pub(crate) fn prepare_base(
+        &mut self,
+        reader: Option<&Reader>,
+        route: Option<&obc_route::RouteReader>,
+        user_fix: Option<Fix>,
+        active_route: Option<usize>,
+        progress_m: u32,
+        route_total_m: u32,
+    ) {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         if let Some(scr) = self.stack.get_mut(base) {
-            let mut px = screen::Prepare { reader, poi_scratch: &mut self.poi_scratch, user_fix };
+            let mut px = screen::Prepare {
+                reader,
+                route,
+                poi_scratch: &mut self.poi_scratch,
+                user_fix,
+                active_route,
+                progress_m,
+                route_total_m,
+            };
             scr.prepare(&mut px);
         }
     }

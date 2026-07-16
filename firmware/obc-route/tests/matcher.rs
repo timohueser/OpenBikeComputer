@@ -127,6 +127,77 @@ fn off_route_freezes_progress_then_resumes_on_rejoin() {
     assert!(back.progress_m.abs_diff(want) <= 6, "resumed progress {} ~ {want}", back.progress_m);
 }
 
+#[test]
+fn position_lookup_and_clipped_interval_are_exact_and_end_clamped() {
+    let bytes = convert("East", &gpx_from(EAST));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let pts = decode_all(&r);
+    let p0 = pts[0];
+    let total = r.total_distance_m;
+
+    let mid = r.position_at(total / 2).unwrap();
+    assert_eq!(mid.progress_m, total / 2);
+    let walked = obc_route::ground_dist_m((p0.lon, p0.lat), (mid.lon, mid.lat));
+    assert!((walked - total as f32 / 2.0).abs() <= 2.0, "midpoint walked {walked} m of {total} m");
+    assert_eq!(r.position_at(total + 10_000).unwrap().progress_m, total, "lookup clamps to route end");
+
+    let lo = total / 4;
+    let hi = total * 3 / 4;
+    let want_lo = r.position_at(lo).unwrap();
+    let want_hi = r.position_at(hi).unwrap();
+    let mut first = None;
+    let mut last = None;
+    let mut visits = 0;
+    r.visit_points_between(lo, hi, |part| {
+        visits += 1;
+        first.get_or_insert(part[0]);
+        last = part.last().copied();
+    });
+    assert!(visits >= 1);
+    assert_eq!(first, Some((want_lo.lon, want_lo.lat)), "highlight starts at the interpolated lower bound");
+    assert_eq!(last, Some((want_hi.lon, want_hi.lat)), "highlight ends at the interpolated rejoin point");
+}
+
+#[test]
+fn skip_floor_blocks_the_skipped_stretch_and_never_moves_backward() {
+    let bytes = convert("East", &gpx_from(EAST));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    let pts = decode_all(&r);
+    let (p0, p1) = (pts[0], *pts.last().unwrap());
+    let total = r.total_distance_m;
+    let mut m = RouteMatch::new();
+
+    let (lon, lat) = east_fix(p0, p1, 0.2, 0.0);
+    let before = m.update(lon, lat, &r);
+    let floor = total * 7 / 10;
+    assert_eq!(m.set_progress_floor(&r, floor).unwrap().progress_m, floor);
+
+    // Still physically on the skipped part of the same long segment: measure to the floor point,
+    // report off-route, and freeze at the new navigation anchor.
+    let (lon, lat) = east_fix(p0, p1, 0.3, 0.0);
+    let skipped = m.update(lon, lat, &r);
+    assert!(skipped.off_route);
+    assert_eq!(skipped.progress_m, floor);
+    assert!(skipped.progress_m > before.progress_m);
+
+    let (lon, lat) = east_fix(p0, p1, 0.8, 0.0);
+    let rejoined = m.update(lon, lat, &r);
+    assert!(!rejoined.off_route);
+    assert!(rejoined.progress_m > floor);
+
+    // A chooser opened earlier may commit after the rider has advanced. The matcher method itself
+    // enforces forward-only semantics, independent of the caller's freshness.
+    let stale = m.set_progress_floor(&r, total / 2).unwrap();
+    assert_eq!(stale.progress_m, rejoined.progress_m, "a lower floor cannot move progress backward");
+
+    m.reset();
+    assert_eq!(m.set_progress_floor(&r, total / 2).unwrap().progress_m, total / 2, "route/session reset clears it");
+}
+
 /// A high-frequency eastward sawtooth of `n` points. Every interior vertex is a
 /// peak/valley deviating ~4 m from its neighbours' chord — well past the 1 m
 /// decimation tolerance — so all survive and a few hundred span more than one
@@ -167,6 +238,30 @@ fn multi_chunk_route_matches_across_chunk_boundaries() {
         last = res.progress_m;
     }
     assert!(last as f64 > 0.9 * total as f64, "final progress {last} m should reach near the {total} m total");
+}
+
+#[test]
+fn clipped_interval_streams_continuously_across_a_chunk_seam() {
+    let bytes = convert("Sawtooth", &sawtooth_gpx(400));
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+    assert!(r.chunks().len() >= 2, "fixture must exercise the multi-chunk path");
+    let seam = r.chunks()[1].cum_distance_m;
+    let lo = seam.saturating_sub(37);
+    let hi = (seam + 53).min(r.total_distance_m);
+    let want_lo = r.position_at(lo).unwrap();
+    let want_hi = r.position_at(hi).unwrap();
+
+    let mut parts: Vec<Vec<(i32, i32)>> = Vec::new();
+    r.visit_points_between(lo, hi, |part| parts.push(part.to_vec()));
+    assert!(parts.len() >= 2, "an interval around seam {seam} must visit both adjacent chunks");
+    assert_eq!(parts[0][0], (want_lo.lon, want_lo.lat), "the lower clip equals position_at(lo)");
+    assert_eq!(parts.last().unwrap().last().copied(), Some((want_hi.lon, want_hi.lat)));
+    for pair in parts.windows(2) {
+        assert_eq!(pair[0].last(), pair[1].first(), "adjacent callbacks share the exact seam coordinate");
+        assert!(pair[0][0].0 <= pair[1][0].0, "callbacks retain the eastward route order");
+    }
 }
 
 /// A closed ~800 m-radius loop (meter-corrected so it's round on the ground) sampled at 20

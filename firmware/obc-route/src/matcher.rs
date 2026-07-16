@@ -60,6 +60,12 @@ pub struct RouteMatch {
     chunk: usize,
     seg: usize,
     progress_m: u32,
+    /// Durable lower bound installed by a pure skip-ahead commit. Unlike a one-time progress write,
+    /// this survives off-route fixes and prevents the bounded backward slack from re-entering the
+    /// skipped stretch.
+    floor_progress_m: u32,
+    /// Global segment containing `floor_progress_m`; segments before it are not candidates.
+    floor_global_seg: u32,
     off_route: bool,
     /// `false` until the first fix has been matched; the first match scans the whole route
     /// to establish an initial lock from anywhere.
@@ -75,7 +81,16 @@ impl Default for RouteMatch {
 
 impl RouteMatch {
     pub fn new() -> Self {
-        RouteMatch { chunk: 0, seg: 0, progress_m: 0, off_route: false, started: false, buf: Vec::new() }
+        RouteMatch {
+            chunk: 0,
+            seg: 0,
+            progress_m: 0,
+            floor_progress_m: 0,
+            floor_global_seg: 0,
+            off_route: false,
+            started: false,
+            buf: Vec::new(),
+        }
     }
 
     /// Forget all match state — call when a route is loaded or swapped.
@@ -83,9 +98,28 @@ impl RouteMatch {
         self.chunk = 0;
         self.seg = 0;
         self.progress_m = 0;
+        self.floor_progress_m = 0;
+        self.floor_global_seg = 0;
         self.off_route = false;
         self.started = false;
         self.buf.clear();
+    }
+
+    /// Install a forward-only navigation floor at `progress_m` and move the matcher cursor to the
+    /// containing segment. The route bytes are unchanged: this is the pure-skip semantic used when
+    /// the rider plans to leave the line and rejoin later. Returns the exact clamped position, or
+    /// `None` when the route has no decodable geometry.
+    pub fn set_progress_floor(&mut self, route: &RouteReader, progress_m: u32) -> Option<crate::reader::RoutePosition> {
+        let progress_m = progress_m.max(self.progress_m).max(self.floor_progress_m);
+        let pos = route.locate_progress(progress_m, &mut self.buf)?;
+        self.chunk = pos.chunk;
+        self.seg = pos.seg;
+        self.progress_m = pos.progress_m;
+        self.floor_progress_m = pos.progress_m;
+        self.floor_global_seg = route.global_seg_index(pos.chunk, pos.seg) as u32;
+        self.off_route = false;
+        self.started = true;
+        Some(pos)
     }
 
     /// Match `(lon, lat)` (microdegrees) onto `route`, advancing the cursor. See the
@@ -128,14 +162,32 @@ impl RouteMatch {
                 let n = self.buf.len();
                 for s in 0..n - 1 {
                     let off = base_gidx + s as i64 - cur_gidx;
+                    let global = (base_gidx + s as i64).max(0) as u32;
                     if self.started && off > fwd {
                         break 'outer;
                     }
                     let a = (self.buf[s].lon, self.buf[s].lat);
                     let b = (self.buf[s + 1].lon, self.buf[s + 1].lat);
                     let seg_len = seg_dist_m_cl(a, b, cl);
-                    if !self.started || off >= -back {
-                        let (t, dist) = project_to_segment(a, b, p, cl);
+                    if (!self.started || off >= -back) && global >= self.floor_global_seg {
+                        let (mut t, mut dist) = project_to_segment(a, b, p, cl);
+                        let mut progress = (cum0 + intra + t * seg_len) as u32;
+                        // The floor can sit inside its containing segment. A fix earlier on that
+                        // same long segment must measure to the floor point, not project behind it
+                        // and appear on-route inside the skipped stretch.
+                        if progress < self.floor_progress_m {
+                            t = if seg_len > 1e-3 {
+                                ((self.floor_progress_m as f32 - cum0 - intra) / seg_len).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            };
+                            let floor = (
+                                a.0 + libm::roundf((b.0 - a.0) as f32 * t) as i32,
+                                a.1 + libm::roundf((b.1 - a.1) as f32 * t) as i32,
+                            );
+                            dist = seg_dist_m_cl(floor, p, cl);
+                            progress = self.floor_progress_m;
+                        }
                         // First lock biases near-ties to the earliest segment (TIE_EPS_M);
                         // once tracking, the forward window bounds the search so a strict
                         // nearest is right.
@@ -145,8 +197,7 @@ impl RouteMatch {
                             Some((_, _, bd, _)) => dist < bd - TIE_EPS_M,
                         };
                         if better {
-                            let progress = ((cum0 + intra + t * seg_len) as u32).min(total);
-                            best = Some((c, s, dist, progress));
+                            best = Some((c, s, dist, progress.min(total)));
                         }
                     }
                     intra += seg_len;

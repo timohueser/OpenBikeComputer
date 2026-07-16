@@ -28,14 +28,15 @@ pois = "POIs"
 map = "Map"
 settings = "Settings"
 
-# --- The mid-ride compass, Waypoints list, and remaining Skip-ahead placeholder ---
+# --- The mid-ride compass, Waypoints list, and Skip-ahead chooser ---
 [ride_menu]
 title = "RIDE MENU"
 waypoints = "Waypoints"
 skip_ahead = "Skip ahead"
 main_menu = "Main menu"
-coming_soon = "Coming soon"
 no_route = "No route loaded"
+off_route = "Return to route"
+route_end = "Route ends here"
 
 [waypoints]
 none = "No waypoints"
