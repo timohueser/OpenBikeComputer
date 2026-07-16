@@ -18,7 +18,7 @@
 //! [`tick_timers`](super::Screen::tick_timers) arm.
 //!
 //! Bindings reuse [`riding_common`](super::riding_common): `press` = pause → Ride control,
-//! `back-hold` = Menu. `back` is the **last hop** of the conditional Back-cycle
+//! `back-hold` = Ride menu. `back` is the **last hop** of the conditional Back-cycle
 //! (Map → Statistics → Climb → Map, C5) — a sibling move back to the Map. The Statistics screen
 //! only routes here when a climb is active and [`ClimbMode`](crate::settings::ClimbMode) is on, so
 //! this hop always closes the ring at the Map.
@@ -92,7 +92,7 @@ impl ClimbScreen {
             // routes here when a climb is active and ClimbMode is on, so closing back to the Map is
             // always correct (a crest that ends the climb auto-returns to the Map anyway, C5).
             Gesture::Back => Transition::Replace(Screen::Map(MapScreen::new())),
-            // The two riding views' shared bindings (press → Ride control, back-hold → Menu).
+            // The riding views' shared bindings (press → Ride control, back-hold → Ride menu).
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
             // No turn/hold behaviour — the climb view is a fixed readout, nothing to scrub.
             Gesture::Turn(_) | Gesture::Hold => Transition::None,

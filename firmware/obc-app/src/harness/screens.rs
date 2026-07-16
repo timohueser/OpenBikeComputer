@@ -4,8 +4,8 @@
 
 use crate::activity::Activity;
 use crate::screen::{
-    apply, Ctx, HomeScreen, MapScreen, MenuScreen, PoiScratch, RideControl, RouteMenuScreen, RouteOverviewScreen,
-    RouteSwapScreen, Screen, ScreenTick, Stack, Transition,
+    apply, ClimbScreen, Ctx, HomeScreen, MapScreen, MenuScreen, PoiScratch, RideControl, RouteMenuScreen,
+    RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
     App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, HostCommand, HostMailbox, InputClock, InputEvent,
@@ -176,10 +176,31 @@ fn map_turn_saturates_at_min_zoom() {
 }
 
 #[test]
-fn map_back_hold_opens_the_menu() {
+fn map_back_hold_opens_the_ride_menu_without_changing_mode() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     let t = MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
-    assert!(matches!(t, Transition::Push(Screen::Menu(_))));
+    assert!(matches!(t, Transition::Push(Screen::RideMenu(_))));
+    assert_eq!(act.mode, Mode::Riding, "opening ride chrome must not pause recording");
+}
+
+#[test]
+fn statistics_and_climb_back_hold_open_the_same_ride_menu() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    let t = StatisticsScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Push(Screen::RideMenu(_))));
+    assert_eq!(act.mode, Mode::Riding);
+
+    let t = ClimbScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Push(Screen::RideMenu(_))));
+    assert_eq!(act.mode, Mode::Riding);
+}
+
+#[test]
+fn paused_back_hold_opens_the_ride_menu_and_stays_paused() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Paused));
+    let t = RideControl::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::Push(Screen::RideMenu(_))));
+    assert_eq!(act.mode, Mode::Paused, "opening the ride menu must not resume a paused session");
 }
 
 #[test]
@@ -682,8 +703,9 @@ fn app_with_pending_swap_on_gamma() -> App {
     app.apply_gesture(Gesture::Press); // START RIDE → Map, session running
     assert_eq!(app.mode(), Mode::Riding);
     assert_eq!(app.active_route_index(), Some(0));
-    app.apply_gesture(Gesture::BackHold); // Map → Menu
-    app.apply_gesture(Gesture::Press); // Routes station → Route menu
+    app.apply_gesture(Gesture::BackHold); // Map → Ride menu (Waypoints selected)
+    app.apply_gesture(Gesture::Turn(3)); // → Routes station
+    app.apply_gesture(Gesture::Press); // Ride menu → Route menu
     app.apply_gesture(Gesture::Turn(2)); // highlight Gamma
     app.apply_gesture(Gesture::Press); // a different route mid-ride → the swap prompt
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "the swap prompt is up");
@@ -866,7 +888,7 @@ fn pan_press_toggles_axis_hold_toggles_orientation() {
 }
 
 /// `back` recenters on the rider but stays in pan; `back-hold` exits to Follow and
-/// does *not* fall through to the global `back-hold` = Menu.
+/// does *not* fall through to the global `back-hold` = Ride menu.
 #[test]
 fn pan_back_recenters_and_back_hold_exits() {
     let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
@@ -881,7 +903,7 @@ fn pan_back_recenters_and_back_hold_exits() {
     assert!(st.pan.is_some(), "back stays in pan");
 
     let t = MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
-    assert!(matches!(t, Transition::None), "back-hold doesn't open the Menu while panning");
+    assert!(matches!(t, Transition::None), "back-hold doesn't open the Ride menu while panning");
     assert!(st.pan.is_none(), "back-hold exits pan");
     assert_eq!(st.mode, CameraMode::Follow, "exiting resumes Follow");
 }

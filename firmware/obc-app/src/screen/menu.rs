@@ -30,7 +30,7 @@ use super::{
 /// The number of menu entries (Routes / Rides / POIs / Map / Settings). A compile-time constant
 /// because the ring geometry + selection wrap depend on it and it never varies by language; the
 /// entries' *labels* are looked up per-language at draw time (see [`MenuText`]).
-const N_ITEMS: usize = 5;
+pub(super) const N_ITEMS: usize = 5;
 
 /// The menu's per-language copy, resolved once per frame — the bar caption plus the five entry
 /// labels in ring order. Built fresh each draw because the language is a runtime value (the old
@@ -78,12 +78,11 @@ const SWEEP_MIN_DEG_S: f32 = 180.0;
 /// The frame cadence the sweep asks the host for while in flight.
 const SWEEP_FRAME_MS: u32 = 16;
 
-/// The main menu. State is the highlighted entry plus the needle sweep: `target_deg` accumulates
-/// ±[`DETENT_DEG`] per detent (so the needle always follows the *turn direction*, including across
-/// the wrap) and `needle_deg` chases it in [`tick_timers`](Self::tick_timers); both are normalized
-/// back into one revolution when the sweep lands.
+/// The shared five-station compass state. Both the main Menu and the mid-ride Menu own one of these,
+/// so the selection wrap, needle easing and frame cadence are one implementation rather than two
+/// lookalikes that can drift.
 #[derive(Debug, Default)]
-pub struct MenuScreen {
+pub(super) struct CompassDial {
     selected: usize,
     needle_deg: f32,
     target_deg: f32,
@@ -91,34 +90,20 @@ pub struct MenuScreen {
     last_anim_ms: Option<u32>,
 }
 
-impl MenuScreen {
-    pub fn new() -> Self {
-        MenuScreen::default()
+impl CompassDial {
+    pub(super) fn selected(&self) -> usize {
+        self.selected
     }
 
-    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Turn(n) => {
-                self.target_deg += n as f32 * DETENT_DEG;
-                list::on_turn(&mut self.selected, n, N_ITEMS)
-            }
-            Gesture::Press => match self.selected {
-                0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
-                1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
-                2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
-                3 => open_map(cx),                                                // Map
-                _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
-            },
-            Gesture::Back => Transition::Pop, // return to caller (Home or Map)
-            Gesture::Hold => Transition::None,
-            Gesture::BackHold => Transition::None, // Shutdown prompt — later slice
-        }
+    pub(super) fn turn(&mut self, n: i32) -> Transition {
+        self.target_deg += n as f32 * DETENT_DEG;
+        list::on_turn(&mut self.selected, n, N_ITEMS)
     }
 
     /// [`Screen::tick_timers`] arm: advance the needle toward the target by the eased step for the
     /// elapsed `dt`, requesting a [`SWEEP_FRAME_MS`] wake while in flight. Settled (the common
     /// case) is [`ScreenTick::idle`] — a resting menu costs no timed repaints.
-    pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+    pub(super) fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         let diff = self.target_deg - self.needle_deg;
         if diff == 0.0 {
             self.last_anim_ms = None;
@@ -144,6 +129,56 @@ impl MenuScreen {
         ScreenTick { changed: step > 0.0, next_wake_ms: Some(SWEEP_FRAME_MS), region: None }
     }
 
+    /// Draw this dial through the one compass renderer. `icons` changes only the station glyphs
+    /// and their enabled state; all geometry and needle chrome stay shared.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn draw(
+        &self,
+        cv: &mut impl Surface,
+        w: i32,
+        h: i32,
+        ble_connected: bool,
+        battery: &str,
+        title: &str,
+        items: &[&str; N_ITEMS],
+        icons: CompassIcons,
+    ) {
+        draw_compass(cv, w, h, self.selected, self.needle_deg, ble_connected, battery, title, items, icons);
+    }
+}
+
+/// The main menu. Its selection and sweep are the shared [`CompassDial`]; only Press dispatch and
+/// per-language station copy are main-menu-specific.
+#[derive(Debug, Default)]
+pub struct MenuScreen {
+    dial: CompassDial,
+}
+
+impl MenuScreen {
+    pub fn new() -> Self {
+        MenuScreen::default()
+    }
+
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Turn(n) => self.dial.turn(n),
+            Gesture::Press => match self.dial.selected() {
+                0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
+                1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
+                2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
+                3 => open_map(cx),                                                // Map
+                _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
+            },
+            Gesture::Back => Transition::Pop, // return to caller (Home or Map)
+            Gesture::Hold => Transition::None,
+            Gesture::BackHold => Transition::None, // Shutdown prompt — later slice
+        }
+    }
+
+    pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+        self.dial.tick_timers(now_ms)
+    }
+
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let ble = rx.state.ble_connected();
         let txt = MenuText::resolve(rx);
@@ -151,10 +186,24 @@ impl MenuScreen {
         let mut batt: heapless::String<8> = heapless::String::new();
         let _ = write!(batt, "{}%", rx.state.battery_pct);
         if COMPASS {
-            draw_compass(cv, rx.w, rx.h, self.selected, self.needle_deg, ble, &batt, &txt);
+            self.dial.draw(cv, rx.w, rx.h, ble, &batt, txt.title, &txt.items, CompassIcons::Main);
         } else {
-            draw_grid(cv, rx.w, rx.h, self.selected, ble, &batt, &txt);
+            draw_grid(cv, rx.w, rx.h, self.dial.selected, ble, &batt, &txt);
         }
+    }
+}
+
+/// Which menu's station glyphs the shared compass chrome draws. The main-menu arm is deliberately
+/// unchanged; the ride-menu arm may dim its first two route-dependent stations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CompassIcons {
+    Main,
+    Ride { route_loaded: bool },
+}
+
+impl CompassIcons {
+    pub(super) fn enabled(self, i: usize) -> bool {
+        !matches!(self, CompassIcons::Ride { route_loaded: false } if i < 2)
     }
 }
 
@@ -192,10 +241,12 @@ fn draw_compass(
     needle_deg: f32,
     ble_connected: bool,
     battery: &str,
-    txt: &MenuText,
+    title: &str,
+    items: &[&str; N_ITEMS],
+    icons: CompassIcons,
 ) {
     use palette::*;
-    title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
+    title_frame_ble(cv, w, h, title, battery, ble_connected);
 
     let c = Point::new(w / 2, h / 2);
 
@@ -219,25 +270,33 @@ fn draw_compass(
 
     // Stations: amber-filled when selected, a thin tan ring otherwise. Evenly spaced around the ring
     // by `station_dir`, so the five entries sit at 72° detents starting from N.
-    let n = txt.items.len();
+    let n = items.len();
     for i in 0..n {
         let (dx, dy) = station_dir(i, n);
         let sc = Point::new(c.x + si(1.0, dx * 72.0), c.y + si(1.0, dy * 72.0));
         let is_sel = i == selected;
-        if is_sel {
+        let enabled = icons.enabled(i);
+        if is_sel && enabled {
             cv.disc(sc, 24, AMBER);
         } else {
             cv.disc(sc, 24, RULE);
             cv.disc(sc, 21, PARCHMENT);
         }
-        let ink = if is_sel { INK } else { SUBTEXT };
-        let bg = if is_sel { AMBER } else { PARCHMENT };
-        draw_icon(cv, i, sc, 1.2, ink, bg);
+        let ink = if !enabled {
+            RULE
+        } else if is_sel {
+            INK
+        } else {
+            SUBTEXT
+        };
+        let bg = if is_sel && enabled { AMBER } else { PARCHMENT };
+        draw_station_icon(cv, icons, i, sc, 1.2, ink, bg);
     }
 
     // The selected entry's name, plain Display type — the A2 amber underline was tried and
     // vetoed by the owner in review round 3 ("just visual noise").
-    cv.text(txt.items[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, INK);
+    let label_ink = if icons.enabled(selected) { INK } else { SUBTEXT };
+    cv.text(items[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, label_ink);
 }
 
 /// Draw the compass **needle** centred at `c`, pointing `deg` (0° = N, clockwise): amber head of
@@ -300,6 +359,13 @@ fn draw_grid(
 
 /// Dispatch an entry's icon, centred at `c` and scaled by `k` (`1.0` fits a station disc, the
 /// grid uses `1.5`). `bg` is the surface behind the icon, for punched-out details.
+fn draw_station_icon(cv: &mut impl Surface, icons: CompassIcons, i: usize, c: Point, k: f32, color: u16, bg: u16) {
+    match icons {
+        CompassIcons::Main => draw_icon(cv, i, c, k, color, bg),
+        CompassIcons::Ride { .. } => draw_ride_icon(cv, i, c, k, color, bg),
+    }
+}
+
 fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: u16) {
     match i {
         0 => icon_route(cv, c, k, color),
@@ -307,6 +373,53 @@ fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: 
         2 => icon_poi(cv, c, k, color, bg),
         3 => icon_map(cv, c, k, color),
         _ => icon_sliders(cv, c, k, color),
+    }
+}
+
+/// Ride-menu station glyphs in ring order: waypoints, skip ahead, POIs, routes, main menu.
+fn draw_ride_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: u16) {
+    match i {
+        0 => icon_waypoints(cv, c, k, color),
+        1 => icon_skip(cv, c, k, color),
+        2 => icon_poi(cv, c, k, color, bg),
+        3 => icon_route(cv, c, k, color),
+        _ => icon_menu(cv, c, k, color),
+    }
+}
+
+/// A short route line carrying two waypoint diamonds.
+fn icon_waypoints(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
+    let y0 = c.y - si(k, 11.0);
+    let y1 = c.y + si(k, 11.0);
+    cv.vline(c.x, y0, y1 - y0 + 1, si(k, 2.0).max(1), color);
+    for y in [c.y - si(k, 6.0), c.y + si(k, 7.0)] {
+        let r = si(k, 4.0);
+        cv.triangle(Point::new(c.x, y - r), Point::new(c.x - r, y), Point::new(c.x + r, y), color);
+        cv.triangle(Point::new(c.x, y + r), Point::new(c.x - r, y), Point::new(c.x + r, y), color);
+    }
+}
+
+/// A forward-jump mark: a doubled chevron ending at a stop bar.
+fn icon_skip(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
+    let x0 = c.x - si(k, 10.0);
+    let x1 = c.x - si(k, 1.0);
+    let x2 = c.x + si(k, 8.0);
+    let dy = si(k, 8.0);
+    for (a, b) in [(x0, x1), (x1, x2)] {
+        cv.line(Point::new(a, c.y - dy), Point::new(b, c.y), color);
+        cv.line(Point::new(a, c.y + dy), Point::new(b, c.y), color);
+    }
+    cv.vline(c.x + si(k, 11.0), c.y - dy, 2 * dy + 1, si(k, 2.0).max(1), color);
+}
+
+/// Three compact rows — the door from the ride-scoped ring to the full main menu.
+fn icon_menu(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
+    let hw = si(k, 11.0);
+    let dot = si(k, 2.0).max(1) as u32;
+    for dy in [-7.0, 0.0, 7.0] {
+        let y = c.y + si(k, dy);
+        cv.disc(Point::new(c.x - hw, y), dot, color);
+        cv.hline(c.x - hw + si(k, 5.0), y, 2 * hw - si(k, 5.0), color);
     }
 }
 
@@ -417,7 +530,7 @@ mod tests {
     fn map_station_idle_pushes_the_browse_map() {
         let mut act = Activity::new(Mode::Idle);
         let mut scr = MenuScreen::new();
-        scr.selected = 3; // the Map station
+        scr.dial.selected = 3; // the Map station
         let t = run(&mut scr, &mut act, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::Map(_))), "idle → push the browse Map over the Menu");
     }
@@ -429,7 +542,7 @@ mod tests {
         let mut act = Activity::new(Mode::Riding);
         act.start_session(); // now tracking
         let mut scr = MenuScreen::new();
-        scr.selected = 3;
+        scr.dial.selected = 3;
         let t = run(&mut scr, &mut act, Gesture::Press);
         assert!(
             matches!(t, Transition::Root(Screen::Map(_))),

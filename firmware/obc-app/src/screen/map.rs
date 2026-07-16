@@ -6,7 +6,7 @@
 //! pan HUD.
 //!
 //! Bindings depend on whether a ride is being tracked. Shared: `turn` = zoom, `hold` = enter Pan
-//! mode, `back-hold` = Menu. **Tracking** (the riding map): `press` = pause → Ride control, `back` =
+//! mode, `back-hold` = Ride menu. **Tracking** (the riding map): `press` = pause → Ride control, `back` =
 //! the sibling Statistics view. **Not tracking** (the route-less browse map, reached from the Menu's
 //! Map station): `press` = the start card, `back` = pop back to the Menu (there's no Statistics
 //! sibling without a ride). Off-route chrome can't fire without a route, so the browse map shows
@@ -404,7 +404,7 @@ fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry
 /// Pan-mode gesture bindings, active while [`AppState::pan`](crate::AppState::pan) is `Some`.
 /// `turn` pans along the active axis, `press` toggles the axis, `hold` flips north-up ↔ heading-up,
 /// `back` recenters on the rider (staying in pan), `back-hold` exits to Follow. This deliberately
-/// overrides the global `back-hold` = Menu while panning — exit pan first to reach the Menu.
+/// overrides the global `back-hold` = Ride menu while panning — exit pan first to reach it.
 fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
         Gesture::Turn(n) => cx.state.pan_step(n),
