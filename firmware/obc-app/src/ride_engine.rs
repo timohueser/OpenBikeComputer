@@ -354,6 +354,7 @@ impl RideEngine {
                 (Some(_), None) => { /* geometry not yet streamable — keep the old table, retry next tick */ }
             }
         }
+        activity.waypoint_count = self.waypoints.len();
         dirty
     }
 
@@ -457,6 +458,7 @@ impl RideEngine {
                 }
             }
         }
+        activity.waypoint_count = self.waypoints.len();
         let prev = activity.next_waypoint;
         let next = resolve_next_waypoint(&self.waypoints, activity.progress_m, prev);
         if next != prev {
@@ -494,6 +496,7 @@ impl RideEngine {
         self.waypoints = Waypoints::new();
         self.waypoints_route = None; // the next tick re-loads from the reopened geometry
         activity.next_waypoint = None;
+        activity.waypoint_count = 0;
         activity.progress_m = 0;
         activity.off_route = false;
         activity.dist_to_route_m = 0;
@@ -534,6 +537,7 @@ impl RideEngine {
         if old_wpts.is_some() && self.waypoints_route.is_none() {
             self.waypoints = Waypoints::new();
             activity.next_waypoint = None;
+            activity.waypoint_count = 0;
         }
     }
 

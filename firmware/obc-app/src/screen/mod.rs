@@ -658,7 +658,7 @@ screens! {
     Menu(MenuScreen) => Caps::nav().timed(),
     /// The five-station mid-ride compass: Waypoints / Skip ahead / POIs / Routes / Main menu.
     RideMenu(RideMenuScreen) => Caps::nav().timed(),
-    /// RM1's Waypoints station stub; a real child screen so the later browser can replace its body.
+    /// The ride menu's route-ordered waypoint plan: distance/climb-to-go with passed rows muted.
     RideWaypoints(RideWaypointsScreen) => Caps::nav(),
     /// RM1's Skip-ahead station stub; RM3 / #788 grows the distance chooser here.
     SkipAhead(SkipAheadScreen) => Caps::nav(),
