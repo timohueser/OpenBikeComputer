@@ -15,14 +15,15 @@ pois = "POIs"
 map = "Mapa"
 settings = "Ajustes"
 
-# --- El menú brújula en ruta, la lista de puntos y la pantalla provisional Saltar ---
+# --- El menú brújula en ruta, la lista de puntos y el selector Saltar tramo ---
 [ride_menu]
 title = "MENÚ DE RUTA"
 waypoints = "Puntos de ruta"
 skip_ahead = "Saltar tramo"
 main_menu = "Menú principal"
-coming_soon = "Próximamente"
 no_route = "No hay ruta cargada"
+off_route = "Vuelva a la ruta"
+route_end = "Fin de la ruta"
 
 [waypoints]
 none = "No hay puntos de ruta"

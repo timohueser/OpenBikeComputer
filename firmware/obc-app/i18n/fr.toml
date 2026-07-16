@@ -15,14 +15,15 @@ pois = "POIs"
 map = "Carte"
 settings = "Réglages"
 
-# --- Le menu boussole en sortie, la liste des points et l'écran Avancer temporaire ---
+# --- Le menu boussole en sortie, la liste des points et le sélecteur Avancer ---
 [ride_menu]
 title = "MENU SORTIE"
 waypoints = "Points de route"
 skip_ahead = "Avancer"
 main_menu = "Menu principal"
-coming_soon = "Bientôt"
 no_route = "Aucun parcours chargé"
+off_route = "Rejoignez parcours"
+route_end = "Fin du parcours"
 
 [waypoints]
 none = "Aucun point de route"

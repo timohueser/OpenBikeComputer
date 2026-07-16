@@ -51,6 +51,15 @@ pub enum TrackAction {
     Discard,
 }
 
+/// A committed pure-skip request waiting for the next route-aware tick to move the matcher's
+/// durable navigation floor. Keyed to the active catalog slot so a racing route swap cannot apply
+/// an old chooser's distance to new geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SkipRequest {
+    pub route: usize,
+    pub target_m: u32,
+}
+
 /// Which phase of the SD-sideload firmware update (epic #615 S5, #620) a [`DfuAction`] one-shot
 /// asks the board to run. The two phases are separate so the UI can **confirm before arming**:
 /// [`Scan`](DfuAction::Scan) is read-only (validate `UPDATE.BIN`, cost nothing on failure) and
@@ -182,6 +191,10 @@ pub struct Activity {
     /// steps the resumable router, writes the reserved nav route, rescans, and answers through
     /// [`App::apply_event`](crate::App::apply_event).
     nav_request: Option<NavRequest>,
+    /// A pure-skip commit queued by the map chooser. The screen can commit without owning the
+    /// host's `RouteReader`; [`RideEngine`](crate::ride_engine::RideEngine) consumes this on the
+    /// next tick that has the matching active geometry.
+    skip_request: Option<SkipRequest>,
     /// A one-shot **DFU request** (epic #615 S5, #620): the SD-sideload firmware-update flow. The
     /// System settings screen posts [`DfuAction::Scan`] (validate `UPDATE.BIN`, answer through
     /// [`App::apply_event`](crate::App::apply_event)); the confirm screen
@@ -455,6 +468,31 @@ impl Activity {
         self.session
     }
 
+    /// Queue a pure skip to `target_m` on `route`. The route-aware tick atomically installs the
+    /// matcher floor and visible progress before processing its next fresh fix; until a successful
+    /// seek, matcher and Activity stay on the same old anchor.
+    pub(crate) fn request_skip(&mut self, route: usize, target_m: u32) {
+        let target_m = target_m.max(self.progress_m).min(self.route_total_m);
+        self.skip_request = Some(SkipRequest { route, target_m });
+    }
+
+    pub(crate) fn pending_skip(&self) -> Option<SkipRequest> {
+        self.skip_request
+    }
+
+    pub(crate) fn clear_skip(&mut self) {
+        self.skip_request = None;
+    }
+
+    /// Follow a queued Skip-ahead commit through a route-catalog rescan by durable identity. If
+    /// its route vanished, drop the one-tick request rather than letting its old index alias a
+    /// surviving neighbour.
+    pub(crate) fn remap_skip_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        self.skip_request = self
+            .skip_request
+            .and_then(|req| remap(req.route).map(|route| SkipRequest { route, target_m: req.target_m }));
+    }
+
     /// Record a one-shot disposition for the open ride log, drained by the host.
     pub fn request_track(&mut self, action: TrackAction) {
         self.track_action = Some(action);
@@ -634,6 +672,7 @@ impl Activity {
     /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`/`session`).
     /// Called when a session starts, so tracking accumulators begin fresh.
     pub(crate) fn reset_ride(&mut self) {
+        self.skip_request = None;
         self.progress_m = 0;
         self.off_route = false;
         self.dist_to_route_m = 0;

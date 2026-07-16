@@ -49,6 +49,7 @@ mod route_overview;
 mod route_received;
 mod route_swap;
 mod settings;
+mod skip_ahead;
 mod statistics;
 mod trip_delete;
 mod warning;
@@ -69,7 +70,7 @@ pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
-pub use ride_menu::{RideMenuScreen, RideWaypointsScreen, SkipAheadScreen};
+pub use ride_menu::{RideMenuScreen, RideWaypointsScreen};
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
@@ -81,6 +82,7 @@ pub use settings::{
     LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen, SettingsScreen,
     StatFieldsScreen, SystemScreen, UnitsScreen,
 };
+pub use skip_ahead::SkipAheadScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 pub use warning::{WarningFlags, WarningScreen};
@@ -194,10 +196,10 @@ pub struct ActiveClimb<'a> {
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a, 'd> {
     /// The streamed-map `Reader` — `None` when the base screen doesn't draw the map (a menu, the
-    /// Statistics view, Home). Only the [`Map`](crate::screen::map) screen reads it, so a host can
-    /// skip building the `Reader` (its SD style-table parse + stack spike) on a non-map frame and
-    /// pass `None`. [`render_map`](crate::App::render_map) / [`render_frame`](crate::App::render_frame)
-    /// always pass `Some`.
+    /// Statistics view, Home). Map-base screens read it, so a host can skip building the `Reader`
+    /// (its SD style-table parse + stack spike) on a non-map frame and pass `None`.
+    /// [`render_map`](crate::App::render_map) / [`render_frame`](crate::App::render_frame) always
+    /// pass `Some`.
     pub reader: Option<&'a Reader<'d>>,
     pub renderer: &'a mut MapRenderer,
     pub state: &'a AppState,
@@ -303,8 +305,8 @@ pub struct Render<'a, 'd> {
     /// strippable render-instrumentation seam.
     pub clock: &'a dyn Clock,
     /// What the base screen's map render drew this frame, for the host's stats panel / frame log.
-    /// Reset to default by the host each frame; only the [`Map`](crate::screen::map) screen writes
-    /// it — every other screen leaves it untouched.
+    /// Reset to default by the host each frame; map-base screens write it and every other screen
+    /// leaves it untouched.
     pub stats: RenderStats,
     /// The running firmware version string (T8 item 6) — the System settings screen's `Firmware`
     /// ledger row. Empty until the host feeds it via [`App::set_fw_version`](crate::App::set_fw_version).
@@ -345,17 +347,26 @@ impl Render<'_, '_> {
 /// needs to resolve its reader-backed one-shot state **before** drawing. Handed to
 /// [`Screen::prepare`], which runs on the base screen once per frame ahead of the draw loop, so the
 /// side-effectful POI snapshot / hours read happens here and [`draw`](Screen::draw) then consumes
-/// immutable prepared state (the narrowed, mutable-scratch-free [`Render`]). Only the two POI
-/// screens read it; every other screen's `prepare` is a no-op.
+/// immutable prepared state (the narrowed, mutable-scratch-free [`Render`]). The POI screens use
+/// the map `Reader`; the Skip-ahead chooser uses the streamed route and live route progress.
 pub struct Prepare<'a, 'd> {
     /// The streamed-map `Reader`, or `None` when the host didn't build it this frame — the POI
     /// acquisitions retry next frame until [`base_needs_reader`](crate::App::base_needs_reader)
     /// (which reads the same [`ReaderNeed`] declaration) stops asking the board to build it.
     pub reader: Option<&'a Reader<'d>>,
+    /// The active streamed route geometry, if the host opened it this frame. The Skip-ahead chooser
+    /// resolves its exact rejoin coordinate and selected-stretch bounds from this; POI screens
+    /// ignore it.
+    pub route: Option<&'a RouteReader<'a>>,
     /// The single [`App`](crate::App)-owned POI-list snapshot buffer — the POI list fills it here.
     pub poi_scratch: &'a mut PoiScratch,
     /// The rider's current fix, `(lon, lat)` µdeg — the POI list's nearest-16 query origin.
     pub user_fix: Option<Fix>,
+    /// Copy of the active route slot and live matched progress at this frame's prepare boundary.
+    /// The Skip chooser advances its selection anchor with the rider before resolving geometry.
+    pub active_route: Option<usize>,
+    pub progress_m: u32,
+    pub route_total_m: u32,
 }
 
 /// A screen's classification, declared **in its `screens!` table row** so it can never drift from
@@ -367,7 +378,7 @@ pub struct Prepare<'a, 'd> {
 /// states what its screen *is*.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScreenKind {
-    /// A live riding view (Map, Statistics) — full-screen, fed by the fix.
+    /// A live riding view (Map, Skip ahead, Statistics) — full-screen, fed by the fix.
     Riding,
     /// Navigation chrome: the Home root, the menus, and the full-screen prompts.
     Nav,
@@ -395,7 +406,7 @@ impl ScreenKind {
 /// it), and showing the BLE connected indicator all read the base screen's [`BaseContent`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BaseContent {
-    /// Draws the streamed base map — the only screen that reads the [`Reader`] for the map itself.
+    /// Draws the streamed base map and therefore reads the [`Reader`] for the map itself.
     Map,
     /// A live riding view fed by the fix but not the map (Statistics, Climb): a fresh fix redraws
     /// it, but it draws no map I/O and shows no BLE indicator.
@@ -416,7 +427,7 @@ pub enum BaseContent {
 pub enum ReaderNeed {
     /// Never needs the `Reader` (all chrome and live-riding non-map screens).
     Never,
-    /// Always needs it — the [`Map`](BaseContent::Map) screen.
+    /// Always needs it — any [`Map`](BaseContent::Map) base screen.
     Always,
     /// Needs it until the POI list's category snapshot has been taken (issue #425).
     PoiSnapshot,
@@ -432,7 +443,7 @@ pub enum ReaderNeed {
 pub enum RemapKind {
     /// Holds no catalog index — nothing to remap.
     None,
-    /// Holds a **route** catalog index (the Route menu / overview / swap / upload cards).
+    /// Holds a **route** catalog index (the Skip chooser / Route menu / overview / swap / upload cards).
     Route,
     /// Holds a **ride** catalog index (the Rides list / ride detail).
     Ride,
@@ -494,8 +505,8 @@ impl Caps {
         }
     }
 
-    /// The base **Map** screen: reads the `Reader` every frame, and is both a tracking ride view and
-    /// a deliberate browse view when not tracking.
+    /// A map-base screen: reads the `Reader` every frame, and is both a tracking ride view and a
+    /// deliberate browse view when not tracking.
     pub const fn map() -> Self {
         Caps {
             kind: ScreenKind::Riding,
@@ -660,8 +671,8 @@ screens! {
     RideMenu(RideMenuScreen) => Caps::nav().timed(),
     /// The ride menu's route-ordered waypoint plan: distance/climb-to-go with passed rows muted.
     RideWaypoints(RideWaypointsScreen) => Caps::nav(),
-    /// RM1's Skip-ahead station stub; RM3 / #788 grows the distance chooser here.
-    SkipAhead(SkipAheadScreen) => Caps::nav(),
+    /// Pure-skip chooser: a map base with streamed selected-stretch ink and an auto-fit camera.
+    SkipAhead(SkipAheadScreen) => Caps::map().remap(RemapKind::Route),
     /// The POIs browser's category list (Menu → POIs).
     PoiMenu(PoiMenuScreen) => Caps::nav(),
     /// One category's distance-sorted nearest-16 with live bearing arrows.
@@ -776,8 +787,9 @@ impl Screen {
     /// [`draw`](Screen::draw) stays side-effect-free (target + render-stats only). Run on the base
     /// screen once per frame, ahead of the draw loop, whenever the host built the `Reader`
     /// ([`base_needs_reader`](crate::App::base_needs_reader) reads the same [`ReaderNeed`]
-    /// declaration). Only the two POI screens act — the list takes its category snapshot into the
-    /// shared scratch, the detail resolves its opening-hours cache; every other screen is a no-op.
+    /// declaration). The POI list takes its category snapshot into shared scratch, the detail
+    /// resolves its opening-hours cache, and Skip ahead resolves route geometry + its live anchor;
+    /// every other screen is a no-op.
     /// Intentionally partial, like [`tick_timers`](Screen::tick_timers) and
     /// [`wants_hold_fill`](Screen::wants_hold_fill): a row that declares no reader need never lands
     /// here.
@@ -785,6 +797,7 @@ impl Screen {
         match self {
             Screen::PoiList(s) => s.prepare(px),
             Screen::PoiDetail(s) => s.prepare(px),
+            Screen::SkipAhead(s) => s.prepare(px),
             _ => {}
         }
     }
@@ -1684,8 +1697,8 @@ mod tests {
     #[test]
     fn every_screen_capability_combination_is_valid() {
         for (name, c) in Screen::NAMES.iter().zip(Screen::CAPS) {
-            // Reader need is pinned to base content: the Map is the one always-reader screen, and the
-            // two POI one-shot readers are chrome-kind list/detail screens; no other screen reads it.
+            // Reader need is pinned to base content: map bases are always-reader screens, and the
+            // two POI one-shot readers are chrome-kind list/detail screens.
             match c.reader {
                 ReaderNeed::Always => assert_eq!(c.base, BaseContent::Map, "{name}: Always-reader ⟺ Map base"),
                 ReaderNeed::Never => assert_ne!(c.base, BaseContent::Map, "{name}: a Map base must read Always"),
@@ -1700,9 +1713,9 @@ mod tests {
                 assert!(c.ride_view, "{name}: a live-data base must be a ride view");
                 assert!(!c.idle_exempt, "{name}: a live view is not a modal exemption");
             }
-            // The browse-exempt "deliberate view when not tracking" is the Map alone.
+            // A browse-exempt "deliberate view when not tracking" must be map-based.
             if c.browse_exempt {
-                assert_eq!(c.base, BaseContent::Map, "{name}: only the Map is browse-exempt");
+                assert_eq!(c.base, BaseContent::Map, "{name}: only a Map base is browse-exempt");
             }
             // Modal exemptions are chrome cards/waits, never ride views.
             if c.idle_exempt {
@@ -1716,9 +1729,10 @@ mod tests {
                 assert_eq!(c.remap, RemapKind::None, "{name}: a settings screen holds no catalog index");
                 assert!(!c.ride_view && !c.idle_exempt && !c.browse_exempt, "{name}: settings carry no view policy");
             }
-            // A screen that remaps catalog indices is a chrome list/card, not a live view.
-            if c.remap != RemapKind::None {
-                assert_eq!(c.base, BaseContent::Chrome, "{name}: a remap-participating screen is chrome-based");
+            // Ride-catalog holders are chrome list/detail screens. Route holders also include the
+            // live map-backed Skip chooser, so route remapping deliberately has no base restriction.
+            if c.remap == RemapKind::Ride {
+                assert_eq!(c.base, BaseContent::Chrome, "{name}: a ride-remap screen is chrome-based");
             }
         }
     }
@@ -1743,6 +1757,7 @@ mod tests {
         assert!(named("Passkey").idle_exempt, "the passkey card is idle-exempt");
         assert!(named("RouteSwap").idle_exempt, "the route-swap prompt is idle-exempt");
         assert_eq!(named("RouteMenu").remap, RemapKind::Route);
+        assert_eq!(named("SkipAhead").remap, RemapKind::Route);
         assert_eq!(named("Rides").remap, RemapKind::Ride);
         // Each capability value is used by at least one screen (nothing dead-declared).
         assert!(caps.iter().any(|c| c.reader == ReaderNeed::Always));

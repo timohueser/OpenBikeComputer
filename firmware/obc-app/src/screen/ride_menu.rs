@@ -1,7 +1,6 @@
 //! The mid-ride compass menu (epic #789): five fixed stations with the same bezel, needle sweep and
-//! detents as the main Menu. Waypoints opens the route-ordered whole-plan list (#787); Skip ahead
-//! remains RM1's navigation-safe stub until #788. POIs, Routes and Main menu open their existing
-//! screens.
+//! detents as the main Menu. Waypoints opens the route-ordered whole-plan list (#787), Skip ahead
+//! opens the map chooser (#788), and POIs, Routes and Main menu open their existing screens.
 
 use core::fmt::Write as _;
 
@@ -20,7 +19,7 @@ use super::list::{self, ListGeometry, Separators};
 use super::menu::{CompassDial, CompassIcons, N_ITEMS};
 use super::{
     empty_state, fit_caption, palette, Ctx, MenuScreen, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick,
-    Transition,
+    SkipAheadScreen, Transition,
 };
 
 /// The waypoint list's two-line row pitch: name above, distance + remaining ascent below. Four rows
@@ -51,7 +50,9 @@ impl RideMenuScreen {
                 0 => Transition::Push(Screen::RideWaypoints(RideWaypointsScreen::at(
                     cx.activity.next_waypoint.unwrap_or(0),
                 ))),
-                1 => Transition::Push(Screen::SkipAhead(SkipAheadScreen::new())),
+                // Replace the transient compass, so chooser Press/Back can Pop once to the exact
+                // caller (Map, Statistics/Climb, or paused Ride control).
+                1 => Transition::Replace(Screen::SkipAhead(SkipAheadScreen::new(cx.activity))),
                 2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),
                 3 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())),
                 _ => Transition::Push(Screen::Menu(MenuScreen::new())),
@@ -139,42 +140,6 @@ impl RideWaypointsScreen {
             rx.settings.units,
         );
     }
-}
-
-/// Skip-ahead station placeholder. RM3 / #788 can grow this state into the distance chooser while
-/// keeping the station and caller contract stable.
-#[derive(Debug, Default)]
-pub struct SkipAheadScreen;
-
-impl SkipAheadScreen {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
-        stub_handle(g)
-    }
-
-    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        draw_stub(cv, rx, Msg::RideMenuSkipAhead);
-    }
-}
-
-fn stub_handle(g: Gesture) -> Transition {
-    match g {
-        Gesture::Back => Transition::Pop,
-        Gesture::Turn(_) | Gesture::Press | Gesture::Hold | Gesture::BackHold => Transition::None,
-    }
-}
-
-fn draw_stub(cv: &mut impl Surface, rx: &mut Render, title: Msg) {
-    super::title_frame(cv, rx.w, rx.h, rx.t(title), "");
-    let (body, hint) = if rx.activity.active_route.is_some() {
-        (rx.t(Msg::RideMenuComingSoon), "")
-    } else {
-        (rx.t(Msg::RideMenuNoRoute), "")
-    };
-    empty_state(cv, rx.w, rx.h, body, hint);
 }
 
 /// Pure route-relative figures for one waypoint row. The distance axis comes from the resident
@@ -280,6 +245,7 @@ fn draw_waypoint_list(
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::{apply, Stack};
     use crate::{AppState, Settings};
     use embedded_graphics::primitives::Rectangle;
     use obc_formats::io::{ByteSink, Error, SliceSource};
@@ -397,7 +363,7 @@ mod tests {
             run(&mut scr, Gesture::Press)
         }
         assert!(matches!(press_at(0), Transition::Push(Screen::RideWaypoints(_))));
-        assert!(matches!(press_at(1), Transition::Push(Screen::SkipAhead(_))));
+        assert!(matches!(press_at(1), Transition::Replace(Screen::SkipAhead(_))));
         assert!(matches!(press_at(2), Transition::Push(Screen::PoiMenu(_))));
         assert!(matches!(press_at(3), Transition::Push(Screen::RouteMenu(_))));
         assert!(matches!(press_at(-1), Transition::Push(Screen::Menu(_))));
@@ -592,10 +558,31 @@ mod tests {
     }
 
     #[test]
-    fn skip_ahead_stub_only_pops_on_back() {
-        assert!(matches!(stub_handle(Gesture::Back), Transition::Pop));
-        for g in [Gesture::Turn(1), Gesture::Press, Gesture::Hold, Gesture::BackHold] {
-            assert!(matches!(stub_handle(g), Transition::None));
+    fn skip_replace_then_pop_preserves_each_caller_and_activity() {
+        fn round_trip(caller: Screen, paused: bool, caller_matches: impl Fn(&Screen) -> bool) {
+            let mut activity = Activity::new(if paused { Mode::Paused } else { Mode::Riding });
+            activity.active_route = Some(0);
+            activity.route_total_m = 2_000;
+            activity.start_session();
+            let mode = activity.mode;
+            let session = activity.session();
+            let mut stack = Stack::new();
+            assert!(stack.push(caller).is_ok());
+            assert!(stack.push(Screen::RideMenu(RideMenuScreen::new())).is_ok());
+            apply(&mut stack, Transition::Replace(Screen::SkipAhead(SkipAheadScreen::new(&activity))));
+            assert!(matches!(stack.last(), Some(Screen::SkipAhead(_))));
+            apply(&mut stack, Transition::Pop);
+            assert!(caller_matches(stack.last().unwrap()));
+            assert_eq!(activity.mode, mode);
+            assert_eq!(activity.session(), session);
         }
+
+        round_trip(Screen::Map(super::super::MapScreen::new()), false, |s| matches!(s, Screen::Map(_)));
+        round_trip(Screen::Statistics(super::super::StatisticsScreen::new()), false, |s| {
+            matches!(s, Screen::Statistics(_))
+        });
+        round_trip(Screen::RideControl(super::super::RideControl::new()), true, |s| {
+            matches!(s, Screen::RideControl(_))
+        });
     }
 }

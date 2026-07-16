@@ -67,8 +67,8 @@ pub use profile::{
     SPARKLINE_BUCKETS,
 };
 pub use reader::{
-    for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RouteReader, RouteSummary,
-    Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
+    for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RoutePosition, RouteReader,
+    RouteSummary, Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
 };
 pub use ride::{track_to_ride, RideInfo, RideStats};
 pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint};
