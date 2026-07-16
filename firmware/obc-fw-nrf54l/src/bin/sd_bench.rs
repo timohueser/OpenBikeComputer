@@ -5,27 +5,22 @@
 //!     cargo run --release --bin sd_bench
 //!
 //! ## What round 1 found (2026-07-15, on glass)
+//!
 //! - **`M16` on SERIAL22 == `M8`, byte for byte** (0.46 MB/s, 1106 µs/512 B block). The standard
 //!   instance floors the prescaler at ÷2 — you cannot clock it past 8 MHz by asking. The real
-//!   >8 MHz path is the unused high-speed SERIAL00/SPIM00 (32 MHz), which needs the SD rewired to
+//!   faster-than-8-MHz path is the unused high-speed SERIAL00/SPIM00 (32 MHz), which needs the SD rewired to
 //!   the P2 high-speed pins. So the clock sweep is dropped here.
 //! - **1106 µs to read ONE 512 B block at 8 MHz** — but the payload is only ~512 µs. Over half of
-//!   every block is *clock-independent* overhead, and CMD18 batching (round 1) only bought +33 %.
-//!   The cause, found in the dep source: embedded-sdmmc's poll loops
-//!   (`read_data` token-wait, `card_command` R1-wait, `wait_not_busy`) inject a **fixed
-//!   `delayer.delay_us(10)` on every polling iteration**. While the card holds MISO at 0xFF during
-//!   its access time (Nac), the driver reads one byte, sleeps 10 µs, reads one byte, sleeps 10 µs…
-//!   — dozens of 10 µs naps per block.
+//!   every block is *clock-independent* overhead, and CMD18 batching bought +33 %.
+//! - Disabling embedded-sdmmc's 10 µs poll backoff bought only ~4 %, so round 2 ruled that out as
+//!   the main cost. The remaining floor is the per-block data-token handshake, CRC, and DMA setup.
 //!
-//! ## What this round tests
-//! The delayer handed to `SdCard` is switchable at runtime via [`BACKOFF`]. The matrix runs every
-//! shape twice — once with the stock 10 µs backoff, once with a **no-op delayer** (spin as fast as
-//! the SPI byte-polls allow) — crossed with batch 1 (CMD17-per-block, the ship `ExtentSource`
-//! path) vs batch 8 (one CMD18). That isolates the three levers cleanly:
-//!   * `backoff on,  b1`  = the shipping path (baseline)
-//!   * `backoff on,  b8`  = what a CMD18 rewrite of `ExtentSource` alone buys
-//!   * `backoff off, b1`  = what killing the 10 µs poll nap alone buys
-//!   * `backoff off, b8`  = both together
+//! ## What the retained harness tests
+//!
+//! The bus stays at the proven 8 MHz ceiling and the negligible backoff stays disabled. Sequential
+//! reads sweep batches 1/8/16/64 to show where CMD18's benefit plateaus; scattered reads compare
+//! batch 1 with batch 8 for the shipping shapes.
+//!
 //! Shapes: `seq` (whole-file scan, throughput ceiling), `rand4k` (scattered 8-block reads = render
 //! chunk misses), `rand512` (scattered 1-block reads = nav A*, #500 — always CMD17).
 //!
@@ -170,11 +165,7 @@ fn read_span(card: &Sd, lay: &Layout, scratch: &mut [Block], start: u32, n_block
 
 /// MB/s ×100 as an integer (bytes/µs == MB/s).
 fn mbps_x100(bytes: u64, us: u64) -> u64 {
-    if us == 0 {
-        0
-    } else {
-        bytes * 100 / us
-    }
+    bytes.saturating_mul(100).checked_div(us).unwrap_or_default()
 }
 
 /// Re-clock the bulk bus (the `SetConfig` seam `sd::init` uses), `orc = 0xFF`.
