@@ -142,7 +142,7 @@ CRC-32, and a `git describe` version string, then the raw application image).
 There are two ways it gets there, and **exactly one** way it gets installed.
 
 - **Card sideload.** Copy `UPDATE.BIN` onto the card from any computer, put the
-  card back, and choose **Settings → System → "Install update from card"**. The
+  card back, and choose **Settings → System → Firmware → "Install update from card"**. The
   device scans and validates the file, shows what it found (the installed version
   → the staged version, plus a no-undo warning), and installs on an encoder press.
   This is the primitive contract: a file on a card, nothing more. The row is

@@ -904,11 +904,11 @@ fn bike_type_cycles_and_persists_across_reboot() {
     assert_eq!(app.nav_profiles().len(), 4, "all four §8.6 names resident");
     assert_eq!(app.nav_profiles().name(2), Some("MTB"));
 
-    // Home → Menu → Settings list → the Bike type row (index 3) → its screen.
+    // Home → Menu → Settings → Ride → the Bike type row (the first row of the Ride group).
     app.apply_gesture(Gesture::BackHold); // → Menu
     app.apply_gesture(Gesture::Turn(-1)); // compass: one ccw detent to Settings
-    app.apply_gesture(Gesture::Press); // → Settings list
-    app.apply_gesture(Gesture::Turn(3)); // Date & Time → Auto-delete → Units → Bike type
+    app.apply_gesture(Gesture::Press); // → Settings list (Ride is the first row)
+    app.apply_gesture(Gesture::Press); // → Ride screen (Bike type is the first row)
     app.apply_gesture(Gesture::Press); // → Bike type screen
     assert!(matches!(app.top_screen(), crate::Screen::BikeType(_)), "navigated to the Bike type screen");
 
@@ -917,9 +917,10 @@ fn bike_type_cycles_and_persists_across_reboot() {
     app.apply_gesture(Gesture::Turn(1));
     assert_eq!(app.settings().bike_profile_idx, 2, "two detents from Road land on MTB");
 
-    // The save is debounced to leaving the settings subtree (Bike type → Settings list → Menu).
+    // The save is debounced to leaving the settings subtree (Bike type → Ride → Settings list → Menu).
     assert!(!settings_dirty(&mut app), "no save cue while still inside Settings");
-    app.apply_gesture(Gesture::Back);
+    app.apply_gesture(Gesture::Back); // Bike type → Ride
+    app.apply_gesture(Gesture::Back); // Ride → Settings list
     app.apply_gesture(Gesture::Back); // → Menu (out of the subtree)
     assert!(settings_dirty(&mut app), "leaving Settings fires the debounced save");
 

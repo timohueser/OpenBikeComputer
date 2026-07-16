@@ -145,18 +145,11 @@ grade = "pente "
 # --- The Settings list ---
 [settings]
 title = "RÉGLAGES"
-datetime = "Date & heure"
-autodelete = "Suppr. auto"
-units = "Unités"
-bike_type = "Type de vélo"
-stats = "Statistiques"
+ride = "Sortie"
 display = "Affichage"
+connections = "Connexions"
 power = "Énergie"
-bluetooth = "Bluetooth"
-sensors = "Capteurs"
-language = "Langue"
 system = "Système"
-reset = "Réinitialiser"
 
 # --- Date & Time settings screen ---
 [datetime]
@@ -167,26 +160,27 @@ local_time = "Heure locale"
 offset = "Décalage"
 utc = "UTC "
 
-# --- Auto-delete settings screen (route auto-expiry + ride auto-delete, epic #638 S5) ---
+# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
 [autodelete]
-title = "SUPPR. AUTO"
-synced_rides = "SORTIES SYNC."
 never = "Jamais"
 day1 = "1 jour"
 week1 = "1 sem."
 month1 = "1 mois"
 
-# --- Stats settings screen ---
-[set_stats]
-title = "STATS"
-pages = "Pages"
-pages_sub = "auto-défil."
+# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+[ride]
+title = "SORTIE"
+bike_type = "Type de vélo"
 fields = "Champs"
 fields_sub = "disposition"
+pages = "Pages"
+pages_sub = "auto-défil."
 climb = "Montée"
 climb_sub = "panneau"
 waypoints = "Points"
 waypoints_sub = "puce"
+autodelete = "Suppr. auto"
+autodelete_sub = "sorties"
 
 # --- Display settings screen ---
 [display]
@@ -205,6 +199,12 @@ gps_fix = "Fix GPS"
 gps_fix_sub = "intervalle"
 power_save = "Économie"
 power_save_sub = "basse conso"
+
+# --- Connections settings menu (Phone / Sensors) ---
+[connections]
+title = "CONNEXIONS"
+phone = "Téléphone"
+sensors = "Capteurs"
 
 # --- Bluetooth settings screen ---
 [bluetooth]
@@ -391,9 +391,18 @@ battery = "Batterie"
 # --- System settings screen (epic #615 S5, #620) ---
 [system]
 title = "SYSTÈME"
+units = "Unités"
+datetime = "Date & heure"
+language = "Langue"
+update = "Firmware"
+reset = "Réinitialiser"
+
+# --- Firmware page (device info ledger + the SD-sideload install action) ---
+[firmware]
+title = "FIRMWARE"
 install_update = "Installer la mise à jour depuis la carte"
 recording = "Enreg."
-firmware = "Micrologiciel"
+version = "Micrologiciel"
 map = "Carte"
 card_free = "Carte libre"
 
