@@ -152,6 +152,19 @@ cargo run --release --features debug-uart
 cargo run --release --no-default-features --features ble
 ```
 
+### SD read throughput diagnostic
+
+`sd_bench` measures the real SERIAL22 → embedded-sdmmc → card path against the first `.obcm` in
+the card root. It compares CMD17-per-block reads with CMD18 batches across sequential, random 4 KB,
+and random 512-byte shapes, and checks sequential passes against an FNV integrity hash:
+
+```sh
+cargo run --release --bin sd_bench
+```
+
+The harness is gated to the default non-BLE feature set; the BLE CI/build command above skips it
+because that profile uses MPSL's mutually exclusive critical-section implementation.
+
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
 spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`. All are

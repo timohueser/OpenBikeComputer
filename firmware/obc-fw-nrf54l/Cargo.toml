@@ -28,7 +28,7 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # without a sky view build `--features synth` (the square-loop stand-in) or `--features debug-uart`.
 # Build with `cargo run --release` (add `--features debug-uart` to stream a recorded ride from a host).
 # See `firmware/docs/ls021-flpr.md` + the crate README.
-default = ["obc-platform/sensor-link", "obc-platform/input-wait", "cs-single-core"]
+default = ["obc-platform/sensor-link", "obc-platform/input-wait", "cs-single-core", "sd-bench"]
 
 # The critical-section impl for every non-BLE build (what used to be the always-on
 # `cortex-m/critical-section-single-core`). A **feature** because it is mutually exclusive with
@@ -37,6 +37,11 @@ default = ["obc-platform/sensor-link", "obc-platform/input-wait", "cs-single-cor
 # symbols). The `ble` build therefore builds with `--no-default-features --features ble` (see
 # the `ble` feature below).
 cs-single-core = ["cortex-m/critical-section-single-core"]
+
+# Marker for the default-only SD throughput diagnostic. `required-features` on the bin keeps it
+# out of `--no-default-features --features ble`, whose MPSL critical-section implementation is
+# intentionally incompatible with this standalone non-BLE harness.
+sd-bench = []
 
 # Replace the real GPS/altimeter with the always-compiled `SynthLocation` square-loop stand-in (no
 # I²C hardware needed) — indoor testing without a sky view, where a real fix never comes. A runtime
@@ -92,6 +97,14 @@ ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:sta
 [[bin]]
 name = "ble_central_repro"
 required-features = ["ble"]
+
+# Throwaway microSD read-speed harness (renderer is SD-bound): sweeps block batches
+# (CMD17 vs CMD18) × read shapes (seq / rand-4k / rand-512) at SERIAL22's proven 8 MHz ceiling
+# against the real `.obcm` on the card, with an FNV integrity guard.
+#   cargo run --release --bin sd_bench
+[[bin]]
+name = "sd_bench"
+required-features = ["sd-bench"]
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
