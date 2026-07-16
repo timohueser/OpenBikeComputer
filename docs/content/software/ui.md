@@ -14,14 +14,14 @@ This page is about *how that works* — the handful of abstractions that make a 
 The core idea: each screen is an enum variant wrapping a little struct of typed state, and the set of screens is one `enum Screen` dispatched by `match`. The enum, its `handle`/`draw` delegation matches, and each screen's classification are all generated from a single declarative `screens!` table — one row per screen — so there are no trait objects, no heap, and no second list to keep in sync: adding a screen is **one table row plus its module**.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="On the left, the Screen enum lists its variants: Home, Map, Statistics, RideControl, Menu, RouteMenu, RouteOverview, RouteSwap, plus the Settings tree. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
+<svg viewBox="0 0 720 322" role="img" aria-label="On the left, the Screen enum lists representative variants: Home, Map, Statistics, RideControl, Menu, RideMenu, RouteMenu, RouteOverview, and RouteSwap. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
   <defs>
     <marker id="aU1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
   <text class="d-tag" x="20" y="24">A screen is a value — no retained widget tree</text>
 
   <!-- enum Screen -->
-  <rect class="d-panel" x="36" y="44" width="210" height="232" rx="11" />
+  <rect class="d-panel" x="36" y="44" width="210" height="254" rx="11" />
   <text class="d-label" x="56" y="66">enum Screen</text>
   <g font-family="var(--mono)">
     <rect x="52" y="78"  width="178" height="22" rx="5" class="d-hot-fill" /><text class="d-sub" x="62" y="93" style="fill:#fff">Map(MapScreen)</text>
@@ -29,9 +29,10 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
     <rect x="52" y="126" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="140">Statistics(…)</text>
     <rect x="52" y="148" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="162">RideControl(…)</text>
     <rect x="52" y="170" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="184">Menu(…)</text>
-    <rect x="52" y="192" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="206">RouteMenu(…)</text>
-    <rect x="52" y="214" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="228">RouteOverview(…)</text>
-    <rect x="52" y="236" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="250">RouteSwap(…)</text>
+    <rect x="52" y="192" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="206">RideMenu(…)</text>
+    <rect x="52" y="214" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="228">RouteMenu(…)</text>
+    <rect x="52" y="236" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="250">RouteOverview(…)</text>
+    <rect x="52" y="258" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="272">RouteSwap(…)</text>
   </g>
 
   <!-- arrow to module -->
@@ -69,6 +70,8 @@ screens! {
     RideControl(RideControl) => Caps::nav().ride_view().hold_fill(), // the Paused page; guarded Finish/Discard
     RideStart(RideStartScreen) => Caps::nav(),       // the browse map's start card (route-less ride)
     Menu(MenuScreen) => Caps::nav().timed(),          // the compass dial sweeps its needle → timed
+    RideMenu(RideMenuScreen) => Caps::nav().timed(),  // the same dial chrome, with ride-scoped stations
+    RideWaypoints(RideWaypointsScreen) => Caps::nav(), SkipAhead(SkipAheadScreen) => Caps::nav(),
     PoiMenu(PoiMenuScreen) => Caps::nav(),           // POIs browser: the category list
     PoiList(PoiListScreen) => Caps::nav().reader(ReaderNeed::PoiSnapshot),  // one-shot nearest-16 query
     PoiDetail(PoiDetailScreen) => Caps::nav().reader(ReaderNeed::PoiHours), // one-shot opening-hours read
@@ -111,7 +114,7 @@ consistent (a Reader-needing map screen, a modal that isn't a ride view, and so 
 A screen never reaches out and changes the UI. It *returns* what it wants — a `Transition` — and a tiny `apply` function runs that against the screen **stack** (a `heapless::Vec<Screen, 8>`). The bottom of the stack is always Home, which is never popped, so `back` always has somewhere to go and the stack can never empty.
 
 <figure class="fig">
-<svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Menu on top. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
+<svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Ride menu on top. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
   <defs>
     <marker id="aU2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -131,7 +134,7 @@ A screen never reaches out and changes the UI. It *returns* what it wants — a 
   <!-- stack -->
   <text class="d-tag" x="24" y="104">the stack</text>
   <g>
-    <rect x="40" y="200" width="150" height="34" rx="6" class="d-water" /><text class="d-label" x="115" y="222" text-anchor="middle" style="fill:#fff">Menu</text>
+    <rect x="40" y="200" width="150" height="34" rx="6" class="d-water" /><text class="d-label" x="115" y="222" text-anchor="middle" style="fill:#fff">Ride menu</text>
     <text class="d-sub" x="200" y="221" style="font-size:9px">← top (gets input)</text>
     <rect x="40" y="166" width="150" height="34" rx="6" class="d-forest" /><text class="d-label" x="115" y="188" text-anchor="middle" style="fill:#fff">Map</text>
     <rect x="40" y="132" width="150" height="34" rx="6" class="d-muted" /><text class="d-label" x="115" y="154" text-anchor="middle">Home</text>
@@ -180,13 +183,10 @@ three lines per gesture: the sweep itself runs through the same timer-poll contr
 clock uses (see *Render on demand* below), so it costs nothing once the needle has landed:
 
 ```rust
-fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
-        Gesture::Turn(n) => {
-            self.target_deg += n as f32 * DETENT_DEG; // the needle chases this in tick_timers
-            list::on_turn(&mut self.selected, n, ITEMS.len()) // Routes / Rides / POIs / Map / Settings
-        }
-        Gesture::Press   => match self.selected {
+        Gesture::Turn(n) => self.dial.turn(n), // shared selection wrap + eased needle target
+        Gesture::Press   => match self.dial.selected() {
             0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
             1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
             2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
@@ -200,6 +200,8 @@ fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
 ```
 
 Four of the five stations open a menu; the **Map** station opens the riding map directly. Which map depends on whether a ride is already being tracked. Mid-ride it lands you back on the live riding map — the ride base — by rooting the stack to a clean `[Home, Map]`, the same normalization the [idle return](#the-whole-flow) does, so it never stacks a second Map or leaves stale menus buried underneath. With **no** ride running it opens a route-less **browse map**: the identical Map screen — GPS-follow camera, zoom on turn, `hold` to Pan — reached without a route or a session, for reading the map while riding without recording. On entry the browse map briefly shows a one-shot bottom-centre *Press to start a ride* hint (auto-hiding after a few seconds — the lowest-priority tenant of the bottom chip slot). On the browse map `back` pops back to the Menu (there's no Statistics sibling without a ride) and `press` opens the **start card** — a small pre-ride launchpad: the selected bike's pixel sprite and profile name (the same sprite the Bike type settings screen draws), a two-row *GPS* / *Battery* checklist (the live fix state and the battery percent), then *Start ride* / *Back* rows. *Start ride* begins a route-less tracking session (the same session-begin the Route overview's START runs, minus the route) and roots to `[Home, Map]`. A route-less ride records and saves exactly like a guided one; only the route-relative stat tiles (*to go*, *to climb*, grade) read `--`, and the Statistics band shows a "No route loaded" note over an otherwise-live grid. The browse map is a *deliberate* view, so — unlike a menu left open — the idle-return timeout leaves it be.
+
+Once a ride is running, `back-hold` opens a second compass with the **same five-detent bezel, amber needle sweep, and label strip**, but ride-scoped stations: **Waypoints**, **Skip ahead**, **POIs**, **Routes**, and **Main menu**. Waypoints starts at north; one counter-clockwise detent reaches Main menu. POIs and Routes open their existing browsers, while the first two stations are placeholder child screens until their ride tools land. A route-less recording keeps the same five positions — the route-dependent pair is dimmed and opens a plain *No route loaded* state — so the ring never changes under the rider's hand.
 
 ## Two buttons, five gestures
 
@@ -939,10 +941,10 @@ Two details keep it steady. **Passing** is distance-hysteresis, not time: the ch
 
 ## The whole flow
 
-Put the pieces together and the navigation graph is small and legible. Two screens are always **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack, and both share the same `press` (pause) and `back-hold` (Menu) bindings. Each also has a `hold`-entered sub-mode (Pan on the Map, Zoom on the profile). On a climb a [third view](#climbs-get-their-own-panel) joins the ring between them.
+Put the pieces together and the navigation graph is small and legible. Two screens are always **riding views** — the Map and the Elevation/Statistics profile — and they're siblings: `back` swaps between them without growing the stack. On a climb a [third view](#climbs-get-their-own-panel) joins the ring between them. All three share `press` (pause) and `back-hold` (the ride-scoped compass); the Paused page accepts the same `back-hold`. Opening that menu never changes the activity mode, so it neither pauses a rolling rider nor resumes a paused one. The Map's Pan sub-mode keeps one deliberate override: there, `back-hold` exits Pan first instead of opening a menu.
 
 <figure class="fig">
-<svg viewBox="0 0 720 340" role="img" aria-label="A navigation graph. Home, the root, opens the compass Menu on both press and back-hold — the single door into the app. The Menu opens the Route menu at its Routes station. Picking a route opens the Route overview; its START truncates to Home and pushes the Map (Root). The Map and Statistics are siblings swapped by back. The Map opens the Paused page on press and enters Pan on hold. From Paused, Resume pops back to the Map and Finish or Discard (held) clears to Home.">
+<svg viewBox="0 0 900 360" role="img" aria-label="A navigation graph. Home opens the main compass Menu. Its Routes station opens the Route menu, a route pick opens Overview, and START roots to Map. Map, Statistics, and Climb form the riding-view back ring. Back-hold from a riding view or Paused opens the ride compass without changing activity mode; its stations are Waypoints, Skip ahead, POIs, Routes, and Main menu. Pan keeps back-hold as exit Pan. Press from Map pauses; Resume returns and held Finish or Discard clears to Home.">
   <defs>
     <marker id="aU7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5f7d3d" /></marker>
     <marker id="aU7c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
@@ -950,39 +952,49 @@ Put the pieces together and the navigation graph is small and legible. Two scree
   <text class="d-tag" x="20" y="24">The screen flow</text>
 
   <!-- nodes -->
-  <rect class="d-panel" x="36"  y="150" width="104" height="40" rx="9" /><text class="d-label" x="88"  y="170" text-anchor="middle">Home</text><text class="d-sub" x="88" y="183" text-anchor="middle" style="font-size:8.5px">root</text>
-  <rect class="d-panel-2" x="232" y="56"  width="116" height="40" rx="9" /><text class="d-label" x="290" y="76"  text-anchor="middle">Route menu</text><text class="d-sub" x="290" y="89" text-anchor="middle" style="font-size:8.5px">pick a route</text>
-  <rect class="d-panel-2" x="246" y="150" width="104" height="40" rx="9" /><text class="d-label" x="298" y="170" text-anchor="middle">Overview</text><text class="d-sub" x="298" y="183" text-anchor="middle" style="font-size:8.5px">track · profile · stats</text>
-  <rect class="d-panel-2" x="232" y="246" width="116" height="40" rx="9" /><text class="d-label" x="290" y="266" text-anchor="middle">Menu</text><text class="d-sub" x="290" y="279" text-anchor="middle" style="font-size:8.5px">compass · 5 stations</text>
-  <rect class="d-forest" x="436" y="150" width="104" height="40" rx="9" /><text class="d-label" x="488" y="174" text-anchor="middle" style="fill:#fff">Map</text>
-  <rect class="d-water" x="596" y="150" width="104" height="40" rx="9" /><text class="d-label" x="648" y="170" text-anchor="middle" style="fill:#fff">Statistics</text><text class="d-sub" x="648" y="183" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">elevation</text>
-  <rect class="d-hot" x="436" y="56" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="488" y="80" text-anchor="middle" style="fill:#a9501c">Paused</text>
-  <rect class="d-panel-2" x="436" y="246" width="104" height="40" rx="9" /><text class="d-label" x="488" y="270" text-anchor="middle">Pan / Zoom</text>
-  <rect class="d-water" x="596" y="246" width="104" height="40" rx="9" /><text class="d-label" x="648" y="266" text-anchor="middle" style="fill:#fff">Climb</text><text class="d-sub" x="648" y="279" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">on a climb</text>
-  <!-- Statistics -> Climb (only while on a climb) -->
-  <line x1="648" y1="190" x2="648" y2="244" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" /><text class="d-sub" x="654" y="222" style="font-size:9px">back</text>
+  <rect class="d-panel" x="30"  y="160" width="100" height="40" rx="9" /><text class="d-label" x="80"  y="180" text-anchor="middle">Home</text><text class="d-sub" x="80" y="193" text-anchor="middle" style="font-size:8.5px">root</text>
+  <rect class="d-panel-2" x="210" y="50" width="116" height="40" rx="9" /><text class="d-label" x="268" y="70" text-anchor="middle">Route menu</text><text class="d-sub" x="268" y="83" text-anchor="middle" style="font-size:8.5px">pick a route</text>
+  <rect class="d-panel-2" x="220" y="160" width="104" height="40" rx="9" /><text class="d-label" x="272" y="180" text-anchor="middle">Overview</text><text class="d-sub" x="272" y="193" text-anchor="middle" style="font-size:8.5px">track · profile · stats</text>
+  <rect class="d-panel-2" x="210" y="270" width="116" height="40" rx="9" /><text class="d-label" x="268" y="290" text-anchor="middle">Main menu</text><text class="d-sub" x="268" y="303" text-anchor="middle" style="font-size:8.5px">compass · 5 stations</text>
+  <rect class="d-hot" x="410" y="50" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="462" y="74" text-anchor="middle" style="fill:#a9501c">Paused</text>
+  <rect class="d-forest" x="410" y="160" width="104" height="40" rx="9" /><text class="d-label" x="462" y="184" text-anchor="middle" style="fill:#fff">Map</text>
+  <rect class="d-panel-2" x="410" y="270" width="104" height="40" rx="9" /><text class="d-label" x="462" y="294" text-anchor="middle">Pan / Zoom</text>
+  <rect class="d-panel-2" x="585" y="50" width="130" height="40" rx="9" /><text class="d-label" x="650" y="70" text-anchor="middle">Ride menu</text><text class="d-sub" x="650" y="83" text-anchor="middle" style="font-size:8.5px">fixed compass · 5</text>
+  <rect class="d-water" x="585" y="160" width="115" height="40" rx="9" /><text class="d-label" x="642" y="180" text-anchor="middle" style="fill:#fff">Statistics</text><text class="d-sub" x="642" y="193" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">elevation</text>
+  <rect class="d-water" x="755" y="160" width="110" height="40" rx="9" /><text class="d-label" x="810" y="180" text-anchor="middle" style="fill:#fff">Climb</text><text class="d-sub" x="810" y="193" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">on a climb</text>
 
   <!-- edge from Home: both press and back-hold open the Menu (the single door in) -->
-  <line x1="140" y1="170" x2="230" y2="262" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="150" y="232" style="font-size:9px">press · back-hold</text>
+  <line x1="130" y1="180" x2="208" y2="286" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="136" y="238" style="font-size:9px">press · back-hold</text>
   <!-- Menu -> Route menu -->
-  <line x1="356" y1="250" x2="356" y2="98" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="362" y="178" style="font-size:9px">Routes</text>
+  <line x1="334" y1="274" x2="334" y2="92" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="340" y="184" style="font-size:9px">Routes</text>
   <!-- Route menu -> Overview (press) -->
-  <line x1="292" y1="96" x2="296" y2="148" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="248" y="122" style="font-size:9px">press</text>
+  <line x1="268" y1="90" x2="272" y2="158" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="230" y="126" style="font-size:9px">press</text>
   <!-- Overview -> Map (START/Root) -->
-  <line x1="350" y1="170" x2="432" y2="170" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="358" y="163" style="fill:#a9501c;font-size:9px">START · Root</text>
+  <line x1="324" y1="180" x2="408" y2="180" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="332" y="173" style="fill:#a9501c;font-size:9px">START · Root</text>
   <!-- Map <-> Statistics -->
-  <line x1="540" y1="160" x2="596" y2="160" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" />
-  <line x1="596" y1="180" x2="540" y2="180" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="568" y="200" text-anchor="middle" style="font-size:9px">back ⇄</text>
+  <line x1="514" y1="170" x2="583" y2="170" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" />
+  <line x1="585" y1="190" x2="516" y2="190" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="550" y="212" text-anchor="middle" style="font-size:9px">back ⇄</text>
+  <!-- Statistics <-> Climb (the third stop exists only while on a climb) -->
+  <line x1="700" y1="170" x2="753" y2="170" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" />
+  <line x1="755" y1="190" x2="702" y2="190" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" /><text class="d-sub" x="728" y="212" text-anchor="middle" style="font-size:9px">back ring</text>
   <!-- Map -> Paused -->
-  <line x1="482" y1="150" x2="482" y2="98" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="396" y="126" style="fill:#a9501c;font-size:9px">press · pause</text>
+  <line x1="454" y1="160" x2="454" y2="92" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aU7c)" /><text class="d-sub" x="366" y="128" style="fill:#a9501c;font-size:9px">press · pause</text>
   <!-- Paused -> Map (resume) -->
-  <line x1="500" y1="98" x2="500" y2="148" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="508" y="126" style="font-size:9px">resume</text>
+  <line x1="472" y1="90" x2="472" y2="158" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="480" y="126" style="font-size:9px">resume</text>
   <!-- Map -> Pan -->
-  <line x1="488" y1="190" x2="488" y2="244" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="496" y="220" style="font-size:9px">hold</text>
+  <line x1="454" y1="200" x2="454" y2="268" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="418" y="238" style="font-size:9px">hold</text>
+  <line x1="472" y1="270" x2="472" y2="202" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="480" y="246" style="font-size:8.5px">back-hold exits</text>
+  <!-- Ride-menu access: same Push from riding views and Paused; no activity-mode write. -->
+  <line x1="514" y1="70" x2="583" y2="70" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="548" y="61" text-anchor="middle" style="font-size:8.5px">back-hold</text>
+  <line x1="642" y1="160" x2="642" y2="92" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="650" y="128" style="font-size:8.5px">back-hold</text>
+  <path d="M514 164 C 538 116, 558 94, 585 82" fill="none" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" />
+  <path d="M810 160 C 810 108, 752 74, 717 70" fill="none" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" />
+  <!-- The ride ring's Main-menu station keeps the full app one detent away. -->
+  <path d="M585 82 C 560 330, 398 340, 326 300" fill="none" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="430" y="338" style="font-size:8.5px">Main menu station</text>
   <!-- Paused -> Home (finish/discard) -->
-  <path d="M436 66 C 250 20, 90 70, 88 148" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="250" y="34" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
+  <path d="M410 60 C 260 12, 82 70, 80 158" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="236" y="28" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
 </svg>
-<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Home has one door: both <code>press</code> and <code>back-hold</code> open the compass <b>Menu</b>, and the Route menu is reached from there at the Routes station. Picking a route opens the <b>Overview</b> — the paired track-shape / elevation pager with its distance and climb figures, START — while the route streams open behind it; START uses <code>Root</code>, so you always land on a clean <code>[Home, Map]</code> instead of a Map buried under stale menus. Picking a <i>different</i> route mid-ride still detours through a guarded "swap or finish &amp; start new" prompt, and the <b>Paused</b> page shows the ride-so-far ledger above its guarded Finish / Discard rows. The Menu's <b>Map</b> station is a second way onto the map: mid-ride it returns to the live Map (the same <code>Root</code> landing), and with no ride running it opens a route-less <b>browse map</b> whose <code>press</code> start card begins a route-less ride — the same START path, minus the route. On a climb, the Statistics view's <code>back</code> opens a third stop — the striped Climb panel — closing the ring back at the Map when you crest. Left untouched, the UI <b>returns on its own</b>: after a configurable idle timeout (default 30 s) it clears back to Home, or — mid-ride — back to the Map, so a menu or settings page left open doesn't strand the display away from the ride.</figcaption>
+<figcaption>Green edges are ordinary moves; coral marks the "go ride / stop riding" path. Home still opens the full <b>Main menu</b>, whose Routes station leads through the Route menu and Overview to a clean <code>[Home, Map]</code>. During a recording, <code>back-hold</code> from Map, Statistics, Climb, or Paused instead pushes the fixed <b>Ride menu</b>; opening it leaves <code>Activity::mode</code> alone, and <code>back</code> returns to the exact view that called it. Its clockwise ring is Waypoints, Skip ahead, POIs, Routes, Main menu. The first two are placeholder empty states in this slice; POIs and Routes reuse their existing mid-ride flows, and Main menu opens the full compass. A route-less ride keeps all five detents but dims Waypoints and Skip ahead. Pan is the exception shown at the bottom: its <code>back-hold</code> exits Pan rather than opening ride chrome. Picking a different route mid-ride still detours through the guarded swap prompt; Paused still owns Resume / Finish / Discard; and the idle-return timeout still clears abandoned chrome back to Home or — while tracking — the Map.</figcaption>
 </figure>
 
 ## The "field map" look
