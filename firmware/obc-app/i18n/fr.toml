@@ -15,6 +15,15 @@ pois = "POIs"
 map = "Carte"
 settings = "Réglages"
 
+# --- Le menu boussole en sortie et ses deux écrans temporaires RM1 ---
+[ride_menu]
+title = "MENU SORTIE"
+waypoints = "Points de route"
+skip_ahead = "Avancer"
+main_menu = "Menu principal"
+coming_soon = "Bientôt"
+no_route = "Aucun parcours chargé"
+
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
 metric = "Métrique"

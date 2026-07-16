@@ -15,6 +15,15 @@ pois = "POIs"
 map = "Karte"
 settings = "Einstellungen"
 
+# --- Das Kompassmenü während der Fahrt und seine zwei RM1-Platzhalter ---
+[ride_menu]
+title = "FAHRTMENÜ"
+waypoints = "Wegpunkte"
+skip_ahead = "Vorspringen"
+main_menu = "Hauptmenü"
+coming_soon = "Demnächst"
+no_route = "Keine Route geladen"
+
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
 metric = "Metrisch"
