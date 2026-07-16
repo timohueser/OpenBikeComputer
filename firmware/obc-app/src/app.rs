@@ -3777,6 +3777,7 @@ mod tests {
             app.ride.waypoints.is_empty() && app.ride.waypoints_route.is_none(),
             "no active route → no waypoint table"
         );
+        assert_eq!(app.activity.waypoint_count, 0, "the gesture-side table length mirrors the empty cache");
 
         // Load the route (active_route = Some) and tick with the reader → climbs segmented once, and
         // the waypoint table loaded on the same edge (GRIMSEL carries none, so the table is empty but
@@ -3786,6 +3787,11 @@ mod tests {
         assert_eq!(app.ride.climbs.len(), 3, "an active route + reader segments the climbs on load");
         assert_eq!(app.ride.climbs_route, Some(0));
         assert_eq!(app.ride.waypoints_route, Some(0), "the waypoint table loads on the same route edge");
+        assert_eq!(
+            app.activity.waypoint_count,
+            app.ride.waypoints.len(),
+            "the gesture-side table length mirrors the loaded resident cache"
+        );
 
         // Unload (active_route → None) and tick → the climbs / waypoints and their derived indices clear.
         app.activity.active_climb = Some(0); // pretend we were on a climb
@@ -3800,6 +3806,7 @@ mod tests {
             "unloading clears the waypoint table"
         );
         assert_eq!(app.activity.next_waypoint, None, "and the next-waypoint index is dropped");
+        assert_eq!(app.activity.waypoint_count, 0, "and the gesture-side table length clears with it");
     }
 
     // --- idle-return timeout (Part B) ---
