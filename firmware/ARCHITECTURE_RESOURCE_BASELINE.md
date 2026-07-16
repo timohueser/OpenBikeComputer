@@ -87,9 +87,20 @@ python3 ../tools/resource_guard.py boot \
 
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
-| default | 201,848 B | 72 B | 201,920 B | 1,024 B | 653,084 B | 1 × 76,800 B | 52 B |
-| BLE | 209,336 B | 4,504 B | 213,840 B | 1,024 B | 1,091,960 B | 1 × 76,800 B | 6,240 B |
+| default | 201,872 B | 72 B | 201,944 B | 1,024 B | 663,892 B | 1 × 76,800 B | 52 B |
+| BLE | 209,360 B | 4,504 B | 213,864 B | 1,024 B | 1,102,856 B | 1 × 76,800 B | 6,240 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
+
+Pure skip-ahead navigation (epic #789, RM3 #788) stores a forward-only route
+floor and one route-identity-stable pending skip in `App`. This grows the named
+`App` allocation **35,968 → 35,992 B** and linked `.bss` by the same **24 B**
+on both profiles; no other named allocation changes. On pinned rustc 1.96.0,
+default is **201,944 B** resident and BLE is **213,864 B**, which become the
+approved ceilings. The corresponding pinned flash observations are 663,892 B
+and 1,102,856 B. The `floating_stable_observation` entries in the machine-readable
+baseline remain the last pre-RM3 rustc 1.97.1 measurements; applying the measured
+24 B data-only delta would preserve default's 8 B toolchain margin and put BLE
+at its new ceiling. CI remains the independent floating-stable check.
 
 The mid-ride compass (epic #789, RM1 #786) deliberately raises the screen-stack
 capacity from 8 to 10 so the deepest ordinary path still leaves two slots for
