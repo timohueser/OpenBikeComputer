@@ -8,7 +8,11 @@ import OBCTransport
 /// implies a cloud or account (epic non-negotiable; the About footer says so
 /// in as many words).
 public struct SettingsView: View {
-    private let model: SettingsModel
+    @Bindable private var model: SettingsModel
+    /// Push the firmware-update screen (S7). Wired by the composition root to the
+    /// navigation path; `nil` keeps the Firmware row a coming-soon placeholder
+    /// (previews / any wiring that doesn't host the update screen).
+    private let onOpenFirmwareUpdate: (() -> Void)?
     /// Debug-only: the hidden second entry into the mock dev panel (B1P's
     /// deferral) — five taps on the App version row. `nil` in Release wiring,
     /// where the gesture goes nowhere.
@@ -22,8 +26,13 @@ public struct SettingsView: View {
 
     private static let gitHubURL = URL(string: "https://github.com/timohueser/OpenBikeComputer")!
 
-    public init(model: SettingsModel, onOpenDevPanel: (() -> Void)? = nil) {
+    public init(
+        model: SettingsModel,
+        onOpenFirmwareUpdate: (() -> Void)? = nil,
+        onOpenDevPanel: (() -> Void)? = nil
+    ) {
         self.model = model
+        self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
         self.onOpenDevPanel = onOpenDevPanel
     }
 
@@ -31,6 +40,7 @@ public struct SettingsView: View {
         ScrollView {
             VStack(spacing: 26) {
                 deviceGroup
+                routesGroup
                 firmwareGroup
                 servicesGroup
                 aboutGroup
@@ -53,6 +63,15 @@ public struct SettingsView: View {
             name: $renameDraft,
             message: "Shown across the app and on the device.",
             onSave: { _ = model.rename(to: renameDraft) }
+        )
+        // The rename's config write failed (#361): say so once, plainly — the
+        // reconcile pass pushes the name on the next connect, no action needed.
+        .obcToast(
+            isPresented: $model.renameWriteFailed,
+            systemImage: "exclamationmark.triangle",
+            message: "Couldn't update the name on \(model.deviceName). "
+                + "It'll retry next time you connect.",
+            duration: .seconds(4)
         )
         .task { model.start() }
     }
@@ -89,7 +108,7 @@ public struct SettingsView: View {
             .obcDestructiveConfirm(
                 "Forget \(model.deviceName)?",
                 isPresented: $forgetShown,
-                message: "You'll pair again to use it. Your routes and rides stay on this phone.",
+                message: model.forgetMessage,
                 actionTitle: "Forget device",
                 onConfirm: { model.forget() }
             )
@@ -123,19 +142,51 @@ public struct SettingsView: View {
         }
     }
 
+    // MARK: Routes — default retention (epic #638 S7)
+
+    private var routesGroup: some View {
+        OBCGroupedSection(
+            "Routes",
+            footer: "New routes you upload auto-delete on the device after this long "
+                + "without use. Routes stay in your library — re-upload is one tap."
+        ) {
+            OBCRetentionRow(
+                icon: "trash",
+                iconColor: OBCTheme.wood,
+                label: "Auto-delete new routes",
+                selection: model.defaultRetention,
+                showsDivider: false,
+                accessibilityID: "settings.autoDelete",
+                onSelect: { model.setDefaultRetention($0) }
+            )
+        }
+    }
+
     // MARK: Firmware (coming soon)
 
     private var firmwareGroup: some View {
         OBCGroupedSection(
             "Firmware",
-            footer: "OTA updates will arrive in a later release. For now, flash from the desktop tool."
+            footer: onOpenFirmwareUpdate == nil
+                ? "OTA updates will arrive in a later release. For now, flash from the desktop tool."
+                : "Import an UPDATE.BIN to send new firmware to your device over Bluetooth."
         ) {
-            OBCListRow(
-                icon: "arrow.down.to.line",
-                iconColor: OBCTheme.amber,
-                label: "Update over the air",
-                comingSoon: true
-            )
+            if let onOpenFirmwareUpdate {
+                OBCListRow(
+                    icon: "arrow.down.to.line",
+                    iconColor: OBCTheme.amber,
+                    label: "Update firmware",
+                    showsChevron: true,
+                    action: onOpenFirmwareUpdate
+                )
+            } else {
+                OBCListRow(
+                    icon: "arrow.down.to.line",
+                    iconColor: OBCTheme.amber,
+                    label: "Update over the air",
+                    comingSoon: true
+                )
+            }
             OBCListRow(
                 icon: "clock",
                 iconColor: OBCTheme.parchment3,
@@ -245,6 +296,7 @@ private struct PreviewSettingsTransport: DeviceTransport {
         AsyncStream { $0.yield(.connected); $0.finish() }
     }
     var battery: AsyncStream<Int> { AsyncStream { $0.yield(82); $0.finish() } }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo {
@@ -252,13 +304,13 @@ private struct PreviewSettingsTransport: DeviceTransport {
     }
     func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
     func writeConfig(_ config: DeviceConfig) async throws {}
-    func listRoutes() async throws -> [RouteSummary] { [] }
-    func routeDetail(_ id: RouteID) async throws -> RouteDetail { throw DeviceError.readFailed }
+    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle {
         .immediatelyFinished(.failed(.notConnected))
     }
-    func deleteRoute(_ id: RouteID) async throws {}
-    func listRides() async throws -> [RideSummary] { [] }
+    func deleteRoute(_ id: DeviceObjectID) async throws {}
+    func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
     func readDiagnostics() async throws -> Data { Data() }

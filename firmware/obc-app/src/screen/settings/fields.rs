@@ -1,42 +1,47 @@
 //! The Fields screen — choose which data fields the riding [`Statistics`](crate::screen) grid shows
-//! and in what order. Reached from the [`Stats`](super::StatsScreen) screen's *Fields* row (the
-//! page-cycle period lives up there, deliberately kept out of this list). Same field-map style +
-//! two-level encoder model as the rest of the settings tree, with two extra idioms:
+//! and in what order, edited **as the grid itself**: the same 3×2 tile pages the Statistics view
+//! draws (same [`page_fields`](stat_fields::page_fields) placement, same [`tile`](crate::screen)
+//! renderer, live values), so what you arrange here is exactly what the ride shows. The cursor is
+//! the amber tile; walking past a page's last tile flips to the next page (`page / pages` in the
+//! title bar). Reached from the [`Stats`](super::StatsScreen) screen's *Fields* row. Two idioms on
+//! top of the shared two-level encoder model:
 //!
-//! - **Reordering.** *Press* grabs the highlighted field; rotating then moves it through the order
-//!   and *press*/*back* drops it. While grabbed the row is **anchored** on screen (it holds still and
-//!   the neighbours slide past it), so a two-span field hopping a whole row reads cleanly rather than
-//!   teleporting. A grabbed two-span field always begins a row — the rule
-//!   [`StatFieldList::move_item`](crate::stat_fields::StatFieldList::move_item) enforces.
-//! - **Removing.** A **hold-to-delete** footer (a trash can + a progress bar that fills with the live
-//!   encoder hold, like the Reset screen) erases the highlighted field — a deliberate gesture, not an
-//!   instant tap, so a stray long-press can't drop a panel.
+//! - **Reordering.** *Press* grabs the highlighted tile (move arrows appear); rotating moves it,
+//!   *press*/*back* drops it. The grid reflows live per detent, so a two-span field's row-aligned
+//!   hops ([`StatFieldList::move_item`](crate::stat_fields::StatFieldList::move_item)) are visible
+//!   rather than inferred.
+//! - **Removing.** A hold-to-delete footer (trash can + progress bar) erases the highlighted field —
+//!   a deliberate gesture so a stray long-press can't drop a panel.
 //!
-//! The `Add field` row opens the [`AddField`](super::AddFieldScreen) picker. Editing is live into
-//! [`Settings::stat_fields`](crate::Settings); leaving the settings subtree persists it.
+//! The ghost `+` tile in the first free slot opens the [`AddField`](super::AddFieldScreen) picker —
+//! a new field lands exactly where the ghost sits. Editing is live into
+//! [`Settings::stat_fields`](crate::Settings).
 
-use embedded_graphics::{
-    prelude::{DrawTarget, Point},
-    primitives::Rectangle,
-};
+use core::fmt::Write;
+
+use embedded_graphics::{prelude::Point, primitives::Rectangle};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
-    Canvas, RenderStats,
+    Surface,
 };
 
 use crate::input::Gesture;
-use crate::screen::{scrollbar, title_frame, window_start, Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::screen::{list, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::stat_fields::{self, COLS, SLOTS_PER_PAGE};
+use crate::Msg;
 
 use super::AddFieldScreen;
 
-/// Per-row height — a single Body label with room for the span badge / move arrows.
-const ROW_H: i32 = 46;
-
-/// Height of the hold-to-delete footer reserved at the bottom (trash can + progress bar on one row).
-/// Reserved whatever the cursor is on, so the list doesn't reflow as you move between field and Add
-/// rows.
+/// Height of the hold-to-delete footer reserved at the bottom, whatever the cursor is on, so the
+/// grid doesn't reflow as you move between field tiles and the ghost Add tile.
 const FOOTER_H: i32 = 34;
+
+/// Gap between tiles — the Statistics grid's spacing, so the arrangement reads identically.
+const GAP: i32 = 6;
+
+/// Side margin of the grid (the Statistics chart margin, near enough that tiles look the same).
+const GRID_X: i32 = 10;
 
 /// The Fields screen. The row list is `[selected fields, in order] + [Add field…]`; `selected` is
 /// the cursor over it, and `grabbed` lifts the selected field for moving.
@@ -49,6 +54,14 @@ pub struct StatFieldsScreen {
 impl StatFieldsScreen {
     pub fn new() -> Self {
         StatFieldsScreen::default()
+    }
+
+    /// True while the cursor sits on a deletable field row (not the trailing Add row) — the
+    /// hold-to-delete footer draws its fill then, so
+    /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a charging hold as
+    /// worth repainting here.
+    pub(crate) fn selection_is_deletable(&self, settings: &crate::Settings) -> bool {
+        self.selected < settings.stat_fields.len()
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -65,7 +78,7 @@ impl StatFieldsScreen {
                     }
                     self.selected = idx;
                 } else {
-                    self.selected = crate::screen::step_selection(self.selected, n, rows);
+                    return list::on_turn(&mut self.selected, n, rows);
                 }
                 Transition::None
             }
@@ -100,100 +113,109 @@ impl StatFieldsScreen {
         }
     }
 
-    /// First visible row of the scrolling window, as a **signed** offset (it can be negative).
-    /// Normally [`window_start`] (scroll to reveal the cursor, always `>= 0`); **while grabbed**, pin
-    /// the grabbed row to the middle slot for *every* position by scrolling the window virtually — so
-    /// near the list ends the row stays dead-centre and empty space shows above/below, rather than the
-    /// row drifting to the edge. The draw loop skips slots whose index falls outside `0..rows`. Pure,
-    /// so the pinning is unit-tested without rendering.
-    fn window_first(&self, visible: usize, rows: usize) -> i32 {
-        if self.grabbed {
-            self.selected as i32 - (visible / 2) as i32
-        } else {
-            window_start(self.selected, visible, rows) as i32
-        }
-    }
-
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use crate::screen::palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
-        let fields = rx.settings.stat_fields.as_slice();
-        let len = fields.len();
-        let add_row = len;
-        let rows = len + 1;
-        let mut cv = Canvas::new(target, color_fn);
+        let (w, h) = (rx.w, rx.h);
+        let list = rx.settings.stat_fields; // `Copy` — frees `rx` for the readout borrow below
+        let len = list.len();
 
-        title_frame(&mut cv, w, h, "FIELDS", "");
+        // The cursor's global slot decides the visible page; the ghost Add tile sits in the first
+        // free slot, so browsing to it flips to its page too.
+        let ghost_slot = stat_fields::next_free_slot(&list);
+        let cur_slot = stat_fields::slot_of(&list, self.selected).unwrap_or(ghost_slot);
+        let page = cur_slot / SLOTS_PER_PAGE;
+        let pages = ghost_slot / SLOTS_PER_PAGE + 1;
 
-        // Window the row list to what fits *above the reserved delete footer*, scrolling to keep the
-        // cursor visible (the Route-menu pattern), or anchoring the grabbed row.
-        let list_h = h - LIST_TOP - 6 - FOOTER_H;
-        let visible = (list_h / ROW_H).max(1) as usize;
-        let first = self.window_first(visible, rows);
+        let mut counter: heapless::String<8> = heapless::String::new();
+        if pages > 1 {
+            let _ = write!(counter, "{} / {}", page + 1, pages);
+        }
+        title_frame(cv, w, h, rx.t(Msg::FieldsTitle), &counter);
 
-        for slot in 0..visible {
-            // `first` is signed: while grabbed the window can scroll past either end, so some slots
-            // map outside the list — those draw as empty space (the pinned row stays centred).
-            let idx = first + slot as i32;
-            if idx < 0 || idx as usize >= rows {
-                continue;
-            }
-            let idx = idx as usize;
-            let y = LIST_TOP + slot as i32 * ROW_H;
-            let area = super::row_rect(0, y, w, ROW_H - 6);
-            let selected = idx == self.selected;
-
-            if idx == add_row {
-                // Add-field row: a plus + label.
-                super::row_cursor(&mut cv, area, selected, false);
-                let midy = area.top_left.y + (area.size.height as i32 - 22) / 2;
-                let px = area.top_left.x + 14;
-                let pcy = midy + 11;
-                cv.hline(px - 6, pcy, 13, INK);
-                cv.vline(px, pcy - 6, 13, 1, INK);
-                cv.text("Add field", Point::new(px + 18, midy), Font::Body, TextAlign::Left, INK);
+        // Tile geometry: the Statistics grid's columns and gaps, with the rows stretched into the
+        // space the chart occupies there — same arrangement, roomier panes.
+        let grid_w = w - 2 * GRID_X;
+        let col_w = (grid_w - GAP) / 2;
+        let row_h = (h - FOOTER_H - LIST_TOP - 2 * GAP - 6) / stat_fields::ROWS_PER_PAGE as i32;
+        // A field's rect from its slot + shape: a single fills one cell, a two-span the grid width,
+        // and the page-sized panel (`rows > 1`) the whole grid — full width, all three rows + gaps.
+        let tile_rect = |slot: usize, span: u8, rows: u8| {
+            let s = slot % SLOTS_PER_PAGE;
+            let (col, row) = ((s % COLS) as i32, (s / COLS) as i32);
+            let tw = if span == 2 { grid_w } else { col_w };
+            let th = if rows > 1 {
+                row_h * stat_fields::ROWS_PER_PAGE as i32 + GAP * (stat_fields::ROWS_PER_PAGE as i32 - 1)
             } else {
-                // A selected field row.
-                let f = fields[idx];
-                let grabbed = selected && self.grabbed;
-                // A grabbed row gets the amber fill plus up/down move arrows at its right edge;
-                // otherwise the plain row cursor (suppressed while grabbed so they don't double up).
-                super::row_cursor(&mut cv, area, selected, grabbed);
-                if grabbed {
-                    cv.round(area, 6, AMBER);
-                    move_arrows(&mut cv, area);
+                row_h
+            };
+            rect(GRID_X + col * (col_w + GAP), LIST_TOP + row * (row_h + GAP), tw, th)
+        };
+
+        // The page's tiles — live cells through the same drawers the Statistics grid uses (so the
+        // arrangement is WYSIWYG, the panel included).
+        let rdt = rx.readout();
+        for (i, f) in list.as_slice().iter().enumerate() {
+            let slot = stat_fields::slot_of(&list, i).unwrap_or(0);
+            if slot / SLOTS_PER_PAGE == page {
+                let area = tile_rect(slot, f.span(), f.rows());
+                let is_sel = i == self.selected;
+                let bg = if is_sel { AMBER } else { PARCHMENT_SHADE };
+                // Editor-only ghost content (T8 item 4): the editor has no route/live fix, so instead
+                // of the `--` the real drawers would show, tiles render a fixed olive sample value and
+                // the placed panel two sample rows — so a layout is judged against realistic content.
+                if f.rows() > 1 {
+                    crate::screen::waypoint_panel_ghost(cv, area, rdt.language, bg);
+                } else {
+                    let mut cell = f.cell(&rdt);
+                    ghost_value(*f, &mut cell);
+                    crate::screen::tile(
+                        cv,
+                        area,
+                        &cell.caption,
+                        &cell.value,
+                        cell.arrow,
+                        cell.value_align,
+                        bg,
+                        SUBTEXT,
+                    );
                 }
-                super::row_label(&mut cv, area, f.name(), None);
-                // A grabbed row's right edge carries the move arrows instead of the span badge.
-                if !grabbed {
-                    let badge_color = if selected { INK } else { SUBTEXT };
-                    super::span_badge(&mut cv, area, f.span(), badge_color);
+                if is_sel && self.grabbed {
+                    move_arrows(cv, area);
                 }
             }
         }
 
-        // The scrollbar wants the real (clamped) window position — the grabbed virtual offset can run
-        // negative / past the end, which isn't a meaningful thumb position.
-        let sb_first = first.clamp(0, rows.saturating_sub(visible) as i32) as usize;
-        scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, rows, sb_first, visible);
-        delete_footer(&mut cv, w, h, self.selected < len, rx.hold_progress);
-        RenderStats::default()
+        // The ghost Add tile: tile anatomy (caption + a plus where the value goes) in outline form.
+        if ghost_slot / SLOTS_PER_PAGE == page {
+            let area = tile_rect(ghost_slot, 1, 1);
+            let is_sel = self.selected == len;
+            if is_sel {
+                cv.round(area, 5, AMBER);
+            } else {
+                cv.round_outline(area, 5, RULE);
+                cv.round_outline(rect(area.top_left.x + 1, area.top_left.y + 1, col_w - 2, row_h - 2), 5, RULE);
+            }
+            let (x, y) = (area.top_left.x, area.top_left.y);
+            cv.text(
+                rx.t(Msg::FieldsAdd),
+                Point::new(x + 5, y + ((row_h - 48) / 2).max(4)),
+                Font::Label,
+                TextAlign::Left,
+                SUBTEXT,
+            );
+            let (px, py) = (x + col_w / 2, y + row_h / 2 + 8);
+            cv.hline(px - 8, py, 17, INK);
+            cv.vline(px, py - 8, 17, 2, INK);
+        }
+
+        delete_footer(cv, w, h, self.selected < len, rx.hold_progress);
     }
 }
 
-/// Draw the hold-to-delete footer: a trash can + a progress bar (warning-red) that fills with the
-/// live encoder hold, on a single row, echoing the Reset screen's confirm bar. Drawn only when a
-/// *field* row is highlighted (`on_field`); the Add row leaves it blank (just the separator). The
-/// actual delete fires from `handle`'s `Hold` arm when the hold completes.
-fn delete_footer<D, F>(cv: &mut Canvas<D, F>, w: i32, h: i32, on_field: bool, hold: f32)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+/// Draw the hold-to-delete footer: a trash can + a warning-red progress bar filled by the live
+/// encoder hold. Drawn only when a field row is highlighted (`on_field`); the Add row leaves it
+/// blank. The delete itself fires from `handle`'s `Hold` arm.
+fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, on_field: bool, hold: f32) {
     use crate::screen::palette::*;
     let fy = h - FOOTER_H;
     cv.hline(super::ROW_X, fy, w - 2 * super::ROW_X, RULE);
@@ -203,7 +225,6 @@ where
     let p = hold.clamp(0.0, 1.0);
     let midy = fy + FOOTER_H / 2;
     draw_trash(cv, super::ROW_X + 16, midy, WARNING);
-    // The bar fills the rest of the row to the right of the can, vertically centred on it.
     let bh = 12;
     let (bx, by) = (super::ROW_X + 36, midy - bh / 2);
     let bw = w - super::ROW_X - 4 - bx;
@@ -214,29 +235,73 @@ where
     }
 }
 
-/// Draw a small trash-can glyph centred at `(cx, cy)` in `color`: a lidded can with a handle and a
-/// couple of ribs, built from the canvas's line/rect primitives.
-fn draw_trash<D, F>(cv: &mut Canvas<D, F>, cx: i32, cy: i32, color: u16)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+/// Draw a small trash-can glyph centred at `(cx, cy)`: a lidded can with a handle and ribs.
+fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
     let (bw, bh) = (11, 12);
     let (bx, by) = (cx - bw / 2, cy - bh / 2 + 1);
-    cv.round_outline(rect(bx, by, bw, bh), 2, color); // the can body
-    cv.hline(bx - 2, by - 2, bw + 4, color); // the lid, slightly wider
-    cv.hline(cx - 2, by - 4, 5, color); // the lid handle
+    cv.round_outline(rect(bx, by, bw, bh), 2, color); // can body
+    cv.hline(bx - 2, by - 2, bw + 4, color); // lid
+    cv.hline(cx - 2, by - 4, 5, color); // handle
     cv.vline(cx - 2, by + 3, bh - 5, 1, color); // ribs
     cv.vline(cx + 2, by + 3, bh - 5, 1, color);
 }
 
-/// Draw the up/down move arrows on a grabbed row's right edge — the "rotate to move me" cue, echoing
-/// the stepper field's arrows but vertical.
-fn move_arrows<D, F>(cv: &mut Canvas<D, F>, area: Rectangle)
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
+/// The Fields editor's **ghost sample values** (T8 item 4): in the editor — never live riding — each
+/// tile shows a fixed, realistic sample in place of the `--` a route-less editor would otherwise
+/// draw, so a layout is judged against real-looking content. Overwrites the cell's value in place
+/// (and, for the wide `NextWaypoint` tile, its name caption). Round, plausible numbers per variant:
+///
+/// | Field         | ghost sample            |
+/// |---------------|-------------------------|
+/// | Speed         | `23.4`                  |
+/// | AvgSpeed      | `19.2`                  |
+/// | DistDone      | `42.5`                  |
+/// | DistToGo      | `12.3`                  |
+/// | Climbed       | `810`  (▲ prefix)       |
+/// | ToClimb       | `95`   (▲ prefix)       |
+/// | Grade         | `4%`                    |
+/// | Elevation     | `1240`                  |
+/// | RideTime      | `2:14:30`               |
+/// | Clock         | `14:32`                 |
+/// | NextWaypoint  | `Pass Summit` + `8.7km` |
+/// | WaypointList  | (drawn by [`waypoint_panel_ghost`](crate::screen::waypoint_panel_ghost)) |
+/// | HeartRate     | `152`                   |
+/// | Power         | `210`                   |
+/// | Cadence       | `88`                    |
+///
+/// The captions (unit labels) stay whatever `cell()` produced, so metric/imperial re-captioning still
+/// shows; only the value is a placeholder. The tile drawer paints it in olive `SUBTEXT`.
+fn ghost_value(field: crate::stat_fields::StatField, cell: &mut crate::stat_fields::StatCell) {
+    use crate::stat_fields::StatField as F;
+    let sample: &str = match field {
+        F::Speed => "23.4",
+        F::AvgSpeed => "19.2",
+        F::DistDone => "42.5",
+        F::DistToGo => "12.3",
+        F::Climbed => "810",
+        F::ToClimb => "95",
+        F::Grade => "4%",
+        F::Elevation => "1240",
+        F::RideTime => "2:14:30",
+        F::Clock => "14:32",
+        F::NextWaypoint => {
+            // The wide waypoint tile is a name caption + a right-aligned distance value.
+            cell.caption.clear();
+            let _ = cell.caption.push_str("Pass Summit");
+            "8.7km"
+        }
+        // The page-sized panel is drawn by `waypoint_panel_ghost`, never as a caption+value tile.
+        F::WaypointList => return,
+        F::HeartRate => "152",
+        F::Power => "210",
+        F::Cadence => "88",
+    };
+    cell.value.clear();
+    let _ = cell.value.push_str(sample);
+}
+
+/// Draw the up/down move arrows on a grabbed row's right edge — the "rotate to move me" cue.
+fn move_arrows(cv: &mut impl Surface, area: Rectangle) {
     use crate::screen::palette::INK;
     let x = area.top_left.x + area.size.width as i32 - 16;
     let midy = area.top_left.y + area.size.height as i32 / 2;
@@ -253,7 +318,19 @@ mod tests {
     fn run(scr: &mut StatFieldsScreen, s: &mut Settings, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
-        let mut cx = Ctx { state: &mut st, activity: &mut act, settings: s, routes: &[], now_ms: 0 };
+        let scratch = crate::screen::PoiScratch::new();
+        let mut cx = Ctx {
+            state: &mut st,
+            activity: &mut act,
+            settings: s,
+            routes: &[],
+            rides: &[],
+            trips: &[],
+            nav_profiles: &crate::NavProfiles::EMPTY,
+            poi_scratch: &scratch,
+            sensor_scan_hits: &[],
+            now_ms: 0,
+        };
         scr.handle(g, &mut cx)
     }
 
@@ -324,28 +401,49 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "a second back pops");
     }
 
-    /// While a field is grabbed the window pins it to the middle slot for **every** position —
-    /// including at the very ends, where the window scrolls "negative"/past the end so the row stays
-    /// centred (empty space above/below) rather than drifting to the edge. Ungrabbed, the window is
-    /// the plain scroll-to-reveal.
+    /// Grabbing the page-sized waypoint panel and turning moves it a whole page per detent, the
+    /// cursor following it across pages — the editor path over the new multi-row machinery.
     #[test]
-    fn grabbed_row_stays_pinned_mid_window() {
-        let (visible, rows) = (5usize, 14usize);
-        let plain = StatFieldsScreen { selected: 8, grabbed: false };
-        assert_eq!(
-            plain.window_first(visible, rows),
-            window_start(8, visible, rows) as i32,
-            "ungrabbed = plain scroll"
-        );
-
-        // For every selection — top, interior, bottom — the grabbed row sits at the mid slot.
-        for sel in 0..rows {
-            let s = StatFieldsScreen { selected: sel, grabbed: true };
-            let slot = sel as i32 - s.window_first(visible, rows);
-            assert_eq!(slot, (visible / 2) as i32, "the grabbed row stays pinned mid-window (sel={sel})");
+    fn grabbing_the_panel_moves_it_page_to_page() {
+        use crate::stat_fields::StatField;
+        let mut s = Settings::default(); // six single-span defaults (page 0, full)
+        assert!(s.stat_fields.push(StatField::WaypointList));
+        let panel_idx = s.stat_fields.len() - 1; // 6 — the panel trails the six, on page 1
+        let mut scr = StatFieldsScreen::new();
+        // Walk the cursor onto the panel, confirm it starts on page 1, then grab it.
+        for _ in 0..panel_idx {
+            run(&mut scr, &mut s, Gesture::Turn(1));
         }
-        // At the top the window offset really does go negative (empty space above the pinned row).
-        let top = StatFieldsScreen { selected: 0, grabbed: true };
-        assert!(top.window_first(visible, rows) < 0, "grabbing the first row scrolls the window past the top");
+        assert_eq!(scr.selected, panel_idx);
+        assert_eq!(stat_fields::slot_of(&s.stat_fields, panel_idx).unwrap() / SLOTS_PER_PAGE, 1, "panel on page 1");
+        run(&mut scr, &mut s, Gesture::Press); // grab
+        assert!(scr.grabbed);
+        // Up: hops the whole page to the front; the cursor follows.
+        run(&mut scr, &mut s, Gesture::Turn(-1));
+        assert_eq!(scr.selected, 0, "the cursor follows the panel to page 0");
+        assert_eq!(s.stat_fields.as_slice()[0], StatField::WaypointList);
+        assert_eq!(stat_fields::slot_of(&s.stat_fields, 0).unwrap() / SLOTS_PER_PAGE, 0, "now on page 0");
+        // Down: hops a whole page back, cursor still following.
+        run(&mut scr, &mut s, Gesture::Turn(1));
+        assert_eq!(scr.selected, panel_idx, "and back down a page");
+        assert_eq!(s.stat_fields.as_slice()[panel_idx], StatField::WaypointList);
+    }
+
+    /// The editor's cursor→page mapping: with seven fields (two pages), walking the cursor past
+    /// the sixth tile lands on page 2 — and the ghost Add tile (index == len) lives on the page
+    /// after the last field's.
+    #[test]
+    fn cursor_page_follows_the_placement_walk() {
+        let mut s = Settings::default(); // six single-span fields — page 1 exactly full
+        s.stat_fields.push(crate::stat_fields::StatField::Clock);
+        let list = s.stat_fields;
+        // Fields 0..=5 sit on page 0, the clock (index 6) on page 1.
+        for i in 0..6 {
+            assert_eq!(stat_fields::slot_of(&list, i).unwrap() / SLOTS_PER_PAGE, 0, "field {i} is on page 1");
+        }
+        assert_eq!(stat_fields::slot_of(&list, 6).unwrap() / SLOTS_PER_PAGE, 1, "the clock starts page 2");
+        // The ghost Add tile follows the clock on page 2 (the 2-span clock consumed slots 6..8).
+        assert_eq!(stat_fields::next_free_slot(&list) / SLOTS_PER_PAGE, 1, "the Add ghost shares page 2");
+        assert_eq!(stat_fields::slot_of(&list, 7), None, "past the selection there is no slot");
     }
 }

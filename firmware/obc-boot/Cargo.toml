@@ -1,0 +1,72 @@
+[package]
+name = "obc-boot"
+version = "0.1.0"
+edition = "2021"
+publish = false # board bootloader — not published to crates.io
+description = "obc-boot — the 32 KB nRF54L bootloader (SD-staged DFU, epic #615). Reads the BOOT_STATE RRAM page, decides via obc-dfu, and jumps to the app at 0x8000. S2 (#617) has no install logic yet; S3 (#618) adds the verify → flash → trial → rollback engine."
+
+# Standalone crate with its own (empty) workspace table so the firmware/ host
+# workspace — which builds its members for the host target — ignores this crate.
+# Built for thumbv8m.main-none-eabihf via the crate-local .cargo/config.toml
+# (same pattern as obc-fw-nrf54l). Its own Cargo.lock is committed.
+[workspace]
+
+[features]
+# The default build is silent: no defmt, no RTT, no panic printer. The 32 KB flash budget
+# (CI's size guard) is measured on THIS shape and must never depend on logging being off
+# by hand — `rtt` is a debug aid, not a shipping configuration.
+default = []
+
+# defmt logging over RTT via the DK's onboard J-Link — bring-up/debug only. Adds the defmt
+# interned-string section to the link (see build.rs) and swaps the panic handler for
+# panic-probe's printing one.
+rtt = ["dep:defmt", "dep:defmt-rtt", "dep:panic-probe", "embassy-nrf/defmt"]
+
+[dependencies]
+# `SCB` (VTOR) + `NVIC` register access and `asm::{delay, bootload}` for the handoff jump.
+# `inline-asm` for the asm module; `critical-section-single-core` provides the
+# critical-section impl embassy-nrf/defmt need (no BLE/MPSL here, ever — the bootloader has
+# no radio, so the board crate's `cs-single-core` juggling doesn't apply).
+# Same 0.7 pin as the board crate (cortex-m 0.7.7 in its lock).
+cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
+# Reset handler + vector table. Same 0.7 pin as the board crate (0.7.5 in its lock).
+cortex-m-rt = "0.7"
+
+# Blocking HAL only — **no executor, no time driver, no gpiote**: this crate needs exactly
+# GPIO for the LED codes, blocking Spim for the SD card, and Rramc for the app-slot/state
+# writes. `nrf54l15-app-s` matches the board crate's die selection; the version pin matches
+# its Cargo.lock (embassy-nrf 0.11.0).
+embassy-nrf = { version = "0.11.0", features = ["nrf54l15-app-s"] }
+# `SetConfig` only — the seam for re-clocking the SD bus 250 kHz → 8 MHz after card init
+# (same as the board crate's sd::init). No default features (no time driver here).
+embassy-embedded-hal = { version = "0.6.0", default-features = false }
+
+# The SD card driver, raw block reads ONLY — **no VolumeManager, no FAT** (extents in the
+# boot state are pre-resolved absolute blocks). `default-features = false` and the version
+# pins match the board crate's Cargo.lock (embedded-sdmmc 0.9.0, embedded-hal-bus 0.3.0,
+# embedded-hal 1.0.0) so the two SD stacks can never skew.
+embedded-sdmmc = { version = "0.9", default-features = false }
+# The held-low-CS `ExclusiveDevice` wrapper (see sd.rs::NoCs) …
+embedded-hal-bus = "0.3"
+# … and the `DelayNs` / `OutputPin` traits it and the card driver want.
+embedded-hal = "1.0"
+# `NorFlash`/`ReadNorFlash` — the traits embassy-nrf's Rramc implements (same dep the board
+# crate's settings store uses).
+embedded-storage = "0.3"
+
+# The boot-state page codec + the pure boot decision — ALL logic lives there (host-tested);
+# this crate is a dumb driver so review is the verification.
+obc-dfu = { path = "../obc-dfu" }
+
+# Debug-only logging (the `rtt` feature above). Same 1.0 pins as the board crate.
+defmt = { version = "1.0", optional = true }
+defmt-rtt = { version = "1.0", optional = true }
+panic-probe = { version = "1.0", features = ["print-defmt"], optional = true }
+
+[profile.release]
+# `opt-level = "s"` (not the board crate's 3): the bootloader has no hot path — every byte
+# spent is budget for S3's install engine inside the CI-guarded 32 KB.
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+debug = 2

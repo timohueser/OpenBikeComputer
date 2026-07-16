@@ -1,14 +1,14 @@
-//! The Add Field picker — the [`StatFields`](super::StatFieldsScreen) screen's `Add field` row opens
-//! it to a wrapping list of every predefined field **not yet** on the grid. `press` adds the
-//! highlighted field (to the end of the selection) and returns; `back` returns without adding. When
-//! every field is already shown it's a quiet empty state rather than a blank list.
+//! The Add Field picker — a wrapping list of every predefined field not yet on the grid. `press`
+//! adds the highlighted field to the end of the selection and returns; `back` returns without adding.
+//! When every field is already shown it's a quiet empty state.
 
-use embedded_graphics::prelude::DrawTarget;
-use obc_render::{Canvas, RenderStats};
+use obc_render::Surface;
 
 use crate::input::Gesture;
-use crate::screen::{scrollbar, title_frame, window_start, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::list::{self, ListGeometry, Separators};
+use crate::screen::{Ctx, Render, Transition};
 use crate::stat_fields::StatField;
+use crate::Msg;
 
 /// Per-row height — matches the Stat Fields list so the two read identically.
 const ROW_H: i32 = 46;
@@ -32,10 +32,7 @@ impl AddFieldScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let avail = hidden(&cx.settings.stat_fields);
         match g {
-            Gesture::Turn(n) => {
-                self.selected = crate::screen::step_selection(self.selected, n, avail.len());
-                Transition::None
-            }
+            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, avail.len()),
             // Add the highlighted field to the end of the grid and return to the manage screen.
             Gesture::Press if !avail.is_empty() => {
                 let f = avail[self.selected.min(avail.len() - 1)];
@@ -47,45 +44,28 @@ impl AddFieldScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, target: &mut D, rx: &mut Render, color_fn: &F) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use crate::screen::palette::*;
-        let (w, h) = (rx.w as i32, rx.h as i32);
+        let (w, h) = (rx.w, rx.h);
         let avail = hidden(&rx.settings.stat_fields);
         let total = avail.len();
-        let mut cv = Canvas::new(target, color_fn);
+        let geo = ListGeometry::below_title(w, h, ROW_H, 6, super::ROW_X, Separators::None);
 
-        title_frame(&mut cv, w, h, "ADD FIELD", "");
+        let sel = if total == 0 { 0 } else { self.selected.min(total - 1) };
+        list::list_frame(cv, w, h, rx.t(Msg::AddFieldTitle), sel + 1, total, geo.visible);
 
         if total == 0 {
-            super::super::empty_state(&mut cv, w, h, "All fields added", "Remove one to swap");
-            return RenderStats::default();
+            super::empty_state(cv, w, h, rx.t(Msg::AddFieldAllAdded), rx.t(Msg::AddFieldAllAddedSub));
+            return;
         }
 
-        let list_h = h - LIST_TOP - 6;
-        let visible = (list_h / ROW_H).max(1) as usize;
-        let sel = self.selected.min(total - 1);
-        let first = window_start(sel, visible, total);
-
-        for slot in 0..visible {
-            let i = first + slot;
-            if i >= total {
-                break;
-            }
-            let f = avail[i];
-            let y = LIST_TOP + slot as i32 * ROW_H;
-            let area = super::row_rect(0, y, w, ROW_H - 6);
-            let selected = i == sel;
-            super::row_cursor(&mut cv, area, selected, false);
-            super::row_label(&mut cv, area, f.name(), None);
-            let badge_color = if selected { INK } else { SUBTEXT };
-            super::span_badge(&mut cv, area, f.span(), badge_color);
-        }
-
-        scrollbar(&mut cv, w - 8, LIST_TOP, visible as i32 * ROW_H, total, first, visible);
-        RenderStats::default()
+        let lang = rx.settings.language;
+        let first = list::window_start(sel, geo.visible, total) as i32;
+        list::draw_rows(cv, geo, total, sel, first, |cv, row| {
+            let f = avail[row.index];
+            super::row_label(cv, row.area, f.name(lang), None);
+            let badge_color = if row.selected { INK } else { SUBTEXT };
+            super::span_badge(cv, row.area, f.span(), badge_color);
+        });
     }
 }

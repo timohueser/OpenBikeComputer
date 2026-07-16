@@ -823,9 +823,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -918,6 +918,12 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ecolor"
@@ -1486,10 +1492,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "wasi",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -2350,9 +2354,25 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
+ "libm",
+ "obc-formats",
+ "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-route",
+ "obcm-testkit",
+]
+
+[[package]]
+name = "obc-bench"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "obc-app",
+ "obc-display",
+ "obc-reader",
+ "obc-render",
+ "obcm-testkit",
 ]
 
 [[package]]
@@ -2363,15 +2383,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-dfu"
+version = "0.1.0"
+
+[[package]]
+name = "obc-display"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "obc-reader",
+ "pollster",
+]
+
+[[package]]
+name = "obc-formats"
+version = "0.1.0"
+dependencies = [
+ "obc-ports",
+]
+
+[[package]]
+name = "obc-host-core"
+version = "0.1.0"
+dependencies = [
+ "obc-app",
+ "obc-formats",
+ "obc-ports",
+ "obc-reader",
+ "obc-replay",
+ "obc-route",
+]
+
+[[package]]
+name = "obc-map-scene"
+version = "0.1.0"
+dependencies = [
+ "heapless 0.8.0",
+ "libm",
+]
+
+[[package]]
+name = "obc-mkimage"
+version = "0.1.0"
+dependencies = [
+ "obc-dfu",
+]
+
+[[package]]
 name = "obc-pack"
 version = "0.1.0"
 dependencies = [
  "geos",
  "heapless 0.8.0",
+ "indexmap",
+ "obc-formats",
  "obc-reader",
  "osmpbf",
  "rayon",
+ "schemars",
+ "serde",
  "serde_json",
+ "serde_path_to_error",
 ]
 
 [[package]]
@@ -2382,21 +2454,25 @@ dependencies = [
  "embassy-futures",
  "embassy-sync",
  "embassy-time",
- "embedded-graphics",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "embedded-sdmmc",
  "heapless 0.8.0",
- "libm",
- "obc-app",
+ "obc-ports",
  "obc-route",
 ]
+
+[[package]]
+name = "obc-ports"
+version = "0.1.0"
 
 [[package]]
 name = "obc-reader"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "libm",
+ "obc-formats",
+ "obc-map-scene",
  "obcm-testkit",
 ]
 
@@ -2407,8 +2483,9 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-formats",
+ "obc-map-scene",
  "obc-reader",
- "obc-route",
  "obcm-testkit",
 ]
 
@@ -2416,7 +2493,7 @@ dependencies = [
 name = "obc-replay"
 version = "0.1.0"
 dependencies = [
- "obc-app",
+ "obc-ports",
 ]
 
 [[package]]
@@ -2425,28 +2502,49 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-formats",
+ "obc-pack",
+ "obc-ports",
  "obc-reader",
+]
+
+[[package]]
+name = "obc-sensors"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "obc-ports",
 ]
 
 [[package]]
 name = "obc-sim"
 version = "0.1.0"
 dependencies = [
- "console_error_panic_hook",
  "eframe",
  "embedded-graphics",
- "getrandom 0.2.17",
  "image",
- "log",
  "obc-app",
- "obc-platform",
+ "obc-dfu",
+ "obc-display",
+ "obc-formats",
+ "obc-host-core",
+ "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-replay",
  "obc-route",
+ "pollster",
  "rfd",
- "wasm-bindgen-futures",
- "web-time",
+]
+
+[[package]]
+name = "obc-storage"
+version = "0.1.0"
+dependencies = [
+ "embedded-sdmmc",
+ "heapless 0.8.0",
+ "obc-formats",
+ "obc-ports",
 ]
 
 [[package]]
@@ -2456,6 +2554,7 @@ dependencies = [
  "eframe",
  "obc-app",
  "obc-platform",
+ "obc-ports",
  "obc-replay",
  "rfd",
  "serialport",
@@ -2466,12 +2565,34 @@ name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "obc-formats",
  "obc-route",
+]
+
+[[package]]
+name = "obc-web-demo"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "embedded-graphics",
+ "heapless 0.8.0",
+ "js-sys",
+ "obc-app",
+ "obc-display",
+ "obc-host-core",
+ "obc-reader",
+ "obc-render",
+ "obc-replay",
+ "obc-route",
+ "wasm-bindgen",
 ]
 
 [[package]]
 name = "obcm-testkit"
 version = "0.1.0"
+dependencies = [
+ "obc-formats",
+]
 
 [[package]]
 name = "objc"
@@ -3184,6 +3305,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f354300ae66f76f1c85c5f84693f0ce81d747e2c3f21a45fef496d89c960bf7d"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7186006dcb21920990093f30e3dea63b7d6e977bf1256be20c3563a5db070da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3304,6 +3445,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d115b50f4aaeea07e79c1912f645c7513d81715d0420f8bc77a18c6260b307f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3365,6 +3531,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_derive_internals"
+version = "0.29.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3376,6 +3553,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

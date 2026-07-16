@@ -1,0 +1,22 @@
+[package]
+name = "obc-display"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
+description = "Board-agnostic no_std display seam: the generic native-frame + presentation capability contracts every backend implements, the RGB222/RGB565 framebuffer DrawTargets the shared renderer writes into, the banded Panel window view, and the LS021B7DD02/FLPR pairing (row-hash damage, wire pack, mutate-and-restore overlay composite). embedded-graphics only — no embassy, no board transport, no app state."
+
+[dependencies]
+# The `DrawTarget` / `Rgb565` the framebuffer implements + the `Point`/`Size`/geometry the
+# contracts speak — pinned to the same 0.8 the renderer and app use so the target type unifies
+# across the path deps. This is the crate's *only* production dependency: the display seam pulls
+# neither embassy, nor the SD stack, nor app/UI state.
+embedded-graphics = "0.8"
+
+[dev-dependencies]
+# The reader's RGB565→device-64 quantizer, so the framebuffer/ls021 tests can pin the panel-plane
+# pack against it exhaustively (the two implement the same quantization and must never drift).
+obc-reader = { path = "../obc-reader" }
+
+# Drives the async display-contract presents in host tests (they complete synchronously on the
+# host) — the same minimal block_on the simulator already uses, so no new lockfile entry.
+pollster = "0.3"

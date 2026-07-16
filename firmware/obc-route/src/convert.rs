@@ -1,4 +1,4 @@
-//! GPX → OBCR conversion (`no_std`).
+//! GPX → OBCR conversion (`no_std`), plus the shared streaming OBCR emitter.
 //!
 //! A single streaming pass over the GPX track points ([`GpxScanner`]) that
 //! simultaneously: accumulates **exact** ride stats (distance via incremental
@@ -8,18 +8,23 @@
 //! points — streaming each finished chunk out through the [`ByteSink`] while keeping
 //! only a bounded index in RAM. The header is written last (`patch_at(0, …)`) once the
 //! offsets and totals are known. See `OBCR_Spec.md` §5.
+//!
+//! The format-shaped middle of that pass — reserve header, decimate + densify, chunk,
+//! index, backfill — is [`ObcrEmitter`], shared with the nav router's route emit
+//! ([`crate::nav`], #465) so the two OBCR producers can't drift; only the *stats* each
+//! producer bakes into the header (elevation figures, waypoints, the distance total)
+//! stay caller-side.
 
 use heapless::Vec;
 
-use crate::byte_io::{ByteSink, ByteSource, Error};
 use crate::deadband::DeadBand;
 use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::{GpxScanner, RawWaypoint, WptScanner};
-use crate::reader::{
-    ChunkMeta, CHUNK_META_LEN, HEADER_V2_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, NAME_CAP, WAYPOINT_ELE_NONE,
-    WAYPOINT_LEN,
+use crate::reader::{ChunkMeta, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS};
+use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, ByteSource, Error};
+use obc_formats::obcr::{
+    CHUNK_META_LEN, HEADER_V2_LEN, MAGIC, NAME_CAP, POINT_RECORD_LEN, VERSION, WAYPOINT_ELE_NONE, WAYPOINT_LEN,
 };
-use obc_reader::codec::{put_i16, put_i32, put_u16, put_u32};
 use obc_reader::BBox;
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
@@ -30,17 +35,12 @@ const EPSILON_M: f32 = 1.0;
 const MAX_SPAN_M: f32 = 1200.0;
 /// Largest stored per-vertex coordinate delta (µdeg). A longer segment is split with
 /// interpolated vertices so `(x - px) as i16` never wraps — including a 2-point track whose one
-/// segment has no intermediate candidate for the `MAX_SPAN_M` rule to keep (issue #110). Mirrors
-/// the OBCM packer's `MAX_SEGMENT` so both formats densify on the same threshold.
+/// segment has no intermediate candidate for the `MAX_SPAN_M` rule to keep. Mirrors the OBCM
+/// packer's `MAX_SEGMENT` so both formats densify on the same threshold.
 const MAX_SEGMENT_UDEG: i64 = 30_000;
 
 /// Max bytes of one chunk's record body (`(points-1) × 6`).
-const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * 6;
-
-/// Converter emission cap for `<wpt>` waypoints (bounds the resident collection pass;
-/// extras past the cap are dropped). The *format* allows up to `u16::MAX` — the
-/// phone-side OBCR encoder is not bound by this.
-pub const MAX_WAYPOINTS: usize = 32;
+const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN;
 
 /// Stats computed during conversion (also written into the header).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,8 +59,7 @@ pub struct RouteStats {
 /// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route
 /// `name`. Returns the computed [`RouteStats`].
 pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
-    // Reserve the v2 header; the body follows immediately (data_offset = HEADER_V2_LEN).
-    sink.write(&[0u8; HEADER_V2_LEN])?;
+    let mut em = ObcrEmitter::new(sink)?;
 
     // Waypoint pass first (GPX carries `<wpt>` file-level, before the track): collect
     // up to MAX_WAYPOINTS into a bounded resident set, then place each on the track
@@ -76,37 +75,16 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
         }
     }
 
-    let mut enc = Encoder::new(HEADER_V2_LEN as u32);
     let mut scan = GpxScanner::new(src);
 
-    // Running stats. `cum_dist` accumulates in `f64`: each per-segment distance is a small
-    // `f32` (see `geo`), but a long route's running total needs the dynamic range — `f32`'s
-    // ~7 significant digits resolve a 300 km total to only ~3 cm and would drift over
-    // thousands of segments.
-    let mut cum_dist = 0f64;
-    // Dead-banded ascent/descent (shared with the elevation profile + app climb).
+    // Dead-banded ascent/descent (shared with the elevation profile + app climb);
+    // min/max track the raw <ele> values. The emitter owns distance/geometry.
     let mut elev = DeadBand::<f64>::new();
-    let mut prev: Option<(i32, i32)> = None;
     let mut last_ele = 0f32;
     let mut min_ele = i16::MAX;
     let mut max_ele = i16::MIN;
-    let mut bbox: Option<BBox> = None;
-    let mut start = (0i32, 0i32);
-    let mut emitted = 0u32;
-
-    // Decimation state (1-step lookahead).
-    let mut last_kept: Option<Cand> = None;
-    let mut pending: Option<Cand> = None;
 
     while let Some(p) = scan.next_point()? {
-        // Distance from the previous raw point.
-        if let Some(pr) = prev {
-            cum_dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
-        } else {
-            start = (p.lon, p.lat);
-        }
-        prev = Some((p.lon, p.lat));
-
         // Elevation: carry the last known value when a point lacks <ele>.
         if let Some(e) = p.ele {
             last_ele = e;
@@ -115,12 +93,11 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
         }
         elev.push(last_ele as f64);
 
-        bbox = Some(grow(bbox, p.lon, p.lat));
+        em.push(sink, p.lon, p.lat, round_i16(last_ele as f64), elev.ascent() as u32)?;
 
-        // Waypoint placement: nearest **raw** track point wins; its cumulative distance
-        // is the waypoint's position along the route. Matches the phone importer's
-        // `WaypointPlacement` (nearest-point, not segment projection) so the two OBCR
-        // producers agree; raw GPX points are dense enough that the difference is noise.
+        // Waypoint placement: nearest **raw** track point wins; its cumulative distance is
+        // the waypoint's position along the route. Matches the phone importer's nearest-point
+        // (not segment-projection) placement so the two OBCR producers agree.
         if !wps.is_empty() {
             let cl = cos_lat(p.lat);
             for w in wps.iter_mut() {
@@ -128,73 +105,170 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
                 let d2 = dx * dx + dy * dy;
                 if d2 < w.best_d2 {
                     w.best_d2 = d2;
-                    w.along_m = cum_dist as u32;
+                    w.along_m = em.cum_dist() as u32;
                 }
             }
         }
-
-        // Feed the decimator; each "kept" point is emitted to the encoder.
-        let c = Cand {
-            lon: p.lon,
-            lat: p.lat,
-            ele: round_i16(last_ele as f64),
-            cum_d: cum_dist as u32,
-            cum_a: elev.ascent() as u32,
-        };
-        match (last_kept, pending) {
-            (None, _) => {
-                emitted += emit_densified(&mut enc, sink, None, c)?;
-                last_kept = Some(c);
-            }
-            (Some(_), None) => pending = Some(c),
-            (Some(lk), Some(pd)) => {
-                let perp = perp_dist_m(lk, c, pd);
-                let span = (c.cum_d - lk.cum_d) as f32;
-                if perp > EPSILON_M || span > MAX_SPAN_M {
-                    emitted += emit_densified(&mut enc, sink, Some(lk), pd)?;
-                    last_kept = Some(pd);
-                }
-                pending = Some(c);
-            }
-        }
-    }
-    // The final point is always kept.
-    if let Some(pd) = pending {
-        emitted += emit_densified(&mut enc, sink, last_kept, pd)?;
     }
 
-    if emitted == 0 {
-        return Err(Error::Empty);
-    }
-
-    enc.finish(sink)?;
-    let index_offset = enc.write_index(sink)?;
-    let wpt_offset = write_waypoints(sink, &mut wps, index_offset + enc.index.len() as u32 * CHUNK_META_LEN as u32)?;
-
-    let bbox = bbox.unwrap_or(BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 });
     if min_ele > max_ele {
         min_ele = 0;
         max_ele = 0;
     }
-    let stats = RouteStats {
-        point_count: emitted,
-        chunk_count: enc.index.len() as u32,
-        total_distance_m: cum_dist as u32,
-        total_ascent_m: elev.ascent() as u32,
-        total_descent_m: elev.descent() as u32,
+    let stats = EmitStats {
         min_ele_m: min_ele,
         max_ele_m: max_ele,
-        waypoint_count: wps.len() as u16,
+        ascent_m: elev.ascent() as u32,
+        descent_m: elev.descent() as u32,
+        total_distance_m: None,
     };
+    em.finish(sink, name, stats, &mut wps)
+}
 
-    let header = build_header(name, &bbox, start, index_offset, wpt_offset, &stats);
-    sink.patch_at(0, &header)?;
-    Ok(stats)
+/// The producer-owned figures [`ObcrEmitter::finish`] bakes into the header: the elevation
+/// stats the caller tracked (GPX: dead-banded over raw `<ele>`; nav routes: all zero — no DEM)
+/// and an optional total-distance override (the router stores summed edge costs, the length
+/// #116 locked, rather than the emitter's re-measured polyline distance).
+pub(crate) struct EmitStats {
+    pub min_ele_m: i16,
+    pub max_ele_m: i16,
+    pub ascent_m: u32,
+    pub descent_m: u32,
+    /// `None` ⇒ the emitter's cumulative raw-path distance.
+    pub total_distance_m: Option<u32>,
+}
+
+/// The streaming OBCR writer shared by [`gpx_to_obcr`] and the nav router's emit
+/// ([`crate::nav`]): reserves the v2 header up front, feeds raw points through the
+/// 1-step-lookahead decimator and the `int16`-delta densify guard into the chunk
+/// [`Encoder`], then backfills the header once offsets and totals are known. Owns every
+/// format/geometry invariant (bbox growth, start point, cumulative distance, chunk
+/// seams) so the two OBCR producers stay byte-compatible by construction; per-producer
+/// stats come in through [`ObcrEmitter::finish`]'s [`EmitStats`].
+pub(crate) struct ObcrEmitter {
+    enc: Encoder,
+    /// Cumulative raw-path distance in `f64`: each per-segment distance is a small `f32`
+    /// (see `geo`), but a long route's running total needs the dynamic range — `f32`'s
+    /// ~7 significant digits resolve a 300 km total to only ~3 cm and would drift over
+    /// thousands of segments.
+    cum_dist: f64,
+    prev: Option<(i32, i32)>,
+    bbox: Option<BBox>,
+    start: (i32, i32),
+    emitted: u32,
+    // Decimation state (1-step lookahead).
+    last_kept: Option<Cand>,
+    pending: Option<Cand>,
+}
+
+impl ObcrEmitter {
+    /// Reserve the v2 header on `sink`; the body follows immediately
+    /// (`data_offset = HEADER_V2_LEN`).
+    pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrEmitter, Error> {
+        sink.write(&[0u8; HEADER_V2_LEN])?;
+        Ok(ObcrEmitter {
+            enc: Encoder::new(HEADER_V2_LEN as u32),
+            cum_dist: 0.0,
+            prev: None,
+            bbox: None,
+            start: (0, 0),
+            emitted: 0,
+            last_kept: None,
+            pending: None,
+        })
+    }
+
+    /// Cumulative raw-path distance so far (m) — includes the point just pushed, so the GPX
+    /// pass reads it for waypoint `along_m` placement.
+    #[inline]
+    pub(crate) fn cum_dist(&self) -> f64 {
+        self.cum_dist
+    }
+
+    /// Feed one raw point: accumulate distance/bbox, then run the decimator — each kept
+    /// point is emitted (densified) to the encoder.
+    pub(crate) fn push(
+        &mut self,
+        sink: &mut dyn ByteSink,
+        lon: i32,
+        lat: i32,
+        ele: i16,
+        cum_ascent: u32,
+    ) -> Result<(), Error> {
+        // Distance from the previous raw point.
+        if let Some(pr) = self.prev {
+            self.cum_dist += seg_dist_m(pr, (lon, lat)) as f64;
+        } else {
+            self.start = (lon, lat);
+        }
+        self.prev = Some((lon, lat));
+        self.bbox = Some(grow(self.bbox, lon, lat));
+
+        let c = Cand { lon, lat, ele, cum_d: self.cum_dist as u32, cum_a: cum_ascent };
+        match (self.last_kept, self.pending) {
+            (None, _) => {
+                self.emitted += emit_densified(&mut self.enc, sink, None, c)?;
+                self.last_kept = Some(c);
+            }
+            (Some(_), None) => self.pending = Some(c),
+            (Some(lk), Some(pd)) => {
+                let perp = perp_dist_m(lk, c, pd);
+                let span = (c.cum_d - lk.cum_d) as f32;
+                if perp > EPSILON_M || span > MAX_SPAN_M {
+                    self.emitted += emit_densified(&mut self.enc, sink, Some(lk), pd)?;
+                    self.last_kept = Some(pd);
+                }
+                self.pending = Some(c);
+            }
+        }
+        Ok(())
+    }
+
+    /// Flush the trailing point, write the chunk index + waypoint table, and backfill the
+    /// header. `Error::Empty` if no point was ever pushed. `wps` is the (already collected)
+    /// waypoint set — pass an empty one for a waypoint-free route.
+    pub(crate) fn finish(
+        mut self,
+        sink: &mut dyn ByteSink,
+        name: &str,
+        stats: EmitStats,
+        wps: &mut Vec<WpPlace, MAX_WAYPOINTS>,
+    ) -> Result<RouteStats, Error> {
+        // The final point is always kept.
+        if let Some(pd) = self.pending {
+            self.emitted += emit_densified(&mut self.enc, sink, self.last_kept, pd)?;
+        }
+        if self.emitted == 0 {
+            return Err(Error::Empty);
+        }
+
+        self.enc.finish(sink)?;
+        let index_offset = self.enc.write_index(sink)?;
+        let wpt_offset =
+            write_waypoints(sink, wps, index_offset + self.enc.index.len() as u32 * CHUNK_META_LEN as u32)?;
+
+        let bbox = self.bbox.unwrap_or(BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 });
+        let stats = RouteStats {
+            point_count: self.emitted,
+            chunk_count: self.enc.index.len() as u32,
+            total_distance_m: stats.total_distance_m.unwrap_or(self.cum_dist as u32),
+            total_ascent_m: stats.ascent_m,
+            total_descent_m: stats.descent_m,
+            min_ele_m: stats.min_ele_m,
+            max_ele_m: stats.max_ele_m,
+            waypoint_count: wps.len() as u16,
+        };
+
+        let header = build_header(name, &bbox, self.start, index_offset, wpt_offset, &stats);
+        sink.patch_at(0, &header)?;
+        Ok(stats)
+    }
 }
 
 /// A waypoint being placed: the raw `<wpt>` plus the best (squared) distance to any
-/// raw track point seen so far and the cumulative route distance there.
-struct WpPlace {
+/// raw track point seen so far and the cumulative route distance there. `pub(crate)`
+/// only so the nav router can hand [`ObcrEmitter::finish`] an empty set.
+pub(crate) struct WpPlace {
     wp: RawWaypoint,
     best_d2: f32,
     along_m: u32,
@@ -244,11 +318,10 @@ struct Cand {
 /// start), or `None` for the very first point. Returns the count emitted (synthetic
 /// intermediates + `c`) so the caller's running total stays exact.
 ///
-/// The decimator's `MAX_SPAN_M` rule only force-keeps an intermediate *raw* candidate between
-/// two kept vertices; a single raw segment with no candidate — a 2-point planner export, a
-/// sparse connector leg — was therefore stored as one oversized delta that silently wrapped
-/// (issue #110). Splitting the span itself here makes the `int16` guard candidate-independent,
-/// mirroring the OBCM packer's `densify` on the same `MAX_SEGMENT_UDEG` threshold.
+/// `MAX_SPAN_M` only force-keeps an intermediate *raw* candidate between two kept vertices; a
+/// single raw segment with no candidate (e.g. a 2-point export) would otherwise be stored as
+/// one oversized delta that silently wraps `int16`. Splitting the span here makes the guard
+/// candidate-independent, mirroring the OBCM packer's `densify` on `MAX_SEGMENT_UDEG`.
 fn emit_densified(enc: &mut Encoder, sink: &mut dyn ByteSink, prev: Option<Cand>, c: Cand) -> Result<u32, Error> {
     let prev = match prev {
         Some(p) => p,
@@ -399,9 +472,9 @@ fn build_header(
     s: &RouteStats,
 ) -> [u8; HEADER_V2_LEN] {
     let mut h = [0u8; HEADER_V2_LEN];
-    h[0..4].copy_from_slice(b"OBCR");
-    h[4] = 2; // version
-              // h[5] flags = 0, h[7] reserved = 0
+    h[0..4].copy_from_slice(MAGIC);
+    h[4] = VERSION;
+    // h[5] flags = 0, h[7] reserved = 0
 
     // Name truncated to NAME_CAP on a char boundary.
     let mut nlen = 0;

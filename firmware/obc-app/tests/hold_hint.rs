@@ -1,9 +1,7 @@
-//! Wiring test for the global long-press hint in [`App::render_frame`]: holding the
-//! encoder swells a black "frame bulge" into the right edge near the top, holding
-//! Back swells one near the bottom, and a quick tap swells neither. Renders against a
-//! tiny in-memory `DrawTarget` over a minimal `.obcm` whose map is a flat sea
-//! backdrop, then compares each held frame to the idle frame so any standing chrome
-//! cancels out and only the bulge's extra near-black pixels are measured.
+//! Wiring test for the global long-press hint in [`App::render_frame`]: holding the encoder swells a
+//! black "frame bulge" into the right edge near the top, holding Back one near the bottom, and a
+//! quick tap neither. Each held frame is compared to the idle frame so any standing chrome cancels
+//! out and only the bulge's extra near-black pixels are measured.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
@@ -25,7 +23,7 @@ fn rgb(c: u16) -> Rgb888 {
 fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let cache = MapCache::new();
     let src = SliceSource(bytes);
-    let tables = MapTables::parse(&src).expect("valid v5 file");
+    let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
     app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
@@ -52,12 +50,9 @@ fn holding_a_button_bulges_its_edge_a_tap_does_nothing() {
     app.handle_input(InputClock(0), &mut keys(&[]));
     let (i_top, i_bot) = render(&mut app, &bytes).edge_halves(hud);
 
-    // Hold the encoder past the dead zone (300 ms of a 500 ms threshold): a bulge
-    // swells the *top* half of the right edge. The bulge is anchored in the top half,
-    // but its base spans `2 * base_half` px regardless of depth, so the quartic shoulders
-    // can graze a handful of px past the exact screen midline — that tail is not the bulge
-    // living in the bottom half, so require the top-half growth to dominate rather than the
-    // bottom-half count to be pixel-zero.
+    // Hold the encoder past the dead zone: a bulge swells the top half. Its base spans `2*base_half`
+    // px, so the quartic shoulders can graze a few px past the midline — hence require the top-half
+    // growth to dominate rather than the bottom count to be zero.
     let (e_top, e_bot) = render_hold(&bytes, Button::Encoder, 300).edge_halves(hud);
     assert!(e_top > i_top, "encoder hold ⇒ a bulge swells the top of the right edge");
     assert!(

@@ -24,30 +24,26 @@ use heapless::Vec;
 
 use crate::deadband::DeadBand;
 use crate::geo::seg_dist_m;
-use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::reader::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_formats::io::{ByteSource, Error};
 
-/// Columns in the **finest** (base) level — the resolution one load-time sweep fills,
-/// and the cap on zoom-in depth. Coarser levels halve from here. At ≈8 KB of `i16`
-/// pairs for the base (≈16 KB for the whole pyramid: 2048+1024+512+256 cols ×4 B +
-/// the 256-col ascent array = exactly 16 KB), this is the one RAM/zoom-depth knob:
-/// doubling it doubles both. Each level must stay even (the downsample merges pairs),
-/// so keep this a power of two.
-///
-/// The constrained `nrf-mem` profile (issue #124) trims it to 512 (the pyramid drops to ~4.6 KB) —
-/// a coarser elevation graph on the narrow panel, freeing RAM for the renderer scratch +
-/// framebuffer + the ride loop's resident route index/cache on the 256 KB part. N6 (#127) took it a
-/// step further (1024→512, a power of two so each level stays even): the zoomed-out graph upsamples
-/// from the 64-col coarsest level, the accepted L15 trade; the 512 KB LM20 restores it.
+/// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
+/// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
+/// must stay even for the pair-merge downsample). The one RAM/zoom-depth knob: doubling it
+/// doubles both (~16 KB for the whole pyramid at 2048). `nrf-mem` trims to 256 (~2.3 KB) for the
+/// narrow panel — one zoom-in step over the 240-px base view — freeing RAM for the renderer, the
+/// ride loop's resident route index/cache, and the BLE stack sharing the 256 KB DK (issue #270).
 #[cfg(not(feature = "nrf-mem"))]
 pub const PROFILE_COLS: usize = 2048;
 #[cfg(feature = "nrf-mem")]
-pub const PROFILE_COLS: usize = 512;
+pub const PROFILE_COLS: usize = 256;
 
-/// Per-level column counts, finest first — each a clean halving of the one before so the
-/// pair-merge downsample lands exactly. On the full profile the coarsest level (256) still
-/// covers the 240-px panel width, so the fully-zoomed-out view reads from it and a full-route
-/// draw walks ~256 columns, not the whole 2048-wide base. On `nrf-mem` the coarsest is 128 — just
-/// under the panel width, so the zoomed-out graph upsamples slightly (the accepted L15 trade).
+/// Per-level column counts, finest first — each a clean halving so the pair-merge downsample
+/// lands exactly. On the full profile the coarsest level (256) still covers the 240-px panel,
+/// so a full-route draw walks ~256 columns, not the 2048-wide base; on `nrf-mem` the *base*
+/// (256) is what just covers the panel — the full-route draw uses it directly and the coarser
+/// levels serve only narrower draws ([`Profile::window`] takes the coarsest level that still
+/// fills the target pixels, so nothing upsamples chunkily).
 const LEVEL_COLS: [usize; 4] = [PROFILE_COLS, PROFILE_COLS / 2, PROFILE_COLS / 4, PROFILE_COLS / 8];
 /// Number of pyramid levels (length of [`LEVEL_COLS`]).
 const NUM_LEVELS: usize = LEVEL_COLS.len();
@@ -96,10 +92,10 @@ pub struct Window {
     pub hi_frac: f32,
 }
 
-/// A route's elevation profile as a multi-resolution pyramid: per-column min/max height
-/// at several resolutions, plus the y-axis range, the peak, and a cumulative-ascent
-/// curve — everything the Statistics screen needs to draw (at any zoom) without
-/// re-reading the route. Build with [`RouteReader::elevation_profile`] and cache it.
+/// A route's elevation profile as a multi-resolution pyramid: per-column min/max height at
+/// several resolutions, plus the y-axis range, the peak, and a cumulative-ascent curve —
+/// everything the Statistics screen draws at any zoom without re-reading the route. Build with
+/// [`RouteReader::elevation_profile`] and cache it.
 #[derive(Debug, Clone)]
 pub struct Profile {
     /// All pyramid levels packed finest-first (`level_offset`/`LEVEL_COLS` index in).
@@ -285,6 +281,230 @@ impl RouteReader<'_> {
 
         Profile { cols, cum_ascent, min_ele_m: self.min_ele_m, max_ele_m: self.max_ele_m, peak_col }
     }
+}
+
+/// Build a **recorded ride's** elevation [`Profile`] by streaming its stored ride object
+/// (`RD{id}.ORD` — the ride object v1/v2, spec §7.2) from `src` once, in small fixed blocks — the
+/// Ride detail screen's band source (epic #678 T2 / #680).
+///
+/// The route twin is [`RouteReader::elevation_profile`]; this shares its whole tail (gap-fill,
+/// pyramid downsample, cumulative ascent, peak) and differs only in the sweep:
+/// - points are the ride object's 14-byte (v1) / 18-byte (v2) records (`lat, lon` at 10⁻⁷ °,
+///   converted to the microdegrees the shared distance core measures in; a [`RIDE_ELE_NONE`]
+///   point contributes distance but no elevation; a v2 record's sensor tail is skipped here);
+/// - columns bucket by the accumulated segment distance over the **header's** `distance` total
+///   (the one total knowable in a single pass; the tail past it clamps into the last column and
+///   any unreached columns gap-fill);
+/// - the y-range is the sweep's own min/max (the ride header stores none) and the ascent curve
+///   normalizes to the header's `climb` total.
+///
+/// Reads at most one 32-record block per `read_at` (≤576 B, v2 stride) and holds no whole-track
+/// buffer, so the board can run it inside its pass without a stack spike beyond the returned
+/// `Profile` itself. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version,
+/// torn length).
+pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
+    use obc_formats::ride::{
+        header_len as ride_header_len, point_len as ride_point_len, ELE_NONE as RIDE_ELE_NONE,
+        POINT_LEN_V2 as RIDE_POINT_LEN_V2,
+    };
+
+    let info = crate::RideInfo::read(src)?;
+    // Point records start after the version's fixed header bytes + the on-disk name. Re-read the
+    // raw `name_len` — `RideInfo` clips its display copy to `NAME_CAP`, the file may store more.
+    // Both versions keep `lat/lon/ele` in the first 14 bytes; v2 only appends a sensor tail, so
+    // the stride (`point_len`) and header size vary by version but the fields read here don't.
+    let mut head = [0u8; 3];
+    src.read_at(0, &mut head)?;
+    let name_len = u16::from_le_bytes([head[1], head[2]]) as u32;
+    let point_len = ride_point_len(info.version);
+    let points_at = name_len + ride_header_len(info.version) as u32;
+
+    let mut cols = [(i16::MAX, i16::MIN); TOTAL_COLS];
+    let mut casc = [0f32; ASCENT_COLS];
+    let total = info.distance_m.max(1) as f64;
+    let base_last = PROFILE_COLS - 1;
+    let asc_last = ASCENT_COLS - 1;
+    let (mut min_ele, mut max_ele) = (i16::MAX, i16::MIN);
+
+    // One sweep over the point records, a block per read — the distance runs through elevation
+    // gaps (a no-ele point still moves the rider), the ascent integrator only over real samples.
+    let mut ascent = DeadBand::<f32>::new();
+    let mut dist = 0f64;
+    let mut prev: Option<(i32, i32)> = None;
+    const BLOCK: usize = 32;
+    let mut buf = [0u8; BLOCK * RIDE_POINT_LEN_V2];
+    let mut done: u32 = 0;
+    while done < info.point_count {
+        let n = ((info.point_count - done) as usize).min(BLOCK);
+        let bytes = &mut buf[..n * point_len];
+        src.read_at(points_at + done * point_len as u32, bytes)?;
+        for rec in bytes.chunks_exact(point_len) {
+            let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
+            let lon = i32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
+            let ele = i16::from_le_bytes([rec[12], rec[13]]);
+            // 10⁻⁷ ° → microdegrees, the shared distance core's unit (a 0.1 µ° truncation —
+            // centimetres — under a band column's reach).
+            let p = (lon / 10, lat / 10);
+            if let Some(pr) = prev {
+                dist += seg_dist_m(pr, p) as f64;
+            }
+            prev = Some(p);
+            if ele == RIDE_ELE_NONE {
+                continue;
+            }
+            min_ele = min_ele.min(ele);
+            max_ele = max_ele.max(ele);
+            let frac = dist / total;
+            let col = ((frac * base_last as f64) as usize).min(base_last);
+            let slot = &mut cols[col];
+            slot.0 = slot.0.min(ele);
+            slot.1 = slot.1.max(ele);
+            let acol = ((frac * asc_last as f64) as usize).min(asc_last);
+            ascent.push(ele as f32);
+            casc[acol] = ascent.ascent();
+        }
+        done += n as u32;
+    }
+
+    // A ride with no elevation at all (every point the sentinel): a flat zero band, not i16 junk.
+    if min_ele > max_ele {
+        (min_ele, max_ele) = (0, 0);
+    }
+    fill_gaps(&mut cols[..PROFILE_COLS], (min_ele, max_ele));
+    downsample_levels(&mut cols);
+    let cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
+    let peak_col = peak_column(&cols[..PROFILE_COLS]);
+    Ok(Profile { cols, cum_ascent, min_ele_m: min_ele, max_ele_m: max_ele, peak_col })
+}
+
+/// A stored ride's recorded-track polyline decimated to at most `N` points — uniform by point
+/// index, the first and last point always kept — the Ride detail's track-shape preview seam
+/// (#678 rework 3, the recorded twin of [`RouteReader::preview_polyline`]). Points come back as
+/// `(lon, lat)` **microdegrees** (the ride records' 10⁻⁷ ° scaled by 1/10), matching the route
+/// preview's unit so the one screen drawer serves both.
+///
+/// Mirrors [`ride_elevation_profile`]'s streaming exactly: the same header/`points_at` walk, the
+/// same 32-record blocks (strictly forward — no whole-track buffer and no backward seeks), one
+/// pass over the 14-byte (v1) / 18-byte (v2) records. Call it once per detail entry, never per
+/// frame. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version, torn
+/// length).
+pub fn ride_preview_polyline<const N: usize>(src: &dyn ByteSource) -> Result<Vec<(i32, i32), N>, Error> {
+    use obc_formats::ride::{
+        header_len as ride_header_len, point_len as ride_point_len, POINT_LEN_V2 as RIDE_POINT_LEN_V2,
+    };
+
+    let info = crate::RideInfo::read(src)?;
+    // Point records start after the version's fixed header bytes + the on-disk name (see
+    // `ride_elevation_profile` — `RideInfo` clips its display name, so re-read the raw length).
+    let mut head = [0u8; 3];
+    src.read_at(0, &mut head)?;
+    let name_len = u16::from_le_bytes([head[1], head[2]]) as u32;
+    let point_len = ride_point_len(info.version);
+    let points_at = name_len + ride_header_len(info.version) as u32;
+
+    let mut out: Vec<(i32, i32), N> = Vec::new();
+    let total = info.point_count as usize;
+    if total == 0 || N == 0 {
+        return Ok(out);
+    }
+    let keep = N.min(total);
+    let mut kept = 0usize; // points pushed so far
+    let mut next = 0usize; // point index of the next kept point
+    const BLOCK: usize = 32;
+    let mut buf = [0u8; BLOCK * RIDE_POINT_LEN_V2];
+    let mut done: u32 = 0;
+    while done < info.point_count {
+        let n = ((info.point_count - done) as usize).min(BLOCK);
+        let bytes = &mut buf[..n * point_len];
+        src.read_at(points_at + done * point_len as u32, bytes)?;
+        for (i, rec) in bytes.chunks_exact(point_len).enumerate() {
+            if done as usize + i != next {
+                continue;
+            }
+            let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
+            let lon = i32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
+            // 10⁻⁷ ° → microdegrees, the route preview's unit (the profile sweep's conversion).
+            let _ = out.push((lon / 10, lat / 10));
+            kept += 1;
+            if kept == keep {
+                return Ok(out);
+            }
+            // The j-th kept point sits at j × (total−1) / (keep−1): endpoints exact, the rest
+            // an even stride (keep ≥ 2 here — keep == 1 returned above).
+            next = kept * (total - 1) / (keep - 1);
+        }
+        done += n as u32;
+    }
+    Ok(out)
+}
+
+/// Buckets in the received-route card's mini elevation sparkline (#682): one min–max-normalized
+/// `u8` height per bucket, sampled left-to-right along the route. Small and fixed so the
+/// route-upload seam can carry the whole band by value with the event.
+pub const SPARKLINE_BUCKETS: usize = 64;
+
+/// Build the received-route card's mini elevation sparkline by streaming the route **once**:
+/// bucket every point into one of [`SPARKLINE_BUCKETS`] distance columns (keeping each column's
+/// peak height), fill any column no point landed in from its neighbour, then min–max-normalize the
+/// columns to `u8`. Returns `None` when the route carries no usable elevation range (a computed
+/// route, or a dead-flat one) — the card then omits the band rather than drawing a fake flat line.
+///
+/// Column placement mirrors [`RouteReader::elevation_profile`] (re-anchor each chunk to its
+/// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m), accumulate per-segment distance from
+/// there), so the mini band reads as a coarser copy of the full Route-overview band. `O(points)`,
+/// one pass over the geometry — call it once at commit time on the host, never on the render path.
+pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKETS]> {
+    let idx = RouteIndex::read(src).ok()?;
+    let lo = idx.min_ele_m as i32;
+    let span = idx.max_ele_m as i32 - lo;
+    if span <= 0 {
+        return None; // flat / no elevation — omit the band
+    }
+    let reader = RouteReader::new(&idx, src);
+    let total = idx.total_distance_m.max(1) as f64;
+    let last = SPARKLINE_BUCKETS - 1;
+    // Peak height per bucket; sentinel `i16::MIN` = "no point landed here" (gap-filled below).
+    let mut maxes = [i16::MIN; SPARKLINE_BUCKETS];
+    let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
+    for k in 0..reader.chunks().len() {
+        if reader.decode_chunk(k, &mut buf).is_err() {
+            continue;
+        }
+        let mut dist = reader.chunks()[k].cum_distance_m as f64;
+        let mut prev: Option<(i32, i32)> = None;
+        for p in &buf {
+            if let Some(pr) = prev {
+                dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+            }
+            prev = Some((p.lon, p.lat));
+            let b = ((dist / total) * last as f64) as usize;
+            let b = b.min(last);
+            if p.ele > maxes[b] {
+                maxes[b] = p.ele;
+            }
+        }
+    }
+    // Carry the last filled height across empty buckets (sparse geometry can skip one), forward
+    // then backward for any leading gap — the profile's gap-fill, one channel.
+    let mut carry: Option<i16> = None;
+    for m in maxes.iter_mut() {
+        match carry {
+            Some(c) if *m == i16::MIN => *m = c,
+            _ => carry = Some(*m),
+        }
+    }
+    let mut back: Option<i16> = None;
+    for m in maxes.iter_mut().rev() {
+        match back {
+            Some(b) if *m == i16::MIN => *m = b,
+            _ => back = Some(*m),
+        }
+    }
+    let mut out = [0u8; SPARKLINE_BUCKETS];
+    for (o, &m) in out.iter_mut().zip(maxes.iter()) {
+        *o = (((m as i32 - lo) * 255 / span).clamp(0, 255)) as u8;
+    }
+    Some(out)
 }
 
 /// Build the coarser pyramid levels in place: each level's column is the min/max merge of

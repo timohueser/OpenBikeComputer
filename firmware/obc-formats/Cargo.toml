@@ -1,0 +1,12 @@
+[package]
+name = "obc-formats"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Allocator-free persistent-format constants and primitive codecs for OpenBikeComputer"
+
+[dependencies]
+# Foundation-only: the recorded-track record codec is defined over `obc_ports::TrackPoint`, the
+# cross-boundary sample type. obc-ports is itself dependency-light foundation and does not depend on
+# obc-formats, so this keeps obc-formats in the foundation floor with no cycle (#812, #807).
+obc-ports = { path = "../obc-ports" }

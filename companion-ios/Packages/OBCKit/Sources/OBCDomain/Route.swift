@@ -1,12 +1,71 @@
 import Foundation
 
-/// Stable identifier for a route object on the device / in the app library.
+/// Stable identifier for a route **in the app's library** — app-generated,
+/// never a device object id.
 ///
 /// A thin `String` wrapper for type safety (a route id can't be passed where a
-/// ride id is expected).
+/// ride id is expected). Route identity is split across the BLE boundary
+/// (#359): the device names its copies by ``DeviceObjectID``, and
+/// `PlannedRouteRecord.deviceObjectID` is the app's durable link between the
+/// two namespaces — a `RouteID` never crosses the transport's data plane.
 public struct RouteID: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
+}
+
+/// One entry of the device's route catalog (`listRoutes()` — the `routeList`
+/// object, spec §7.4): the durable device object id plus the display fields.
+/// Deliberately **not** a `RouteSummary` — the catalog is keyed by
+/// ``DeviceObjectID``, and its one consumer (reconciling the C1 "on device"
+/// badge, #289) compares those ids against `PlannedRouteRecord.deviceObjectID`;
+/// it never feeds list rows.
+public struct RouteCatalogEntry: Identifiable, Equatable, Sendable {
+    public let id: DeviceObjectID
+    public var name: String
+    /// Route length in metres.
+    public var distanceMeters: Double
+    /// Total climb in metres.
+    public var elevationGainMeters: Double
+    /// Number of geometry points in the stored route object.
+    public var pointCount: Int
+    /// The stored object's whole-object CRC-32 (v2 `routeList` entry, spec §7.4) —
+    /// the content fingerprint that lets the app verify *what* a linked id points
+    /// at (identity-verified badges) and recognize an identical unlinked copy
+    /// (adopt-by-content). `0` = unknown (the device hasn't filled the side-loaded
+    /// sidecar yet, or a genuine CRC of `0`, read the same by spec — no
+    /// special-casing). The badge/adoption logic that consumes it is V6 (#770).
+    public var crc32: UInt32
+    /// The device's computed auto-delete instant for this route (epic #638), from
+    /// the v2+expiry `routeList` entry's `expires_at` tail (spec §7.4). `nil` when
+    /// the device hasn't started the countdown (`last_used == 0`), retention is
+    /// ``Retention/never``, **or** the device predates expiry (a pre-tail 76-byte
+    /// entry — see ``RouteListEntry``). Display-only; goes stale gracefully as
+    /// extend-on-use moves it.
+    public var expiresAt: Date?
+    /// The device's stored retention level for this route (epic #638), from the
+    /// entry's `retention` tail byte. `nil` when the device predates expiry (no
+    /// tail); a known byte decodes via ``Retention/init(safeRawValue:)``.
+    public var retention: Retention?
+
+    public init(
+        id: DeviceObjectID,
+        name: String,
+        distanceMeters: Double,
+        elevationGainMeters: Double,
+        pointCount: Int = 0,
+        crc32: UInt32 = 0,
+        expiresAt: Date? = nil,
+        retention: Retention? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.distanceMeters = distanceMeters
+        self.elevationGainMeters = elevationGainMeters
+        self.pointCount = pointCount
+        self.crc32 = crc32
+        self.expiresAt = expiresAt
+        self.retention = retention
+    }
 }
 
 /// Where an imported route came from **as a wire format**. The phone converts
@@ -105,10 +164,19 @@ public struct RouteBlob: Equatable, Sendable {
     public let waypoints: [Waypoint]
     /// Opaque compact-binary route bytes — framed, not parsed, by `BLEChannel`.
     public let payload: Data
+    /// The device object id to **replace**, or `nil` for a fresh upload (the device
+    /// assigns a new id). Set when re-uploading an edited route that's already on
+    /// the device so it updates in place instead of duplicating — "uploading to an
+    /// existing id replaces that object" (`obc-ble-interface-spec.md` §4.2).
+    public let targetObjectID: DeviceObjectID?
 
-    public init(summary: RouteSummary, waypoints: [Waypoint] = [], payload: Data) {
+    public init(
+        summary: RouteSummary, waypoints: [Waypoint] = [], payload: Data,
+        targetObjectID: DeviceObjectID? = nil
+    ) {
         self.summary = summary
         self.waypoints = waypoints
         self.payload = payload
+        self.targetObjectID = targetObjectID
     }
 }

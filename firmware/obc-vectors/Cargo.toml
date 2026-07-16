@@ -6,6 +6,7 @@ publish = false # test-only: builds + verifies the shared protocol-vectors/ fixt
 description = "S0 wire-protocol shared test vectors (obc-ble-interface-spec.md): builders and contract tests for the binary fixtures in protocol-vectors/, consumed by both cargo test and the companion app's swift test"
 
 [dependencies]
+obc-formats = { path = "../obc-formats" }
 obc-route = { path = "../obc-route" }
 
 [dev-dependencies]

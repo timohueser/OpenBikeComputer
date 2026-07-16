@@ -7,7 +7,8 @@
 
 #![allow(dead_code)]
 
-use obc_route::{ByteSink, Error, RoutePoint, RouteReader, SliceSource, MAX_POINTS_PER_CHUNK};
+use obc_formats::io::{ByteSink, Error, SliceSource};
+use obc_route::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 
 /// A `ByteSink` over a growable `Vec` — the host's "write the whole file to RAM"
 /// backing (the device uses a FatFs-backed sink instead).

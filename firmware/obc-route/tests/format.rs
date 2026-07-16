@@ -7,9 +7,10 @@
 
 use core::cell::Cell;
 
+use obc_formats::io::{ByteSource, Error, SliceSource};
+use obc_formats::obcr::{CHUNK_META_LEN, HEADER_LEN};
 use obc_route::{
-    ByteSource, Error, RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, SliceSource, CHUNK_META_LEN,
-    HEADER_LEN, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
+    RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
 };
 
 mod common;
@@ -26,6 +27,29 @@ impl ByteSource for CountingSource<'_> {
     fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
         self.reads.set(self.reads.get() + 1);
         self.inner.read_at(offset, buf)
+    }
+    fn len(&self) -> u32 {
+        self.inner.len()
+    }
+}
+
+/// A source that runs one callback from inside its first geometry read. This models a safe
+/// reentrant source implementation using another reader that shares the cache.
+struct ReentrantSource<'a> {
+    inner: SliceSource<'a>,
+    reads: Cell<u32>,
+    triggered: Cell<bool>,
+    on_first_read: &'a dyn Fn(),
+}
+
+impl ByteSource for ReentrantSource<'_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+        self.reads.set(self.reads.get() + 1);
+        let result = self.inner.read_at(offset, buf);
+        if !self.triggered.replace(true) {
+            (self.on_first_read)();
+        }
+        result
     }
     fn len(&self) -> u32 {
         self.inner.len()
@@ -146,6 +170,16 @@ fn two_chunk_route() -> Vec<u8> {
     )
 }
 
+fn one_chunk_route(name: &str, end: (i32, i32, i16)) -> Vec<u8> {
+    build_route(
+        name,
+        (10, 10),
+        (1000, 20, 10),
+        (100, end.2),
+        &[ChunkIn { points: vec![(10, 10, 100), end], cum_distance_m: 0, cum_ascent_m: 0 }],
+    )
+}
+
 #[test]
 fn header_and_summary() {
     let bytes = two_chunk_route();
@@ -179,6 +213,39 @@ fn header_and_summary() {
     assert_eq!(s2.bbox.max_lon, 90);
 }
 
+/// `read_into` fills the caller's **resident** slot in place (the board path — the by-value
+/// `read` transits ~6.7 KB of stack, which overflowed the DK's main stack on the post-upload
+/// index rebuild). Pins the slot's lifecycle: a reused slot is fully replaced by the new route,
+/// and a failed read leaves it cleared — never a half-filled or stale index.
+#[test]
+fn read_into_reuses_and_clears_the_resident_slot() {
+    let first = two_chunk_route();
+    let mut idx = RouteIndex::empty();
+    idx.read_into(&SliceSource(&first)).unwrap();
+    assert_eq!(idx.name(), "Black Forest");
+    assert_eq!(idx.chunks().len(), 2);
+
+    // Reuse the same slot for a different route: every field must be the new route's.
+    let second = build_route(
+        "Vosges",
+        (5, 6),
+        (2_000, 100, 80),
+        (300, 340),
+        &[ChunkIn { points: vec![(5, 6, 300), (7, 9, 340)], cum_distance_m: 0, cum_ascent_m: 0 }],
+    );
+    idx.read_into(&SliceSource(&second)).unwrap();
+    assert_eq!(idx.name(), "Vosges");
+    assert_eq!(idx.chunks().len(), 1);
+    assert_eq!(idx.point_count, 2);
+    assert_eq!(idx.total_distance_m, 2_000);
+
+    // A failed read clears the slot (the caller's validity flag is already down).
+    assert!(idx.read_into(&SliceSource(&first[..10])).is_err());
+    assert_eq!(idx.chunks().len(), 0, "a failed read must not leave a half-filled index");
+    assert_eq!(idx.name(), "");
+    assert_eq!(idx.point_count, 0);
+}
+
 #[test]
 fn route_cache_serves_repeats_without_re_reading() {
     let bytes = two_chunk_route();
@@ -197,25 +264,129 @@ fn route_cache_serves_repeats_without_re_reading() {
     assert_eq!(src.reads.get(), 2);
     assert_eq!(cache.stats(), (0, 2));
 
-    // Re-decoding the same chunks is served from the cache — no further source reads.
-    let b0 = decode(&r, 0);
-    let b1 = decode(&r, 1);
+    // Moving the parsed index preserves its session identity. A fresh reader over that same
+    // resident parse adopts the same identity and retains hits — no further source reads. This is
+    // both the by-value host path and the board's per-frame reader lifecycle.
+    let moved_ridx = ridx;
+    let repeated = RouteReader::new_cached(&moved_ridx, &src, &cache);
+    let b0 = decode(&repeated, 0);
+    let b1 = decode(&repeated, 1);
     assert_eq!(src.reads.get(), 2, "a cache hit must not touch the source");
     assert_eq!(cache.stats(), (2, 2));
     assert_eq!(a0, b0);
     assert_eq!(a1, b1);
 
     // The cached bytes are exactly what the uncached decoder produces.
-    let plain = RouteReader::new(&ridx, &idx_src);
+    let plain = RouteReader::new(&moved_ridx, &idx_src);
     assert_eq!(decode(&plain, 0), a0);
     assert_eq!(decode(&plain, 1), a1);
 
-    // After a clear (a route switch), the chunk misses and is re-read.
+    // An explicit diagnostic clear remains available; the chunk misses and is re-read.
     cache.clear();
     assert_eq!(cache.stats(), (0, 0));
-    let _ = decode(&r, 0);
+    let cold = RouteReader::new_cached(&moved_ridx, &src, &cache);
+    let _ = decode(&cold, 0);
     assert_eq!(src.reads.get(), 3, "after clear the chunk is re-read");
     assert_eq!(cache.stats(), (0, 1));
+}
+
+/// Two routes may use identical chunk indices and byte offsets while containing different points.
+/// Constructing a cached reader for the second parsed index must automatically invalidate the
+/// first route's slot — no caller-ordered `clear()` — and then keep hits for repeated readers over
+/// that second resident session.
+#[test]
+fn route_switch_without_clear_cannot_cross_serve() {
+    let a = one_chunk_route("A", (20, 20, 110));
+    let b = one_chunk_route("B", (30, 40, 120));
+    let src_a = CountingSource { inner: SliceSource(&a), reads: Cell::new(0) };
+    let src_b = CountingSource { inner: SliceSource(&b), reads: Cell::new(0) };
+    let cache = RouteCache::new();
+    let mut resident_idx = RouteIndex::empty();
+    resident_idx.read_into(&SliceSource(&a)).unwrap();
+
+    let reader_a = RouteReader::new_cached(&resident_idx, &src_a, &cache);
+    assert_eq!(decode(&reader_a, 0).last(), Some(&RoutePoint { lon: 20, lat: 20, ele: 110 }));
+    assert_eq!(src_a.reads.get(), 1);
+    assert_eq!(cache.stats(), (0, 1));
+
+    // Refill the *same* resident slot, exactly like board reconciliation. Same chunk key (0), no
+    // explicit clear: its new parse identity must force a miss against route B's source.
+    resident_idx.read_into(&SliceSource(&b)).unwrap();
+    let reader_b = RouteReader::new_cached(&resident_idx, &src_b, &cache);
+    let points_b = decode(&reader_b, 0);
+    assert_eq!(points_b.last(), Some(&RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(src_b.reads.get(), 1, "a route switch must read B rather than hit A's slot");
+    assert_eq!(cache.stats(), (0, 1), "adoption resets diagnostics and starts B cold");
+
+    // Reconstructing a reader over the same parsed index is a hit, not a new session.
+    let reader_b_again = RouteReader::new_cached(&resident_idx, &src_b, &cache);
+    assert_eq!(decode(&reader_b_again, 0), points_b);
+    assert_eq!(src_b.reads.get(), 1, "the same resident index must retain cache hits");
+    assert_eq!(cache.stats(), (1, 1));
+}
+
+/// Long-lived safe readers can be interleaved against one cache. Every A/B ownership transition
+/// must miss and return that reader's geometry; a same-route repeat must still hit without I/O.
+#[test]
+fn interleaved_readers_revalidate_identity_on_every_hit_lookup() {
+    let a = one_chunk_route("A", (20, 20, 110));
+    let b = one_chunk_route("B", (30, 40, 120));
+    let idx_a = RouteIndex::read(&SliceSource(&a)).unwrap();
+    let idx_b = RouteIndex::read(&SliceSource(&b)).unwrap();
+    let src_a = CountingSource { inner: SliceSource(&a), reads: Cell::new(0) };
+    let src_b = CountingSource { inner: SliceSource(&b), reads: Cell::new(0) };
+    let cache = RouteCache::new();
+
+    let reader_a = RouteReader::new_cached(&idx_a, &src_a, &cache);
+    let points_a = decode(&reader_a, 0);
+    let reader_b = RouteReader::new_cached(&idx_b, &src_b, &cache);
+    let points_b = decode(&reader_b, 0);
+    assert_ne!(points_a, points_b);
+
+    assert_eq!(decode(&reader_a, 0), points_a, "A must not hit B's same-tag slot");
+    assert_eq!(src_a.reads.get(), 2, "returning to A must start cold");
+    assert_eq!(decode(&reader_b, 0), points_b, "B must not hit A's same-tag slot");
+    assert_eq!(src_b.reads.get(), 2, "returning to B must start cold");
+
+    assert_eq!(decode(&reader_b, 0), points_b);
+    assert_eq!(src_b.reads.get(), 2, "a same-route repeat must remain a warm hit");
+    assert_eq!(cache.stats(), (1, 1));
+}
+
+/// A miss releases the cache borrow before source I/O. If that source reentrantly fills the cache
+/// for B, A's eventual put must re-adopt A; otherwise the cache claims to own B while holding A's
+/// same-tag points and B's next lookup cross-serves poisoned geometry.
+#[test]
+fn reentrant_read_revalidates_identity_before_miss_put() {
+    let a = one_chunk_route("A", (20, 20, 110));
+    let b = one_chunk_route("B", (30, 40, 120));
+    let idx_a = RouteIndex::read(&SliceSource(&a)).unwrap();
+    let idx_b = RouteIndex::read(&SliceSource(&b)).unwrap();
+    let src_b = CountingSource { inner: SliceSource(&b), reads: Cell::new(0) };
+    let cache = RouteCache::new();
+    let reader_b = RouteReader::new_cached(&idx_b, &src_b, &cache);
+    let reentrant_b_last = Cell::new(None);
+    let decode_b = || reentrant_b_last.set(decode(&reader_b, 0).last().copied());
+    let src_a = ReentrantSource {
+        inner: SliceSource(&a),
+        reads: Cell::new(0),
+        triggered: Cell::new(false),
+        on_first_read: &decode_b,
+    };
+    let reader_a = RouteReader::new_cached(&idx_a, &src_a, &cache);
+
+    let points_a = decode(&reader_a, 0);
+    assert_eq!(points_a.last(), Some(&RoutePoint { lon: 20, lat: 20, ele: 110 }));
+    assert_eq!(reentrant_b_last.get(), Some(RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(src_a.reads.get(), 1);
+    assert_eq!(src_b.reads.get(), 1);
+
+    let points_b = decode(&reader_b, 0);
+    assert_eq!(points_b.last(), Some(&RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(src_b.reads.get(), 2, "B must miss rather than consume A's in-flight fill");
+    assert_eq!(decode(&reader_b, 0), points_b);
+    assert_eq!(src_b.reads.get(), 2, "B's refill must be warm on the same identity");
+    assert_eq!(cache.stats(), (1, 1));
 }
 
 #[test]
@@ -282,7 +453,7 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_chunk_route();
-    bytes[4] = 3; // unsupported version (v2 is accepted — the waypoint extension, #268)
+    bytes[4] = 3; // unsupported version (v2 is accepted — the waypoint extension)
     assert_eq!(err(&bytes), Error::BadVersion);
 
     let mut bytes = two_chunk_route();
@@ -290,11 +461,8 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadVersion);
 }
 
-/// Item 9 (bounds: chunk count) — **`chunk_count > MAX_ROUTE_CHUNKS` is rejected** before any
-/// chunk is read (`reader.rs`, the `h.chunk_count as usize > MAX_ROUTE_CHUNKS` guard). A
-/// corrupt header claiming more chunks than the resident index can hold must fail with
-/// `TooLarge`, not overrun the fixed [`MAX_ROUTE_CHUNKS`]-capacity buffer. `rejects_bad_input`
-/// only covered magic/version/too-short; this is one of the corrupt-SD-read guards.
+/// `chunk_count > MAX_ROUTE_CHUNKS` is rejected before any chunk is read: a corrupt header must
+/// fail with `TooLarge`, not overrun the fixed-capacity index buffer.
 #[test]
 fn rejects_chunk_count_over_cap() {
     let mut bytes = two_chunk_route();
@@ -305,11 +473,8 @@ fn rejects_chunk_count_over_cap() {
     assert_eq!(RouteIndex::read(&src).err(), Some(Error::TooLarge));
 }
 
-/// Item 9 (bounds: point count) — **a chunk with `point_count > MAX_POINTS_PER_CHUNK` is
-/// rejected** (`reader.rs`, the per-chunk `point_count as usize > MAX_POINTS_PER_CHUNK` guard).
-/// The decode buffer is a fixed [`MAX_POINTS_PER_CHUNK`]-capacity `heapless::Vec`; a chunk meta
-/// claiming more points must fail with `TooLarge` up front rather than during decode. Guards
-/// against a corrupt chunk index overflowing the decode buffer.
+/// A chunk with `point_count > MAX_POINTS_PER_CHUNK` is rejected up front with `TooLarge` rather
+/// than overflowing the fixed-capacity decode buffer during decode.
 #[test]
 fn rejects_point_count_over_cap() {
     let mut bytes = two_chunk_route();
@@ -321,11 +486,8 @@ fn rejects_point_count_over_cap() {
     assert_eq!(RouteIndex::read(&src).err(), Some(Error::TooLarge));
 }
 
-/// Item 9 (bounds: data region) — **a chunk whose `byte_offset + byte_len` runs past the
-/// source is rejected** (`reader.rs`, the `end > src.len()` guard). The reader bounds-checks
-/// each chunk's data region once at parse time so the hot decode path needs no per-read check;
-/// a truncated or corrupt file that points a chunk past its own end must fail with `BadOffset`,
-/// never read out of bounds. The last of item 9's corrupt-SD-read guards.
+/// A chunk whose `byte_offset + byte_len` runs past the source is rejected with `BadOffset` at
+/// parse time (so the hot decode path needs no per-read check), never reading out of bounds.
 #[test]
 fn rejects_chunk_data_region_past_end() {
     let mut bytes = two_chunk_route();
@@ -335,4 +497,31 @@ fn rejects_chunk_data_region_past_end() {
     bytes[len_off..len_off + 4].copy_from_slice(&bad);
     let src = SliceSource(&bytes);
     assert_eq!(RouteIndex::read(&src).err(), Some(Error::BadOffset));
+}
+
+/// `preview_polyline` (#685 §4): the two-chunk fixture has 5 distinct points (the seam point
+/// deduped). `N` at/above that keeps all 5 verbatim; `N = 3` keeps first / middle / last; and
+/// every preview is a route-order subset with the endpoints exact.
+#[test]
+fn preview_polyline_decimates_uniformly_with_exact_endpoints() {
+    let bytes = two_chunk_route();
+    let src = SliceSource(&bytes);
+    let ridx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&ridx, &src);
+
+    // The full distinct polyline, seam deduped.
+    let all: Vec<(i32, i32)> = vec![(10, 10), (20, 25), (40, 40), (60, 30), (90, 70)];
+
+    let keep_all = r.preview_polyline::<8>();
+    assert_eq!(keep_all.as_slice(), all.as_slice(), "N ≥ total keeps every distinct point once");
+
+    let three = r.preview_polyline::<3>();
+    assert_eq!(
+        three.as_slice(),
+        &[(10, 10), (40, 40), (90, 70)],
+        "N = 3 keeps first / middle / last (indices 0, 2, 4)"
+    );
+
+    let two = r.preview_polyline::<2>();
+    assert_eq!(two.as_slice(), &[(10, 10), (90, 70)], "N = 2 keeps exactly the endpoints");
 }

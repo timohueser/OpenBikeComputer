@@ -1,22 +1,23 @@
 //! Real GPS (u-blox **SAM-M10Q**) + barometric altimeter (Bosch **BMP581**) + electronic compass
-//! (the **AK09916** magnetometer inside a TDK **ICM-20948**) on a shared I²C bus (issue #218 +
-//! IMU/compass bring-up) — the board-specific transport + the event-driven sensor task.
+//! (the **AK09916** magnetometer inside a TDK **ICM-20948**) on a shared I²C bus — the board-specific
+//! transport + the event-driven sensor task.
 //!
 //! All three chips sit on one **TWIM30** I²C bus on the low-power P0 domain (SDA P0.01 / SCL P0.02);
 //! the GPS **TX-Ready** line is the single interrupt (P0.03). The pure decode — UBX NAV-PVT framing,
-//! NAV-PVT → [`Fix`](obc_app::Fix), BMP581 raw → metres, magnetometer axes → heading — lives
-//! host-tested in [`obc_platform::ubx`] / [`obc_platform::bmp581`] / [`obc_platform::compass`] /
-//! [`obc_platform::icm20948`]; this module owns only the concrete `Twim` transactions and the
+//! NAV-PVT → [`Fix`](obc_ports::Fix), BMP581 raw → metres, magnetometer axes → heading — lives
+//! host-tested in [`obc_sensors::ubx`] / [`obc_sensors::bmp581`] / [`obc_sensors::compass`] /
+//! [`obc_sensors::icm20948`]; this module owns only the concrete `Twim` transactions and the
 //! [`sensor_task`] that coalesces a GPS fix + a coincident baro + magnetometer reading into one
-//! coherent datapoint and publishes it through [`obc_platform::sensor_link`].
+//! coherent datapoint and publishes it through its [`SensorTaskLink`] into the board's
+//! instance-owned [`SensorHub`](obc_platform::sensor_hub::SensorHub) (#808).
 //!
 //! ## Compass: magnetometer only, via I²C bypass
 //! Only the ICM-20948's **3 magnetometer axes** are used — the accel/gyro stay asleep. The AK09916 is
 //! reached by putting the ICM in **I²C bypass** (its aux bus tied to the host pins), so it answers
 //! directly at `0x0C` as if it were a standalone 3-axis compass. That's deliberate: the shipping
 //! board is expected to drop the ICM for a plain magnetometer, and swapping it is then a new chip
-//! module like [`obc_platform::icm20948`] plus new transaction calls here — the heading geometry
-//! ([`obc_platform::compass`]) and the app's `CompassSource` seam don't move.
+//! module like [`obc_sensors::icm20948`] plus new transaction calls here — the heading geometry
+//! ([`obc_sensors::compass`]) and the `obc-ports` `CompassSource` seam don't move.
 //!
 //! Unlike the altimeter (which is logged into each track point and so *must* be fix-coherent), the
 //! heading is **never stored** — it only orients a heading-up *map while the rider is stopped*. So it
@@ -33,21 +34,21 @@
 //! **nothing**, so `LocationSource::poll` returns `None` and the camera never teleports; climb
 //! simply pauses. Every stage logs over RTT (defmt) so acquisition is watchable live.
 //!
-//! ## Power management (issue #225)
+//! ## Power management
 //! Continuous tracking is ~20 mA — left on while idle it would flatten the pack in days. So after one
-//! **boot fix** (which sets the clock #223 + warms the ephemeris), the task follows the app's
+//! **boot fix** (which sets the clock + warms the ephemeris), the task follows the app's
 //! [`GpsPower`] request: **deep-sleep** (`RXM-PMREQ` backup, ~µA, zero bus traffic) whenever a ride
 //! isn't running, waking on a DDC poke for a fast *warm* fix when one starts; full-power fixes while
 //! riding, or the M10's on-chip **low-power** tracking when the `power_saver` toggle is on. The
-//! `RXM-PMREQ` / `CFG-PM` encodings live host-tested in [`obc_platform::ubx`].
+//! `RXM-PMREQ` / `CFG-PM` encodings live host-tested in [`obc_sensors::ubx`].
 
 use defmt::{debug, error, info, warn};
 use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_nrf::gpio::Input;
 use embassy_nrf::twim::Twim;
 use embassy_time::{Duration, Instant, Timer};
-use obc_platform::sensor_link::GpsPower;
-use obc_platform::{bmp581, compass, icm20948, sensor_link, ubx};
+use obc_platform::sensor_hub::{GpsPower, SensorPresence, SensorTaskLink};
+use obc_sensors::{bmp581, compass, icm20948, ubx};
 
 /// SAM-M10Q I²C (DDC) slave address.
 const M10_ADDR: u8 = 0x42;
@@ -57,8 +58,8 @@ const M10_ADDR: u8 = 0x42;
 const DDC_COUNT_REG: u8 = 0xFD;
 const DDC_DATA_REG: u8 = 0xFF;
 
-/// Default GPS fix interval at boot (seconds). The ride loop pushes the persisted #117 setting via
-/// [`sensor_link::set_rate`] right after it loads settings, so this only governs the first second.
+/// Default GPS fix interval at boot (seconds). The ride loop pushes the persisted setting via
+/// the sensor hub's rate latch right after it loads settings, so this only governs the first second.
 const DEFAULT_INTERVAL_S: u16 = 1;
 
 /// TX-Ready config: the module PIO wired to P0.03, active-high, asserting when ~one NAV-PVT is
@@ -76,9 +77,9 @@ const DEADLINE_MARGIN_MS: u64 = 300;
 /// tail bytes carry to the next read. 300 B holds ~3 NAV-PVTs (100 B each) plus slack.
 const ACC_CAP: usize = 300;
 
-/// Bound on the boot-fix acquisition (issue #225): the task holds awake at most this long for the
-/// first fix — which sets the clock (#223) + warms the ephemeris — before dropping into the
-/// power-managed steady state, so a boot under cover (no sky) still eventually deep-sleeps when idle.
+/// Bound on the boot-fix acquisition: the task holds awake at most this long for the first fix —
+/// which sets the clock + warms the ephemeris — before dropping into the power-managed steady state,
+/// so a boot under cover (no sky) still eventually deep-sleeps when idle.
 const BOOT_ACQUIRE_TIMEOUT_S: u64 = 150;
 
 /// Per-board **hard-iron offset** (µT) subtracted from each magnetometer axis before the heading.
@@ -133,12 +134,11 @@ struct FixState {
     last_heading: Option<f32>,
 }
 
-/// The sensor task (issue #218 + #225 power management + compass). Probes all three chips, configures
-/// the M10 (NAV-PVT on I²C at the fix rate, NMEA off, TX-Ready on) + the BMP581 + the ICM-20948
-/// magnetometer (bypass), then runs two phases:
+/// The sensor task. Probes all three chips, configures the M10 (NAV-PVT on I²C at the fix rate, NMEA
+/// off, TX-Ready on) + the BMP581 + the ICM-20948 magnetometer (bypass), then runs two phases:
 ///
-/// 1. **Boot acquisition** — hold awake until the first valid fix (which sets the clock #223 + warms
-///    the ephemeris) or [`BOOT_ACQUIRE_TIMEOUT_S`], **ignoring** the app's power request so an idle
+/// 1. **Boot acquisition** — hold awake until the first valid fix (which sets the clock + warms the
+///    ephemeris) or [`BOOT_ACQUIRE_TIMEOUT_S`], **ignoring** the app's power request so an idle
 ///    boot still gets one fix before it can deep-sleep.
 /// 2. **Steady state** — honour the app's [`GpsPower`] request: deep-sleep (`RXM-PMREQ` backup, zero
 ///    bus traffic) when idle; full- (or `power_saver` low-) power fixes while riding. Each waking
@@ -151,7 +151,7 @@ struct FixState {
 ///
 /// Spawned once from `main`; never returns.
 #[embassy_executor::task]
-pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
+pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, link: SensorTaskLink<'static>) {
     info!("sensors: TWIM30 up (SDA P0.01 / SCL P0.02); probing the I²C bus…");
 
     // --- Boot probe: loud RTT so a wiring/power fault is obvious before anything else. ---
@@ -175,19 +175,24 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
     // bypass, so only its *presence* (a successful ICM probe + config) matters at read time.
     let compass_ok = icm_addr.is_some();
 
+    // Surface the probe result on glass (issue #504): any chip that didn't answer becomes a
+    // dismissable warning the ride loop raises. Published once — a missing module is a wiring/power
+    // fault, not a transient. (A missing GPS *module* is distinct from "no fix yet".)
+    link.dispatch_presence(SensorPresence { gps: gps_ok, altimeter: baro_addr.is_some(), compass: compass_ok });
+
     let mut acc = [0u8; ACC_CAP];
     let mut acc_len = 0usize;
     let mut interval_s = DEFAULT_INTERVAL_S;
     let mut st = FixState::default();
 
-    // --- Phase 1: boot acquisition (issue #225). Hold awake until the first valid fix or a bounded
-    // timeout, ignoring the app's power request — so the clock (#223) gets set and the ephemeris
-    // warms even on an idle boot, before the steady state below is allowed to deep-sleep. ---
+    // --- Phase 1: boot acquisition. Hold awake until the first valid fix or a bounded timeout,
+    // ignoring the app's power request — so the clock gets set and the ephemeris warms even on an idle
+    // boot, before the steady state below is allowed to deep-sleep. ---
     info!("sensors: boot acquisition — holding awake for the first fix (≤ {=u64}s)", BOOT_ACQUIRE_TIMEOUT_S);
     let boot_deadline = Instant::now() + Duration::from_secs(BOOT_ACQUIRE_TIMEOUT_S);
     loop {
         wait_data_event(&mut txready, interval_s, &mut st).await;
-        if drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st).await {
+        if drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st, link).await {
             break; // got the boot fix
         }
         if Instant::now() >= boot_deadline {
@@ -199,8 +204,8 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
         }
     }
 
-    // --- Phase 2: power-managed steady state (issue #225). Honour the app's requested GpsPower —
-    // deep-sleep when idle, full / low-power fixes while riding — and keep streaming fixes. ---
+    // --- Phase 2: power-managed steady state. Honour the app's requested GpsPower — deep-sleep when
+    // idle, full / low-power fixes while riding — and keep streaming fixes. ---
     let mut power = GpsPower::Active;
     let mut asleep = false; // so backup is commanded once on entry, not re-sent each parked iteration
                             // Absolute deadline for the next DDC poll fallback. Absolute (not a fresh `Timer::after` each
@@ -215,7 +220,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
             }
             // Asleep: zero DDC traffic. Wait only for a power change (or a rate change to apply on
             // the next wake — `CFG-RATE` can't take effect while the receiver is in backup).
-            match select(sensor_link::wait_power(), sensor_link::wait_rate()).await {
+            match select(link.wait_power(), link.wait_rate()).await {
                 Either::First(p) => power = p,
                 Either::Second(s) => {
                     interval_s = s.max(1);
@@ -237,7 +242,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
         }
 
         // Active / LowPower: wait for a data event (TX-Ready edge or the absolute poll deadline), a
-        // #117 rate change, a power change — or, while stationary, a compass tick. The compass branch
+        // rate change, a power change — or, while stationary, a compass tick. The compass branch
         // is `pending` (never fires) unless the receiver has a compass and the last fix was stopped,
         // so a moving rider does zero magnetometer traffic (the GPS course is the heading then).
         let tick_compass = compass_ok && st.stationary;
@@ -249,12 +254,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
             }
         };
         match select(
-            select4(
-                txready.wait_for_rising_edge(),
-                Timer::at(next_poll),
-                sensor_link::wait_rate(),
-                sensor_link::wait_power(),
-            ),
+            select4(txready.wait_for_rising_edge(), Timer::at(next_poll), link.wait_rate(), link.wait_power()),
             compass_tick,
         )
         .await
@@ -283,11 +283,11 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>) {
             Either::Second(()) => {
                 // Stationary compass tick — read + publish the heading (dead-banded). No fix is
                 // involved, and `next_poll` is untouched so the GPS poll keeps counting down.
-                read_and_publish_heading(&mut twim, &mut st).await;
+                read_and_publish_heading(&mut twim, &mut st, link).await;
                 continue;
             }
         }
-        drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st).await;
+        drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st, link).await;
         next_poll = Instant::now() + poll_deadline(interval_s);
     }
 }
@@ -307,8 +307,8 @@ async fn wait_data_event(txready: &mut Input<'static>, interval_s: u16, st: &mut
     note_wait_edge(st, edge);
 }
 
-/// Log the TX-Ready / poll-fallback edge the first time each is observed (issue #218): a TX-Ready
-/// edge means the event-driven path is live; the timeout fallback is the normal path on a board that
+/// Log the TX-Ready / poll-fallback edge the first time each is observed: a TX-Ready edge means the
+/// event-driven path is live; the timeout fallback is the normal path on a board that
 /// doesn't break TX-Ready out (and points at the P0.03 wiring / PIO on one that does).
 fn note_wait_edge(st: &mut FixState, txready_edge: bool) {
     if txready_edge {
@@ -322,7 +322,7 @@ fn note_wait_edge(st: &mut FixState, txready_edge: bool) {
     }
 }
 
-/// One DDC drain → parse → publish cycle (issue #218/#223). Drains the receiver's DDC into the
+/// One DDC drain → parse → publish cycle. Drains the receiver's DDC into the
 /// accumulator's free tail, parses the freshest complete NAV-PVT, publishes the resolved UTC time
 /// (independent of the position fix, so the clock can set during acquisition) and — on a **valid**
 /// fix — a coincident BMP581 reading + the coherent `(fix, altitude, temperature)` datapoint, and
@@ -336,6 +336,7 @@ async fn drain_and_publish(
     acc_len: &mut usize,
     baro_addr: Option<u8>,
     st: &mut FixState,
+    link: SensorTaskLink<'static>,
 ) -> bool {
     let n = read_ddc(twim, &mut acc[*acc_len..]).await;
     if n == 0 {
@@ -363,11 +364,11 @@ async fn drain_and_publish(
         pvt.fix_type, pvt.num_sv, pvt.hacc_mm, pvt.pdop, pvt.lat, pvt.lon
     );
 
-    // Publish the receiver's UTC time (issue #223) the moment it's valid + fully resolved — **before**
-    // the position-fix gate below, so "Set from GPS" can set the clock during acquisition, while
-    // there's still no usable fix. A `None` (unresolved) publishes nothing.
+    // Publish the receiver's UTC time the moment it's valid + fully resolved — **before**
+    // the position-fix gate below, so the clock is set during acquisition, while there's still no
+    // usable fix (a GPS fix always stamps the clock, #641). A `None` (unresolved) publishes nothing.
     if let Some(t) = pvt.utc_time() {
-        sensor_link::dispatch_time(t);
+        link.dispatch_time(t);
     }
 
     let Some(fix) = pvt.to_fix() else {
@@ -393,11 +394,11 @@ async fn drain_and_publish(
         if let Some((pa, c)) = read_bmp581_forced(twim, addr).await {
             let m = bmp581::pa_to_m(pa);
             debug!("BMP581 forced: {=f32} Pa  {=f32} °C  → {=f32} m", pa, c, m);
-            sensor_link::dispatch_alt(m);
-            sensor_link::dispatch_temp(c);
+            link.dispatch_alt(m);
+            link.dispatch_temp(c);
         }
     }
-    sensor_link::dispatch_fix(fix);
+    link.dispatch_fix(fix);
     // Record motion state for the compass gate: the app uses the magnetometer heading only when the
     // GPS gives no course (stopped), so the task ticks the compass only while this is true.
     st.stationary = fix.course.is_none();
@@ -417,7 +418,7 @@ fn power_name(p: GpsPower) -> &'static str {
     }
 }
 
-/// Put the M10 into **backup** deep sleep (issue #225) — `RXM-PMREQ`, infinite duration. The
+/// Put the M10 into **backup** deep sleep — `RXM-PMREQ`, infinite duration. The
 /// receiver keeps its RTC + ephemeris on ~µA and wakes on the next DDC activity, so the restart is a
 /// fast *warm* fix. Best-effort: a failed write is logged, not fatal.
 async fn enter_backup(twim: &mut Twim<'static>) {
@@ -430,7 +431,7 @@ async fn enter_backup(twim: &mut Twim<'static>) {
     }
 }
 
-/// Wake the M10 from backup (issue #225): any DDC activity wakes it, but the first transaction can be
+/// Wake the M10 from backup: any DDC activity wakes it, but the first transaction can be
 /// lost while it powers up, so poke the byte-count register a few times with a short settle.
 async fn wake_receiver(twim: &mut Twim<'static>) {
     for _ in 0..3 {
@@ -441,7 +442,7 @@ async fn wake_receiver(twim: &mut Twim<'static>) {
     info!("sensors: GPS woken from backup");
 }
 
-/// Set the M10's tracking power mode (issue #225): full power, or the on-chip low-power tracking when
+/// Set the M10's tracking power mode: full power, or the on-chip low-power tracking when
 /// `power_saver` is on. Best-effort VALSET, ACK-logged like the other config keys — **verify the
 /// `CFG-PM-OPERATEMODE` key + value semantics on first bring-up** (see [`ubx::KEY_PM_OPERATEMODE`]).
 async fn set_power_mode(twim: &mut Twim<'static>, power: GpsPower) {
@@ -680,17 +681,17 @@ async fn configure_icm20948(twim: &mut Twim<'static>, addr: u8) {
 }
 
 /// One stationary compass cycle: read the AK09916 heading and publish it through
-/// [`sensor_link::dispatch_heading`], **dead-banded** by [`HEADING_DEADBAND_DEG`] so magnetometer
+/// [`SensorTaskLink::dispatch_heading`], **dead-banded** by [`HEADING_DEADBAND_DEG`] so magnetometer
 /// noise while the device is held still doesn't repaint the heading-up map. Called on the
 /// [`COMPASS_INTERVAL_MS`] cadence from [`sensor_task`] while stationary; a read failure / overflow
 /// just holds the last heading.
-async fn read_and_publish_heading(twim: &mut Twim<'static>, st: &mut FixState) {
+async fn read_and_publish_heading(twim: &mut Twim<'static>, st: &mut FixState, link: SensorTaskLink<'static>) {
     let Some(deg) = read_mag_heading(twim).await else { return };
     let moved = st.last_heading.is_none_or(|h| compass::angle_diff(h, deg) >= HEADING_DEADBAND_DEG);
     if moved {
         st.last_heading = Some(deg);
         debug!("compass: heading {=f32}° (AK09916)", deg);
-        sensor_link::dispatch_heading(deg);
+        link.dispatch_heading(deg);
     }
 }
 

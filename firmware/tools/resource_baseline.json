@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "measurement": {
+    "source_commit": "fded8d6444bd3e17fae7f916fd10a7eea0611700",
+    "rustc": "1.96.0 (ac68faa20 2026-05-25)",
+    "llvm": "22.1.2",
+    "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
+    "riscv_binutils": "GNU objcopy (GNU Binutils) 2.46.1",
+    "build_host": "MacBookPro18,3 (arm64), macOS 26.5.1 (25F80)",
+    "target": "thumbv8m.main-none-eabihf",
+    "capacity_profile": "nrf-mem (nRF54L15-DK, 256 KiB SRAM; the board crate does not yet build an LM20 ELF)"
+  },
+  "board": {
+    "default": {
+      "features": "default (real sensors + LS021/FLPR, constrained nrf-mem capacities)",
+      "measured_resident": 201752,
+      "resident_ram_max": 201752,
+      "floating_stable_observation": {
+        "rustc": "1.97.0 (2d8144b78 2026-07-07)",
+        "bss": 201672,
+        "data": 72,
+        "resident": 201744,
+        "uninit": 1024,
+        "flash": 645472
+      },
+      "uninit_max": 1024,
+      "measured_flash": 647000,
+      "framebuffer_count": 1,
+      "framebuffer_bytes": 76800,
+      "poll_frame_measured": 52,
+      "poll_frame_limit": 12288,
+      "compile_time_allocations": {
+        "framebuffer": 76800,
+        "row_diff": 1284,
+        "app": 35800,
+        "map_cache": 14444,
+        "map_tables": 4060,
+        "route_cache": 6180,
+        "route_index": 6252,
+        "renderer": 8352,
+        "nav_scratch": 19976,
+        "nav_tile_cache": 4140,
+        "nav_planner": 9024,
+        "stack_reserve": 36864,
+        "ble_total": 0,
+        "ble_mpsl": 0,
+        "ble_sdc_memory": 0,
+        "ble_host_resources": 0,
+        "ble_packet_pool": 0,
+        "ble_cracen": 0,
+        "ble_object_store": 0,
+        "ble_server": 0,
+        "ble_gap_name": 0,
+        "ble_sensor_manager": 0
+      }
+    },
+    "ble": {
+      "features": "--no-default-features --features ble (map + BLE, constrained nrf-mem capacities)",
+      "measured_resident": 213672,
+      "resident_ram_max": 213672,
+      "uninit_max": 1024,
+      "measured_flash": 1085508,
+      "framebuffer_count": 1,
+      "framebuffer_bytes": 76800,
+      "poll_frame_measured": 6240,
+      "poll_frame_limit": 12288,
+      "floating_stable_observation": {
+        "rustc": "1.97.0 (2d8144b78 2026-07-07)",
+        "bss": 209168,
+        "data": 4504,
+        "resident": 213672,
+        "uninit": 1024,
+        "flash": 1085680,
+        "poll_frame": 6240
+      },
+      "compile_time_allocations": {
+        "framebuffer": 76800,
+        "row_diff": 1284,
+        "app": 35800,
+        "map_cache": 14444,
+        "map_tables": 4060,
+        "route_cache": 6180,
+        "route_index": 6252,
+        "renderer": 8352,
+        "nav_scratch": 19976,
+        "nav_tile_cache": 4140,
+        "nav_planner": 9024,
+        "stack_reserve": 36864,
+        "ble_total": 32106,
+        "ble_mpsl": 0,
+        "ble_sdc_memory": 8704,
+        "ble_host_resources": 3960,
+        "ble_packet_pool": 4036,
+        "ble_cracen": 0,
+        "ble_object_store": 13048,
+        "ble_server": 1936,
+        "ble_gap_name": 52,
+        "ble_sensor_manager": 370
+      }
+    }
+  },
+  "bootloader": {
+    "features": "default (no RTT)",
+    "measured_flash": 16012,
+    "flash_budget": 32768
+  }
+}

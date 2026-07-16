@@ -23,18 +23,29 @@ public struct DeviceInfo: Equatable, Sendable {
     /// `OBCProtocol.version`; a mismatch surfaces as `DeviceError.protocolMismatch`
     /// (never a crash). See `OBCProtocol.md` → *Versioning*.
     public let protocolVersion: UInt16
+    /// The device's **store epoch** (v2 `protocolVersion` read: `version u16 ·
+    /// store_epoch u32`) — a TRNG nonce the device changes only on an id-era reset
+    /// (a full-chip reflash, factory reset, or torn id-marks line). `nil` when the
+    /// read carried no epoch: a v1 device (a 2-byte read, taking the #303 mismatch
+    /// path) or a short/torn v2 read. **Deliberately not defaulted to `0`** — `0`
+    /// is a legal epoch, so a missing epoch must read as "unknown", never a
+    /// fabricated value. The (serial, epoch) library scoping that consumes it is
+    /// V5 (#769); this field is the wire fact it stands on.
+    public let storeEpoch: UInt32?
 
     public init(
         name: String,
         firmwareVersion: String,
         hardwareVersion: String = "",
         serial: String = "",
-        protocolVersion: UInt16 = OBCProtocol.version
+        protocolVersion: UInt16 = OBCProtocol.version,
+        storeEpoch: UInt32? = nil
     ) {
         self.name = name
         self.firmwareVersion = firmwareVersion
         self.hardwareVersion = hardwareVersion
         self.serial = serial
         self.protocolVersion = protocolVersion
+        self.storeEpoch = storeEpoch
     }
 }

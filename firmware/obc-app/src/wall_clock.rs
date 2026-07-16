@@ -1,92 +1,97 @@
-//! The device wall clock — a live current time derived from a stored set-point and the
-//! monotonic millis clock, plus the per-minute repaint edge a clock-bearing screen ticks on.
+//! The device wall clock — a live current time derived from a stored set-point and the monotonic
+//! millis clock, plus the per-minute repaint edge a clock-bearing screen ticks on.
 //!
 //! There is no RTC. `now_ms` is boot-relative monotonic millis, and [`Settings::clock`] is only a
-//! **set-point**: the time the user (or, later, a GPS fix) last *established*. The live time is
-//! that set-point advanced by however long has elapsed since it was stamped — so [`WallClock`] is
-//! the one place that turns "the time we were told" + "millis since" into "the time now", and
-//! every screen that shows a clock reads it through here so they all agree and tick together.
+//! **set-point**: the time the user (or a GPS fix) last *established*. The live time is that
+//! set-point advanced by however long has elapsed since it was stamped. Every clock-bearing screen
+//! reads through here so they all agree and tick together.
 //!
 //! [`Settings::clock`]: crate::Settings::clock
 
-use crate::settings::DateTime;
+use crate::settings::{add_minutes_bounded, DateTime};
 
 /// Derives the current wall-clock [`DateTime`] from a set-point (`base`) and the monotonic millis
-/// at which that set-point was true (`epoch_ms`).
-///
-/// `now(now_ms)` is `base` advanced by the elapsed minutes since `epoch_ms` — **recomputed from
-/// the set-point every call**, so it can never accumulate drift and is a pure function of
-/// `(base, epoch_ms, now_ms)`. [`set`](WallClock::set) re-stamps both halves: the manual Date &
-/// Time editor calls it on an edit, and a future GPS fix will re-stamp through the same seam (with
-/// the manual set-point as the fallback when there's no fix). Owned by
-/// [`App`](crate::App); handed to screens as the already-computed `now` so they never see the
-/// epoch.
+/// at which that set-point was true (`epoch_ms`). [`now`](WallClock::now) is **recomputed from the
+/// set-point every call**, so it can never accumulate drift. [`set`](WallClock::set) re-stamps both
+/// halves (a GPS fix, a BLE `setClock`, or the boot restore of the persisted set-point). Owned by
+/// [`App`](crate::App); screens get the already-computed `now` and never see the epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WallClock {
     /// The set-point: the time that was true at [`epoch_ms`](WallClock::epoch_ms).
     base: DateTime,
     /// The monotonic millis at which [`base`](WallClock::base) was established.
     epoch_ms: u32,
+    /// Whether a set-point has ever been **established** — false for the bare boot construction, true
+    /// once [`set`](WallClock::set) has run (the persisted clock restored at boot, or a GPS/BLE
+    /// re-stamp). Distinguishes "the device has been told a time" from a fresh clock that
+    /// has never known one; the Home date line (#683) hides while this is false, since a date with no
+    /// trusted origin would mislead. (Finer GPS/BLE-only trust is auto-expiry epic #638's job.)
+    established: bool,
 }
 
 impl WallClock {
-    /// A clock whose set-point `base` is true at the boot origin (`epoch_ms = 0`). The host seeds
-    /// it from the persisted [`Settings::clock`](crate::Settings::clock) at boot and re-stamps it
-    /// on the first real edit, so without an RTC the clock simply resumes from the last-set value
-    /// and ticks forward — accurate to within however long the device was powered off, until a GPS
-    /// fix (or the user) re-stamps it.
+    /// A clock whose set-point `base` is true at the boot origin (`epoch_ms = 0`), not yet
+    /// [`established`](WallClock::is_established). Seeded from the persisted
+    /// [`Settings::clock`](crate::Settings::clock) at boot; without an RTC the clock resumes from the
+    /// last-set value, off by however long the device was powered down until a GPS fix (or the user)
+    /// re-stamps it.
     pub fn new(base: DateTime) -> Self {
-        WallClock { base, epoch_ms: 0 }
+        WallClock { base, epoch_ms: 0, established: false }
     }
 
-    /// Re-stamp: declare that `base` is the time **now** (`now_ms`). Called when the time is set —
-    /// by the Date & Time editor today, by a GPS fix later — so the clock resumes ticking from the
-    /// freshly established value rather than the stale one.
+    /// Re-stamp: declare that `base` is the time **now** (`now_ms`), so the clock resumes ticking
+    /// from the freshly established value — and mark it [`established`](WallClock::is_established).
     pub fn set(&mut self, base: DateTime, now_ms: u32) {
         self.base = base;
         self.epoch_ms = now_ms;
+        self.established = true;
+    }
+
+    /// Whether a set-point has ever been established (see the field) — the Home date line's
+    /// "do we know the date?" gate.
+    pub fn is_established(&self) -> bool {
+        self.established
     }
 
     /// The current wall-clock time at `now_ms`: the set-point advanced by the whole minutes elapsed
-    /// since it was stamped. `wrapping_sub` so the elapsed span is correct across the ~49.7-day u32
-    /// millis wrap (the real elapsed is always far below it). Minute resolution — the clock only
-    /// ever displays `HH:MM`, and the set-point itself carries no seconds.
+    /// since it was stamped. `wrapping_sub` keeps the elapsed span correct across the ~49.7-day u32
+    /// millis wrap. Minute resolution — the clock only ever displays `HH:MM`.
     pub fn now(&self, now_ms: u32) -> DateTime {
         let elapsed_min = now_ms.wrapping_sub(self.epoch_ms) / 60_000;
-        self.base.add_minutes(elapsed_min)
+        add_minutes_bounded(self.base, elapsed_min)
     }
 
-    /// Milliseconds from `now_ms` until the displayed `HH:MM` next rolls over — i.e. how long a
-    /// clock-bearing screen can sleep before its [`MinuteTicker`] would fire. This is the timed-redraw
-    /// deadline the **event-driven** host arms a single wake timer to (issue #219): rather than the
-    /// loop free-running to *discover* a minute changed, the app reports exactly when it will, so the
-    /// M33 can WFI until then. The set-point itself carries no seconds, so the boundary is measured
-    /// from the millis offset into the current minute (`elapsed mod 60 s`); `wrapping_sub` keeps it
-    /// correct across the ~49.7-day u32 wrap, exactly like [`now`](WallClock::now). Always in
-    /// `1..=60_000` (it never returns 0 — at an exact boundary the full minute remains).
+    /// Unix seconds at `now_ms`, reading the set-point as UTC: [`to_unix`](DateTime::to_unix) plus
+    /// the **full elapsed seconds** since the stamp. Unlike [`now`](WallClock::now) this keeps the
+    /// sub-minute remainder — the GPS re-stamp back-dates `epoch_ms` by the fix's
+    /// seconds-into-the-minute, so second-level truth survives the minute-resolution set-point. The
+    /// set-point is *local* time; the caller
+    /// ([`App::wall_unix_now`](crate::App::wall_unix_now)) folds the UTC offset back out.
+    pub fn unix_now(&self, now_ms: u32) -> u32 {
+        self.base.to_unix().wrapping_add(now_ms.wrapping_sub(self.epoch_ms) / 1000)
+    }
+
+    /// Milliseconds from `now_ms` until the displayed `HH:MM` next rolls over — the timed-redraw
+    /// deadline the **event-driven** host arms a single wake timer to, so the M33 can WFI until
+    /// then rather than free-run to discover the change. Measured from the millis offset into the
+    /// current minute; `wrapping_sub` keeps it wrap-safe like [`now`](WallClock::now). Always in
+    /// `1..=60_000` (never 0 — at an exact boundary the full minute remains).
     pub fn ms_to_next_minute(&self, now_ms: u32) -> u32 {
         60_000 - now_ms.wrapping_sub(self.epoch_ms) % 60_000
     }
 }
 
 /// A per-minute repaint edge for a screen drawing an `HH:MM` clock. The screen holds one and calls
-/// [`changed`](MinuteTicker::changed) from its `animate`, dirtying itself exactly once each time
-/// the displayed minute rolls over — the timed-redraw the render-on-demand host needs to repaint a
-/// static screen as the clock advances, without it polling the clock on a blind heartbeat.
-///
-/// The minute is the finest field of an `HH:MM` readout, so a minute change also subsumes every
-/// coarser rollover (hour, day) above it; a screen that showed seconds would compare those instead.
-/// Reusable by every clock-bearing screen, so they all tick on the same once-a-minute cadence.
+/// [`changed`](MinuteTicker::changed) from its `tick_timers`, dirtying itself exactly once each time
+/// the displayed minute rolls over — so a static screen repaints as the clock advances without
+/// polling on a blind heartbeat. The minute change subsumes every coarser rollover above it.
 ///
 /// The **first** observation only *initialises* the baseline and reports no change: a screen's
-/// first paint is already driven by whatever made it appear (the boot dirty, or the navigation
-/// back to it), which draws the current minute — so the ticker need only catch the *subsequent*
-/// rollovers, matching the "dirty only on an actual change" contract the Statistics spring-back
-/// follows (and avoiding a spurious second paint right after the first).
+/// first paint is already driven by whatever made it appear, so the ticker need only catch the
+/// *subsequent* rollovers (and avoid a spurious second paint right after the first).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MinuteTicker {
-    /// The last minute seen, or `None` before the first observation (which initialises it without
-    /// reporting a change).
+    /// The last minute seen, or `None` before the first observation.
     last: Option<u8>,
 }
 
@@ -108,9 +113,6 @@ mod tests {
         DateTime { year: 2025, month: 6, day: 29, hour, minute }
     }
 
-    /// `now` returns the set-point advanced by the whole minutes since the epoch — and recomputes
-    /// from the set-point each call, so reading it twice for the same `now_ms` is identical (no
-    /// accumulation), and a sub-minute elapsed adds nothing.
     #[test]
     fn now_advances_by_elapsed_minutes() {
         let mut c = WallClock::new(dt(14, 40));
@@ -144,7 +146,7 @@ mod tests {
     }
 
     /// `ms_to_next_minute` reports the time left until the displayed minute rolls over — the wake
-    /// deadline the event-driven loop arms (issue #219). Measured from the offset into the current
+    /// deadline the event-driven loop arms. Measured from the offset into the current
     /// minute, never 0, and wrap-safe like `now`.
     #[test]
     fn ms_to_next_minute_counts_down_to_the_rollover() {
@@ -158,6 +160,21 @@ mod tests {
         let mut w = WallClock::new(dt(0, 0));
         w.set(dt(0, 0), u32::MAX - 30_000);
         assert_eq!(w.ms_to_next_minute(u32::MAX.wrapping_add(10_000)), 20_000, "wrap-safe: 40 s elapsed → 20 s left");
+    }
+
+    /// `unix_now` keeps the sub-minute remainder the `HH:MM` reading drops: a set-point stamped
+    /// mid-minute (the GPS back-dating) yields second-accurate unix time, wrap-safe like `now`.
+    #[test]
+    fn unix_now_keeps_seconds_and_survives_the_wrap() {
+        let base = DateTime { year: 2026, month: 7, day: 2, hour: 9, minute: 33 };
+        let mut c = WallClock::new(base);
+        c.set(base, 10_000); // 09:33:00 was true at t = 10 s
+        assert_eq!(c.unix_now(10_000), base.to_unix());
+        assert_eq!(c.unix_now(10_000 + 61_500), base.to_unix() + 61, "whole elapsed seconds, not minutes");
+        // Wrap-safe: stamped 30 s before the u32 millis wrap, read 30 s past it — 60 s elapsed.
+        let mut w = WallClock::new(base);
+        w.set(base, u32::MAX - 30_000);
+        assert_eq!(w.unix_now(u32::MAX.wrapping_add(30_000)), base.to_unix() + 60);
     }
 
     /// The ticker initialises silently on the first observation, then fires only when the minute

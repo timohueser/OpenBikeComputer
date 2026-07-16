@@ -69,6 +69,53 @@ struct LaunchConnectingView: View {
     }
 }
 
+/// A-timeout — the bonded device didn't answer within the connect grace
+/// window (asleep, out of range, powered off). Calm like D5, and never a
+/// trap: retry re-enters A, or head to the routes — the background connect
+/// keeps listening either way.
+struct LaunchConnectFailedView: View {
+    let deviceName: String
+    let onRetry: () -> Void
+    let onGoToRoutes: () -> Void
+
+    var body: some View {
+        LaunchScreenScaffold {
+            VStack(spacing: 0) {
+                Circle()
+                    .fill(OBCTheme.warning.opacity(0.1))
+                    .frame(width: 88, height: 88)
+                    .overlay {
+                        BluetoothRune(slashed: true)
+                            .stroke(OBCTheme.warning, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            .frame(width: 40, height: 40)
+                    }
+                    .padding(.bottom, 24)
+
+                Text("Can't reach \(deviceName)")
+                    .font(.obcSerif(size: 25))
+                    .foregroundStyle(OBCTheme.ink)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("launch.connectFailedTitle")
+                    .padding(.bottom, 8)
+
+                Text("It's probably asleep or out of range. Your routes are still here — the app connects on its own once \(deviceName) is nearby.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(OBCTheme.inkSoft)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .frame(maxWidth: 260)
+            }
+        } actions: {
+            Button("Try again", action: onRetry)
+                .buttonStyle(.obcPrimary)
+                .accessibilityIdentifier("launch.tryAgain")
+            Button("Go to routes", action: onGoToRoutes)
+                .buttonStyle(.obcGhost)
+                .accessibilityIdentifier("launch.goToRoutes")
+        }
+    }
+}
+
 /// H8 (radio off) / the post-denial H7 state. Point to the fix; don't nag —
 /// and never trap the rider: the library stays reachable.
 struct RadioBlockedView: View {
@@ -139,6 +186,10 @@ struct RadioBlockedView: View {
 
 #Preview("A · connecting") {
     LaunchConnectingView(deviceName: "Trailhead")
+}
+
+#Preview("A-timeout · can't reach") {
+    LaunchConnectFailedView(deviceName: "Trailhead", onRetry: {}, onGoToRoutes: {})
 }
 
 #Preview("H8 · bluetooth off") {

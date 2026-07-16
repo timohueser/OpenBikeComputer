@@ -1,26 +1,21 @@
-//! `ingest.rs` — read an `.osm.pbf` into styled features. Handles lines, closed-way
-//! polygons, and multipolygon/`boundary` *relation* area assembly (lakes-with-
-//! islands, multi-part forests). Reads with `osmpbf` in two passes:
+//! `ingest.rs` — read an `.osm.pbf` into styled features (lines, closed-way
+//! polygons, and multipolygon/`boundary` relation areas). Two `osmpbf` passes:
 //!
-//!   - **Pass 1** builds the `node_id → coord` store **and** collects qualifying
-//!     area relations (their style + member way-ids) — relations sit last in a
-//!     sorted PBF, so a single whole-file read sees them after the nodes, no extra
-//!     pass needed.
+//!   - **Pass 1** builds the `node_id → coord` store and collects qualifying area
+//!     relations. Relations sit last in a sorted PBF, so one whole-file read sees
+//!     them after the nodes — no extra pass. Tagged nodes are also matched
+//!     against the POI table here ([`crate::poi`]).
 //!   - **Pass 2** resolves ways into features + coastlines and captures the
-//!     geometry of any way that is a relation member.
+//!     geometry of any way that is a relation member. Closed ways matching the
+//!     POI table yield centroid POIs.
 //!
-//! Then each relation's member ways are assembled into polygons-with-holes via
-//! GEOS `build_area` ([`assemble_multipolygon`]) and emitted styled by the
-//! relation's tags. Assembly is additive: a tagged closed way that is also a
-//! relation member still yields its own polygon and contributes to the relation
-//! polygon.
+//! Each relation's member ways are then assembled into polygons-with-holes via
+//! [`assemble_multipolygon`]. Assembly is additive: a tagged closed way that is
+//! also a relation member yields its own polygon *and* contributes to the relation.
+//! A closed `highway=residential` loop is a line only, never a filled blob.
 //!
-//! Closed-way classification: a closed `highway=residential` loop becomes a line
-//! only, never also a filled blob.
-//!
-//! Coordinates are read osmium's way — `decimicro / 1e7`, never `* 1e-7` — so the
-//! f64 lon/lat match osmium's exactly and everything downstream (bbox, simplify,
-//! serialize) lines up.
+//! Coordinates use `decimicro / 1e7`, never `* 1e-7`, so the f64 lon/lat match
+//! osmium's exactly and everything downstream lines up.
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,29 +23,33 @@ use osmpbf::{Element, ElementReader, RelMemberType};
 
 use crate::config::Config;
 use crate::geom::{assemble_multipolygon, polygon_is_valid, Geom};
+use crate::hours;
+use crate::nav::{self, NavGraph, RoutableWay};
+use crate::poi::{self, Poi};
 
-/// A feature as it leaves ingest: a simple geometry plus its style id and the
-/// `min_lod` gate.
 pub struct IngestFeature {
     pub style_id: u8,
     pub min_lod: usize,
     pub geom: Geom,
 }
 
-/// Everything ingest produces: the styled features and the coastline lines
-/// (captured separately, always — they feed the bbox and, later, land/sea).
+/// Coastlines are captured separately (always) — they feed the bbox and land/sea.
+/// POIs are the classified + deduped point-of-interest set ([`crate::poi`]),
+/// serialized into the OBCM POI section (§7). `nav_graph` is the in-memory
+/// routable graph ([`crate::nav`]), serialized into the v8 nav-graph section (§8).
 pub struct Ingested {
     pub features: Vec<IngestFeature>,
     pub coastlines: Vec<Vec<(f64, f64)>>,
+    pub pois: Vec<Poi>,
+    pub nav_graph: NavGraph,
 }
 
-/// A qualifying area relation collected in pass 1, awaiting member geometry (pass
-/// 2) and assembly. Holds owned data only (no borrow into the PBF buffer).
+/// A pass-1 area relation awaiting member geometry (pass 2) and assembly.
 struct PendingRelation {
     style_id: u8,
     min_lod: usize,
-    /// Member **way** ids, in member order. Roles are deliberately dropped —
-    /// `build_area` classifies outer/inner by geometry (handover §3.1).
+    /// Member **way** ids in member order. Roles are dropped — `build_area`
+    /// classifies outer/inner by geometry.
     member_ways: Vec<i64>,
 }
 
@@ -58,8 +57,7 @@ struct PendingRelation {
 /// polygon.
 const AREA_TAGS: [&str; 6] = ["building", "landuse", "amenity", "leisure", "natural", "waterway"];
 
-/// osmium derives lon/lat as `decimicro / 1e7` — division by the exact integer
-/// `1e7`, never `* 1e-7`. Keep it that way so the coords match osmium exactly.
+/// `decimicro / 1e7`, never `* 1e-7`, so coords match osmium exactly.
 #[inline]
 fn to_deg(decimicro: i32) -> f64 {
     decimicro as f64 / 1e7
@@ -69,20 +67,26 @@ fn to_deg(decimicro: i32) -> f64 {
 /// relation-assembled area polygons).
 pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     // --- Pass 1: node-location store + relation collection. ---
-    // The PBF is node-sorted so the store is filled before any relation is read
-    // (relations come last); a full store is the simple, safe choice — it could be
-    // shrunk later. ~8 B/node + overhead.
+    // The PBF is node-sorted, so the store is filled before any relation is read.
+    // The stage strings are matched by the web builder's progress UI — print each
+    // when its pass actually starts, not both up front.
+    println!("Pass 1: reading nodes...");
     let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
     let mut pending: Vec<PendingRelation> = Vec::new();
     let mut needed_ways: HashSet<i64> = HashSet::new();
+    // POI candidates from both passes, deduped after assembly. Classification is
+    // config-free (hardcoded table — locked decision on #115).
+    let mut poi_cands: Vec<Poi> = Vec::new();
     ElementReader::from_path(pbf_path)
         .map_err(|e| format!("open {pbf_path}: {e}"))?
         .for_each(|el| match el {
             Element::Node(n) => {
                 nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                push_node_poi(n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut poi_cands);
             }
             Element::DenseNode(n) => {
                 nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                push_node_poi(n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut poi_cands);
             }
             Element::Relation(r) => collect_relation(&r, config, &mut pending, &mut needed_ways),
             _ => {}
@@ -90,9 +94,14 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
         .map_err(|e| format!("pass 1 {pbf_path}: {e}"))?;
 
     // --- Pass 2: ways → features + coastlines, plus member-way geometry capture. ---
+    println!("Pass 2: processing ways...");
     let mut features = Vec::new();
     let mut coastlines = Vec::new();
     let mut member_geom: HashMap<i64, Vec<(f64, f64)>> = HashMap::with_capacity(needed_ways.len());
+    // Routable-way topology for the nav graph ([`crate::nav`]). We keep the OSM node
+    // ids here (which the render path drops) so shared nodes can be recovered as
+    // junctions after the pass; the graph is built from these once all ways are seen.
+    let mut routable_ways: Vec<RoutableWay> = Vec::new();
     ElementReader::from_path(pbf_path)
         .map_err(|e| format!("open {pbf_path}: {e}"))?
         .for_each(|el| {
@@ -101,8 +110,8 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
                 // A missing node aborts the whole way — osmium would raise
                 // `InvalidLocationError` here, and the way is dropped.
                 let Some(coords) = resolve_coords(&refs, &nodes) else { return };
-                process_way(&w, &refs, &coords, config, &mut features, &mut coastlines);
-                // Capture geometry for relation assembly (move, no extra clone).
+                push_routable_way(&w, &refs, &coords, &mut routable_ways);
+                process_way(&w, &refs, &coords, config, &mut features, &mut coastlines, &mut poi_cands);
                 if needed_ways.contains(&w.id()) {
                     member_geom.insert(w.id(), coords);
                 }
@@ -110,16 +119,11 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
         })
         .map_err(|e| format!("pass 2 {pbf_path}: {e}"))?;
 
-    // --- Assemble relation areas from captured member geometry (Stage 4). ---
-    // Each outer ring (+ its nested holes) becomes one polygon, styled by the
-    // relation. Un-assemblable/invalid relations yield nothing (skip-and-warn),
-    // matching osmium silently dropping broken relations.
-    //
-    // **Completeness:** osmium's MultipolygonManager only assembles a relation when
-    // ALL its member ways are present; an incomplete relation (a member way clipped
-    // out of the extract) is dropped, not assembled from the surviving members.
-    // We mirror that — assembling a partial ring would emit a phantom polygon that
-    // crosses the extract boundary.
+    // --- Assemble relation areas from captured member geometry. ---
+    // Each outer ring (+ nested holes) becomes one polygon, styled by the relation.
+    // **Completeness:** like osmium, only assemble when ALL member ways are present;
+    // an incomplete relation (a member clipped out of the extract) is dropped, not
+    // assembled from survivors — that would emit a phantom boundary-crossing polygon.
     for pr in &pending {
         let mut members = Vec::with_capacity(pr.member_ways.len());
         let mut complete = true;
@@ -133,19 +137,64 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
             }
         }
         if !complete {
-            continue; // incomplete relation → osmium drops it too
+            continue;
         }
         for poly in assemble_multipolygon(&members) {
             features.push(IngestFeature { style_id: pr.style_id, min_lod: pr.min_lod, geom: poly });
         }
     }
 
-    Ok(Ingested { features, coastlines })
+    // --- POIs: collapse OSM double-mapping, then log per-category counts. ---
+    let (pois, poi_dropped) = poi::dedupe(poi_cands);
+    println!("{}", poi::format_counts(&pois, poi_dropped));
+
+    // --- Nav graph: junctions + deduped edges from the routable ways, then
+    // island pruning (`routing.min_component_edges`) + v9-guarantee edge splits
+    // ([`nav::build_graph_with`]). Serialized into the §8 nav section. Logged (with
+    // component + kinds stats) alongside POIs.
+    let (nav_graph, nav_stats) = nav::build_graph_with(&routable_ways, config.routing.min_component_edges);
+    println!("{}", nav::format_summary(&nav_graph, &nav_stats));
+
+    Ok(Ingested { features, coastlines, pois, nav_graph })
 }
 
-/// Resolve a way's node refs to degree coordinates against the node store.
-/// `None` iff any node is missing — the caller drops the way, mirroring osmium's
-/// `InvalidLocationError`.
+/// Capture a routable way's node-id sequence + µdeg coords for the nav graph.
+/// Routability is tag-based ([`nav::is_routable`]) and independent of styling — a
+/// way can be routable without a render style and vice-versa. Ways with fewer than
+/// two nodes carry no edge and are skipped. `coords` is the way's f64-degree
+/// geometry from [`resolve_coords`]; it is snapped to the µdeg grid here (the same
+/// grid POIs and the serializer use) so edge lengths and later serialization agree.
+fn push_routable_way(w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Vec<RoutableWay>) {
+    if refs.len() < 2 {
+        return;
+    }
+    // Classify once (routability + way-kind byte). `None` ⇒ not routable — this is
+    // the only place tags exist, so the kind is captured here or never.
+    let Some(kind) = nav::classify(w.tags()) else { return };
+    let coords_udeg = coords.iter().map(|&(x, y)| (poi::to_udeg(x), poi::to_udeg(y))).collect();
+    out.push(RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg, kind });
+}
+
+/// Classify one node's tags against the POI table; push a candidate on match.
+/// The overwhelmingly common untagged-node case falls straight through.
+fn push_node_poi<'a, I>(tags: I, decimicro_lon: i32, decimicro_lat: i32, out: &mut Vec<Poi>)
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    if let Some((subtype, name, raw_hours)) = poi::classify(tags) {
+        out.push(Poi {
+            subtype,
+            lon_udeg: poi::to_udeg(to_deg(decimicro_lon)),
+            lat_udeg: poi::to_udeg(to_deg(decimicro_lat)),
+            name,
+            from_node: true,
+            hours: raw_hours.and_then(hours::parse),
+        });
+    }
+}
+
+/// Resolve a way's node refs to degree coordinates. `None` iff any node is missing
+/// — the caller drops the way (osmium's `InvalidLocationError`).
 fn resolve_coords(refs: &[i64], nodes: &HashMap<i64, (i32, i32)>) -> Option<Vec<(f64, f64)>> {
     let mut coords = Vec::with_capacity(refs.len());
     for r in refs {
@@ -156,9 +205,8 @@ fn resolve_coords(refs: &[i64], nodes: &HashMap<i64, (i32, i32)>) -> Option<Vec<
 }
 
 /// Collect a `type=multipolygon`/`type=boundary` relation (skipping `admin_level`)
-/// for area assembly: record its style + member way-ids — the relations osmium's
-/// `AreaManager` turns into areas. Member roles are ignored — geometry decides
-/// outer/inner; non-way members (nodes, sub-relations) are skipped.
+/// for area assembly: record its style + member way-ids. Roles are ignored;
+/// non-way members are skipped.
 fn collect_relation(
     r: &osmpbf::Relation,
     config: &Config,
@@ -166,12 +214,11 @@ fn collect_relation(
     needed_ways: &mut HashSet<i64>,
 ) {
     let tags: HashMap<&str, &str> = r.tags().collect();
-    // Only area relation types build polygons (osmium's AreaManager).
     match tags.get("type").copied() {
         Some("multipolygon") | Some("boundary") => {}
         _ => return,
     }
-    // admin_level relations are line-only (handover §3.4) → no polygon.
+    // admin_level relations are line-only → no polygon.
     if tags.contains_key("admin_level") {
         return;
     }
@@ -188,8 +235,7 @@ fn collect_relation(
 }
 
 /// One way: capture coastline always, then style + classify into a single
-/// polygon-or-line emission. `refs`/`coords` are pre-resolved (so the caller can
-/// also reuse `coords` for member capture).
+/// polygon-or-line emission. `refs`/`coords` are pre-resolved.
 fn process_way(
     w: &osmpbf::Way,
     refs: &[i64],
@@ -197,31 +243,45 @@ fn process_way(
     config: &Config,
     features: &mut Vec<IngestFeature>,
     coastlines: &mut Vec<Vec<(f64, f64)>>,
+    pois: &mut Vec<Poi>,
 ) {
-    // Tags collected once, used for both styling and classification.
     let tags: HashMap<&str, &str> = w.tags().collect();
+    let is_closed = refs.len() >= 2 && refs.first() == refs.last();
 
-    // Coastlines are captured ALWAYS — even if the way is also closed/styled —
-    // and as lines, never areas.
+    // Coastlines are captured ALWAYS — even if the way is also closed/styled — and
+    // as lines, never areas.
     if tags.get("natural") == Some(&"coastline") && coords.len() >= 2 {
         coastlines.push(coords.to_vec());
     }
 
+    // A closed way matching the POI table yields a POI at the ring centroid —
+    // independent of styling (a bare `shop=supermarket` outline has no style at
+    // all). The building-tagged supermarket way and the area campsite are the
+    // motivating cases; relations are out of scope (#115).
+    if is_closed {
+        if let Some((subtype, name, raw_hours)) = poi::classify(tags.iter().map(|(&k, &v)| (k, v))) {
+            let (cx, cy) = poi::ring_centroid(coords);
+            pois.push(Poi {
+                subtype,
+                lon_udeg: poi::to_udeg(cx),
+                lat_udeg: poi::to_udeg(cy),
+                name,
+                from_node: false,
+                hours: raw_hours.and_then(hours::parse),
+            });
+        }
+    }
+
     let Some(style) = config.get_style(&tags) else { return };
 
-    // Closed-way classification: emit a polygon iff it's an area, else a line —
-    // never both (a closed road loop is a line, not also a filled blob).
-    let is_closed = refs.len() >= 2 && refs.first() == refs.last();
+    // A closed area emits a polygon; a closed road loop emits a line, never both.
     if is_closed && is_area(&tags) {
-        // admin_level + area ⇒ drop it entirely (neither a styled line nor a
-        // polygon here).
+        // admin_level + area ⇒ drop entirely (no line, no polygon).
         if tags.contains_key("admin_level") {
             return;
         }
-        // Closed ways are already first==last; no holes (those come from
-        // relations). Require ≥3 points, and skip rings osmium's assembler would
-        // reject as invalid (e.g. a self-intersecting building) — those emit no
-        // polygon, and no line either (the line branch already returned).
+        // Skip rings osmium's assembler would reject as invalid (e.g. a
+        // self-intersecting building); no polygon and no line (line branch returned).
         if coords.len() >= 3 && polygon_is_valid(coords, &[]) {
             features.push(IngestFeature {
                 style_id: style.id,
@@ -232,8 +292,7 @@ fn process_way(
         return;
     }
 
-    // Line: open ways, and closed-but-not-area "circular roads" (W6 residential,
-    // W12 natural=water area=no). Mirror way()'s `len(coords) >= 2` guard.
+    // Line: open ways, and closed-but-not-area circular roads.
     if coords.len() >= 2 {
         features.push(IngestFeature { style_id: style.id, min_lod: style.min_lod, geom: Geom::Line(coords.to_vec()) });
     }
@@ -259,23 +318,19 @@ mod tests {
         matches!(g, Geom::Polygon { .. })
     }
 
-    /// The `tiny.osm` truth table (its header comment), as **Stage-4 Rust** sees
-    /// it: relations are now assembled, and the closed-line-way double-emit stays
-    /// fixed. So the Stage-3 result (7 features + 1 coastline) gains R1's lake
-    /// (1 water polygon WITH a hole) and R2's two forest outers → 10 features.
+    /// The `tiny.osm` truth table: relations assembled (R1's lake with a hole, R2's
+    /// two forest outers) plus lines and closed-way polygons → 10 features.
     #[test]
     fn tiny_truth_table() {
-        // The fixture now ships in-repo (committed past the `*.osm.pbf` ignore; source
-        // of truth is `tiny/tiny.osm`), so it must be present. The old guard did
-        // `eprintln! + return` on a missing file — which reported PASS without ever
-        // running, so CI (which never built the corpus) was green on a test that did
-        // nothing (issue #95). A missing fixture is now a hard failure, not a skip.
+        // The fixture is committed in-repo (source of truth `tiny/tiny.osm`); a
+        // missing fixture is a hard failure, not a skip.
         assert!(
             std::path::Path::new(TINY_PBF).exists(),
             "corpus fixture missing: {TINY_PBF}. It is committed; rebuild from tiny/tiny.osm via \
              packer/tests/corpus/build_corpus.sh"
         );
-        let cfg = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/config.json")).expect("config");
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
         let ing = ingest_osm(TINY_PBF, &cfg).expect("ingest");
 
         // W8 (way 109) is the only coastline; nodes 29,30 ⇒ 2 points.
@@ -313,29 +368,66 @@ mod tests {
         assert_eq!(ing.features.len(), 10, "10 features total");
     }
 
+    /// End-to-end POI extraction over the hand-authored `poi.osm` fixture (its
+    /// header comment is the truth table): node + closed-way classification,
+    /// name folding, and both dedup pairs (node-beats-centroid, named-beats-
+    /// unnamed). See packer/tests/corpus/poi/poi.osm.
+    #[test]
+    fn poi_fixture_end_to_end() {
+        const POI_PBF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/poi.osm.pbf");
+        assert!(
+            std::path::Path::new(POI_PBF).exists(),
+            "corpus fixture missing: {POI_PBF}. It is committed; rebuild from poi/poi.osm via \
+             packer/tests/corpus/build_corpus.sh"
+        );
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
+        let ing = ingest_osm(POI_PBF, &cfg).expect("ingest");
+
+        // 7 candidates (5 nodes + 2 way-centroids), 2 dedup-dropped ⇒ 5 kept.
+        assert_eq!(ing.pois.len(), 5, "expected 5 POIs, got: {:?}", ing.pois);
+
+        let find = |name: Option<&str>, subtype: u8| {
+            ing.pois
+                .iter()
+                .find(|p| p.subtype == subtype && p.name.as_deref() == name)
+                .unwrap_or_else(|| panic!("missing poi subtype {subtype} name {name:?}: {:?}", ing.pois))
+        };
+
+        // N1: named water node, exact µdeg grid.
+        let n1 = find(Some("Marktbrunnen"), 1);
+        assert_eq!((n1.lat_udeg, n1.lon_udeg, n1.from_node), (47_995_000, 7_850_000, true));
+        // N2 beat W1's centroid: node position (the building corner), way's
+        // name folded ü→ue at pack time.
+        let n2 = find(Some("Edeka Mueller"), 13);
+        assert_eq!((n2.lat_udeg, n2.lon_udeg, n2.from_node), (47_989_900, 7_859_900, true));
+        // N3: CJK name folded to empty ⇒ unnamed.
+        let n3 = find(None, 1);
+        assert_eq!((n3.lat_udeg, n3.lon_udeg), (47_980_000, 7_840_000));
+        // N5 beat the unnamed spring N6 40 m away (named > unnamed, same category).
+        find(Some("Brunnen A"), 1);
+        assert!(!ing.pois.iter().any(|p| p.subtype == 2), "spring N6 must be dedup-dropped");
+        // W2: unnamed campsite way ⇒ POI at the ring centroid.
+        let w2 = find(None, 5);
+        assert_eq!((w2.lat_udeg, w2.lon_udeg, w2.from_node), (48_000_200, 7_870_200, false));
+        // N4 (amenity=parking) never classified.
+        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("water 3").count(), 1);
+    }
+
     fn tags(pairs: &[(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
         pairs.iter().copied().collect()
     }
 
-    /// `is_area` (ingest.rs ~244) is the closed-way polygon/line gate, and the only
-    /// path the `tiny_truth_table` corpus test exercises it through is the skippable
-    /// fixture — so cover the heuristic directly. The decisive cases: an `area=yes`
-    /// override forces area even with no AREA_TAGS key; `area=no` forces a line even
-    /// when an AREA_TAGS key is present (this is the W12 `natural=water area=no`
-    /// branch that must stay a line); and absent `area` falls back to "any AREA_TAGS
-    /// key present".
+    /// The closed-way polygon/line gate: `area=yes` forces area even with no
+    /// AREA_TAGS key; `area=no` forces a line even with one present (the W12
+    /// `natural=water area=no` case); absent `area` falls back to any AREA_TAGS key.
     #[test]
     fn is_area_overrides_and_tag_fallback() {
-        // area=yes wins outright, even with no AREA_TAGS key.
         assert!(is_area(&tags(&[("area", "yes")])), "area=yes ⇒ area regardless of other tags");
-        // area=no wins outright, even over an AREA_TAGS key — the W12 line case.
         assert!(!is_area(&tags(&[("area", "no"), ("natural", "water")])), "area=no ⇒ never an area");
-        // No `area` key: any one of building/landuse/amenity/leisure/natural/waterway
-        // present ⇒ area.
         for key in AREA_TAGS {
             assert!(is_area(&tags(&[(key, "whatever")])), "AREA_TAGS key {key} ⇒ area");
         }
-        // No `area`, no AREA_TAGS key ⇒ not an area (a bare closed highway loop).
         assert!(!is_area(&tags(&[("highway", "residential")])), "no area tag, no AREA_TAGS key ⇒ line");
         // An unrecognized `area` value falls through to the tag fallback (not yes/no).
         assert!(!is_area(&tags(&[("area", "maybe")])), "unknown area value, no AREA_TAGS key ⇒ line");

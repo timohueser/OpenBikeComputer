@@ -21,6 +21,8 @@ public struct UploadSheetView: View {
     public var body: some View {
         OBCSheetContainer {
             switch model.phase {
+            case .ready:
+                readyContent
             case .uploading:
                 progressContent(interrupted: false)
             case .interrupted:
@@ -48,10 +50,56 @@ public struct UploadSheetView: View {
     /// one extra button, F₂ the taller centered confirm.
     private var sheetHeight: CGFloat {
         switch model.phase {
+        case .ready: model.supportsRetention ? 320 : 260
         case .uploading: 280
         case .interrupted: 340
         case .done: 320
         case .failed: 310
+        }
+    }
+
+    // MARK: Ready — the pre-transfer confirm (epic #638 S7)
+
+    private var readyContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 13) {
+                iconTile(systemImage: "square.and.arrow.up", color: OBCTheme.forest)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Upload to \(model.deviceName)")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(OBCTheme.ink)
+                        .accessibilityIdentifier("upload.readyTitle")
+                    Text(model.readySizeLine)
+                        .font(.obcMono(size: 12.5))
+                        .foregroundStyle(OBCTheme.inkFaint)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.bottom, 16)
+
+            // The Auto-delete row — hidden on a device without retention capability
+            // (S6 flag), which also skips the `.ready` confirm entirely.
+            if model.supportsRetention {
+                OBCGroupedSection {
+                    OBCRetentionRow(
+                        selection: model.retention,
+                        showsDivider: false,
+                        accessibilityID: "upload.autoDelete",
+                        onSelect: { model.selectRetention($0) }
+                    )
+                }
+                .padding(.bottom, 4)
+            }
+
+            Button("Upload to \(model.deviceName)") { model.beginUpload() }
+                .buttonStyle(.obcPrimary)
+                .disabled(!model.canUpload)
+                .accessibilityIdentifier("upload.begin")
+                .padding(.top, 14)
+            Button("Cancel") { model.dismiss() }
+                .buttonStyle(.obcGhost)
+                .accessibilityIdentifier("upload.cancel")
+                .padding(.top, 10)
         }
     }
 
@@ -156,14 +204,18 @@ public struct UploadSheetView: View {
 
     private var failedContent: some View {
         VStack(spacing: 0) {
-            iconTile(systemImage: "exclamationmark.triangle", color: OBCTheme.warning)
-                .padding(.top, 6)
-                .padding(.bottom, 14)
+            iconTile(
+                systemImage: model.failure == .storageFull ? "externaldrive.badge.exclamationmark" : "exclamationmark.triangle",
+                color: OBCTheme.warning
+            )
+            .padding(.top, 6)
+            .padding(.bottom, 14)
 
-            Text("Couldn't upload")
+            Text(model.failedTitle)
                 .font(.obcSerif(size: 20))
                 .foregroundStyle(OBCTheme.ink)
-            Text("\(model.deviceName) didn't answer. Check that it's awake and nearby, then try again.")
+                .accessibilityIdentifier("upload.failedTitle")
+            Text(model.failedMessage)
                 .font(.system(size: 13.5))
                 .lineSpacing(3)
                 .foregroundStyle(OBCTheme.inkSoft)
@@ -171,6 +223,7 @@ public struct UploadSheetView: View {
                 .frame(maxWidth: 260)
                 .padding(.top, 6)
                 .padding(.bottom, 18)
+                .accessibilityIdentifier("upload.failedMessage")
 
             Button("Close") { model.dismiss() }
                 .buttonStyle(.obcGhost)
@@ -198,15 +251,16 @@ private struct PreviewUploadTransport: DeviceTransport {
 
     var state: AsyncStream<ConnectionState> { AsyncStream { _ in } }
     var battery: AsyncStream<Int> { AsyncStream { _ in } }
+    var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
     func connect() async throws {}
     func disconnect() async {}
     func deviceInfo() async throws -> DeviceInfo { DeviceInfo(name: "Trailhead", firmwareVersion: "0") }
     func readConfig() async throws -> DeviceConfig { DeviceConfig(name: "Trailhead") }
     func writeConfig(_ config: DeviceConfig) async throws {}
-    func listRoutes() async throws -> [RouteSummary] { [] }
-    func routeDetail(_ id: RouteID) async throws -> RouteDetail { throw DeviceError.readFailed }
-    func deleteRoute(_ id: RouteID) async throws {}
-    func listRides() async throws -> [RideSummary] { [] }
+    func listRoutes() async throws -> [RouteCatalogEntry] { [] }
+    func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { throw DeviceError.readFailed }
+    func deleteRoute(_ id: DeviceObjectID) async throws {}
+    func listRides() async throws -> RideCatalog { RideCatalog(rides: []) }
     func rideDetail(_ id: RideID) async throws -> RideDetail { throw DeviceError.readFailed }
     func downloadRides(_ ids: [RideID]) -> RideDownload { .finished() }
     func readDiagnostics() async throws -> Data { Data() }
@@ -219,7 +273,7 @@ private struct PreviewUploadTransport: DeviceTransport {
             for step in 1...100 {
                 try? await Task.sleep(for: .milliseconds(40))
                 let done = total * step / 100
-                continuation.yield(TransferProgress(bytesDone: done, total: total, offset: done))
+                continuation.yield(TransferProgress(bytesDone: done, total: total))
             }
             continuation.finish()
             outcome.fulfill(.completed)
@@ -237,22 +291,35 @@ private struct PreviewUploadTransport: DeviceTransport {
                 .sheet(isPresented: $shown) {
                     UploadSheetView(model: UploadSheetModel(
                         transport: PreviewUploadTransport(),
-                        blob: RouteBlob(
-                            summary: RouteSummary(
-                                id: RouteID("preview"), name: "Kettle Moraine Loop",
-                                distanceMeters: 62_400, elevationGainMeters: 840
-                            ),
-                            waypoints: [Waypoint(
-                                index: 0, name: "Ottawa Lake trailhead",
-                                distanceAlongMeters: 0, coordinate: Coordinate(latitude: 0, longitude: 0)
-                            )],
-                            payload: Data(count: 2_300_000)
-                        ),
+                        blob: previewBlob,
                         deviceName: "Trailhead"
                     ))
                 }
         }
     }
     return Demo()
+}
+
+/// A real OBCR route (a short synthetic climb) so the preview's size readout shows
+/// the true kB scale, not a placeholder byte count.
+private var previewBlob: RouteBlob {
+    let waypoint = Waypoint(
+        index: 0, name: "Ottawa Lake trailhead",
+        distanceAlongMeters: 0, coordinate: Coordinate(latitude: 43.02, longitude: -88.55)
+    )
+    let points = (0..<400).map { i in
+        RoutePoint(
+            coordinate: Coordinate(latitude: 43.02 + 0.0006 * Double(i), longitude: -88.55 + 0.0004 * Double(i % 2)),
+            elevationMeters: 280 + Double(i % 40)
+        )
+    }
+    return RouteBlob(
+        summary: RouteSummary(
+            id: RouteID("preview"), name: "Kettle Moraine Loop",
+            distanceMeters: 62_400, elevationGainMeters: 840
+        ),
+        waypoints: [waypoint],
+        payload: RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Kettle Moraine Loop")
+    )
 }
 #endif

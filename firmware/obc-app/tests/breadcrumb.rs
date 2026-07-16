@@ -1,8 +1,7 @@
-//! Breadcrumb bounds + decimation. The two tiers stay within their fixed caps no matter how
-//! long the ride, the start stays visible, `clear` empties it — and the coarse spine keeps the
-//! ride's *shape* **without** straight-lining a long stretch under budget pressure (issue #22):
-//! it simplifies by Visvalingam effective area, so the kept points spread along the whole ride
-//! instead of collapsing one section to a chord.
+//! Breadcrumb bounds + decimation: the two tiers stay within fixed caps however long the ride, the
+//! start stays visible, `clear` empties it — and the coarse spine keeps the ride's shape without
+//! straight-lining a long stretch under budget pressure (issue #22). It simplifies by Visvalingam
+//! effective area, so the kept points spread along the whole ride instead of collapsing to a chord.
 
 use obc_app::Breadcrumb;
 
@@ -30,8 +29,8 @@ fn empty_then_cleared() {
 #[test]
 fn short_ride_is_all_recent_one_line() {
     let mut bc = Breadcrumb::new();
-    // Five points ~22 m apart: the ring isn't full, so nothing has aged into the spine — the
-    // whole short trail is full-resolution `recent`, and `points()` is just those 5 in order.
+    // Five points ~22 m apart: the ring isn't full, so nothing has aged into the spine — the whole
+    // short trail is full-resolution `recent`.
     for i in 0..5 {
         bc.push(i * 200, LAT0);
     }
@@ -45,8 +44,7 @@ fn short_ride_is_all_recent_one_line() {
 #[test]
 fn straight_ride_is_drawn_exactly() {
     let mut bc = Breadcrumb::new();
-    // ~150 km dead straight. Colinear points carry zero area, so the spine never bends — the
-    // drawn line reproduces the ride exactly, start to finish.
+    // ~150 km dead straight. Colinear points carry zero area, so the spine never bends.
     let mut input = std::vec::Vec::new();
     for i in 0..30_000 {
         bc.push(i * 50, LAT0);
@@ -61,10 +59,9 @@ fn straight_ride_is_drawn_exactly() {
 #[test]
 fn long_curvy_ride_distributes_and_stays_bounded() {
     let mut bc = Breadcrumb::new();
-    // ~200 km continuously weaving — far past both caps, so the spine is budget-pressured the
-    // whole way. It must stay bounded, keep its start, follow the ride within a few-fold of the
-    // budget's spacing, and — the regression this guards — must NOT collapse a long stretch into
-    // one straight chord.
+    // ~200 km continuously weaving — far past both caps, so the spine is budget-pressured the whole
+    // way. It must stay bounded, keep its start, follow the ride — and must NOT collapse a long
+    // stretch into one straight chord (the regression this guards).
     let mut input = std::vec::Vec::new();
     let mut last = (0, 0);
     for i in 0..30_000i64 {
@@ -75,9 +72,7 @@ fn long_curvy_ride_distributes_and_stays_bounded() {
         last = (lon, lat);
     }
     let spine: std::vec::Vec<(i32, i32)> = bc.spine_iter().collect();
-    // Bounded regardless of the configured cap: a fixed budget, not ride-length — far fewer
-    // points than the 30 000 pushed — yet well populated. (Cap-agnostic so tuning SPINE_CAP
-    // doesn't break the test.)
+    // Bounded regardless of the cap: a fixed budget, not ride-length, yet well populated.
     assert!(spine.len() < input.len() / 4, "spine bounded well below ride length: {}", spine.len());
     assert!(spine.len() > 100, "spine stays well populated: {}", spine.len());
     assert_eq!(bc.points().next(), Some((0, LAT0)), "start preserved");
@@ -88,21 +83,21 @@ fn long_curvy_ride_distributes_and_stays_bounded() {
     let (total, longest) = span_stats(&spine);
     assert!(longest <= total / 20.0, "one segment spans too much: {longest:.0} m of {total:.0} m");
 
-    // And the line still tracks the ride — coarser than the route (fixed budget over 200 km),
-    // but bounded, never the straight-line collapse. The deviation budget scales with the spine
-    // density: the constrained `nrf-mem` profile (issue #124) halves SPINE_CAP, so the same weave
-    // is drawn with half the points and strays roughly twice as far — still bounded, not collapsed.
+    // And the line still tracks the ride, bounded, never the straight-line collapse. The deviation
+    // budget scales with spine density: the `nrf-mem` profile quarters SPINE_CAP (256 vs 1024), so
+    // the same weave is drawn with a quarter the points and strays several times further — still
+    // sub-pixel on a whole-ride view (~833 m/px for a 200 km ride on the 240 px panel).
     let out: std::vec::Vec<(i32, i32)> = bc.points().collect();
     let dev = max_deviation_m(&input, &out);
-    let dev_budget = if cfg!(feature = "nrf-mem") { 80.0 } else { 40.0 };
+    let dev_budget = if cfg!(feature = "nrf-mem") { 200.0 } else { 40.0 };
     assert!(dev <= dev_budget, "trail strays {dev:.1} m from a 200 km weave on a fixed point budget");
 }
 
 #[test]
 fn curve_within_budget_is_faithful() {
     let mut bc = Breadcrumb::new();
-    // A weave whose aged points overflow the spine (so it actually simplifies) but only modestly,
-    // so the kept budget tracks it tightly — every ridden fix within a few metres of the line.
+    // A weave whose aged points overflow the spine (so it simplifies) but only modestly, so the kept
+    // budget tracks it within a few metres.
     let mut input = std::vec::Vec::new();
     for i in 0..3_000i64 {
         let lon = (i * 60) as i32;
@@ -113,15 +108,18 @@ fn curve_within_budget_is_faithful() {
     assert!(bc.spine_iter().count() > 50, "spine exercised");
     let out: std::vec::Vec<(i32, i32)> = bc.points().collect();
     let dev = max_deviation_m(&input, &out);
-    assert!(dev <= SHAPE_TOL_M, "breadcrumb strays {dev:.2} m from the weave");
+    // The aged points overflow the spine and simplify; the constrained `nrf-mem` profile keeps a
+    // quarter the points (SPINE_CAP 256 vs 1024), so the same weave strays several times further.
+    let tol = if cfg!(feature = "nrf-mem") { 20.0 } else { SHAPE_TOL_M };
+    assert!(dev <= tol, "breadcrumb strays {dev:.2} m from the weave");
 }
 
 #[test]
 fn switchbacks_keep_their_corners() {
     let mut bc = Breadcrumb::new();
-    // Straight legs joined by sharp turns (a triangle wave) — the corners carry large area, so
-    // Visvalingam spends the budget on them and the legs collapse to straight chords. The turns
-    // must survive; the old along-track gate cut them once its spacing relaxed (issue #22).
+    // Straight legs joined by sharp turns — the corners carry large area, so Visvalingam spends the
+    // budget on them. The turns must survive; the old along-track gate cut them once its spacing
+    // relaxed (issue #22).
     let mut input = std::vec::Vec::new();
     for i in 0..6_000i64 {
         let lon = (i * 60) as i32;

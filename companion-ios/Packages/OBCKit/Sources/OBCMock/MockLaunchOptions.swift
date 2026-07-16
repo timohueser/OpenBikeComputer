@@ -12,16 +12,30 @@ import OBCDomain
 /// | argument | values | effect |
 /// |---|---|---|
 /// | `-OBCScenario <name>` | any `Scenario.rawValue` | boot into that scenario |
-/// | `-OBCFixtures <name>` | `default` / `empty` / `large` | override the fixture set |
+/// | `-OBCFixtures <name>` | `default` / `empty` / `large` / `trips` | override the fixture set (`trips` = the TR6 trip-grouping demo) |
 /// | `-OBCConnection <state>` | `disconnected` / `connecting` / `connected` / `outOfRange` | override the initial link state |
 /// | `-OBCTransport <kind>` | `ble` / `mock` | force the real `BLETransport` in a Debug build |
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |
 /// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
 /// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch (E1; `bad` → H5) |
+/// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
+/// | `-OBCFirmwareDemo` | (flag) | open the S7 firmware-update screen with a pre-staged sample update (the Files picker can't be automated) |
+/// | `-OBCDeviceRoutesFull` | (flag) | pad the device's route catalog to one below the cap so a multi-stage trip fails the whole-trip precheck (TR8 storage-precheck demo/test) |
+/// | `-OBCOldFirmware` | (flag) | model a device predating auto-expiry (epic #638): `setClock`/`setRouteRetention` answer `unsupported`, no `routeList` expiry tail — S7's capability-gated (hidden) state |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
-/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token).
+/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token), `OBC_NETWORK`,
+/// `OBC_FIRMWARE_DEMO=1`.
+/// How far the `-OBCFirmwareDemo` hook drives the S7 screen. Raw values are the
+/// launch tokens (`-OBCFirmwareDemo` bare = `staged`, `-OBCFirmwareDemo send`).
+public enum FirmwareDemoStage: String, Sendable, Equatable {
+    /// Pre-stage a sample update and stop — the "staged" screenshot.
+    case staged
+    /// Also fire Send, so a run walks transferring → awaiting-confirm → done.
+    case sending = "send"
+}
+
 public struct MockLaunchOptions: Equatable, Sendable {
     public var scenario: Scenario?
     public var fixtures: String?
@@ -37,6 +51,25 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// demos — the Files picker can't be driven from automation): `gpx`/`tcx`
     /// land on E1 (or H4 when unpaired), `bad` raises H5. `nil` = no import.
     public var importSample: SampleRouteFile.Kind?
+    /// Force the MapKit-basemap reachability (#294): `false` pins the grid
+    /// fallback (offline), `true` pins the basemap; `nil` uses the real
+    /// `NWPathMonitor`. Lets XCUITests exercise the fallback without real network
+    /// flakiness.
+    public var networkOnline: Bool?
+    /// Open the S7 firmware-update screen at launch with a pre-staged sample
+    /// update (the Files picker can't be driven from automation) — for the flow
+    /// screenshots + demos. `.staged` stops at the staged screen; `.sending`
+    /// also fires Send, so a run walks transfer → confirm → done. Debug-only.
+    public var firmwareDemo: FirmwareDemoStage?
+    /// Pad the mock device's route catalog to one below the route cap so a
+    /// multi-stage trip fails the whole-trip precheck **before any bytes** (TR8,
+    /// issue #657) — the storage-precheck-failure XCUITest / demo hook.
+    public var deviceRoutesFull: Bool
+    /// Model a device that predates auto-expiry (epic #638): `setClock` /
+    /// `setRouteRetention` answer `unsupported` and `routeList` entries carry no
+    /// expiry tail. `false` = the current firmware (expiry supported). Drives
+    /// S7's capability-gated (hidden) state under automation.
+    public var oldFirmware: Bool
 
     public init(
         scenario: Scenario? = nil,
@@ -45,7 +78,11 @@ public struct MockLaunchOptions: Equatable, Sendable {
         useBLETransport: Bool = false,
         showDevPanel: Bool = false,
         showUIGallery: Bool = false,
-        importSample: SampleRouteFile.Kind? = nil
+        importSample: SampleRouteFile.Kind? = nil,
+        networkOnline: Bool? = nil,
+        firmwareDemo: FirmwareDemoStage? = nil,
+        deviceRoutesFull: Bool = false,
+        oldFirmware: Bool = false
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -54,6 +91,10 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.showDevPanel = showDevPanel
         self.showUIGallery = showUIGallery
         self.importSample = importSample
+        self.networkOnline = networkOnline
+        self.firmwareDemo = firmwareDemo
+        self.deviceRoutesFull = deviceRoutesFull
+        self.oldFirmware = oldFirmware
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with
@@ -93,6 +134,31 @@ public struct MockLaunchOptions: Equatable, Sendable {
             }
             return SampleRouteFile.Kind(rawValue: env) ?? .gpx
         }()
+        // Unknown tokens leave reachability on the real monitor (nil).
+        let networkOnline: Bool? = switch value("OBCNetwork", env: "OBC_NETWORK") {
+        case "offline": false
+        case "online": true
+        default: nil
+        }
+        // Bare `-OBCFirmwareDemo` (or `OBC_FIRMWARE_DEMO=1`) stops at the staged
+        // screen; a `send` token also fires Send (unknown token → staged).
+        let firmwareDemo: FirmwareDemoStage? = {
+            if let index = arguments.firstIndex(of: "-OBCFirmwareDemo") {
+                if index + 1 < arguments.count, !arguments[index + 1].hasPrefix("-") {
+                    return FirmwareDemoStage(rawValue: arguments[index + 1]) ?? .staged
+                }
+                return .staged
+            }
+            guard let env = environment["OBC_FIRMWARE_DEMO"], !env.isEmpty, env != "0" else {
+                return nil
+            }
+            return FirmwareDemoStage(rawValue: env) ?? .staged
+        }()
+
+        let deviceRoutesFull = arguments.contains("-OBCDeviceRoutesFull")
+            || environment["OBC_DEVICE_ROUTES_FULL"] == "1"
+        let oldFirmware = arguments.contains("-OBCOldFirmware")
+            || environment["OBC_OLD_FIRMWARE"] == "1"
 
         return MockLaunchOptions(
             scenario: scenario,
@@ -101,7 +167,11 @@ public struct MockLaunchOptions: Equatable, Sendable {
             useBLETransport: transport == "ble",
             showDevPanel: showPanel,
             showUIGallery: showGallery,
-            importSample: importSample
+            importSample: importSample,
+            networkOnline: networkOnline,
+            firmwareDemo: firmwareDemo,
+            deviceRoutesFull: deviceRoutesFull,
+            oldFirmware: oldFirmware
         )
     }
 
@@ -111,6 +181,10 @@ public struct MockLaunchOptions: Equatable, Sendable {
         let control = MockControl(scenario: scenario ?? .happyPath)
         if let fixtures { control.loadFixtures(fixtures) }
         if let connection { control.connection = connection }
+        control.routesNearlyFull = deviceRoutesFull
+        // The flag forces old-firmware even over a scenario that supports expiry;
+        // it never re-enables it (a `.oldFirmware` scenario stays old).
+        if oldFirmware { control.supportsExpiry = false }
         return control
     }
 }

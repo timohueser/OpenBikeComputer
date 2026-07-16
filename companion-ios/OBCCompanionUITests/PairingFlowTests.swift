@@ -73,6 +73,12 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
         app.buttons["pair.start"].tap()
 
+        // #297: the row appears first (un-gated discovery); the passkey (gated) only
+        // fires on the row tap, so D5 rejected surfaces after confirming, not before.
+        let row = app.buttons["pair.deviceRow"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "D2 discovered row missing")
+        row.tap()
+
         let failed = app.staticTexts["pair.failedTitle"]
         XCTAssertTrue(failed.waitForExistence(timeout: 10), "D5 missing")
         XCTAssertEqual(failed.label, "Pairing didn't finish")
@@ -135,5 +141,29 @@ final class PairingFlowTests: XCTestCase {
         app.launchArguments += ["-OBCScenario", "happyPath", "-OBCConnection", "disconnected"]
         app.launch()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 15))
+    }
+
+    /// Bonded but the device never answers (asleep / out of range): the A
+    /// grace window expires onto the connect-failed screen — never a
+    /// forever-spinner — and Go to routes still reaches the library.
+    @MainActor
+    func testDeviceUnreachableTimesOutToConnectFailedAndRoutesStayReachable() {
+        let app = launch(scenario: "deviceUnreachable")
+
+        XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "A state missing")
+        // The default 8 s connect grace must expire onto the timeout screen.
+        let title = app.staticTexts["launch.connectFailedTitle"]
+        XCTAssertTrue(title.waitForExistence(timeout: 15), "connect-failed screen missing")
+        XCTAssertEqual(title.label, "Can't reach Trailhead")
+        XCTAssertTrue(app.buttons["launch.tryAgain"].exists)
+        snap(app, "A-timeout-connect-failed")
+
+        // Try again re-enters A, and the still-silent device times out again.
+        app.buttons["launch.tryAgain"].tap()
+        XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "retry must re-enter A")
+        XCTAssertTrue(title.waitForExistence(timeout: 15), "second timeout missing")
+
+        app.buttons["launch.goToRoutes"].tap()
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "library must stay reachable")
     }
 }

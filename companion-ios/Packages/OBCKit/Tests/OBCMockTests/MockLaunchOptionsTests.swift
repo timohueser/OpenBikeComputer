@@ -86,6 +86,35 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertNil(parse([], env: ["OBC_IMPORT_SAMPLE": "0"]).importSample)
     }
 
+    func testParsesNetworkOverride() {
+        // Absent → nil (the real NWPathMonitor drives it).
+        XCTAssertNil(parse([]).networkOnline)
+        XCTAssertEqual(parse(["-OBCNetwork", "offline"]).networkOnline, false)
+        XCTAssertEqual(parse(["-OBCNetwork", "online"]).networkOnline, true)
+        XCTAssertEqual(parse([], env: ["OBC_NETWORK": "offline"]).networkOnline, false)
+        // Unknown token degrades to nil (real monitor), never crashes.
+        XCTAssertNil(parse(["-OBCNetwork", "sometimes"]).networkOnline)
+    }
+
+    func testParsesFirmwareDemoStage() {
+        XCTAssertNil(parse([]).firmwareDemo)
+        // Bare flag / env=1 → staged.
+        XCTAssertEqual(parse(["-OBCFirmwareDemo"]).firmwareDemo, .staged)
+        XCTAssertEqual(parse([], env: ["OBC_FIRMWARE_DEMO": "1"]).firmwareDemo, .staged)
+        // `send` token → sending.
+        XCTAssertEqual(parse(["-OBCFirmwareDemo", "send"]).firmwareDemo, .sending)
+        XCTAssertEqual(parse([], env: ["OBC_FIRMWARE_DEMO": "send"]).firmwareDemo, .sending)
+        // Unknown token degrades to staged, never crashes; a following flag isn't a token.
+        XCTAssertEqual(parse(["-OBCFirmwareDemo", "wat"]).firmwareDemo, .staged)
+        XCTAssertEqual(parse(["-OBCFirmwareDemo", "-OBCShowDevPanel"]).firmwareDemo, .staged)
+    }
+
+    func testSampleFirmwareFileIsAValidContainer() throws {
+        let data = SampleFirmwareFile.container(version: "0.5.0")
+        let staged = try StagedFirmware.validate(data)
+        XCTAssertEqual(staged.version, "0.5.0")
+    }
+
     func testSampleRouteFileServesEveryKind() {
         for kind in [SampleRouteFile.Kind.gpx, .tcx, .bad] {
             XCTAssertNotNil(SampleRouteFile.data(kind), "\(kind) sample must load")

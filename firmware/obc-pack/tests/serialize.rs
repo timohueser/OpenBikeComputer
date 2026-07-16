@@ -1,7 +1,5 @@
-//! Port of `packer/tests/test_serialize.py`: the same inputs must produce the
-//! same bytes. Rings are pre-closed here because shapely closes polygon rings
-//! automatically, so the geometry that reaches `pack_feature` (in Python and in
-//! the dump the harness feeds us) already has `first == last`.
+//! Byte-pinned serializer tests. Polygon rings are pre-closed (`first == last`),
+//! matching the closed geometry that reaches `pack_feature`.
 
 use obc_pack::{pack_chunk, pack_feature, pack_style_dict, serialize_lods, Feature, Kind, LodLayer, Node, Style};
 
@@ -11,20 +9,59 @@ fn line(style_id: u8, pts: &[(f64, f64)]) -> Feature {
 
 #[test]
 fn pack_style_dict_one_style() {
-    // test_pack_style_dict: id 10, z 50, color 0xF9A6, weight 4, priority 2.
-    let data = pack_style_dict(&[Style { id: 10, z_index: 50, color: 0xF9A6, weight: 4, priority: 2 }]);
-    assert_eq!(data.len(), 7); // count(1) + 6-byte record
+    let data = pack_style_dict(&[Style {
+        id: 10,
+        z_index: 50,
+        color: 0xF9A6,
+        weight: 4,
+        priority: 2,
+        dashed: false,
+        color2: None,
+    }]);
+    assert_eq!(data.len(), 9); // count(1) + 8-byte v10 record
     assert_eq!(data[0], 1); // count
     assert_eq!(data[1], 10); // id
     assert_eq!(data[2] as i8, 50); // z_index
     assert_eq!(u16::from_le_bytes([data[3], data[4]]), 0xF9A6); // color
     assert_eq!(data[5], 4); // weight
-    assert_eq!(data[6], 1); // flags = priority(2) - 1
+    assert_eq!(data[6], 1); // flags = priority(2) - 1, no dashed/color2 bits
+    assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x0000); // color2 absent ⇒ 0x0000 on the wire
+}
+
+#[test]
+fn pack_style_dict_line_style_and_color2() {
+    // Dashed + a secondary color: flag bit 2 (dashed) and bit 3 (color2-present) set over the
+    // priority bits, and the color2 u16 trails the record.
+    let data = pack_style_dict(&[Style {
+        id: 3,
+        z_index: 0,
+        color: 0x001F,
+        weight: 2,
+        priority: 3,
+        dashed: true,
+        color2: Some(0x8410),
+    }]);
+    assert_eq!(data.len(), 9);
+    assert_eq!(data[6], (3 - 1) | 0x04 | 0x08, "priority 3 + dashed bit 2 + color2 bit 3");
+    assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x8410, "color2");
+
+    // `color2 == Some(0x0000)` still sets bit 3 — black is a real secondary color, not a sentinel.
+    let data = pack_style_dict(&[Style {
+        id: 4,
+        z_index: 0,
+        color: 0x001F,
+        weight: 1,
+        priority: 1,
+        dashed: false,
+        color2: Some(0x0000),
+    }]);
+    assert_eq!(data[6] & 0x08, 0x08, "color2-present bit set even for black");
+    assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x0000);
 }
 
 #[test]
 fn pack_feature_8bit_line() {
-    // test_pack_feature_8bit: a 2-point line, anchor at the node min corner.
+    // A 2-point line, anchor at the node min corner.
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let data = pack_feature(&f, node_bbox);
@@ -41,17 +78,17 @@ fn pack_feature_8bit_line() {
 
 #[test]
 fn pack_chunk_pads_with_ff() {
-    // test_pack_chunk_padding.
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
-    let chunk = pack_chunk(&[f], node_bbox, 32);
+    let (chunk, dropped) = pack_chunk(&[f], node_bbox, 32);
     assert_eq!(chunk.len(), 32);
+    assert_eq!(dropped, 0);
     assert!(chunk[14..].iter().all(|&b| b == 0xFF)); // 18 bytes of padding
 }
 
 #[test]
 fn pack_polygon_with_hole() {
-    // test_pack_polygon_small. shapely closes both rings (4 pts -> 5 stored).
+    // Rings pre-closed: 4 distinct pts -> 5 stored.
     let ext = vec![(0.0, 0.0), (0.0001, 0.0), (0.0001, 0.0001), (0.0, 0.0001), (0.0, 0.0)];
     let hole = vec![(0.00002, 0.00002), (0.00008, 0.00002), (0.00008, 0.00008), (0.00002, 0.00008), (0.00002, 0.00002)];
     let f = Feature { style_id: 20, kind: Kind::Polygon, rings: vec![ext, hole] };
@@ -67,22 +104,74 @@ fn pack_polygon_with_hole() {
 
 #[test]
 fn serialize_lods_header_single_empty_leaf() {
-    // test_serialize_lods_header: one LOD, one empty leaf, no styles.
+    // One LOD, one empty leaf, no styles.
     let lods = vec![LodLayer {
         max_mpp: None,
         chunk_size: 2048,
         root: Node::Leaf { bbox: (0, 0, 100, 100), features: vec![] },
     }];
-    let bin = serialize_lods(&lods, &[], 0xF800, (0, 0, 100, 100));
+    let (bin, dropped) = serialize_lods(
+        &lods,
+        &[],
+        0xF800,
+        (0, 0, 100, 100),
+        &[],
+        &Default::default(),
+        &obc_pack::config::default_profiles(),
+    );
+    assert_eq!(dropped, 0);
 
-    // v5 header(32) + style count(1) + 1 LOD entry(18) + index(4) = 55.
-    assert_eq!(bin.len(), 55);
+    // header(40) + style count(1) + 1 LOD entry(18) + index(4) = 63, then the empty POI directory
+    // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
+    // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty v9 nav
+    // section (28-byte directory + the always-present profile table) at the tail.
+    let poi_dir_len = 1 + 2 + 6 * 13 + 6;
+    let hours_pool_len = 2; // an empty pool is just its count
+                            // Empty graph: the 28-byte directory + the four default profiles (52 B each), always present.
+    let profile_table_len = 4 * 52;
+    let nav_section_len = 28 + profile_table_len;
+    assert_eq!(bin.len(), 63 + poi_dir_len + hours_pool_len + nav_section_len);
     assert_eq!(&bin[0..4], b"OBCM");
-    assert_eq!(bin[4], 5); // version
-    assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 32); // style offset
+    assert_eq!(bin[4], 10); // version
+    assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 40); // style offset (40 since v8)
     assert_eq!(bin[25], 1); // lod count
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
-    assert_eq!(lod_tbl, 33); // 32 header + 1 style-count byte
+    assert_eq!(lod_tbl, 41); // 40 header + 1 style-count byte
+
+    // The POI section offset (header byte 32) points just past the LOD payload: the
+    // section is 63 bytes in (header 40 + style 1 + LOD entry 18 + index 4).
+    let poi_off = u32::from_le_bytes([bin[32], bin[33], bin[34], bin[35]]) as usize;
+    assert_eq!(poi_off, 63);
+    assert_eq!(bin[poi_off], 6, "empty POI directory still declares 6 categories");
+    assert_eq!(u16::from_le_bytes([bin[poi_off + 1], bin[poi_off + 2]]), 512); // shared chunk_size
+
+    // The v7 hours-pool fields trail the six 13-byte entries: offset u32 + count u16. Count is 0 (no
+    // hours), and the pool region (its bare `count u16`) begins right after the directory.
+    let pool_fields_off = poi_off + 3 + 6 * 13;
+    let hours_pool_off = u32::from_le_bytes(bin[pool_fields_off..pool_fields_off + 4].try_into().unwrap()) as usize;
+    let hours_pool_count = u16::from_le_bytes(bin[pool_fields_off + 4..pool_fields_off + 6].try_into().unwrap());
+    assert_eq!(hours_pool_count, 0, "no hours in this map");
+    assert_eq!(hours_pool_off, poi_off + poi_dir_len, "pool follows the directory (no categories)");
+    assert_eq!(u16::from_le_bytes(bin[hours_pool_off..hours_pool_off + 2].try_into().unwrap()), 0, "empty pool count");
+
+    // The nav section offset (header byte 36) points just past the hours pool; an empty graph is the
+    // 28-byte directory followed by the always-present profile table — zero index nodes / chunks /
+    // edges, chunk_size pinned to 512, profile_count 4, profile table right after the directory.
+    let nav_off = u32::from_le_bytes(bin[36..40].try_into().unwrap()) as usize;
+    assert_eq!(nav_off, hours_pool_off + hours_pool_len, "nav section at the file tail");
+    assert_eq!(u32::from_le_bytes(bin[nav_off + 4..nav_off + 8].try_into().unwrap()), 0, "index_node_count 0");
+    assert_eq!(u32::from_le_bytes(bin[nav_off + 8..nav_off + 12].try_into().unwrap()), 0, "node_chunk_count 0");
+    assert_eq!(u32::from_le_bytes(bin[nav_off + 16..nav_off + 20].try_into().unwrap()), 0, "edge_chunk_count 0");
+    assert_eq!(u16::from_le_bytes(bin[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "nav chunk_size pinned");
+    assert_eq!(
+        u32::from_le_bytes(bin[nav_off + 22..nav_off + 26].try_into().unwrap()) as usize,
+        nav_off + 28,
+        "profile table sits immediately after the 28-byte directory"
+    );
+    assert_eq!(bin[nav_off + 26], 4, "profile_count = the 4 default profiles");
+    assert_eq!(bin[nav_off + 27], 0, "reserved byte is 0");
+    // The empty nav section is exactly the directory + the 4-profile table.
+    assert_eq!(nav_off + nav_section_len, bin.len(), "empty nav section is dir + profile table");
 
     let mpp = f32::from_le_bytes([bin[lod_tbl], bin[lod_tbl + 1], bin[lod_tbl + 2], bin[lod_tbl + 3]]);
     assert!(mpp.is_infinite()); // coarsest layer
@@ -96,11 +185,7 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(chunk_count, 0);
 }
 
-// === 16-bit delta path — byte-pinned (issue #95, item 4) =====================
-// `serialize.rs` byte-pins the 8-bit line + poly-with-hole, but the 16-bit flag
-// (0x01) and the `int16` LE delta encoding were only ever round-tripped, never
-// pinned at the byte level. A reader/writer drift on the delta width would still
-// pass round_trip.rs while corrupting every map with a >127-µdeg segment.
+// === 16-bit delta path — byte-pinned ========================================
 
 #[test]
 fn pack_feature_16bit_line() {
@@ -136,10 +221,7 @@ fn pack_feature_16bit_negative_delta() {
     assert_eq!(i16::from_le_bytes([data[14], data[15]]), -500, "dy = -500 as signed int16");
 }
 
-// === Densify byte-pinning inside pack_feature (issue #95, item 4) ============
-// `densify` is unit-tested in isolation, but its effect *inside* a real
-// `pack_feature` — the bumped exterior Pt Count and the extra delta pair on the
-// wire — was never asserted at the byte level.
+// === Densify byte-pinning inside pack_feature ===============================
 
 #[test]
 fn pack_feature_densifies_long_segment_bytes() {
@@ -161,11 +243,10 @@ fn pack_feature_densifies_long_segment_bytes() {
     assert_eq!(i16::from_le_bytes([data[18], data[19]]), 27_500); // dy to endpoint
 }
 
-// === Numeric extremes (issue #95, item 5) ====================================
-// `to_udeg` is tested for ties-even but never near the i32 range; `pack_feature`
-// casts the anchor `as i32` and deltas `as i16`. A continent-spanning anchor must
-// survive the i32 cast, and the anchor-relative deltas (kept small by the node
-// frame) must stay correct even for huge absolute coordinates.
+// === Numeric extremes =======================================================
+// `pack_feature` casts the anchor `as i32` and deltas `as i16`. A continent-
+// spanning anchor must survive the i32 cast, and the anchor-relative deltas (kept
+// small by the node frame) stay correct even for huge absolute coordinates.
 
 #[test]
 fn pack_feature_extreme_anchor_survives_i32() {
@@ -204,9 +285,51 @@ fn pack_feature_antimeridian_negative_anchor() {
     assert_eq!(data[13] as i8, 100, "dy = +100 µdeg");
 }
 
-// === Chunk-size overflow drop (issue #95, item 6) ============================
-// `pack_chunk` drops a feature (and every feature after it) that would overflow the
-// chunk. Pin that the drop happens AND the padding/contents stay consistent.
+// === Quadtree budget vs real packed bytes ===================================
+// The quadtree splits on `geom::packed_size_budget`; if that ever under-counts
+// what `pack_feature` really emits, a leaf survives splitting and `pack_chunk`
+// silently drops the overflow. Pin `budget >= packed.len()` for the cases that
+// used to be under-counted: densified long segments, densified anchor→hole
+// jumps, and hole bookkeeping bytes.
+
+#[test]
+fn budget_covers_packed_bytes_for_densify_and_holes() {
+    use obc_pack::geom::{packed_size_budget, Geom};
+    let node_bbox = (0, 0, 10_000_000, 10_000_000);
+
+    let check = |name: &str, geom: &Geom, feature: &Feature| {
+        let budget = packed_size_budget(geom);
+        let packed = pack_feature(feature, node_bbox).len();
+        assert!(budget >= packed, "{name}: budget {budget} must cover packed {packed} bytes");
+    };
+
+    // A 2-point line spanning 3° of longitude densifies to ~100 midpoints.
+    let long = vec![(0.1, 0.5), (3.1, 0.5)];
+    check("densified line", &Geom::Line(long.clone()), &Feature { style_id: 1, kind: Kind::Line, rings: vec![long] });
+
+    // A polygon with two holes, each ~1° from the anchor: the anchor→hole jumps
+    // densify too, and the hole count/pt_count bookkeeping bytes must be counted.
+    let ext = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)];
+    let h1 = vec![(1.0, 1.0), (1.01, 1.0), (1.01, 1.01), (1.0, 1.01), (1.0, 1.0)];
+    let h2 = vec![(1.5, 1.5), (1.51, 1.5), (1.51, 1.51), (1.5, 1.51), (1.5, 1.5)];
+    check(
+        "polygon with far holes",
+        &Geom::Polygon { exterior: ext.clone(), interiors: vec![h1.clone(), h2.clone()] },
+        &Feature { style_id: 2, kind: Kind::Polygon, rings: vec![ext, h1, h2] },
+    );
+
+    // A small 8-bit line: the budget may be loose (16-bit worst case) but never under.
+    let small = vec![(1.0, 1.0), (1.0001, 1.0001), (1.0002, 1.0)];
+    check(
+        "small 8-bit line",
+        &Geom::Line(small.clone()),
+        &Feature { style_id: 3, kind: Kind::Line, rings: vec![small] },
+    );
+}
+
+// === Chunk-size overflow drop ===============================================
+// `pack_chunk` drops a feature (and every feature after it) that would overflow
+// the chunk; pin that the padding/contents stay consistent.
 
 #[test]
 fn pack_chunk_drops_overflowing_feature_and_the_rest() {
@@ -219,8 +342,9 @@ fn pack_chunk_drops_overflowing_feature_and_the_rest() {
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
 
     // Chunk of 20: holds `a` (14) but not `a`+`b` (28) ⇒ b and c dropped.
-    let chunk = pack_chunk(&[a, b, c], node_bbox, 20);
+    let (chunk, dropped) = pack_chunk(&[a, b, c], node_bbox, 20);
     assert_eq!(chunk.len(), 20, "chunk is exactly chunk_size");
+    assert_eq!(dropped, 2, "b and c are reported as dropped, not lost silently");
     // First 14 bytes are feature `a` (style 10); the rest is 0xFF padding — no
     // partial second feature, and `c` is gone too (break, not continue).
     assert_eq!(chunk[0], 10, "the one feature that fit is `a`");
@@ -245,7 +369,16 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
         chunk_size: 20,
         root: Node::Leaf { bbox: (1_000_000, 1_000_000, 1_010_000, 1_010_000), features: vec![a, b] },
     }];
-    let bin = serialize_lods(&lods, &[], 0xF800, (1_000_000, 1_000_000, 1_010_000, 1_010_000));
+    let (bin, dropped) = serialize_lods(
+        &lods,
+        &[],
+        0xF800,
+        (1_000_000, 1_000_000, 1_010_000, 1_010_000),
+        &[],
+        &Default::default(),
+        &obc_pack::config::default_profiles(),
+    );
+    assert_eq!(dropped, 1, "the overflowing feature is reported dropped");
 
     // Locate the LOD table and read its node/chunk counts + index offset.
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
@@ -257,8 +390,8 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
 
     // The leaf's index entry is chunk 0 (high bit clear ⇒ a leaf, not a branch).
     let entry = u32::from_le_bytes([bin[idx_off], bin[idx_off + 1], bin[idx_off + 2], bin[idx_off + 3]]);
-    assert_eq!(entry & 0x8000_0000, 0, "index entry is a leaf, not a branch");
-    assert_eq!(entry & 0x7FFF_FFFF, 0, "leaf maps to chunk id 0");
+    assert_eq!(entry & obc_formats::obcm::BRANCH_BIT, 0, "index entry is a leaf, not a branch");
+    assert_eq!(entry & !obc_formats::obcm::BRANCH_BIT, 0, "leaf maps to chunk id 0");
 
     // The single chunk holds only feature `a` (style 10); style 11 was dropped.
     let chunk_off = idx_off + node_count as usize * 4;

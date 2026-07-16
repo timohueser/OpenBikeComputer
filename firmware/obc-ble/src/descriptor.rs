@@ -1,15 +1,16 @@
-//! The control-plane descriptor codecs (spec §4). Small, typed, fixed-shape messages that ride GATT
-//! — the "frame codec" the S0 freeze pins — while the CoC stays raw payload bytes:
+//! The control-plane descriptor codecs — small, typed, fixed-shape messages that ride GATT while
+//! the CoC stays raw payload bytes:
 //!
-//! - [`TransferControl`] (§4.2): the fixed **16-byte** descriptor the app writes to open / resume /
-//!   abort a transfer, and the device notifies to announce a download's size + CRC.
-//! - [`StatusMessage`] (§4.3): the device → app `status` notification envelope — a `u8`
-//!   discriminator + fixed body ([`TransferResult`] / [`StoreChanged`] / [`CommandResult`]).
-//! - [`ObjectStoreDigest`] (§4.5): the 10-byte "did anything change" read/notify value.
-//! - [`Config`] (§7.3): the whole-blob Config object that crosses GATT (not the CoC).
+//! - [`TransferControl`]: the fixed **12-byte** descriptor the app writes to open / abort a transfer
+//!   (protocol v2: `transferControl` is **write-only** — a download's announce rides the `status`
+//!   envelope as [`StatusMessage::DownloadAnnounce`], not a notify on this characteristic).
+//! - [`StatusMessage`]: the device → app `status` notification envelope — a `u8` discriminator +
+//!   fixed body. In v2 it is the **sole** device → app control channel, so the download announce
+//!   (`msg = 4`) shares its one subscription / one ordering domain.
+//! - [`VersionRead`]: the widened `protocolVersion` read — `version u16 · store_epoch u32` (§1).
+//! - [`Config`]: the whole-blob Config object that crosses GATT (not the CoC).
 //!
-//! Every layout mirrors the app's Swift `TransferDescriptor.swift` field-for-field and is pinned by
-//! the shared `protocol-vectors/` fixtures (`tests/vectors.rs`). All integers little-endian (§0).
+//! Every layout mirrors the app's Swift codecs field-for-field. All integers little-endian.
 
 /// Why a control-plane descriptor failed to decode. Mirrors the app's `DescriptorError` so a
 /// firmware reject and an app reject classify the same wire byte the same way.
@@ -25,27 +26,32 @@ pub enum DescriptorError {
     UnknownStatus(u8),
 }
 
-/// The kind of object a bulk transfer carries (spec §4.1). `Config` is reserved on the CoC (the
-/// Config object crosses GATT whole-blob); `Firmware` is reserved for a future OTA type; `Echo` is
-/// the A5 dev/test loopback.
+/// The kind of object a bulk transfer carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ObjectType {
     Route = 1,
     Ride = 2,
-    /// Reserved on the CoC — Config crosses GATT (§3.3).
+    /// Reserved on the CoC — Config crosses GATT whole-blob.
     ConfigBlob = 3,
     Diagnostics = 4,
-    /// Reserved (OTA, M4).
-    Firmware = 5,
+    /// A firmware update image — a complete `UPDATE.BIN` OBCU container, app → device (upload only).
+    /// The transfer layer stays format-blind: the payload is opaque bytes staged to `/UPDATE.BIN`
+    /// (spec §7.6). Installing it is the separate, on-glass-confirmed `installFw` command.
+    FwImage = 5,
     RouteList = 6,
     RideList = 7,
-    /// Dev/test loopback (A5): the device streams back exactly what it received.
+    /// Dev/test loopback: the device streams back exactly what it received.
     Echo = 8,
+    /// A trip object — a tiny metadata object referencing route object ids in ride order (spec §7.7),
+    /// app → device (upload) and device → app (detail read). Trip ids draw from a **separate** device
+    /// counter (§4.1), never shared with a route or ride id.
+    Trip = 9,
+    /// The trip catalog list object (device → app), spec §7.4 — 76-byte entries mirroring `routeList`.
+    TripList = 10,
 }
 
 impl ObjectType {
-    /// The wire byte.
     pub const fn as_u8(self) -> u8 {
         self as u8
     }
@@ -57,20 +63,22 @@ impl ObjectType {
             2 => Self::Ride,
             3 => Self::ConfigBlob,
             4 => Self::Diagnostics,
-            5 => Self::Firmware,
+            5 => Self::FwImage,
             6 => Self::RouteList,
             7 => Self::RideList,
             8 => Self::Echo,
+            9 => Self::Trip,
+            10 => Self::TripList,
             other => return Err(DescriptorError::UnknownType(other)),
         })
     }
 }
 
-/// The imperative a [`TransferControl`] carries (spec §4.2).
+/// The imperative a [`TransferControl`] carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Op {
-    /// app → device: the app streams `object[offset…]` over the CoC.
+    /// app → device: the app streams the whole object over the CoC.
     Upload = 1,
     /// device → app: the app requests, the device announces (`total_len`/`crc32`) then streams.
     Download = 2,
@@ -93,17 +101,23 @@ impl Op {
     }
 }
 
-/// The fixed **16-byte** transfer descriptor (spec §4.2) — one shape serves upload, download
-/// request/announce, and abort, so the CoC needs no per-chunk header.
+/// The fixed **12-byte** transfer descriptor — one shape serves upload, download request/announce,
+/// and abort, so the CoC needs no per-chunk header.
 ///
 /// ```text
 ///   op         u8    1 = upload · 2 = download · 3 = abort
 ///   type       u8    ObjectType
 ///   object_id  u16   0xFFFF on upload = "new" (device assigns; see TransferResult)
-///   total_len  u32   upload: full object size · download request / abort: 0
-///   crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
-///   offset     u32   byte offset to start streaming from (0 = fresh) — the resume anchor
+///   total_len  u32   upload / download announce: full object size · download request / abort: 0
+///   crc32      u32   upload / download announce: whole-object CRC-32/IEEE · download request / abort: 0
 /// ```
+///
+/// **v2 drops the `offset` field** — transfers restart, never resume (§1 principle 4), so the byte
+/// was permanently `0`. Its `NonZeroOffset` reject went with it. The descriptor is written by the
+/// app to *open* a transfer; the device never notifies it (`transferControl` is write-only). A
+/// download's announce — the same 12 bytes with `total_len`/`crc32` filled — travels as a
+/// [`StatusMessage::DownloadAnnounce`] (`msg = 4`) instead, folding all device → app control traffic
+/// onto the one `status` characteristic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransferControl {
     pub op: Op,
@@ -111,17 +125,14 @@ pub struct TransferControl {
     pub object_id: u16,
     pub total_len: u32,
     pub crc32: u32,
-    pub offset: u32,
 }
 
 impl TransferControl {
-    /// The on-wire length (§4.2).
-    pub const ENCODED_LEN: usize = 16;
+    pub const ENCODED_LEN: usize = 12;
 
-    /// The `object_id` an upload sends to mean "new — the device assigns the id" (§4.1).
+    /// The `object_id` an upload sends to mean "new — the device assigns the id".
     pub const NEW_OBJECT_ID: u16 = 0xFFFF;
 
-    /// Encode the fixed 16-byte descriptor.
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
         let mut b = [0u8; Self::ENCODED_LEN];
         b[0] = self.op.as_u8();
@@ -129,13 +140,12 @@ impl TransferControl {
         b[2..4].copy_from_slice(&self.object_id.to_le_bytes());
         b[4..8].copy_from_slice(&self.total_len.to_le_bytes());
         b[8..12].copy_from_slice(&self.crc32.to_le_bytes());
-        b[12..16].copy_from_slice(&self.offset.to_le_bytes());
         b
     }
 
-    /// Decode a descriptor from a GATT write. Purely structural — semantic checks (e.g. an offset
-    /// past `total_len`) belong to the transfer state machine, which answers them with a typed
-    /// [`TransferResult`] rather than a bare ATT failure (§4.2).
+    /// Decode a descriptor from a GATT write. Purely structural — semantic checks belong to the
+    /// transfer state machine, which answers them with a typed [`TransferResult`] rather than a bare
+    /// ATT failure.
     pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
         if data.len() < Self::ENCODED_LEN {
             return Err(DescriptorError::Truncated);
@@ -146,20 +156,19 @@ impl TransferControl {
             object_id: u16::from_le_bytes([data[2], data[3]]),
             total_len: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
             crc32: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
-            offset: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
         })
     }
 }
 
-/// The outcome of a transfer, reported in a [`TransferResult`] (spec §4.3).
+/// The outcome of a transfer, reported in a [`TransferResult`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TransferStatus {
     /// Stored + CRC verified.
     Committed = 0,
-    /// Rejected — nothing committed (§4.2).
+    /// Rejected — nothing committed.
     CrcMismatch = 1,
-    /// Cancelled by either side (§4.2 op=3).
+    /// Cancelled by either side.
     Aborted = 2,
     /// Storage / internal failure.
     Error = 3,
@@ -167,6 +176,9 @@ pub enum TransferStatus {
     NotFound = 4,
     /// A transfer is already active.
     Busy = 5,
+    /// A catalog is full — a new-object upload (a route past its cap, a trip past its cap) was
+    /// rejected at descriptor-open time.
+    StorageFull = 6,
 }
 
 impl TransferStatus {
@@ -182,13 +194,59 @@ impl TransferStatus {
             3 => Self::Error,
             4 => Self::NotFound,
             5 => Self::Busy,
+            6 => Self::StorageFull,
             other => return Err(DescriptorError::UnknownStatus(other)),
         })
     }
+
+    /// The descriptor-open reject rule for a route **or trip upload**, before any byte streams
+    /// (issue #452; extended to trips in epic #526, TR4 #653 — the rule is type-agnostic, the caller
+    /// passes the relevant catalog's `catalog_full`/`id_known`).
+    ///
+    /// A *new* upload — id [`TransferControl::NEW_OBJECT_ID`] (`0xFFFF`) or a named id the device
+    /// doesn't hold — grows the catalog, so it is refused when the store can't index another object
+    /// (`catalog_full`: the route table is at `MAX_ROUTES` / the trip table at `MAX_TRIPS`, or the
+    /// durable id space is exhausted):
+    ///
+    /// - new + full → [`StorageFull`](Self::StorageFull) — the phone tells the rider to free space.
+    /// - named-but-unknown id with room to spare → [`NotFound`](Self::NotFound) — a real client error.
+    /// - a *replace-by-id* of an existing route (`id_known`) reuses its slot → **exempt**; `None`
+    ///   (proceed), even at the cap. Updating the actively-navigated route must never hit storage-full.
+    ///
+    /// `None` means "no reject at this stage" — the caller proceeds to arm the transfer.
+    pub const fn upload_open_reject(object_id: u16, id_known: bool, catalog_full: bool) -> Option<Self> {
+        let is_new = object_id == TransferControl::NEW_OBJECT_ID || !id_known;
+        if !is_new {
+            return None; // replace-by-id: exempt from the cap
+        }
+        if catalog_full {
+            return Some(Self::StorageFull);
+        }
+        if object_id != TransferControl::NEW_OBJECT_ID {
+            return Some(Self::NotFound); // named-but-unknown id, room to spare
+        }
+        None
+    }
+
+    /// The announce-time reject for a `fwImage` upload (spec §4.2 / §7.6): an announced object
+    /// larger than the device's update-slot ceiling `max_len` is refused at the `transferControl`
+    /// write with [`Error`](Self::Error), **before any bytes stream** — a ~900 KB update would
+    /// otherwise transfer only to fail at commit. `None` = accept (the caller arms the
+    /// [`Receiver`](crate::Receiver)). `total_len` is the whole OBCU container (64-byte header +
+    /// raw image), so the board passes the **container-sized** ceiling
+    /// `obc_dfu::MAX_IMAGE_LEN + HEADER_LEN` — the raw-image cap plus the header (DR5, #733); the
+    /// constants stay out of this crate so the wire codec never links the DFU crate.
+    pub const fn fwimage_announce_reject(total_len: u32, max_len: u32) -> Option<Self> {
+        if total_len > max_len {
+            Some(Self::Error)
+        } else {
+            None
+        }
+    }
 }
 
-/// The closing result of a transfer (spec §4.3, `msg = 1`). `committed_offset` is the durable byte
-/// count — the resume anchor. For a fresh upload (`object_id == 0xFFFF`) it carries the assigned id.
+/// The closing result of a transfer (`msg = 1`). `committed_offset` is the durable byte count.
+/// For a fresh upload (`object_id == 0xFFFF`) `object_id` carries the assigned id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransferResult {
     pub object_id: u16,
@@ -205,14 +263,14 @@ impl TransferResult {
     }
 }
 
-/// Which object store moved + its new revision (spec §4.3, `msg = 2`).
+/// Which object store moved + its new revision (`msg = 2`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoreChanged {
     pub ty: ObjectType,
     pub revision: u32,
 }
 
-/// The result of a `command` write (spec §4.3/§4.4).
+/// The result of a `command` write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CommandStatus {
@@ -240,10 +298,10 @@ impl CommandStatus {
     }
 }
 
-/// The result notified after a `command` write (spec §4.3, `msg = 3`).
+/// The result notified after a `command` write (`msg = 3`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandResult {
-    /// Echoes the command byte (§4.4).
+    /// Echoes the command byte.
     pub command: u8,
     pub status: CommandStatus,
     /// Command-specific; 0 unless documented.
@@ -254,11 +312,279 @@ impl CommandResult {
     pub fn new(command: u8, status: CommandStatus) -> Self {
         Self { command, status, detail: 0 }
     }
+
+    /// A result whose `detail` byte carries a documented, command-specific value (`ackRides`
+    /// reports its newly-flagged count here).
+    pub fn with_detail(command: u8, status: CommandStatus, detail: u8) -> Self {
+        Self { command, status, detail }
+    }
 }
 
-/// One `status` characteristic notification (spec §4.3): a `u8` discriminator + fixed body. The
-/// board encodes one of these after a control-plane write or a transfer close; the app decodes them
-/// and **ignores unknown discriminators** (forward compatibility), never failing the link over one.
+/// `command` byte: `deleteObject` (§4.4, cmd 1) — `type u8 · object_id u16 LE`.
+pub const CMD_DELETE_OBJECT: u8 = 1;
+/// `command` byte: `ackRides` (§4.4, cmd 2) — see [`AckRides`].
+pub const CMD_ACK_RIDES: u8 = 2;
+/// `command` byte: `installFw` (§4.4, cmd 3) — no args (the `cmd` byte only). Asks the device to
+/// install the staged `/UPDATE.BIN`; see [`install_fw_reply`].
+pub const CMD_INSTALL_FW: u8 = 3;
+/// `command` byte: `forgetBond` (§4.4, cmd 4) — no args (the `cmd` byte only). Asks the device to
+/// dissolve **its** side of the bond, so an app-side "Forget device" doesn't leave the pair wedged
+/// (the device would otherwise keep rejecting new pairings until the rider ran Forget phone on the
+/// device — §8). Honoured **only over the authenticated, bonded link**: the gated `command`
+/// characteristic already requires the LESC-encrypted link (§8), so a stranger can never issue it —
+/// the bonded phone asking to clear its own bond is fully consistent with the reject-when-bonded
+/// posture. The device answers `commandResult(ok)` first, then clears the bond + drops the link and
+/// returns to open-pairing advertising.
+pub const CMD_FORGET_BOND: u8 = 4;
+/// `command` byte: `setClock` (§4.4, cmd 5) — `utc u32 LE · offset_min i16 LE`; see [`SetClock`].
+/// Auto-expiry epic #638 S2 (#642): the phone stamps the device's UTC clock + local offset on every
+/// connect, the second trusted clock source after GPS. The epic's draft table numbered it `3`; that
+/// predates `installFw`/`forgetBond` taking `3`/`4`, so it lands at `5` (the next-free command, §4.4).
+pub const CMD_SET_CLOCK: u8 = 5;
+/// `command` byte: `setRouteRetention` (§4.4, cmd 6) — `object_id u16 LE · retention u8`; see
+/// [`SetRouteRetention`]. Auto-expiry epic #638 S4 (#644): the phone sets a stored route's retention
+/// level without re-uploading it — right after an upload's `transferResult` commits (the result
+/// carries the assigned id) and on any user retention edit. The epic's draft table numbered it `4`;
+/// that predates `forgetBond`/`setClock` taking `4`/`5`, so it lands at `6` (the next-free command).
+pub const CMD_SET_ROUTE_RETENTION: u8 = 6;
+
+/// The largest valid `setRouteRetention` retention byte: `5` (2 months). A write above it is an
+/// out-of-range level (§4.4), rejected `error` — decoded here, mirrored by the iOS codec, and pinned
+/// by the `command-set-route-retention.bin` vector.
+pub const SET_ROUTE_RETENTION_MAX: u8 = 5;
+
+/// The earliest UTC a `setClock` will accept: `2020-01-01T00:00:00Z` (unix `1577836800`). An earlier
+/// stamp is an obviously-bogus phone clock (§4.4) and is rejected `error`, so it can never seed a
+/// stale set-point that the auto-expiry sweep (#638) would then treat as trusted.
+pub const SET_CLOCK_MIN_UTC: u32 = 1_577_836_800;
+/// The magnitude bound on a `setClock` UTC offset: ±14 h (±840 min), the real-world offset span
+/// (−12:00 Baker Island … +14:00 Kiribati). A write outside it is rejected `error` (§4.4).
+pub const SET_CLOCK_MAX_OFFSET_MIN: i16 = 14 * 60;
+
+/// Map the cheaply-knowable device state at the BLE edge to the `installFw` `commandResult.status`
+/// (§4.4 cmd 3). The four documented outcomes reuse the existing status vocabulary — **no new status
+/// byte** — with precedence **`busy` > `noStaged` > `invalid` > `ok`**:
+///
+/// - `busy` → [`Busy`](CommandStatus::Busy): a ride is recording, or an install request is already
+///   pending.
+/// - `noStaged` → [`NotFound`](CommandStatus::NotFound): no `UPDATE.BIN` on the card (a cheap
+///   card-root existence check).
+/// - `invalid` → [`Error`](CommandStatus::Error): the device can *cheaply* tell the stage is
+///   unusable. The reference firmware never runs the multi-second CRC scan inside the command
+///   handler, so it always passes `staged_invalid = false` and lets the on-device confirm flow
+///   surface a bad image; this arm exists for a device that can reject a stage cheaply.
+/// - else → [`Ok`](CommandStatus::Ok): the request is accepted and the on-glass confirm card will
+///   show. The command **never installs on its own** — a physical confirm is always required.
+pub const fn install_fw_reply(has_staged: bool, busy: bool, staged_invalid: bool) -> CommandStatus {
+    if busy {
+        CommandStatus::Busy
+    } else if !has_staged {
+        CommandStatus::NotFound
+    } else if staged_invalid {
+        CommandStatus::Error
+    } else {
+        CommandStatus::Ok
+    }
+}
+
+/// The `ackRides` command (§4.4, cmd `2`): `cmd u8 · count u8 · count × object_id u16 LE` — the
+/// phone's **possession ack** for stored rides.
+///
+/// The device's per-ride "synced" flag is otherwise inferred from one event (a ride download
+/// completing), so any divergence between the phone's library and the device's sidecar — rides
+/// downloaded before the sidecar existed, a sidecar lost with a reflashed card, an app reinstall —
+/// was permanent. This command makes the phone's library the ground truth: on connect (and whenever
+/// it likes) the app lists the ride ids it holds, and the device flags every listed id it still
+/// stores as synced. **Monotonic** — ids the phone lost are never un-flagged (the flag means
+/// "downloaded at least once", not "still held") — and **idempotent and order-free**, so a list
+/// longer than one GATT write is simply split across writes. Unknown ids are ignored (`ok` either
+/// way): the phone may legitimately hold rides the device has since deleted.
+///
+/// Borrowed view over the id bytes (alloc-free, like [`Config`]); trailing bytes past
+/// `count × 2` are ignored.
+#[derive(Clone, Copy, Debug)]
+pub struct AckRides<'a> {
+    /// Exactly `count × 2` little-endian id bytes.
+    ids: &'a [u8],
+}
+
+impl<'a> AckRides<'a> {
+    /// The encoded length of an ack carrying `count` ids.
+    pub const fn encoded_len(count: usize) -> usize {
+        2 + count * 2
+    }
+
+    /// Decode a full `command` write (starting at the command byte). Errors: not `ackRides`
+    /// ([`DescriptorError::UnknownOp`]) or fewer id bytes than `count` promises
+    /// ([`DescriptorError::Truncated`]).
+    pub fn decode(data: &'a [u8]) -> Result<Self, DescriptorError> {
+        let [cmd, count, rest @ ..] = data else {
+            return Err(DescriptorError::Truncated);
+        };
+        if *cmd != CMD_ACK_RIDES {
+            return Err(DescriptorError::UnknownOp(*cmd));
+        }
+        let n = *count as usize * 2;
+        match rest.get(..n) {
+            Some(ids) => Ok(Self { ids }),
+            None => Err(DescriptorError::Truncated),
+        }
+    }
+
+    /// How many ride ids this ack carries.
+    pub fn count(&self) -> usize {
+        self.ids.len() / 2
+    }
+
+    /// The acked ride ids, in write order.
+    pub fn iter(&self) -> impl Iterator<Item = u16> + 'a {
+        self.ids.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]))
+    }
+
+    /// Encode `ids` into `out` (must be ≥ [`encoded_len`](Self::encoded_len)); returns the written
+    /// length, or `None` for more than 255 ids or a too-small buffer. The app side encodes (its
+    /// Swift codec mirrors this); the firmware only decodes — this exists for the shared-vector
+    /// and round-trip tests.
+    pub fn encode(ids: &[u16], out: &mut [u8]) -> Option<usize> {
+        if ids.len() > u8::MAX as usize || out.len() < Self::encoded_len(ids.len()) {
+            return None;
+        }
+        out[0] = CMD_ACK_RIDES;
+        out[1] = ids.len() as u8;
+        for (i, id) in ids.iter().enumerate() {
+            out[2 + i * 2..4 + i * 2].copy_from_slice(&id.to_le_bytes());
+        }
+        Some(Self::encoded_len(ids.len()))
+    }
+}
+
+/// The `setClock` command (§4.4, cmd `5`): `cmd u8 = 5 · utc u32 LE · offset_min i16 LE` — the
+/// phone stamps the device's wall clock on every connect (auto-expiry epic #638 S2, #642).
+///
+/// `utc` is the phone's current time in unix seconds; `offset_min` is its local UTC offset in
+/// minutes with **DST already applied** (the phone is the timezone oracle — the device carries no tz
+/// tables). The device sets its UTC wall-clock set-point, persists the offset, and becomes *trusted*
+/// for the boot — the safety gate the retention sweep reads. The app sends it immediately after
+/// encryption and **before** `ackRides`, so ride `synced_at` stamping (S3) can assume a trusted clock.
+///
+/// [`decode`](Self::decode) checks the fixed 7-byte structure **and** the two plausibility gates a
+/// bogus phone clock would fail — `utc` no earlier than 2020-01-01 ([`SET_CLOCK_MIN_UTC`]) and
+/// `|offset|` within ±14 h ([`SET_CLOCK_MAX_OFFSET_MIN`]) — so a caller answers `error` (§4.3) on any
+/// `Err` and `ok` on success. Keeping both checks here (not only the length) means the firmware and
+/// the iOS mirror share one definition of "valid", pinned by the `command-set-clock.bin` vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetClock {
+    /// The phone's current UTC time, unix seconds.
+    pub utc: u32,
+    /// The phone's current local UTC offset in minutes (`+02:00` → `120`), DST already folded in.
+    pub offset_min: i16,
+}
+
+impl SetClock {
+    /// The wire length: `cmd u8 · utc u32 · offset_min i16`.
+    pub const ENCODED_LEN: usize = 7;
+
+    /// Decode a full `command` write (starting at the command byte). Errors — each answered `error`
+    /// (§4.4) — are a wrong length or command byte ([`Truncated`](DescriptorError::Truncated) /
+    /// [`UnknownOp`](DescriptorError::UnknownOp)), a `utc` before [`SET_CLOCK_MIN_UTC`], or an
+    /// `offset_min` beyond ±[`SET_CLOCK_MAX_OFFSET_MIN`]. The write must be **exactly** 7 bytes
+    /// (unlike `ackRides`, `setClock` carries no variable tail, so trailing bytes are malformed).
+    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
+        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
+        if bytes[0] != CMD_SET_CLOCK {
+            return Err(DescriptorError::UnknownOp(bytes[0]));
+        }
+        let utc = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+        let offset_min = i16::from_le_bytes([bytes[5], bytes[6]]);
+        // `unsigned_abs`, not `abs`: `i16::MIN.abs()` overflows (panics in a debug/test build), and a
+        // 2-byte LE field can decode to `i16::MIN`. `unsigned_abs` maps it to `32768` cleanly, well
+        // over the bound, so a bogus offset is rejected rather than panicking the decoder.
+        if utc < SET_CLOCK_MIN_UTC || offset_min.unsigned_abs() > SET_CLOCK_MAX_OFFSET_MIN as u16 {
+            return Err(DescriptorError::Truncated);
+        }
+        Ok(Self { utc, offset_min })
+    }
+
+    /// Encode into `out` (≥ [`ENCODED_LEN`](Self::ENCODED_LEN)); returns the written length or `None`
+    /// for a too-small buffer. The app side encodes (its Swift codec mirrors this); the firmware only
+    /// decodes — this exists for the shared-vector and round-trip tests.
+    pub fn encode(utc: u32, offset_min: i16, out: &mut [u8]) -> Option<usize> {
+        if out.len() < Self::ENCODED_LEN {
+            return None;
+        }
+        out[0] = CMD_SET_CLOCK;
+        out[1..5].copy_from_slice(&utc.to_le_bytes());
+        out[5..7].copy_from_slice(&offset_min.to_le_bytes());
+        Some(Self::ENCODED_LEN)
+    }
+}
+
+/// The `setRouteRetention` command (§4.4, cmd `6`): `cmd u8 = 6 · object_id u16 LE · retention u8` —
+/// the phone sets a stored route's retention level (auto-expiry epic #638 S4, #644).
+///
+/// `object_id` names a stored route; `retention` is the retention enum byte (`0` never · `1` 1 day ·
+/// `2` 1 week · `3` 2 weeks · `4` 1 month · `5` 2 months), mirroring `obc_app::Retention`. The device
+/// writes the level into its route-retention sidecar **without touching `last_used`** — changing
+/// retention never resets the usage clock — and bumps the **route** store revision only on a real
+/// change (setting the same value twice is `ok` with no bump). An unknown `object_id` answers
+/// `notFound`; a `retention` above [`SET_ROUTE_RETENTION_MAX`] or a wrong-length write answers `error`.
+/// The command is **additive** on protocol v2 — no `protocolVersion` bump.
+///
+/// [`decode`](Self::decode) folds the §4.4 validation (exact 4-byte length, cmd byte, `retention` in
+/// range) so a caller answers `error` on any `Err`, and checks the id against the catalog separately
+/// (that needs store state). Keeping the range check here — not only in the handler — means the
+/// firmware and the iOS mirror share one definition of "valid", pinned by the
+/// `command-set-route-retention.bin` vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetRouteRetention {
+    /// The stored route object id whose retention to set.
+    pub object_id: u16,
+    /// The retention enum byte (`0..=`[`SET_ROUTE_RETENTION_MAX`]); mirrors `obc_app::Retention`.
+    pub retention: u8,
+}
+
+impl SetRouteRetention {
+    /// The wire length: `cmd u8 · object_id u16 · retention u8`.
+    pub const ENCODED_LEN: usize = 4;
+
+    /// Decode a full `command` write (starting at the command byte). Errors — each answered `error`
+    /// (§4.4) — are a wrong length or command byte ([`Truncated`](DescriptorError::Truncated) /
+    /// [`UnknownOp`](DescriptorError::UnknownOp)) or a `retention` above [`SET_ROUTE_RETENTION_MAX`].
+    /// The write must be **exactly** 4 bytes (like `setClock`, it carries no variable tail, so
+    /// trailing bytes are malformed). An out-of-range `retention` reuses `Truncated` — the caller maps
+    /// every `Err` to `error` regardless of variant, matching the `setClock` precedent.
+    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
+        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
+        if bytes[0] != CMD_SET_ROUTE_RETENTION {
+            return Err(DescriptorError::UnknownOp(bytes[0]));
+        }
+        let object_id = u16::from_le_bytes([bytes[1], bytes[2]]);
+        let retention = bytes[3];
+        if retention > SET_ROUTE_RETENTION_MAX {
+            return Err(DescriptorError::Truncated);
+        }
+        Ok(Self { object_id, retention })
+    }
+
+    /// Encode into `out` (≥ [`ENCODED_LEN`](Self::ENCODED_LEN)); returns the written length or `None`
+    /// for a too-small buffer. The app side encodes (its Swift codec mirrors this); the firmware only
+    /// decodes — this exists for the shared-vector and round-trip tests. It does **not** range-check
+    /// `retention`, so a negative test can encode an out-of-range byte for [`decode`](Self::decode).
+    pub fn encode(object_id: u16, retention: u8, out: &mut [u8]) -> Option<usize> {
+        if out.len() < Self::ENCODED_LEN {
+            return None;
+        }
+        out[0] = CMD_SET_ROUTE_RETENTION;
+        out[1..3].copy_from_slice(&object_id.to_le_bytes());
+        out[3] = retention;
+        Some(Self::ENCODED_LEN)
+    }
+}
+
+/// One `status` characteristic notification: a `u8` discriminator + fixed body. The app **ignores
+/// unknown discriminators** (forward compatibility), never failing the link over one. In protocol
+/// v2 this is the **sole** device → app control channel, so every message — including a download's
+/// announce (`msg = 4`) — shares its one subscription and one ordering domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusMessage {
     /// `msg = 1`, 8 bytes.
@@ -267,11 +593,17 @@ pub enum StatusMessage {
     StoreChanged(StoreChanged),
     /// `msg = 3`, 4 bytes.
     CommandResult(CommandResult),
+    /// `msg = 4`, 13 bytes: the download announce — the `msg` byte followed by the 12-byte
+    /// [`TransferControl`] descriptor (`op = Download`, `total_len`/`crc32` filled). v2 folds the
+    /// announce off `transferControl` and onto this envelope so all device → app control traffic is
+    /// one notify characteristic.
+    DownloadAnnounce(TransferControl),
 }
 
 impl StatusMessage {
-    /// The longest encoded message (`transferResult`) — a notify buffer of this size fits any.
-    pub const MAX_ENCODED_LEN: usize = TransferResult::ENCODED_LEN;
+    /// The longest encoded message (`downloadAnnounce`: `msg` byte + the 12-byte descriptor) — a
+    /// notify buffer of this size fits any.
+    pub const MAX_ENCODED_LEN: usize = 1 + TransferControl::ENCODED_LEN;
 
     /// Encode into a fixed buffer; the returned length is the slice to notify (`&buf[..len]`).
     pub fn encode(&self) -> ([u8; Self::MAX_ENCODED_LEN], usize) {
@@ -296,6 +628,11 @@ impl StatusMessage {
                 b[2] = c.status.as_u8();
                 b[3] = c.detail;
                 4
+            }
+            Self::DownloadAnnounce(d) => {
+                b[0] = 4;
+                b[1..1 + TransferControl::ENCODED_LEN].copy_from_slice(&d.encode());
+                1 + TransferControl::ENCODED_LEN
             }
         };
         (b, len)
@@ -337,29 +674,48 @@ impl StatusMessage {
                     detail: data[3],
                 })
             }
+            4 => {
+                if data.len() < 1 + TransferControl::ENCODED_LEN {
+                    return Err(DescriptorError::Truncated);
+                }
+                Self::DownloadAnnounce(TransferControl::decode(&data[1..])?)
+            }
             _ => return Ok(None),
         }))
     }
 }
 
-/// The `objectStore` digest (spec §4.5): the cheap "did anything change" signal that replaces
-/// polling the CoC-sized lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct ObjectStoreDigest {
-    pub revision: u32,
-    pub route_count: u16,
-    pub ride_count: u16,
+/// The `protocolVersion` characteristic read (widened for v2, epic #632 item 5): the wire version
+/// **and** the device's current **store epoch** — a `u32` TRNG nonce naming the store's id era. The
+/// epoch is **card-resident** (#776): it lives on the SD card, so the card carries its own era name.
+/// It changes on an id-era reset — a lost RRAM id floor (full-chip reflash, factory reset, a torn
+/// id-marks line) or an absent/torn card epoch file. Because it rides the card, a card swap
+/// transplants the era, and a card written by a *different* device presents *its own* epoch — a
+/// distinct `(serial, epoch)` scope on this device, which closes the former foreign-card hole (#776).
+/// The app reads it first on every connect, before any reconcile, so it knows the era before it acks
+/// or links anything; the epoch scopes all id-keyed app state to `(device serial, store epoch)` so a
+/// reset can't silently alias months-old ids. A device with **no mounted store** has no epoch and
+/// serves only the 2-byte version — the app fail-closes the ack (never epoch `0`, a legal value). The
+/// mint rule lives on the device (V3); a random nonce leaks nothing beyond open DIS. Readable
+/// **without** encryption.
+///
+/// ```text
+///   version      u16   the protocol version (currently 2)
+///   store_epoch  u32   the device's current store-epoch nonce
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VersionRead {
+    pub version: u16,
+    pub store_epoch: u32,
 }
 
-impl ObjectStoreDigest {
-    pub const ENCODED_LEN: usize = 10;
+impl VersionRead {
+    pub const ENCODED_LEN: usize = 6;
 
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
         let mut b = [0u8; Self::ENCODED_LEN];
-        b[0..4].copy_from_slice(&self.revision.to_le_bytes());
-        b[4..6].copy_from_slice(&self.route_count.to_le_bytes());
-        b[6..8].copy_from_slice(&self.ride_count.to_le_bytes());
-        // b[8..10] = reserved, already 0.
+        b[0..2].copy_from_slice(&self.version.to_le_bytes());
+        b[2..6].copy_from_slice(&self.store_epoch.to_le_bytes());
         b
     }
 
@@ -368,20 +724,16 @@ impl ObjectStoreDigest {
             return Err(DescriptorError::Truncated);
         }
         Ok(Self {
-            revision: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            route_count: u16::from_le_bytes([data[4], data[5]]),
-            ride_count: u16::from_le_bytes([data[6], data[7]]),
+            version: u16::from_le_bytes([data[0], data[1]]),
+            store_epoch: u32::from_le_bytes([data[2], data[3], data[4], data[5]]),
         })
     }
 }
 
-/// The Config object (spec §7.3) — the one object small enough to cross GATT whole-blob (on the
-/// `config` characteristic), not the CoC. `name` is the device name (Delta 1: rename = write Config
-/// with a changed name). Append-only: readers ignore unknown trailing bytes, absent trailing fields
-/// mean "device default".
-///
-/// Borrows its name from the wire buffer, so decoding is alloc-free; the board wraps the encoded
-/// bytes into its GATT attribute type.
+/// The Config object — the one object small enough to cross GATT whole-blob, not the CoC. Rename =
+/// write Config with a changed `name`. Append-only: readers ignore unknown trailing bytes, absent
+/// trailing fields mean "device default". Borrows `name` from the wire buffer, so decode is
+/// alloc-free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config<'a> {
     /// The device name, UTF-8, ≤ [`Config::MAX_NAME`] bytes.
@@ -391,15 +743,14 @@ pub struct Config<'a> {
 }
 
 impl<'a> Config<'a> {
-    /// The name-length cap (§7.3, matches the OBCR route-name cap).
+    /// The name-length cap (matches the OBCR route-name cap).
     pub const MAX_NAME: usize = 48;
-    /// The whole-blob cap (§7.3) — the GATT attribute the board serves it on.
     pub const MAX_ENCODED: usize = 128;
     /// The smallest well-formed blob: `name_len` (2) + empty name + `units` (1).
     pub const MIN_ENCODED: usize = 3;
 
-    /// Encode into `out` (must be ≥ `2 + name.len() + 1`), returning the written length. Returns
-    /// `None` if the name is over-long or the buffer is too small.
+    /// Encode into `out` (must be ≥ `2 + name.len() + 1`), returning the written length. `None` if
+    /// the name is over-long or the buffer is too small.
     pub fn encode(&self, out: &mut [u8]) -> Option<usize> {
         let len = 2 + self.name.len() + 1;
         if self.name.len() > Self::MAX_NAME || len > Self::MAX_ENCODED || out.len() < len {
@@ -411,16 +762,14 @@ impl<'a> Config<'a> {
         Some(len)
     }
 
-    /// Decode + validate a written Config blob (§7.3): a `name_len` ≤ 48 that fits, whole blob in
-    /// `[MIN_ENCODED, MAX_ENCODED]`. A trailing byte after `units` is tolerated (append-only rule) —
-    /// unknown future fields, ignored here. `None` = malformed (the board rejects it with an ATT
-    /// error rather than silently storing it).
+    /// Decode + validate a written Config blob: a `name_len` ≤ 48 that fits, whole blob in
+    /// `[MIN_ENCODED, MAX_ENCODED]`. A trailing byte after `units` is tolerated (append-only rule).
+    /// `None` = malformed (the board rejects it with an ATT error rather than silently storing it).
     pub fn decode(data: &'a [u8]) -> Option<Self> {
         if data.len() < Self::MIN_ENCODED || data.len() > Self::MAX_ENCODED {
             return None;
         }
         let name_len = u16::from_le_bytes([data[0], data[1]]) as usize;
-        // 2 (name_len) + name_len (name) + at least 1 (units) must fit.
         if name_len > Self::MAX_NAME || 2 + name_len + 1 > data.len() {
             return None;
         }

@@ -3,7 +3,7 @@ name = "obc-fw-nrf54l"
 version = "0.1.0"
 edition = "2021"
 publish = false  # board firmware — not published to crates.io
-description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + ST7789 EYESPI). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
+description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + the reflective LS021B7DD02 memory-LCD driven by the FLPR coprocessor). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
 
 # Standalone crate with its own (empty) workspace table so the firmware/ host
 # workspace — which builds its members for the host target — ignores this crate.
@@ -15,12 +15,11 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # Default build = the **real map/ride app on the reflective LS021B7DD02 panel** (issues #165 / #173),
 # driven by the FLPR (the VPR RISC-V coprocessor): mount the SD card, stream the `.obcm`, render it
 # into the resident RGB222 framebuffer through the shared `obc-app`, and have the FLPR scan the whole
-# frame to the LS021 in one push. This is the shipping target path (buttons #126, sensors/GPX #127).
-# LS021 is the *baseline* — it's selected by the **absence** of `tft` — so every FLPR/LS021 `cfg` in
-# the crate keys on `not(feature = "tft")`. Like the old `panel-ls021` opt-in it pulls the `build.rs`
-# carve-out (the M33 shrinks to 244 KB; the top 12 KB is the FLPR image + handshake page) and
-# cross-compiles the RISC-V blob, so the default build needs a RISC-V gcc (`brew install
-# riscv64-elf-gcc`) and the Board-Configurator settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
+# frame to the LS021 in one push. This is the shipping target path (buttons #126, sensors/GPX #127) —
+# the LS021/FLPR panel is the only display path. `build.rs` always emits the carve-out (the M33
+# shrinks to 248 KB; the top 8 KB is the FLPR image + handshake page) and cross-compiles the RISC-V
+# blob, so the build needs a RISC-V gcc (`brew install riscv64-elf-gcc`) and the Board-Configurator
+# settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
 # The default build also drives the **real sensors** (issue #218): a u-blox SAM-M10Q GPS + a Bosch
 # BMP581 altimeter on a shared TWIM30 I²C bus (P0.01/02/03). `obc-platform/sensor-link` pulls the
 # embassy-sync `Signal` hand-off the board's `sensors::sensor_task` publishes through. Real sensors
@@ -45,13 +44,6 @@ cs-single-core = ["cortex-m/critical-section-single-core"]
 # unused) since Cargo can't disable a default feature. See issue #218.
 synth = []
 
-# `tft` selects the **ST7789** EYESPI panel (240×320) instead of the LS021 — the original bring-up
-# display, kept as an opt-in second backend. It is a *backend select* for `src/main.rs`: the
-# hand-rolled `St7789` SPIM driver (`src/st7789.rs`) replaces the FLPR `Ls021Flpr` backend, the app
-# renders into the same RGB222 plane and the band push expands it to RGB565 over SPI. No FLPR carve
-# and no RISC-V toolchain — it links the full 256 KB. Build with `cargo run --release --features tft`.
-tft = []
-
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
 # nRF54L15 has no USB peripheral, so the debug-sensor /
 # telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_04 / RX P1_05);
@@ -74,6 +66,12 @@ debug-uart = ["obc-platform/debug-link"]
 # board — which routes COM onto P1/P3 — turns on. See `src/com_hw.rs` + the crate README pin map.
 com-hw = []
 
+# Developer/CI-only compile-time allocation report. This adds a self-describing
+# `.obc_resources` table to the ELF so `firmware/tools/resource_guard.py` can read exact
+# target-side `size_of` values without running on a board. Shipping builds never enable it, so the
+# table costs them no flash or RAM. See `firmware/ARCHITECTURE_RESOURCE_BASELINE.md`.
+resource-report = []
+
 # The BLE build (issue #270, epic #267): fold the nrf-sdc/MPSL/TrouBLE stack into `main.rs`
 # behind one feature (the A1 spike bin is retired). Build with
 #   cargo run --release --no-default-features --features ble
@@ -81,12 +79,19 @@ com-hw = []
 # global-irq-disable one (`cs-single-core`) to MPSL's, which the radio's timing requires — a
 # `compile_error!` in main.rs catches the wrong invocation. The feature re-enables the two
 # obc-platform default legs itself, so nothing else is lost with `--no-default-features`.
-# On the 256 KB DK the `ble` build also **cfg's out the whole map path** (no `App`, `MapCache`,
-# `RouteCache`, `RouteIndex` — ~128 KB freed) and boots a text-only BLE status UI instead; SD,
-# RRAM settings, buttons, sensors, and the FLPR display all stay up. That exclusion is keyed on
-# the build.rs-emitted `has_map` cfg — the single line the 512 KB LM20 relaxes to run map + BLE
-# together (the budget assert then arbitrates, at compile time).
+# Map + BLE run **in one image** (#270): `ble::run` is spawned beside the ride loop and both
+# drive the shared SD + settings store, fitting the 256 KB DK on the culled `nrf-mem` caps (the
+# budget assert + the residual-stack margin arbitrate at compile time; the 512 KB LM20 relaxes
+# everything). Composes with `debug-uart`/`synth` for a headless ride beside a live link.
 ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "dep:heapless09", "dep:obc-ble", "obc-platform/sensor-link", "obc-platform/input-wait"]
+
+# The `SoftdeviceController: 50:701` isolation harness (epic #707): MPSL + SDC + trouble-host
+# only — no FLPR / SD / app — scanning for and connecting an HR strap with the exact ship
+# parameters. The `ble_spike` precedent, resurrected for the central role. Build with
+#   cargo run --release --no-default-features --features ble --bin ble_central_repro
+[[bin]]
+name = "ble_central_repro"
+required-features = ["ble"]
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
@@ -101,8 +106,8 @@ embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54l15-app-s", "time
 # the SWI00 vector, see the module doc). `platform-cortex-m` for the Cortex-M arch backend.
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 # Cross-executor sync (#126): the lock-free `Channel` carrying recognised gestures from the
-# high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared
-# ST7789/framebuffer bus, and the blocking `Mutex` over the `InputPlane`. ^0.8.0 is what the
+# high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared SD +
+# settings store, and the blocking `Mutex` over the `InputPlane`. ^0.8.0 is what the
 # embassy-nrf 0.11 ecosystem resolves.
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 # `Timer` + the embassy-time backend (driven by `time-driver-grtc` above). `defmt-timestamp-uptime`
@@ -126,9 +131,9 @@ panic-probe = { version = "1.0", features = ["print-defmt"] }
 cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 
-# embedded-hal 1.0 traits (SpiBus / OutputPin / DelayNs) the hand-rolled ST7789 panel
-# backend is generic over; embassy-nrf's `Spim` + `Output` and embassy-time's `Delay`
-# implement them. (#122)
+# embedded-hal 1.0 digital traits: `sd::NoCs` implements `ErrorType` / `OutputPin` for the
+# held-low chip-select the embedded-sdmmc `SpiDevice` wants (the per-byte-CS workaround).
+# embedded-hal-bus (below) also re-exports these; the direct dep pins the version they unify on.
 embedded-hal = "1.0"
 # `NorFlash`/`ReadNorFlash` — the traits embassy-nrf's `Rramc` (RRAM controller) driver implements;
 # the persistent settings store (#193) reads/writes its 16-byte blob to the carved RRAM page through
@@ -136,10 +141,22 @@ embedded-hal = "1.0"
 embedded-storage = "0.3"
 
 # The board-agnostic glue: the `Panel` banded-display seam + the `Band` frame-absolute draw view
-# the ST7789 backend implements, and `Framebuffer565`'s `RawFb`/`Pack` the band reuses (issue
-# #122). Pulls obc-app/route/reader transitively — all no_std, all defmt-free. `debug-link` stays
-# off (no embassy-sync) until the sensor stream at N6.
+# the source/handoff adapters over obc-ports: the button debouncer, the debug-sensor codec + its
+# `debug-link` sources, the `sensor-link`/BLE-sensor hand-offs, and the synth/stub fallback sources.
+# `debug-link` stays off (no embassy-sync) until the sensor stream at N6. (#807 split the display
+# seam, sensor decoders, and SD adapters into the sibling crates below.)
 obc-platform = { path = "../obc-platform" }
+# The display seam (#807): the generic frame/presentation contracts the LS021/FLPR backend
+# implements, the `FbDevice64` map plane the shared renderer draws into, `Framebuffer565`'s
+# `RawFb`/`Pack` the overlay composite reuses, and the `ls021` pairing (geometry/rowdiff/wire/
+# composite). embedded-graphics only. (was `obc-platform::{framebuffer,panel,ls021,display_contracts}`)
+obc-display = { path = "../obc-display" }
+# The pure sensor chip/protocol decoders (#807): UBX / BMP581 / ICM-20948 / compass. The board owns
+# the concrete `Twim` transactions in `sensors.rs`; these decode the bytes. No embassy, host-tested.
+obc-sensors = { path = "../obc-sensors" }
+# The board-agnostic SD storage adapters (#807): `SdByteSource`/`SdByteSink`/`SdTrackSink` + the
+# FAT-extent map fast path — only the concrete SPIM bus type is board-specific here.
+obc-storage = { path = "../obc-storage" }
 # The shared text renderer — `draw_text` + the Terminus `Font` tiers every on-device screen uses. (#122)
 obc-render = { path = "../obc-render" }
 # `Rgb565` / `DrawTarget` / `Point` / `Rectangle` for the map path's `color_fn` + the hold-bulge
@@ -148,19 +165,24 @@ obc-render = { path = "../obc-render" }
 embedded-graphics = "0.8"
 
 # microSD map storage (issue #123). The card stores the map/routes/tracks; the board-agnostic FatFs
-# byte adapters live in obc-platform (`SdByteSource`/`SdByteSink`/`SdTrackSink`) and the format
+# byte adapters live in obc-storage (`SdByteSource`/`SdByteSink`/`SdTrackSink`) and the format
 # parsers in obc-reader/obc-route — only the concrete SPIM bus type is board-specific here.
 # `nrf-mem` (issue #124) is the constrained memory profile and forwards to obc-render/reader/route,
 # so this single edge trims every shared crate's resident buffers for the 256 KB part; Cargo's
 # feature unification then applies it to the obc-render/obc-reader/obc-route edges below (and
 # obc-platform's transitive ones) too. The board crate is the nRF, so it's always on.
 obc-app = { path = "../obc-app", features = ["nrf-mem"] } # App/init_map + render_map (#125); MAX_ROUTES / TrackAction / TrackSink for the SD `Storage`; the budget assert's App/cache sizes
+obc-ports = { path = "../obc-ports" } # Semantic sensor/input/track/settings contracts implemented by board composition.
+obc-formats = { path = "../obc-formats" } # OBCR `NAME_CAP` (route/ride name cap) for the SD store's resident name buffers.
 obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the N4 map path renders from (#125)
 obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx for the `/routes` catalog + GPX (SD `Storage`)
+# The SD-staged DFU foundation (epic #615): the OBCU container + boot-state codec the app-side
+# armer reads/writes (S4, #619), plus its pure scan/arm/confirm decision core (`obc_dfu::armer`).
+obc-dfu = { path = "../obc-dfu" }
 # FatFs over SPI. `default-features = false` (no `log`/`defmt-log`): embedded-sdmmc 0.9 pins
 # `defmt = "0.3"`, which would clash with this crate's defmt 1.0 — so its internal logging stays
 # the no-op fallback and card/FS errors are surfaced via this crate's `defmt::Debug2Format`.
-# Matches obc-platform's own `embedded-sdmmc` resolve so the `VolumeManager` types unify.
+# Matches obc-storage's own `embedded-sdmmc` resolve so the `VolumeManager` types unify.
 embedded-sdmmc = { version = "0.9", default-features = false }
 # `ExclusiveDevice` turns the embassy-nrf `Spim` bus + a GPIO CS into the `SpiDevice` `SdCard` wants.
 embedded-hal-bus = "0.3"
@@ -195,7 +217,20 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"], opti
 # again exactly this crate's set). It runs on heapless **0.9**; the shared crates are on 0.8.
 # `default-packet-pool-mtu-251` sizes the pool for the config we intend to ship (ATT MTU 247 =
 # link-layer 251 with DLE), so the budget assert's RAM numbers are the shipping ones.
-trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "gatt", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
+# `security` (A8, issue #276) turns on the LESC/SMP/bonding host: passkey pairing, the
+# per-characteristic encryption gate, and the peer-IRK resolving list for bonded reconnect.
+# It pulls p256/aes/cmac/rand{,_core,_chacha} — all no_std here (trouble pins them
+# `default-features=false`), and the SMP CSPRNG is auto-seeded from the controller's `LeRand`
+# at host init (no app-side entropy plumbing). nrf-sdc exports every HCI command the security
+# host requires (LTK reply, enable-encryption, the resolving-list set, LeRand).
+# `central` + `scan` (SE6, epic #707): the BLE sensor manager runs the central role on the same
+# `Stack` as the phone-facing peripheral — `stack.central()` scans for + connects to HR/power/cadence
+# sensors while `stack.peripheral()` keeps advertising to the phone (0.7 supports concurrent roles on
+# one stack). `scan` pulls in `central`; the manager uses legacy scan (`Scanner::scan`) + legacy
+# connect (`LeCreateConn`). nrf-sdc already carries `central` (its cleanup path needs
+# `LeCreateConnCancel`); the SDC's central/scan *buffers* are only allocated once the Builder calls
+# `.support_central()/.support_scan()/.central_count()` (see `ble/mod.rs`).
+trouble-host = { version = "0.7", features = ["defmt", "derive", "peripheral", "central", "scan", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"], optional = true }
 # trouble-host's `#[gatt_service]` derive impls `AsGatt` for *its* heapless (0.9) `String`/`Vec`, so
 # the A4 GATT string/blob characteristic types (DIS strings, `config`, …) must be 0.9 — the shared
 # crates' 0.8 types don't satisfy the bound. Alias 0.9 under a distinct name so both coexist; the
@@ -206,7 +241,7 @@ heapless09 = { package = "heapless", version = "0.9", optional = true }
 # stay on the warm-reset-safe `MaybeUninit`-in-`.bss` pattern; see `init_static` in main.rs).
 static_cell = { version = "2", optional = true }
 # The host-tested S0 data-plane core (A5, issue #273): the transferControl / status descriptor
-# codecs, CRC-32/IEEE, and the whole-object transfer state machine (Receiver / Sender). no_std,
+# codecs, CRC-32/IEEE, and the whole-object transfer state machine (Receiver / StreamSender). no_std,
 # no-alloc, radio-free — this crate drives the CoC bytes through it; the shared protocol-vectors/
 # fixtures pin it to the Swift side. A workspace member built here for the M33 target.
 obc-ble = { path = "../obc-ble", optional = true }

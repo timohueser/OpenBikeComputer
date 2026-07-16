@@ -1,0 +1,7 @@
+riding=0x56d9a197e3d0cfe7
+riding-rot=0x8351ed68501a0af6
+mid=0x3071f09bdcd8bbe5
+mid-rot=0x8b3421f22d2e8ef5
+overview=0x07b3e659b578f89c
+overview-rot=0xcde40d6215c2b9c0
+route=0xe26019c8e500f2c0

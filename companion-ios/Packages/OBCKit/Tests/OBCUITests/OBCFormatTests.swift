@@ -127,6 +127,18 @@ final class OBCFormatTests: XCTestCase {
         )
     }
 
+    func testTransferSizeLineUsesKilobytesForRealRoutes() {
+        // A real OBCR route is tens of kB — MB would read a misleading "0.0".
+        XCTAssertEqual(
+            OBCFormat.transferSizeLine(bytesDone: 12_000, totalBytes: 24_000, hasWaypoints: true, locale: en),
+            "12 / 24 kB · route + waypoints"
+        )
+        XCTAssertEqual(
+            OBCFormat.transferSizeLine(bytesDone: 0, totalBytes: 3_200, hasWaypoints: false, locale: en),
+            "0 / 3 kB · route"
+        )
+    }
+
     private func date(_ year: Int, _ month: Int, _ day: Int, hour: Int = 9, minute: Int = 0) -> Date {
         cal.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
     }

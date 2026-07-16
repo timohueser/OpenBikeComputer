@@ -38,9 +38,8 @@ pub fn draw_palette(fb: &mut Framebuffer) {
     }
 }
 
-/// Launch a minimal window showing the palette at integer scale (nearest-neighbor,
-/// so the device's hard pixel grid stays crisp). Esc or Q closes it. The framebuffer
-/// is drawn once up front — the mode is static, so there is nothing to tick.
+/// Launch a minimal window showing the palette at integer scale. Esc or Q closes it. The
+/// framebuffer is drawn once up front (the mode is static).
 pub fn run(width: u32, height: u32, scale: u32) -> Result<(), eframe::Error> {
     let win = [(width * scale) as f32, (height * scale) as f32];
     let options = eframe::NativeOptions {
@@ -133,12 +132,9 @@ mod tests {
         assert_eq!(pixel(&fb, 239, 319), (255, 255, 255));
     }
 
-    /// Item 16 (no gaps "for any width/height", `draw_palette` ~31-32): the cells are tiled
-    /// by edge (`col * w / 8 .. (col+1) * w / 8`), which only tiles seamlessly if the edges
-    /// chain without gap or overlap — and that's only obvious when 8 divides w/h. On a size
-    /// that is *not* a multiple of 8 (37×53), check EVERY pixel equals the color its column's
-    /// cell predicts: a gap would leave a pixel the wrong color (or untouched black where a
-    /// non-black cell was due), and an overlap would paint a cell's edge with its neighbor's.
+    /// The edge-tiled cells (`col * w / 8 .. (col+1) * w / 8`) only chain seamlessly if the
+    /// edges have no gap or overlap — non-obvious when 8 doesn't divide w/h. On 37×53, check
+    /// every pixel equals the color its cell predicts (a gap or overlap would mismatch).
     #[test]
     fn tiles_without_gaps_on_non_multiple_of_8_dimensions() {
         let (w, h) = (37u32, 53u32);

@@ -22,6 +22,8 @@ firmware/tracks/
 *.obct
 # The simulator's persisted-settings file (the device-RRAM stand-in) — a runtime artifact.
 firmware/obc-settings.bin
+# ui-snapshots.sh output — before/after PNG sweeps are per-branch scratch, never committed.
+ui-snapshots/
 .pytest_cache/
 user_config.json
 .worktrees/
@@ -29,4 +31,18 @@ user_config.json
 *.gpx
 # ...except the deterministic source the protocol-vector route fixtures regenerate from.
 !firmware/obc-vectors/src/route-source.gpx
+# ...and the iOS companion's bundled GPX import fixture (three OBCKit tests load it).
+!companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx
 project/
+# `obc` dev-task tooling (in tools/): personal defaults + the web builder's
+# virtualenv + the optional local maps drop. The tooling itself (everything in
+# tools/ except obc.local) is committed.
+tools/obc.local
+.venv/
+/maps/
+# Web builder frontend: dependencies + the Vite build output (CI builds it).
+packer/web_builder/frontend/node_modules/
+packer/web_builder/static/dist/
+
+# XcodeBuildMCP session defaults (local tool state)
+.xcodebuildmcp/

@@ -27,10 +27,36 @@ final class MockTransferTests: XCTestCase {
         XCTAssertEqual(outcome, .completed)
     }
 
+    func testUploadReportsADeviceAssignedObjectID() async throws {
+        let transport = MockTransport(control: fastControl())
+        let handle = transport.uploadRoute(makeRouteBlob(bytes: 50_000))
+        _ = try await drain(handle)
+        let outcome = await handle.outcome
+        let assigned = await handle.assignedObjectID
+        XCTAssertEqual(outcome, .completed)
+        // A fresh upload (no target) gets a new device-assigned id.
+        XCTAssertNotNil(assigned, "the device assigns a new object id on a fresh upload")
+    }
+
+    func testReuploadKeepsTheTargetObjectID() async throws {
+        let transport = MockTransport(control: fastControl())
+        let blob = RouteBlob(
+            summary: RouteSummary(id: RouteID("r"), name: "Edited", distanceMeters: 1_000, elevationGainMeters: 10),
+            payload: MockPayload.make(count: 40_000),
+            targetObjectID: DeviceObjectID(7)   // replacing device object 7
+        )
+        let handle = transport.uploadRoute(blob)
+        _ = try await drain(handle)
+        let outcome = await handle.outcome
+        let assigned = await handle.assignedObjectID
+        XCTAssertEqual(outcome, .completed)
+        XCTAssertEqual(assigned, DeviceObjectID(7), "a replace commits under the same id, not a new one")
+    }
+
     func testDownloadRidesSizesFromFixtures() async throws {
         let control = fastControl()
         let transport = MockTransport(control: control)
-        let rides = try await transport.listRides()
+        let rides = try await transport.listRides().rides
         let id = try XCTUnwrap(rides.first).id
         let download = transport.downloadRides([id])
         let progress = try await drain(download.handle)
@@ -41,7 +67,7 @@ final class MockTransferTests: XCTestCase {
     func testDownloadDeliversEachRidePayload() async throws {
         let control = fastControl()
         let transport = MockTransport(control: control)
-        let ids = try await transport.listRides().map(\.id)
+        let ids = try await transport.listRides().rides.map(\.id)
         XCTAssertGreaterThan(ids.count, 1)   // needs ≥2 fixture rides to prove ordering
 
         let download = transport.downloadRides(ids)
@@ -80,7 +106,7 @@ final class MockTransferTests: XCTestCase {
         let control = fastControl()
         control.dropTransfer(atFraction: 0.5)        // H10 sync interrupted
         let transport = MockTransport(control: control)
-        let ids = try await transport.listRides().map(\.id)
+        let ids = try await transport.listRides().rides.map(\.id)
         let download = transport.downloadRides(ids)
 
         let sawDrop = await awaitState(transport.state, equals: .outOfRange)

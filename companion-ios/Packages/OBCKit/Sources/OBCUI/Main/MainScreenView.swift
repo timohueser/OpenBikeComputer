@@ -16,10 +16,23 @@ public struct MainScreenView: View {
     private let importFileExtensions: Set<String>
     private let onImportFile: (URL) -> Void
     private let onSelectRoute: (RouteSummary) -> Void
+    private let onSelectTrip: (TripRecord) -> Void
     private let onSelectRide: (RideSummary) -> Void
     private let onSettings: () -> Void
+    private let onOpenTrash: () -> Void
 
     @State private var emptyStatePickerShown = false
+    // Multi-select grouping (TR7): the primary retrofit path — enter Select from
+    // the title bar, tap loose route cards, then Group into trip…. Selection is
+    // Planned-only; entering it swaps the card taps for toggles and shows the
+    // bottom action bar.
+    @State private var isSelecting = false
+    @State private var selectedRouteIDs: Set<RouteID> = []
+    @State private var groupPromptShown = false
+    @State private var groupName = "New trip"
+    /// The loose route whose "Add to trip…" context menu is opening the shared
+    /// picker (TR7) — `nil` when no picker is up.
+    @State private var pickerRequest: RouteTripPickerRequest?
     // Pull-to-reveal search (Mail-style): hidden until the list is tugged
     // down past the threshold; hides again on scroll-up once the query is
     // cleared. `scrollBaseline` is the sentinel row's resting position.
@@ -31,38 +44,59 @@ public struct MainScreenView: View {
         importFileExtensions: Set<String> = ["gpx", "tcx"],
         onImportFile: @escaping (URL) -> Void = { _ in },
         onSelectRoute: @escaping (RouteSummary) -> Void = { _ in },
+        onSelectTrip: @escaping (TripRecord) -> Void = { _ in },
         onSelectRide: @escaping (RideSummary) -> Void = { _ in },
-        onSettings: @escaping () -> Void = {}
+        onSettings: @escaping () -> Void = {},
+        onOpenTrash: @escaping () -> Void = {}
     ) {
         self.model = model
         self.importFileExtensions = importFileExtensions
         self.onImportFile = onImportFile
         self.onSelectRoute = onSelectRoute
+        self.onSelectTrip = onSelectTrip
         self.onSelectRide = onSelectRide
         self.onSettings = onSettings
+        self.onOpenTrash = onOpenTrash
     }
 
     public var body: some View {
+        // The sync state machine, read straight off the model's coordinator
+        // (#358) — `@Bindable` here because `model.sync` is a `let` the
+        // model-level `@Bindable` can't project bindings through.
+        @Bindable var sync = model.sync
         VStack(spacing: 0) {
             DeviceTopBar(
                 deviceName: model.deviceName,
                 connection: model.connection,
                 batteryPercent: model.battery,
-                syncState: model.syncState,
-                onSync: { model.sync() },
+                syncState: sync.syncState,
+                onSync: { sync.sync() },
                 onSettings: onSettings
             )
 
-            // One banner at a time: an interrupted sync (H10) owns the slot —
-            // it carries the link story AND the way out (Resume).
-            if let interruption = model.syncInterruption {
+            // One banner at a time. A protocol mismatch (#303) outranks the rest:
+            // the link is up but unusable for data, so it can't be a transfer or
+            // an out-of-range story — sync is disabled until the versions match.
+            if let mismatch = model.protocolMismatch {
+                OBCInlineBanner(
+                    tone: .warning,
+                    systemImage: "exclamationmark.triangle",
+                    title: "Can't sync with \(model.deviceName).",
+                    message: mismatch.found > mismatch.expected
+                        ? "Update the app to match this OBC."
+                        : "Update the OBC to match this app."
+                )
+                .accessibilityIdentifier("protocolMismatchBanner")
+                .padding(.horizontal, 20)
+                .padding(.bottom, 6)
+            } else if let interruption = sync.syncInterruption {
                 OBCInlineBanner(
                     tone: .warning,
                     systemImage: "exclamationmark.triangle",
                     title: "Sync interrupted.",
                     message: "Got \(interruption.landed) of \(interruption.total) rides.",
                     actionTitle: "Resume",
-                    action: { model.resumeSync() }
+                    action: { sync.resumeSync() }
                 )
                 .accessibilityIdentifier("syncInterruptedBanner")
                 .padding(.horizontal, 20)
@@ -76,26 +110,144 @@ public struct MainScreenView: View {
                 .accessibilityIdentifier("disconnectedBanner")
                 .padding(.horizontal, 20)
                 .padding(.bottom, 6)
+            } else if sync.hiddenRideCount > 0 {
+                // v2 rideList truncation (spec §7.4): past the device's cap some
+                // rides are dropped from the list in FAT-arbitrary order, so
+                // "up to date" would be a lie — say so plainly (iOS tone rule).
+                OBCInlineBanner(
+                    systemImage: "externaldrive.badge.exclamationmark",
+                    title: sync.hiddenRideCount == 1
+                        ? "1 ride on \(model.deviceName) can't be listed."
+                        : "\(sync.hiddenRideCount) rides on \(model.deviceName) can't be listed.",
+                    message: "Free up space on the device to sync them."
+                )
+                .accessibilityIdentifier("ridesTruncatedBanner")
+                .padding(.horizontal, 20)
+                .padding(.bottom, 6)
             }
 
             OBCLargeTitleBar("Routes") {
-                OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
+                titleActions
             }
 
             list
         }
         .background(OBCTheme.parchment.ignoresSafeArea())
+        // The multi-select action bar (TR7): a bottom Group into trip… primary,
+        // shown only while selecting. Two or more routes make a group.
+        .safeAreaInset(edge: .bottom) { selectionBar }
+        // The name prompt — prefilled "New trip" (nothing fancier, locked).
+        .alert("Name the trip", isPresented: $groupPromptShown) {
+            TextField("Trip name", text: $groupName)
+            Button("Cancel", role: .cancel) {}
+            Button("Create") {
+                model.groupIntoTrip(Array(selectedRouteIDs), name: groupName)
+                exitSelection()
+            }
+        }
+        // The shared trip picker for a loose route's "Add to trip…" context menu.
+        .sheet(item: $pickerRequest) { request in
+            TripPickerSheet(
+                title: "Add to trip",
+                trips: model.tripPickerItems,
+                onPick: { model.fileRoute(request.id, into: $0) }
+            )
+        }
         #if os(iOS)
         // The screen draws its own chrome (top bar + large-title row).
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .obcToast(
-            isPresented: $model.upToDateToastVisible,
+            isPresented: $sync.upToDateToastVisible,
             message: "You're up to date — no new rides on \(model.deviceName)."
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("main.screen")
+        // Selection is a Planned-tab mode: leaving the tab ends it, so the
+        // Group bar and Cancel never float over the Tracked list.
+        .onChange(of: model.tab) { _, _ in
+            if isSelecting { exitSelection() }
+        }
         .task { model.start() }
+    }
+
+    // MARK: Title actions + selection (TR7)
+
+    /// The large-title trailing controls: Select + import normally; a single
+    /// Cancel while multi-selecting (import is out of the way mid-group). Select
+    /// is Planned-only and hidden with no loose routes to group.
+    @ViewBuilder
+    private var titleActions: some View {
+        if isSelecting {
+            Button("Cancel") { exitSelection() }
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(OBCTheme.tint)
+                .accessibilityIdentifier("main.selectCancel")
+        } else {
+            if model.tab == .planned && looseRouteCount > 0 {
+                Button("Select") {
+                    isSelecting = true
+                    selectedRouteIDs = []
+                }
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(OBCTheme.tint)
+                .accessibilityIdentifier("main.select")
+            }
+            OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
+        }
+    }
+
+    /// The bottom Group into trip… bar, present only while selecting.
+    @ViewBuilder
+    private var selectionBar: some View {
+        if isSelecting {
+            let count = selectedRouteIDs.count
+            Button {
+                groupName = "New trip"
+                groupPromptShown = true
+            } label: {
+                Text(count > 0 ? "Group into trip (\(count))" : "Group into trip")
+            }
+            .buttonStyle(.obcPrimary)
+            .disabled(count < 2)
+            .accessibilityIdentifier("main.groupIntoTrip")
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+            .background(.ultraThinMaterial)
+        }
+    }
+
+    /// Loose (top-level) route cards — what Select can group. Trips aren't
+    /// selectable.
+    private var looseRouteCount: Int {
+        model.plannedItems.reduce(0) { count, item in
+            if case .route = item { return count + 1 }
+            return count
+        }
+    }
+
+    private func toggleSelection(_ id: RouteID) {
+        if selectedRouteIDs.contains(id) {
+            selectedRouteIDs.remove(id)
+        } else {
+            selectedRouteIDs.insert(id)
+        }
+    }
+
+    private func exitSelection() {
+        isSelecting = false
+        selectedRouteIDs = []
+    }
+
+    /// The selection tick over a route card while grouping.
+    private func selectionCheck(on id: RouteID) -> some View {
+        let selected = selectedRouteIDs.contains(id)
+        return Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(selected ? OBCTheme.forest : OBCTheme.inkFaint)
+            .padding(8)
+            .background(selected ? OBCTheme.panel.opacity(0.9) : .clear, in: Circle())
     }
 
     // MARK: List
@@ -163,6 +315,21 @@ public struct MainScreenView: View {
                 case .planned: plannedContent
                 case .tracked: trackedContent
                 }
+
+                // Recently Deleted (#292): the entry into the trash sits under
+                // the Tracked rows (and under the empty state — deleting the
+                // last ride must not strand the trash). Hidden while a search
+                // filters the list: the row isn't a search result.
+                if model.tab == .tracked, !model.trashedRides.isEmpty, model.searchText.isEmpty {
+                    OBCDisclosureRow(
+                        systemImage: "trash",
+                        label: "Recently Deleted",
+                        value: "\(model.trashedRides.count)",
+                        accessibilityID: "main.recentlyDeleted",
+                        action: onOpenTrash
+                    )
+                    .padding(.top, 8)
+                }
             }
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
@@ -202,9 +369,9 @@ public struct MainScreenView: View {
     /// while syncing, the forest "Synced N new rides just now" confirm after.
     @ViewBuilder
     private var syncLine: some View {
-        if let progress = model.syncProgress {
+        if let progress = model.sync.syncProgress {
             syncLineLabel("\(progress.done) of \(progress.total) rides", color: OBCTheme.amber, icon: nil)
-        } else if let count = model.lastSyncCount {
+        } else if let count = model.sync.lastSyncCount {
             syncLineLabel(
                 "Synced \(count) new \(count == 1 ? "ride" : "rides") just now",
                 color: OBCTheme.forest,
@@ -236,7 +403,7 @@ public struct MainScreenView: View {
             readError
         } else if model.loadState == .loading && model.routes.isEmpty {
             skeletons
-        } else if model.filteredRoutes.isEmpty && !model.searchText.isEmpty {
+        } else if model.filteredPlannedItems.isEmpty && !model.searchText.isEmpty {
             noMatches(noun: "routes", scope: "all planned routes")
         } else if model.routes.isEmpty {
             // S1 — empty ≠ broken: point at the import that fills it (B10 owns
@@ -260,16 +427,77 @@ public struct MainScreenView: View {
                 if case .success(let url) = result { onImportFile(url) }
             }
         } else {
-            ForEach(model.filteredRoutes) { route in
-                Button {
-                    onSelectRoute(route)
-                } label: {
-                    RouteCard(route: route)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("main.card.\(route.id.rawValue)")
-                .obcSwipeToDelete {
-                    model.deleteRoute(route.id)
+            // TR6: trip cards + loose route cards, interleaved by addedAt.
+            // TR7: while selecting, route cards toggle instead of navigating and
+            // trips dim out (a trip isn't a groupable stage).
+            ForEach(model.filteredPlannedItems) { item in
+                switch item {
+                case .trip(let trip):
+                    Button {
+                        onSelectTrip(trip)
+                    } label: {
+                        TripCard(
+                            name: trip.name,
+                            stats: model.tripStats(trip.id),
+                            stageSummaries: model.tripStages(trip.id),
+                            onDevice: model.tripOnDeviceState(trip.id)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSelecting)
+                    .opacity(isSelecting ? 0.4 : 1)
+                    .accessibilityIdentifier("main.trip.\(trip.id.rawValue)")
+                case .route(let route, _):
+                    if isSelecting {
+                        Button {
+                            toggleSelection(route.id)
+                        } label: {
+                            RouteCard(
+                                route: route,
+                                onDevice: model.onDeviceState(route.id),
+                                expiryBadge: model.expiryBadge(for: route.id)
+                            )
+                                .overlay(alignment: .topTrailing) {
+                                    selectionCheck(on: route.id)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("main.card.\(route.id.rawValue)")
+                        .accessibilityAddTraits(
+                            selectedRouteIDs.contains(route.id) ? .isSelected : [])
+                    } else {
+                        Button {
+                            onSelectRoute(route)
+                        } label: {
+                            RouteCard(
+                                route: route,
+                                onDevice: model.onDeviceState(route.id),
+                                expiryBadge: model.expiryBadge(for: route.id)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("main.card.\(route.id.rawValue)")
+                        .obcSwipeToDelete {
+                            model.deleteRoute(route.id)
+                        }
+                        // Clip the long-press lift preview to the card's own
+                        // rounded shape — without this the system snapshots the
+                        // whole rectangular row and the card floats on a stark
+                        // white slab. (iOS-only kind; macOS is the test host.)
+                        #if os(iOS)
+                        .contentShape(
+                            .contextMenuPreview,
+                            RoundedRectangle(cornerRadius: OBCTheme.radiusCard)
+                        )
+                        #endif
+                        .contextMenu {
+                            Button {
+                                pickerRequest = RouteTripPickerRequest(id: route.id)
+                            } label: {
+                                Label("Add to trip…", systemImage: "folder.badge.plus")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -353,6 +581,12 @@ public struct MainScreenView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 40)
     }
+}
+
+/// A loose route whose "Add to trip…" context menu is presenting the shared
+/// picker (TR7) — the `Identifiable` handle a `.sheet(item:)` needs.
+private struct RouteTripPickerRequest: Identifiable {
+    let id: RouteID
 }
 
 #if DEBUG

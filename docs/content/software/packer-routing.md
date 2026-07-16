@@ -5,7 +5,7 @@ description: How OpenStreetMap data becomes a device-ready OBCM map (the obc-pac
 
 # Packer & routing
 
-Two jobs bracket the device's own work. **Packing** turns raw OpenStreetMap data into a styled `.obcm` map — a heavy job, run once on a computer. **Routing** is the lighter on-device pair: turning a GPX you upload into a navigable `.obcr`, and **map-matching** your live position onto it as you ride. The device never computes a route for you — you bring your own line — so "routing" here means *following*, not pathfinding.
+Two jobs bracket the device's own work. **Packing** turns raw OpenStreetMap data into a styled `.obcm` map — a heavy job, run once on a computer, and (as of v8) it also bakes a [routable navigation graph](#building-the-navigation-graph) into the map — one that v9 makes [bike-type-aware](#weighting-the-graph-bike-profiles). **Routing** is the lighter on-device work: turning a GPX you upload into a navigable `.obcr`, **map-matching** your live position onto it as you ride, and — new this iteration — **computing** a route to a POI on the device itself over that baked graph. So "routing" here is mostly *following* a line you brought, with a memory-bounded bit of *pathfinding* when you ask the device to reach a POI on its own.
 
 The packer ([`obc-pack`](src:firmware/obc-pack)) lives in the same Rust workspace as the device firmware and depends on the same [`obc-reader`](src:firmware/obc-reader), so the program that *writes* the format and the program that *reads* it can never disagree about a byte.
 
@@ -92,23 +92,25 @@ What a feature *is* — and whether it's kept at all — comes from a `config.js
   <line class="d-flow" x1="488" y1="92" x2="540" y2="92" marker-end="url(#aP2)" />
 
   <!-- style out -->
-  <rect class="d-hot" x="548" y="56" width="150" height="120" rx="10" style="fill:#f8efe4" />
-  <text class="d-label" x="564" y="76" style="fill:#a9501c">style #5</text>
+  <rect class="d-hot" x="548" y="52" width="150" height="140" rx="10" style="fill:#f8efe4" />
+  <text class="d-label" x="564" y="72" style="fill:#a9501c">style #5</text>
   <g font-family="var(--mono)">
-    <text class="d-sub" x="564" y="98">color (RGB565)</text>
-    <text class="d-sub" x="564" y="118">z_index · weight</text>
-    <text class="d-sub" x="564" y="138">priority 1–4</text>
-    <text class="d-sub" x="564" y="158">min_lod</text>
+    <text class="d-sub" x="564" y="94">color (RGB565)</text>
+    <text class="d-sub" x="564" y="112">z_index · weight</text>
+    <text class="d-sub" x="564" y="130">priority 1–4</text>
+    <text class="d-sub" x="564" y="148">min_lod</text>
+    <text class="d-sub" x="564" y="166">line_style · color2</text>
   </g>
 </svg>
-<figcaption>A style carries everything the renderer later needs: a colour, a paint order (<code>z_index</code>), a line weight, a drop-priority, and a <code>min_lod</code> — the zoom tier below which the feature isn't included. These become the <a href="../formats/#the-header">style table</a> in the file, and the colours resolve through the very same <a href="../architecture/#two-hosts-one-core-and-the-seams-between-them"><code>color_fn</code></a> the UI uses.</figcaption>
+<figcaption>A style carries everything the renderer later needs: a colour, a paint order (<code>z_index</code>), a line weight, a drop-priority, a <code>min_lod</code> (the zoom tier below which the feature isn't included), and — since <b>v10</b> — a <code>line_style</code> and an optional secondary colour <code>color2</code> for dashes, casings, stripes and outlines. These become the <a href="../formats/#the-header">style table</a> in the file, and the colours resolve through the very same <a href="../architecture/#two-hosts-one-core-and-the-seams-between-them"><code>color_fn</code></a> the UI uses.</figcaption>
 </figure>
 
 ```rust
 pub fn get_style(&self, tags: &HashMap<&str, &str>) -> Option<&FeatureStyle> {
     for (tag_key, by_value) in &self.features {   // walked in document order
         if let Some(val) = tags.get(tag_key.as_str()) {
-            if let Some(style) = by_value.get(*val) {
+            // exact value first, then the category's "*" catch-all
+            if let Some(style) = by_value.get(*val).or_else(|| by_value.get("*")) {
                 return Some(style);               // first match wins
             }
         }
@@ -116,6 +118,8 @@ pub fn get_style(&self, tags: &HashMap<&str, &str>) -> Option<&FeatureStyle> {
     None                                          // unstyled → dropped
 }
 ```
+
+Within a `tag_key`, the value `"*"` is a **catch-all**: an exact value match still wins, but any other value that key carries falls back to the `"*"` rule. So `building → { warehouse: …, "*": … }` gives warehouses their own style and paints every other `building=*` with the catch-all — without enumerating OSM's ~50 building values by hand. The catch-all is an ordinary rule (it takes one style ID like any other), so it's purely a packer-side convenience; the file format and the device never know it existed.
 
 ### Ingest: two passes, then assemble
 
@@ -207,16 +211,259 @@ OSM ways draw the *coast*, but not the sea or the land fill. Those come from a s
 <figcaption>The packer reads the land shapefile directly and reprojects it from Web Mercator with closed-form math — no GIS stack — decoding only the records whose bounding box touches the query. The result flows through the same simplify-and-quadtree path as every other feature, so by the time the device sees it, land is just more geometry.</figcaption>
 </figure>
 
-### Building the LOD pyramid
+### Extracting POIs
 
-Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything, at full detail.
+The same OSM extract carries more than geometry. Amenities a bikepacker actually looks for — water, campsites, lodging, resupply, pharmacies, bike shops — are tagged on nodes and areas the geometry pipeline would otherwise style-and-forget. A separate stage harvests them into the map's [POI section](../formats/#pois-a-nearest-list-not-a-map-layer), where the device browses them by category. It's config-free on purpose: the tag → category mapping is **hardcoded in the packer** (a locked decision), so packing the same extract always yields the same POIs.
 
 <figure class="fig">
-<svg viewBox="0 0 720 270" role="img" aria-label="A pool of features each tagged with a min-LOD flows into three tiers. The country tier takes only features with min-LOD 0 and simplifies them at 50 metres. The region tier adds min-LOD 1 features at 12 metres. The street tier adds everything at full detail. Each tier becomes its own quadtree.">
+<svg viewBox="0 0 720 300" role="img" aria-label="POI extraction. On the left, two OSM sources: a tagged node used as-is, and a closed way whose polygon centroid becomes a point. Both are classified against a fixed table of tag-equals-value rules mapping to a category and subtype. Names are folded to ASCII and capped at 24 bytes. Finally a dedup step collapses a node and a way-centroid of the same category within 50 metres into one POI, keeping the node.">
+  <defs>
+    <marker id="aP6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Nodes + way-centroids → classify → fold names → dedup</text>
+
+  <!-- sources -->
+  <rect class="d-panel-2" x="24" y="44" width="150" height="40" rx="9" />
+  <text class="d-sub" x="40" y="62" style="font-size:10px">a tagged node</text>
+  <text class="d-sub" x="40" y="77" style="font-size:9px">amenity=drinking_water</text>
+  <circle cx="158" cy="64" r="4" class="d-hot-fill" />
+
+  <rect class="d-panel-2" x="24" y="94" width="150" height="52" rx="9" />
+  <text class="d-sub" x="40" y="112" style="font-size:10px">a closed way</text>
+  <text class="d-sub" x="40" y="127" style="font-size:9px">tourism=camp_site</text>
+  <!-- small polygon with centroid dot -->
+  <path d="M120 118 L150 116 L156 136 L126 140 Z" fill="none" stroke="#3c6b39" stroke-width="1.2" />
+  <circle cx="138" cy="127" r="3" class="d-hot-fill" />
+  <text class="d-sub" x="120" y="152" style="font-size:8.5px;fill:#a9501c">→ ring centroid</text>
+
+  <!-- classify -->
+  <line class="d-flow" x1="178" y1="64"  x2="224" y2="86" marker-end="url(#aP6)" />
+  <line class="d-flow" x1="178" y1="120" x2="224" y2="98" marker-end="url(#aP6)" />
+  <rect class="d-panel" x="230" y="56" width="204" height="92" rx="10" />
+  <text class="d-tag" x="246" y="76">fixed table · first match</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="246" y="96"  style="font-size:9.5px">amenity=drinking_water → Water</text>
+    <text class="d-sub" x="246" y="112" style="font-size:9.5px">natural=spring &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ Water</text>
+    <text class="d-sub" x="246" y="128" style="font-size:9.5px">tourism=camp_site &nbsp;&nbsp;→ Campsite</text>
+    <text class="d-sub" x="246" y="142" style="font-size:9px;fill:#a9501c">… 18 subtypes, 6 categories</text>
+  </g>
+
+  <!-- fold names -->
+  <line class="d-flow" x1="438" y1="102" x2="484" y2="102" marker-end="url(#aP6)" />
+  <rect class="d-panel-2" x="490" y="72" width="206" height="60" rx="10" />
+  <text class="d-tag" x="506" y="90">fold name → ASCII, ≤ 24 B</text>
+  <text class="d-sub" x="506" y="110" font-family="var(--mono)" style="font-size:10px">"Bäckerei Müller"</text>
+  <text class="d-sub" x="506" y="124" font-family="var(--mono)" style="font-size:10px;fill:#a9501c">→ "Baeckerei Mueller"</text>
+
+  <!-- dedup -->
+  <line class="d-flow" x1="360" y1="150" x2="360" y2="196" marker-end="url(#aP6)" />
+  <rect class="d-hot" x="120" y="200" width="480" height="76" rx="12" style="fill:#f8efe4" />
+  <text class="d-tag" x="138" y="220" style="fill:#a9501c">dedup — same category within 50 m = one POI</text>
+  <!-- node + centroid merging -->
+  <circle cx="168" cy="248" r="5" class="d-hot-fill" /><text class="d-sub" x="150" y="268" style="font-size:9px">node</text>
+  <circle cx="210" cy="248" r="4" class="d-water" /><text class="d-sub" x="196" y="268" style="font-size:9px">centroid</text>
+  <line x1="176" y1="248" x2="202" y2="248" stroke="#9aa884" stroke-width="1.2" stroke-dasharray="3 2" />
+  <line class="d-flow" x1="250" y1="248" x2="300" y2="248" marker-end="url(#aP6)" />
+  <circle cx="330" cy="248" r="5" class="d-hot-fill" /><text class="d-sub" x="346" y="252" style="font-size:9.5px">the node wins</text>
+  <text class="d-sub" x="470" y="240" style="font-size:9px">priority: node beats centroid,</text>
+  <text class="d-sub" x="470" y="254" style="font-size:9px">then named beats unnamed,</text>
+  <text class="d-sub" x="470" y="268" style="font-size:9px">then first-seen.</text>
+</svg>
+<figcaption>Both an OSM <b>node</b> and a <b>closed way</b> can be a POI — a way is reduced to its shoelace-weighted <b>ring centroid</b>, so a campsite polygon becomes a single point. Each candidate is classified against a fixed <code>key=value</code> table (first match in table order wins, the same rule as the style config), and its name is <b>folded to printable ASCII</b> and capped at 24 bytes. The last step matters because OSM double-maps: a drinking-water node sitting inside a same-tagged area, an entrance node beside a campsite polygon. Two candidates of the <b>same category within ~50 m</b> collapse to one, and the winner is chosen by priority — a node (a real placed point) beats a derived centroid, a named POI beats an unnamed one.</figcaption>
+</figure>
+
+Why fold names at all? The OBCM `Name` field is a **fixed 24-byte, printable-ASCII** slot: fixed-width keeps records seekable, and one byte per character keeps the budget a predictable 24 glyphs (a raw UTF-8 `ö` is two bytes). So rather than store variable-width UTF-8, the packer transliterates at pack time: German umlauts get their proper digraphs (`ä → ae`, `ß → ss`), the rest of Latin strips to its base letter, and anything genuinely unmappable (CJK, Cyrillic, Greek) becomes a word break rather than gluing neighbours together. (The [device font](../ui/#the-field-map-look) itself covers Latin-1 + Latin Extended-A, so *phone-supplied* route and ride names render their umlauts directly on-glass — it's only these fixed-width **packed** POI names that fold.) A name that folds away to nothing is stored as unnamed, and the device falls back to the subtype's label ("Spring", "Bakery"). The 24-byte cap is a device-row width, not a storage worry — POI bytes are noise next to geometry.
+
+```rust
+pub const POI_TABLE: [PoiKind; 18] = [
+    kind(1, "amenity", "drinking_water"), // → Water / "Drinking water"
+    kind(2, "natural", "spring"),         // → Water / "Spring"
+    kind(5, "tourism", "camp_site"),      // → Campsite
+    kind(13, "shop", "supermarket"),      // → Resupply / "Supermarket"
+    // … 18 rows, ids append-only — the subtype id is normative (OBCM_Spec §7.4)
+];
+```
+
+The subtype *ids* are normative and shared: the packer owns only the OSM `key=value` half of the table, while each subtype's category and fallback label live once in [`obc-formats`'s POI table](src:firmware/obc-formats/src/obcm.rs) — the same table the device reads through `obc-reader` — so the two crates can't drift, and a pinning test asserts every row agrees. The extracted, deduped, name-folded POIs are handed to the serializer, which builds the [per-category quadtrees](../formats/#pois-a-nearest-list-not-a-map-layer) of the POI section.
+
+### Parsing opening hours
+
+A POI carries one more thing worth harvesting: when it's *open*. OSM stores that in the [`opening_hours`](https://wiki.openstreetmap.org/wiki/Key:opening_hours) tag — a compact grammar like `Mo-Fr 08:00-18:00; Sa 09:00-13:00; PH off`. Parsing that grammar is a **host job that never runs on the device**: the microcontroller has no room for a date library and no reason to re-derive the same answer every frame. So the packer parses `opening_hours` **once, at pack time**, into the fixed [29-byte weekly schedule](../formats/#opening-hours-a-pooled-weekly-schedule) the device reads with a single array lookup.
+
+The parser is a deliberate **subset**, not a full `opening_hours` engine — the real data (town shops, campsites) exercises a small corner of the grammar, and a full engine would drag a time model into a build tool that has no clock. It handles weekday ranges and lists (`Mo-Fr`, `Mo,We,Fr`), `HH:MM-HH:MM` intervals (including a split lunch, two per day), `24/7`, `off`/`closed`, bare time-only rules that apply every day, and overnight wrap. Times are rounded to the nearest quarter-hour with the same **round-half-to-even** convention the packer uses for coordinates. Anything it *can't* model it **drops and flags** rather than guessing — it never invents hours that aren't there.
+
+<figure class="fig">
+<svg viewBox="0 0 720 250" role="img" aria-label="The opening_hours stage. A raw OSM opening_hours string is parsed at pack time into a normalized weekly schedule of seven days. A seasonal date rule is flattened to a representative in-season week and flagged seasonal; a public-holiday or unmodellable rule is dropped and flagged truncated. All resulting schedules are then deduplicated into a small pool, and each POI stores only its pool index.">
+  <defs>
+    <marker id="aOH" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">opening_hours → normalize → flag → dedup pool</text>
+
+  <!-- raw string -->
+  <rect class="d-panel-2" x="24" y="44" width="238" height="52" rx="9" />
+  <text class="d-sub" x="40" y="62" style="font-size:9.5px">raw OSM tag</text>
+  <text class="d-sub" x="40" y="80" font-family="var(--mono)" style="font-size:9px">Mo-Fr 08:00-18:00; Sa 09-13</text>
+  <text class="d-sub" x="40" y="92" font-family="var(--mono)" style="font-size:9px">Apr-Oct: …; PH off</text>
+
+  <!-- parse -->
+  <line class="d-flow" x1="266" y1="70" x2="312" y2="70" marker-end="url(#aOH)" />
+  <rect class="d-panel" x="318" y="44" width="196" height="52" rx="10" />
+  <text class="d-tag" x="334" y="64">parse (subset grammar)</text>
+  <text class="d-sub" x="334" y="84" style="font-size:9px">→ 7 days × ≤2 intervals</text>
+
+  <!-- flags -->
+  <line class="d-flow" x1="416" y1="96" x2="416" y2="120" marker-end="url(#aOH)" />
+  <rect class="d-panel-2" x="300" y="126" width="232" height="58" rx="10" />
+  <text class="d-sub" x="316" y="146" style="font-size:9.5px;fill:#a9501c">seasonal — Apr-Oct flattened to</text>
+  <text class="d-sub" x="316" y="159" style="font-size:9px">a representative in-season week</text>
+  <text class="d-sub" x="316" y="176" style="font-size:9.5px;fill:#a9501c">truncated — PH / 3rd interval dropped</text>
+
+  <!-- dedup pool -->
+  <line class="d-flow" x1="300" y1="155" x2="230" y2="200" marker-end="url(#aOH)" />
+  <rect class="d-hot" x="24" y="196" width="300" height="44" rx="12" style="fill:#f8efe4" />
+  <text class="d-tag" x="40" y="216" style="fill:#a9501c">dedup — a region's shops share hours</text>
+  <text class="d-sub" x="40" y="232" style="font-size:9px">identical schedules → one blob; POI stores its index</text>
+
+  <!-- only-with-hours note -->
+  <rect class="d-panel-2" x="344" y="196" width="352" height="44" rx="10" />
+  <text class="d-sub" x="360" y="214" style="font-size:9.5px">a POI with no parseable hours stores <tspan font-family="var(--mono)">0xFFFF</tspan></text>
+  <text class="d-sub" x="360" y="230" style="font-size:9px">— only POIs that actually have hours cost a pool slot</text>
+</svg>
+<figcaption>The stage runs per POI, after classification. Two cases need flattening. A <b>seasonal</b> rule (<code>Apr-Oct: …</code>) carries a date selector the weekly blob can't express, so the packer bakes a <b>representative in-season week</b> and sets the <i>seasonal</i> flag — the v1 device ignores it, but the bit is there for a future season-aware pass. A rule the subset genuinely can't model — a public-holiday <code>PH</code> clause, a <code>sunrise/sunset</code> time, or a third interval on a day — is <b>dropped</b> and the <i>truncated</i> flag set, so the device knows the schedule is partial rather than wrong. Finally every schedule is <b>deduplicated</b> into a shared pool: because a whole town's shops so often keep the same hours, the pool stays tiny, and a POI with no parseable hours (the common case) costs nothing but a <code>0xFFFF</code> sentinel in its record.</figcaption>
+</figure>
+
+The subset grammar, the flag semantics, and the quarter-hour encoding live in [`obc-pack/src/hours.rs`](src:firmware/obc-pack/src/hours.rs); the pooled bytes are described in [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The device end — turning a pooled blob into *today's hours* and an *open-now* badge — is the [POI detail view](../ui/#the-poi-detail-view).
+
+### Building the navigation graph
+
+The map so far is geometry the device *draws*. To let the device *route* — compute its own way to a POI — the packer builds one more thing the raw data doesn't contain: a **navigation graph**. Highways in OSM are ways, and the geometry pipeline turns them into styled polylines the moment it resolves their coordinates — dropping the node ids as it goes. But those node ids are the topology: two roads that *share* an OSM node meet there. This stage keeps the node ids for routable ways and recovers the graph from the shared ones. It's serialized into the map's [navigation-graph section](../formats/#the-navigation-graph-a-routable-network), and it's **always built** — a config-free, always-present section like the POIs, so packing the same extract always yields the same graph (there's no toggle to forget).
+
+<figure class="fig">
+<svg viewBox="0 0 720 300" role="img" aria-label="Building the navigation graph in three steps. First, a bike-legality filter keeps most highway ways but excludes motorway and its links, excludes trunk unless it is tagged bicycle equals yes, and hard-excludes anything tagged access equals no or private, bicycle equals no, or motorroad equals yes. Second, junction detection: a node touched by two or more routable ways, or sitting at a way's endpoint, becomes a junction; interior shape points do not. Third, each way is split at its junctions into edges, duplicate and reversed parallel ways are deduplicated by an unordered endpoint pair plus geometry key, and each edge's great-circle length becomes its cost. The result is junction nodes joined by edges.">
+  <defs>
+    <marker id="aNG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Filter routable ways → find junctions → split + dedup into edges</text>
+
+  <!-- 1 class/access filter -->
+  <rect class="d-panel" x="24" y="52" width="200" height="120" rx="10" />
+  <text class="d-tag" x="40" y="72">① routable? highway + access</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="40" y="92"  style="font-size:9px;fill:#2c5230">residential · track · path · cycleway ✓</text>
+    <text class="d-sub" x="40" y="107" style="font-size:9px;fill:#2c5230">footway · steps · service ✓ (walk a bike)</text>
+    <text class="d-sub" x="40" y="125" style="font-size:9px;fill:#a9501c">motorway ✗ · trunk ✗ unless bicycle=yes</text>
+    <text class="d-sub" x="40" y="140" style="font-size:9px;fill:#a9501c">access=no|private · bicycle=no ✗</text>
+  </g>
+  <text class="d-sub" x="40" y="162" style="font-size:8.5px">independent of render styling</text>
+
+  <!-- 2 junction detection -->
+  <line class="d-flow" x1="228" y1="112" x2="264" y2="112" marker-end="url(#aNG)" />
+  <text class="d-sub" x="270" y="52" style="font-size:9px;fill:#6b7758">② a shared node = a junction</text>
+  <!-- two ways crossing at a node -->
+  <line x1="288" y1="140" x2="392" y2="96" stroke="#9aa884" stroke-width="2.4" />
+  <line x1="300" y1="86"  x2="380" y2="150" stroke="#9aa884" stroke-width="2.4" />
+  <!-- interior shape points (open) -->
+  <circle cx="322" cy="128" r="2.6" fill="#ece8cf" stroke="#9aa884" stroke-width="1"/>
+  <circle cx="360" cy="112" r="2.6" fill="#ece8cf" stroke="#9aa884" stroke-width="1"/>
+  <!-- the shared junction -->
+  <circle cx="340" cy="119" r="5" class="d-hot-fill" />
+  <text class="d-sub" x="340" y="172" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">touched ≥2× → junction</text>
+  <text class="d-sub" x="270" y="192" style="font-size:8.5px">endpoints are always junctions;</text>
+  <text class="d-sub" x="270" y="204" style="font-size:8.5px">interior shape points never are</text>
+
+  <!-- 3 split + dedup -->
+  <line class="d-flow" x1="404" y1="112" x2="440" y2="112" marker-end="url(#aNG)" />
+  <rect class="d-hot" x="448" y="52" width="248" height="120" rx="10" style="fill:#f8efe4" />
+  <text class="d-tag" x="464" y="72" style="fill:#a9501c">③ split into edges + dedup</text>
+  <text class="d-sub" x="464" y="94"  style="font-size:9.5px">cut each way at every junction</text>
+  <text class="d-sub" x="464" y="110" style="font-size:9.5px">→ edge interiors are junction-free</text>
+  <text class="d-sub" x="464" y="130" style="font-size:9.5px">dedup key: unordered (a,b) + geometry</text>
+  <text class="d-sub" x="464" y="146" style="font-size:9px;fill:#a9501c">a way + its reverse = one edge</text>
+  <text class="d-sub" x="464" y="162" style="font-size:9px">cost = great-circle length, metres</text>
+
+  <!-- result graph -->
+  <line class="d-flow" x1="360" y1="216" x2="360" y2="242" marker-end="url(#aNG)" />
+  <rect class="d-panel-2" x="180" y="246" width="360" height="46" rx="10" />
+  <text class="d-sub" x="360" y="266" text-anchor="middle" style="font-size:10px">junction <b>nodes</b> (dense pack-run ids) joined by undirected <b>edges</b></text>
+  <text class="d-sub" x="360" y="282" text-anchor="middle" style="font-size:9px">→ serialized as the map's §8 navigation graph</text>
+</svg>
+<figcaption>The <b>routable predicate</b> reads only a way's routing tags (<code>highway</code>, <code>access</code>, <code>bicycle</code>, <code>motorroad</code>) — never the style config, so a road can be drawn but not routable, or the reverse. Most classes are in; <b>motorway</b> (and its <code>_link</code> ramps) is always out — a bike router must never route onto one — while <b>trunk</b> is out <i>unless</i> the way is explicitly tagged <code>bicycle=yes</code>. <code>access=no</code>/<code>private</code>, <code>bicycle=no</code>/<code>use_sidepath</code>, and <code>motorroad=yes</code> are hard excludes on any class; <code>footway</code> and <code>steps</code> stay in, because it is legal to <i>walk</i> a bike there (preference, not legality, is the router's job — see [profiles](#weighting-the-graph-bike-profiles) below). <b>Junction detection</b> is pure counting: a node touched by two-or-more routable ways is a junction, as is any way's first or last node; a shape point touched once stays inside an edge. Each way is then <b>split</b> at its junctions into edges whose interiors carry no junction, and duplicate or reversed-parallel ways <b>collapse</b> — the dedup key is the unordered endpoint pair <i>plus</i> the geometry <i>plus</i> the way-kind, so two genuinely different roads between the same pair (even a cycleway drawn over a road) both survive. Each edge's <b>cost</b> is its great-circle length in metres, summed with the very same helper the route format uses, so on-device costs can't drift from measured distance. A final hygiene pass <b>prunes islands</b> — tiny disconnected components (fewer than <code>min_component_edges</code>, default 50, edges) are dropped so the device can't snap a rider onto an unroutable islet — and long edges are split at synthetic junctions so every neighbour delta and cost fits the §8 record's <code>int16</code>/<code>uint16</code> fields.</figcaption>
+</figure>
+
+A way is routable exactly when it can be *classified* — the same pass that decides legality also computes the edge's **way-kind** byte (its highway + surface class, [below](#weighting-the-graph-bike-profiles)), so `is_routable` is just `classify(tags).is_some()`:
+
+```rust
+pub fn is_routable<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(tags: I) -> bool {
+    classify(tags).is_some()
+}
+
+/// The packed way-kind byte, or None when the way is bike-illegal.
+pub fn classify<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(tags: I) -> Option<u8> {
+    // ... read highway / surface / bicycle / access / motorroad from tags ...
+    if matches!(access, Some("no" | "private")) { return None; }            // hard excludes
+    if motorroad == Some("yes") { return None; }
+    if matches!(bicycle, Some("no" | "use_sidepath")) { return None; }
+    let hclass = match highway? {
+        "trunk" | "trunk_link" if bicycle == Some("yes") => 13,             // else excluded, like motorway
+        other => highway_class(other)?,                                     // None ⇒ not routable (motorway, …)
+    };
+    Some((surface_class(surface) << 5) | hclass)                            // way_kind = surface<<5 | highway
+}
+```
+
+A real pack run logs the graph next to the POI counts, so a glance at the build output confirms it's there and plausibly sized:
+
+```
+nav graph: 12874 nodes, 15903 edges, 8421.6 km
+```
+
+The in-memory build — the way-kind classification, the bike-legality filter, junction detection, edge split and dedup, island pruning, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the device *does* with it — snap, profile-weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
+
+### Weighting the graph: bike profiles
+
+The graph so far is bike-*legal* but undifferentiated: every edge costs its metres, so the device would route a road bike down a muddy singletrack if it were a few metres shorter. What makes an MTB route differ from a road route — *why your MTB route differs* — is two more things the packer bakes in. Each edge carries a **way-kind** byte, and the section opens with a small table of **bike profiles**; on the device, A\* multiplies each edge's raw metres by the chosen profile's weight for that edge's way-kind, so "shortest" becomes "cheapest *for this bike*."
+
+**Way-kind** is one byte per edge, `way_kind = (surface_class << 5) | highway_class` — a 5-bit **highway class** (0 `cycleway`, 1 `path`, 2 `track`, 3 `footway`, … 10 `tertiary`, 11 `secondary`, 12 `primary`, and 13 `trunk_cycl` for a bike-legal trunk) and a 3-bit **surface class** (`paved`, `compacted`, `gravel`, `dirt`, `rough`, `cobbles`, `grass`, plus `unknown`). Both tables are **locked** and config-free — the same OSM extract always yields the same bytes — and they are the *single vocabulary* profiles are written against. The full canonical table is [`OBCM_Spec.md` §8.6](src:OBCM_Spec.md) (mirrored from the one source of truth, `nav.rs`); the device never sees a raw OSM tag, only this byte.
+
+A **profile** is a display name plus a multiplier for every highway class and every surface class, stored in `1/16` fixed-point (so `16` = 1.0×, and `0` means **forbidden** — that class is dropped from the profile's graph entirely). The map carries 1–8 of them (the default pack ships four); the device's effective weight for an edge is `(highway_mult × surface_mult) >> 4`. Here are the four default profiles' highway weights for a handful of classes (the [preset](src:packer/presets/default.json) has the rest, plus the surface axis):
+
+| highway class | Road | Gravel | MTB | Touring |
+|---|---|---|---|---|
+| cycleway | 1.0 | 1.1 | 1.3 | 1.0 |
+| primary  | 1.8 | 2.2 | 3.5 | 2.6 |
+| track    | 6.0 | 1.2 | 1.0 | 1.6 |
+| path     | 7.0 | 1.5 | 1.0 | 2.0 |
+| steps    | forbidden | forbidden | 3.0 | 6.0 |
+
+Read a column and you can predict the routing. **Worked example:** suppose a rider can reach the same destination two ways — a **1 km stretch of `primary`** road, or a **2 km `cycleway`** that loops around it (both `paved`, so each profile's surface weight scales both sides equally and drops out of the comparison). Multiply length by the highway weight:
+
+- **Road** — primary `1000 × 1.8 = 1800`, cycleway `2000 × 1.0 = 2000`. Road takes the **primary** (1800 < 2000): a road cyclist would rather ride 1 km of quiet main road than 2 km out of the way.
+- **MTB** — primary `1000 × 3.5 = 3500`, cycleway `2000 × 1.3 = 2600`. MTB takes the **cycleway** (2600 < 3500): to the MTB profile the primary is so heavily penalised that the 2× detour is still cheaper.
+
+Same two roads, same start and finish, opposite choice — that difference is entirely the profile, and you could have called it from the table above.
+
+**One rule constrains every profile: no weight below 1.0×** (a non-zero multiplier is always ≥ `16`). The on-device A\* uses a great-circle heuristic, which is only admissible — only *safe to trust* — if no edge can cost less than its straight-line distance. A weight under 1.0× would make some edge cheaper than the crow flies and quietly break the ε bound. So the packer **rejects** a config with a non-zero weight below 1.0 (naming the A\* bound in the error), and the reader **clamps** one up to 1.0× defensively. Which is what keeps **ε** meaningful: the router's `f = g + ε·h` with ε = 1.3 returns a path at most 1.3× the *cheapest route under the profile* — not the geometrically shortest, the cheapest once your bike's weights are applied. (When even the tight 1.3× bound exhausts the device's fixed search table, ε **escalates** — 1.3 → 2.0 → 3.0 — to reach farther in the same memory; the bound is then the successful rung's ε. That range mechanism lives with [the router seam](../architecture/#on-device-routing-the-router-seam).)
+
+Which profile the device uses is a single **Bike-type** setting — a bare index into the loaded map's profile table, persisted across reboots. Pick "MTB" and every plan re-weights accordingly; the created-route overview shows the profile it used. If the setting points past a particular map's profile count (a smaller map, a stale setting), the router falls back to profile 0 and the UI honestly shows *profile 0's* name rather than a profile the map doesn't have.
+
+Profiles are the one part of the routing graph that **is** configurable (the topology is not). The web builder's advanced editor has a **Bike-profiles panel**: one row per way-kind class, a multiplier cell per profile, and a **forbidden** toggle for the `0` case — schema-driven from the same class vocabulary above, and it enforces the ≥ 1.0× floor in the editor so a config that the packer would reject can't be exported in the first place. Like every other field, it round-trips to a plain CLI config.
+
+### Building the LOD pyramid
+
+Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-file-front-to-back), and the packer builds each one independently. Two knobs from the config drive it: every feature's **`min_lod`** (the coarsest tier it's allowed into) and each tier's **simplify tolerance**. So the country tier holds a handful of feature types, heavily simplified; the street tier holds everything at (near-)full detail. The presets pick each tolerance pixel-accurately: one pixel at the finest scale the tier is drawn at, which is the next finer tier's `max_mpp` ceiling. The finest tier has no finer fallback, but still carries a small **sub-pixel** simplify (2 m in the presets) — enough to shed OSM's redundant, GPS-jitter vertices, which dominate the renderer's point budget at street zoom, with no visible change.
+
+An optional third knob, **`min_area_px`**, declutters the coarse tiers: after simplify, a **polygon** whose projected area falls below that many square pixels — measured at the tier's finest on-screen scale, again the next finer tier's `max_mpp` — is dropped, so a whole region's worth of sub-pixel forest and landuse slivers stop crowding the render's [point budget](../rendering/#4-decode-by-priority-the-clever-bit). It's off by default and never touches the finest tier (nothing coarser to fall back to). Lines are left alone: an OSM way is stored as many short segments, so an area test would drop a road's shortest links and leave it holed — zoomed-out line density stays purely a `min_lod` choice. The same threshold also trims **sub-pixel holes** out of the polygons it *keeps*: a hole smaller than a pixel is painted straight over, so dropping it is invisible yet frees a ring plus its vertices in the render scratch (a big farmland face pocked with tiny unmapped islands is the motivating case).
+
+A fourth knob, **`merge_fills`**, attacks redundancy instead of size-per-feature. Rural OSM is wall-to-wall farmland and meadow parcels, each mapped as its own way, and on a 64-colour panel many distinct landuse types collapse onto the same green — so every shared parcel boundary is stored twice and drawn as two separate polygons even though the screen shows one flat fill. With the flag on, the packer unions every polygon whose style renders pixel-identically — same `z_index`, `color`, and `priority`, and **no `color2`** (a `color2` strokes the ring, so its walls are visible and must not be dissolved) — into one shape per tier, deleting every interior shared boundary. It's a pure size-and-render-cost win with no intended visual change: an un-outlined fill beside an identical un-outlined fill already reads as one blob. Crucially the union runs **before** simplify — adjacent parcels share boundary *nodes*, so unioning first dissolves them exactly, where simplifying first would nudge each copy independently and leave hairline cracks along every seam. Candidates are chosen by geometry kind (a closed *line* that happens to share a fill style is never touched), and it's off by default, so the packed bytes are unchanged unless you ask for it.
+
+A fifth knob, **`merge_lines`**, is the same idea for lines — and it targets the budget the render actually runs out of first at riding zoom. OSM splits one continuous road, river, or railway into many `way`s (a new segment at every bridge, name change, or surface change), each packed as its own line feature; because a line record carries no per-feature payload — colour, weight, dash, and casing all live in the [style table](../formats/#the-header) keyed by style id — same-styled fragments that meet end-to-end draw identically to one polyline. With the flag on the packer stitches them into maximal polylines per tier via a GEOS line-merge, joining fragments that share an endpoint and stopping at genuine junctions (three ways meeting) so distinct roads never fuse. Each join reclaims one **[span](../rendering/#4-decode-by-priority-the-clever-bit) and one ring** — and a frame's span and ring budgets saturate long before its point budget once the map is dense, so this is where the coarse-zoom "features dropped" pressure actually lives. Two lines stitch only if their styles agree on the *full* render identity (`z_index`, `color`, `weight`, `priority`, `dashed`, and `color2` — all of which change a stroked line, unlike a fill), and stitching runs before simplify so a merged run's now-interior junction vertices simplify away too. Solid lines are pixel-identical; the one visible difference is that a dashed or cased line's pattern runs *continuously* across a former join instead of restarting — an improvement. Off by default, so the bytes are unchanged unless you ask for it.
+
+<figure class="fig">
+<svg viewBox="0 0 720 270" role="img" aria-label="A pool of features each tagged with a min-LOD flows into three tiers. The country tier takes only features with min-LOD 0 and simplifies them at 120 metres. The region tier adds min-LOD 1 features at 18 metres. The street tier adds everything at full detail. Each tier becomes its own quadtree.">
   <defs>
     <marker id="aP5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">Each tier: filter by min_lod, simplify, then quadtree</text>
+  <text class="d-tag" x="20" y="24">Each tier: filter by min_lod, dissolve fills + stitch lines, simplify, cull tiny areas, then quadtree</text>
 
   <!-- feature pool -->
   <rect class="d-panel-2" x="30" y="70" width="140" height="130" rx="10" />
@@ -234,12 +481,12 @@ Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-fi
     <line class="d-flow" x1="174" y1="100" x2="214" y2="92" marker-end="url(#aP5)" />
     <rect class="d-panel" x="220" y="62" width="220" height="42" rx="8" />
     <text class="d-label" x="234" y="80">LOD 0 · country</text>
-    <text class="d-sub" x="234" y="96" style="font-size:9px">min_lod ≤ 0 · simplify 50 m</text>
+    <text class="d-sub" x="234" y="96" style="font-size:9px">min_lod ≤ 0 · simplify 120 m</text>
 
     <line class="d-flow" x1="174" y1="135" x2="214" y2="135" marker-end="url(#aP5)" />
     <rect class="d-panel" x="220" y="114" width="220" height="42" rx="8" />
     <text class="d-label" x="234" y="132">LOD 1 · region</text>
-    <text class="d-sub" x="234" y="148" style="font-size:9px">+ min_lod ≤ 1 · simplify 12 m</text>
+    <text class="d-sub" x="234" y="148" style="font-size:9px">+ min_lod ≤ 1 · simplify 18 m</text>
 
     <line class="d-flow" x1="174" y1="170" x2="214" y2="178" marker-end="url(#aP5)" />
     <rect class="d-panel" x="220" y="166" width="220" height="42" rx="8" />
@@ -266,10 +513,16 @@ Now the heart of it. The file is a [pyramid of detail levels](../formats/#the-fi
 ```rust
 for i in 0..lods.len() {                              // coarse (0) → fine
     let tol = lods[i].simplify_m / M_PER_DEG;
+    let cull_mpp = lods.get(i + 1).and_then(|l| l.max_mpp); // finest tier: None → never cull
     let level: Vec<(u8, Geom)> = features
         .par_iter()                                   // rayon — one GEOS context per thread
         .filter(|f| f.min_lod <= i)                   // the LOD gate
-        .map(|f| (f.style_id, simplify(&f.geom, tol)))
+        .filter_map(|f| {
+            let g = simplify(&f.geom, tol);
+            let too_small = cull_mpp                  // drop sub-min_area_px polygons (lines: never)
+                .is_some_and(|mpp| footprint_below(&g, mpp, lods[i].min_area_px));
+            (!too_small).then(|| (f.style_id, g))
+        })
         .collect();                                   // order preserved
     let tree = build_lod(level, global_bbox, chunk_size); // this tier's quadtree
     serialize_and_stream(tree);                       // write to disk, then drop
@@ -278,7 +531,7 @@ for i in 0..lods.len() {                              // coarse (0) → fine
 
 ### The quadtree: packing geometry into chunks
 
-Within a tier, features are inserted into a quadtree over the global bounding box. A leaf simply accumulates features until their packed size — `12 + point_count·4` bytes each — would exceed the chunk size; then it **splits** into four (NW · NE · SW · SE) and re-distributes them. A feature that straddles a child boundary is **clipped** to each child's box.
+Within a tier, features are bucketed into a quadtree over the global bounding box. A node holds every feature reaching it; if their combined packed size — `12 + point_count·4` bytes each — fits the chunk size it becomes a leaf, otherwise it **splits** into four (NW · NE · SW · SE), hands each child the features it reaches, and recurses. A feature that straddles a child boundary is **clipped** to each child's box. The four child subtrees are built **in parallel** — they share no state, and only plain geometry (never a live GEOS handle) crosses a thread — which is what keeps the per-LOD build, otherwise the packer's heaviest stage, off the critical path.
 
 <figure class="fig">
 <svg viewBox="0 0 720 290" role="img" aria-label="A region with features being bucketed into a quadtree. A dense corner has been subdivided into four smaller cells, one of them subdivided again. A line feature crossing a cell boundary is clipped into two pieces, one per cell.">
@@ -321,15 +574,24 @@ Within a tier, features are inserted into a quadtree over the global bounding bo
 </figure>
 
 ```rust
-let delta = 12 + pt_count(&f.geom) * 4;   // this feature's packed size
-self.features.push(f);
-self.current_size += delta;
-if self.current_size > self.chunk_size {  // leaf full → subdivide NW/NE/SW/SE
-    self.split();                         // and re-insert the accumulated features
+let total: usize = feats.iter().map(|f| 12 + pt_count(&f.geom) * 4).sum();
+if total <= chunk_size || !splittable {
+    return Node::Leaf { bbox, features: feats };   // fits the chunk → a leaf
 }
+// too big → split NW/NE/SW/SE, clip straddlers into each child, recurse in parallel
+let (nw, ne, sw, se) = distribute_to_quadrants(feats, bbox);
+rayon::join(|| (build(nw), build(ne)), || (build(sw), build(se)))
 ```
 
 That this is the *same* quadtree the device walks closes the loop with the other pages: the packer writes it, the [format](../formats/#the-quadtree-index) stores it as a flat `u32` array, and the [renderer](../rendering/#3-the-quadtree-cull-only-the-chunks-you-can-see) walks it to cull.
+
+### The web builder
+
+Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a drawn box the sources are cropped to), pick a style, build, download. Three ideas shape it:
+
+- **Presets over knobs.** The main page offers complete style presets — Bikepacking, Minimal, High detail — each a full packer config shipped in [`packer/presets/`](src:packer/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
+- **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the web server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten.
+- **A stateless server.** The working config lives in the browser ("Custom — based on Bikepacking"), never on the server; builds run through a bounded queue into per-job directories and stream progress live. That shape runs locally today and would survive a shared deployment unchanged.
 
 ## Following a route
 
@@ -448,9 +710,14 @@ let (back, fwd) = if !self.started {
 
 - The packer pipeline driver: [`obc-pack/src/main.rs`](src:firmware/obc-pack/src/main.rs)
 - Config + first-match styling: [`obc-pack/src/config.rs`](src:firmware/obc-pack/src/config.rs)
+- The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:firmware/obc-pack/schema/config.schema.json)
+- The web builder — FastAPI server + Svelte app: [`packer/web_builder/`](src:packer/web_builder)
 - OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:firmware/obc-pack/src/ingest.rs)
 - The quadtree build: [`obc-pack/src/quadtree.rs`](src:firmware/obc-pack/src/quadtree.rs)
 - Land generation: [`obc-pack/src/land.rs`](src:firmware/obc-pack/src/land.rs)
+- POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:firmware/obc-pack/src/poi.rs)
+- The navigation-graph build (routable filter, junction detection, edge split + dedup): [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs)
+- The on-device router (snap + profile-weighted A\* + OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - The route map-matcher: [`obc-route/src/matcher.rs`](src:firmware/obc-route/src/matcher.rs)
 - GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs)
 

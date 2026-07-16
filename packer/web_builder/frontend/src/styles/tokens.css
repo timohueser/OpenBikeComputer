@@ -1,0 +1,24 @@
+/* Field-guide design tokens — copied verbatim from docs/assets/docs.css :root
+   (the docs site is the source of truth; keep the two blocks in sync). */
+:root {
+    --parchment: #ece8cf;
+    --parchment-2: #e4dec0;
+    --parchment-3: #d6cda8;
+    --panel: #f3f0df;
+    --line: rgba(47, 82, 51, 0.16);
+    --line-strong: rgba(47, 82, 51, 0.32);
+    --ink: #24331c;
+    --ink-soft: #4d5b3c;
+    --ink-faint: #6b7758;
+    --wood: #5f7d3d;
+    --amber: #e3ad33;
+    --forest: #3c6b39;
+    --forest-deep: #2c5230;
+    --coral: #cf6a2a;
+    --water: #33575b;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+    --head-h: 60px;
+}

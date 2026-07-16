@@ -1,0 +1,196 @@
+//! OBCM map-format constants from `OBCM_Spec.md`.
+
+use crate::io::{validate_prefix, DecodeError};
+
+pub const MAGIC: [u8; 4] = *b"OBCM";
+pub const VERSION: u8 = 10;
+pub const HEADER_LEN: usize = 40;
+pub const LOD_ENTRY_LEN: usize = 18;
+pub const STYLE_RECORD_LEN: usize = 8;
+pub const FEATURE_HEADER_LEN: usize = 12;
+
+pub const FEATURE_FLAG_16BIT: u8 = 0x01;
+pub const FEATURE_FLAG_POLYGON: u8 = 0x02;
+pub const FEATURE_FLAG_HOLES: u8 = 0x04;
+pub const STYLE_PRIORITY_MASK: u8 = 0x03;
+pub const STYLE_DASHED_BIT: u8 = 0x04;
+pub const STYLE_HAS_COLOR2_BIT: u8 = 0x08;
+
+pub const BRANCH_BIT: u32 = 0x8000_0000;
+pub const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
+pub const CHUNK_END: u8 = 0xFF;
+
+pub const POI_CATEGORY_COUNT: u8 = 6;
+pub const POI_RECORD_LEN: usize = 36;
+pub const POI_NAME_LEN: usize = 24;
+pub const POI_HOURS_REF_NONE: u16 = 0xFFFF;
+pub const POI_HOURS_BLOB_LEN: usize = 29;
+pub const POI_HOURS_DAYS: usize = 7;
+pub const POI_HOURS_SLOTS_PER_DAY: usize = 2;
+pub const POI_HOURS_FLAG_SEASONAL: u8 = 0x01;
+pub const POI_HOURS_FLAG_TRUNCATED: u8 = 0x02;
+pub const POI_CHUNK_SIZE: usize = 512;
+pub const POI_CAT_ENTRY_LEN: usize = 13;
+pub const POI_DIR_POOL_FIELDS_LEN: usize = 6;
+
+pub const NAV_DIR_LEN: usize = 28;
+pub const NAV_CHUNK_SIZE: usize = 512;
+pub const NAV_NODE_FIXED_LEN: usize = 13;
+pub const NAV_NEIGHBOR_LEN: usize = 15;
+pub const NAV_EDGE_FIXED_LEN: usize = 15;
+pub const NAV_PROFILE_LEN: usize = 52;
+pub const NAV_PROFILE_NAME_LEN: usize = 12;
+pub const NAV_MAX_PROFILES: usize = 8;
+pub const NAV_MAX_DEGREE: usize = 24;
+
+/// The browsable POI categories from OBCM spec §7.4. Discriminants are stable wire ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum PoiCategory {
+    Water = 1,
+    Campsite = 2,
+    Accommodation = 3,
+    Resupply = 4,
+    Pharmacy = 5,
+    BikeShop = 6,
+}
+
+impl PoiCategory {
+    pub const ALL: [PoiCategory; POI_CATEGORY_COUNT as usize] = [
+        PoiCategory::Water,
+        PoiCategory::Campsite,
+        PoiCategory::Accommodation,
+        PoiCategory::Resupply,
+        PoiCategory::Pharmacy,
+        PoiCategory::BikeShop,
+    ];
+
+    #[inline]
+    pub const fn id(self) -> u8 {
+        self as u8
+    }
+
+    #[inline]
+    pub const fn from_id(id: u8) -> Option<PoiCategory> {
+        Some(match id {
+            1 => PoiCategory::Water,
+            2 => PoiCategory::Campsite,
+            3 => PoiCategory::Accommodation,
+            4 => PoiCategory::Resupply,
+            5 => PoiCategory::Pharmacy,
+            6 => PoiCategory::BikeShop,
+            _ => return None,
+        })
+    }
+
+    /// Stable device-facing category label. Distinct from a subtype fallback label.
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            PoiCategory::Water => "Water",
+            PoiCategory::Campsite => "Campsite",
+            PoiCategory::Accommodation => "Lodging",
+            PoiCategory::Resupply => "Resupply",
+            PoiCategory::Pharmacy => "Pharmacy",
+            PoiCategory::BikeShop => "Bike shop",
+        }
+    }
+}
+
+/// One append-only OBCM spec §7.4 subtype row.
+#[derive(Debug, Clone, Copy)]
+pub struct PoiSubtype {
+    pub category: PoiCategory,
+    pub label: &'static str,
+}
+
+const fn subtype(category: PoiCategory, label: &'static str) -> PoiSubtype {
+    PoiSubtype { category, label }
+}
+
+/// Canonical subtype table, indexed by `subtype_id - 1`.
+pub const POI_SUBTYPES: [PoiSubtype; 18] = [
+    subtype(PoiCategory::Water, "Drinking water"),
+    subtype(PoiCategory::Water, "Spring"),
+    subtype(PoiCategory::Water, "Water tap"),
+    subtype(PoiCategory::Water, "Water point"),
+    subtype(PoiCategory::Campsite, "Campsite"),
+    subtype(PoiCategory::Campsite, "Caravan site"),
+    subtype(PoiCategory::Accommodation, "Hotel"),
+    subtype(PoiCategory::Accommodation, "Hostel"),
+    subtype(PoiCategory::Accommodation, "Guest house"),
+    subtype(PoiCategory::Accommodation, "Motel"),
+    subtype(PoiCategory::Accommodation, "Wilderness hut"),
+    subtype(PoiCategory::Accommodation, "Alpine hut"),
+    subtype(PoiCategory::Resupply, "Supermarket"),
+    subtype(PoiCategory::Resupply, "Convenience"),
+    subtype(PoiCategory::Resupply, "Bakery"),
+    subtype(PoiCategory::Resupply, "Marketplace"),
+    subtype(PoiCategory::Pharmacy, "Pharmacy"),
+    subtype(PoiCategory::BikeShop, "Bike shop"),
+];
+
+#[inline]
+pub fn poi_subtype_row(subtype_id: u8) -> Option<&'static PoiSubtype> {
+    if subtype_id == 0 {
+        return None;
+    }
+    POI_SUBTYPES.get(subtype_id as usize - 1)
+}
+
+#[inline]
+pub fn poi_category_of(subtype_id: u8) -> Option<PoiCategory> {
+    poi_subtype_row(subtype_id).map(|row| row.category)
+}
+
+#[inline]
+pub fn poi_label_of(subtype_id: u8) -> Option<&'static str> {
+    poi_subtype_row(subtype_id).map(|row| row.label)
+}
+
+pub fn validate_header_prefix(bytes: &[u8]) -> Result<(), DecodeError> {
+    validate_prefix(bytes, &MAGIC, VERSION, VERSION).map(|_| ())
+}
+
+const _: () = assert!(EMPTY_LEAF == !BRANCH_BIT);
+const _: () = assert!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN <= NAV_CHUNK_SIZE);
+const _: () = assert!(POI_HOURS_BLOB_LEN == 1 + POI_HOURS_DAYS * POI_HOURS_SLOTS_PER_DAY * 2);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constants_match_the_committed_obcm_fixture() {
+        let fixture = include_bytes!("../../obc-sim/assets/grimsel-demo.obcm");
+        validate_header_prefix(fixture).unwrap();
+        assert_eq!(fixture[4], VERSION);
+        assert_eq!(u32::from_le_bytes(fixture[21..25].try_into().unwrap()), HEADER_LEN as u32);
+    }
+
+    #[test]
+    fn record_widths_pin_spec_arithmetic() {
+        assert_eq!(STYLE_RECORD_LEN, 1 + 1 + 2 + 1 + 1 + 2);
+        assert_eq!(FEATURE_HEADER_LEN, 1 + 2 + 4 + 4 + 1);
+        assert_eq!(POI_RECORD_LEN, 4 + 4 + 1 + 1 + POI_NAME_LEN + 2);
+        assert_eq!(NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN + 32 + 8);
+    }
+
+    #[test]
+    fn poi_id_tables_pin_the_append_only_contract() {
+        assert_eq!(POI_SUBTYPES.len(), 18);
+        assert_eq!(PoiCategory::ALL.map(PoiCategory::id), [1, 2, 3, 4, 5, 6]);
+        for (index, row) in POI_SUBTYPES.iter().enumerate() {
+            let subtype_id = (index + 1) as u8;
+            assert_eq!(poi_subtype_row(subtype_id).map(|value| value.label), Some(row.label));
+            assert_eq!(PoiCategory::from_id(row.category.id()), Some(row.category));
+            assert!(row.label.len() <= 14);
+            assert!(row.label.is_ascii() && row.label.bytes().all(|byte| (0x20..=0x7E).contains(&byte)));
+        }
+        assert!(poi_subtype_row(0).is_none());
+        assert!(poi_subtype_row(CHUNK_END).is_none());
+        assert!(poi_subtype_row(19).is_none());
+        assert_eq!(PoiCategory::from_id(0), None);
+        assert_eq!(PoiCategory::from_id(7), None);
+    }
+}

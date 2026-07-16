@@ -3,10 +3,11 @@
 The **real hardware target** for OpenBikeComputer: the shared `obc-app` running on
 an nRF54L15-DK (Cortex-M33), with map/routes/tracks streamed from a microSD card —
 load a route, ride it (driven by the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C
-bus, issue #218, or a `--features synth`/`debug-uart` stand-in for indoor work), and save a GPX. The default firmware drives
+bus, issue #218, or a `--features synth`/`debug-uart` stand-in for indoor work), and save the ride
+as the durable `RDnn.ORD` ride object (GPX export happens in the companion app after sync — the
+device writes no GPX). The firmware drives
 the reflective **LS021B7DD02** memory LCD (the panel the project ships on) via the
-nRF54L's **FLPR** (the VPR RISC-V coprocessor); the Adafruit **ST7789** EYESPI panel
-(240×320) is kept as the opt-in `--features tft` bring-up backend. The LS021 protocol
+nRF54L's **FLPR** (the VPR RISC-V coprocessor) — the only display path. The LS021 protocol
 is on the [display-protocol docs page](https://timohueser.github.io/OpenBikeComputer/hardware/display-protocol/);
 the `ls021-*` binaries below are its standalone bring-up benches.
 
@@ -20,9 +21,8 @@ for Desktop*), are written to the DK's interface MCU, and **persist across power
 cycles** — do them once. After changing anything, click **Write config** (blue dots =
 unwritten). No soldering / solder-bridge cuts are needed on current board revisions.
 
-1. **VDD / VDDM → 3.3 V.** The default is 1.8 V, which is too low for both panels (the
-   LS021's logic and the ST7789 breakout's level shifters). (Also feed the panel's `Vin`
-   from the DK's 5 V / VBUS so its on-board 3.3 V LDO has headroom.)
+1. **VDD / VDDM → 3.3 V.** The default is 1.8 V, which is too low for the LS021's logic. (Also feed
+   the panel's `Vin` from the DK's 5 V / VBUS so its on-board 3.3 V LDO has headroom.)
 2. **External memory → OFF** ("external memory → GPIO on the P2 header"). This
    electronically disconnects the on-board QSPI flash, freeing **P2.00–P2.05** so the
    display can use them. We never use that flash (maps live on SD).
@@ -35,18 +35,13 @@ unwritten). No soldering / solder-bridge cuts are needed on current board revisi
 
 ## Wiring (DK headers)
 
-Full detail is in the `src/main.rs` module doc. The **default build drives the LS021
-panel** — its FLPR wiring is in the [LS021 section below](#ls021-flpr-builds--dk-wiring-issue-165).
-Common to both panels: a **microSD** breakout on the **P1** header (SCK P1_11 / MISO P1_07
-/ MOSI P1_06 / CS P1_12, with a pull-up on MISO; the LS021 build moves CS to P0.00 — see
-below); the four DK buttons and LED0 are on-board; the J-Link **VCOM** (P1_04/P1_05) and
-RTT both ride the DK's USB.
+Full detail is in the `src/main.rs` module doc. The **build drives the LS021 panel** — its FLPR
+wiring is in the [LS021 section below](#ls021-flpr-builds--dk-wiring-issue-165). Also on the board:
+a **microSD** breakout on the **P1** header (SCK P1_11 / MISO P1_07 / MOSI P1_06 / CS P0.00, with a
+pull-up on MISO — see below); the four DK buttons and LED0 are on-board; the J-Link **VCOM**
+(P1_04/P1_05) and RTT both ride the DK's USB.
 
-For the opt-in **`--features tft`** build, the **ST7789** sits on the flash-freed **P2**
-header (SCK P2_01 / MOSI P2_02 / CS P2_05 / DC P2_03 / RST P2_00, Vin←5 V, logic at 3.3 V)
-and SD `CS` stays on P1.12.
-
-### Full pin map (default LS021 / FLPR build)
+### Full pin map (LS021 / FLPR build)
 
 **Port P2 — MCU/fast domain (panel source bus + COM) — all 11 pins used:**
 
@@ -88,7 +83,7 @@ and SD `CS` stays on P1.12.
 
 | Pin   | Signal     | Notes                                          |
 |-------|------------|------------------------------------------------|
-| P0.00 | SD CS      | moved here in the FLPR build (held LOW)         |
+| P0.00 | SD CS      | held LOW (freed P1.12 for GEN)                  |
 | P0.01 | I²C SDA    | shared GPS + altimeter + compass bus (TWIM30, #218) |
 | P0.02 | I²C SCL    | shared GPS + altimeter + compass bus (TWIM30, #218) |
 | P0.03 | GPS TX-Ready | *optional* DDC data-ready IRQ (active-high)     |
@@ -123,6 +118,13 @@ in seconds — the biggest UX win for a device switched off at each stop.
 
 ## Build & flash
 
+**One-time prerequisite (#617): flash the bootloader.** The app is linked at `0x8000` —
+the 32 KB below it belongs to [`obc-boot`](../obc-boot/README.md), which must be on the
+chip once (`cd ../obc-boot && cargo run --release`; it survives every app reflash, since
+probe-rs only writes each ELF's own address range). A device without it shows no LED
+blink and never boots; the recovery recipe is in that README. Everything below — flashing,
+RTT, `cargo rtt`, the flash-twice retry quirk — then works exactly as before.
+
 From this crate directory (it's a standalone crate built for `thumbv8m.main-none-eabihf`;
 `cargo run` flashes + streams defmt/RTT over the on-board J-Link via probe-rs):
 
@@ -141,38 +143,32 @@ cargo run --release --features synth
 # HWFC OFF (above). Replaces the real sensors with the host feed.
 cargo run --release --features debug-uart
 
-# The same map/ride app on the **ST7789** bring-up panel instead of the LS021 (opt-in
-# backend) — no FLPR, no RISC-V gcc, links the full 256 KB. Real sensors still apply. ST7789 wiring (below).
-cargo run --release --features tft
-
 # The BLE build (issue #270, epic #267): the same firmware with the nrf-sdc + MPSL + TrouBLE
-# stack folded in (`src/ble.rs`), advertising as `OBC-XXXX` (S0 §2 — the FICR serial tail). On
-# this 256 KB DK it compiles the MAP PLANE OUT (~128 KB freed) and boots a text-only BLE status
-# UI on the LS021 instead; SD, RRAM settings, buttons, and the real sensors all stay up.
-# `--no-default-features` is REQUIRED (it swaps the critical-section impl to MPSL's — a
-# compile_error catches the wrong invocation). Doesn't combine with tft/synth/debug-uart.
+# stack folded in (`src/ble/`), advertising as `OBC-XXXX` (S0 §2 — the FICR serial tail).
+# Map + BLE run IN ONE IMAGE: the full map/ride app plus the companion link, sharing the SD
+# card + RRAM settings behind one async mutex. `--no-default-features` is REQUIRED (it swaps
+# the critical-section impl to MPSL's — a compile_error catches the wrong invocation).
+# Composes with debug-uart/synth (headless ride beside a live link).
 cargo run --release --no-default-features --features ble
 ```
 
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
-spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble.rs`. All are
+spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`. All are
 in git history if an isolation bring-up is ever needed again — the FLPR transport is
 `src/ls021_flpr.rs`, exercised by the default build.)
 
 ### LS021 FLPR builds — DK wiring (issue #165)
 
-The default build drives the LS021 panel itself, not the ST7789.
 The source bus + `BCK` + COM stay on **P2** (P2.00–06 data/clock, P2.07/08/10 COM, P2.09 heartbeat
 LED); the four gate lines + `BSP` sit on **free P1 pins** — `GSP P1.00 / GCK P1.01 / GEN P1.12 /
 INTB P1.10 / BSP P1.14` — deliberately **off** the SD-SPI bus (P1.06/07/11/12) and VCOM (P1.04/05)
 the app needs.
 
 The DK breaks out only **P1.00–14** (P1.02/03 are NFC), which is one pin short for everything the app
-puts on P1 — so in the **default (LS021) build**, SD **`CS` moves from P1.12 to P0.00** (one jumper
-on the SD breakout; it's a plain GPIO, and the M33 already drives P0 for BTN3). That frees P1.12 for
-`GEN`. The SD bus pins (SCK P1.11 / MISO P1.07 / MOSI P1.06) are unchanged; the opt-in `tft` build
-keeps `CS` on P1.12.
+puts on P1 — so SD **`CS` moves from P1.12 to P0.00** (one jumper on the SD breakout; it's a plain
+GPIO, and the M33 already drives P0 for BTN3). That frees P1.12 for `GEN`. The SD bus pins (SCK P1.11
+/ MISO P1.07 / MOSI P1.06) are unchanged.
 
 The five gate/`BSP` DK pins, the masks in `src/flpr/flpr_pingpong.c`, and the physical 21-pin FPC
 harness must all agree; if a gate line stays dark on glass, confirm the pin is broken out on your DK
@@ -197,7 +193,7 @@ build (P1.04/05/15) are illustrative — reconcile them with the final schematic
 P2 and the default build keeps `com_task`; `com-hw` is **on-glass + logic-analyzer verification pending**
 (no GPIOTE-COM board exists yet).
 
-### FLPR toolchain (the default build)
+### FLPR toolchain
 
 The FLPR backend cross-compiles a tiny freestanding C blob for the RISC-V coprocessor, so it
 needs an `rv32emc`-capable GNU gcc — install once:
@@ -206,9 +202,8 @@ needs an `rv32emc`-capable GNU gcc — install once:
 brew install riscv64-elf-gcc        # or set RISCV_GCC=<path> to an xPack / Zephyr-SDK toolchain
 ```
 
-It's needed by the **default** (FLPR) map firmware. Only the opt-in **`--features tft`** ST7789
-firmware needs **no** RISC-V toolchain (CI installs the gcc only on the FLPR legs; `build.rs` keys the
-blob on the absence of `tft`). On Linux/CI the apt package `gcc-riscv64-unknown-elf` works too.
+Every build needs it (the FLPR drives the panel on every build; `build.rs` always compiles the
+blob). On Linux/CI the apt package `gcc-riscv64-unknown-elf` works too.
 
 If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 `--probe <vid:pid:serial>` for the J-Link.
@@ -216,7 +211,7 @@ If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 ## BLE stack — dependency pins & gotchas (issues #269/#270, epic #267)
 
 The A1 spike proved `nrf-sdc` (Nordic's closed-source SoftDevice Controller + MPSL bindings) +
-`trouble-host` on this DK; A2 (#270) folded that stack into the real firmware as `src/ble.rs`
+`trouble-host` on this DK; A2 (#270) folded that stack into the real firmware as `src/ble/`
 behind the `ble` feature (build command above). What the spike settled, for everything Track A
 builds on it:
 
@@ -243,99 +238,83 @@ builds on it:
   Moving back to the xtal (better idle power) means writing the `OSCILLATORS` INTCAP registers
   before MPSL init — a filed follow-up.
 - **Interrupts/peripherals MPSL+SDC claim.** Vectors: `RADIO_0`, `TIMER10`, `GRTC_3` (high-prio),
-  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — which is why `main.rs`'s high-priority
-  `InterruptExecutor` sits on **SWI01** (every build; the full priority ladder is in `main.rs`'s
-  module doc). Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN`
+  `CLOCK_POWER`, and `SWI00` (low-prio scheduling) — which is why the firmware's high-priority
+  `InterruptExecutor` (`src/planes.rs`) sits on **SWI01** (every build; the full priority ladder
+  is in `main.rs`'s module doc). Peripherals owned outright: GRTC CH7–11, `TIMER10`, `TIMER20`, `TEMP`, `CRACEN`
   (LL crypto RNG), and a raft of PPI/PPIB channels (grouped in `main.rs`, consumed by
   `ble::run`). The HF **crystal** is an MPSL hard requirement (`HfclkSource::ExternalXtal`) —
   the `ble` build's boot config sets it; non-BLE builds keep the internal RC.
-- **RAM.** The `ble` build's statics end ~104 KB in (vs ~210 KB for the map build in 244 KB) —
-  the map plane's exclusion is what buys that. The budget assert in `main.rs` counts the BLE
-  residents (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this DK at compile time; the
-  512 KB LM20 relaxes the `has_map` line in `build.rs` to run both planes together.
+- **RAM.** The map plane compiles into every build now (#270), so on the `ble` build the map and
+  BLE stack are resident together. The budget assert in `main.rs` sums the map-plane residents
+  (`MAP_RESIDENT`) and the BLE stack's (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this
+  DK at compile time if they overrun the carve. The one piece the `ble` build drops is the
+  on-device router (`has_nav`): its ~14.3 KB of `NAV_*` statics don't fit beside the BLE stack on
+  the 256 KB DK (see `build.rs`); the 512 KB LM20 relaxes the `has_nav` gate to run the router on
+  every build too.
+- **Stack: keep big values out of long-lived async bodies (#677).** Every sizeable value
+  constructed inline in an async fn/block gets a construction-temporary slot in the generated
+  poll function's **stack frame**, allocated at entry on *every* poll — `ble::run` once carried a
+  30.5 KB poll frame this way, and SMP's synchronous software-P256 pairing chain (which runs in
+  the host runner's rx path, on the main stack) overflowed the region into `defmt_rtt::BUFFER`:
+  a HardFault with a corrupted backtrace on every pairing attempt. The discipline: big objects
+  live in `.bss` statics built by dedicated `#[inline(never)]` init fns (transient frame, boot
+  depth) and the async body holds only `&'static` handles — see `ble::run`'s doc. Three nets
+  catch a regression: the compile-time budget assert (floors the stack region), the CI
+  **poll-frame guard** on the ble ELF (largest `sub sp` in any `TaskStorage<F>::poll` ≤ 12 KB —
+  the `ci.yml` embedded job), and **MSPLIM** (armed first thing in `main`): the ARMv8-M hardware
+  stack-limit register turns any residual overflow into an immediate, precise fault instead of
+  silent `.bss` corruption. To check a frame by hand, disassemble the release ELF
+  (`cargo objdump --release --no-default-features --features ble -- -d --demangle`) and read the
+  `sub sp` at each `TaskStorage<F>::poll` entry.
 
-## Connection lifecycle (A3, #271)
+## BLE — board-specific notes & on-glass verification
 
-`ble::run` is a loop with **no terminal state**: advertise → serve the link → re-advertise,
-forever, unattended. Any disconnect (any reason) drops straight back to advertising; even an
-advertise *error* only pauses a beat before retrying. What A3 added on top of A2's bare
-connect/hold:
+The wire protocol (advertising policy, GATT services/UUIDs, CoC framing, object layouts, pairing
+security) is canonical in [`obc-ble-interface-spec.md`](../../obc-ble-interface-spec.md) — read it
+there, not here. `src/ble/` implements it; the S0 descriptor codecs + transfer state machine are the
+host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vectors/`). What's
+**board/firmware-specific** and worth knowing:
 
-- **Advertising interval policy (S0 §2)** — *fast* (40 ms) for 30 s after boot and after every
-  disconnect, then *slow* (1000 ms) indefinitely. Legacy connectable adv doesn't self-terminate,
-  so the fast→slow switch is a host-side timer (`select` against the advertiser), not the HCI
-  duration field.
-- **Parameter negotiation on connect (S0 §3.4)** — the device *requests* 2M PHY, data-length
-  extension (251-byte PDUs), and a relaxed idle connection-parameter set; iOS accepts what the OS
-  allows. Every request is a **preference** (the protocol is correct at any MTU/PHY, just slower),
-  so each is `with_timeout`-bounded and best-effort — a stalled or rejected procedure is logged
-  and skipped, never a reason to drop the link. `conn_params(true)` pins the *fast* set A5's data
-  plane switches to during transfers.
-- **Watchdog policy** — **no hardware WDT (yet)**. The lifecycle is a *structural* watchdog: every
-  host op is timeout-bounded and the loop has no path that can block permanently, so a stuck
-  procedure degrades to a reconnect rather than a hang. A hardware `WDT` petted from the host
-  runner is deferred to A9, where it can be co-designed with the idle/WFI wake pattern.
-- **Telemetry** — connects / disconnects / last disconnect reason (named + numeric) / negotiated
-  MTU + PHY, all logged over RTT and shown on the status screen (the `link c/d xNN` and
-  `NNms 2M mMMM` lines) — the raw material for the A9 soak assertions.
+- **DIS identity** — Firmware Revision is `<crate-semver>+<git-short>` (`build.rs` emits
+  `OBC_FW_GIT`), Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID` whose last
+  four digits are the `OBC-XXXX` advertised name.
+- **Storage lives on SD, ids are durable in filenames.** Uploaded routes land as 8.3 `RTnn.OBR`
+  files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route
+  the boot scan accepts); the **map build's** catalog scan matches `*.OBR` beside `.obcr`, so an
+  uploaded route shows in the on-device menu after a reflash. Every ride Finish on the map build
+  writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
+  build just serves those. The id in each filename is recovered at boot and is what the app's
+  synced-set keys on. A ride is deleted **only on the device** (its Rides screen, hold-to-delete);
+  the wire `deleteObject` on a ride answers `notFound` deliberately, and app-side deletes are
+  tombstoned in the app.
+- **Config + bond persist in the RRAM SETTINGS carve** (`settings.rs`), which survives power cycles
+  **and a firmware reflash** (it sits above the app image, so `probe-rs download` leaves it): the
+  device name (config codec v3) @0, the boot counter @2048, the single 64-byte CRC-checked bond slot
+  (LTK + peer IRK, `ObjectStore::{load,save,clear}_bond`) @`BOND_OFFSET`. Pairing is LESC passkey
+  **display** — the 6-digit code renders on the app's passkey card (`Font::Huge`). One bond slot, and
+  while it's occupied the device **rejects** every new pairing attempt (#455): the hold-guarded
+  **Forget phone** in Settings ▸ Bluetooth is the only device-side clear, so physical possession
+  guards the *clear* step (it no longer silently replaces the bond on a fresh pairing).
 
-**Verify** with nRF Connect (the A1–A4 oracle): connect and confirm the negotiated MTU (247),
-2M PHY, and the interval settling to the idle set; disconnect/re-connect and walk out of range —
-the counters bump, the reason logs, and it always returns to advertising.
-
-## GATT control plane (A4, #272)
-
-`ble::run` now serves the **real** control plane the iOS app discovers on connect
-(`obc-ble-interface-spec.md` §3, the S0-frozen UUIDs). One `#[gatt_server]` in `src/ble.rs` holds
-three services — mirroring the spec section so there's one place to diff:
-
-- **DIS** (`0x180A`) — Firmware Revision (`<crate-semver>+<git-short>`, e.g. `0.1.0+ca9b336`;
-  `build.rs` emits `OBC_FW_GIT`), Hardware Revision (`nrf54l15-dk`), Serial Number (the 16-hex FICR
-  `DEVICEID`, whose last four digits are the `OBC-XXXX` advertised name).
-- **BAS** (`0x180F`) — Battery Level, read + notify, fed from the `FuelGauge` seam (the status plane
-  publishes each poll via `ble::publish_battery`; a `battery_task` re-notifies on a slow cadence).
-- **OBC Control** (`3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`) — all eight characteristics: `command`,
-  `status` (notify), `objectStore`, `config`, `transferControl` (write+notify), `diagnostics`
-  (reserved, reads 0 bytes), `psm`, `protocolVersion` (= 1). The 128-bit service UUID is advertised
-  (name moves to the scan response) so the app's `scanForPeripherals(withServices:)` filter matches.
-
-Control-plane writes are answered with the S0-typed `status` envelope — never a hang or a bare ATT
-failure for an op that isn't fully wired yet: `command` → `commandResult` (`deleteObject` reports
-`notFound` until the A6 store lands), `transferControl` → `transferResult(error)` (no data plane
-until A5), `config` is shape-validated + accepted (round-trips in-session; RRAM/SD persistence is A6).
-
-A4 also stands up a **minimal L2CAP CoC**: the SPSM `0x0080` is registered on the stack and
-published in `psm`, and `serve_coc` accepts the channel and **drains/discards** its bytes. That is
-just enough for the iOS app's `connect()` to complete (it gates completion on the L2CAP channel
-opening); the framing crate + transfer state machine + real object payloads are A5/A6, bonding A8.
-
-**Verify** — nRF Connect: the full service/characteristic table matches S0, DIS strings + serial are
-real, BAS notifies, `protocolVersion` reads `1`, `psm` reads `0x0080`, and a write to
-`command`/`transferControl` yields a `status` notification. Then the iOS companion (Debug build,
-`-OBCTransport ble`): `connect()` completes end-to-end and the device row shows the real firmware
-revision — first app↔firmware contact.
-
-## CoC data plane + echo loopback (A5, #273)
-
-A5 turns that drain into a **real bulk-transfer data plane**, driven by the host-tested `obc-ble`
-workspace crate (the S0 descriptor codecs + the whole-object transfer state machine — `cargo test -p
-obc-ble`, pinned to `protocol-vectors/` alongside the Swift side). The control plane and the CoC are
-separate futures coordinating through one `Signal`:
-
-- A `transfer_control` write is decoded (`obc_ble::TransferControl`) and classified (`classify_transfer`):
-  an `echo` **upload** (S0 type 8) is *armed* — its descriptor signalled to the CoC task and answered by
-  the data plane; every other op/type (real routes/rides are A6/A7) still gets an immediate S0-typed
-  `transferResult(error)`, an `abort` an `aborted`.
-- `serve_coc` → `run_echo` feeds the CoC bytes through an `obc_ble::Receiver` (a running CRC-32, **no**
-  reassembly buffer, S0 §5) and streams each SDU straight back byte-for-byte, verifying **one**
-  whole-object CRC at the end and notifying `committed` / `crcMismatch`. Zero storage involvement — the
-  loopback that proves the data plane end to end (real objects → SD are A6). On the first transfer the
-  link is asked for the fast `conn_params` set; the kB/s is logged over RTT.
-
-**Verify** — the Mac echo rig `companion-ios/EchoHarness` (reuses the app's `BLEChannel` + CoC byte
-layer): `swift run echo-harness --count 1000 --size 32768` round-trips 1000 × 32 KB byte-identical;
-`--corrupt` flips a byte per object and expects the device to reject it with `crcMismatch`. Watch the
-per-echo throughput + `committed`/`crcMismatch` in the RTT log.
+**Verify on glass** (nRF Connect is the pre-app oracle for A3–A4; the iOS app + harness for A5+):
+- **nRF Connect** — service/char table matches the spec, DIS strings + serial real, BAS notifies,
+  `protocolVersion` reads `1`, `psm` reads `0x0080`; negotiated MTU (247) + 2M PHY, interval settles
+  to the idle set; disconnect/re-connect + walk out of range bumps the counters and always returns to
+  advertising. As an *unbonded* stranger (post-A8): DIS/`protocolVersion` readable, access-denied on
+  every gated char + the CoC.
+- **Echo/transfer harness** `companion-ios/EchoHarness` (reuses the app's `BLEChannel`):
+  `swift run echo-harness --count 1000 --size 32768` round-trips byte-identical; `--corrupt` expects a
+  `crcMismatch`. `upload`/`list`/`detail`/`delete`/`abort-test` exercise the route plane.
+- **E2E golden path** — share a GPX to the iOS app, upload (B5 sheet), reflash the **map** build; the
+  route is in the device menu and rideable (SD persists across flashes). For sync: record 2–3 rides on
+  the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's
+  totals in the app against the device's Paused ledger. Ids must survive a power cycle; the boot
+  counter must increment across them.
+- **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
+  restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
+  phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
+  device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
+  contact pairs with a fresh passkey.
 
 ## Driving it from a host (`debug-uart`)
 
@@ -351,3 +330,36 @@ on-screen button row that injects encoder/Back presses), and shows the device's
 render-stats telemetry coming back. It's the same `obc-platform::debug_link` wire
 protocol the simulator uses — only the transport differs (a VCOM UART here). `--list`
 enumerates serial ports; the VCOM is the J-Link CDC port.
+
+### Triggering a firmware update over the VCOM (`dfu-install`, S4 #619)
+
+With an `UPDATE.BIN` (see `../README.md` §Firmware update images) in the card root, the
+same link carries the DFU armer's trigger — no feeder GUI needed. Two hard-won gotchas
+(both bit for real): the J-Link exposes **two** CDC ports and only one is live — on macOS
+it's the `cu.usbmodem*133` one (`*131` silently swallows writes; and use `cu.*`, never
+`tty.*`) — and plain `stty` + `printf`/`cat` does **not** work (macOS resets the termios
+on every open/close, so the line never arrives at 115200 raw). Use pyserial:
+
+```sh
+uv venv /tmp/dfu-venv && uv pip install --python /tmp/dfu-venv/bin/python pyserial
+/tmp/dfu-venv/bin/python - <<'EOF'
+import serial, time
+p = serial.Serial('/dev/cu.usbmodem<...>133', 115200, rtscts=False, timeout=1)
+p.write(b'dfu-install\n')
+end = time.time() + 90
+while time.time() < end:                 # watch the `D …` status lines back
+    if (line := p.readline()):
+        print(line.decode(errors='replace').rstrip())
+EOF
+```
+
+If nothing comes back (and RTT shows no `dfu:` line either), the J-Link CDC path is in
+its known injection wedge — writes vanish while RTT keeps flowing; `probe-rs reset` does
+NOT clear it, only a physical DK power-cycle does.
+
+The device streams one `D` line per phase — scan result (staged version, size, extents),
+rollback snapshot, `armed gen=N` — then resets into `obc-boot`, which installs the image
+(LED codes: `../obc-boot/README.md`). Errors (`no UPDATE.BIN…`, `failed its CRC check…`,
+`too fragmented…`) come back the same way and the device keeps running. The trigger is
+refused mid-recording. Concept + formats: `OBCU_Spec.md`; the byte-identical request path
+is what S5's on-device menu entry will post.
