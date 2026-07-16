@@ -87,8 +87,8 @@ impl RideWaypointsScreen {
     }
 }
 
-/// Skip-ahead station placeholder. RM2 can grow this state into the distance chooser while keeping
-/// the station and caller contract stable.
+/// Skip-ahead station placeholder. RM3 / #788 can grow this state into the distance chooser while
+/// keeping the station and caller contract stable.
 #[derive(Debug, Default)]
 pub struct SkipAheadScreen;
 
