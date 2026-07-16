@@ -618,6 +618,16 @@ impl App {
         if self.ride.sync_route_state(&mut self.activity, route) {
             self.ui.map_dirty = true;
         }
+        // A Skip-ahead Press is queued by the screen because input handling deliberately owns no
+        // host `RouteReader`. Install its forward-only matcher floor before this tick's fresh fix,
+        // then re-derive every guidance consumer from the new progress.
+        if self.ride.apply_pending_skip(&mut self.activity, route) {
+            if let Some(route) = route {
+                self.update_active_climb(route);
+                self.update_next_waypoint(route);
+            }
+            self.ui.map_dirty = true;
+        }
 
         let Sensors { loc, altimeter, temperature, clock, compass, track, fuel, hr, power, cadence } = sensors;
         // Battery charge from the PMIC gauge, on the slow ~30 s cadence. A reading only repaints
@@ -885,14 +895,14 @@ impl App {
     /// active-climb transition rather than a route upload:
     ///
     /// - **Entry** (`None → Some`): in [`Auto`](crate::settings::ClimbMode::Auto) mode, if the top
-    ///   screen is a **riding view** (Map or Statistics — a [`ScreenKind::Riding`], never a menu /
-    ///   overlay / ride-control / settings screen), switch it to the Climb screen. The riding-view
-    ///   guard is the whole point: the rider deep in a menu or the pause page is never yanked out.
-    /// - **Exit** (`Some → None`): if the top screen **is** the Climb screen — which it can only be
-    ///   in Auto (an entry switch) or because the rider cycled there manually — return to the Map on
-    ///   the crest, so a finished climb doesn't strand a stale "No climb" panel. This runs
-    ///   regardless of mode: the Climb screen is only reachable with a climb active, so once the
-    ///   climb ends there's nothing for it to show.
+    ///   screen is exactly Map or Statistics, switch it to the Climb screen. The explicit sibling
+    ///   guard is the whole point: a rider deep in a menu, pause page, or an interactive map-based
+    ///   chooser such as Skip ahead is never yanked out.
+    /// - **Exit** (`Some → None`): replace a Climb screen anywhere in the stack with Map, without
+    ///   dismissing chrome or an interactive chooser above it. Usually Climb is the top; the wider
+    ///   repair matters when Ride menu or Skip ahead was opened from Climb before the crest. Either
+    ///   way, returning later cannot reveal a stale "No climb" panel. This runs regardless of mode:
+    ///   once the climb ends there's nothing for that screen to show.
     ///
     /// [`Manual`](crate::settings::ClimbMode::Manual) and [`Off`](crate::settings::ClimbMode::Off)
     /// never *enter*; the exit return still fires from Manual (the rider cycled to the Climb screen
@@ -900,32 +910,31 @@ impl App {
     /// A `Replace` (not a push) so the ring's depth is unchanged — the Climb screen is a sibling of
     /// the riding views, not an overlay.
     fn apply_climb_auto_switch(&mut self, prev: Option<usize>, next: Option<usize>) {
-        use crate::screen::ScreenKind;
         let top_is = |app: &Self, want: fn(&Screen) -> bool| app.ui.stack.last().is_some_and(want);
         match (prev, next) {
-            // Entry: Auto + on a riding view → show the Climb screen.
+            // Entry: Auto + on one of the two eligible riding siblings → show the Climb screen.
             (None, Some(_))
                 if self.settings.climb_mode == crate::settings::ClimbMode::Auto
-                    && top_is(self, |s| s.kind() == ScreenKind::Riding) =>
+                    && top_is(self, |s| matches!(s, Screen::Map(_) | Screen::Statistics(_))) =>
             {
                 if let Some(top) = self.ui.stack.last_mut() {
                     *top = Screen::Climb(crate::screen::ClimbScreen::new());
                 }
             }
-            // Exit (crest): if we're sitting on the Climb screen, return to the Map.
-            (Some(_), None) if top_is(self, |s| matches!(s, Screen::Climb(_))) => {
-                if let Some(top) = self.ui.stack.last_mut() {
-                    *top = Screen::Map(MapScreen::new());
+            // Exit (crest): repair the caller in place, preserving any active menu/chooser above it.
+            (Some(_), None) => {
+                if let Some(climb) = self.ui.stack.iter_mut().rfind(|s| matches!(s, Screen::Climb(_))) {
+                    *climb = Screen::Map(MapScreen::new());
                 }
             }
             _ => {}
         }
     }
 
-    /// Whether the base (lowest opaque) screen draws the **map** — the [`Map`](crate::screen::map)
-    /// screen, the only one that reads the streamed-map [`Reader`]. A render-on-demand host polls
-    /// this to skip the whole map pipeline on a non-map frame: don't build the `Reader` (an SD
-    /// style-table parse + its stack spike), pass `None` to
+    /// Whether the base (lowest opaque) screen draws the **map** — any screen declaring
+    /// [`BaseContent::Map`](crate::screen::BaseContent::Map). A render-on-demand host polls this to
+    /// skip the whole map pipeline on a non-map frame: don't build the `Reader` (an SD style-table
+    /// parse + its stack spike), pass `None` to
     /// [`render_map_timed`](App::render_map_timed), and a menu / Home redraw draws only its own
     /// chrome with zero map I/O.
     pub fn base_draws_map(&self) -> bool {
@@ -934,12 +943,12 @@ impl App {
 
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
     /// [`render_map_timed`](App::render_map_timed) — a superset of [`base_draws_map`](App::base_draws_map).
-    /// The Map always does; the **POI list** screen (issue #425) does too, but only until it has
-    /// taken its one-shot snapshot; and the **POI detail** screen (issue #444) does until it has
-    /// resolved its one hours read. Both read the `Reader` in the *draw* path off `rx.reader`, so a
-    /// render-on-demand host (the board's two-plane loop) must build the `Reader` on the frame each
-    /// one-shot read is taken. Once the list's [`poi_snapshot_pending`](App::poi_snapshot_pending) is
-    /// false — or the detail's schedule cache has resolved — the screen draws from its frozen
+    /// Map-base screens always do; the **POI list** screen (issue #425) does too, but only until it
+    /// has taken its one-shot snapshot; and the **POI detail** screen (issue #444) does until it has
+    /// resolved its one hours read. The POI screens read the `Reader` in their pre-draw prepare
+    /// pass, so a render-on-demand host (the board's two-plane loop) must build it on the frame each
+    /// one-shot read is taken. Once the list's [`poi_snapshot_pending`](App::poi_snapshot_pending)
+    /// is false — or the detail's schedule cache has resolved — the screen draws from its frozen
     /// state with no `Reader`, so the host skips the build again.
     ///
     /// The sim's `render_frame` always passes `Some(reader)`, so it never consults this — only the
@@ -1019,8 +1028,8 @@ impl App {
     /// (#450). Clones up to [`MAX_ROUTES`](crate::MAX_ROUTES) entries; any beyond that are ignored.
     ///
     /// The remap is the live-catalog contract: a rescan that inserts or removes a route re-points
-    /// [`Activity::active_route`], the matcher/profile caches keyed on it, an open Route-menu
-    /// selection, a Route-overview preview, and a pending
+    /// [`Activity::active_route`], the matcher/profile caches keyed on it, an open Skip-ahead
+    /// chooser or queued skip commit, a Route-menu selection, a Route-overview preview, and a pending
     /// [`RouteSwapScreen`](crate::screen::RouteSwapScreen) at the *same route* (by id) in the new
     /// order. A vanished route falls back sanely: navigation unloads (`active_route = None`, stale
     /// matcher progress + profile dropped), a menu selection clamps near its old position, a
@@ -1089,6 +1098,7 @@ impl App {
                 Screen::RouteSwap(sw) => sw.remap_routes(&remap),
                 Screen::RouteReceived(rc) => rc.remap_routes(&remap),
                 Screen::RouteUpdated(ru) => ru.remap_routes(&remap),
+                Screen::SkipAhead(skip) => skip.remap_routes(&remap),
                 _ => {}
             }
         }
@@ -1944,10 +1954,17 @@ impl App {
         // `set_ride_preview`); only the drop lives here, so a stale band/shape is never drawn.
         self.catalogs.drop_stale_ride_views(self.activity.viewed_ride);
 
-        // Pre-draw acquisition (#803): the base screen resolves any reader-backed one-shot state
-        // (the POI snapshot / hours) before the draw loop, so `Render` carries the POI scratch
-        // read-only and every screen's `draw` is side-effect-free (target + render-stats only).
-        self.ui.prepare_base(reader, self.state.user_fix);
+        // Pre-draw acquisition (#803): the base screen resolves any streamed-reader state (POI
+        // snapshot / hours or Skip-ahead route geometry) before the draw loop, so `Render` carries
+        // the POI scratch read-only and every screen's `draw` is side-effect-free.
+        self.ui.prepare_base(
+            reader,
+            route,
+            self.state.user_fix,
+            self.activity.active_route,
+            self.activity.progress_m,
+            self.activity.route_total_m,
+        );
 
         // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.ui.now_ms);
@@ -3581,6 +3598,173 @@ mod tests {
         RouteIndex::read(&src).unwrap()
     }
 
+    fn tick_without_fix(app: &mut App, route: Option<&RouteReader>) {
+        let mut loc = OneFix(None);
+        app.tick(
+            RideClock(0),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
+            },
+            route,
+        );
+    }
+
+    #[test]
+    fn skip_commit_atomically_reanchors_progress_matcher_and_guidance() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let idx = grimsel_index();
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        app.activity.active_route = Some(0);
+        app.activity.start_session();
+        tick_without_fix(&mut app, Some(&route)); // establish route/session caches
+
+        app.activity.progress_m = 1_000;
+        let session = app.activity.session();
+        let mode = app.activity.mode;
+        app.activity.request_skip(0, 12_000); // lands on the fixture's second climb
+        tick_without_fix(&mut app, Some(&route));
+        assert_eq!(app.activity.progress_m, 12_000);
+        assert!(!app.activity.off_route);
+        assert_eq!(app.activity.active_climb, Some(1), "climb guidance re-derived at the new anchor");
+        assert!(app.activity.pending_skip().is_none());
+        assert_eq!(app.activity.session(), session);
+        assert_eq!(app.activity.mode, mode);
+
+        // A fix in the skipped stretch cannot pull matching behind the durable floor.
+        let p = route.position_at(2_000).unwrap();
+        let mut loc = OneFix(Some(Fix { lon: p.lon, lat: p.lat, course: None, speed_mps: None }));
+        app.tick(
+            RideClock(1_000),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
+            },
+            Some(&route),
+        );
+        assert!(app.activity.off_route);
+        assert_eq!(app.activity.progress_m, 12_000);
+
+        // Removing/reloading the route resets the floor; an early fix on the reloaded geometry can
+        // establish an early first lock again (the tracking session itself is still the same).
+        app.activity.active_route = None;
+        tick_without_fix(&mut app, None);
+        app.activity.active_route = Some(0);
+        tick_without_fix(&mut app, Some(&route));
+        let mut loc = OneFix(Some(Fix { lon: p.lon, lat: p.lat, course: None, speed_mps: None }));
+        app.tick(
+            RideClock(2_000),
+            Sensors {
+                loc: &mut loc,
+                altimeter: None,
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
+            },
+            Some(&route),
+        );
+        assert!(!app.activity.off_route);
+        assert!(app.activity.progress_m < 3_000, "route reload cleared the old 12 km floor");
+
+        // A new session on the same route also clears every skip-derived anchor.
+        app.activity.request_skip(0, 8_000);
+        tick_without_fix(&mut app, Some(&route));
+        assert_eq!(app.activity.progress_m, 8_000);
+        app.activity.end_session();
+        app.activity.start_session();
+        tick_without_fix(&mut app, Some(&route));
+        assert_eq!(app.activity.progress_m, 0);
+        assert!(!app.activity.off_route);
+    }
+
+    #[test]
+    fn failed_skip_seek_keeps_old_anchor_and_retries() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let idx = grimsel_index();
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        app.activity.active_route = Some(0);
+        app.activity.start_session();
+        tick_without_fix(&mut app, Some(&route));
+        app.activity.progress_m = 1_000;
+        app.activity.request_skip(0, 4_000);
+
+        let empty = SliceSource(&[]);
+        let unreadable = RouteReader::new(&idx, &empty);
+        tick_without_fix(&mut app, Some(&unreadable));
+        assert_eq!(app.activity.progress_m, 1_000, "failed decode does not split Activity from matcher");
+        assert!(app.activity.pending_skip().is_some(), "transient failure remains retryable");
+
+        tick_without_fix(&mut app, Some(&route));
+        assert_eq!(app.activity.progress_m, 4_000);
+        assert!(app.activity.pending_skip().is_none());
+    }
+
+    fn app_with_skip_chooser_on_beta() -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Alpha"), summary("Beta"), summary("Gamma")], &[10, 20, 30]);
+        app.activity.active_route = Some(1);
+        app.activity.progress_m = 1_000;
+        app.activity.route_total_m = 5_000;
+        app.activity.start_session();
+        let chooser = crate::screen::SkipAheadScreen::new(&app.activity);
+        *app.ui.stack.last_mut().unwrap() = Screen::SkipAhead(chooser);
+        app
+    }
+
+    #[test]
+    fn skip_chooser_and_queued_commit_follow_route_identity_across_rescans() {
+        let mut app = app_with_skip_chooser_on_beta(); // Beta id 20 at index 1
+        app.set_routes_with_ids(&[summary("Gamma"), summary("Alpha"), summary("Beta")], &[30, 10, 20]);
+        assert_eq!(app.activity.active_route, Some(2), "active navigation followed Beta to index 2");
+
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.activity.pending_skip().unwrap().route, 2, "the open chooser followed Beta too");
+
+        // Before the next route-aware tick consumes the request, another rescan moves Beta again.
+        app.set_routes_with_ids(&[summary("Beta"), summary("Gamma"), summary("Alpha")], &[20, 30, 10]);
+        assert_eq!(app.activity.active_route, Some(0));
+        assert_eq!(app.activity.pending_skip().unwrap().route, 0, "the queued one-tick request follows Beta");
+    }
+
+    #[test]
+    fn vanished_skip_route_disables_the_chooser_and_clears_a_queued_commit() {
+        let mut open = app_with_skip_chooser_on_beta();
+        open.set_routes_with_ids(&[summary("Alpha"), summary("Gamma")], &[10, 30]);
+        assert_eq!(open.activity.active_route, None, "vanished Beta unloads navigation");
+        open.apply_gesture(Gesture::Press);
+        assert!(matches!(open.top_screen(), Screen::SkipAhead(_)), "an unavailable chooser stays safely cancellable");
+        assert!(open.activity.pending_skip().is_none(), "it never retargets the route now at old index 1");
+
+        let mut queued = app_with_skip_chooser_on_beta();
+        queued.apply_gesture(Gesture::Press);
+        assert!(queued.activity.pending_skip().is_some());
+        queued.set_routes_with_ids(&[summary("Alpha"), summary("Gamma")], &[10, 30]);
+        assert!(queued.activity.pending_skip().is_none(), "a queued commit for vanished Beta is cancelled");
+    }
+
     /// Drive the active-climb state directly through `App::update_active_climb` with a controlled
     /// `progress_m`, over the real fixture reader — isolating the hysteresis + once-per-entry refill
     /// from the matcher's fix-snapping (which can't place progress to the metre).
@@ -3694,6 +3878,29 @@ mod tests {
         );
     }
 
+    /// Skip ahead is map-backed and live, but it is an interaction in progress rather than an
+    /// auto-switch sibling. A climb entry must preserve both the chooser and its selected distance.
+    #[test]
+    fn auto_never_switches_away_from_skip_ahead() {
+        use crate::screen::SkipAheadScreen;
+        use crate::settings::ClimbMode;
+        let (mut app, idx) = climb_app(ClimbMode::Auto);
+        app.activity.active_route = Some(0);
+        app.activity.progress_m = 1_000;
+        app.activity.route_total_m = 20_000;
+        app.activity.start_session();
+        let chooser = SkipAheadScreen::new(&app.activity);
+        *app.ui.stack.last_mut().unwrap() = Screen::SkipAhead(chooser);
+        app.apply_gesture(Gesture::Turn(2)); // selected distance = 3 × 500 m
+
+        enter_first_climb(&mut app, &idx); // live anchor advances to 5 km on climb entry
+        assert!(matches!(app.top_screen(), Screen::SkipAhead(_)), "climb entry preserves the open chooser");
+
+        app.apply_gesture(Gesture::Press);
+        let req = app.activity.pending_skip().expect("the preserved chooser still commits");
+        assert_eq!((req.route, req.target_m), (0, 6_500), "the 1.5 km selection survives the climb edge");
+    }
+
     /// Manual and Off never auto-switch on entry (the rider reaches the Climb screen only by cycling
     /// Back, or not at all).
     #[test]
@@ -3723,8 +3930,39 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Map(_)), "the crest returns to the Map from the Climb screen");
     }
 
-    /// The crest return only touches the Climb screen: if the rider is on some other view when the
-    /// climb ends, that view is left as-is (never force-switched to the Map).
+    /// If ride chrome was opened from Climb, the crest repairs that hidden caller without
+    /// dismissing the interaction on top. Back from Skip ahead must reveal Map, never No climb.
+    #[test]
+    fn crest_repairs_a_hidden_climb_below_skip_ahead() {
+        use crate::settings::ClimbMode;
+        let (mut app, idx) = climb_app(ClimbMode::Auto);
+        enter_first_climb(&mut app, &idx); // top = Climb
+        app.activity.active_route = Some(0);
+        app.activity.route_total_m = 50_000;
+        app.activity.start_session();
+
+        app.apply_gesture(Gesture::BackHold); // [Home, Climb, RideMenu]
+        app.apply_gesture(Gesture::Turn(1));
+        app.apply_gesture(Gesture::Press); // RideMenu Replace → [Home, Climb, SkipAhead]
+        assert!(matches!(app.top_screen(), Screen::SkipAhead(_)));
+
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        app.activity.progress_m = 50_000;
+        app.update_active_climb(&route);
+        assert_eq!(app.activity.active_climb, None);
+        assert!(matches!(app.top_screen(), Screen::SkipAhead(_)), "crest does not dismiss the chooser");
+        assert!(
+            matches!(app.ui.stack[app.ui.stack.len() - 2], Screen::Map(_)),
+            "the hidden Climb caller is repaired in place"
+        );
+
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Map(_)), "Back reveals the repaired riding caller");
+    }
+
+    /// The crest return only repairs a Climb screen: if the rider is on some other view and no
+    /// Climb caller exists when the climb ends, that view is left as-is (never force-switched).
     #[test]
     fn crest_leaves_other_screens_untouched() {
         use crate::screen::MenuScreen;

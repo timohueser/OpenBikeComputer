@@ -48,6 +48,20 @@ pub struct RoutePoint {
     pub ele: i16,
 }
 
+/// An interpolated position on the route polyline at an exact, clamped along-route distance.
+///
+/// The public fields are the coordinate/distance a map chooser needs; the containing chunk and
+/// segment stay crate-private so [`RouteMatch`](crate::RouteMatch) can move its forward cursor to
+/// the same point without exposing file-layout details to applications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutePosition {
+    pub progress_m: u32,
+    pub lon: i32,
+    pub lat: i32,
+    pub(crate) chunk: usize,
+    pub(crate) seg: usize,
+}
+
 /// One chunk's index entry — its bbox (for viewport query), the absolute anchor it
 /// decodes from, and the cumulative stats at its first point (for remaining-distance/
 /// climb). See `OBCR_Spec.md` §2.
@@ -392,6 +406,77 @@ impl<'a> RouteReader<'a> {
         decode_chunk_from(self.src, m, n, out)
     }
 
+    /// Locate `progress_m` on the route, clamping it to the route end and linearly interpolating
+    /// inside the containing segment. Uses caller-owned decode scratch so the matcher can seek its
+    /// resident buffer without adding a stack-sized route copy.
+    pub(crate) fn locate_progress(
+        &self,
+        progress_m: u32,
+        buf: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
+    ) -> Option<RoutePosition> {
+        let target = progress_m.min(self.total_distance_m);
+        let chunks = self.chunks();
+        let k = chunks.iter().rposition(|cm| cm.cum_distance_m <= target).unwrap_or(0);
+        let cm = chunks.get(k)?;
+        self.decode_chunk(k, buf).ok()?;
+        let first = *buf.first()?;
+        if buf.len() == 1 {
+            return Some(RoutePosition { progress_m: target, lon: first.lon, lat: first.lat, chunk: k, seg: 0 });
+        }
+
+        let cl = crate::geo::cos_lat(first.lat);
+        let mut s = cm.cum_distance_m as f32;
+        for i in 0..buf.len() - 1 {
+            let a = buf[i];
+            let b = buf[i + 1];
+            let dl = crate::geo::seg_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
+            let last = i + 2 == buf.len();
+            if target as f32 <= s + dl || last {
+                let t = if dl > 1e-3 { ((target as f32 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
+                let p = interpolate_point(a, b, t);
+                return Some(RoutePosition { progress_m: target, lon: p.lon, lat: p.lat, chunk: k, seg: i });
+            }
+            s += dl;
+        }
+        None
+    }
+
+    /// Return the coordinate at `progress_m`, clamped to the route end. This is the cold UI-facing
+    /// wrapper around [`locate_progress`](Self::locate_progress); the hot matcher supplies its own
+    /// resident scratch instead.
+    #[inline(never)]
+    pub fn position_at(&self, progress_m: u32) -> Option<RoutePosition> {
+        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+        self.locate_progress(progress_m, &mut buf)
+    }
+
+    /// Stream only the polyline stretch in the inclusive along-route interval `[start_m, end_m]`.
+    /// Each callback slice is one clipped chunk: its first and last coordinates are interpolated at
+    /// the interval boundary, with no retained route copy. Decode failures skip that chunk, matching
+    /// the normal route-overlay contract.
+    #[inline(never)]
+    pub fn visit_points_between(&self, start_m: u32, end_m: u32, mut visit: impl FnMut(&[(i32, i32)])) {
+        let lo = start_m.min(self.total_distance_m);
+        let hi = end_m.min(self.total_distance_m);
+        if lo >= hi {
+            return;
+        }
+        let chunks = self.chunks();
+        // Keep only coordinate scratch live across `visit`: the deeper RoutePoint decode frame is
+        // `#[inline(never)]` below and has returned before a renderer's stroke/fill stack starts.
+        // This mirrors `obc-app::route::decode_lonlat`'s measured stack-lifetime discipline.
+        let mut lonlat = [(0i32, 0i32); MAX_POINTS_PER_CHUNK];
+        for (k, cm) in chunks.iter().enumerate() {
+            let chunk_hi = chunks.get(k + 1).map_or(self.total_distance_m, |next| next.cum_distance_m);
+            if chunk_hi < lo || cm.cum_distance_m > hi {
+                continue;
+            }
+            if let Some(n) = decode_points_between(self, k, lo, hi, &mut lonlat) {
+                visit(&lonlat[..n]);
+            }
+        }
+    }
+
     /// The route's polyline decimated to at most `N` points — uniform by point index, the first
     /// and last point always kept — the computed-route overview's shape-preview seam (#685 §4:
     /// the host hands the app this bounded copy; ≤ 64 points is plenty for a ~212×90 px sketch).
@@ -434,6 +519,62 @@ impl<'a> RouteReader<'a> {
         }
         out
     }
+}
+
+fn interpolate_point(a: RoutePoint, b: RoutePoint, t: f32) -> RoutePoint {
+    RoutePoint {
+        lon: libm::roundf(a.lon as f32 + (b.lon - a.lon) as f32 * t) as i32,
+        lat: libm::roundf(a.lat as f32 + (b.lat - a.lat) as f32 * t) as i32,
+        ele: libm::roundf(a.ele as f32 + (b.ele - a.ele) as f32 * t) as i16,
+    }
+}
+
+/// Decode and clip one route chunk into caller-owned `(lon, lat)` scratch. Kept out of line so its
+/// `Vec<RoutePoint, 256>` frame is gone before [`RouteReader::visit_points_between`]'s callback
+/// enters the renderer's stroke/fill stack.
+#[inline(never)]
+fn decode_points_between(
+    route: &RouteReader,
+    k: usize,
+    lo: u32,
+    hi: u32,
+    out: &mut [(i32, i32); MAX_POINTS_PER_CHUNK],
+) -> Option<usize> {
+    let cm = route.chunks().get(k)?;
+    let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+    route.decode_chunk(k, &mut buf).ok()?;
+    if buf.len() < 2 {
+        return None;
+    }
+    let cl = crate::geo::cos_lat(buf[0].lat);
+    let mut s = cm.cum_distance_m as f32;
+    let mut first: Option<(usize, RoutePoint)> = None;
+    let mut last: Option<(usize, RoutePoint)> = None;
+    for i in 0..buf.len() - 1 {
+        let a = buf[i];
+        let b = buf[i + 1];
+        let dl = crate::geo::seg_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
+        let seg_hi = s + dl;
+        if seg_hi >= lo as f32 && s <= hi as f32 {
+            let t0 = if dl > 1e-3 { ((lo as f32 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
+            let t1 = if dl > 1e-3 { ((hi as f32 - s) / dl).clamp(0.0, 1.0) } else { 1.0 };
+            first.get_or_insert((i, interpolate_point(a, b, t0)));
+            last = Some((i + 1, interpolate_point(a, b, t1)));
+        }
+        s = seg_hi;
+        if s > hi as f32 {
+            break;
+        }
+    }
+    let (a, pa) = first?;
+    let (b, pb) = last?;
+    for (dst, p) in out.iter_mut().zip(buf[a..=b].iter()) {
+        *dst = (p.lon, p.lat);
+    }
+    let n = b - a + 1;
+    out[0] = (pa.lon, pa.lat);
+    out[n - 1] = (pb.lon, pb.lat);
+    Some(n)
 }
 
 /// Decode chunk `m` (its `n` points) from `src` into the already-cleared `out`: the anchor,
