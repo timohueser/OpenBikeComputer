@@ -15,7 +15,7 @@
 			(in_pos_files yes)
 			(duplicate_pin_numbers_are_jumpers no)
 			(property "Reference" "U"
-				(at 30.48 10.16 0)
+				(at 9.652 6.096 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
@@ -25,7 +25,7 @@
 				)
 			)
 			(property "Value" "SAM-M10Q-00B"
-				(at 30.48 7.62 0)
+				(at 43.434 6.604 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
@@ -34,8 +34,8 @@
 					)
 				)
 			)
-			(property "Footprint" "SAM-M10Q_UBL"
-				(at 0 0 0)
+			(property "Footprint" "obc:SAM-M10Q_UBL"
+				(at 55.372 -37.084 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(hide yes)
@@ -46,8 +46,8 @@
 					)
 				)
 			)
-			(property "Datasheet" "SAM-M10Q-00B"
-				(at 0 0 0)
+			(property "Datasheet" "https://content.u-blox.com/sites/default/files/documents/SAM-M10Q_DataSheet_UBX-22013293.pdf"
+				(at 27.686 -40.132 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(hide yes)
@@ -69,10 +69,22 @@
 					)
 				)
 			)
-			(property "ki_locked" ""
-				(at 0 0 0)
+			(property "Manufacturer" "u-blox"
+				(at 24.892 -36.83 0)
 				(show_name no)
 				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "MPN" "SAM-M10Q-00B"
+				(at 38.608 -36.83 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -546,7 +558,7 @@
 				)
 			)
 		)
-		(property "Footprint" "SAM-M10Q_UBL"
+		(property "Footprint" "obc:SAM-M10Q_UBL"
 			(at 52.07 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -558,7 +570,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "SAM-M10Q-00B"
+		(property "Datasheet" "https://content.u-blox.com/sites/default/files/documents/SAM-M10Q_DataSheet_UBX-22013293.pdf"
 			(at 52.07 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -572,6 +584,28 @@
 		)
 		(property "Description" ""
 			(at 52.07 43.18 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "u-blox"
+			(at 76.962 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MPN" "SAM-M10Q-00B"
+			(at 90.678 80.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -646,6 +680,52 @@
 				(path "/9592e112-fc73-4f3e-a0d8-ab6827836a9f"
 					(reference "U1")
 					(unit 1)
+				)
+			)
+		)
+	)
+	(sheet
+		(at 158.75 44.45)
+		(size 73.66 52.07)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "39ae5a3d-c98b-400d-8ca8-3b7d41b656b5")
+		(property "Sheetname" "Power Management"
+			(at 158.75 43.7384 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "../../shared/power_management.kicad_sch"
+			(at 158.75 97.1046 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "OBC_Prototype"
+				(path "/9592e112-fc73-4f3e-a0d8-ab6827836a9f"
+					(page "2")
 				)
 			)
 		)
