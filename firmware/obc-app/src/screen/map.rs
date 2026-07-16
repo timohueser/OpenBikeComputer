@@ -38,8 +38,8 @@ use super::{Ctx, Render, Screen, ScreenTick, StatisticsScreen, Transition};
 /// Zoom multiplier per encoder detent (matches the scroll-wheel feel).
 const ZOOM_STEP: f32 = 1.2;
 /// Zoom clamps (pixels per microdegree-lat), same spirit as the sim's bounds.
-const MIN_ZOOM: f32 = 1e-6;
-const MAX_ZOOM: f32 = 1e4;
+pub(crate) const MIN_ZOOM: f32 = 1e-6;
+pub(crate) const MAX_ZOOM: f32 = 1e4;
 
 /// Fallback backdrop when a map carries no backdrop style.
 const DEFAULT_BG_RGB565: u16 = 0x2104;
@@ -49,6 +49,9 @@ const DEFAULT_BG_RGB565: u16 = 0x2104;
 /// render benchmark's route scene pins its stroke weight to this exact value (re-exported as
 /// [`crate::screen::ROUTE_WEIGHT`]).
 pub const ROUTE_WEIGHT: u32 = 11;
+/// Narrower stroke painted inside the route line for the chooser's to-be-skipped stretch. The
+/// magenta edges remain visible, while warning-orange makes the selected interval unmistakable.
+const SKIPPED_WEIGHT: u32 = 7;
 
 /// Colour of the route direction chevrons — white, for contrast over the magenta route line. Drawn
 /// only at riding zoom (see [`CHEVRON_MAX_MPP`]).
@@ -225,64 +228,8 @@ impl MapScreen {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        // The Map is the only screen that reads the `Reader`; `None` is unreachable in practice
-        // (the host only draws the map with it) — draw nothing rather than fault.
-        let Some(reader) = rx.reader else { return };
         let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
-        let bg565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
-        // The base map, route, breadcrumb and marker render through the raw target + colour policy —
-        // the one consumer of the Canvas escape hatch (everything else draws via `Surface`).
-        let (target, color_fn) = cv.split();
-        let bg = color_fn(bg565);
-        // `render_timed` fills the per-stage timings from `rx.clock`; with a `NoopClock` it's `render`.
-        let mut stats = rx.renderer.render_timed(target, reader, &vp, bg, color_fn, rx.clock);
-
-        // Chevrons appear once zoomed past `CHEVRON_MAX_MPP`, anchored to the rider's matched
-        // distance (`progress_m`). Gated on the viewport scale, decoupled from the LOD pyramid.
-        let arrows_at = (vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
-
-        // The planned route, stroked in magenta under the breadcrumb + marker — handed to the
-        // renderer through the `RouteOverlaySource` seam (`RouteOverlay` adapts the reader).
-        if let Some(route) = rx.route {
-            let (route_chunks, route_points, route_points_drawn) = rx.renderer.draw_route(
-                target,
-                &vp,
-                &crate::route::RouteOverlay(route),
-                color_fn(super::palette::ROUTE),
-                ROUTE_WEIGHT,
-                color_fn(ARROW_COLOR),
-                arrows_at,
-            );
-            stats.route_chunks = route_chunks;
-            stats.route_points = route_points;
-            stats.route_points_drawn = route_points_drawn;
-        }
-
-        // The breadcrumb in navy, drawn over the route (and under the marker). One chained stroke
-        // (coarse spine → full-res recent tail), so the tiers never double up.
-        if !rx.breadcrumb.is_empty() {
-            let trail = color_fn(super::palette::BREADCRUMB);
-            rx.renderer.stroke_path(target, &vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
-        }
-
-        rx.stats = stats;
-        // The raw-target borrow (`target` / `color_fn` from `split`) ends here; the diamonds and the
-        // marker below re-`split` the canvas as they draw.
-
-        // Waypoint diamonds: small filled-ink rhombuses on the route line at each named waypoint,
-        // drawn over the route + breadcrumb but under the marker (so the marker wins when the rider
-        // sits on a waypoint). Always on when the loaded route has waypoints — the part-3 chip setting
-        // governs only the chip, and an empty table (no route) skips the loop for free.
-        draw_waypoint_diamonds(cv, &vp, rx.waypoints.as_slice(), rx.w, rx.h);
-
-        // The "you" colour: warning-red while off-route, else the map's marker colour. Shared by the
-        // marker and the pan pin so the off-screen pin matches the on-screen marker. Drawn last of the
-        // map plane, so it sits over the waypoint diamonds.
-        let marker565 = if rx.activity.off_route { super::palette::WARNING } else { reader.marker_color };
-        if let Some(fix) = rx.state.user_fix {
-            let (target, color_fn) = cv.split();
-            rx.renderer.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
-        }
+        let Some(marker565) = draw_map_scene(cv, rx, &vp, None) else { return };
 
         // The remaining chrome draws in the palette vocabulary, back through the canvas.
         let panning = rx.state.pan.is_some();
@@ -370,6 +317,84 @@ impl MapScreen {
             draw_pan_hud(cv, (rx.w as f32, rx.h as f32), pan, rx.state.user_fix, marker565, &vp);
         }
     }
+}
+
+/// Optional skip-ahead ink added to the shared map scene. The chooser owns the exact interval and
+/// candidate coordinate; the normal Map passes `None` and pays no extra route decode.
+#[derive(Clone, Copy)]
+pub(crate) struct SkipMapOverlay {
+    pub start_m: u32,
+    pub end_m: u32,
+    pub candidate: (i32, i32),
+}
+
+/// Draw the reusable map scene (base map, full route, optional skipped-range ink, breadcrumb,
+/// waypoints, rider and candidate). Map chrome stays in [`MapScreen::draw`]; the Skip chooser adds
+/// its own floating HUD after this returns.
+pub(crate) fn draw_map_scene<D, F>(
+    cv: &mut Canvas<D, F>,
+    rx: &mut Render,
+    vp: &Viewport,
+    skip: Option<SkipMapOverlay>,
+) -> Option<u16>
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let reader = rx.reader?;
+    let bg565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
+    let (target, color_fn) = cv.split();
+    let bg = color_fn(bg565);
+    let mut stats = rx.renderer.render_timed(target, reader, vp, bg, color_fn, rx.clock);
+    let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
+
+    if let Some(route) = rx.route {
+        let (route_chunks, route_points, route_points_drawn) = rx.renderer.draw_route(
+            target,
+            vp,
+            &crate::route::RouteOverlay(route),
+            color_fn(super::palette::ROUTE),
+            ROUTE_WEIGHT,
+            color_fn(ARROW_COLOR),
+            arrows_at,
+        );
+        stats.route_chunks = route_chunks;
+        stats.route_points = route_points;
+        stats.route_points_drawn = route_points_drawn;
+
+        if let Some(selected) = skip {
+            route.visit_points_between(selected.start_m, selected.end_m, |pts| {
+                rx.renderer.stroke_path(
+                    target,
+                    vp,
+                    pts.iter().copied(),
+                    color_fn(super::palette::WARNING),
+                    SKIPPED_WEIGHT,
+                );
+            });
+        }
+    }
+
+    if !rx.breadcrumb.is_empty() {
+        let trail = color_fn(super::palette::BREADCRUMB);
+        rx.renderer.stroke_path(target, vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
+    }
+    rx.stats = stats;
+
+    draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
+    let marker565 = if rx.activity.off_route { super::palette::WARNING } else { reader.marker_color };
+    if let Some(fix) = rx.state.user_fix {
+        let (target, color_fn) = cv.split();
+        rx.renderer.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
+    }
+    if let Some(selected) = skip {
+        let (x, y) = vp.to_screen(selected.candidate.0, selected.candidate.1);
+        let c = Point::new(x, y);
+        cv.disc(c, 10, super::palette::PARCHMENT);
+        cv.disc(c, 7, super::palette::WARNING);
+        cv.disc(c, 3, super::palette::INK);
+    }
+    Some(marker565)
 }
 
 // ---- Waypoint diamonds (on the route line) --------------------------------

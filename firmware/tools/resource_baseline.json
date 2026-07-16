@@ -13,8 +13,8 @@
   "board": {
     "default": {
       "features": "default (real sensors + LS021/FLPR, constrained nrf-mem capacities)",
-      "measured_resident": 201920,
-      "resident_ram_max": 201920,
+      "measured_resident": 201944,
+      "resident_ram_max": 201944,
       "floating_stable_observation": {
         "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
         "bss": 201840,
@@ -24,7 +24,7 @@
         "flash": 644096
       },
       "uninit_max": 1024,
-      "measured_flash": 653084,
+      "measured_flash": 663892,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 52,
@@ -32,7 +32,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 35968,
+        "app": 35992,
         "map_cache": 14444,
         "map_tables": 4060,
         "route_cache": 6180,
@@ -56,10 +56,10 @@
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE, constrained nrf-mem capacities)",
-      "measured_resident": 213840,
-      "resident_ram_max": 213840,
+      "measured_resident": 213864,
+      "resident_ram_max": 213864,
       "uninit_max": 1024,
-      "measured_flash": 1091960,
+      "measured_flash": 1102856,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 6240,
@@ -76,7 +76,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 35968,
+        "app": 35992,
         "map_cache": 14444,
         "map_tables": 4060,
         "route_cache": 6180,
