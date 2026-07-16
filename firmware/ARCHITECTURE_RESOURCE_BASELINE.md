@@ -87,9 +87,23 @@ python3 ../tools/resource_guard.py boot \
 
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
-| default | 201,680 B | 72 B | 201,752 B | 1,024 B | 647,000 B | 1 × 76,800 B | 52 B |
-| BLE | 209,168 B | 4,504 B | 213,672 B | 1,024 B | 1,085,508 B | 1 × 76,800 B | 6,240 B |
+| default | 201,848 B | 72 B | 201,920 B | 1,024 B | 653,084 B | 1 × 76,800 B | 52 B |
+| BLE | 209,336 B | 4,504 B | 213,840 B | 1,024 B | 1,091,960 B | 1 × 76,800 B | 6,240 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
+
+The mid-ride compass (epic #789, RM1 #786) deliberately raises the screen-stack
+capacity from 8 to 10 so the deepest ordinary path still leaves two slots for
+host-pushed cards. A target `Screen` is 84 B, so those two slots grow the named
+`App` allocation **35,800 → 35,968 B** and linked `.bss` by the same **168 B**
+on both profiles; no other named allocation changes. On pinned rustc 1.96.0,
+default grows **201,752 → 201,920 B** and BLE **213,672 → 213,840 B** resident.
+The approved default ceiling is 201,920 B: the current floating-stable rustc
+1.97.1 (`8bab26f4f 2026-07-14`) links at 201,912 B, preserving the repository's
+8 B default toolchain margin. BLE links at 213,840 B on both toolchains, so its
+ceiling is that exact measurement. The same CI run observed 644,096 B default
+flash and 1,068,784 B BLE flash; the pinned 1.96.0 observations in the table are
+653,084 B and 1,091,960 B. Framebuffer count, `.uninit`, guarded poll frames
+(52 B / 6,240 B), and every report entry other than `App` are unchanged.
 
 Auto-expiry (epic #638, S3 #643) added the retention runtime + sweep queue to
 `App`, per-route retention metas to `CatalogState`, and a `synced_at` to each
@@ -103,7 +117,8 @@ floating-stable rustc 1.97.0 for BLE (213,672 B); the default links 201,744 B on
 1.97.0, 8 B under the 1.96.0 capture that sets the ceiling. Poll frames
 (52 B / 6,240 B) and the allocation report are unchanged in shape.
 
-The table is the reproducible rustc 1.96.0 capture. The first floating-stable CI
+The table is the reproducible rustc 1.96.0 capture plus the itemized, approved
+changes above. The first floating-stable CI
 run on rustc 1.97.0 (`2d8144b78 2026-07-07`) produced default `.bss` 200,772 B,
 `.data` 96 B, `.uninit` 1,024 B, and 615,416 B of flash: a measured 4 B resident
 increase and a 9,784 B flash decrease caused by the toolchain change alone. The
@@ -229,8 +244,8 @@ unchanged on both profiles — the signal is a module static, not a field of `Ap
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
 
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
-separately. The M33 receives 253,952 B after the FLPR carve, leaving 52,064 B
-after default `.bss + .data + .uninit` and 40,160 B after BLE. Those residuals
+separately. The M33 receives 253,952 B after the FLPR carve, leaving 51,008 B
+after default `.bss + .data + .uninit` and 39,088 B after BLE. Those residuals
 are linker headroom, not measured stack high-water. The independent 36,864 B
 `STACK_RESERVE` is a compile-time floor, also not a runtime measurement.
 
@@ -248,7 +263,7 @@ These are exact 32-bit target `size_of` values from the report-only ELF:
 | :-- | --: | --: |
 | framebuffer | 76,800 B | 76,800 B |
 | row diff | 1,284 B | 1,284 B |
-| `App` | 35,800 B | 35,800 B |
+| `App` | 35,968 B | 35,968 B |
 | map cache | 14,444 B | 14,444 B |
 | map tables | 4,060 B | 4,060 B |
 | route cache | 6,180 B | 6,180 B |
