@@ -238,6 +238,10 @@ pub struct Activity {
     /// table. The riding views (the map chip / stat fields, later in the epic) read it for the "next
     /// waypoint" readouts. Cleared on every route swap / unload / replace, alongside `active_climb`.
     pub(crate) next_waypoint: Option<usize>,
+    /// Number of entries in the App-owned resident waypoint table. Mirrored with the cache so a
+    /// waypoint-list gesture can wrap its cursor without putting draw-only row data in `Ctx`.
+    /// Normally this is the complete plan (≤32); on an oversized route it is the current window.
+    pub(crate) waypoint_count: usize,
 
     // actually-ridden accumulators
     /// Distance actually pedalled (m) — the `done` stat. Counts **every** sane fix, including

@@ -28,7 +28,7 @@ pois = "POIs"
 map = "Map"
 settings = "Settings"
 
-# --- The mid-ride compass and its two RM1 placeholder children ---
+# --- The mid-ride compass, Waypoints list, and remaining Skip-ahead placeholder ---
 [ride_menu]
 title = "RIDE MENU"
 waypoints = "Waypoints"
@@ -36,6 +36,9 @@ skip_ahead = "Skip ahead"
 main_menu = "Main menu"
 coming_soon = "Coming soon"
 no_route = "No route loaded"
+
+[waypoints]
+none = "No waypoints"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]

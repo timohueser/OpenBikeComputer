@@ -20,7 +20,7 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use obc_app::i18n::{t, Msg};
 use obc_app::settings::Language;
-use obc_app::{App, AppState, Button, ButtonEvent, InputClock, InputEvent, Settings};
+use obc_app::{App, AppState, Button, ButtonEvent, Gesture, InputClock, InputEvent, Screen, Settings};
 
 mod common;
 use common::{build_min_obcm, keys, render_120};
@@ -144,5 +144,29 @@ fn render_smoke() {
 
         let buf = render_120(&mut app, &bytes);
         assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "menu rendered blank in {lang:?}",);
+    }
+}
+
+/// RM2's new empty-state key is translated (not four English placeholders) and its route-less
+/// Waypoints screen renders through each catalog column without a font/buffer failure.
+#[test]
+fn waypoint_empty_state_is_localized_and_renders() {
+    assert_eq!(t(Msg::WaypointsNone, Language::En), "No waypoints");
+    assert_eq!(t(Msg::WaypointsNone, Language::De), "Keine Wegpunkte");
+    assert_eq!(t(Msg::WaypointsNone, Language::Fr), "Aucun point de route");
+    assert_eq!(t(Msg::WaypointsNone, Language::Es), "No hay puntos de ruta");
+
+    let bytes = build_min_obcm(0xF800);
+    for lang in LANGS {
+        let mut app = App::new(AppState::new(0, 0, 0.05));
+        app.set_settings(Settings { language: lang, ..Default::default() });
+        app.apply_gesture(Gesture::BackHold); // Map → Ride menu
+        app.apply_gesture(Gesture::Press); // default/north station → Waypoints
+        assert!(matches!(app.top_screen(), Screen::RideWaypoints(_)));
+        let buf = render_120(&mut app, &bytes);
+        assert!(
+            buf.px.iter().any(|&p| p != Rgb888::BLACK),
+            "route-less waypoint empty state rendered blank in {lang:?}"
+        );
     }
 }
