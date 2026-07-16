@@ -15,7 +15,7 @@ pois = "POIs"
 map = "Karte"
 settings = "Einstellungen"
 
-# --- Das Kompassmenü während der Fahrt und seine zwei RM1-Platzhalter ---
+# --- Das Kompassmenü während der Fahrt, Wegpunktliste und Vorspringen-Platzhalter ---
 [ride_menu]
 title = "FAHRTMENÜ"
 waypoints = "Wegpunkte"
@@ -23,6 +23,9 @@ skip_ahead = "Vorspringen"
 main_menu = "Hauptmenü"
 coming_soon = "Demnächst"
 no_route = "Keine Route geladen"
+
+[waypoints]
+none = "Keine Wegpunkte"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]

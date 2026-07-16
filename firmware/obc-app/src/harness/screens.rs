@@ -203,6 +203,36 @@ fn paused_back_hold_opens_the_ride_menu_and_stays_paused() {
     assert_eq!(act.mode, Mode::Paused, "opening the ride menu must not resume a paused session");
 }
 
+/// Whole-App ride-chrome path for RM2: Map → back-hold → Ride menu → press Waypoints; inert row
+/// gestures preserve the tracking session/mode, Back returns one stack level at a time to the exact
+/// riding view that opened the menu.
+#[test]
+fn ride_menu_waypoints_navigation_preserves_session_and_returns_to_map() {
+    let mut app = App::new(AppState::new(0, 0, 1.0));
+    app.activity.start_session();
+    let session = app.activity.session;
+    assert_eq!(app.activity.mode, Mode::Riding);
+
+    app.apply_gesture(Gesture::BackHold);
+    assert!(matches!(app.top_screen(), Screen::RideMenu(_)));
+    app.apply_gesture(Gesture::Press); // north/default station = Waypoints
+    assert!(matches!(app.top_screen(), Screen::RideWaypoints(_)));
+
+    for g in [Gesture::Turn(1), Gesture::Press, Gesture::Hold, Gesture::BackHold] {
+        app.apply_gesture(g);
+        assert!(matches!(app.top_screen(), Screen::RideWaypoints(_)), "{g:?} stays in the MVP list");
+        assert_eq!(app.activity.mode, Mode::Riding);
+        assert_eq!(app.activity.session, session);
+    }
+
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::RideMenu(_)));
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
+    assert_eq!(app.activity.mode, Mode::Riding);
+    assert_eq!(app.activity.session, session);
+}
+
 #[test]
 fn ride_control_resume_is_a_press_that_pops() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Paused));

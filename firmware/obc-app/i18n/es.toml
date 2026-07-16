@@ -15,7 +15,7 @@ pois = "POIs"
 map = "Mapa"
 settings = "Ajustes"
 
-# --- El menú brújula en ruta y sus dos pantallas provisionales RM1 ---
+# --- El menú brújula en ruta, la lista de puntos y la pantalla provisional Saltar ---
 [ride_menu]
 title = "MENÚ DE RUTA"
 waypoints = "Puntos de ruta"
@@ -23,6 +23,9 @@ skip_ahead = "Saltar tramo"
 main_menu = "Menú principal"
 coming_soon = "Próximamente"
 no_route = "No hay ruta cargada"
+
+[waypoints]
+none = "No hay puntos de ruta"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
