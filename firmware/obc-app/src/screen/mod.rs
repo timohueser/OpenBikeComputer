@@ -85,8 +85,10 @@ pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 pub use warning::{WarningFlags, WarningScreen};
 
-/// Maximum overlay depth. Sized with headroom; the real flow never nests more than a few deep.
-pub const MAX_DEPTH: usize = 8;
+/// Maximum overlay depth. The deepest normal path is eight screens
+/// (`Home → Map → Ride menu → Menu → Settings → Ride → Fields → Add field`); keep two more slots
+/// for host-pushed cards such as a warning arriving while that path is open.
+pub const MAX_DEPTH: usize = 10;
 
 /// The screen stack: the bottom is the always-present root (Home), the top is the
 /// screen currently receiving input.
@@ -658,7 +660,7 @@ screens! {
     RideMenu(RideMenuScreen) => Caps::nav().timed(),
     /// RM1's Waypoints station stub; a real child screen so the later browser can replace its body.
     RideWaypoints(RideWaypointsScreen) => Caps::nav(),
-    /// RM1's Skip-ahead station stub; the later distance chooser grows here.
+    /// RM1's Skip-ahead station stub; RM3 / #788 grows the distance chooser here.
     SkipAhead(SkipAheadScreen) => Caps::nav(),
     /// The POIs browser's category list (Menu → POIs).
     PoiMenu(PoiMenuScreen) => Caps::nav(),
