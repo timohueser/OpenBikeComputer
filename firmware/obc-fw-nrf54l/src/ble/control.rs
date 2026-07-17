@@ -174,23 +174,43 @@ fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedSto
             // next `routeList`. Setting the same value twice is `ok` with no bump (the idempotence
             // pin); an unknown `object_id` is `notFound`.
             match SetRouteRetention::decode(data) {
-                Ok(srr) => match store.borrow_mut().set_route_retention(
-                    shared,
-                    srr.object_id,
-                    Retention::from_u8(srr.retention),
-                ) {
-                    None => {
-                        info!("ble: [cmd] setRouteRetention: unknown route {}", srr.object_id);
-                        (CommandStatus::NotFound, 0, None)
+                Ok(srr) => {
+                    use crate::object_store::SetRetentionResult;
+                    match store.borrow_mut().set_route_retention(
+                        shared,
+                        srr.object_id,
+                        Retention::from_u8(srr.retention),
+                    ) {
+                        SetRetentionResult::NotFound => {
+                            info!("ble: [cmd] setRouteRetention: unknown route {}", srr.object_id);
+                            (CommandStatus::NotFound, 0, None)
+                        }
+                        // `ok` only after durable persistence; the store revision (→ storeChanged) moved
+                        // inside `set_route_retention` on a real change, so notify Route then.
+                        SetRetentionResult::Changed => {
+                            info!(
+                                "ble: [cmd] setRouteRetention: route {} -> retention {} (changed)",
+                                srr.object_id, srr.retention
+                            );
+                            (CommandStatus::Ok, 0, Some(ObjectType::Route))
+                        }
+                        SetRetentionResult::Unchanged => {
+                            info!(
+                                "ble: [cmd] setRouteRetention: route {} already retention {}",
+                                srr.object_id, srr.retention
+                            );
+                            (CommandStatus::Ok, 0, None)
+                        }
+                        // Finding #876-5: the write did not reach the card — never claim `ok`.
+                        SetRetentionResult::WriteFailed => {
+                            warn!(
+                                "ble: [cmd] setRouteRetention: route {} sidecar write failed — reporting Error",
+                                srr.object_id
+                            );
+                            (CommandStatus::Error, 0, None)
+                        }
                     }
-                    Some(changed) => {
-                        info!(
-                            "ble: [cmd] setRouteRetention: route {} -> retention {} (changed {})",
-                            srr.object_id, srr.retention, changed
-                        );
-                        (CommandStatus::Ok, 0, changed.then_some(ObjectType::Route))
-                    }
-                },
+                }
                 Err(_) => {
                     warn!("ble: [cmd] setRouteRetention rejected: malformed / out-of-range ({} B)", data.len());
                     (CommandStatus::Error, 0, None)

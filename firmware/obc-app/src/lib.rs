@@ -66,8 +66,8 @@ pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
 pub use nav_profiles::NavProfiles;
 pub use retention::{
-    decode_route_retention, encode_route_retention, Retention, RideRetention, RouteRetentionMeta, RouteRetentionStore,
-    ROUTE_RETENTION_MAX_LEN,
+    decode_route_retention, encode_route_retention, Retention, RideRetention, RideRetentionRecord, RouteRetentionMeta,
+    RouteRetentionStore, ROUTE_RETENTION_MAX_LEN,
 };
 pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
