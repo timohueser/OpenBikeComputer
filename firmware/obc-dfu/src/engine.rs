@@ -114,6 +114,12 @@ pub enum Outcome {
     /// The staged image failed verification **before anything was erased** — the arm was cleared
     /// to `Idle` and the old app is intact. Caller: error LED code, then jump.
     StageRejected,
+    /// The bootloader gave up on an `Armed` card it could not read within the driver's bounded
+    /// retry budget and cleared the arm to `Idle` **before the flash pass ever began** (DR3 #731):
+    /// nothing was erased, so the old app at the slot base is intact — caller: error LED code, then
+    /// jump. Only ever returned by [`abandon_arm`], never by [`run`]; a `RolledBack`/`StageRejected`
+    /// [`LastOutcome`] would misreport it, so it records [`OutcomeKind::ArmAbandoned`] instead.
+    ArmAbandoned,
     /// The image was flashed, readback-verified, and the follow-up state (`Trial` after an
     /// install, `Idle` after a rollback) written. Caller: **jump straight to the app slot** —
     /// never reset. A reset would re-enter the bootloader with the just-written `Trial`, which
@@ -123,7 +129,16 @@ pub enum Outcome {
     /// An SD read failed mid-pass. The state page was **not** touched (a transient card error
     /// must never clear a valid arm) — caller: LED code, back off, bring the card up again, and
     /// re-run; state-wise this boot never happened.
-    SdError,
+    ///
+    /// `pre_erase` is the DR3 (#731) erase-safety flag: `true` iff the failure happened during the
+    /// **verify** pass (or its container-header read) of an `Install`, i.e. **before any slot byte
+    /// could have been written**. Only then is the arm provably untouched and therefore abandonable
+    /// — the caller may retry a bounded number of `pre_erase: true` rounds and then call
+    /// [`abandon_arm`] to clear the arm and boot the intact old app. `false` means the flash pass
+    /// had already begun (the slot may be half-written) or the failure was on a `Rollback` (whose
+    /// trial image is the only bootable thing in the slot): the caller must keep retrying/parking
+    /// forever — abandoning would brick.
+    SdError { pre_erase: bool },
     /// The readback never matched (or an RRAM write failed) after `1 +` [`FLASH_RETRIES`] flash
     /// passes — or the post-flash state write itself failed. The state page still holds the
     /// `Armed`/`Trial` record, so the next power cycle retries from scratch. Caller: LED SOS,
@@ -385,9 +400,13 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
                     let _ = io.write_state(&BootState::Idle { installed: rollback.map(|r| r.header), last_outcome });
                     Outcome::StageRejected
                 }
-                Err(VerifyError::Io) => Outcome::SdError,
+                // Verify-pass SD error: nothing erased yet, so the arm is still abandonable (DR3).
+                Err(VerifyError::Io) => Outcome::SdError { pre_erase: true },
                 Ok(()) => match flash_verified(io, &update, slot, buf) {
-                    Err(PassError::Sd) => Outcome::SdError,
+                    // The flash pass has begun — the slot may be half-written, so this is NOT
+                    // abandonable; the caller retries/parks forever (invariant: never abandon a
+                    // touched slot).
+                    Err(PassError::Sd) => Outcome::SdError { pre_erase: false },
                     Err(PassError::Flash) => Outcome::FlashError,
                     // The slot now provably holds the image — record the single trial boot.
                     // A failed Trial write leaves Armed ⇒ halt; next power cycle re-installs.
@@ -417,9 +436,11 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
                     let _ = io.write_state(&BootState::Idle { installed, last_outcome });
                     Outcome::StageRejected
                 }
-                Err(VerifyError::Io) => Outcome::SdError,
+                // A Rollback is never abandonable — the trial image already in the slot is the only
+                // bootable thing, so a transient card error keeps today's forever-retry/park.
+                Err(VerifyError::Io) => Outcome::SdError { pre_erase: false },
                 Ok(()) => match flash_verified(io, &snapshot, slot, buf) {
-                    Err(PassError::Sd) => Outcome::SdError,
+                    Err(PassError::Sd) => Outcome::SdError { pre_erase: false },
                     Err(PassError::Flash) => Outcome::FlashError,
                     // Rollback complete: straight to Idle (no trial for the known-good image).
                     Ok(()) => {
@@ -432,5 +453,37 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
                 },
             }
         }
+    }
+}
+
+/// Abandon a pre-erase `Armed` arm the bootloader could not bring the card up for (DR3 #731).
+///
+/// Clears the state to `Idle`, carrying forward the outgoing image's header from the rollback
+/// snapshot exactly as the verify-reject path does ([`run`]'s `VerifyError::Mismatch` arm), and
+/// records an [`OutcomeKind::ArmAbandoned`] outcome against the arm's `generation` so the next
+/// boot's [`verdict`](crate::verdict) surfaces the abandon card. Returns [`Outcome::ArmAbandoned`]
+/// — the old app at `slot.base` is intact, so the caller boots it.
+///
+/// **Sequencing contract (the safety property this issue turns on):** the caller must only invoke
+/// this after a [`run`] that returned [`Outcome::SdError`]` { pre_erase: true }` — i.e. the failure
+/// was in the verify pass, before any slot byte could have been written. Once the flash pass has
+/// begun the slot may be half-written and the arm is **no longer abandonable**; clearing it then
+/// would strand a bricked slot. The retry *count* that decides when to give up lives in the driver
+/// (`obc-boot`); this function owns the "abandon writes `Idle` + `ArmAbandoned`" rule, host-tested.
+///
+/// A non-`Armed` state is a caller bug (nothing but an `Armed` arm can be abandoned): nothing is
+/// written and [`Outcome::Jump`] is returned, staying total rather than panicking (the bootloader's
+/// standing rule).
+pub fn abandon_arm(state: &BootState, io: &mut impl InstallIo) -> Outcome {
+    match state {
+        BootState::Armed { generation, rollback, .. } => {
+            let last_outcome = Some(LastOutcome { kind: OutcomeKind::ArmAbandoned, generation: *generation });
+            // Same as the reject path: the app slot is never touched. If even this clear fails, the
+            // caller still boots the intact old app and the next boot repeats the same safe path.
+            let installed = rollback.as_ref().map(|r| r.header);
+            let _ = io.write_state(&BootState::Idle { installed, last_outcome });
+            Outcome::ArmAbandoned
+        }
+        _ => Outcome::Jump,
     }
 }
