@@ -163,8 +163,9 @@ inferring one from version strings: `Installed` = the staged image is now runnin
 (a first-install trial accepted, or a rollback that kept the freshly-flashed image
 because its snapshot was unreadable); `RolledBack` = an unconfirmed trial was restored
 to its snapshot; `StageRejected` = the staged image failed verification before the app
-slot was erased; `ArmAbandoned` = reserved for DR3 (#731, the bootloader gives up on an
-unreadable `Armed` card and boots the intact app). `Outcome Generation` lets the app's
+slot was erased; `ArmAbandoned` = the bootloader gave up on an `Armed` card it could not
+read within a bounded retry budget and, **because nothing had been erased yet**, cleared
+the arm and booted the intact old app (DR3 #731 — see §2.4). `Outcome Generation` lets the app's
 boot-outcome reconcile bind the outcome to the arm marker it left before the install
 reboot. `Has Outcome = 0` is a plain steady-state `Idle`, a fresh device, or an `Idle`
 written by a `0x0001` writer (whose body ends after the installed option — see the
@@ -267,6 +268,22 @@ guarantee holds even on a cold power-on where no watchdog was running yet. On th
 warm-reset arm path the app's already-running dog is instead adopted and fed
 through the install, so a slow install is never cut down mid-flash; a plain `Idle`
 boot never touches the watchdog (DR1, #729).
+
+**Unreadable-card handling (DR3, #731).** A card the bootloader cannot read is retried
+with a growing backoff, but *how long* depends on whether the app slot has been touched —
+the same verify-before-erase line that governs everything else. **Before** the engine's
+flash pass begins (a bring-up failure, or an SD error during the verify pass of an
+`Armed` install) the old app is still intact, so after a bounded budget of pre-erase
+failures (~a minute) the bootloader **abandons** the arm: it writes `Idle` — carrying the
+outgoing image's header forward exactly as a rejected stage does — with an `ArmAbandoned`
+Last Outcome, and boots the intact old app. **Once the flash pass has begun** (the slot may
+be half-written) and for a `Rollback` (whose trial image is the only bootable thing), an SD
+error instead retries **forever** (the "reinsert the card and power-cycle" worst case) — a
+touched slot is never abandoned. The retry *count* is a bootloader policy; the "abandon
+writes `Idle` + `ArmAbandoned`, pre-erase only" rule is host-tested in `obc-dfu`
+(`engine::abandon_arm`). This refines epic #615's invariant 5 ("card absent ⇒ retry every
+boot"): that still holds for the erase-unsafe cases, but a pre-erase `Armed` arm no longer
+strands a device that holds perfectly good firmware.
 
 ---
 
