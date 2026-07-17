@@ -99,6 +99,23 @@ const ROUTE_CRCS: &str = "ROUTES.CRC";
 /// sidecar's file handling; codec + torn-line semantics live in `obc-app::retention` (host-tested).
 const ROUTE_RETENTION: &str = "ROUTES.RET";
 
+/// Which step of a CRC-framed sidecar rewrite failed (finding #876-5). A truncating rewrite is only
+/// **durable** when open, write, flush, **and** close all succeed; a swallowed flush/close error is a
+/// torn persist. Callers whose failure direction is safe by design (a torn retention/synced sidecar
+/// decodes conservatively → nothing deletes) may treat this best-effort, but the `setRouteRetention`
+/// reply must never claim `ok` ahead of durability — it maps a failure to `command` `Error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidecarWriteError {
+    /// The directory was absent, or the file could not be opened for a truncating rewrite.
+    Open,
+    /// The payload write failed.
+    Write,
+    /// The flush after the write failed (bytes may not have reached the card).
+    Flush,
+    /// The close failed (the directory entry / length may not be committed).
+    Close,
+}
+
 /// The trip-CRC sidecar in `/routes` (epic #526 TR4, #653) — the trip twin of [`ROUTE_CRCS`]: trip
 /// object id → whole-object CRC-32 of the stored `TP{id}.OBT` bytes, so a `tripList` entry carries a
 /// content fingerprint the app verifies (a stage reorder changes neither `byte_len` nor `name`, only
@@ -769,9 +786,24 @@ impl Storage {
         let mut set = self.load_synced_set();
         let added = ids.filter(|&id| set.insert(id, synced_at)).count();
         if added > 0 {
-            self.write_synced_set(&set);
+            let _ = self.write_synced_set(&set);
         }
         added
+    }
+
+    /// The **full** compact ride-retention inventory (finding #876-2): every synced ride's
+    /// `id + synced + synced_at`, up to [`MAX_RIDES`], read straight off the synced-set sidecar — so
+    /// the auto-delete sweep + the eager `synced_at` stamp reach a synced+expired ride even when it
+    /// sits below the newest-[`UI_RIDES_CAP`] the Rides menu shows. An unsynced ride carries no
+    /// retention state and is never in the set. One file read; the board hands this to
+    /// [`App::set_ride_retention_inventory`](obc_app::App::set_ride_retention_inventory) after each
+    /// ride rescan.
+    pub fn ride_retention_inventory(&self) -> Vec<obc_app::RideRetentionRecord, MAX_RIDES> {
+        let mut out = Vec::new();
+        for (id, synced_at) in self.load_synced_set().entries() {
+            let _ = out.push(obc_app::RideRetentionRecord { id, synced: true, synced_at_utc: synced_at });
+        }
+        out
     }
 
     /// Stamp a **legacy** synced-without-timestamp ride's `synced_at` (auto-expiry epic #638, S3 —
@@ -780,7 +812,7 @@ impl Storage {
     pub fn stamp_ride_synced_at(&mut self, id: u16, synced_at: u32) {
         let mut set = self.load_synced_set();
         if set.stamp_synced_at(id, synced_at) {
-            self.write_synced_set(&set);
+            let _ = self.write_synced_set(&set);
         }
     }
 
@@ -790,7 +822,7 @@ impl Storage {
     pub fn forget_ride_synced(&mut self, id: u16) {
         let mut set = self.load_synced_set();
         if set.remove(id) {
-            self.write_synced_set(&set);
+            let _ = self.write_synced_set(&set);
         }
     }
 
@@ -829,21 +861,59 @@ impl Storage {
         }
     }
 
+    /// The centralized CRC-framed sidecar rewrite (finding #876-5): open (truncating) → write →
+    /// flush → close, checking **every** step, and returning the first that failed. The file is
+    /// always flushed + closed even after a write error so the open-file budget is never leaked, and
+    /// the failing step is named in the log (the consequence line lives at the call site, which knows
+    /// whether the failure is safe-by-design or must surface to the phone). Replaces the
+    /// copy-pasted `open → write(ignore err) → flush(ignore) → close(ignore)` blocks whose swallowed
+    /// flush/close error made a torn persist look like success.
+    fn rewrite_sidecar(
+        &mut self,
+        dir: Option<RawDirectory>,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), SidecarWriteError> {
+        let Some(dir) = dir else { return Err(SidecarWriteError::Open) };
+        let file = self
+            .vmgr
+            .open_file_in_dir(dir, name, Mode::ReadWriteCreateOrTruncate)
+            .map_err(|_| SidecarWriteError::Open)?;
+        // Write, then flush + close **unconditionally** to release the handle, then report the first
+        // failing step.
+        let wrote = self.vmgr.write(file, bytes).is_ok();
+        let flushed = self.vmgr.flush_file(file).is_ok();
+        let closed = self.vmgr.close_file(file).is_ok();
+        let step = if !wrote {
+            Some(SidecarWriteError::Write)
+        } else if !flushed {
+            Some(SidecarWriteError::Flush)
+        } else if !closed {
+            Some(SidecarWriteError::Close)
+        } else {
+            None
+        };
+        match step {
+            Some(e) => {
+                defmt::warn!(
+                    "SD: sidecar rewrite failed (write {=bool} flush {=bool} close {=bool})",
+                    wrote,
+                    flushed,
+                    closed
+                );
+                Err(e)
+            }
+            None => Ok(()),
+        }
+    }
+
     /// Overwrite the route-CRC sidecar (truncating). A write failure is warned, not fatal — the
     /// worst case is a route serves `0 = unknown` and re-fills lazily next list build, never a crash.
     pub fn write_route_crcs(&mut self, map: &RouteCrcs) {
-        let Some(dir) = self.routes_dir else { return };
         let mut buf = [0u8; ROUTE_CRCS_MAX_LEN];
         let n = encode_route_crcs(map, &mut buf);
-        match self.vmgr.open_file_in_dir(dir, ROUTE_CRCS, Mode::ReadWriteCreateOrTruncate) {
-            Ok(file) => {
-                if self.vmgr.write(file, &buf[..n]).is_err() {
-                    defmt::warn!("SD: route-crc sidecar write failed — a route may serve crc 0 next list build");
-                }
-                let _ = self.vmgr.flush_file(file);
-                let _ = self.vmgr.close_file(file);
-            }
-            Err(e) => defmt::warn!("SD: cannot open route-crc sidecar: {}", defmt::Debug2Format(&e)),
+        if self.rewrite_sidecar(self.routes_dir, ROUTE_CRCS, &buf[..n]).is_err() {
+            defmt::warn!("SD: route-crc sidecar not persisted — a route may serve crc 0 next list build");
         }
     }
 
@@ -880,14 +950,19 @@ impl Storage {
     /// level actually changed, and returns whether it did so the caller bumps the route store revision
     /// on a real change only (setting the same value twice is a no-op — the idempotence pin). A row
     /// that reverts to `Never` with `last_used == 0` is dropped (the empty default reads that way).
-    pub fn set_route_retention_level(&mut self, id: u16, retention: Retention) -> bool {
+    /// Returns `Ok(true)` on a durable change, `Ok(false)` when the value was already that level (a
+    /// no-op — nothing to persist), or `Err` when the sidecar rewrite did not reach the card
+    /// (finding #876-5). The caller (`ObjectStore::set_route_retention`) bumps the revision and
+    /// replies `ok` **only** on `Ok(true)`; an `Err` is surfaced as `command` `Error`, never a false
+    /// `ok`.
+    pub fn set_route_retention_level(&mut self, id: u16, retention: Retention) -> Result<bool, SidecarWriteError> {
         let mut store = self.load_route_retention();
         let meta = RouteRetentionMeta { retention, last_used_utc: store.get(id).last_used_utc };
-        let changed = store.set(id, meta);
-        if changed {
-            self.write_route_retention(&store);
+        if !store.set(id, meta) {
+            return Ok(false); // already that level — durable by definition, nothing rewritten
         }
-        changed
+        self.write_route_retention(&store)?;
+        Ok(true)
     }
 
     /// Stamp route `id`'s `last_used` in the sidecar (auto-expiry epic #638, S3 — the sweep's
@@ -896,7 +971,9 @@ impl Storage {
     pub fn stamp_route_last_used(&mut self, id: u16, utc: u32) {
         let mut store = self.load_route_retention();
         if store.stamp_last_used(id, utc) {
-            self.write_route_retention(&store);
+            // Best-effort: a torn stamp is safe (the route keeps its old/`0` `last_used` and is
+            // re-stamped or left unexpired next sweep — never a wrong deletion). The helper logs.
+            let _ = self.write_route_retention(&store);
         }
     }
 
@@ -906,26 +983,19 @@ impl Storage {
     pub fn forget_route_retention(&mut self, id: u16) {
         let mut store = self.load_route_retention();
         if store.set(id, RouteRetentionMeta::default()) {
-            self.write_route_retention(&store);
+            let _ = self.write_route_retention(&store); // best-effort tidy; the helper logs a failure
         }
     }
 
-    /// Overwrite the route-retention sidecar (truncating). A write failure is warned, not fatal —
-    /// the worst case is a route reads `Never` next list build (nothing deletes), never a crash.
-    pub fn write_route_retention(&mut self, store: &RouteRetentionStore) {
-        let Some(dir) = self.routes_dir else { return };
+    /// Overwrite the route-retention sidecar (truncating), returning whether the whole rewrite —
+    /// open, write, flush, close — reached the card (finding #876-5). A torn write is safe by design
+    /// (a route reads `Never` next list build → nothing deletes), so the stamp/forget callers ignore
+    /// the result; only [`set_route_retention_level`](Storage::set_route_retention_level) propagates
+    /// it so `setRouteRetention` never claims `ok` ahead of durability.
+    pub fn write_route_retention(&mut self, store: &RouteRetentionStore) -> Result<(), SidecarWriteError> {
         let mut buf = [0u8; ROUTE_RETENTION_MAX_LEN];
         let n = encode_route_retention(store, &mut buf);
-        match self.vmgr.open_file_in_dir(dir, ROUTE_RETENTION, Mode::ReadWriteCreateOrTruncate) {
-            Ok(file) => {
-                if self.vmgr.write(file, &buf[..n]).is_err() {
-                    defmt::warn!("SD: route-retention sidecar write failed — a route may read Never next list build");
-                }
-                let _ = self.vmgr.flush_file(file);
-                let _ = self.vmgr.close_file(file);
-            }
-            Err(e) => defmt::warn!("SD: cannot open route-retention sidecar: {}", defmt::Debug2Format(&e)),
-        }
+        self.rewrite_sidecar(self.routes_dir, ROUTE_RETENTION, &buf[..n])
     }
 
     /// Read the card-resident store-epoch nonce (`/EPOCH.OBE`, protocol v2 #632 item 5 / #776), or
@@ -979,22 +1049,14 @@ impl Storage {
         ok
     }
 
-    /// Overwrite the synced-ride sidecar (truncating). A write failure is warned, not fatal — the
-    /// worst case is a ride reads as unsynced next boot (the safe default), never a crash.
-    fn write_synced_set(&mut self, set: &SyncedRides) {
-        let Some(dir) = self.tracks_dir else { return };
+    /// Overwrite the synced-ride sidecar (truncating), returning whether the whole rewrite reached
+    /// the card (finding #876-5). A torn write is safe by design — a ride reads as unsynced next boot
+    /// (the safe default: never deleted, and the phone re-acks on reconnect) — so the synced-flag
+    /// callers treat it best-effort; the helper logs the failing step.
+    fn write_synced_set(&mut self, set: &SyncedRides) -> Result<(), SidecarWriteError> {
         let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
         let n = encode_synced_rides(set, &mut buf);
-        match self.vmgr.open_file_in_dir(dir, SYNCED_SET, Mode::ReadWriteCreateOrTruncate) {
-            Ok(file) => {
-                if self.vmgr.write(file, &buf[..n]).is_err() {
-                    defmt::warn!("SD: synced-set write failed — a ride may read unsynced next boot");
-                }
-                let _ = self.vmgr.flush_file(file);
-                let _ = self.vmgr.close_file(file);
-            }
-            Err(e) => defmt::warn!("SD: cannot open synced-set: {}", defmt::Debug2Format(&e)),
-        }
+        self.rewrite_sidecar(self.tracks_dir, SYNCED_SET, &buf[..n])
     }
 
     /// Delete the stored ride with durable object id `id` (the map-only build's hold-to-delete, epic
