@@ -2364,10 +2364,10 @@ impl App {
         loop {
             let id = self.retention.peek(SweepKind::DeleteRoute)?;
             if self.route_delete_still_due(id) {
-                if !self.retention.delete_dispatch_ready(SweepKind::DeleteRoute, now_ms) {
+                if !self.retention.delete_dispatch_ready(SweepKind::DeleteRoute, id, now_ms) {
                     return None; // one route delete in flight — wait out the bounded backoff
                 }
-                self.retention.mark_delete_dispatched(SweepKind::DeleteRoute, now_ms);
+                self.retention.mark_delete_dispatched(SweepKind::DeleteRoute, id, now_ms);
                 return Some(HostCommand::DeleteRoute { id });
             }
             // Invalid / already applied: drop this candidate and try the next.
@@ -2416,10 +2416,10 @@ impl App {
         loop {
             let id = self.retention.peek(SweepKind::DeleteRide)?;
             if self.ride_delete_still_due(id) {
-                if !self.retention.delete_dispatch_ready(SweepKind::DeleteRide, now_ms) {
+                if !self.retention.delete_dispatch_ready(SweepKind::DeleteRide, id, now_ms) {
                     return None;
                 }
-                self.retention.mark_delete_dispatched(SweepKind::DeleteRide, now_ms);
+                self.retention.mark_delete_dispatched(SweepKind::DeleteRide, id, now_ms);
                 return Some(HostCommand::DeleteRide { id });
             }
             self.retention.cancel(SweepKind::DeleteRide, id);
@@ -5426,5 +5426,68 @@ mod tests {
             drain_once(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }),
             "the retained candidate retries itself, without another hourly discovery"
         );
+    }
+
+    /// Review fix (#886): cancelling a queued-but-never-dispatched candidate must NOT re-open the
+    /// per-kind dispatch window while a *different* id's delete is outstanding. Interleaving:
+    /// `DeleteRoute(10)` is dispatched and in flight, `DeleteRoute(11)` is queued behind it; the
+    /// rider activates route 11 → `note_active_route` cancels 11's candidate. The same-pass drain
+    /// must not re-emit `DeleteRoute(10)` mid-flight (one delete in flight per kind), and 10 must
+    /// stay retained for its own backoff-paced retry.
+    #[test]
+    fn cancel_of_a_queued_candidate_does_not_reopen_the_inflight_window() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("X"), summary("A")], &[10, 11], &[expired(now), expired(now)]);
+        app.retention_tick(); // queues DeleteRoute(10) + DeleteRoute(11)
+        let first = drain_once(&mut app);
+        assert!(first.contains(&HostCommand::DeleteRoute { id: 10 }), "10 dispatches first and is in flight");
+        assert!(!first.contains(&HostCommand::DeleteRoute { id: 11 }), "one route delete in flight at a time");
+
+        // The rider activates route 11 (catalog index 1) — the next tick's `note_active_route`
+        // cancels 11's queued (never-dispatched) delete candidate.
+        app.activate_route(1);
+        app.retention_tick();
+        assert!(!app.retention.has(SweepKind::StampRide), "sanity: only route work is queued");
+        let cmds = drain_once(&mut app);
+        assert!(
+            !cmds.iter().any(|c| matches!(c, HostCommand::DeleteRoute { .. })),
+            "cancelling 11 must not re-emit the in-flight 10 mid-backoff: {cmds:?}"
+        );
+        assert_eq!(app.retention.peek(SweepKind::DeleteRoute), Some(10), "10 stays retained for its own retry");
+
+        // 10's own backoff still governs its retry: past the window, 10 (and only 10) re-dispatches.
+        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
+        let retry = drain_once(&mut app);
+        assert!(retry.contains(&HostCommand::DeleteRoute { id: 10 }), "10 retries after its backoff");
+        assert!(!retry.contains(&HostCommand::DeleteRoute { id: 11 }), "the activated 11 is never deleted");
+    }
+
+    /// Review fix (#886): the drain-time trust guard. Delete candidates that are already queued
+    /// (collected under a trusted clock) are **retained and nothing dispatches** when the clock is
+    /// not trusted at drain time — invariant 1 holds at execution time, not only at collection time.
+    /// (Production trust never reverts within a boot; the guard is belt-and-braces, exercised here
+    /// by seeding candidates directly into an untrusted app.)
+    #[test]
+    fn untrusted_clock_at_drain_time_defers_queued_deletes() {
+        use crate::retention::SweepAction;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // never stamped → Untrusted
+        app.set_routes_with_meta(&[summary("Old")], &[10], &[RouteRetentionMeta::new(Retention::Day1, 1)]);
+        app.set_ride_retention_inventory(&[RideRetentionRecord { id: 7, synced: true, synced_at_utc: 1 }]);
+        // Candidates as an earlier trusted sweep would have queued them.
+        app.retention.test_push(SweepAction::DeleteRoute(10));
+        app.retention.test_push(SweepAction::DeleteRide(7));
+
+        let cmds = drain_once(&mut app);
+        assert_eq!(n_deletes(&cmds), 0, "no trusted clock at drain time → nothing dispatches: {cmds:?}");
+        assert!(
+            app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide),
+            "the candidates are retained (deferred), not dropped"
+        );
+
+        // Trust arrives → the same candidates dispatch (their live recheck still holds them due).
+        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
+        let after = drain_once(&mut app);
+        assert!(after.contains(&HostCommand::DeleteRoute { id: 10 }), "route delete dispatches once trusted");
+        assert!(after.contains(&HostCommand::DeleteRide { id: 7 }), "ride delete dispatches once trusted");
     }
 }

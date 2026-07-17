@@ -426,9 +426,12 @@ pub struct SweepInputs<'a> {
 }
 
 /// Evaluate one sweep pass, pushing every warranted [`SweepAction`] into `out` (bounded; overflow is
-/// silently dropped and re-found the next sweep — but `out` is sized to hold a full catalog, so it
-/// never truncates in practice). **Pure** over its inputs — the whole safety policy in one testable
-/// place. Holds the epic's invariants:
+/// silently dropped). With the full [`MAX_RIDES`](crate::ride::MAX_RIDES)-deep ride inventory
+/// (finding #876-2), a bulk-expiry backlog *can* exceed [`SWEEP_QUEUE_CAP`] — that is deliberate
+/// **wave behavior**: the caller only re-sweeps once the queue has drained, so the next sweep picks
+/// up whatever is still due. The direction is benign — a full queue only delays stamps/deletes to a
+/// later wave, never mis-deletes (dispatch re-validates every candidate). **Pure** over its inputs —
+/// the whole safety policy in one testable place. Holds the epic's invariants:
 ///
 /// 1. *(caller-gated)* nothing runs without a trusted clock — the caller only builds [`SweepInputs`]
 ///    when [`clock_trusted`](crate::App::clock_trusted) and no ride is recording.
@@ -489,10 +492,15 @@ pub fn collect_sweep_actions<const N: usize>(inputs: &SweepInputs, out: &mut hea
     }
 }
 
-/// The pending-action queue's capacity — one full catalog's worth of routes plus resident rides, so
-/// a single sweep pass never truncates its batch (every actionable id fits). Drained one action per
-/// class per host pass (matching the board's single-slot-per-pass execution), so a batch clears over
-/// the next few frames.
+/// The pending-candidate queue's capacity. Deliberately **smaller** than the theoretical worst case
+/// now that the sweep reads the full [`MAX_RIDES`](crate::ride::MAX_RIDES)-deep ride inventory
+/// (finding #876-2): a pathological store (every route expired + >32 rides due at once) can emit
+/// more candidates than fit. That overflow is **wave behavior, not loss** — `collect_sweep_actions`
+/// drops the excess silently, and because [`RetentionRuntime::maybe_sweep`] only re-sweeps once the
+/// queue has drained, the next sweep re-discovers whatever is still due. The failure direction is
+/// benign by construction: a full queue can only *delay* stamps and deletes to a later wave, never
+/// mis-delete (every candidate is still re-validated at dispatch). Sized for the realistic case —
+/// a full route catalog plus a UI-page of rides — so waves only occur under bulk-expiry backlogs.
 pub(crate) const SWEEP_QUEUE_CAP: usize = MAX_ROUTES + UI_RIDES_CAP;
 
 /// Bounded pacing between re-dispatches of a delete **candidate** that storage has not yet confirmed
@@ -530,15 +538,18 @@ pub(crate) struct RetentionRuntime {
     /// Only advanced once the stamp is actually queued (never lost to capacity pressure —
     /// finding #876-1).
     last_active_stamped: Option<u16>,
-    /// Per-kind re-dispatch backoff (map-plane millis): the instant the head **route** / **ride**
-    /// delete candidate may be re-dispatched, or `None` when it may go now (the bounded
-    /// [`RETENTION_DELETE_BACKOFF_MS`] pacing). Keyed per kind so a route delete never blocks a ride
-    /// delete — the overwriting `Signal`s these replace were themselves per-kind
-    /// (`ROUTE_DELETE_REQ` / `RIDE_DELETE_REQ`), so "one delete in flight" is per kind. Cleared when
-    /// that kind's candidate is cancelled (the previous op resolved), so the next head dispatches at
-    /// once.
-    route_delete_retry_ms: Option<u32>,
-    ride_delete_retry_ms: Option<u32>,
+    /// Per-kind in-flight **route** / **ride** delete: the dispatched candidate's id plus the
+    /// map-plane-millis instant it may be re-dispatched (the bounded
+    /// [`RETENTION_DELETE_BACKOFF_MS`] pacing); `None` = nothing of that kind is in flight, the head
+    /// candidate may dispatch now. Keyed per kind so a route delete never blocks a ride delete —
+    /// "one delete in flight" is per kind, matching the board's per-kind delete channels. Carrying
+    /// the **id** (not just the deadline) is what keeps the one-in-flight property honest: only a
+    /// cancel of *the dispatched id itself* (its rescan confirmed it gone, or a live recheck retired
+    /// it) clears the slot — cancelling some *other* queued-but-never-dispatched candidate of the
+    /// same kind (e.g. an activation retiring its own delete while a different route's delete is
+    /// outstanding) must not re-open the dispatch window mid-flight.
+    route_delete_inflight: Option<(u16, u32)>,
+    ride_delete_inflight: Option<(u16, u32)>,
 }
 
 impl RetentionRuntime {
@@ -548,17 +559,17 @@ impl RetentionRuntime {
             queue: heapless::Vec::new(),
             last_sweep_hour: None,
             last_active_stamped: None,
-            route_delete_retry_ms: None,
-            ride_delete_retry_ms: None,
+            route_delete_inflight: None,
+            ride_delete_inflight: None,
         }
     }
 
-    /// The per-kind re-dispatch backoff slot (`None` for the non-delete kinds — the stamp classes
-    /// are fire-and-forget and never paced).
-    fn retry_slot(&mut self, kind: SweepKind) -> Option<&mut Option<u32>> {
+    /// The per-kind in-flight slot (`None` for the non-delete kinds — the stamp classes are
+    /// fire-and-forget and never paced).
+    fn inflight_slot(&mut self, kind: SweepKind) -> Option<&mut Option<(u16, u32)>> {
         match kind {
-            SweepKind::DeleteRoute => Some(&mut self.route_delete_retry_ms),
-            SweepKind::DeleteRide => Some(&mut self.ride_delete_retry_ms),
+            SweepKind::DeleteRoute => Some(&mut self.route_delete_inflight),
+            SweepKind::DeleteRide => Some(&mut self.ride_delete_inflight),
             SweepKind::StampRoute | SweepKind::StampRide => None,
         }
     }
@@ -584,37 +595,46 @@ impl RetentionRuntime {
     }
 
     /// Remove the queued candidate of `kind` with this id (the live recheck cancelled it — invalid,
-    /// or storage confirmed it gone) and clear the delete-retry backoff so the next candidate may
-    /// dispatch at once. Returns whether anything was removed.
+    /// or storage confirmed it gone). Clears the in-flight slot **only when the cancelled id is the
+    /// dispatched one** — that operation has resolved, so the next head may dispatch at once.
+    /// Cancelling a queued-but-never-dispatched candidate (an activation retiring its own delete
+    /// while a *different* id's delete is outstanding) leaves the in-flight slot alone, preserving
+    /// the per-kind one-in-flight property: the outstanding id is not re-dispatched mid-flight by an
+    /// unrelated cancel. Returns whether anything was removed.
     pub(crate) fn cancel(&mut self, kind: SweepKind, id: u16) -> bool {
         let Some(pos) = self.queue.iter().position(|a| kind.matches(*a) && a.id() == id) else {
             return false;
         };
         self.queue.remove(pos);
-        if let Some(slot) = self.retry_slot(kind) {
-            *slot = None; // the previous op of this kind resolved — the next head may dispatch now
+        if let Some(slot) = self.inflight_slot(kind) {
+            if matches!(slot, Some((inflight, _)) if *inflight == id) {
+                *slot = None; // the dispatched op resolved — the next head may dispatch now
+            }
         }
         true
     }
 
-    /// Whether a delete candidate of `kind` may be **(re-)dispatched** now — `true` unless a prior
-    /// dispatch's bounded [`RETENTION_DELETE_BACKOFF_MS`] window is still open. Cancellation clears
-    /// the window, so the common success path (rescan drops the id within a frame or two → the
-    /// candidate is cancelled) is never gated; only a genuinely-failing write waits out the backoff
-    /// before it re-fires.
-    pub(crate) fn delete_dispatch_ready(&mut self, kind: SweepKind, now_ms: u32) -> bool {
-        match self.retry_slot(kind).and_then(|s| *s) {
+    /// Whether delete candidate `id` of `kind` may be **(re-)dispatched** now — `true` when nothing
+    /// of that kind is in flight, or when `id` *is* the in-flight one and its bounded
+    /// [`RETENTION_DELETE_BACKOFF_MS`] window has elapsed (the retry path). A *different* id stays
+    /// blocked until the in-flight one resolves (cancel on rescan/recheck) — one delete in flight
+    /// per kind. Cancellation of the dispatched id clears the slot, so the common success path
+    /// (rescan drops the id within a frame or two) is never gated; only a genuinely-failing write
+    /// waits out the backoff before it re-fires.
+    pub(crate) fn delete_dispatch_ready(&mut self, kind: SweepKind, id: u16, now_ms: u32) -> bool {
+        match self.inflight_slot(kind).and_then(|s| *s) {
             None => true,
-            Some(at) => now_ms.wrapping_sub(at) < 0x8000_0000,
+            Some((inflight, at)) => inflight == id && now_ms.wrapping_sub(at) < 0x8000_0000,
         }
     }
 
-    /// Record that a delete candidate of `kind` was just dispatched: arm the bounded re-dispatch
-    /// backoff so a still-present (failed) object doesn't re-fire every frame. The candidate itself
-    /// stays queued (retained until storage confirms it gone).
-    pub(crate) fn mark_delete_dispatched(&mut self, kind: SweepKind, now_ms: u32) {
-        if let Some(slot) = self.retry_slot(kind) {
-            *slot = Some(now_ms.wrapping_add(RETENTION_DELETE_BACKOFF_MS));
+    /// Record that delete candidate `id` of `kind` was just dispatched: own the per-kind in-flight
+    /// slot and arm the bounded re-dispatch backoff so a still-present (failed) object doesn't
+    /// re-fire every frame. The candidate itself stays queued (retained until storage confirms it
+    /// gone).
+    pub(crate) fn mark_delete_dispatched(&mut self, kind: SweepKind, id: u16, now_ms: u32) {
+        if let Some(slot) = self.inflight_slot(kind) {
+            *slot = Some((id, now_ms.wrapping_add(RETENTION_DELETE_BACKOFF_MS)));
         }
     }
 

@@ -123,33 +123,40 @@ pub(crate) async fn wait_store_changed() {
 }
 
 /// On-device route-delete request (epic #447, P6): the durable object id of a route the Route menu's
-/// hold-to-delete footer asked to remove. The **ride loop** posts it (it drains the app's
-/// `take_route_delete`), and the **BLE plane** — the sole owner of the `RefCell<ObjectStore>` —
-/// executes it via [`ObjectStore::delete_route`], so the delete goes through the same catalog +
-/// revision + `storeChanged` path a phone-initiated delete does (never raw SD). A coalescing
-/// `Signal` (level, one id in flight) rather than a queue: the footer fires one delete at a time and
-/// the drain runs promptly, so a second request can't stack up behind the first.
+/// hold-to-delete footer asked to remove, or the auto-expiry sweep's next expired route. The **ride
+/// loop** posts it, and the **BLE plane** — the sole owner of the `RefCell<ObjectStore>` — executes
+/// it via [`ObjectStore::delete_route`], so the delete goes through the same catalog + revision +
+/// `storeChanged` path a phone-initiated delete does (never raw SD).
 ///
 /// It lives as a module static, like [`STORE_CHANGED`], because the `ObjectStore` is trapped behind
 /// the BLE task's `RefCell` while the app lives in the ride loop — this is the lock-free hand-off
 /// from the loop that owns the *intent* to the plane that owns the *store*.
 ///
-/// A bounded **[`Channel`]**, not a coalescing `Signal` (finding #876-3). The auto-expiry sweep can
-/// discover several expired routes at once; the old overwriting `Signal` held only the newest id, so
-/// a batch dispatched faster than the SD delete task drained lost the earlier ids until a later
-/// sweep. The channel is lossless (every posted id is executed exactly once) and applies backpressure
-/// — a full channel makes [`request_route_delete`] report `false` and the app keeps the candidate for
-/// the next pass. Manual (UI hold-to-delete) and retention deletes share this one executor.
+/// A bounded **[`Channel`]**, not a coalescing `Signal` (finding #876-3): the old overwriting
+/// `Signal` held only the newest id, so a retention batch dispatched faster than the SD delete task
+/// drained silently lost the earlier ids until a later sweep. The channel never *overwrites* a
+/// queued id — but be precise about what it does and does not guarantee: a full channel drops the
+/// posted id ([`request_route_delete`] reports `false`), and the app's dispatch bookkeeping ran
+/// *before* this post, so a drop is **not observed backpressure**. End-to-end losslessness rests on
+/// the app's **retain-until-rescan** ownership instead: a retention delete candidate stays queued in
+/// `obc-app` until the store rescan confirms the id gone, so a dropped post is simply re-dispatched
+/// after the bounded backoff. With one retention delete in flight per kind plus at most one manual
+/// delete, depth [`DELETE_CHANNEL_CAP`] means a full channel is effectively unreachable — and when
+/// it isn't, the cost is a delay, never a lost delete. Manual (UI hold-to-delete) and retention
+/// deletes share this one executor.
 static ROUTE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
 
-/// The bounded delete-request channel depth. The app dispatches **one delete per class in flight**
-/// (retained until the store confirms it gone), so at most a couple of ids are ever outstanding; a
-/// small depth is ample and a full channel simply back-pressures the app (never a lost delete).
+/// The bounded delete-request channel depth. The app dispatches **one retention delete per kind in
+/// flight** (retained until the store confirms it gone) plus at most one manual delete, so at most a
+/// couple of ids are ever outstanding; a small depth is ample. A full channel drops the post (the
+/// caller warns) and the app's retained candidate re-dispatches it after the backoff — a delay,
+/// never a lost delete (see [`ROUTE_DELETE_REQ`]).
 const DELETE_CHANNEL_CAP: usize = 8;
 
 /// Post a route-delete request from the ride loop (epic #447, P6) — the BLE plane drains it and runs
-/// the `ObjectStore` delete. Returns `false` if the channel is full (the caller keeps the candidate
-/// and retries) — **lossless**, never an overwrite (finding #876-3).
+/// the `ObjectStore` delete. Returns `false` when the channel is full and the id was **dropped**;
+/// the caller must surface that (a warn), and recovery is the app's retain-until-rescan retry — the
+/// candidate is still owned app-side and re-dispatches after its bounded backoff (finding #876-3).
 pub(crate) fn request_route_delete(id: u16) -> bool {
     ROUTE_DELETE_REQ.try_send(id).is_ok()
 }
@@ -167,11 +174,14 @@ pub(crate) async fn wait_route_delete() -> u16 {
 /// the same catalog + revision + `storeChanged` path a phone-initiated delete does.
 /// A bounded [`Channel`] like [`ROUTE_DELETE_REQ`] (finding #876-3): the ride retention sweep can
 /// discover several synced+aged rides at once, and the old overwriting `Signal` lost all but the
-/// newest. Lossless + back-pressured; shared by manual (Rides-menu hold) and retention ride deletes.
+/// newest. Same contract as the route channel: never an overwrite, but a full channel **drops** the
+/// post — end-to-end losslessness rests on the app's retain-until-rescan retry, not on observed
+/// backpressure. Shared by manual (Rides-menu hold) and retention ride deletes.
 static RIDE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
 
-/// Post a ride-delete request from the ride loop (epic #447, P7). Returns `false` if the channel is
-/// full (the caller keeps the candidate and retries) — lossless, never an overwrite.
+/// Post a ride-delete request from the ride loop (epic #447, P7). Returns `false` when the channel
+/// is full and the id was **dropped** — the caller warns, and the app's retained candidate
+/// re-dispatches after its bounded backoff (see [`request_route_delete`]).
 pub(crate) fn request_ride_delete(id: u16) -> bool {
     RIDE_DELETE_REQ.try_send(id).is_ok()
 }
