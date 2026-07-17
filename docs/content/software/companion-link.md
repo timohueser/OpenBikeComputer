@@ -423,6 +423,18 @@ grew a small tail to carry it. Formats stay pinned; the mutable state routes
 *around* them. The command layouts, the connect-ordering rules, and the 84-byte
 list entry are the [BLE interface spec §4.4 / §7.4](src:obc-ble-interface-spec.md).
 
+**A whole trip is one retention choice.** When you upload a *trip*, the confirm
+sheet shows a single **Auto-delete** picker, and that one choice is the
+postcondition for **every** member route — a trip is one unit, so the trip-level
+pick overrides whatever level a member route carried on its own. The subtlety is
+that a whole-trip upload skips the *bytes* of any stage the device already holds
+(same content, nothing to re-send) — but a skipped stage is skipped only for
+transfer, **never** for policy: the retention command still lands on it, so the
+one trip choice reaches the already-current stages exactly as it reaches the
+freshly-uploaded ones. A re-run at the level a stage already holds sends nothing
+(idempotent), and an old device with no expiry support shows no picker and
+receives no retention command at all.
+
 ## Store epochs — which id era you're talking to
 
 Everything above trusts durable ids to keep meaning the same object next connect.
