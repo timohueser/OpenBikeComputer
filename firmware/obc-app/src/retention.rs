@@ -25,7 +25,7 @@
 //! route reads `Never` → nothing deletes (the safe direction; the app re-pushes retention at
 //! reconcile in S7, so it self-heals).
 
-use crate::ride::{RideSummary, UI_RIDES_CAP};
+use crate::ride::UI_RIDES_CAP;
 use crate::route::MAX_ROUTES;
 
 /// Seconds in a day — the retention arithmetic unit (`expires_at = last_used + days · DAY_SECS`).
@@ -385,9 +385,30 @@ pub enum SweepAction {
     StampRide(u16),
 }
 
-/// The read-only inputs one sweep pass evaluates — the resident catalogs and their retention state,
-/// plus the current UTC instant and the ride-retention setting. Borrowed (no copies of the
-/// catalogs), so the sweep is allocation-free: it only compares a handful of `u32`s per entry.
+/// One stored ride's **retention-relevant** facts — the compact, board-agnostic inventory the sweep
+/// reads *instead of* the 32-row UI ride catalog (finding #876-2). Storage holds up to
+/// [`MAX_RIDES`] rides but the resident [`RideCatalog`](crate::ride) only ever surfaces the newest
+/// [`UI_RIDES_CAP`]; feeding retention from that catalog left older synced rides invisible to expiry
+/// forever. Retention needs only these three facts (never the name/distance/profile the UI carries),
+/// so the host streams **every** stored ride's `id + synced + synced_at` here, independent of the
+/// display catalog.
+///
+/// [`MAX_RIDES`]: crate::ride::MAX_RIDES
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RideRetentionRecord {
+    /// The ride's durable object id.
+    pub id: u16,
+    /// Whether the phone has a durable copy (the synced-set flag). An unsynced ride is never touched.
+    pub synced: bool,
+    /// The UTC-seconds instant the ride was first synced (`0` = legacy synced-without-stamp — the
+    /// eager stamp starts its countdown; never deleted on sight).
+    pub synced_at_utc: u32,
+}
+
+/// The read-only inputs one sweep pass evaluates — the resident route catalog + the full compact
+/// ride inventory and their retention state, plus the current UTC instant and the ride-retention
+/// setting. Borrowed (no copies of the catalogs), so the sweep is allocation-free: it only compares
+/// a handful of `u32`s per entry.
 pub struct SweepInputs<'a> {
     /// Current UTC unix seconds (only ever passed when the clock is trusted — the caller gates it).
     pub now_utc: u32,
@@ -397,10 +418,9 @@ pub struct SweepInputs<'a> {
     pub route_metas: &'a [RouteRetentionMeta],
     /// The active-navigation route's catalog index, or `None` — never deleted (re-stamped instead).
     pub active_route: Option<usize>,
-    /// Durable ride ids, pairwise with [`rides`](SweepInputs::rides).
-    pub ride_ids: &'a [u16],
-    /// The resident ride summaries — the sweep reads each `synced` flag and `synced_at_utc` stamp.
-    pub rides: &'a [RideSummary],
+    /// The **full** compact ride inventory — every stored ride's retention facts (finding #876-2),
+    /// not just the newest [`UI_RIDES_CAP`] the menu shows.
+    pub ride_records: &'a [RideRetentionRecord],
     /// The device ride-retention setting.
     pub ride_retention: RideRetention,
 }
@@ -449,8 +469,10 @@ pub fn collect_sweep_actions<const N: usize>(inputs: &SweepInputs, out: &mut hea
     }
 
     // ── Rides (delete only; the `synced_at` stamp is eager — see the fn doc) ──
+    // Evaluated over the **full** compact inventory (finding #876-2), so a synced+aged ride is
+    // reachable regardless of whether it sits in the newest-32 UI catalog.
     let ride_days = inputs.ride_retention.days();
-    for (&id, ride) in inputs.ride_ids.iter().zip(inputs.rides) {
+    for ride in inputs.ride_records {
         // Invariant 5: only a synced ride whose countdown has *started* (`synced_at > 0`) and fully
         // elapsed is deleted. `synced_at == 0` (never stamped — e.g. acked while untrusted) is left
         // for the eager stamp to start; an unsynced ride is never touched, at any age. `ride_days ==
@@ -462,7 +484,7 @@ pub fn collect_sweep_actions<const N: usize>(inputs: &SweepInputs, out: &mut hea
             continue; // ride_retention == Never → nothing deletes
         };
         if now >= ride.synced_at_utc.saturating_add(days * DAY_SECS) {
-            let _ = out.push(SweepAction::DeleteRide(id));
+            let _ = out.push(SweepAction::DeleteRide(ride.id));
         }
     }
 }
@@ -473,13 +495,31 @@ pub fn collect_sweep_actions<const N: usize>(inputs: &SweepInputs, out: &mut hea
 /// the next few frames.
 pub(crate) const SWEEP_QUEUE_CAP: usize = MAX_ROUTES + UI_RIDES_CAP;
 
-/// The app-resident retention runtime: the pending sweep-action queue, the wall-clock hour the last
-/// sweep ran (the allocation-free "roughly hourly" gate — no new timer), and the last active-route
-/// id stamped (so activation stamps `last_used` **once per activation**, not per tick).
+/// Bounded pacing between re-dispatches of a delete **candidate** that storage has not yet confirmed
+/// gone (map-plane millis, finding #876-1/3). A delete candidate is *kept* — not consumed — when it
+/// is dispatched, so it re-dispatches until the authoritative rescan shows the object absent (success)
+/// or a live recheck cancels it. This backoff keeps a genuinely-failing write (rare — a dead SD) from
+/// re-firing every frame while the far more common success path (rescan lands in a frame or two, the
+/// candidate is cancelled as "already absent") is never gated by it.
+pub(crate) const RETENTION_DELETE_BACKOFF_MS: u32 = 3_000;
+
+/// The app-resident retention **coordinator** (finding #876): the pending candidate queue, the
+/// wall-clock hour the last sweep ran (the allocation-free "roughly hourly" gate — no new timer), the
+/// last active-route id stamped (so activation stamps `last_used` **once per activation**, not per
+/// tick), and the bounded re-dispatch backoff for an in-flight delete.
+///
+/// The queue holds **candidates**, not final commands. A `Delete*` entry means only "this id looked
+/// worth deleting when the cursor reached it" — it does **not** authorize deletion. The just-in-time
+/// decision is re-derived from live state (clock trust, recording, active route, expiry, synced) in
+/// [`App::drain_host_command`](crate::App) immediately before dispatch, and a delete candidate is
+/// **retained until storage confirms it gone** (the rescan drops the id) rather than consumed on
+/// dispatch — so a transient failure retries without waiting for the next hourly sweep, and a route
+/// activated or a ride re-synced after discovery is protected by the live recheck.
 pub(crate) struct RetentionRuntime {
-    /// The batch of [`SweepAction`]s a sweep pass emitted, not yet drained to the host. Drained one
-    /// per class per pass; a sweep only refills it when it is empty (so a batch is never
-    /// double-enqueued).
+    /// The batch of candidate [`SweepAction`]s a sweep pass emitted. Stamps drain once (fire-and-
+    /// forget, mirrored so they don't re-enqueue); delete candidates are retained until storage
+    /// confirms the object absent (or a live recheck cancels them). A sweep only refills it when it
+    /// is empty (so a batch is never double-enqueued and at most one batch drains at a time).
     queue: heapless::Vec<SweepAction, SWEEP_QUEUE_CAP>,
     /// The wall-clock hour (`utc / 3600`) of the last completed sweep — `None` until the first
     /// trusted sweep this boot. The sweep re-runs when the current hour differs (roughly hourly)
@@ -487,13 +527,40 @@ pub(crate) struct RetentionRuntime {
     last_sweep_hour: Option<u32>,
     /// The active route id whose activation was last stamped — so the once-per-activation
     /// `last_used` stamp fires when the active route *changes*, not every tick it stays active.
+    /// Only advanced once the stamp is actually queued (never lost to capacity pressure —
+    /// finding #876-1).
     last_active_stamped: Option<u16>,
+    /// Per-kind re-dispatch backoff (map-plane millis): the instant the head **route** / **ride**
+    /// delete candidate may be re-dispatched, or `None` when it may go now (the bounded
+    /// [`RETENTION_DELETE_BACKOFF_MS`] pacing). Keyed per kind so a route delete never blocks a ride
+    /// delete — the overwriting `Signal`s these replace were themselves per-kind
+    /// (`ROUTE_DELETE_REQ` / `RIDE_DELETE_REQ`), so "one delete in flight" is per kind. Cleared when
+    /// that kind's candidate is cancelled (the previous op resolved), so the next head dispatches at
+    /// once.
+    route_delete_retry_ms: Option<u32>,
+    ride_delete_retry_ms: Option<u32>,
 }
 
 impl RetentionRuntime {
     /// The boot state: nothing queued, no sweep run yet, no activation stamped.
     pub(crate) const fn new() -> Self {
-        RetentionRuntime { queue: heapless::Vec::new(), last_sweep_hour: None, last_active_stamped: None }
+        RetentionRuntime {
+            queue: heapless::Vec::new(),
+            last_sweep_hour: None,
+            last_active_stamped: None,
+            route_delete_retry_ms: None,
+            ride_delete_retry_ms: None,
+        }
+    }
+
+    /// The per-kind re-dispatch backoff slot (`None` for the non-delete kinds — the stamp classes
+    /// are fire-and-forget and never paced).
+    fn retry_slot(&mut self, kind: SweepKind) -> Option<&mut Option<u32>> {
+        match kind {
+            SweepKind::DeleteRoute => Some(&mut self.route_delete_retry_ms),
+            SweepKind::DeleteRide => Some(&mut self.ride_delete_retry_ms),
+            SweepKind::StampRoute | SweepKind::StampRide => None,
+        }
     }
 
     /// Whether an action of `kind` is queued (the drain's backpressure peek).
@@ -502,24 +569,90 @@ impl RetentionRuntime {
     }
 
     /// Pop the first queued action of `kind`, or `None`. Removes it (each is a distinct one-shot).
+    /// The **stamp** drain path — a delete candidate is never consumed this way (it is retained
+    /// until confirmed; see [`peek`](Self::peek) / [`cancel`](Self::cancel)).
     pub(crate) fn take(&mut self, kind: SweepKind) -> Option<u16> {
         let pos = self.queue.iter().position(|a| kind.matches(*a))?;
         Some(self.queue.remove(pos).id())
+    }
+
+    /// The first queued candidate id of `kind` **without** removing it — the delete drain peeks,
+    /// re-derives the live decision, and only then either [`cancel`](Self::cancel)s it (invalid /
+    /// already applied) or dispatches it (kept for retry).
+    pub(crate) fn peek(&self, kind: SweepKind) -> Option<u16> {
+        self.queue.iter().find(|a| kind.matches(**a)).map(|a| a.id())
+    }
+
+    /// Remove the queued candidate of `kind` with this id (the live recheck cancelled it — invalid,
+    /// or storage confirmed it gone) and clear the delete-retry backoff so the next candidate may
+    /// dispatch at once. Returns whether anything was removed.
+    pub(crate) fn cancel(&mut self, kind: SweepKind, id: u16) -> bool {
+        let Some(pos) = self.queue.iter().position(|a| kind.matches(*a) && a.id() == id) else {
+            return false;
+        };
+        self.queue.remove(pos);
+        if let Some(slot) = self.retry_slot(kind) {
+            *slot = None; // the previous op of this kind resolved — the next head may dispatch now
+        }
+        true
+    }
+
+    /// Whether a delete candidate of `kind` may be **(re-)dispatched** now — `true` unless a prior
+    /// dispatch's bounded [`RETENTION_DELETE_BACKOFF_MS`] window is still open. Cancellation clears
+    /// the window, so the common success path (rescan drops the id within a frame or two → the
+    /// candidate is cancelled) is never gated; only a genuinely-failing write waits out the backoff
+    /// before it re-fires.
+    pub(crate) fn delete_dispatch_ready(&mut self, kind: SweepKind, now_ms: u32) -> bool {
+        match self.retry_slot(kind).and_then(|s| *s) {
+            None => true,
+            Some(at) => now_ms.wrapping_sub(at) < 0x8000_0000,
+        }
+    }
+
+    /// Record that a delete candidate of `kind` was just dispatched: arm the bounded re-dispatch
+    /// backoff so a still-present (failed) object doesn't re-fire every frame. The candidate itself
+    /// stays queued (retained until storage confirms it gone).
+    pub(crate) fn mark_delete_dispatched(&mut self, kind: SweepKind, now_ms: u32) {
+        if let Some(slot) = self.retry_slot(kind) {
+            *slot = Some(now_ms.wrapping_add(RETENTION_DELETE_BACKOFF_MS));
+        }
     }
 
     /// Enqueue a stamp for the active route becoming `active_id` — but only **once per activation**
     /// (when it differs from the last stamped active id). Called each trusted tick; a no-op while
     /// the active route is unchanged. `active_id == None` clears the memory so re-activating the
     /// same route later re-stamps.
+    ///
+    /// Two safety duties beyond the stamp (finding #876-1):
+    /// - it **cancels any queued delete candidate for the now-active route** immediately, so an
+    ///   activation that races an already-discovered delete can never be beaten to dispatch (the
+    ///   live drain recheck is the primary guard; this closes the window belt-and-braces);
+    /// - it advances `last_active_stamped` **only once the stamp is actually queued**, so a full
+    ///   queue can never drop the activation stamp and then suppress the retry — a later tick re-tries.
     pub(crate) fn note_active_route(&mut self, active_id: Option<u16>) {
         match active_id {
-            Some(id) if self.last_active_stamped != Some(id) => {
-                self.last_active_stamped = Some(id);
-                let _ = self.queue.push(SweepAction::StampRoute(id));
+            Some(id) => {
+                // Invariant 3: an activated route must never be deleted by an earlier sweep decision.
+                self.cancel(SweepKind::DeleteRoute, id);
+                if self.last_active_stamped != Some(id) {
+                    // Advance the once-per-activation memory only if the stamp is (or is already)
+                    // queued — never lose it to capacity pressure.
+                    if self.ensure_stamp_route(id) {
+                        self.last_active_stamped = Some(id);
+                    }
+                }
             }
             None => self.last_active_stamped = None,
-            _ => {}
         }
+    }
+
+    /// Ensure a `StampRoute(id)` is queued (idempotent — skips a duplicate). Returns whether one is
+    /// queued afterwards (`false` only when the queue was full and the push failed).
+    pub(crate) fn ensure_stamp_route(&mut self, id: u16) -> bool {
+        if self.queue.iter().any(|a| matches!(a, SweepAction::StampRoute(q) if *q == id)) {
+            return true;
+        }
+        self.queue.push(SweepAction::StampRoute(id)).is_ok()
     }
 
     /// Enqueue a `last_used` stamp for a route a BLE upload just committed (auto-expiry epic #638 S4):
@@ -543,10 +676,10 @@ impl RetentionRuntime {
     /// instead of deferring to the recording-end sweep. Idempotent: skips an id already queued (the
     /// caller also mirrors `synced_at` on drain, so a stamped ride stops matching next tick). `rides`
     /// is the resident catalog pairwise with `ride_ids`.
-    pub(crate) fn stamp_synced_rides(&mut self, ride_ids: &[u16], rides: &[RideSummary]) {
-        for (&id, ride) in ride_ids.iter().zip(rides) {
-            if ride.synced && ride.synced_at_utc == 0 && !self.has_stamp_ride(id) {
-                let _ = self.queue.push(SweepAction::StampRide(id));
+    pub(crate) fn stamp_synced_rides(&mut self, rides: &[RideRetentionRecord]) {
+        for ride in rides {
+            if ride.synced && ride.synced_at_utc == 0 && !self.has_stamp_ride(ride.id) {
+                let _ = self.queue.push(SweepAction::StampRide(ride.id));
             }
         }
     }
@@ -626,6 +759,7 @@ impl SweepAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ride::MAX_RIDES;
 
     #[test]
     fn retention_days_and_unknown_decode() {
@@ -757,22 +891,13 @@ mod tests {
             route_ids: &[],
             route_metas: &[],
             active_route: None,
-            ride_ids: &[],
-            rides: &[],
+            ride_records: &[],
             ride_retention: RideRetention::Week1,
         }
     }
 
-    fn ride(synced: bool, synced_at_utc: u32) -> RideSummary {
-        RideSummary {
-            name: heapless::String::new(),
-            start_time: 0,
-            distance_m: 0,
-            moving_time_s: 0,
-            climb_m: 0,
-            synced,
-            synced_at_utc,
-        }
+    fn ride(id: u16, synced: bool, synced_at_utc: u32) -> RideRetentionRecord {
+        RideRetentionRecord { id, synced, synced_at_utc }
     }
 
     #[test]
@@ -821,18 +946,16 @@ mod tests {
     /// left untouched here (the eager stamp starts it), and an unsynced ride is never touched.
     #[test]
     fn sweep_ride_rules() {
-        let ids = [1u16, 2, 3, 4];
         let now = 1_000_000;
         let rides = [
-            ride(true, now - 8 * DAY_SECS), // synced 8 days ago → expired (>7)
-            ride(true, now - DAY_SECS),     // synced yesterday → kept
-            ride(true, 0),                  // legacy synced, unstamped → NOT the sweep's job
-            ride(false, 0),                 // unsynced → untouched (age irrelevant)
+            ride(1, true, now - 8 * DAY_SECS), // synced 8 days ago → expired (>7)
+            ride(2, true, now - DAY_SECS),     // synced yesterday → kept
+            ride(3, true, 0),                  // legacy synced, unstamped → NOT the sweep's job
+            ride(4, false, 0),                 // unsynced → untouched (age irrelevant)
         ];
         let inputs = SweepInputs {
             now_utc: now,
-            ride_ids: &ids,
-            rides: &rides,
+            ride_records: &rides,
             ride_retention: RideRetention::Week1, // 7 days
             ..ins()
         };
@@ -847,34 +970,56 @@ mod tests {
         );
     }
 
+    /// Finding #876-2: the sweep evaluates the **full** compact inventory, not the newest-32 UI
+    /// catalog — an older synced+expired ride (one that would never sit in the display list) is
+    /// still selected for deletion, and a legacy `synced_at == 0` ride anywhere in the inventory is
+    /// eagerly stamped.
+    #[test]
+    fn sweep_and_stamp_cover_full_inventory_beyond_ui_cap() {
+        let now = 10_000_000;
+        // Build an inventory larger than the UI cap: the newest UI_RIDES_CAP are fresh/unsynced, an
+        // old one (index past the cap) is synced + expired, and another old one is legacy-unstamped.
+        let mut recs: heapless::Vec<RideRetentionRecord, MAX_RIDES> = heapless::Vec::new();
+        for i in 0..UI_RIDES_CAP as u16 {
+            let _ = recs.push(ride(100 + i, false, 0)); // the "visible" newest 32: unsynced
+        }
+        let _ = recs.push(ride(7, true, now - 30 * DAY_SECS)); // old, synced long ago → expired
+        let _ = recs.push(ride(8, true, 0)); // old, legacy synced-without-stamp → needs the eager stamp
+        assert!(recs.len() > UI_RIDES_CAP, "the inventory is larger than the display catalog");
+
+        let inputs = SweepInputs { now_utc: now, ride_records: &recs, ride_retention: RideRetention::Week1, ..ins() };
+        let mut out: heapless::Vec<SweepAction, SWEEP_QUEUE_CAP> = heapless::Vec::new();
+        collect_sweep_actions(&inputs, &mut out);
+        assert!(out.contains(&SweepAction::DeleteRide(7)), "an older-than-UI-cap synced+expired ride is deleted");
+
+        // The eager stamp reaches every legacy ride in the inventory, not just the UI-resident ones.
+        let mut rt = RetentionRuntime::new();
+        rt.stamp_synced_rides(&recs);
+        assert_eq!(rt.take(SweepKind::StampRide), Some(8), "the legacy synced-unstamped ride is stamped");
+        assert_eq!(rt.take(SweepKind::StampRide), None, "only the one unstamped ride needs a stamp");
+    }
+
     /// The eager `synced_at` stamp: every trusted tick enqueues one `StampRide` per synced-and-unstamped
     /// ride (idempotently — never a second for the same id), and leaves stamped/unsynced rides alone.
     #[test]
     fn runtime_stamps_synced_rides_eagerly() {
-        let ids = [1u16, 2, 3];
         let rides = [
-            ride(true, 0),     // synced, unstamped → stamp
-            ride(true, 5_000), // synced, already stamped → leave
-            ride(false, 0),    // unsynced → never
+            ride(1, true, 0),     // synced, unstamped → stamp
+            ride(2, true, 5_000), // synced, already stamped → leave
+            ride(3, false, 0),    // unsynced → never
         ];
         let mut rt = RetentionRuntime::new();
-        rt.stamp_synced_rides(&ids, &rides);
-        rt.stamp_synced_rides(&ids, &rides); // a second tick must not double-enqueue id 1
+        rt.stamp_synced_rides(&rides);
+        rt.stamp_synced_rides(&rides); // a second tick must not double-enqueue id 1
         assert_eq!(rt.take(SweepKind::StampRide), Some(1), "the unstamped synced ride is stamped");
         assert_eq!(rt.take(SweepKind::StampRide), None, "exactly one stamp, and only for the unstamped ride");
     }
 
     #[test]
     fn sweep_ride_retention_never_deletes_nothing() {
-        let ids = [1u16];
-        let rides = [ride(true, 1)]; // synced ages ago
-        let inputs = SweepInputs {
-            now_utc: u32::MAX,
-            ride_ids: &ids,
-            rides: &rides,
-            ride_retention: RideRetention::Never,
-            ..ins()
-        };
+        let rides = [ride(1, true, 1)]; // synced ages ago
+        let inputs =
+            SweepInputs { now_utc: u32::MAX, ride_records: &rides, ride_retention: RideRetention::Never, ..ins() };
         let mut out: heapless::Vec<SweepAction, 8> = heapless::Vec::new();
         collect_sweep_actions(&inputs, &mut out);
         assert!(out.is_empty(), "ride_retention Never → nothing");
@@ -893,6 +1038,36 @@ mod tests {
         rt.note_active_route(None); // clear memory
         rt.note_active_route(Some(7)); // re-activating 7 stamps again
         assert_eq!(rt.take(SweepKind::StampRoute), Some(7));
+    }
+
+    /// Finding #876-1: the activation safety stamp is **never lost to capacity pressure**. When the
+    /// candidate queue is full, `note_active_route` cannot queue the stamp and must *not* advance its
+    /// once-per-activation memory — so a later tick (after a slot frees) retries and lands it.
+    #[test]
+    fn activation_stamp_survives_capacity_pressure() {
+        let mut rt = RetentionRuntime::new();
+        // Saturate the queue with delete candidates.
+        for i in 0..SWEEP_QUEUE_CAP as u16 {
+            rt.test_push(SweepAction::DeleteRoute(i));
+        }
+        rt.note_active_route(Some(9_999));
+        assert!(!rt.has(SweepKind::StampRoute), "no room for the activation stamp yet");
+        // A delete drains/cancels, freeing a slot — the next activation tick retries the stamp.
+        assert!(rt.cancel(SweepKind::DeleteRoute, 0), "free one slot");
+        rt.note_active_route(Some(9_999));
+        assert_eq!(rt.take(SweepKind::StampRoute), Some(9_999), "the activation stamp is retried, not lost");
+    }
+
+    /// Finding #876-1: `note_active_route` immediately cancels a queued delete candidate for the
+    /// route that just became active (belt-and-braces alongside the live drain recheck).
+    #[test]
+    fn activation_cancels_a_queued_delete_for_that_route() {
+        let mut rt = RetentionRuntime::new();
+        rt.test_push(SweepAction::DeleteRoute(5));
+        rt.test_push(SweepAction::DeleteRoute(6));
+        rt.note_active_route(Some(5));
+        assert_eq!(rt.peek(SweepKind::DeleteRoute), Some(6), "route 5's delete candidate was cancelled on activation");
+        assert!(rt.has(SweepKind::StampRoute), "and it is queued for a re-stamp instead");
     }
 
     #[test]

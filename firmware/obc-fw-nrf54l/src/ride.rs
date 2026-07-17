@@ -170,6 +170,10 @@ pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
 pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     let catalog = storage.scan_rides();
     app.set_rides(&catalog, storage.ride_ids());
+    // Feed the **full** compact ride-retention inventory (finding #876-2): every synced ride, not
+    // just the newest-32 the menu shows, so the auto-delete sweep + eager stamp reach older synced
+    // rides. Independent of the display catalog above; one extra synced-set read.
+    app.set_ride_retention_inventory(&storage.ride_retention_inventory());
 }
 
 /// Scan the card's `/routes` **trip catalog** (`TP{id}.OBT` files) into the app's trip folders (epic

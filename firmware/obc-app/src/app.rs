@@ -838,10 +838,12 @@ impl App {
         // stamp is safe mid-ride (invariant 4 gates *deletions*, not stamps), so this runs regardless
         // of `is_tracking`. (Rides acked while *untrusted* — an old app with no `setClock` — keep
         // `synced_at == 0` until this fires on the first trusted tick: the lazy fallback.)
-        self.retention.stamp_synced_rides(self.catalogs.ride_ids(), self.catalogs.rides());
+        self.retention.stamp_synced_rides(self.catalogs.ride_records());
 
         // The roughly-hourly delete sweep (invariant 4: not while recording). `maybe_sweep` gates on the
-        // wall-clock hour and an empty queue, then fills the batch from the pure policy function.
+        // wall-clock hour and an empty queue, then fills the batch from the pure policy function. The
+        // final delete/stamp decision is re-derived from live state at drain (`drain_host_command`),
+        // so a candidate collected here is only ever a suggestion, never an authorized deletion.
         if !self.activity.is_tracking() {
             let App { retention, catalogs, activity, settings, .. } = self;
             retention.maybe_sweep(now, |queue| {
@@ -850,8 +852,7 @@ impl App {
                     route_ids: catalogs.route_ids(),
                     route_metas: catalogs.route_metas(),
                     active_route: activity.active_route,
-                    ride_ids: catalogs.ride_ids(),
-                    rides: catalogs.rides(),
+                    ride_records: catalogs.ride_records(),
                     ride_retention: settings.ride_retention,
                 };
                 crate::retention::collect_sweep_actions(&inputs, queue);
@@ -1186,6 +1187,16 @@ impl App {
         }
         self.activity.viewed_ride = self.activity.viewed_ride.and_then(remap);
         self.ui.map_dirty = true;
+    }
+
+    /// Feed the **full** compact ride-retention inventory (finding #876-2): every stored ride's
+    /// `id + synced + synced_at`, up to [`MAX_RIDES`](crate::MAX_RIDES), independent of the
+    /// newest-32 UI catalog [`set_rides`](App::set_rides) carries. A retention-aware host (the board)
+    /// streams this from its whole-store synced-set after each rescan so the auto-delete sweep + the
+    /// eager `synced_at` stamp reach a synced+expired ride even when it never sits in the display
+    /// list. Call **after** [`set_rides`](App::set_rides) (which seeds a display-only fallback).
+    pub fn set_ride_retention_inventory(&mut self, records: &[crate::retention::RideRetentionRecord]) {
+        self.catalogs.set_ride_retention_inventory(records);
     }
 
     /// The resident ride catalog (summaries) — what the Rides screen lists.
@@ -2275,14 +2286,13 @@ impl App {
                 self.activity.take_nav_cancel().then_some(HostCommand::CancelRoutePlan)
             }
             HostCommandClass::DeleteRoute => {
-                // The UI hold-to-delete (index-resolved to a durable id) takes priority; a sweep
-                // delete (already id-shaped) drains after it, one per pass (#638 S3).
+                // The UI hold-to-delete (index-resolved to a durable id) takes priority; a retention
+                // delete drains after it, re-validated against live state and one in flight at a time
+                // (finding #876-1/3).
                 if let Some(idx) = self.activity.take_route_delete() {
                     Some(HostCommand::DeleteRoute { id: self.catalogs.route_entry(idx)?.id })
                 } else {
-                    self.retention
-                        .take(crate::retention::SweepKind::DeleteRoute)
-                        .map(|id| HostCommand::DeleteRoute { id })
+                    self.retention_delete_route()
                 }
             }
             HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
@@ -2290,9 +2300,7 @@ impl App {
                 if let Some(idx) = self.activity.take_ride_delete() {
                     Some(HostCommand::DeleteRide { id: self.catalogs.ride_entry(idx)?.id })
                 } else {
-                    self.retention
-                        .take(crate::retention::SweepKind::DeleteRide)
-                        .map(|id| HostCommand::DeleteRide { id })
+                    self.retention_delete_ride()
                 }
             }
             HostCommandClass::StampRouteUsed => {
@@ -2306,7 +2314,11 @@ impl App {
             HostCommandClass::StampRideSynced => {
                 let id = self.retention.take(crate::retention::SweepKind::StampRide)?;
                 let utc = self.wall_unix_now();
+                // Mirror into both the resident summary (UI repaint) and the full retention inventory
+                // (finding #876-2) so a re-derivation before the host's rescan doesn't re-enqueue the
+                // stamp — including for a ride outside the newest-32 display catalog.
                 self.catalogs.stamp_ride_synced_at(id, utc);
+                self.catalogs.stamp_inventory_synced_at(id, utc);
                 Some(HostCommand::StampRideSynced { id, utc })
             }
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
@@ -2329,6 +2341,106 @@ impl App {
             HostCommandClass::LoadRideTrack => self.ride_track_request().map(|id| HostCommand::LoadRideTrack { id }),
             HostCommandClass::RefreshNavPreview => self.nav_preview_missing().then_some(HostCommand::RefreshNavPreview),
         }
+    }
+
+    /// Drain one retention **route** delete, re-deriving the whole policy from live state at dispatch
+    /// (finding #876-1). A candidate is only a suggestion; the just-in-time decision is what becomes
+    /// a command:
+    ///
+    /// - no trusted clock this boot, or a ride recording → **defer** (candidates stay queued —
+    ///   invariants 1 & 4);
+    /// - the route is now active → **never delete**; re-stamp it instead (invariant 3);
+    /// - the route vanished, went `Never`, has an unknown `last_used`, or is no longer expired →
+    ///   **cancel** the candidate (an absent object is a completed no-op — invariants 2 & 6);
+    /// - otherwise **dispatch** the delete and **keep** the candidate (it is retired only when the
+    ///   authoritative rescan drops the id), paced by the bounded re-dispatch backoff so a failing
+    ///   write retries without hammering (finding #876-3).
+    fn retention_delete_route(&mut self) -> Option<HostCommand> {
+        use crate::retention::SweepKind;
+        if !self.clock_trusted() || self.activity.is_tracking() {
+            return None; // defer — invariants 1 & 4, evaluated at execution time
+        }
+        let now_ms = self.ui.now_ms;
+        loop {
+            let id = self.retention.peek(SweepKind::DeleteRoute)?;
+            if self.route_delete_still_due(id) {
+                if !self.retention.delete_dispatch_ready(SweepKind::DeleteRoute, now_ms) {
+                    return None; // one route delete in flight — wait out the bounded backoff
+                }
+                self.retention.mark_delete_dispatched(SweepKind::DeleteRoute, now_ms);
+                return Some(HostCommand::DeleteRoute { id });
+            }
+            // Invalid / already applied: drop this candidate and try the next.
+            self.retention.cancel(SweepKind::DeleteRoute, id);
+        }
+    }
+
+    /// The just-in-time route-delete predicate (finding #876-1): whether route `id` is *still* a
+    /// legal auto-delete right now. Converts an active/unknown-stamp route into a re-stamp instead of
+    /// a delete (so the safety stamp is never lost), and reports `false` for a route that vanished,
+    /// went `Never`, or is no longer expired.
+    fn route_delete_still_due(&mut self, id: u16) -> bool {
+        use crate::retention::Retention;
+        let now = self.wall_unix_now();
+        let Some(idx) = self.catalogs.route_ids().iter().position(|&x| x == id) else {
+            return false; // route gone — already absent
+        };
+        let meta = self.catalogs.route_metas().get(idx).copied().unwrap_or_default();
+        // Invariant 3: the active route is never deleted — re-stamp it when it would otherwise expire.
+        if self.activity.active_route == Some(idx) {
+            if !matches!(meta.retention, Retention::Never) {
+                self.retention.ensure_stamp_route(id);
+            }
+            return false;
+        }
+        if matches!(meta.retention, Retention::Never) {
+            return false; // invariant 6
+        }
+        if meta.needs_clock_started() {
+            self.retention.ensure_stamp_route(id); // invariant 2: stamp, never delete on sight
+            return false;
+        }
+        meta.is_expired(now)
+    }
+
+    /// Drain one retention **ride** delete, re-deriving the policy from live state at dispatch
+    /// (finding #876-1) — the ride twin of [`retention_delete_route`](App::retention_delete_route).
+    /// A ride is only deleted while it is still synced, `synced_at > 0`, and its configured interval
+    /// has fully elapsed (invariant 5); anything else cancels the candidate.
+    fn retention_delete_ride(&mut self) -> Option<HostCommand> {
+        use crate::retention::SweepKind;
+        if !self.clock_trusted() || self.activity.is_tracking() {
+            return None; // defer — invariants 1 & 4
+        }
+        let now_ms = self.ui.now_ms;
+        loop {
+            let id = self.retention.peek(SweepKind::DeleteRide)?;
+            if self.ride_delete_still_due(id) {
+                if !self.retention.delete_dispatch_ready(SweepKind::DeleteRide, now_ms) {
+                    return None;
+                }
+                self.retention.mark_delete_dispatched(SweepKind::DeleteRide, now_ms);
+                return Some(HostCommand::DeleteRide { id });
+            }
+            self.retention.cancel(SweepKind::DeleteRide, id);
+        }
+    }
+
+    /// The just-in-time ride-delete predicate (finding #876-1/5): whether ride `id` is *still* a
+    /// legal auto-delete — read from the full compact inventory, so a re-sync or a lengthened
+    /// interval discovered after the sweep wins.
+    fn ride_delete_still_due(&self, id: u16) -> bool {
+        let now = self.wall_unix_now();
+        let Some(rec) = self.catalogs.ride_records().iter().find(|r| r.id == id) else {
+            return false; // gone from the inventory — already absent
+        };
+        if !rec.synced || rec.synced_at_utc == 0 {
+            return false; // unsynced, or the countdown has not started
+        }
+        let Some(days) = self.settings.ride_retention.days() else {
+            return false; // ride_retention == Never
+        };
+        now >= rec.synced_at_utc.saturating_add(days * crate::retention::DAY_SECS)
     }
 
     /// The Ride detail's derived track-fill cue (#680): the viewed ride's durable id while the
@@ -5168,5 +5280,151 @@ mod tests {
         let metas = app.route_metas();
         assert_eq!(metas[0], RouteRetentionMeta::new(Retention::Month1, 300), "C's meta followed its id");
         assert_eq!(metas[1], RouteRetentionMeta::new(Retention::Day1, 100), "A's meta followed its id");
+    }
+
+    // ==================== finding #876: just-in-time execution guards ====================
+    //
+    // The tests above collect *and* dispatch in one `sweep_and_drain`, so a decision never goes
+    // stale between the two. These drive the race the issue is about: fill the candidate queue with
+    // one `retention_tick`, mutate live state, and prove the **drain** re-derives the decision.
+
+    use crate::retention::{RideRetentionRecord, SweepKind, RETENTION_DELETE_BACKOFF_MS};
+
+    /// One drain pass (a single host loop iteration), collecting the commands it produced.
+    fn drain_once(app: &mut App) -> heapless::Vec<HostCommand, 32> {
+        let mut mb: HostMailbox = HostMailbox::new();
+        let _ = app.drain_host_commands(&mut mb);
+        let mut out = heapless::Vec::new();
+        while let Some(c) = mb.pop() {
+            let _ = out.push(c);
+        }
+        out
+    }
+
+    fn expired(now: u32) -> RouteRetentionMeta {
+        RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)
+    }
+
+    /// Finding #876-1: a route **activated after the sweep discovered it** as a delete candidate but
+    /// **before the delete drains** is never deleted — the live drain recheck converts it to a
+    /// re-stamp, and the still-idle expired route deletes as normal.
+    #[test]
+    fn activation_after_discovery_cancels_the_queued_delete() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("A"), summary("B")], &[10, 11], &[expired(now), expired(now)]);
+        app.retention_tick(); // the sweep queues DeleteRoute(10) + DeleteRoute(11)
+        assert!(app.retention.has(SweepKind::DeleteRoute), "both routes are delete candidates");
+        // The rider opens route 10 and starts navigating it before that item drains.
+        app.activate_route(0);
+        let cmds = drain_once(&mut app);
+        assert!(!cmds.contains(&HostCommand::DeleteRoute { id: 10 }), "the activated route is never deleted");
+        assert!(
+            cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })),
+            "the activated route is re-stamped instead: {cmds:?}"
+        );
+        assert!(cmds.contains(&HostCommand::DeleteRoute { id: 11 }), "the still-idle expired route deletes");
+    }
+
+    /// Finding #876-1 (invariant 4): deletes discovered while idle and **then** interrupted by a
+    /// recording are deferred — not dropped — and dispatch once recording ends.
+    #[test]
+    fn recording_after_discovery_defers_deletes_without_losing_them() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
+        app.set_ride_retention_inventory(&[RideRetentionRecord {
+            id: 7,
+            synced: true,
+            synced_at_utc: now - 8 * DAY_SECS,
+        }]);
+        app.retention_tick(); // discovers DeleteRoute(10) + DeleteRide(7) while idle
+        assert!(app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide));
+        // Recording begins *after* discovery, on a later frame.
+        app.activity.start_session();
+        let while_recording = drain_once(&mut app);
+        assert_eq!(n_deletes(&while_recording), 0, "no auto-delete dispatches while recording");
+        assert!(
+            app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide),
+            "the candidates are retained, not dropped"
+        );
+        // Recording ends → the same candidates dispatch (route + ride are separate classes → one pass).
+        app.activity.end_session();
+        let after = drain_once(&mut app);
+        assert!(after.contains(&HostCommand::DeleteRoute { id: 10 }), "the route delete dispatches after recording");
+        assert!(after.contains(&HostCommand::DeleteRide { id: 7 }), "the ride delete dispatches after recording");
+    }
+
+    /// Finding #876-1: retention/metadata changed **between discovery and dispatch** — the live state
+    /// wins. A route lengthened to `Never` after the sweep queued its delete is not deleted.
+    #[test]
+    fn metadata_change_between_discovery_and_dispatch_wins() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
+        app.retention_tick(); // queues DeleteRoute(10)
+        assert!(app.retention.has(SweepKind::DeleteRoute));
+        // The phone sets this route to Never (or re-stamps it) before the delete drains.
+        app.set_route_meta(&[RouteRetentionMeta::new(Retention::Never, now - 3 * DAY_SECS)]);
+        let cmds = drain_once(&mut app);
+        assert_eq!(n_deletes(&cmds), 0, "the live Never wins — the stale delete candidate is cancelled");
+        assert!(!app.retention.has(SweepKind::DeleteRoute), "the cancelled candidate is retired");
+    }
+
+    /// Finding #876-3: multiple expired objects are drained **one in flight at a time**, and every id
+    /// is executed exactly once (or resolved already-absent) — none is overwritten or dropped, the
+    /// exact failure the coalescing delete `Signal` had. The host "applies" each delete by rescanning
+    /// the store without the id (as the real store-changed edge does).
+    #[test]
+    fn batched_deletes_all_execute_exactly_once() {
+        let (mut app, now) = trusted_app();
+        let mut live: heapless::Vec<u16, 4> = heapless::Vec::from_slice(&[10, 11, 12]).unwrap();
+        let rescan = |app: &mut App, live: &[u16]| {
+            let sums: heapless::Vec<RouteSummary, 4> = live.iter().map(|_| summary("x")).collect();
+            let metas: heapless::Vec<RouteRetentionMeta, 4> = live.iter().map(|_| expired(now)).collect();
+            app.set_routes_with_meta(&sums, live, &metas);
+        };
+        rescan(&mut app, &live);
+        app.retention_tick(); // three delete candidates queued at once
+
+        let mut deleted: heapless::Vec<u16, 8> = heapless::Vec::new();
+        for _ in 0..12 {
+            for c in &drain_once(&mut app) {
+                if let HostCommand::DeleteRoute { id } = c {
+                    let _ = deleted.push(*id);
+                    // Storage succeeds: the id leaves the catalog on the next rescan.
+                    if let Some(p) = live.iter().position(|x| x == id) {
+                        live.remove(p);
+                    }
+                    rescan(&mut app, &live);
+                }
+            }
+            if !app.retention.has(SweepKind::DeleteRoute) {
+                break;
+            }
+        }
+        assert_eq!(deleted.len(), 3, "every expired route was deleted: {deleted:?}");
+        for id in [10u16, 11, 12] {
+            assert_eq!(deleted.iter().filter(|&&x| x == id).count(), 1, "id {id} executed exactly once");
+        }
+    }
+
+    /// Finding #876-3: a transient delete failure is **retried by the same candidate** — no second
+    /// hourly sweep is needed. The retry is paced by the bounded backoff (so a dead card doesn't
+    /// re-fire every frame), then re-dispatches the identical id once the window elapses.
+    #[test]
+    fn failed_delete_retries_without_a_new_sweep() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
+        app.retention_tick();
+        assert!(drain_once(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }), "first dispatch");
+        // Storage FAILED: route 10 is still present. Within the backoff window it does not re-fire.
+        assert!(
+            !drain_once(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }),
+            "the backoff paces the retry — no per-frame hammering"
+        );
+        // Past the backoff, the *same* candidate re-dispatches — no new sweep ran in between.
+        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
+        assert!(
+            drain_once(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }),
+            "the retained candidate retries itself, without another hourly discovery"
+        );
     }
 }

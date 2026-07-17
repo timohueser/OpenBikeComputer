@@ -220,4 +220,119 @@ struct TripUploadModelTests {
             #expect(record?.retention == .twoMonths)
         }
     }
+
+    // MARK: Whole-trip retention reaches skipped stages (finding #876-4)
+
+    /// The crux of finding #876-4: a re-run where **every** stage's bytes are already
+    /// current (all skips, nothing transferred) still applies the trip's newly-chosen
+    /// Auto-delete level to every member route — on the device and in the library. A
+    /// skip skips the bytes, not the retention postcondition.
+    @Test
+    func reRunAtADifferentLevelUpdatesEverySkippedStage() async {
+        let (model, control, library) = await makeRetentionMain()
+        let stageIDs = model.tripStages(tripID).map(\.id)
+
+        // First upload lands both stages fresh at the app default (.twoWeeks).
+        let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        startAndConfirm(first)
+        await poll("first done") { first.phase == .done }
+        for id in stageIDs {
+            let objectID = try! #require(library.plannedRoutes().first { $0.id == id }?.deviceLink?.objectID)
+            #expect(control.routeRetention(for: objectID) == .twoWeeks)
+        }
+
+        // Re-run: everything is current → an all-skip queue, no payload bytes. Pick a
+        // *different* level for the whole trip.
+        let second = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        second.start()
+        second.selectRetention(.twoMonths)
+        second.beginUpload()
+        await poll("second done") { second.phase == .done }
+        #expect(second.committedCount == 0, "no route/trip payload bytes transfer")
+        #expect(second.skippedCount == 2)
+
+        // …yet every member route — all skipped — now carries the trip's new level.
+        for id in stageIDs {
+            let record = library.plannedRoutes().first { $0.id == id }
+            let objectID = try! #require(record?.deviceLink?.objectID)
+            #expect(control.routeRetention(for: objectID) == .twoMonths, "a skipped stage still got the trip's level")
+            #expect(record?.retention == .twoMonths)
+        }
+    }
+
+    /// A mix of a **fresh/replaced** stage and a **skipped** stage: both end at the
+    /// selected trip level (finding #876-4). The device forgets one stage after the
+    /// first upload, so the re-plan is one fresh + one skip.
+    @Test
+    func aFreshAndASkippedStageBothLandTheTripLevel() async {
+        let (model, control, library) = await makeRetentionMain()
+        let stageIDs = model.tripStages(tripID).map(\.id)
+
+        let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        startAndConfirm(first)
+        await poll("first done") { first.phase == .done }
+
+        // The device forgets stage 0 → its re-plan is fresh; stage 1 stays a skip.
+        let goneObjectID = try! #require(library.plannedRoutes().first { $0.id == stageIDs[0] }?.deviceLink?.objectID)
+        control.deviceDeletesRoute(goneObjectID)
+
+        // Re-plan against the fresh catalog (prepareTripUpload re-reads + reconciles).
+        let second = try! #require(await model.prepareTripUpload(tripID, timing: Self.fastTiming))
+        second.start()
+        second.selectRetention(.oneMonth)
+        second.beginUpload()
+        await poll("second done") { second.phase == .done }
+        #expect(second.committedCount >= 1, "the forgotten stage re-uploads")
+        #expect(second.skippedCount >= 1, "the surviving stage skips its bytes")
+
+        for id in stageIDs {
+            let record = library.plannedRoutes().first { $0.id == id }
+            let objectID = try! #require(record?.deviceLink?.objectID)
+            #expect(control.routeRetention(for: objectID) == .oneMonth, "fresh and skipped stages both land the trip level")
+            #expect(record?.retention == .oneMonth)
+        }
+    }
+
+    /// Idempotence: re-running at the **already-current** level sends **no** retention
+    /// command (finding #876-4) — a skipped stage whose device level already matches
+    /// pushes nothing.
+    @Test
+    func reRunAtTheSameLevelSendsNoRedundantRetentionCommand() async {
+        let (model, control, _) = await makeRetentionMain()
+
+        let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        startAndConfirm(first)  // lands both stages at the .twoWeeks default
+        await poll("first done") { first.phase == .done }
+        let writesAfterFirst = control.routeRetentionWriteCount
+
+        let second = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        second.start()
+        second.selectRetention(.twoWeeks)  // the same level the stages already hold
+        second.beginUpload()
+        await poll("second done") { second.phase == .done }
+        #expect(second.skippedCount == 2)
+        #expect(
+            control.routeRetentionWriteCount == writesAfterFirst,
+            "re-selecting the current level pushes nothing — idempotent")
+    }
+
+    /// Compatibility: an incapable (old-firmware) device shows no picker and its
+    /// skipped stages send **no** retention command (finding #876-4) — the flow is
+    /// unchanged, `applyStageRetention` gates the push on capability.
+    @Test
+    func incapableDeviceRerunSendsNoRetentionCommand() async {
+        let (model, control, _) = await makeRetentionMain(.oldFirmware)
+        await poll("capability settles") { !model.supportsRetention }
+
+        let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        #expect(!first.supportsRetention)
+        first.start()  // no confirm gate — runs straight away
+        await poll("first done") { first.phase == .done }
+
+        let second = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        second.start()
+        await poll("second done") { second.phase == .done }
+        #expect(second.skippedCount == 2)
+        #expect(control.routeRetentionWriteCount == 0, "an incapable device never gets a retention command")
+    }
 }
