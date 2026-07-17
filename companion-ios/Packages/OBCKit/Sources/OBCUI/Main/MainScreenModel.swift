@@ -1288,6 +1288,47 @@ public final class MainScreenModel {
         tab = .planned
     }
 
+    /// Reverse a planned route (#503): land an **end-to-end flipped copy** at the
+    /// top of Planned, leaving the original untouched (a second route, not an
+    /// in-place edit — the rider keeps both directions). The reversed geometry
+    /// runs through the same `RouteStats` / OBCR encode path as any route, so its
+    /// ascent/descent swap and re-derived cumulative stats fall out for free; the
+    /// waypoints keep their coordinates with `Distance Along` flipped and re-sorted
+    /// (`ImportedRoute.reversed()`). The copy is a fresh library route — new id, no
+    /// device link, uploads like any other. Returns the new route's id (`nil` if
+    /// the source route has vanished).
+    @discardableResult
+    public func reverseRoute(_ id: RouteID) -> RouteID? {
+        guard let original = plannedRecords[id] else { return nil }
+        let reversedRoute = original.route.reversed()
+        let stats = RouteStats.compute(from: reversedRoute.points)
+        let name = RouteReversal.reversedName(original.summary.name)
+        let newID = RouteID("reversed-\(UUID().uuidString.lowercased())")
+        let summary = RouteSummary(
+            id: newID,
+            name: name,
+            distanceMeters: stats.distanceMeters,
+            elevationGainMeters: stats.elevationGainMeters,
+            estimatedDuration: stats.estimatedDuration,
+            pointCount: reversedRoute.points.count,
+            // Same wire lineage as the original — it still encodes to OBCR the
+            // same way; the direction, not the format, changed.
+            source: original.summary.source,
+            trackPreview: TrackPreview.normalizing(reversedRoute.points.map(\.coordinate))
+        )
+        // The source file rides along as provenance (the original bytes, flipped
+        // only in the canonical `route`); nothing re-parses it to rebuild geometry.
+        let record = PlannedRouteRecord(
+            summary: summary,
+            route: reversedRoute,
+            sourceFileName: original.sourceFileName,
+            sourceFileData: original.sourceFileData,
+            addedAt: now()
+        )
+        addImportedRoute(record)
+        return newID
+    }
+
     /// A saved planned route whose name matches `name` (case-insensitively) — the
     /// import edge asks so it can offer "replace" instead of a duplicate.
     public func plannedRoute(named name: String) -> PlannedRouteRecord? {
