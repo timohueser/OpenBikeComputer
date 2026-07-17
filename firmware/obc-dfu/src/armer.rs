@@ -130,13 +130,15 @@ pub fn scan(io: &mut impl StageIo, chunk: &mut [u8]) -> Result<StagedRef, ScanEr
         return Err(ScanError::BadCrc);
     }
 
-    // The whole-file extent chain (spec §2.3). The count gate is double-walled: the resolver
-    // reports an over-long chain itself, and `StagedRef::new` re-rejects anything past
-    // MAX_EXTENTS (it can't fail on len/crc — they come from the same header).
+    // The whole-file extent chain (spec §2.3). The too-fragmented count gate has two real walls: the
+    // fixed-capacity `[Extent; MAX_EXTENTS]` buffer physically caps what `stage_extents` can write
+    // (its contract returns the run count, so a correct impl cannot report `Ok(n > MAX_EXTENTS)`),
+    // and it reports an over-long chain itself via `ExtentsError::TooFragmented`. `StagedRef::new`'s
+    // own `> MAX_EXTENTS` reject then stands as belt-and-braces (it can't fail on len/crc — they come
+    // from the same header).
     let mut extents = [Extent::default(); MAX_EXTENTS];
     let count = match io.stage_extents(&mut extents) {
-        Ok(n) if n <= MAX_EXTENTS => n,
-        Ok(n) => return Err(ScanError::TooFragmented { extents: n as u32 }),
+        Ok(n) => n,
         Err(ExtentsError::TooFragmented { extents }) => return Err(ScanError::TooFragmented { extents }),
         Err(ExtentsError::Io) => return Err(ScanError::Io),
     };
