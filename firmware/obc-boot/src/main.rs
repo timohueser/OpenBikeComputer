@@ -183,13 +183,13 @@ fn boot(p: embassy_nrf::Peripherals) {
     //   `ARM_ABANDON_ROUNDS` pre-erase failures (~a minute) ABANDON the arm — clear it to `Idle`
     //   (the engine records `ArmAbandoned` so the app shows the abandon card) and boot the old app,
     //   instead of stranding a device that still holds perfectly good firmware.
-    let abandonable = matches!(decision, BootDecision::Install(_));
+    let abandonable = matches!(decision, BootDecision::Install { .. });
     let mut backoff = BACKOFF_MIN_MS;
     let mut pre_erase_rounds = 0u32;
 
     // Only decisions that stream extents need the card at all.
     let mut card = match decision {
-        BootDecision::Install(_) | BootDecision::Rollback(_) => {
+        BootDecision::Install { .. } | BootDecision::Rollback { .. } => {
             Some(sd::SdBlocks::new(p.SERIAL22, p.P1_11, p.P1_07, p.P1_06, p.P0_00))
         }
         _ => None,
@@ -293,7 +293,7 @@ fn boot(p: embassy_nrf::Peripherals) {
             // *rollback's* jump (also `Installed`) re-enters the previously confirmed image —
             // the same trust level as a plain `Idle` boot, so it deliberately stays dog-less
             // on a cold boot, like the fast path.
-            if matches!(decision, BootDecision::Install(_)) {
+            if matches!(decision, BootDecision::Install { .. }) {
                 dog.start_for_trial();
             }
             #[cfg(feature = "rtt")]
