@@ -18,6 +18,7 @@ public struct RouteDetailView: View {
     private let onUpload: () -> Void
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    private let onReverse: (() -> Void)?
     private let onSaveToPlanned: (() -> Void)?
     private let noDevicePaired: Bool
     private let onPair: (() -> Void)?
@@ -40,6 +41,7 @@ public struct RouteDetailView: View {
         onUpload: @escaping () -> Void = {},
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
+        onReverse: (() -> Void)? = nil,
         onSaveToPlanned: (() -> Void)? = nil,
         noDevicePaired: Bool = false,
         onPair: (() -> Void)? = nil,
@@ -50,6 +52,7 @@ public struct RouteDetailView: View {
         self.onUpload = onUpload
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onReverse = onReverse
         self.onSaveToPlanned = onSaveToPlanned
         self.noDevicePaired = noDevicePaired
         self.onPair = onPair
@@ -275,6 +278,13 @@ public struct RouteDetailView: View {
             switch model.dressing {
             case .planned:
                 uploadButton
+                if let onReverse {
+                    // #503 — a whole-route flip lands a reversed copy alongside
+                    // the original; the rider keeps both directions.
+                    Button("Reverse", action: onReverse)
+                        .buttonStyle(.obcGhost)
+                        .accessibilityIdentifier("detail.reverse")
+                }
                 Button("Delete route") { deleteConfirmShown = true }
                     .buttonStyle(.obcDestructive)
                     .accessibilityIdentifier("detail.delete")

@@ -94,6 +94,9 @@ struct RouteDetailScreen: View {
     private let deviceName: String
     private let onDelete: (() -> Void)?
     private let onRename: ((String) -> Void)?
+    /// Reverse the route (#503, planned dressing only) — creates the flipped copy
+    /// and navigates to it; `nil` on rides / imports.
+    private let onReverse: (() -> Void)?
     private let onUploaded: ((DeviceObjectID?, UInt32, Retention) -> Void)?
     /// Retention (epic #638 S7): the level the upload sheet seeds from, whether the
     /// device is capable (hides the row/skips the confirm), and the detail-edit sink.
@@ -127,6 +130,7 @@ struct RouteDetailScreen: View {
         onEditRetention: ((Retention) -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
+        onReverse: (() -> Void)? = nil,
         onUploaded: ((DeviceObjectID?, UInt32, Retention) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
         currentTripID: TripID? = nil,
@@ -150,6 +154,7 @@ struct RouteDetailScreen: View {
         self.onEditRetention = onEditRetention
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onReverse = onReverse
         self.onUploaded = onUploaded
         self.tripPickerItems = tripPickerItems
         self.currentTripID = currentTripID
@@ -180,7 +185,8 @@ struct RouteDetailScreen: View {
                 ))
             },
             onDelete: onDelete,
-            onRename: onRename
+            onRename: onRename,
+            onReverse: onReverse
         )
         .navigationTitle(isRide ? "Ride" : "Route")
         .navigationBarTitleDisplayMode(.inline)
