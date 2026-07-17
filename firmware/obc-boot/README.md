@@ -31,8 +31,8 @@ The RRAM layout (single source of truth for the app side:
 | one short pulse | proof-of-life on every entry (then the app boots) |
 | slow heartbeat | verifying the staged image (nothing written yet) |
 | fast heartbeat | flashing the app slot / readback |
-| **2 blinks**, then boot | staged image invalid — arm cleared, old app intact |
-| **3 blinks**, pause, repeat | SD missing / read failing — retrying forever with backoff (reinsert card, or power cycle) |
+| **2 blinks**, then boot | arm cleared, old app intact — either the staged image failed verification, or (DR3) an `Armed` card stayed unreadable past the retry budget and the untouched arm was abandoned |
+| **3 blinks**, pause, repeat | SD missing / read failing — retrying with backoff (reinsert card, or power cycle). A pre-erase `Armed` arm gives up after ~a minute (`ARM_ABANDON_ROUNDS`) and abandons it (→ 2 blinks, old app boots); a `Rollback` or a mid-flash error retries forever (never abandon a touched slot) |
 | **SOS**, forever | readback never matched after retries — halted; state still `Armed`, so a power cycle retries the install |
 
 Heartbeat rates scale with card throughput (a toggle per N 4 KB chunks); the

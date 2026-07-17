@@ -42,6 +42,14 @@ const INSTALL_BUF_LEN: usize = 4096;
 const BACKOFF_MIN_MS: u32 = 250;
 const BACKOFF_MAX_MS: u32 = 8_000;
 
+/// DR3 (#731): how many **pre-erase** card failures an `Armed` arm tolerates before the bootloader
+/// abandons it and boots the intact old app. A "round" is one bring-up-or-verify failure followed
+/// by a triple-blink + backoff wait; with the backoff ladder (250, 500, 1000, 2000, 4000, then
+/// 8000 ms) 10 rounds is ~48 s of backoff plus the blink time — on the order of a minute, as the
+/// issue asks. Only failures **before** the engine's flash pass begins count (the slot is provably
+/// untouched then); a `Rollback` or a mid-flash error is never abandoned (it parks forever).
+const ARM_ABANDON_ROUNDS: u32 = 10;
+
 /// The BOOT_STATE RRAM page, read in place. The address comes from the `__boot_state_base`
 /// linker symbol (`ORIGIN(BOOT_STATE)` in `memory.x` — the app-side `build.rs` PROVIDEs the
 /// same symbol for the armer), the same convention as the app's `__settings_base`: the magic
@@ -160,50 +168,89 @@ fn boot(p: embassy_nrf::Peripherals) {
 
     let mut rram = Rramc::new(p.RRAMC);
 
-    // The card is needed only when the engine will stream extents. Bring-up retries FOREVER
-    // with a triple-blink + growing backoff: the card is life-support (the device is a
-    // paperweight without its maps), so "park until the card is back, then a power cycle
-    // recovers" is the designed worst case — never proceed toward an erase without a card.
+    let app_base = app_slot_base();
+    let slot = Slot { base: app_base, len: boot_state_base() - app_base };
+    let mut buf = [0u8; INSTALL_BUF_LEN];
+
+    // The card is life-support (no maps ⇒ no device), so a card that won't read is retried with a
+    // triple-blink + growing backoff rather than a hard failure. Two cases differ (DR3, #731):
+    //
+    // - `Rollback`, or **any mid-flash** SD error: the slot's trial image is the only bootable
+    //   thing, or the app slot is already being rewritten — never abandon a touched slot. Retry
+    //   FOREVER (the designed worst case: reinsert the card and power-cycle).
+    // - **pre-erase `Armed`**: nothing has been touched — the old app is intact at `app_base`. A
+    //   card that died in the drawer, a swapped-in fresh maps card, a card lost on a trip: after
+    //   `ARM_ABANDON_ROUNDS` pre-erase failures (~a minute) ABANDON the arm — clear it to `Idle`
+    //   (the engine records `ArmAbandoned` so the app shows the abandon card) and boot the old app,
+    //   instead of stranding a device that still holds perfectly good firmware.
+    let abandonable = matches!(decision, BootDecision::Install(_));
+    let mut backoff = BACKOFF_MIN_MS;
+    let mut pre_erase_rounds = 0u32;
+
+    // Only decisions that stream extents need the card at all.
     let mut card = match decision {
         BootDecision::Install(_) | BootDecision::Rollback(_) => {
-            let mut blocks = sd::SdBlocks::new(p.SERIAL22, p.P1_11, p.P1_07, p.P1_06, p.P0_00);
-            let mut backoff = BACKOFF_MIN_MS;
-            while !blocks.try_init() {
-                // An adopted dog must not convert this park into a reset storm — pet per lap
-                // (a lap is ≤ ~9 s: three blinks + the ≤8 s backoff, far inside 24 s), so the
-                // loop keeps waiting for the card exactly as designed.
+            Some(sd::SdBlocks::new(p.SERIAL22, p.P1_11, p.P1_07, p.P1_06, p.P0_00))
+        }
+        _ => None,
+    };
+
+    let outcome = loop {
+        // Bring the card up (or back up after a wobble) before the engine touches it. A bring-up
+        // failure is inherently pre-erase — nothing has streamed — so an `Armed` arm here is
+        // abandonable. Pet the adopted dog per lap (a lap is ≤ ~9 s: three blinks + the ≤8 s
+        // backoff, far inside 24 s) so the wait stays a wait, never a reset storm.
+        if let Some(blocks) = card.as_mut() {
+            if !blocks.try_init() {
                 dog.pet();
                 #[cfg(feature = "rtt")]
                 defmt::warn!("obc-boot: SD init failed — retrying in {=u32} ms", backoff);
                 led.blink_code(3, &mut com);
                 com.delay_ms(backoff);
                 backoff = (backoff * 2).min(BACKOFF_MAX_MS);
+                if abandonable {
+                    pre_erase_rounds += 1;
+                    if pre_erase_rounds >= ARM_ABANDON_ROUNDS {
+                        #[cfg(feature = "rtt")]
+                        defmt::warn!(
+                            "obc-boot: card unreadable after {=u32} rounds — abandoning the arm, booting the old app",
+                            pre_erase_rounds
+                        );
+                        let mut io =
+                            install::BootIo::new(None, &mut rram, &mut led, &mut dog, &mut com, boot_state_base());
+                        break engine::abandon_arm(&state, &mut io);
+                    }
+                }
+                continue;
             }
-            Some(blocks)
         }
-        _ => None,
-    };
 
-    // Run the engine; a transient SD error mid-stream gets the same forever-retry treatment as
-    // a missing card (state untouched by construction — host-tested), everything else is final.
-    let app_base = app_slot_base();
-    let slot = Slot { base: app_base, len: boot_state_base() - app_base };
-    let mut buf = [0u8; INSTALL_BUF_LEN];
-    let mut backoff = BACKOFF_MIN_MS;
-    let outcome = loop {
         let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, &mut dog, &mut com, boot_state_base());
         match engine::run(&state, &slot, &mut io, &mut buf) {
-            Outcome::SdError => {
-                // Same pet-per-lap as the init loop above; inside the engine the progress
-                // hook pets every chunk (`install.rs`).
+            Outcome::SdError { pre_erase } => {
+                // Same pet-per-lap as the bring-up above; inside the engine the progress hook pets
+                // every chunk (`install.rs`). The next loop iteration re-inits the card at the top.
                 dog.pet();
                 #[cfg(feature = "rtt")]
                 defmt::warn!("obc-boot: SD read failed mid-install — retrying in {=u32} ms", backoff);
                 led.blink_code(3, &mut com);
                 com.delay_ms(backoff);
                 backoff = (backoff * 2).min(BACKOFF_MAX_MS);
-                if let Some(card) = card.as_mut() {
-                    let _ = card.try_init();
+                // Only a pre-erase failure of an abandonable (`Armed`) arm counts toward the budget;
+                // once the flash pass has begun (`pre_erase == false`) we retry forever — abandoning
+                // a half-written slot would brick. The engine owns that distinction, host-tested.
+                if abandonable && pre_erase {
+                    pre_erase_rounds += 1;
+                    if pre_erase_rounds >= ARM_ABANDON_ROUNDS {
+                        #[cfg(feature = "rtt")]
+                        defmt::warn!(
+                            "obc-boot: card unreadable after {=u32} rounds — abandoning the arm, booting the old app",
+                            pre_erase_rounds
+                        );
+                        let mut io =
+                            install::BootIo::new(None, &mut rram, &mut led, &mut dog, &mut com, boot_state_base());
+                        break engine::abandon_arm(&state, &mut io);
+                    }
                 }
             }
             outcome => break outcome,
@@ -220,6 +267,15 @@ fn boot(p: embassy_nrf::Peripherals) {
         Outcome::StageRejected => {
             #[cfg(feature = "rtt")]
             defmt::warn!("obc-boot: staged image invalid — arm cleared, booting the old app");
+            led.blink_code(2, &mut com);
+        }
+        // DR3 (#731): the card never came up for an untouched `Armed` arm within the retry budget,
+        // so it was cleared to `Idle` and the intact old app is booted. Same end state as a rejected
+        // stage — arm cleared, old app intact — so the same 2-blink code; the *cause* (unreadable
+        // card vs. bad image) is surfaced to the rider by the app's verdict card, not the LED.
+        Outcome::ArmAbandoned => {
+            #[cfg(feature = "rtt")]
+            defmt::warn!("obc-boot: arm abandoned (card unreadable) — booting the old app");
             led.blink_code(2, &mut com);
         }
         // The slot holds the readback-verified image and the follow-up state (`Trial` after an
@@ -254,9 +310,9 @@ fn boot(p: embassy_nrf::Peripherals) {
             defmt::error!("obc-boot: flash/readback failed after retries — halting (power cycle retries)");
             led.sos_forever(&mut com, || dog.pet());
         }
-        // The retry loop above never breaks with SdError; keep the match total without a
-        // panic path.
-        Outcome::SdError => led.sos_forever(&mut com, || dog.pet()),
+        // The retry loop above never breaks with SdError (a pre-erase one is retried then
+        // abandoned; a mid-flash one is retried forever); keep the match total without a panic path.
+        Outcome::SdError { .. } => led.sos_forever(&mut com, || dog.pet()),
     }
 }
 
