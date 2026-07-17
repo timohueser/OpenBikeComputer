@@ -6,7 +6,7 @@
 //! the last readback), the retry counts, the header-skip/padding byte math, and every failure
 //! edge — power loss included.
 
-use obc_dfu::engine::{run, InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE};
+use obc_dfu::engine::{abandon_arm, run, InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE};
 use obc_dfu::{BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, PAGE_LEN};
 use std::collections::BTreeMap;
 
@@ -54,6 +54,9 @@ struct MockIo {
     /// Fail the Nth read_blocks call (transient card error model).
     fail_read_at: Option<usize>,
     reads_done: usize,
+    /// Fail every read_blocks once at least one slot write has happened — models a card that dies
+    /// only *after* the flash pass has begun (a mid-flash, non-abandonable SD error, DR3 #731).
+    fail_read_after_write: bool,
     /// Corrupt every write_lines (flip the first byte) — a flash that never takes the data.
     corrupt_writes: bool,
 }
@@ -73,6 +76,7 @@ impl MockIo {
             dead: false,
             fail_read_at: None,
             reads_done: 0,
+            fail_read_after_write: false,
             corrupt_writes: false,
         }
     }
@@ -121,6 +125,11 @@ impl InstallIo for MockIo {
         }
         self.reads_done += 1;
         if self.fail_read_at == Some(self.reads_done) {
+            return Err(IoError);
+        }
+        // A card that dies once the flash pass has started writing the slot: every verify-pass read
+        // (writes_done == 0) still succeeds, so the failure is unambiguously mid-flash.
+        if self.fail_read_after_write && self.writes_done > 0 {
             return Err(IoError);
         }
         let blocks = (buf.len() / BLOCK) as u32;
@@ -403,16 +412,80 @@ fn slot_bounds_gate() {
 }
 
 /// A transient SD read error must NOT clear the arm (unlike a mismatch): outcome `SdError`,
-/// state untouched, nothing written — the caller retries and the stage stays installable.
+/// state untouched, nothing written — the caller retries and the stage stays installable. These
+/// failures all land in the verify pass (before any slot write), so the arm is still abandonable
+/// (`pre_erase: true`, DR3 #731).
 #[test]
 fn sd_error_leaves_arm_intact() {
     for fail_at in [1, 3, 7] {
         let (mut io, state, _img, _update) = armed(9001, true);
         io.fail_read_at = Some(fail_at);
-        assert_eq!(run_engine(&mut io, &state), Outcome::SdError, "read #{fail_at}");
+        assert_eq!(run_engine(&mut io, &state), Outcome::SdError { pre_erase: true }, "read #{fail_at}");
         assert!(!io.ops.iter().any(|o| matches!(o, Op::WriteState(_))), "state must stay Armed");
         assert_eq!(io.state(), state, "arm untouched after a transient SD error");
     }
+}
+
+/// DR3 (#731) acceptance — an SD error *after* the flash pass has begun is NOT abandonable
+/// (`pre_erase: false`): the slot may be half-written, so the state stays `Armed` for the
+/// forever-retry and nothing is cleared. (The caller must never call `abandon_arm` for this.)
+#[test]
+fn sd_error_mid_flash_is_not_abandonable() {
+    let (mut io, state, _img, _update) = armed(9001, true);
+    io.fail_read_after_write = true; // reads fail once the first slot write has landed
+
+    assert_eq!(run_engine(&mut io, &state), Outcome::SdError { pre_erase: false });
+    assert!(io.count_write_lines() > 0, "the flash pass must have started (a slot write happened)");
+    assert!(!io.ops.iter().any(|o| matches!(o, Op::WriteState(_))), "a touched slot must keep the arm");
+    assert_eq!(io.state(), state, "arm untouched — a mid-flash card death is never abandoned");
+}
+
+/// DR3 (#731) acceptance — after the driver's bounded pre-erase retry budget is exhausted it calls
+/// `abandon_arm`: the arm is cleared to `Idle` (installed = the outgoing image's header, carried
+/// from the rollback snapshot as the reject path does), an `ArmAbandoned` outcome is recorded
+/// against the arm's generation, the app slot is never touched, and the old app is booted. Covered
+/// for both the with- and without-rollback arms.
+#[test]
+fn abandon_arm_clears_to_idle_and_boots_old_app() {
+    for with_rollback in [true, false] {
+        let (mut io, state, _img, _update) = armed(9001, with_rollback);
+
+        // The failure that drives the driver to the abandon is provably pre-erase, and nothing was
+        // written before it (the strict sequencing rule this issue turns on).
+        io.fail_read_at = Some(1);
+        assert_eq!(run_engine(&mut io, &state), Outcome::SdError { pre_erase: true });
+        assert_eq!(io.count_write_lines(), 0, "nothing may be erased before the abandon");
+
+        // Budget exhausted (the count lives in the driver) → abandon.
+        assert_eq!(abandon_arm(&state, &mut io), Outcome::ArmAbandoned);
+        assert_eq!(io.count_write_lines(), 0, "the abandon must never touch the app slot");
+
+        let expected_installed = match &state {
+            BootState::Armed { rollback, .. } => rollback.as_ref().map(|r| r.header),
+            _ => unreachable!(),
+        };
+        match io.state() {
+            BootState::Idle { installed, last_outcome } => {
+                assert_eq!(installed, expected_installed, "installed = the outgoing image's header");
+                assert_eq!(
+                    last_outcome,
+                    Some(LastOutcome { kind: OutcomeKind::ArmAbandoned, generation: 7 }),
+                    "the abandon is recorded so the next boot's verdict surfaces it"
+                );
+            }
+            s => panic!("expected Idle after abandon, got {s:?}"),
+        }
+    }
+}
+
+/// `abandon_arm` on a non-`Armed` state is a caller bug — it must stay total: nothing is written and
+/// the app is booted (`Jump`), never a panic (the bootloader's standing rule).
+#[test]
+fn abandon_arm_on_non_armed_is_a_noop_jump() {
+    let state = BootState::Idle { installed: None, last_outcome: None };
+    let mut io = MockIo::new(&state);
+    assert_eq!(abandon_arm(&state, &mut io), Outcome::Jump);
+    assert!(io.ops.is_empty(), "no writes on a non-Armed abandon");
 }
 
 /// Power-loss sweep: kill the mock at every possible write (torn), power-cycle, re-run from
