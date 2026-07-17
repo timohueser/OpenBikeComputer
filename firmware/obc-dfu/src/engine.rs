@@ -353,6 +353,57 @@ fn padded_len(len: u32) -> u32 {
     len.div_ceil(RRAM_LINE_LEN as u32) * RRAM_LINE_LEN as u32
 }
 
+/// The shared install pipeline behind both an `Install` and a `Rollback` decision — the
+/// `verify → map errors → flash_verified → map errors → write_state → map result` sequence with
+/// byte-identical error mapping (DR7, #735). The two callers differ only in:
+///
+/// - `source`: the extent chain to stream (the staged update, or the rollback snapshot);
+/// - `mismatch_state`: the `Idle` written when `verify` deterministically rejects the stage — the
+///   invariant-1 "a bad stage must never cost the running firmware" path, constructed at each call
+///   site (an `Install` carries the outgoing header forward + records `StageRejected`; a `Rollback`
+///   keeps the running trial image + records `Installed`);
+/// - `success_state`: the follow-up written after a verified flash (an `Install`'s single-trial
+///   `Trial`, a `Rollback`'s straight-to-`Idle`);
+/// - `verify_io_pre_erase`: whether a **verify-pass** SD error is abandonable — `true` only for an
+///   `Install`, whose old app is still intact before the flash pass (DR3, #731); a `Rollback`'s
+///   trial image is the only bootable thing, so its card errors are never pre-erase-abandonable.
+///
+/// Keeping the reject policy and error mapping single-sourced is the point: a future change to
+/// either must land once, so the install and rollback safety paths can never silently diverge.
+fn install_pipeline(
+    io: &mut impl InstallIo,
+    source: &StagedRef,
+    slot: &Slot,
+    buf: &mut [u8],
+    verify_io_pre_erase: bool,
+    mismatch_state: &BootState,
+    success_state: &BootState,
+) -> Outcome {
+    match verify(io, source, slot, buf) {
+        // Deterministic bad stage, old app never touched: clear the arm to the caller's follow-up
+        // state and boot the old app. If even the clear fails, still jump — the old app is intact and
+        // the next boot repeats this same safe path.
+        Err(VerifyError::Mismatch) => {
+            let _ = io.write_state(mismatch_state);
+            Outcome::StageRejected
+        }
+        // Verify-pass SD error: nothing erased yet; abandonable only for an Install (DR3).
+        Err(VerifyError::Io) => Outcome::SdError { pre_erase: verify_io_pre_erase },
+        Ok(()) => match flash_verified(io, source, slot, buf) {
+            // The flash pass has begun — the slot may be half-written, so this is NOT abandonable;
+            // the caller retries/parks forever (invariant: never abandon a touched slot).
+            Err(PassError::Sd) => Outcome::SdError { pre_erase: false },
+            Err(PassError::Flash) => Outcome::FlashError,
+            // The slot now provably holds the image — write the follow-up state. A failed write
+            // leaves the Armed/Trial record ⇒ halt; the next power cycle retries from scratch.
+            Ok(()) => match io.write_state(success_state) {
+                Ok(()) => Outcome::Installed,
+                Err(_) => Outcome::FlashError,
+            },
+        },
+    }
+}
+
 /// Run the whole boot-time install engine for a decoded [`BootState`]: decide, then execute the
 /// decision's verify → flash → readback → state-transition sequence over `io`, using `buf` as
 /// the SD↔RRAM staging buffer (a non-zero multiple of [`SD_BLOCK_LEN`]; the bootloader passes
@@ -374,84 +425,47 @@ pub fn run(state: &BootState, slot: &Slot, io: &mut impl InstallIo, buf: &mut [u
 
         // Unconfirmed trial with no snapshot (first install): accept the running image and
         // clear to Idle. A failed clear changes nothing observable — next boot re-accepts.
-        BootDecision::AcceptAndClear => {
-            let (installed, generation) = match state {
-                BootState::Trial { installed, generation, .. } => (Some(*installed), *generation),
-                _ => (None, 0), // unreachable via decide(); stay total rather than panic
-            };
-            // The running (trial) image is accepted as permanent — record it as Installed.
+        // The running (trial) image is accepted as permanent — record it as Installed.
+        BootDecision::AcceptAndClear { installed, generation } => {
             let last_outcome = Some(LastOutcome { kind: OutcomeKind::Installed, generation });
-            let _ = io.write_state(&BootState::Idle { installed, last_outcome });
+            let _ = io.write_state(&BootState::Idle { installed: Some(installed), last_outcome });
             Outcome::Jump
         }
 
-        BootDecision::Install(update) => {
-            let (generation, rollback) = match state {
-                BootState::Armed { generation, rollback, .. } => (*generation, *rollback),
-                _ => (0, None), // unreachable via decide(); stay total rather than panic
+        BootDecision::Install { update, generation, rollback } => {
+            // Bad stage, old app never touched (invariant 1): clear the arm carrying forward the
+            // outgoing image's header from the rollback snapshot (if the armer took one) and boot
+            // the old app; the terminal write records StageRejected against the arm's generation.
+            let mismatch = BootState::Idle {
+                installed: rollback.map(|r| r.header),
+                last_outcome: Some(LastOutcome { kind: OutcomeKind::StageRejected, generation }),
             };
-            match verify(io, &update, slot, buf) {
-                // Bad stage, old app never touched: clear the arm (carrying forward the
-                // outgoing image's header from the rollback snapshot, if the armer took one)
-                // and boot the old app. If even the clear fails, still jump — the old app is
-                // intact and the next boot repeats this same safe path.
-                Err(VerifyError::Mismatch) => {
-                    let last_outcome = Some(LastOutcome { kind: OutcomeKind::StageRejected, generation });
-                    let _ = io.write_state(&BootState::Idle { installed: rollback.map(|r| r.header), last_outcome });
-                    Outcome::StageRejected
-                }
-                // Verify-pass SD error: nothing erased yet, so the arm is still abandonable (DR3).
-                Err(VerifyError::Io) => Outcome::SdError { pre_erase: true },
-                Ok(()) => match flash_verified(io, &update, slot, buf) {
-                    // The flash pass has begun — the slot may be half-written, so this is NOT
-                    // abandonable; the caller retries/parks forever (invariant: never abandon a
-                    // touched slot).
-                    Err(PassError::Sd) => Outcome::SdError { pre_erase: false },
-                    Err(PassError::Flash) => Outcome::FlashError,
-                    // The slot now provably holds the image — record the single trial boot.
-                    // A failed Trial write leaves Armed ⇒ halt; next power cycle re-installs.
-                    Ok(()) => {
-                        match io.write_state(&BootState::Trial { generation, installed: update.header, rollback }) {
-                            Ok(()) => Outcome::Installed,
-                            Err(_) => Outcome::FlashError,
-                        }
-                    }
-                },
-            }
+            // The slot now provably holds the image — record the single trial boot, with the
+            // rollback snapshot riding into the Trial; an unconfirmed Trial rolls back next boot.
+            let success = BootState::Trial { generation, installed: update.header, rollback };
+            // A verify-pass SD error is pre-erase-abandonable here: the old app is still intact (DR3).
+            install_pipeline(io, &update, slot, buf, true, &mismatch, &success)
         }
 
         // Unconfirmed trial with a snapshot: same engine, source = the rollback extents.
-        BootDecision::Rollback(snapshot) => {
-            let (installed, generation) = match state {
-                BootState::Trial { installed, generation, .. } => (Some(*installed), *generation),
-                _ => (None, 0), // unreachable via decide(); stay total rather than panic
+        BootDecision::Rollback { snapshot, installed, generation } => {
+            // The snapshot on card is bad and the trial image is what's in the slot — the only
+            // bootable thing we have. Accept it (clear to Idle) rather than brick: a rollback to
+            // garbage would cost the running firmware, which invariant 1 forbids in both directions.
+            // The trial image stuck, so record it as Installed against the arm's generation.
+            let mismatch = BootState::Idle {
+                installed: Some(installed),
+                last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation }),
             };
-            match verify(io, &snapshot, slot, buf) {
-                // The snapshot on card is bad and the trial image is what's in the slot — the
-                // only bootable thing we have. Accept it (clear to Idle) rather than brick:
-                // a rollback to garbage would cost the running firmware, which invariant 1
-                // forbids in both directions. The trial image stuck, so record it as Installed.
-                Err(VerifyError::Mismatch) => {
-                    let last_outcome = Some(LastOutcome { kind: OutcomeKind::Installed, generation });
-                    let _ = io.write_state(&BootState::Idle { installed, last_outcome });
-                    Outcome::StageRejected
-                }
-                // A Rollback is never abandonable — the trial image already in the slot is the only
-                // bootable thing, so a transient card error keeps today's forever-retry/park.
-                Err(VerifyError::Io) => Outcome::SdError { pre_erase: false },
-                Ok(()) => match flash_verified(io, &snapshot, slot, buf) {
-                    Err(PassError::Sd) => Outcome::SdError { pre_erase: false },
-                    Err(PassError::Flash) => Outcome::FlashError,
-                    // Rollback complete: straight to Idle (no trial for the known-good image).
-                    Ok(()) => {
-                        let last_outcome = Some(LastOutcome { kind: OutcomeKind::RolledBack, generation });
-                        match io.write_state(&BootState::Idle { installed: Some(snapshot.header), last_outcome }) {
-                            Ok(()) => Outcome::Installed,
-                            Err(_) => Outcome::FlashError,
-                        }
-                    }
-                },
-            }
+            // Rollback complete: straight to Idle (no trial for the known-good image), recorded
+            // as RolledBack.
+            let success = BootState::Idle {
+                installed: Some(snapshot.header),
+                last_outcome: Some(LastOutcome { kind: OutcomeKind::RolledBack, generation }),
+            };
+            // A Rollback is never abandonable — the trial image already in the slot is the only
+            // bootable thing, so even a verify-pass card error keeps today's forever-retry/park.
+            install_pipeline(io, &snapshot, slot, buf, false, &mismatch, &success)
         }
     }
 }

@@ -186,23 +186,29 @@ fn decide_matrix() {
     assert_eq!(decide(&BootState::Idle { installed: None, last_outcome: None }), BootDecision::Jump);
     assert_eq!(decide(&BootState::Idle { installed: Some(header("v", 1)), last_outcome: None }), BootDecision::Jump);
 
-    // Armed ⇒ Install the staged update (regardless of a rollback snapshot).
+    // Armed ⇒ Install the staged update (carrying its generation + rollback snapshot).
     let up = staged("u", 3);
-    assert_eq!(decide(&BootState::Armed { generation: 1, update: up, rollback: None }), BootDecision::Install(up));
     assert_eq!(
-        decide(&BootState::Armed { generation: 1, update: up, rollback: Some(staged("r", 1)) }),
-        BootDecision::Install(up)
+        decide(&BootState::Armed { generation: 1, update: up, rollback: None }),
+        BootDecision::Install { update: up, generation: 1, rollback: None }
+    );
+    let rb1 = staged("r", 1);
+    assert_eq!(
+        decide(&BootState::Armed { generation: 1, update: up, rollback: Some(rb1) }),
+        BootDecision::Install { update: up, generation: 1, rollback: Some(rb1) }
     );
 
-    // Trial with a snapshot ⇒ Rollback it; without ⇒ AcceptAndClear (first install).
+    // Trial with a snapshot ⇒ Rollback it (carrying the trial header + generation); without ⇒
+    // AcceptAndClear (first install), carrying the running image's header + generation.
     let rb = staged("r", 2);
+    let installed = header("v", 1);
     assert_eq!(
-        decide(&BootState::Trial { generation: 1, installed: header("v", 1), rollback: Some(rb) }),
-        BootDecision::Rollback(rb)
+        decide(&BootState::Trial { generation: 1, installed, rollback: Some(rb) }),
+        BootDecision::Rollback { snapshot: rb, installed, generation: 1 }
     );
     assert_eq!(
-        decide(&BootState::Trial { generation: 1, installed: header("v", 1), rollback: None }),
-        BootDecision::AcceptAndClear
+        decide(&BootState::Trial { generation: 1, installed, rollback: None }),
+        BootDecision::AcceptAndClear { installed, generation: 1 }
     );
 }
 
