@@ -330,6 +330,13 @@ struct RootView: View {
                         path.removeAll()
                     },
                     onRename: { mainModel.renameRoute(id, to: $0) },
+                    // #503 — reverse lands a flipped copy alongside the original
+                    // and opens it, so the rider sees the direction they'll ride.
+                    onReverse: {
+                        if let reversedID = mainModel.reverseRoute(id) {
+                            path.append(.route(id: reversedID))
+                        }
+                    },
                     // A completed upload: record the device object id +
                     // fingerprint it landed under (the badge + in-place replace),
                     // and the rider's chosen retention (S6 pushes it post-commit).
