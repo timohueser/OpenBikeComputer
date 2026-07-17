@@ -702,7 +702,7 @@ The map underneath is the base; everything that moves with *you* is drawn on top
 1. **Route** — the planned line (magenta), stroked through the same clip-then-stroke path, with direction **chevrons** laid down in a second sweep so they sit on top even where the route doubles back. Chevrons are spaced by *ground distance* derived from a fixed pixel cadence, so they stay evenly spread as you zoom and stay pinned to the ground as you pan. The Skip-ahead chooser suppresses the chevrons and streams only its selected interval again as a narrower warning-orange stroke; the magenta edges remain visible and no second route copy is retained.
 2. **Breadcrumb** — the recorded trail behind you (navy), a two-tier coarse-spine-plus-recent-tail path.
 3. **Waypoints and markers** — route waypoint diamonds, then the rider's course-pointing chevron (or stationary diamond), followed by Skip ahead's fixed-size rejoin ring when that chooser is open.
-4. **HUD chrome** — the off-route readout and pan-mode indicators, or Skip ahead's floating distance panel.
+4. **HUD chrome** — the off-route readout and pan-mode indicators, or Skip ahead's floating distance/inspection-zoom panel.
 
 Each is just another polyline through the stroker or a triangle through the polygon fill — and since a thick stroke is itself rectangles and discs filled as spans, nearly everything on screen comes down to the one scanline span fill, reused.
 
