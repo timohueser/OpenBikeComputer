@@ -1461,12 +1461,19 @@ public final class MainScreenModel {
     /// records the desired level for a later reconcile push but sends nothing now).
     func applyStageRetention(_ id: RouteID, _ retention: Retention) {
         guard var record = plannedRecords[id] else { return }
+        // Push when the device holds this route (valid scoped link), is capable,
+        // and the desired level diverges from the device's — optimistic, like the
+        // reconcile push; a failed send self-heals at the next reconcile.
+        let needsPush: Bool = {
+            guard supportsRetention, let scope = connectedScope, let link = record.deviceLink,
+                link.matches(scope), record.deviceRetention != retention else { return false }
+            return true
+        }()
+        // Fully idempotent postcondition: the record already holds the level and
+        // the device already matches — nothing to mutate, persist, or send.
+        guard record.retention != retention || needsPush else { return }
         record.retention = retention
-        // Push now when the device holds this route (valid scoped link), is
-        // capable, and the desired level diverges from the device's — optimistic,
-        // like the reconcile push; a failed send self-heals at the next reconcile.
-        if supportsRetention, let scope = connectedScope, let link = record.deviceLink,
-            link.matches(scope), record.deviceRetention != retention {
+        if needsPush, let link = record.deviceLink {
             pushRetention(retention, to: link.objectID)
             record.deviceRetention = retention  // optimistic; a later list confirms
         }

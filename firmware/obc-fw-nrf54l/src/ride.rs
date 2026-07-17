@@ -1149,8 +1149,16 @@ pub(crate) async fn run_app(
             // one `ObjectStore`, revision-and-notify coherent, and RefCell-legal (the ride loop never
             // borrows the store). The rescan comes back on the resulting `STORE_CHANGED` edge above.
             if let Some(_id) = host_pass.delete_route {
+                // A full channel DROPS the id (not observed backpressure — the app's dispatch
+                // bookkeeping already ran): warn, and rely on the app's retain-until-rescan
+                // candidate to re-dispatch it after the bounded backoff (finding #876-3).
                 #[cfg(feature = "ble")]
-                crate::object_store::request_route_delete(_id);
+                if !crate::object_store::request_route_delete(_id) {
+                    defmt::warn!(
+                        "ride: route-delete channel full — id {} dropped; the app's retained candidate retries",
+                        _id
+                    );
+                }
                 // Map-only build: no `ObjectStore`/radio, so delete the file directly and re-scan the
                 // catalog locally (the same `load_routes` machinery the store-changed edge runs).
                 // Geometry handle closed FIRST, for the same two reasons as the store-changed
@@ -1207,8 +1215,15 @@ pub(crate) async fn run_app(
             // Rides menu locally. The greying while recording already keeps the delete legal (no open
             // TRACK.OBT / pending save collides).
             if let Some(_id) = host_pass.delete_ride {
+                // Same contract as the route delete above: a full channel drops the id — warn and
+                // rely on the app's retained candidate to re-dispatch after the backoff.
                 #[cfg(feature = "ble")]
-                crate::object_store::request_ride_delete(_id);
+                if !crate::object_store::request_ride_delete(_id) {
+                    defmt::warn!(
+                        "ride: ride-delete channel full — id {} dropped; the app's retained candidate retries",
+                        _id
+                    );
+                }
                 #[cfg(not(feature = "ble"))]
                 if let Some(s) = storage.as_mut() {
                     if s.delete_ride_by_id(_id) {
