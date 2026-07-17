@@ -36,6 +36,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
@@ -49,6 +50,22 @@ use obc_ports::SettingsStore;
 
 use crate::sd::Storage;
 use crate::SharedStore;
+
+/// The outcome of a `setRouteRetention` command (finding #876-5) — replaces the old `Option<bool>`
+/// so a durable-write failure is distinguishable from success. The BLE handler maps it to a
+/// [`CommandStatus`](obc_ble::CommandStatus): `Changed`/`Unchanged` → `Ok` (bump only on `Changed`),
+/// `NotFound` → `NotFound`, `WriteFailed` → `Error` — never a false `ok` ahead of durability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetRetentionResult {
+    /// No stored route has this id (or the card is absent) — the handler answers `notFound`.
+    NotFound,
+    /// The route already had this level — `ok`, **no** revision bump (the idempotence pin).
+    Unchanged,
+    /// A real change persisted durably — `ok`, revision bumped, `storeChanged(route)` fires.
+    Changed,
+    /// The route exists but the retention sidecar rewrite did not reach the card — `Error`, no bump.
+    WriteFailed,
+}
 
 /// Store-movement edge for the app UI (epic #447): [`bump_revision`](ObjectStore::bump_revision) —
 /// the single chokepoint for every commit/delete — increments this, the same edge that notifies the
@@ -106,46 +123,72 @@ pub(crate) async fn wait_store_changed() {
 }
 
 /// On-device route-delete request (epic #447, P6): the durable object id of a route the Route menu's
-/// hold-to-delete footer asked to remove. The **ride loop** posts it (it drains the app's
-/// `take_route_delete`), and the **BLE plane** — the sole owner of the `RefCell<ObjectStore>` —
-/// executes it via [`ObjectStore::delete_route`], so the delete goes through the same catalog +
-/// revision + `storeChanged` path a phone-initiated delete does (never raw SD). A coalescing
-/// `Signal` (level, one id in flight) rather than a queue: the footer fires one delete at a time and
-/// the drain runs promptly, so a second request can't stack up behind the first.
+/// hold-to-delete footer asked to remove, or the auto-expiry sweep's next expired route. The **ride
+/// loop** posts it, and the **BLE plane** — the sole owner of the `RefCell<ObjectStore>` — executes
+/// it via [`ObjectStore::delete_route`], so the delete goes through the same catalog + revision +
+/// `storeChanged` path a phone-initiated delete does (never raw SD).
 ///
 /// It lives as a module static, like [`STORE_CHANGED`], because the `ObjectStore` is trapped behind
 /// the BLE task's `RefCell` while the app lives in the ride loop — this is the lock-free hand-off
 /// from the loop that owns the *intent* to the plane that owns the *store*.
-static ROUTE_DELETE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+///
+/// A bounded **[`Channel`]**, not a coalescing `Signal` (finding #876-3): the old overwriting
+/// `Signal` held only the newest id, so a retention batch dispatched faster than the SD delete task
+/// drained silently lost the earlier ids until a later sweep. The channel never *overwrites* a
+/// queued id — but be precise about what it does and does not guarantee: a full channel drops the
+/// posted id ([`request_route_delete`] reports `false`), and the app's dispatch bookkeeping ran
+/// *before* this post, so a drop is **not observed backpressure**. End-to-end losslessness rests on
+/// the app's **retain-until-rescan** ownership instead: a retention delete candidate stays queued in
+/// `obc-app` until the store rescan confirms the id gone, so a dropped post is simply re-dispatched
+/// after the bounded backoff. With one retention delete in flight per kind plus at most one manual
+/// delete, depth [`DELETE_CHANNEL_CAP`] means a full channel is effectively unreachable — and when
+/// it isn't, the cost is a delay, never a lost delete. Manual (UI hold-to-delete) and retention
+/// deletes share this one executor.
+static ROUTE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
+
+/// The bounded delete-request channel depth. The app dispatches **one retention delete per kind in
+/// flight** (retained until the store confirms it gone) plus at most one manual delete, so at most a
+/// couple of ids are ever outstanding; a small depth is ample. A full channel drops the post (the
+/// caller warns) and the app's retained candidate re-dispatches it after the backoff — a delay,
+/// never a lost delete (see [`ROUTE_DELETE_REQ`]).
+const DELETE_CHANNEL_CAP: usize = 8;
 
 /// Post a route-delete request from the ride loop (epic #447, P6) — the BLE plane drains it and runs
-/// the `ObjectStore` delete. Overwrites any un-drained request (one delete in flight at a time).
-pub(crate) fn request_route_delete(id: u16) {
-    ROUTE_DELETE_REQ.signal(id);
+/// the `ObjectStore` delete. Returns `false` when the channel is full and the id was **dropped**;
+/// the caller must surface that (a warn), and recovery is the app's retain-until-rescan retry — the
+/// candidate is still owned app-side and re-dispatches after its bounded backoff (finding #876-3).
+pub(crate) fn request_route_delete(id: u16) -> bool {
+    ROUTE_DELETE_REQ.try_send(id).is_ok()
 }
 
-/// The BLE plane's route-delete arm: resolves with the id to delete once the ride loop posts one.
-/// Folded into the BLE lifetime `join` so it drains whether the phone is connected or the device is
-/// parked advertising (see `ble::run`).
+/// The BLE plane's route-delete arm: resolves with the next id to delete once the ride loop posts
+/// one. Folded into the BLE lifetime `join` so it drains whether the phone is connected or the device
+/// is parked advertising (see `ble::run`).
 pub(crate) async fn wait_route_delete() -> u16 {
-    ROUTE_DELETE_REQ.wait().await
+    ROUTE_DELETE_REQ.receive().await
 }
 
 /// On-device **ride**-delete request (epic #447, P7 / #454) — the ride-namespace twin of
 /// [`ROUTE_DELETE_REQ`]. The ride loop's Rides-menu hold posts a ride's durable object id; the BLE
 /// plane drains it and runs [`ObjectStore::delete_ride`], so an on-device ride delete goes through
 /// the same catalog + revision + `storeChanged` path a phone-initiated delete does.
-static RIDE_DELETE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+/// A bounded [`Channel`] like [`ROUTE_DELETE_REQ`] (finding #876-3): the ride retention sweep can
+/// discover several synced+aged rides at once, and the old overwriting `Signal` lost all but the
+/// newest. Same contract as the route channel: never an overwrite, but a full channel **drops** the
+/// post — end-to-end losslessness rests on the app's retain-until-rescan retry, not on observed
+/// backpressure. Shared by manual (Rides-menu hold) and retention ride deletes.
+static RIDE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
 
-/// Post a ride-delete request from the ride loop (epic #447, P7). Overwrites any un-drained request
-/// (one delete in flight at a time — the footer fires one at a time and the drain runs promptly).
-pub(crate) fn request_ride_delete(id: u16) {
-    RIDE_DELETE_REQ.signal(id);
+/// Post a ride-delete request from the ride loop (epic #447, P7). Returns `false` when the channel
+/// is full and the id was **dropped** — the caller warns, and the app's retained candidate
+/// re-dispatches after its bounded backoff (see [`request_route_delete`]).
+pub(crate) fn request_ride_delete(id: u16) -> bool {
+    RIDE_DELETE_REQ.try_send(id).is_ok()
 }
 
-/// The BLE plane's ride-delete arm: resolves with the ride id to delete once the ride loop posts one.
+/// The BLE plane's ride-delete arm: resolves with the next ride id to delete once the ride loop posts one.
 pub(crate) async fn wait_ride_delete() -> u16 {
-    RIDE_DELETE_REQ.wait().await
+    RIDE_DELETE_REQ.receive().await
 }
 
 /// On-device trip **cascade**-delete request (epic #526, TR3/TR4) — the trip-namespace sibling of
@@ -791,17 +834,32 @@ impl ObjectStore {
     /// - `Some(false)` — the value was already that level; `ok` with **no** revision bump (the
     ///   idempotence pin: only a real change moves the store).
     ///
-    /// A missing card is treated as "no such route" (`None`) — nothing to write.
-    pub fn set_route_retention(&mut self, shared: &mut SharedStore, id: u16, retention: Retention) -> Option<bool> {
+    /// A missing card is treated as "no such route" ([`NotFound`](SetRetentionResult::NotFound)) —
+    /// nothing to write. A sidecar write that does not reach the card is
+    /// [`WriteFailed`](SetRetentionResult::WriteFailed) — the revision is **not** bumped and the
+    /// handler replies `command` `Error`, never a false `ok` (finding #876-5).
+    pub fn set_route_retention(
+        &mut self,
+        shared: &mut SharedStore,
+        id: u16,
+        retention: Retention,
+    ) -> SetRetentionResult {
         if !self.has_route(id) {
-            return None;
+            return SetRetentionResult::NotFound;
         }
-        let storage = shared.storage.as_mut()?;
-        let changed = storage.set_route_retention_level(id, retention);
-        if changed {
-            self.bump_revision();
+        let Some(storage) = shared.storage.as_mut() else {
+            return SetRetentionResult::NotFound;
+        };
+        match storage.set_route_retention_level(id, retention) {
+            Ok(false) => SetRetentionResult::Unchanged, // already that level — `ok`, no bump (idempotence pin)
+            Ok(true) => {
+                // Durable success only: bump the route revision so `storeChanged(route)` + the ride
+                // loop's rescan re-feed the fresh retention.
+                self.bump_revision();
+                SetRetentionResult::Changed
+            }
+            Err(_) => SetRetentionResult::WriteFailed, // torn persist — no bump, surfaced as `Error`
         }
-        Some(changed)
     }
 
     /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so

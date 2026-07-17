@@ -181,6 +181,13 @@ impl SyncedRides {
         self.rides.iter().map(|r| r.id)
     }
 
+    /// Every synced ride as `(id, synced_at)` — the source for the board's compact ride-retention
+    /// inventory (finding #876-2). Covers **all** synced rides (up to [`MAX_RIDES`]), not the
+    /// newest-32 UI catalog, so retention reaches an older synced+expired ride.
+    pub fn entries(&self) -> impl Iterator<Item = (u16, u32)> + '_ {
+        self.rides.iter().map(|r| (r.id, r.synced_at))
+    }
+
     /// How many rides are synced.
     pub fn len(&self) -> usize {
         self.rides.len()

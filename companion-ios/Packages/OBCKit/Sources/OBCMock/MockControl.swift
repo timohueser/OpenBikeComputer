@@ -105,6 +105,11 @@ public final class MockControl: @unchecked Sendable {
     /// the phone last pushed. An override layered over each fixture route's
     /// declared `deviceRetention`; absent → `.never`.
     private var _routeRetention: [UInt16: Retention] = [:]
+    /// How many `setRouteRetention` commands the app has sent this session (test
+    /// hook) — every call, regardless of outcome. Lets a test assert a redundant
+    /// push was *not* made (idempotence) or that a skipped trip stage still got its
+    /// retention command (finding #876-4).
+    private var _routeRetentionWriteCount = 0
     /// The device-side `last_used` sidecar: device object id → the anchor the
     /// expiry countdown runs from. Stamped `now` at **upload commit** (the device's
     /// rule) and seeded from a fixture's `lastUsedDaysAgo`; **never** moved by a
@@ -472,11 +477,19 @@ public final class MockControl: @unchecked Sendable {
     /// `last_used`** (spec §4.4 — a retention change never resets the usage clock).
     func applyRouteRetention(_ id: DeviceObjectID, _ retention: Retention) -> RetentionWriteOutcome {
         lock.withLocked {
+            _routeRetentionWriteCount += 1 // the command was sent — record it regardless of outcome
             guard _supportsExpiry else { return .unsupported }
             guard _fixtures.routes.contains(where: { $0.deviceObjectID == id }) else { return .notFound }
             _routeRetention[id.raw] = retention
             return .applied
         }
+    }
+
+    /// How many `setRouteRetention` commands the app has sent this session (test
+    /// hook — finding #876-4). A skipped trip stage must still send one; a re-run at
+    /// the already-current level must send none.
+    public var routeRetentionWriteCount: Int {
+        lock.withLocked { _routeRetentionWriteCount }
     }
 
     /// Lock-held: the retention the (mock) device serves for `id` — the pushed

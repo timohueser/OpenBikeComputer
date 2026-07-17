@@ -21,8 +21,8 @@
 use obc_route::Profile;
 
 use crate::app::NAV_PREVIEW_MAX;
-use crate::retention::RouteRetentionMeta;
-use crate::ride::{RideCatalog, RideSummary, UI_RIDES_CAP};
+use crate::retention::{RideRetentionRecord, RouteRetentionMeta};
+use crate::ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 
@@ -76,6 +76,14 @@ pub(crate) struct CatalogState {
     rides: RideCatalog,
     /// Each ride's durable object id, pairwise with [`rides`](CatalogState::rides).
     ride_ids: heapless::Vec<u16, UI_RIDES_CAP>,
+    /// The **full** compact ride-retention inventory (finding #876-2): every stored ride's
+    /// `id + synced + synced_at`, up to [`MAX_RIDES`], independent of the newest-[`UI_RIDES_CAP`]
+    /// display catalog above. The retention sweep + eager `synced_at` stamp read this — so an older
+    /// synced+expired ride the menu never shows is still reachable by expiry. Fed by the host
+    /// ([`set_ride_retention_inventory`](CatalogState::set_ride_retention_inventory)); a plain
+    /// [`replace_rides`](CatalogState::replace_rides) also seeds it from the visible summaries so a
+    /// host that never streams the full view still expires the rides it does surface.
+    ride_inventory: heapless::Vec<RideRetentionRecord, MAX_RIDES>,
     /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
     /// detail's band source, host-filled once per detail entry. `None` while unanswered.
     ride_profile: Option<Profile>,
@@ -108,6 +116,7 @@ impl CatalogState {
             trips: Trips::new(),
             rides: RideCatalog::new(),
             ride_ids: heapless::Vec::new(),
+            ride_inventory: heapless::Vec::new(),
             ride_profile: None,
             ride_profile_for: None,
             ride_preview: heapless::Vec::new(),
@@ -134,6 +143,7 @@ impl CatalogState {
             addr_of_mut!((*slot).trips).write(Trips::new());
             addr_of_mut!((*slot).rides).write(RideCatalog::new());
             addr_of_mut!((*slot).ride_ids).write(heapless::Vec::new());
+            addr_of_mut!((*slot).ride_inventory).write(heapless::Vec::new());
             addr_of_mut!((*slot).ride_profile).write(None);
             addr_of_mut!((*slot).ride_profile_for).write(None);
             addr_of_mut!((*slot).ride_preview).write(heapless::Vec::new());
@@ -149,6 +159,7 @@ impl CatalogState {
                 trips: _,
                 rides: _,
                 ride_ids: _,
+                ride_inventory: _,
                 ride_profile: _,
                 ride_profile_for: _,
                 ride_preview: _,
@@ -297,6 +308,34 @@ impl CatalogState {
         &self.ride_ids
     }
 
+    /// The full compact ride-retention inventory the sweep reads (finding #876-2) — every stored
+    /// ride's `id + synced + synced_at`, not just the newest-[`UI_RIDES_CAP`] the menu shows.
+    pub(crate) fn ride_records(&self) -> &[RideRetentionRecord] {
+        &self.ride_inventory
+    }
+
+    /// Overwrite the compact ride-retention inventory from the host's full store scan (finding
+    /// #876-2). Independent of [`replace_rides`](CatalogState::replace_rides): the host streams
+    /// **every** stored ride (up to [`MAX_RIDES`]) here so retention sees rides beyond the display
+    /// catalog; entries past the cap are ignored.
+    pub(crate) fn set_ride_retention_inventory(&mut self, records: &[RideRetentionRecord]) {
+        self.ride_inventory.clear();
+        for r in records.iter().take(MAX_RIDES) {
+            let _ = self.ride_inventory.push(*r);
+        }
+    }
+
+    /// Optimistically stamp ride `id`'s `synced_at` in the **inventory** (the sweep's mirror of the
+    /// host's sidecar write, the full-inventory twin of
+    /// [`stamp_ride_synced_at`](CatalogState::stamp_ride_synced_at)) so a re-derivation before the
+    /// host's rescan lands doesn't re-enqueue the same stamp for a ride outside the display catalog.
+    /// Only ever fills a `0` stamp. A no-op if the id isn't in the inventory.
+    pub(crate) fn stamp_inventory_synced_at(&mut self, id: u16, utc: u32) {
+        if let Some(r) = self.ride_inventory.iter_mut().find(|r| r.id == id && r.synced_at_utc == 0) {
+            r.synced_at_utc = utc;
+        }
+    }
+
     /// The paired `{id, summary}` at ride-catalog index `idx` — the ride twin of
     /// [`route_entry`](CatalogState::route_entry).
     pub(crate) fn ride_entry(&self, idx: usize) -> Option<RideEntry<'_>> {
@@ -316,9 +355,17 @@ impl CatalogState {
         let old_ids = self.ride_ids.clone();
         self.rides.clear();
         self.ride_ids.clear();
+        // Seed the compact retention inventory from the visible summaries as a fallback (finding
+        // #876-2): a host that never streams the full store view still expires the rides it does
+        // surface. A retention-aware host (the board) overwrites this with the full up-to-MAX_RIDES
+        // view via `set_ride_retention_inventory` right after, so the sweep sees rides beyond the
+        // newest UI_RIDES_CAP too.
+        self.ride_inventory.clear();
         for (s, &id) in summaries.iter().zip(ids).take(UI_RIDES_CAP) {
             let _ = self.rides.push(s.clone());
             let _ = self.ride_ids.push(id);
+            let _ =
+                self.ride_inventory.push(RideRetentionRecord { id, synced: s.synced, synced_at_utc: s.synced_at_utc });
         }
         // The view caches follow their subject's identity (identity survives → the resident
         // profile moves with it, no re-stream; vanished → the buffer drops).

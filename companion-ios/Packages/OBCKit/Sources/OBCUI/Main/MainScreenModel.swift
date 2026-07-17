@@ -941,7 +941,13 @@ public final class MainScreenModel {
             let name = plannedRecords[routeID]?.summary.name ?? "Stage"
             switch stagePlan.action {
             case .skip:
-                steps.append(.skip(title: name))
+                // The stage's bytes are current, so nothing transfers — but the
+                // trip's chosen retention must still reach it (finding #876-4). Wire
+                // the same postcondition path the fresh/replace commit uses; the
+                // trip level is read at execution time (after the rider confirmed).
+                steps.append(.skip(title: name, applyRetention: { [weak self] retention in
+                    self?.applyStageRetention(routeID, retention)
+                }))
             case .fresh, .replace:
                 let target: DeviceObjectID? =
                     if case .replace(let objectID) = stagePlan.action { objectID } else { nil }
@@ -1441,13 +1447,33 @@ public final class MainScreenModel {
     /// eventually-true. A retro change to the default never lands here — only an
     /// explicit per-route edit does.
     public func setRouteRetention(_ id: RouteID, _ retention: Retention) {
-        guard var record = plannedRecords[id], record.retention != retention else { return }
+        guard plannedRecords[id]?.retention != retention else { return }
+        applyStageRetention(id, retention)
+    }
+
+    /// Force a route to a desired retention **postcondition** and push it when the
+    /// device holds it and its level diverges — the shared path behind the
+    /// single-route setter and every whole-trip member stage (finding #876-4). A
+    /// whole-trip choice must reach **every** member route, including a stage whose
+    /// *bytes* were skipped (already current): a skip skips the transfer, never the
+    /// policy. Idempotent — no command when the device is already at `retention`
+    /// (`deviceRetention == retention`) — and capability-gated (an incapable device
+    /// records the desired level for a later reconcile push but sends nothing now).
+    func applyStageRetention(_ id: RouteID, _ retention: Retention) {
+        guard var record = plannedRecords[id] else { return }
+        // Push when the device holds this route (valid scoped link), is capable,
+        // and the desired level diverges from the device's — optimistic, like the
+        // reconcile push; a failed send self-heals at the next reconcile.
+        let needsPush: Bool = {
+            guard supportsRetention, let scope = connectedScope, let link = record.deviceLink,
+                link.matches(scope), record.deviceRetention != retention else { return false }
+            return true
+        }()
+        // Fully idempotent postcondition: the record already holds the level and
+        // the device already matches — nothing to mutate, persist, or send.
+        guard record.retention != retention || needsPush else { return }
         record.retention = retention
-        // Push now when the device holds this route (valid scoped link), is
-        // capable, and the desired level diverges from the device's — optimistic,
-        // like the reconcile push; a failed send self-heals at the next reconcile.
-        if supportsRetention, let scope = connectedScope, let link = record.deviceLink,
-            link.matches(scope), record.deviceRetention != retention {
+        if needsPush, let link = record.deviceLink {
             pushRetention(retention, to: link.objectID)
             record.deviceRetention = retention  // optimistic; a later list confirms
         }
