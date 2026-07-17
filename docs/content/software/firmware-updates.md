@@ -128,6 +128,19 @@ the state is still `Armed` throughout, so a power loss there just reruns the pas
 from the staged file. Nothing the rider can do turns the device into a
 paperweight; the worst case is "reinsert the card and power-cycle".
 
+There is one refinement to that worst case. If the card is *unreadable* while an
+update is armed — it died in the drawer between arming and rebooting, or the rider
+swapped in a fresh maps card — the bootloader can't stream the staged file at all.
+For a rollback, or once the flash pass has already started writing the slot, it
+keeps retrying forever (never abandon a slot that might be half-written). But an
+`Armed` arm whose flash pass hasn't begun has touched *nothing* — the old app is
+still whole at its slot base — so after about a minute of triple-blinking the
+bootloader **abandons** the arm: it clears the state back to `Idle`, records that
+the arm was abandoned, and boots the old firmware. The rider sees a one-time
+"update abandoned — card unreadable" card and can re-arm once the card is back,
+instead of staring at a device that is holding perfectly good firmware hostage to a
+card that never returns.
+
 > **CRC-32, no signatures — on purpose (v1).** Integrity is a CRC-32/IEEE over the
 > whole image, end to end. There is no cryptographic signature: physical access to
 > the card is already root on an open device, so the meaningful gate is the human
