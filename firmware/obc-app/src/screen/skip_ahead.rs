@@ -4,7 +4,6 @@
 //! Press. Hold toggles a rejoin-inspection camera where Turn zooms around the candidate; Back returns
 //! to the caller without touching navigation state.
 
-use core::fmt::Write as _;
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
     rect,
@@ -20,16 +19,19 @@ use crate::Msg;
 use super::map::{draw_map_scene, SkipMapOverlay};
 use super::{Ctx, Prepare, Render, Transition};
 
-/// One encoder detent changes the requested along-route rejoin distance by 200 m. Skip ahead is for
+/// One encoder detent changes the requested along-route rejoin distance by 100 m. Skip ahead is for
 /// nearby closures and trail problems, so finer control matters more than spanning many kilometres;
 /// the route-end clamp still displays/commits the exact non-multiple remainder.
-pub(crate) const SKIP_STEP_M: u32 = 200;
+pub(crate) const SKIP_STEP_M: u32 = 100;
 /// A shorter remainder has no useful later rejoin point and is guarded as "Route ends here".
 pub(crate) const MIN_SKIP_M: u32 = 100;
 /// Enter inspection at roughly 2.5× the overview scale: enough to resolve the candidate's local
 /// junction without making the Hold transition visually disorienting.
-const INSPECT_ENTRY_STEPS: u8 = 5;
-const INSPECT_MAX_STEPS: u8 = 13;
+const INSPECT_MIN_EXP: i8 = -2;
+const INSPECT_ENTRY_EXP: i8 = 5;
+const INSPECT_MAX_EXP: i8 = 13;
+const INSPECT_ENTRY_LEVEL: u8 = (INSPECT_ENTRY_EXP - INSPECT_MIN_EXP + 1) as u8;
+const INSPECT_MAX_LEVEL: u8 = (INSPECT_MAX_EXP - INSPECT_MIN_EXP + 1) as u8;
 const INSPECT_ZOOM_STEP: f32 = 1.2;
 const HUD_H: i32 = 76;
 const HUD_MARGIN: i32 = 10;
@@ -51,9 +53,9 @@ pub struct SkipAheadScreen {
     start_m: u32,
     total_m: u32,
     steps: u16,
-    /// `0` = overview/distance adjustment; `1..=INSPECT_MAX_STEPS` = rejoin inspection, with this
-    /// many multiplicative zoom detents over the fitted overview.
-    inspect_steps: u8,
+    /// `0` = overview/distance adjustment; `1..=INSPECT_MAX_LEVEL` = rejoin inspection. Level one
+    /// starts two zoom detents wider than the fitted overview; higher levels move progressively in.
+    inspect_level: u8,
     prepared: Option<PreparedSkip>,
 }
 
@@ -64,7 +66,7 @@ impl SkipAheadScreen {
             start_m: activity.progress_m,
             total_m: activity.route_total_m,
             steps: 1,
-            inspect_steps: 0,
+            inspect_level: 0,
             prepared: None,
         }
     }
@@ -86,13 +88,20 @@ impl SkipAheadScreen {
     }
 
     fn inspecting(&self) -> bool {
-        self.inspect_steps != 0
+        self.inspect_level != 0
     }
 
     fn inspect_zoom(&self) -> f32 {
+        let exponent = INSPECT_MIN_EXP + self.inspect_level.saturating_sub(1) as i8;
         let mut zoom = 1.0;
-        for _ in 0..self.inspect_steps {
-            zoom *= INSPECT_ZOOM_STEP;
+        if exponent >= 0 {
+            for _ in 0..exponent {
+                zoom *= INSPECT_ZOOM_STEP;
+            }
+        } else {
+            for _ in exponent..0 {
+                zoom /= INSPECT_ZOOM_STEP;
+            }
         }
         zoom
     }
@@ -122,8 +131,8 @@ impl SkipAheadScreen {
         self.refresh_anchor(cx.activity);
         match g {
             Gesture::Turn(n) if self.available(cx.activity) && self.inspecting() => {
-                let next = (self.inspect_steps as i32).saturating_add(n).clamp(1, INSPECT_MAX_STEPS as i32);
-                self.inspect_steps = next as u8;
+                let next = (self.inspect_level as i32).saturating_add(n).clamp(1, INSPECT_MAX_LEVEL as i32);
+                self.inspect_level = next as u8;
                 Transition::None
             }
             Gesture::Turn(n) if self.available(cx.activity) => {
@@ -148,7 +157,7 @@ impl SkipAheadScreen {
             // The encoder hold is unused by the chooser otherwise. Toggle between the spatial
             // overview and a candidate-centred inspection camera without changing the selection.
             Gesture::Hold if self.available(cx.activity) => {
-                self.inspect_steps = if self.inspecting() { 0 } else { INSPECT_ENTRY_STEPS };
+                self.inspect_level = if self.inspecting() { 0 } else { INSPECT_ENTRY_LEVEL };
                 Transition::None
             }
             // Cancel consumes both chooser and ride-menu caller, restoring the riding view without
@@ -236,14 +245,8 @@ impl SkipAheadScreen {
         };
         match status {
             Ok(dist) => {
-                let mut readout = heapless::String::<24>::new();
-                if self.inspecting() {
-                    let _ = write!(readout, "{} {:.1}x", dist.as_str(), self.inspect_zoom());
-                } else {
-                    let _ = readout.push_str(dist.as_str());
-                }
                 cv.text("-", Point::new(x + 24, y + 36), Font::Display, TextAlign::Center, INK);
-                cv.text(readout.as_str(), Point::new(rx.w / 2, y + 36), Font::Display, TextAlign::Center, WARNING);
+                cv.text(dist.as_str(), Point::new(rx.w / 2, y + 36), Font::Display, TextAlign::Center, WARNING);
                 cv.text("+", Point::new(x + w - 24, y + 36), Font::Display, TextAlign::Center, INK);
             }
             Err(msg) => {
@@ -328,8 +331,8 @@ mod tests {
     fn candidate_steps_clamp_to_actual_route_remainder() {
         let a = tracking_activity(200, 1_350);
         let mut s = SkipAheadScreen::new(&a);
-        assert_eq!(s.actual_skip_m(), Some(200));
-        s.steps = 9;
+        assert_eq!(s.actual_skip_m(), Some(100));
+        s.steps = 99;
         assert_eq!(s.actual_skip_m(), Some(1_150));
         assert_eq!(s.target_m(), Some(1_350));
     }
@@ -351,7 +354,7 @@ mod tests {
         let t = with_ctx(&mut a, |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop));
         let req = a.pending_skip().expect("commit queued");
-        assert_eq!((req.route, req.target_m), (2, 1_600), "three 200 m steps from the live anchor");
+        assert_eq!((req.route, req.target_m), (2, 1_300), "three 100 m steps from the live anchor");
         assert_eq!(a.progress_m, 1_000, "visible progress waits for the atomic route-aware seek");
         assert_eq!(a.session(), session, "same tracking session");
         assert_eq!(a.mode, mode, "Mode is preserved");
@@ -395,17 +398,17 @@ mod tests {
     fn moving_while_open_advances_highlight_and_commit_anchor() {
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = SkipAheadScreen::new(&a);
-        // Rider advances before a Turn; that input refreshes the live anchor and selects 400 m.
+        // Rider advances before a Turn; that input refreshes the live anchor and selects 200 m.
         a.progress_m = 1_200;
         with_ctx(&mut a, |cx| {
             let _ = s.handle(Gesture::Turn(1), cx);
         });
-        assert_eq!((s.start_m, s.target_m()), (1_200, Some(1_600)));
-        // Another 100 m before Press: commit is still a 400 m skip, now from 1.3 km.
+        assert_eq!((s.start_m, s.target_m()), (1_200, Some(1_400)));
+        // Another 100 m before Press: commit is still a 200 m skip, now from 1.3 km.
         a.progress_m = 1_300;
         let t = with_ctx(&mut a, |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop));
-        assert_eq!(a.pending_skip().unwrap().target_m, 1_700);
+        assert_eq!(a.pending_skip().unwrap().target_m, 1_500);
     }
 
     #[test]
@@ -416,12 +419,15 @@ mod tests {
 
         assert!(matches!(with_ctx(&mut a, |cx| s.handle(Gesture::Hold, cx)), Transition::None));
         assert!(s.inspecting());
-        assert_eq!(s.inspect_steps, INSPECT_ENTRY_STEPS);
+        assert_eq!(s.inspect_level, INSPECT_ENTRY_LEVEL);
         let entry_zoom = s.inspect_zoom();
 
-        let _ = with_ctx(&mut a, |cx| s.handle(Gesture::Turn(2), cx));
-        assert!(s.inspect_zoom() > entry_zoom, "Turn zooms in while inspecting");
+        let _ = with_ctx(&mut a, |cx| s.handle(Gesture::Turn(-20), cx));
+        assert!(s.inspect_zoom() < 1.0, "inspection can zoom a little wider than the fitted overview");
         assert_eq!(s.target_m(), target, "inspection never changes the selected rejoin point");
+
+        let _ = with_ctx(&mut a, |cx| s.handle(Gesture::Turn(20), cx));
+        assert!(s.inspect_zoom() > entry_zoom, "Turn zooms back in while inspecting");
 
         let _ = with_ctx(&mut a, |cx| s.handle(Gesture::Hold, cx));
         assert!(!s.inspecting(), "a second Hold returns to the overview");
