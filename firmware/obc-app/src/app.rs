@@ -3891,14 +3891,14 @@ mod tests {
         app.activity.start_session();
         let chooser = SkipAheadScreen::new(&app.activity);
         *app.ui.stack.last_mut().unwrap() = Screen::SkipAhead(chooser);
-        app.apply_gesture(Gesture::Turn(2)); // selected distance = 3 × 500 m
+        app.apply_gesture(Gesture::Turn(2)); // selected distance = 3 × 200 m
 
         enter_first_climb(&mut app, &idx); // live anchor advances to 5 km on climb entry
         assert!(matches!(app.top_screen(), Screen::SkipAhead(_)), "climb entry preserves the open chooser");
 
         app.apply_gesture(Gesture::Press);
         let req = app.activity.pending_skip().expect("the preserved chooser still commits");
-        assert_eq!((req.route, req.target_m), (0, 6_500), "the 1.5 km selection survives the climb edge");
+        assert_eq!((req.route, req.target_m), (0, 5_600), "the 600 m selection survives the climb edge");
     }
 
     /// Manual and Off never auto-switch on entry (the rider reaches the Climb screen only by cycling

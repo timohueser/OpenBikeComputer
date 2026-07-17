@@ -379,7 +379,7 @@ fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: 
 /// Ride-menu station glyphs in ring order: waypoints, skip ahead, POIs, routes, main menu.
 fn draw_ride_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: u16) {
     match i {
-        0 => icon_waypoints(cv, c, k, color),
+        0 => icon_waypoints(cv, c, k, color, bg),
         1 => icon_skip(cv, c, k, color),
         2 => icon_poi(cv, c, k, color, bg),
         3 => icon_route(cv, c, k, color),
@@ -387,39 +387,65 @@ fn draw_ride_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16,
     }
 }
 
-/// A short route line carrying two waypoint diamonds.
-fn icon_waypoints(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
-    let y0 = c.y - si(k, 11.0);
-    let y1 = c.y + si(k, 11.0);
-    cv.vline(c.x, y0, y1 - y0 + 1, si(k, 2.0).max(1), color);
-    for y in [c.y - si(k, 6.0), c.y + si(k, 7.0)] {
-        let r = si(k, 4.0);
-        cv.triangle(Point::new(c.x, y - r), Point::new(c.x - r, y), Point::new(c.x + r, y), color);
-        cv.triangle(Point::new(c.x, y + r), Point::new(c.x - r, y), Point::new(c.x + r, y), color);
+/// A compact route bend carrying two haloed waypoint diamonds. The three-pixel path and filled
+/// stops match the visual mass of the established route/POI glyphs at the dial's small scale.
+fn icon_waypoints(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
+    let at = |x: f32, y: f32| Point::new(c.x + si(k, x), c.y + si(k, y));
+    let path = [at(-10.0, 10.0), at(-5.0, 4.0), at(-5.0, -7.0), at(6.0, -7.0), at(10.0, -3.0)];
+    for pair in path.windows(2) {
+        icon_thick_line(cv, pair[0], pair[1], si(k, 2.0).max(3), color);
+    }
+    for p in [path[1], path[3]] {
+        let r = si(k, 5.0).max(4);
+        cv.triangle(Point::new(p.x, p.y - r), Point::new(p.x - r, p.y), Point::new(p.x + r, p.y), color);
+        cv.triangle(Point::new(p.x, p.y + r), Point::new(p.x - r, p.y), Point::new(p.x + r, p.y), color);
+        let inner = si(k, 2.0).max(2);
+        cv.triangle(Point::new(p.x, p.y - inner), Point::new(p.x - inner, p.y), Point::new(p.x + inner, p.y), bg);
+        cv.triangle(Point::new(p.x, p.y + inner), Point::new(p.x - inner, p.y), Point::new(p.x + inner, p.y), bg);
     }
 }
 
-/// A forward-jump mark: a doubled chevron ending at a stop bar.
+/// The familiar media-style forward-jump mark: two **filled** arrowheads ending at a heavy stop
+/// bar. Filled geometry survives the 240 px dial far better than the old single-pixel chevrons.
 fn icon_skip(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
-    let x0 = c.x - si(k, 10.0);
-    let x1 = c.x - si(k, 1.0);
-    let x2 = c.x + si(k, 8.0);
-    let dy = si(k, 8.0);
-    for (a, b) in [(x0, x1), (x1, x2)] {
-        cv.line(Point::new(a, c.y - dy), Point::new(b, c.y), color);
-        cv.line(Point::new(a, c.y + dy), Point::new(b, c.y), color);
+    let top = c.y - si(k, 9.0);
+    let bot = c.y + si(k, 9.0);
+    for (left, tip) in [(-11.0, -1.0), (-2.0, 8.0)] {
+        cv.triangle(
+            Point::new(c.x + si(k, left), top),
+            Point::new(c.x + si(k, left), bot),
+            Point::new(c.x + si(k, tip), c.y),
+            color,
+        );
     }
-    cv.vline(c.x + si(k, 11.0), c.y - dy, 2 * dy + 1, si(k, 2.0).max(1), color);
+    let bar_w = si(k, 3.0).max(3);
+    cv.fill(rect(c.x + si(k, 10.0), top, bar_w, bot - top + 1), color);
 }
 
-/// Three compact rows — the door from the ride-scoped ring to the full main menu.
+/// Three compact, filled rows — the door from the ride-scoped ring to the full main menu.
 fn icon_menu(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
     let hw = si(k, 11.0);
-    let dot = si(k, 2.0).max(1) as u32;
+    let dot = si(k, 2.5).max(2) as u32;
+    let stroke = si(k, 3.0).max(3);
     for dy in [-7.0, 0.0, 7.0] {
         let y = c.y + si(k, dy);
         cv.disc(Point::new(c.x - hw, y), dot, color);
-        cv.hline(c.x - hw + si(k, 5.0), y, 2 * hw - si(k, 5.0), color);
+        cv.fill(rect(c.x - hw + si(k, 5.0), y - stroke / 2, 2 * hw - si(k, 5.0), stroke), color);
+    }
+}
+
+/// A small arbitrary-angle stroke for glyph construction. Parallel lines are offset across the
+/// segment's minor axis, yielding a stable odd-pixel weight without allocating path geometry.
+fn icon_thick_line(cv: &mut impl Surface, a: Point, b: Point, width: i32, color: u16) {
+    let half = width.max(1) / 2;
+    if (b.x - a.x).abs() >= (b.y - a.y).abs() {
+        for off in -half..=half {
+            cv.line(Point::new(a.x, a.y + off), Point::new(b.x, b.y + off), color);
+        }
+    } else {
+        for off in -half..=half {
+            cv.line(Point::new(a.x + off, a.y), Point::new(b.x + off, b.y), color);
+        }
     }
 }
 

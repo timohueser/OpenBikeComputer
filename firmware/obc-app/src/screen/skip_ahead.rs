@@ -1,8 +1,10 @@
 //! Pure Skip-ahead chooser (#788): select a later point on the existing route, without synthesizing
 //! a detour or modifying the OBCR. The screen streams only the highlighted interval, fits a local
 //! north-up camera around the rider + whole selected stretch, and queues a durable matcher floor on
-//! Press. Back returns to the riding map without touching navigation state.
+//! Press. Hold toggles a rejoin-inspection camera where Turn zooms around the candidate; Back returns
+//! to the caller without touching navigation state.
 
+use core::fmt::Write as _;
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
     rect,
@@ -18,12 +20,17 @@ use crate::Msg;
 use super::map::{draw_map_scene, SkipMapOverlay};
 use super::{Ctx, Prepare, Render, Transition};
 
-/// One encoder detent changes the requested along-route rejoin distance by 500 m. It is deliberately
-/// coarse enough to operate while riding; the route-end clamp still displays/commits the exact
-/// remaining distance when it is not a multiple of the step.
-pub(crate) const SKIP_STEP_M: u32 = 500;
+/// One encoder detent changes the requested along-route rejoin distance by 200 m. Skip ahead is for
+/// nearby closures and trail problems, so finer control matters more than spanning many kilometres;
+/// the route-end clamp still displays/commits the exact non-multiple remainder.
+pub(crate) const SKIP_STEP_M: u32 = 200;
 /// A shorter remainder has no useful later rejoin point and is guarded as "Route ends here".
 pub(crate) const MIN_SKIP_M: u32 = 100;
+/// Enter inspection at roughly 2.5× the overview scale: enough to resolve the candidate's local
+/// junction without making the Hold transition visually disorienting.
+const INSPECT_ENTRY_STEPS: u8 = 5;
+const INSPECT_MAX_STEPS: u8 = 13;
+const INSPECT_ZOOM_STEP: f32 = 1.2;
 const HUD_H: i32 = 76;
 const HUD_MARGIN: i32 = 10;
 const FIT_MARGIN: f32 = 24.0;
@@ -36,13 +43,17 @@ struct PreparedSkip {
 }
 
 /// Screen-local chooser state. No route geometry is retained: only the entry anchor, encoder step
-/// count, and one prepared coordinate/bounds record (~32 B) live in the screen stack.
+/// count, compact inspection zoom state, and one prepared coordinate/bounds record live in the
+/// screen stack.
 #[derive(Debug)]
 pub struct SkipAheadScreen {
     route: Option<usize>,
     start_m: u32,
     total_m: u32,
     steps: u16,
+    /// `0` = overview/distance adjustment; `1..=INSPECT_MAX_STEPS` = rejoin inspection, with this
+    /// many multiplicative zoom detents over the fitted overview.
+    inspect_steps: u8,
     prepared: Option<PreparedSkip>,
 }
 
@@ -53,6 +64,7 @@ impl SkipAheadScreen {
             start_m: activity.progress_m,
             total_m: activity.route_total_m,
             steps: 1,
+            inspect_steps: 0,
             prepared: None,
         }
     }
@@ -71,6 +83,18 @@ impl SkipAheadScreen {
 
     fn target_m(&self) -> Option<u32> {
         self.actual_skip_m().map(|d| self.start_m.saturating_add(d).min(self.total_m))
+    }
+
+    fn inspecting(&self) -> bool {
+        self.inspect_steps != 0
+    }
+
+    fn inspect_zoom(&self) -> f32 {
+        let mut zoom = 1.0;
+        for _ in 0..self.inspect_steps {
+            zoom *= INSPECT_ZOOM_STEP;
+        }
+        zoom
     }
 
     fn available(&self, activity: &Activity) -> bool {
@@ -97,6 +121,11 @@ impl SkipAheadScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         self.refresh_anchor(cx.activity);
         match g {
+            Gesture::Turn(n) if self.available(cx.activity) && self.inspecting() => {
+                let next = (self.inspect_steps as i32).saturating_add(n).clamp(1, INSPECT_MAX_STEPS as i32);
+                self.inspect_steps = next as u8;
+                Transition::None
+            }
             Gesture::Turn(n) if self.available(cx.activity) => {
                 let remaining = self.total_m.saturating_sub(self.start_m);
                 let max_steps = remaining.saturating_add(SKIP_STEP_M - 1) / SKIP_STEP_M;
@@ -115,6 +144,12 @@ impl SkipAheadScreen {
                 } else {
                     Transition::None
                 }
+            }
+            // The encoder hold is unused by the chooser otherwise. Toggle between the spatial
+            // overview and a candidate-centred inspection camera without changing the selection.
+            Gesture::Hold if self.available(cx.activity) => {
+                self.inspect_steps = if self.inspecting() { 0 } else { INSPECT_ENTRY_STEPS };
+                Transition::None
             }
             // Cancel consumes both chooser and ride-menu caller, restoring the riding view without
             // queueing a floor or changing progress/session/mode.
@@ -163,8 +198,17 @@ impl SkipAheadScreen {
         F: Fn(u16) -> D::Color,
     {
         let selected = self.prepared.filter(|_| self.available(rx.activity));
-        let vp = selected
-            .map_or_else(|| rx.state.viewport(rx.w as f32, rx.h as f32), |p| fit_viewport(rx.w, rx.h, p.bounds));
+        let vp = selected.map_or_else(
+            || rx.state.viewport(rx.w as f32, rx.h as f32),
+            |p| {
+                let overview = fit_viewport(rx.w, rx.h, p.bounds);
+                if self.inspecting() {
+                    inspect_viewport(rx.w, rx.h, p.candidate, overview.zoom, self.inspect_zoom())
+                } else {
+                    overview
+                }
+            },
+        );
         let overlay =
             selected.map(|p| SkipMapOverlay { start_m: self.start_m, end_m: p.target_m, candidate: p.candidate });
         let _ = draw_map_scene(cv, rx, &vp, overlay);
@@ -178,7 +222,8 @@ impl SkipAheadScreen {
         let w = rx.w - 2 * HUD_MARGIN;
         cv.round(rect(x, y, w, HUD_H), 11, PARCHMENT);
         cv.round_outline(rect(x, y, w, HUD_H), 11, INK);
-        cv.text(rx.t(Msg::RideMenuSkipAhead), Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
+        let title = if self.inspecting() { rx.t(Msg::RideMenuInspectRejoin) } else { rx.t(Msg::RideMenuSkipAhead) };
+        cv.text(title, Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
 
         let status = if self.route.is_none() || rx.activity.active_route != self.route {
             Err(rx.t(Msg::RideMenuNoRoute))
@@ -191,8 +236,14 @@ impl SkipAheadScreen {
         };
         match status {
             Ok(dist) => {
+                let mut readout = heapless::String::<24>::new();
+                if self.inspecting() {
+                    let _ = write!(readout, "{} {:.1}x", dist.as_str(), self.inspect_zoom());
+                } else {
+                    let _ = readout.push_str(dist.as_str());
+                }
                 cv.text("-", Point::new(x + 24, y + 36), Font::Display, TextAlign::Center, INK);
-                cv.text(dist.as_str(), Point::new(rx.w / 2, y + 36), Font::Display, TextAlign::Center, WARNING);
+                cv.text(readout.as_str(), Point::new(rx.w / 2, y + 36), Font::Display, TextAlign::Center, WARNING);
                 cv.text("+", Point::new(x + w - 24, y + 36), Font::Display, TextAlign::Center, INK);
             }
             Err(msg) => {
@@ -227,6 +278,17 @@ fn fit_viewport(w: i32, h: i32, b: BBox) -> Viewport {
     let desired_y = FIT_MARGIN + usable_h / 2.0;
     let cam_lat = centre_lat - ((h as f32 / 2.0 - desired_y) / zoom) as i32;
     Viewport::new(w as f32, h as f32, cam_lon, cam_lat, zoom)
+}
+
+/// Candidate-centred north-up camera for the inspection sub-mode. The ring sits at the same usable
+/// map-area centre as the overview bounds, never behind the floating HUD.
+fn inspect_viewport(w: i32, h: i32, candidate: (i32, i32), overview_zoom: f32, factor: f32) -> Viewport {
+    let zoom = (overview_zoom * factor).clamp(super::map::MIN_ZOOM, super::map::MAX_ZOOM);
+    let usable_bottom = (h - HUD_H - 2 * HUD_MARGIN) as f32;
+    let usable_h = (usable_bottom - FIT_MARGIN).max(1.0);
+    let desired_y = FIT_MARGIN + usable_h / 2.0;
+    let cam_lat = candidate.1 - ((h as f32 / 2.0 - desired_y) / zoom) as i32;
+    Viewport::new(w as f32, h as f32, candidate.0, cam_lat, zoom)
 }
 
 #[cfg(test)]
@@ -266,7 +328,7 @@ mod tests {
     fn candidate_steps_clamp_to_actual_route_remainder() {
         let a = tracking_activity(200, 1_350);
         let mut s = SkipAheadScreen::new(&a);
-        assert_eq!(s.actual_skip_m(), Some(500));
+        assert_eq!(s.actual_skip_m(), Some(200));
         s.steps = 9;
         assert_eq!(s.actual_skip_m(), Some(1_150));
         assert_eq!(s.target_m(), Some(1_350));
@@ -289,7 +351,7 @@ mod tests {
         let t = with_ctx(&mut a, |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop));
         let req = a.pending_skip().expect("commit queued");
-        assert_eq!((req.route, req.target_m), (2, 2_500), "three 500 m steps from the live anchor");
+        assert_eq!((req.route, req.target_m), (2, 1_600), "three 200 m steps from the live anchor");
         assert_eq!(a.progress_m, 1_000, "visible progress waits for the atomic route-aware seek");
         assert_eq!(a.session(), session, "same tracking session");
         assert_eq!(a.mode, mode, "Mode is preserved");
@@ -333,17 +395,49 @@ mod tests {
     fn moving_while_open_advances_highlight_and_commit_anchor() {
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = SkipAheadScreen::new(&a);
-        // Rider advances before a Turn; that input refreshes the live anchor and selects 1 km.
+        // Rider advances before a Turn; that input refreshes the live anchor and selects 400 m.
         a.progress_m = 1_200;
         with_ctx(&mut a, |cx| {
             let _ = s.handle(Gesture::Turn(1), cx);
         });
-        assert_eq!((s.start_m, s.target_m()), (1_200, Some(2_200)));
-        // Another 100 m before Press: commit is still a 1 km skip, now from 1.3 km.
+        assert_eq!((s.start_m, s.target_m()), (1_200, Some(1_600)));
+        // Another 100 m before Press: commit is still a 400 m skip, now from 1.3 km.
         a.progress_m = 1_300;
         let t = with_ctx(&mut a, |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop));
-        assert_eq!(a.pending_skip().unwrap().target_m, 2_300);
+        assert_eq!(a.pending_skip().unwrap().target_m, 1_700);
+    }
+
+    #[test]
+    fn hold_toggles_candidate_inspection_and_turn_changes_only_zoom() {
+        let mut a = tracking_activity(1_000, 5_000);
+        let mut s = SkipAheadScreen::new(&a);
+        let target = s.target_m();
+
+        assert!(matches!(with_ctx(&mut a, |cx| s.handle(Gesture::Hold, cx)), Transition::None));
+        assert!(s.inspecting());
+        assert_eq!(s.inspect_steps, INSPECT_ENTRY_STEPS);
+        let entry_zoom = s.inspect_zoom();
+
+        let _ = with_ctx(&mut a, |cx| s.handle(Gesture::Turn(2), cx));
+        assert!(s.inspect_zoom() > entry_zoom, "Turn zooms in while inspecting");
+        assert_eq!(s.target_m(), target, "inspection never changes the selected rejoin point");
+
+        let _ = with_ctx(&mut a, |cx| s.handle(Gesture::Hold, cx));
+        assert!(!s.inspecting(), "a second Hold returns to the overview");
+    }
+
+    #[test]
+    fn press_from_inspection_commits_the_unchanged_candidate() {
+        let mut a = tracking_activity(1_000, 5_000);
+        let mut s = SkipAheadScreen::new(&a);
+        let target = s.target_m().unwrap();
+        let _ = with_ctx(&mut a, |cx| s.handle(Gesture::Hold, cx));
+        let _ = with_ctx(&mut a, |cx| s.handle(Gesture::Turn(3), cx));
+
+        let t = with_ctx(&mut a, |cx| s.handle(Gesture::Press, cx));
+        assert!(matches!(t, Transition::Pop));
+        assert_eq!(a.pending_skip().unwrap().target_m, target);
     }
 
     #[test]
@@ -355,5 +449,15 @@ mod tests {
             assert!(x >= FIT_MARGIN as i32 - 1 && x <= 240 - FIT_MARGIN as i32 + 1);
             assert!(y >= FIT_MARGIN as i32 - 1 && y <= 320 - HUD_H - 2 * HUD_MARGIN + 1);
         }
+    }
+
+    #[test]
+    fn inspection_centres_the_candidate_above_the_hud_at_a_tighter_zoom() {
+        let candidate = (7_805_000, 48_005_000);
+        let vp = inspect_viewport(240, 320, candidate, 0.01, 2.5);
+        let (x, y) = vp.to_screen(candidate.0, candidate.1);
+        assert_eq!(x, 120);
+        assert!(y >= FIT_MARGIN as i32 && y < 320 - HUD_H - 2 * HUD_MARGIN);
+        assert!((vp.zoom - 0.025).abs() < 1e-6);
     }
 }
