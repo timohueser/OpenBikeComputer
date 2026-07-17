@@ -87,8 +87,8 @@ python3 ../tools/resource_guard.py boot \
 
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
-| default | 202,912 B | 72 B | 202,984 B | 1,024 B | 670,128 B | 1 × 76,800 B | 52 B |
-| BLE | 210,472 B | 4,504 B | 214,976 B | 1,024 B | 1,109,956 B | 1 × 76,800 B | 6,240 B |
+| default | 202,920 B | 72 B | 202,992 B | 1,024 B | 670,168 B | 1 × 76,800 B | 52 B |
+| BLE | 210,480 B | 4,504 B | 214,984 B | 1,024 B | 1,110,228 B | 1 × 76,800 B | 6,240 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
 
 Auto-delete hardening (#876, finding 2) gives retention a **full compact ride
@@ -98,15 +98,18 @@ slot: 128 × 8 B + 4 B length = 1,028 B, landing as **+1,040 B** inside `App`
 (35,992 → 37,032 B) with layout padding — so the expiry sweep reaches every
 stored ride, not just the newest-32 UI catalog. The record cannot pack below
 8 B without `repr(packed)`/split-array contortions that would save at most
-256 B. The BLE profile additionally pays **72 B** for the two bounded
+256 B. The #886 review round added the dispatched **id** to the two per-kind
+in-flight delete slots (`Option<u32>` → `Option<(u16, u32)>`, keeping the
+one-in-flight property honest under an unrelated cancel), +8 B → `App`
+37,040 B. The BLE profile additionally pays **72 B** for the two bounded
 lossless delete `Channel`s (8 × `u16` slots each) that replace the overwriting
 route/ride delete `Signal`s (finding 3). On pinned rustc 1.96.0, default grows
-**201,944 → 202,984 B** resident and BLE **213,864 → 214,976 B**, the new
+**201,944 → 202,992 B** resident and BLE **213,864 → 214,984 B**, the new
 approved ceilings. The floating-stable rustc 1.97.1 (`8bab26f4f 2026-07-14`) CI
-run links default at 202,976 B (preserving the repository's 8 B default
-toolchain margin) and BLE at 214,976 B (exactly at its ceiling), with 658,484 B
-/ 1,084,052 B flash; the pinned observations in the table are 670,128 B and
-1,109,956 B. Framebuffer count, `.uninit`, and the guarded poll frames
+run before the review round linked default at 202,976 B (the repository's 8 B
+default toolchain margin) and BLE exactly at its then-ceiling, with 658,484 B /
+1,084,052 B flash; the pinned observations in the table are 670,168 B and
+1,110,228 B. Framebuffer count, `.uninit`, and the guarded poll frames
 (52 B / 6,240 B) are unchanged; no report entry other than `App` moves — the
 delete channels are module statics, not `ObjectStore` fields.
 
