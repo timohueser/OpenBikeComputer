@@ -19,12 +19,13 @@ settings = "Réglages"
 [ride_menu]
 title = "MENU SORTIE"
 waypoints = "Points de route"
-skip_ahead = "Avancer"
+detour = "Détour"
 inspect_rejoin = "Voir reprise"
 main_menu = "Menu principal"
 no_route = "Aucun parcours chargé"
 off_route = "Rejoignez parcours"
 route_end = "Fin du parcours"
+no_nav = "Pas de données routage"
 
 [waypoints]
 none = "Aucun point de route"
@@ -371,6 +372,13 @@ route_removed = "Parcours retiré"
 recording = "Sortie en cours"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
+# --- The Detour flow (#882): planning copy, preview title, failure hints ---
+[detour]
+title = "DÉTOUR"
+planning = "Calcul du détour..."
+commit_failed = "Échec du détour."
+rejoin_hint = "Essayez une reprise plus loin."
+
 [nav_route]
 create_route = "Créer parcours"
 cancel = "Annuler"

@@ -1,6 +1,7 @@
 //! The mid-ride compass menu (epic #789): five fixed stations with the same bezel, needle sweep and
-//! detents as the main Menu. Waypoints opens the route-ordered whole-plan list (#787), Skip ahead
-//! opens the map chooser (#788), and POIs, Routes and Main menu open their existing screens.
+//! detents as the main Menu. Waypoints opens the route-ordered whole-plan list (#787), Detour
+//! opens the rejoin chooser (#788 → routed detour #882), and POIs, Routes and Main menu open
+//! their existing screens.
 
 use core::fmt::Write as _;
 
@@ -18,8 +19,8 @@ use crate::Msg;
 use super::list::{self, ListGeometry, Separators};
 use super::menu::{CompassDial, CompassIcons, N_ITEMS};
 use super::{
-    empty_state, fit_caption, palette, Ctx, MenuScreen, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick,
-    SkipAheadScreen, Transition,
+    empty_state, fit_caption, palette, Ctx, DetourScreen, MenuScreen, PoiMenuScreen, Render, RouteMenuScreen, Screen,
+    ScreenTick, Transition,
 };
 
 /// The waypoint list's two-line row pitch: name above, distance + remaining ascent below. Four rows
@@ -51,8 +52,12 @@ impl RideMenuScreen {
                     cx.activity.next_waypoint.unwrap_or(0),
                 ))),
                 // Replace the transient compass, so chooser Press/Back can Pop once to the exact
-                // caller (Map, Statistics/Climb, or paused Ride control).
-                1 => Transition::Replace(Screen::SkipAhead(SkipAheadScreen::new(cx.activity))),
+                // caller (Map, Statistics/Climb, or paused Ride control). A dimmed station (no
+                // nav graph / no route / off-route) never transitions.
+                1 if detour_available(cx.activity, cx.state.has_nav_graph) => {
+                    Transition::Replace(Screen::Detour(DetourScreen::new(cx.activity)))
+                }
+                1 => Transition::None,
                 2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),
                 3 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())),
                 _ => Transition::Push(Screen::Menu(MenuScreen::new())),
@@ -69,7 +74,7 @@ impl RideMenuScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let items: [&str; N_ITEMS] = [
             rx.t(Msg::RideMenuWaypoints),
-            rx.t(Msg::RideMenuSkipAhead),
+            rx.t(Msg::RideMenuDetour),
             rx.t(Msg::MenuPois),
             rx.t(Msg::MenuRoutes),
             rx.t(Msg::RideMenuMainMenu),
@@ -84,9 +89,19 @@ impl RideMenuScreen {
             &batt,
             rx.t(Msg::RideMenuTitle),
             &items,
-            CompassIcons::Ride { route_loaded: rx.activity.active_route.is_some() },
+            CompassIcons::Ride {
+                route_loaded: rx.activity.active_route.is_some(),
+                detour_available: detour_available(rx.activity, rx.state.has_nav_graph),
+            },
         );
     }
+}
+
+/// Whether the Detour station is actionable (#882): a route is loaded, the map has a nav graph,
+/// and the rider is on the route (the corridor anchors on live progress, which off-route
+/// freezes). Shared by the station's Press gate and its dimming.
+fn detour_available(activity: &crate::activity::Activity, has_nav_graph: bool) -> bool {
+    activity.active_route.is_some() && has_nav_graph && !activity.off_route
 }
 
 /// The active route's named waypoints in route order. The list deliberately keeps passed entries
@@ -337,7 +352,10 @@ mod tests {
 
     fn run(scr: &mut RideMenuScreen, g: Gesture) -> Transition {
         let mut state = AppState::new(0, 0, 1.0);
+        // A routed, nav-graph ride so every station (incl. the gated Detour, #882) is actionable.
+        state.has_nav_graph = true;
         let mut activity = Activity::new(Mode::Riding);
+        activity.active_route = Some(0);
         let mut settings = Settings::default();
         let scratch = super::super::PoiScratch::new();
         let mut cx = Ctx {
@@ -363,7 +381,7 @@ mod tests {
             run(&mut scr, Gesture::Press)
         }
         assert!(matches!(press_at(0), Transition::Push(Screen::RideWaypoints(_))));
-        assert!(matches!(press_at(1), Transition::Replace(Screen::SkipAhead(_))));
+        assert!(matches!(press_at(1), Transition::Replace(Screen::Detour(_))));
         assert!(matches!(press_at(2), Transition::Push(Screen::PoiMenu(_))));
         assert!(matches!(press_at(3), Transition::Push(Screen::RouteMenu(_))));
         assert!(matches!(press_at(-1), Transition::Push(Screen::Menu(_))));
@@ -378,12 +396,18 @@ mod tests {
     }
 
     #[test]
-    fn route_less_ring_dims_only_the_two_route_dependent_stations() {
-        let route_less = CompassIcons::Ride { route_loaded: false };
+    fn route_less_ring_dims_only_the_route_dependent_stations() {
+        let route_less = CompassIcons::Ride { route_loaded: false, detour_available: false };
         assert!(!route_less.enabled(0));
         assert!(!route_less.enabled(1));
         assert!((2..N_ITEMS).all(|i| route_less.enabled(i)));
-        assert!((0..N_ITEMS).all(|i| CompassIcons::Ride { route_loaded: true }.enabled(i)));
+        // A loaded route on a nav-graph map lights everything; a graph-less (or off-route) map
+        // dims only the Detour station (#882).
+        let all = CompassIcons::Ride { route_loaded: true, detour_available: true };
+        assert!((0..N_ITEMS).all(|i| all.enabled(i)));
+        let no_nav = CompassIcons::Ride { route_loaded: true, detour_available: false };
+        assert!(no_nav.enabled(0) && !no_nav.enabled(1));
+        assert!((2..N_ITEMS).all(|i| no_nav.enabled(i)));
     }
 
     #[test]
@@ -569,8 +593,8 @@ mod tests {
             let mut stack = Stack::new();
             assert!(stack.push(caller).is_ok());
             assert!(stack.push(Screen::RideMenu(RideMenuScreen::new())).is_ok());
-            apply(&mut stack, Transition::Replace(Screen::SkipAhead(SkipAheadScreen::new(&activity))));
-            assert!(matches!(stack.last(), Some(Screen::SkipAhead(_))));
+            apply(&mut stack, Transition::Replace(Screen::Detour(DetourScreen::new(&activity))));
+            assert!(matches!(stack.last(), Some(Screen::Detour(_))));
             apply(&mut stack, Transition::Pop);
             assert!(caller_matches(stack.last().unwrap()));
             assert_eq!(activity.mode, mode);

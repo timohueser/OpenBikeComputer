@@ -51,12 +51,35 @@ pub enum TrackAction {
     Discard,
 }
 
-/// A committed pure-skip request waiting for the next route-aware tick to move the matcher's
-/// durable navigation floor. Keyed to the active catalog slot so a racing route swap cannot apply
-/// an old chooser's distance to new geometry.
+/// A **seam re-anchor** waiting for the next route-aware tick: after a detour commit re-adopts
+/// the spliced route (#882), the matcher's progress + forward-only floor are installed at the
+/// splice seam (`anchor_m` — the rider's frozen along-route position, which the splice
+/// guarantees is exactly the head/detour boundary). Queued by the commit handler, never by a
+/// screen: the tick owns the `RouteReader` the install needs. Keyed to the catalog slot so a
+/// racing route swap cannot apply the anchor to unrelated geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SkipRequest {
+pub(crate) struct SeamRequest {
     pub route: usize,
+    pub anchor_m: u32,
+}
+
+/// A one-shot **detour-plan request** (#882): the Detour chooser's Press asks the host to plan
+/// an A* detour from the rider's fix to the rejoin point at `target_m`, blacklisting the
+/// corridor around the skipped span `[progress_m, target_m]`. The host resolves the rejoin
+/// *coordinate* itself (`position_at(target_m)`) — it owns the active `RouteReader`; the screen
+/// deliberately carries only distances, keeping the request tiny and `Copy`. Drained as
+/// [`HostCommand::PlanDetour`](crate::host::HostCommand::PlanDetour); answered through
+/// [`App::apply_event`](crate::App::apply_event) as `DetourPlanned`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetourRequest {
+    /// The active catalog slot the request is keyed to (durable-remapped across rescans).
+    pub route: usize,
+    /// The rider's fix at Press, `(lon, lat)` µdeg — the detour's start.
+    pub from: (i32, i32),
+    /// The rider's along-route projection at Press — the corridor's (frozen) start anchor and
+    /// the splice's head/detour seam.
+    pub progress_m: u32,
+    /// The chosen rejoin distance along the route — the corridor's end and the splice point.
     pub target_m: u32,
 }
 
@@ -191,10 +214,20 @@ pub struct Activity {
     /// steps the resumable router, writes the reserved nav route, rescans, and answers through
     /// [`App::apply_event`](crate::App::apply_event).
     nav_request: Option<NavRequest>,
-    /// A pure-skip commit queued by the map chooser. The screen can commit without owning the
-    /// host's `RouteReader`; [`RideEngine`](crate::ride_engine::RideEngine) consumes this on the
-    /// next tick that has the matching active geometry.
-    skip_request: Option<SkipRequest>,
+    /// A seam re-anchor queued by the detour commit handler (#882);
+    /// [`RideEngine`](crate::ride_engine::RideEngine) consumes it on the next tick that has the
+    /// matching active geometry, installing matcher progress + floor at the splice seam.
+    seam_request: Option<SeamRequest>,
+    /// A one-shot detour-plan request (#882), set by the Detour chooser's Press and drained via
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands) as `PlanDetour`.
+    detour_request: Option<DetourRequest>,
+    /// A one-shot detour **commit** (#882): the preview screen's Press asks the host to splice
+    /// the planned detour into the active route (Phase B) and re-adopt the result.
+    detour_commit: bool,
+    /// A one-shot detour **cancel** (#882): Back on the planning or preview screen drops the
+    /// in-flight plan / the held detour bytes host-side. Same annihilation semantics as
+    /// [`nav_cancel`](Activity::nav_cancel).
+    detour_cancel: bool,
     /// A one-shot **DFU request** (epic #615 S5, #620): the SD-sideload firmware-update flow. The
     /// System settings screen posts [`DfuAction::Scan`] (validate `UPDATE.BIN`, answer through
     /// [`App::apply_event`](crate::App::apply_event)); the confirm screen
@@ -468,29 +501,99 @@ impl Activity {
         self.session
     }
 
-    /// Queue a pure skip to `target_m` on `route`. The route-aware tick atomically installs the
-    /// matcher floor and visible progress before processing its next fresh fix; until a successful
-    /// seek, matcher and Activity stay on the same old anchor.
-    pub(crate) fn request_skip(&mut self, route: usize, target_m: u32) {
-        let target_m = target_m.max(self.progress_m).min(self.route_total_m);
-        self.skip_request = Some(SkipRequest { route, target_m });
+    /// The rider's matched along-route progress, meters (frozen while off-route) — the read the
+    /// hosts' flow tests pin the detour seam re-anchor by; in-crate readers use the field.
+    pub fn progress_m(&self) -> u32 {
+        self.progress_m
     }
 
-    pub(crate) fn pending_skip(&self) -> Option<SkipRequest> {
-        self.skip_request
+    /// Queue a seam re-anchor at `anchor_m` on `route` (#882): the route-aware tick atomically
+    /// installs matcher progress + the forward-only floor at the splice seam before processing
+    /// its next fresh fix. Stored verbatim — the tick's `locate_progress` clamps against the
+    /// (just-adopted) route's real length, which this `Activity` may not mirror yet.
+    pub(crate) fn request_seam(&mut self, route: usize, anchor_m: u32) {
+        self.seam_request = Some(SeamRequest { route, anchor_m });
     }
 
-    pub(crate) fn clear_skip(&mut self) {
-        self.skip_request = None;
+    pub(crate) fn pending_seam(&self) -> Option<SeamRequest> {
+        self.seam_request
     }
 
-    /// Follow a queued Skip-ahead commit through a route-catalog rescan by durable identity. If
+    pub(crate) fn clear_seam(&mut self) {
+        self.seam_request = None;
+    }
+
+    /// Follow a queued seam re-anchor through a route-catalog rescan by durable identity. If
     /// its route vanished, drop the one-tick request rather than letting its old index alias a
     /// surviving neighbour.
-    pub(crate) fn remap_skip_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.skip_request = self
-            .skip_request
-            .and_then(|req| remap(req.route).map(|route| SkipRequest { route, target_m: req.target_m }));
+    pub(crate) fn remap_seam_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        self.seam_request = self
+            .seam_request
+            .and_then(|req| remap(req.route).map(|route| SeamRequest { route, anchor_m: req.anchor_m }));
+    }
+
+    /// Record a one-shot detour-plan request (#882) — set by the Detour chooser's Press, drained
+    /// by [`App::drain_host_commands`](crate::App::drain_host_commands) as `PlanDetour`.
+    pub(crate) fn request_detour(&mut self, req: DetourRequest) {
+        self.detour_request = Some(req);
+    }
+
+    /// Take (and clear) the pending detour-plan request, if any.
+    pub(crate) fn take_detour_request(&mut self) -> Option<DetourRequest> {
+        self.detour_request.take()
+    }
+
+    /// Non-consuming peek at whether a detour-plan request is pending.
+    pub(crate) fn has_detour_request(&self) -> bool {
+        self.detour_request.is_some()
+    }
+
+    /// Non-consuming peek at the pending detour-plan request itself — the durable-identity tests
+    /// pin the remap through it without draining the one-shot.
+    #[cfg(test)]
+    pub(crate) fn pending_detour_request(&self) -> Option<DetourRequest> {
+        self.detour_request
+    }
+
+    /// Follow a queued detour-plan request through a route-catalog rescan by durable identity;
+    /// a vanished route drops the request (the host-side gate would refuse it anyway).
+    pub(crate) fn remap_detour_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        self.detour_request =
+            self.detour_request.and_then(|req| remap(req.route).map(|route| DetourRequest { route, ..req }));
+    }
+
+    /// Record a one-shot detour commit (#882) — the preview screen's Press.
+    pub(crate) fn request_detour_commit(&mut self) {
+        self.detour_commit = true;
+    }
+
+    /// Take (and clear) the pending detour commit, if any.
+    pub(crate) fn take_detour_commit(&mut self) -> bool {
+        core::mem::take(&mut self.detour_commit)
+    }
+
+    /// Non-consuming peek at whether a detour commit is pending.
+    pub(crate) fn detour_commit_pending(&self) -> bool {
+        self.detour_commit
+    }
+
+    /// Record a one-shot detour cancel (#882) — Back on the detour planning or preview screen.
+    /// **Post-time annihilation** (the `request_nav_cancel` rule): an undrained plan request or
+    /// commit is cleared here, so the host never receives work the rider already dismissed.
+    pub(crate) fn request_detour_cancel(&mut self) {
+        self.detour_request = None;
+        self.detour_commit = false;
+        self.detour_cancel = true;
+    }
+
+    /// Take (and clear) the pending detour cancel, if any.
+    pub(crate) fn take_detour_cancel(&mut self) -> bool {
+        core::mem::take(&mut self.detour_cancel)
+    }
+
+    /// Non-consuming peek at whether a detour cancel is pending.
+    pub(crate) fn detour_cancel_pending(&self) -> bool {
+        self.detour_cancel
     }
 
     /// Record a one-shot disposition for the open ride log, drained by the host.
@@ -672,7 +775,10 @@ impl Activity {
     /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`/`session`).
     /// Called when a session starts, so tracking accumulators begin fresh.
     pub(crate) fn reset_ride(&mut self) {
-        self.skip_request = None;
+        self.seam_request = None;
+        self.detour_request = None;
+        self.detour_commit = false;
+        self.detour_cancel = false;
         self.progress_m = 0;
         self.off_route = false;
         self.dist_to_route_m = 0;

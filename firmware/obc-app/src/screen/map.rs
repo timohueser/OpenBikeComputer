@@ -319,23 +319,26 @@ impl MapScreen {
     }
 }
 
-/// Optional skip-ahead ink added to the shared map scene. The chooser owns the exact interval and
-/// candidate coordinate; the normal Map passes `None` and pays no extra route decode.
+/// Optional detour ink added to the shared map scene (#882): the skipped-span interval and rejoin
+/// candidate the chooser owns, plus (on the preview screen) the planned detour's decimated
+/// polyline. The normal Map passes `None` and pays no extra route decode.
 #[derive(Clone, Copy)]
-pub(crate) struct SkipMapOverlay {
+pub(crate) struct DetourMapOverlay<'a> {
     pub start_m: u32,
     pub end_m: u32,
     pub candidate: (i32, i32),
+    /// The planned detour's decimated polyline — empty on the chooser (nothing planned yet).
+    pub detour: &'a [(i32, i32)],
 }
 
-/// Draw the reusable map scene (base map, full route, optional skipped-range ink, breadcrumb,
-/// waypoints, rider and candidate). Map chrome stays in [`MapScreen::draw`]; the Skip chooser adds
-/// its own floating HUD after this returns.
+/// Draw the reusable map scene (base map, full route, optional skipped-range + detour ink,
+/// breadcrumb, waypoints, rider and candidate). Map chrome stays in [`MapScreen::draw`]; the
+/// Detour chooser/preview add their own floating HUD after this returns.
 pub(crate) fn draw_map_scene<D, F>(
     cv: &mut Canvas<D, F>,
     rx: &mut Render,
     vp: &Viewport,
-    skip: Option<SkipMapOverlay>,
+    skip: Option<DetourMapOverlay<'_>>,
 ) -> Option<u16>
 where
     D: DrawTarget,
@@ -372,6 +375,16 @@ where
                     SKIPPED_WEIGHT,
                 );
             });
+            // The planned detour (#882): route-colored — it is what the route becomes on commit.
+            if selected.detour.len() >= 2 {
+                rx.renderer.stroke_path(
+                    target,
+                    vp,
+                    selected.detour.iter().copied(),
+                    color_fn(super::palette::ROUTE),
+                    ROUTE_WEIGHT,
+                );
+            }
         }
     }
 
