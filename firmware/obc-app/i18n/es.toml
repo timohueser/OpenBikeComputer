@@ -19,12 +19,13 @@ settings = "Ajustes"
 [ride_menu]
 title = "MENÚ DE RUTA"
 waypoints = "Puntos de ruta"
-skip_ahead = "Saltar tramo"
+detour = "Desvío"
 inspect_rejoin = "Ver reenganche"
 main_menu = "Menú principal"
 no_route = "No hay ruta cargada"
 off_route = "Vuelva a la ruta"
 route_end = "Fin de la ruta"
+no_nav = "Sin datos de rutas"
 
 [waypoints]
 none = "No hay puntos de ruta"
@@ -371,6 +372,13 @@ route_removed = "Ruta eliminada"
 recording = "Grabando salida"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
+# --- The Detour flow (#882): planning copy, preview title, failure hints ---
+[detour]
+title = "DESVÍO"
+planning = "Planeando desvío..."
+commit_failed = "Fallo al aplicar desvío."
+rejoin_hint = "Prueba un reenganche más lejano."
+
 [nav_route]
 create_route = "Crear ruta"
 cancel = "Cancelar"
