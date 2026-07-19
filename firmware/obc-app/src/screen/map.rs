@@ -375,13 +375,14 @@ where
                     SKIPPED_WEIGHT,
                 );
             });
-            // The planned detour (#882): route-colored — it is what the route becomes on commit.
+            // The planned detour (#882): blue, so the replanned portion reads apart from the
+            // magenta route it will replace and the warning-colored span it avoids.
             if selected.detour.len() >= 2 {
                 rx.renderer.stroke_path(
                     target,
                     vp,
                     selected.detour.iter().copied(),
-                    color_fn(super::palette::ROUTE),
+                    color_fn(super::palette::DETOUR),
                     ROUTE_WEIGHT,
                 );
             }

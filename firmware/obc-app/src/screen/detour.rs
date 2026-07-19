@@ -9,7 +9,7 @@
 //!   rejoin-inspection camera). **Press now posts a plan request** and pushes the shared planning
 //!   spinner; there is no pure skip.
 //! - [`DetourPreviewScreen`] — the planned detour drawn over the map (skipped span in warning
-//!   ink, the detour in route ink) with a signed "±X km" cost line. Press commits the splice;
+//!   ink, the detour in blue) with a signed "±X km" cost line. Press commits the splice;
 //!   Back cancels back to the chooser with detents intact.
 //!
 //! The chooser holds **no route geometry** — only the entry anchor, encoder step count, compact

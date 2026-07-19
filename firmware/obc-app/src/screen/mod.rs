@@ -1493,6 +1493,10 @@ pub mod palette {
     /// Magenta — the planned route line on the Map. The classic GPS route hue: it lands on no
     /// base-map feature, so it always reads as "the line to follow".
     pub const ROUTE: u16 = rgb565(255, 0, 255); // → (255,0,255) magenta
+    /// Blue — the planned detour's polyline on the Detour preview (#882): the replanned portion
+    /// reads apart from the magenta route it will replace, the warning-orange skipped span, and
+    /// the (recessive navy) breadcrumb behind it.
+    pub const DETOUR: u16 = rgb565(0, 90, 255); // → (0,85,255) blue
     /// Navy — the recorded breadcrumb (travelled path), stroked over the route and under the marker.
     /// Recessive so the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
