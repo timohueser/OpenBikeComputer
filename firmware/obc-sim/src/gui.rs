@@ -309,6 +309,7 @@ impl SimGui {
         // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
         // (a device re-runs it on every map load).
         app.set_nav_profiles(map_tables.nav_profiles());
+        app.set_map_nav_graph(map_tables.has_nav_graph());
         // Device-info built-ins for the System settings screen (T8 item 6): firmware version (the
         // sim's crate version) + the loaded map's name (filename stem) & OBCM version. The card-free
         // scan is answered per-frame in `update` when the screen posts its on-entry request.

@@ -14,6 +14,7 @@
 
 use obc_app::{App, DrainStatus, HostCommand, HostMailbox, TrackAction};
 
+use crate::nav::{finish_detour_commit, finish_detour_plan, DetourPlan, DetourReady};
 use crate::{
     finish_nav_plan, ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackRepository, TripCatalog,
 };
@@ -25,12 +26,25 @@ fn feed_routes(app: &mut App, routes: &dyn RouteRepository) {
     app.set_routes_with_meta(routes.catalog(), routes.ids(), &routes.retention_metas());
 }
 
-/// The shared host-loop state: the drain mailbox, the in-flight route plan (stepped once per pass),
-/// and the resident active-route parse. A host owns one for its lifetime.
+/// The one in-flight plan a host steps — a POI route plan or a detour plan (#882). One enum slot
+/// instead of two `Option`s: the two flows can never run concurrently **by construction** (the UI
+/// can't reach both planning screens at once, and one slot makes the exclusion structural), and
+/// only one large scratch/tile frame is alive at a time (the stack rule below).
+pub enum InflightPlan {
+    Nav(NavPlan),
+    Detour(DetourPlan),
+}
+
+/// The shared host-loop state: the drain mailbox, the in-flight plan (stepped once per pass), a
+/// planned-but-uncommitted detour, and the resident active-route parse. A host owns one for its
+/// lifetime.
 #[derive(Default)]
 pub struct HostLoop {
     mailbox: HostMailbox,
-    nav: Option<NavPlan>,
+    plan: Option<InflightPlan>,
+    /// A planned detour's bytes + frozen splice context (#882), held from `DetourPlanned` until
+    /// the rider commits or cancels.
+    detour_ready: Option<DetourReady>,
     /// The resident active-route parse — the caller reads it (via [`session`](HostLoop::session))
     /// to open the tick+render [`RouteReader`](obc_route::RouteReader) after [`reconcile`](HostLoop::reconcile).
     pub session: ActiveRouteSession,
@@ -39,12 +53,12 @@ pub struct HostLoop {
 impl HostLoop {
     /// A fresh host loop (empty mailbox, no plan, nothing parsed).
     pub fn new() -> Self {
-        HostLoop { mailbox: HostMailbox::new(), nav: None, session: ActiveRouteSession::new() }
+        HostLoop { mailbox: HostMailbox::new(), plan: None, detour_ready: None, session: ActiveRouteSession::new() }
     }
 
-    /// Whether a route plan is computing (the planning-spinner state).
+    /// Whether a plan (route or detour) is computing (the planning-spinner state).
     pub fn is_planning(&self) -> bool {
-        self.nav.is_some()
+        self.plan.is_some()
     }
 
     /// Drain every pending host command in the canonical [`HostCommand::DRAIN_ORDER`], apply the
@@ -134,9 +148,37 @@ impl HostLoop {
                 // the app already mirrored the value optimistically, so no re-feed is needed here.
                 HostCommand::StampRouteUsed { id, utc } => routes.stamp_route_used(id, utc),
                 HostCommand::StampRideSynced { id, utc } => rides.stamp_synced_at(id, utc),
-                HostCommand::CancelRoutePlan => self.nav = None,
+                HostCommand::CancelRoutePlan => {
+                    if matches!(self.plan, Some(InflightPlan::Nav(_))) {
+                        self.plan = None;
+                    }
+                }
                 HostCommand::PlanRoute(req) => {
-                    self.nav = Some(NavPlan::start(&req, app.settings().bike_profile_idx));
+                    self.plan = Some(InflightPlan::Nav(NavPlan::start(&req, app.settings().bike_profile_idx)));
+                }
+                HostCommand::CancelDetour => {
+                    // Drop both the in-flight detour plan and any planned-but-uncommitted bytes.
+                    if matches!(self.plan, Some(InflightPlan::Detour(_))) {
+                        self.plan = None;
+                    }
+                    self.detour_ready = None;
+                }
+                HostCommand::PlanDetour(req) => {
+                    self.detour_ready = None;
+                    let started = self.session.index().and_then(|index| {
+                        let src = routes.active_source()?;
+                        let orig = obc_route::RouteReader::new(index, &src);
+                        DetourPlan::start(&req, app.settings().bike_profile_idx, &orig)
+                    });
+                    match started {
+                        Some(plan) => self.plan = Some(InflightPlan::Detour(plan)),
+                        // The active route vanished / can't resolve the rejoin — answer now.
+                        None => app.apply_event(obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath))),
+                    }
+                }
+                HostCommand::CommitDetour => {
+                    let ready = self.detour_ready.take();
+                    finish_detour_commit(app, routes, self.session.index(), ready);
                 }
                 HostCommand::FinishTrack(action) => finish = Some(action),
                 HostCommand::LoadRideTrack { id } => {
@@ -152,22 +194,31 @@ impl HostLoop {
     }
 
     /// Phase 2 — step an in-flight plan once (the board's one-step-per-pass shape) and, on a terminal
-    /// outcome, commit + answer through [`finish_nav_plan`]. Non-generic and `#[inline(never)]` so the
-    /// `RouteIndex` parse inside `finish_nav_plan` never coexists with phase 1's `NavPlan` frame.
+    /// outcome, commit + answer through [`finish_nav_plan`] / [`finish_detour_plan`]. Non-generic and
+    /// `#[inline(never)]` so the `RouteIndex` parse inside the finish tails never coexists with
+    /// phase 1's plan-reservation frame.
     #[inline(never)]
     fn step_plan(&mut self, app: &mut App, routes: &mut dyn RouteRepository, reader: &obc_reader::Reader) {
         // Compute the outcome before `take`-ing, so the terminal-outcome commit doesn't overlap the
         // step borrow.
-        let outcome = self.nav.as_mut().map(|plan| plan.step(reader));
-        match outcome {
-            None | Some(obc_route::Step::Running) => {}
-            Some(obc_route::Step::Done(stats)) => {
-                let plan = self.nav.take().expect("just stepped it");
-                finish_nav_plan(app, routes, Ok(stats), plan.bytes(), plan.tile_stats());
+        let outcome = match self.plan.as_mut() {
+            None => return,
+            Some(InflightPlan::Nav(plan)) => plan.step(reader),
+            Some(InflightPlan::Detour(plan)) => plan.step(reader),
+        };
+        let terminal = match outcome {
+            obc_route::Step::Running => return,
+            obc_route::Step::Done(stats) => Ok(stats),
+            obc_route::Step::Failed(e) => Err(e),
+        };
+        match self.plan.take().expect("just stepped it") {
+            InflightPlan::Nav(plan) => {
+                finish_nav_plan(app, routes, terminal, plan.bytes(), plan.tile_stats());
             }
-            Some(obc_route::Step::Failed(e)) => {
-                let plan = self.nav.take().expect("just stepped it");
-                finish_nav_plan(app, routes, Err(e), plan.bytes(), plan.tile_stats());
+            InflightPlan::Detour(plan) => {
+                // The detour is NOT committed here — the bytes park until the preview's Press
+                // drains `CommitDetour` (or `CancelDetour` drops them).
+                self.detour_ready = finish_detour_plan(app, terminal, plan);
             }
         }
     }
