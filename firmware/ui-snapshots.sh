@@ -173,7 +173,7 @@ DETOUR_PRE="B r r w p r r r p d r r r r r r p p p d p T"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE B r p w p" --detour-hold --png "$OUT/detour-planning.png"
 # (c) The preview: a real corridor-blacklisted A* plan over the monaco graph — the detour polyline
-# in route ink over the warning-colored skipped span, the signed distance-cost line on the HUD.
+# in blue over the warning-colored skipped span, the signed distance-cost line on the HUD.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE B r p r r p d" --png "$OUT/detour-preview.png"
 # (d) The failure card: detour title + the one honest remedy hint ("Try a farther rejoin."),
