@@ -87,9 +87,29 @@ python3 ../tools/resource_guard.py boot \
 
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
-| default | 202,920 B | 72 B | 202,992 B | 1,024 B | 670,168 B | 1 × 76,800 B | 52 B |
-| BLE | 210,480 B | 4,504 B | 214,984 B | 1,024 B | 1,110,228 B | 1 × 76,800 B | 6,240 B |
+| default | 204,544 B | 72 B | 204,616 B | 1,024 B | 685,484 B | 1 × 76,800 B | 52 B |
+| BLE | 211,032 B | 4,504 B | 215,536 B | 1,024 B | 1,124,104 B | 1 × 76,800 B | 6,240 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
+
+The routed detour (#882) replaces the pure skip: the `NavPlanner` gains the
+resident **corridor blacklist** (`Option<Corridor>` — a 128-point downsampled
+skipped-span polyline + inflated bbox + exemption coords), growing the
+`nav_planner` report entry **9,024 → 10,096 B** (+1,072 B, in `.bss` on the
+default profile only — the BLE image links no nav statics but shares the
+table). `App` grows **37,040 → 37,592 B** (+552 B): the ≤64-point
+detour-preview polyline slot in `CatalogState` (~520 B), the
+`DetourRequest`/commit/cancel one-shots replacing the pure-skip slot on
+`Activity`, and the `has_nav_graph` flag on `AppState`. On pinned rustc 1.96.0
+default links **202,992 → 204,616 B** resident (+1,624 = both deltas exactly)
+and BLE **214,984 → 215,536 B** (+552, `App` only), the new approved ceilings;
+flash observations move to 685,484 B / 1,124,104 B (the detour planner, splicer,
+and preview screens). Framebuffer count, `.uninit`, and the guarded poll frames
+are unchanged. The `floating_stable_observation` entries remain the last
+pre-detour rustc 1.97.1 measurements; CI's floating-stable run re-measures them
+independently. (The board does not yet *dispatch* the detour commands — the
+station stays dimmed on device until the ride loop feeds `set_map_nav_graph`
+and drives the plan/commit pipeline — but the resident cost ships with the
+shared crates, so it is itemized now.)
 
 Auto-delete hardening (#876, finding 2) gives retention a **full compact ride
 inventory** in `CatalogState` — `heapless::Vec<RideRetentionRecord, MAX_RIDES>`,
