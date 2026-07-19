@@ -369,6 +369,12 @@ impl<'a> RouteReader<'a> {
         RouteReader { src, idx, cache: None }
     }
 
+    /// The underlying byte source — for the crate's own whole-file passes over sections the
+    /// chunk index doesn't cover (the splicer's [`for_each_waypoint`] sweep).
+    pub(crate) fn source(&self) -> &dyn ByteSource {
+        self.src
+    }
+
     /// Like [`new`](Self::new), but back [`decode_chunk`](Self::decode_chunk) with a resident
     /// [`RouteCache`], so a redraw of an unchanged route — and the matcher's per-fix decode —
     /// hit RAM instead of re-reading geometry from the SD card. The cache adopts the index's
@@ -415,13 +421,25 @@ impl<'a> RouteReader<'a> {
         buf: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
     ) -> Option<RoutePosition> {
         let target = progress_m.min(self.total_distance_m);
+        let (p, chunk, seg) = self.locate_interpolated(target, buf)?;
+        Some(RoutePosition { progress_m: target, lon: p.lon, lat: p.lat, chunk, seg })
+    }
+
+    /// The shared clamped-walk core of [`locate_progress`](Self::locate_progress) and
+    /// [`elevation_at`](Self::elevation_at): the interpolated [`RoutePoint`] at `target`
+    /// (already clamped by the caller) plus its containing chunk and segment.
+    fn locate_interpolated(
+        &self,
+        target: u32,
+        buf: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
+    ) -> Option<(RoutePoint, usize, usize)> {
         let chunks = self.chunks();
         let k = chunks.iter().rposition(|cm| cm.cum_distance_m <= target).unwrap_or(0);
         let cm = chunks.get(k)?;
         self.decode_chunk(k, buf).ok()?;
         let first = *buf.first()?;
         if buf.len() == 1 {
-            return Some(RoutePosition { progress_m: target, lon: first.lon, lat: first.lat, chunk: k, seg: 0 });
+            return Some((first, k, 0));
         }
 
         let cl = crate::geo::cos_lat(first.lat);
@@ -433,12 +451,21 @@ impl<'a> RouteReader<'a> {
             let last = i + 2 == buf.len();
             if target as f32 <= s + dl || last {
                 let t = if dl > 1e-3 { ((target as f32 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
-                let p = interpolate_point(a, b, t);
-                return Some(RoutePosition { progress_m: target, lon: p.lon, lat: p.lat, chunk: k, seg: i });
+                return Some((interpolate_point(a, b, t), k, i));
             }
             s += dl;
         }
         None
+    }
+
+    /// The interpolated elevation at `progress_m`, clamped to the route end — the splice path's
+    /// seam-endpoint sampler ([`locate_progress`](Self::locate_progress) keeps position only;
+    /// this keeps the elevation those callers drop). Cold path with its own decode scratch.
+    #[inline(never)]
+    pub(crate) fn elevation_at(&self, progress_m: u32) -> Option<i16> {
+        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+        let target = progress_m.min(self.total_distance_m);
+        Some(self.locate_interpolated(target, &mut buf)?.0.ele)
     }
 
     /// Return the coordinate at `progress_m`, clamped to the route end. This is the cold UI-facing
@@ -540,9 +567,30 @@ fn decode_points_between(
     hi: u32,
     out: &mut [(i32, i32); MAX_POINTS_PER_CHUNK],
 ) -> Option<usize> {
-    let cm = route.chunks().get(k)?;
     let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-    route.decode_chunk(k, &mut buf).ok()?;
+    let n = decode_route_points_between(route, k, lo, hi, &mut buf)?;
+    for (dst, p) in out.iter_mut().zip(buf.iter()) {
+        *dst = (p.lon, p.lat);
+    }
+    Some(n)
+}
+
+/// Decode chunk `k` and clip it in place to the inclusive along-route interval `[lo, hi]`,
+/// keeping the full [`RoutePoint`] records: `buf` ends up holding only the clipped stretch, its
+/// first and last points interpolated at the interval boundary (elevation included). This is the
+/// splice path's chunk primitive; [`decode_points_between`] layers the render-facing `(lon, lat)`
+/// view on top so there is exactly one clipping implementation. Returns the kept point count;
+/// `None` when the chunk misses the interval or fails to decode.
+#[inline(never)]
+pub(crate) fn decode_route_points_between(
+    route: &RouteReader,
+    k: usize,
+    lo: u32,
+    hi: u32,
+    buf: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
+) -> Option<usize> {
+    let cm = route.chunks().get(k)?;
+    route.decode_chunk(k, buf).ok()?;
     if buf.len() < 2 {
         return None;
     }
@@ -568,12 +616,14 @@ fn decode_points_between(
     }
     let (a, pa) = first?;
     let (b, pb) = last?;
-    for (dst, p) in out.iter_mut().zip(buf[a..=b].iter()) {
-        *dst = (p.lon, p.lat);
-    }
     let n = b - a + 1;
-    out[0] = (pa.lon, pa.lat);
-    out[n - 1] = (pb.lon, pb.lat);
+    // Shift the kept stretch to the front in place — no second point buffer on the stack.
+    for i in 0..n {
+        buf[i] = buf[a + i];
+    }
+    buf.truncate(n);
+    buf[0] = pa;
+    buf[n - 1] = pb;
     Some(n)
 }
 

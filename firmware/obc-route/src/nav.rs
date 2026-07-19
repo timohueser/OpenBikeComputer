@@ -96,6 +96,7 @@
 use heapless::Vec;
 
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
+use crate::corridor::Corridor;
 use crate::geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
 use crate::reader::MAX_WAYPOINTS;
 use obc_formats::io::ByteSink;
@@ -105,7 +106,7 @@ use obc_reader::{BBox, NavTileCache, Reader, M_PER_DEG};
 /// Snap radius, meters (locked on #116): each endpoint snaps to the nearest routable
 /// node within this, or the route fails as [`NavError::NoPath`]. v1 snaps to nodes,
 /// not mid-edge (a noted future refinement).
-const SNAP_RADIUS_M: f32 = 250.0;
+pub(crate) const SNAP_RADIUS_M: f32 = 250.0;
 
 /// The **ε-escalation ladder** (N8, epic #533): weighted-A\* heuristic inflation ε as a sequence
 /// of integer `(num, den)` ratios — `f = g + (num·h)/den`. The search starts at rung 0 (1.3×, the
@@ -610,6 +611,10 @@ pub struct NavPlanner {
     /// The OBCR emitter — created on entering the emit phase (its constructor writes the
     /// reserved header), consumed by the finish. The planner's one big field (~9 kB).
     em: Option<ObcrEmitter>,
+    /// The detour blacklist (#882): `Some` only for [`new_detour`](Self::new_detour) plans. Read
+    /// on every settle, so it lives here (caller-owned like the emitter, ~1 kB) — POI plans carry
+    /// `None` and relax byte-identically to a planner without the field.
+    corridor: Option<Corridor>,
 }
 
 impl NavPlanner {
@@ -643,7 +648,18 @@ impl NavPlanner {
             total_m: 0,
             last: None,
             em: None,
+            corridor: None,
         }
+    }
+
+    /// A **detour** planner (#882): like [`new`](Self::new), but the search additionally skips
+    /// any candidate edge the `corridor` blacklists — the geometric corridor around the skipped
+    /// route span, built host-side with [`Corridor::build`]. The exemption discs around the two
+    /// snapped endpoints are wired in automatically once the snap phases resolve.
+    pub fn new_detour(from: (i32, i32), to: (i32, i32), name: &str, profile_idx: u8, corridor: Corridor) -> Self {
+        let mut p = Self::new(from, to, name, profile_idx);
+        p.corridor = Some(corridor);
+        p
     }
 
     /// The public phase the **next** step will work on — the board's per-phase timing key.
@@ -738,6 +754,11 @@ impl NavPlanner {
                 };
                 self.goal_id = id;
                 self.goal_c = c;
+                // Both endpoints are now snapped — arm the detour corridor's take-off/landing
+                // exemptions (no-op for POI plans).
+                if let Some(cor) = self.corridor.as_mut() {
+                    cor.set_exempt_nodes(self.start_c, self.goal_c);
+                }
                 // Seed the frontier with the start node at rung 0 (1.3×).
                 if let Err(e) = self.reseed(scratch) {
                     return self.fail(e);
@@ -786,9 +807,16 @@ impl NavPlanner {
                     scratch.entries[idx].meta |= META_CLOSED;
                     // Relax neighbors. A read failure is the only hard error; a full table latches
                     // `table_full` and keeps searching (decrease-key on tracked nodes still relaxes).
-                    if let Err(e) =
-                        settle::<N>(reader, scratch, tiles, idx, self.goal_c, &self.mult, &mut self.table_full)
-                    {
+                    if let Err(e) = settle::<N>(
+                        reader,
+                        scratch,
+                        tiles,
+                        idx,
+                        self.goal_c,
+                        &self.mult,
+                        self.corridor.as_ref(),
+                        &mut self.table_full,
+                    ) {
                         return self.fail(e);
                     }
                     // Budget by cache misses — the only expensive unit (≈ one SD chunk read each) —
@@ -982,6 +1010,31 @@ pub fn plan_route<const N: usize>(
     }
 }
 
+/// One-shot convenience over [`NavPlanner::new_detour`]: loop [`step`](NavPlanner::step) to
+/// completion with the corridor blacklist — the headless sim's and the tests' detour twin of
+/// [`plan_route`]; interactive hosts step the planner themselves.
+#[allow(clippy::too_many_arguments)] // same shape rationale as `plan_route`
+pub fn plan_detour<const N: usize>(
+    reader: &Reader,
+    from: (i32, i32),
+    to: (i32, i32),
+    name: &str,
+    profile_idx: u8,
+    corridor: Corridor,
+    scratch: &mut NavScratch<N>,
+    tiles: &mut NavTileCache,
+    sink: &mut dyn ByteSink,
+) -> Result<RouteStats, NavError> {
+    let mut planner = NavPlanner::new_detour(from, to, name, profile_idx, corridor);
+    loop {
+        match planner.step(reader, scratch, tiles, sink) {
+            Step::Running => {}
+            Step::Done(stats) => return Ok(stats),
+            Step::Failed(e) => return Err(e),
+        }
+    }
+}
+
 /// One settle: descend the node quadtree to the settled node's leaf (a degenerate
 /// one-point view — the spatial re-fetch) and relax each of its §8.3 neighbors from
 /// the inline `(coord, cost_m, way_kind)`, weighting the cost by the plan's profile
@@ -995,6 +1048,9 @@ pub fn plan_route<const N: usize>(
 /// relaxes normally (zero allocations). The only hard error is a read failure ([`NavError::NoPath`]);
 /// running out of table is no longer an error here — the caller drains the frontier and maps a
 /// latched `table_full` to [`NavError::Exhausted`] then.
+// The arg list is the relax context (goal, profile, optional corridor) plus the caller-owned
+// buffers — same shape rationale as `plan_route`'s allow.
+#[allow(clippy::too_many_arguments)]
 #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
 fn settle<const N: usize>(
     reader: &Reader,
@@ -1003,6 +1059,7 @@ fn settle<const N: usize>(
     idx: usize,
     goal_c: (i32, i32),
     mult: &ProfileMult,
+    corridor: Option<&Corridor>,
     table_full: &mut bool,
 ) -> Result<(), NavError> {
     let settled = scratch.entries[idx];
@@ -1021,6 +1078,11 @@ fn settle<const N: usize>(
                 let Some(m) = mult.mult(nb.way_kind) else {
                     continue;
                 };
+                // Detour blacklist (#882): an edge whose chord hugs the skipped span is skipped
+                // exactly like a forbidden class — never relaxed, graph untouched for other plans.
+                if corridor.is_some_and(|c| c.blocks((settled.lon, settled.lat), (nb.lon, nb.lat))) {
+                    continue;
+                }
                 let weighted = (nb.cost_m.saturating_mul(m)) >> 4;
                 // u16-saturating tentative cost: a saturated g is just maximally
                 // unattractive (see the layout note) — never wrapped, never mis-ordered.
