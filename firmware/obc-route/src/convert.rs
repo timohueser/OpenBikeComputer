@@ -69,7 +69,7 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
     {
         let mut scan = WptScanner::new(src);
         while let Some(wp) = scan.next_waypoint()? {
-            if wps.push(WpPlace { wp, best_d2: f32::INFINITY, along_m: 0 }).is_err() {
+            if wps.push(WpPlace { wp, best_d2: f32::INFINITY, along_m: 0, kind: 0 }).is_err() {
                 break; // cap reached — keep the first MAX_WAYPOINTS
             }
         }
@@ -214,7 +214,7 @@ impl ObcrEmitter {
             (Some(lk), Some(pd)) => {
                 let perp = perp_dist_m(lk, c, pd);
                 let span = (c.cum_d - lk.cum_d) as f32;
-                if perp > EPSILON_M || span > MAX_SPAN_M {
+                if perp > EPSILON_M || span > MAX_SPAN_M || reverses(lk, pd, c) {
                     self.emitted += emit_densified(&mut self.enc, sink, Some(lk), pd)?;
                     self.last_kept = Some(pd);
                 }
@@ -267,11 +267,34 @@ impl ObcrEmitter {
 
 /// A waypoint being placed: the raw `<wpt>` plus the best (squared) distance to any
 /// raw track point seen so far and the cumulative route distance there. `pub(crate)`
-/// only so the nav router can hand [`ObcrEmitter::finish`] an empty set.
+/// only so the nav router can hand [`ObcrEmitter::finish`] an empty set and the
+/// splicer can re-place stored waypoints.
 pub(crate) struct WpPlace {
     wp: RawWaypoint,
     best_d2: f32,
     along_m: u32,
+    /// The stored kind byte, preserved verbatim across a splice (the GPX pass writes 0 —
+    /// `<sym>`/`<type>` mapping is the phone's job).
+    kind: u8,
+}
+
+impl WpPlace {
+    /// Re-place an already-stored [`Waypoint`](crate::reader::Waypoint) at a (possibly shifted)
+    /// along-route distance — the splicer's constructor: placement is already decided, so the
+    /// nearest-point search state is inert.
+    pub(crate) fn from_stored(w: &crate::reader::Waypoint, along_m: u32) -> WpPlace {
+        WpPlace {
+            wp: RawWaypoint {
+                lon: w.lon,
+                lat: w.lat,
+                ele: (w.ele != WAYPOINT_ELE_NONE).then_some(w.ele as f32),
+                name: w.name.clone(),
+            },
+            best_d2: 0.0,
+            along_m,
+            kind: w.kind,
+        }
+    }
 }
 
 /// Sort the placed waypoints by position along the route and write the fixed-record
@@ -295,7 +318,7 @@ fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS
         put_i32(&mut rec, 4, w.wp.lon);
         put_i32(&mut rec, 8, w.wp.lat);
         put_i16(&mut rec, 12, w.wp.ele.map_or(WAYPOINT_ELE_NONE, |e| round_i16(e as f64)));
-        rec[14] = 0; // kind: generic — GPX <sym>/<type> mapping is the phone's job
+        rec[14] = w.kind; // GPX pass: 0 (generic); splice pass: the stored kind, preserved
         rec[15] = w.wp.name.len() as u8;
         rec[16..16 + w.wp.name.len()].copy_from_slice(w.wp.name.as_bytes());
         sink.write(&rec)?;
@@ -506,6 +529,18 @@ fn build_header(
     put_u32(&mut h, 112, wpt_offset);
     put_u16(&mut h, 116, s.waypoint_count);
     h
+}
+
+/// Does the path reverse direction at `b` (the heading turns by more than 90°)? A perfectly
+/// collinear out-and-back — a computed detour riding back to a junction, a turnaround at a
+/// dead end — has zero perpendicular distance everywhere, so the chord test alone would
+/// collapse the whole doubled-back stretch onto its endpoints and silently lose its length
+/// from the geometry (#882). A reversal vertex is always kept.
+fn reverses(a: Cand, b: Cand, c: Cand) -> bool {
+    let cl = cos_lat(a.lat);
+    let (ux, uy) = delta_m((a.lon, a.lat), (b.lon, b.lat), cl);
+    let (vx, vy) = delta_m((b.lon, b.lat), (c.lon, c.lat), cl);
+    ux * vx + uy * vy < 0.0
 }
 
 /// Perpendicular distance (m) from point `p` to the chord `a → c`, in local-equirectangular

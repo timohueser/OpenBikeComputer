@@ -859,6 +859,13 @@ impl MapTables {
     pub fn nav_profiles(&self) -> &[MapProfile] {
         &self.profiles
     }
+
+    /// Whether the map carries a non-empty §8 nav graph — the once-per-map-load feed behind
+    /// `App::set_map_nav_graph` (#882: a graph-less map dims the Detour station instead of
+    /// failing a plan). Same parsed-tables convenience rationale as [`nav_profiles`](Self::nav_profiles).
+    pub fn has_nav_graph(&self) -> bool {
+        !self.nav.is_empty()
+    }
 }
 
 pub struct Reader<'a> {
