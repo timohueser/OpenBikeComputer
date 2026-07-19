@@ -96,44 +96,79 @@ impl DetourPlan {
 
 /// A planned, **uncommitted** detour: the detour-only OBCR bytes plus the frozen splice context,
 /// held host-side between `DetourPlanned` and the rider's `CommitDetour`/`CancelDetour`.
+///
+/// The bytes and `rejoin_m` are already **trimmed to first tail contact** (#882) when the plan's
+/// approach rode the route's own tail — see [`finish_detour_plan`]; so the splice context here is
+/// exactly what commits, and `rejoin_m >= the chooser's target_m` (the chosen distance is a rejoin
+/// *minimum*).
 pub struct DetourReady {
     bytes: Vec<u8>,
     detour_len_m: u32,
     progress_m: u32,
-    target_m: u32,
+    rejoin_m: u32,
 }
 
 /// The detour plan finished (#882): answer the app — success hands over the preview figures
 /// (`cost = detour length − skipped span length`, signed) and the decimated detour polyline
 /// ([`App::set_detour_preview`](obc_app::App)), and returns the [`DetourReady`] the host holds
 /// until commit/cancel; failure answers the typed error and holds nothing.
+///
+/// `orig` is the resident original route: when present, a successful plan is trimmed to its first
+/// sustained contact with the route tail past `target_m`
+/// ([`trim_detour_to_tail`](obc_route::trim_detour_to_tail)), so the preview polyline and cost line
+/// already describe the shortened detour and the splice rejoins at that farther point. `None` (or a
+/// trim that doesn't bite) keeps the untrimmed bytes, the planner length, and the chosen `target_m`.
 pub fn finish_detour_plan(
     app: &mut obc_app::App,
     outcome: Result<obc_route::RouteStats, obc_route::NavError>,
     plan: DetourPlan,
+    orig: Option<&obc_route::RouteReader>,
 ) -> Option<DetourReady> {
     match outcome {
         Ok(stats) => {
-            let span_m = plan.target_m.saturating_sub(plan.progress_m);
+            let mut bytes = plan.sink.into_bytes();
+            // Default (no trim): rejoin at the chosen minimum, the planner's summed edge length.
+            let mut rejoin_m = plan.target_m;
+            let mut detour_len_m = stats.total_distance_m;
+
+            // Advance the rejoin to the detour's first sustained contact with the route tail: A*
+            // legally rides the future route's own road to the goal (the tail past `target_m` is not
+            // blacklisted), and the splice would append a tail that immediately retraces it. The
+            // trim re-emits `detour[0..=contact]` into a fresh buffer; on any miss we keep today's.
+            let trimmed = orig.and_then(|orig| {
+                let src = obc_formats::io::SliceSource(&bytes);
+                let didx = obc_route::RouteIndex::read(&src).ok()?;
+                let det = obc_route::RouteReader::new(&didx, &src);
+                let mut trim_sink = VecSink::default();
+                match obc_route::trim_detour_to_tail(orig, &det, plan.target_m, &mut trim_sink) {
+                    Ok(Some(o)) => Some((o.rejoin_m, o.detour_len_m, trim_sink.into_bytes())),
+                    _ => None,
+                }
+            });
+            if let Some((rj, dl, tbytes)) = trimmed {
+                let saved =
+                    (stats.total_distance_m as i64 + (rj as i64 - plan.target_m as i64) - dl as i64).max(0) as u32;
+                eprintln!("detour plan: trimmed to first tail contact at {rj} m (−{saved} m)");
+                rejoin_m = rj;
+                detour_len_m = dl;
+                bytes = tbytes;
+            }
+
+            // Cost = detour length − skipped span (`rejoin_m − progress_m`); the trim lengthens the
+            // skipped span and shortens the detour, so both terms improve the figure honestly.
             let preview = obc_app::DetourPreview {
-                cost_delta_m: (stats.total_distance_m as i64 - span_m as i64) as i32,
-                total_distance_m: stats.total_distance_m,
+                cost_delta_m: (detour_len_m as i64 - (rejoin_m as i64 - plan.progress_m as i64)) as i32,
+                total_distance_m: detour_len_m,
             };
-            let bytes = plan.sink.into_bytes();
-            // The preview polyline, decimated straight off the in-RAM detour OBCR.
+            // The preview polyline, decimated straight off the (possibly trimmed) in-RAM detour OBCR.
             let src = obc_formats::io::SliceSource(&bytes);
             if let Ok(idx) = obc_route::RouteIndex::read(&src) {
                 let pts = obc_route::RouteReader::new(&idx, &src).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
                 app.set_detour_preview(&pts);
             }
-            eprintln!("detour plan: ok len={} m (Δ {:+} m)", stats.total_distance_m, preview.cost_delta_m);
+            eprintln!("detour plan: ok len={detour_len_m} m (Δ {:+} m)", preview.cost_delta_m);
             app.apply_event(obc_app::HostEvent::DetourPlanned(Ok(preview)));
-            Some(DetourReady {
-                bytes,
-                detour_len_m: stats.total_distance_m,
-                progress_m: plan.progress_m,
-                target_m: plan.target_m,
-            })
+            Some(DetourReady { bytes, detour_len_m, progress_m: plan.progress_m, rejoin_m })
         }
         Err(e) => {
             eprintln!("detour plan: failed ({e:?})");
@@ -169,7 +204,7 @@ pub fn finish_detour_commit(
             let det_src = obc_formats::io::SliceSource(&ready.bytes);
             let det_idx = obc_route::RouteIndex::read(&det_src).map_err(|_| NavError::NoPath)?;
             let det = obc_route::RouteReader::new(&det_idx, &det_src);
-            obc_route::splice_detour(&orig, &det, ready.progress_m, ready.target_m, ready.detour_len_m, &mut sink)
+            obc_route::splice_detour(&orig, &det, ready.progress_m, ready.rejoin_m, ready.detour_len_m, &mut sink)
                 .map_err(|_| NavError::NoPath)?;
         }
         let id = store.write_nav_route(sink.bytes()).ok_or(NavError::NoPath)?;

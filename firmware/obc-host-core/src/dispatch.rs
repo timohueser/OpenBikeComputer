@@ -217,8 +217,13 @@ impl HostLoop {
             }
             InflightPlan::Detour(plan) => {
                 // The detour is NOT committed here — the bytes park until the preview's Press
-                // drains `CommitDetour` (or `CancelDetour` drops them).
-                self.detour_ready = finish_detour_plan(app, terminal, plan);
+                // drains `CommitDetour` (or `CancelDetour` drops them). Hand `finish` the resident
+                // original route so it can trim the rejoin to first tail contact (#882); the source
+                // binding must outlive the call, so it's bound here rather than inside a closure.
+                let src = routes.active_source();
+                let orig =
+                    self.session.index().zip(src.as_ref()).map(|(index, s)| obc_route::RouteReader::new(index, s));
+                self.detour_ready = finish_detour_plan(app, terminal, plan, orig.as_ref());
             }
         }
     }
