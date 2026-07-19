@@ -28,12 +28,13 @@ use heapless::Vec;
 
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
 use crate::deadband::DeadBand;
-use crate::geo::ground_dist_m;
+use crate::geo::{cos_lat, ground_dist_m, ground_dist_m_cl, project_to_segment};
 use crate::reader::{
     decode_route_points_between, for_each_waypoint, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
 };
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
+use obc_reader::{BBox, M_PER_DEG};
 
 /// Source chunks decoded per [`Splicer::step`] — the splice's pacing unit (one chunk ≈ one
 /// bounded decode + a burst of emitter pushes), mirroring the search's miss budget philosophy.
@@ -389,6 +390,282 @@ impl Splicer {
 /// Linear elevation between the two seam samples at arc fraction `t`.
 fn lerp_ele(a: i16, b: i16, t: f32) -> i16 {
     libm::roundf(a as f32 + (b as f32 - a as f32) * t) as i16
+}
+
+// ------------------------------------------------------------------------- rejoin-at-first-contact
+
+/// Per-point hug distance to the route tail (m). Two consecutive detour points each within this of
+/// the tail count as *sustained* contact — the same both-endpoints-proximity trick
+/// [`Corridor::blocks`](crate::corridor::Corridor) uses, so a single-point crossing or a bridge
+/// overpass never triggers. A deliberately-untuned first value (mirrors the corridor width scale).
+pub const TRIM_CONTACT_M: f32 = 25.0;
+
+/// How far past `target_m` the tail is materialized when looking for the detour's first contact
+/// with it (m). The A* approach that rides the route backwards does so over at most a few hundred
+/// metres of tail; this window is generous. Deliberately-untuned first value.
+pub const TRIM_LOOKAHEAD_M: u32 = 1_500;
+
+/// Max resident tail sample points (12 B each → ~1.5 KB) — a longer window widens its stride to
+/// fit, so this is a hard cap by construction (mirrors [`CORRIDOR_MAX_PTS`](crate::corridor)).
+const TRIM_TAIL_MAX_PTS: usize = 128;
+
+/// Along-tail sampling interval floor (m): finer than the contact radius so the chord between
+/// samples never hides a point that is genuinely on the tail.
+const TRIM_MIN_SAMPLE_M: f32 = 20.0;
+
+/// A trim whose rejoin advances no further than this past `target_m` — and which contacts the tail
+/// only at the detour's final pair — is a no-op: every plan's landing hugs the tail near the goal
+/// by construction, so trimming there would rewrite the bytes for nothing.
+const TRIM_NOOP_M: u32 = 30;
+
+/// The result of [`trim_detour_to_tail`] when the detour is advanced to its first sustained tail
+/// contact: the (farther) rejoin distance to splice from, and the trimmed detour's measured length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrimOutcome {
+    /// The rejoin distance on the *original* route — always `>= target_m`.
+    pub rejoin_m: u32,
+    /// The trimmed detour's length: measured polyline meters (the emitter's re-measured header
+    /// total), not the planner's summed edge `length_m`. A trimmed detour has no planner-summed
+    /// length for its shortened form, so this is the honest basis for the preview's cost line — the
+    /// same few-percent metric family as the untrimmed splice's header-total precedent.
+    pub detour_len_m: u32,
+}
+
+/// Advance a planned detour's rejoin to its **first sustained contact** with the route tail (#882).
+///
+/// A* legally approaches the goal-snap node along the future route's own road (the tail past
+/// `target_m` is deliberately not blacklisted by the [`Corridor`](crate::corridor::Corridor)), so
+/// the splice would append a tail that immediately retraces that approach — ride to the rejoin ring
+/// and straight back. This walks the planned detour in route order and finds the first point pair
+/// where **both** points hug the tail (within [`TRIM_CONTACT_M`]); it truncates the detour there and
+/// re-emits `detour[0..=trim]` into `sink`, returning the rejoin distance to splice from instead
+/// (the chooser's `target_m` becomes a rejoin *minimum*).
+///
+/// Returns `Ok(None)` — leaving `sink` untouched, caller keeps the untrimmed bytes and `target_m` —
+/// when the detour never sustains contact, or when the only contact is its final landing pair near
+/// the goal (the no-op every plan produces by construction).
+///
+/// `#[inline(never)]` — its `Tail` sampler lives here across the (separately out-of-lined) walk and
+/// re-emit frames; the ~9 kB emitter and the 2 kB decode buffers stay in their own popped frames.
+#[inline(never)]
+pub fn trim_detour_to_tail(
+    orig: &RouteReader,
+    detour: &RouteReader,
+    target_m: u32,
+    sink: &mut dyn ByteSink,
+) -> Result<Option<TrimOutcome>, Error> {
+    let tail = Tail::build(orig, target_m);
+    // No tail past the goal (rejoin at/near the route end) → nothing to retrace.
+    if tail.pts.len() < 2 {
+        return Ok(None);
+    }
+    let Some((trim_index, rejoin_m)) = first_tail_contact(detour, &tail, target_m)? else {
+        return Ok(None);
+    };
+    // The contact is only the detour's final pair, landing at (≈) the goal — the by-construction
+    // no-op. `trim_index` is the pair's first point; `last_index - 1` is that final pair's start.
+    let last_index = detour_distinct_count(detour).saturating_sub(1);
+    if trim_index + 1 >= last_index && rejoin_m.saturating_sub(target_m) <= TRIM_NOOP_M {
+        return Ok(None);
+    }
+    let stats = emit_trimmed(detour, trim_index, sink)?;
+    Ok(Some(TrimOutcome { rejoin_m, detour_len_m: stats.total_distance_m }))
+}
+
+/// A detour point's projection onto the tail: `(segment index, t along it, cross-track distance m)`.
+type TailHit = (usize, f32, f32);
+
+/// The route tail past `target_m`, downsampled to a small resident polyline carrying each sample's
+/// along-route progress — the geometry the detour walk projects against. Mirrors
+/// [`Corridor::build`](crate::corridor::Corridor)'s downsample-a-span shape.
+struct Tail {
+    /// `(lon, lat, progress_m)` samples in route order (progress ascending from `target_m`).
+    pts: heapless::Vec<(i32, i32, u32), TRIM_TAIL_MAX_PTS>,
+    /// `pts`' union bbox, pre-inflated by [`TRIM_CONTACT_M`] — the cheap reject.
+    bbox: BBox,
+    /// `cos_lat` hoisted at the tail's first point — one band for the whole projection.
+    cl: f32,
+}
+
+impl Tail {
+    /// Materialize `[target_m, min(total, target_m + TRIM_LOOKAHEAD_M)]` into resident samples,
+    /// streaming the span chunk-clipped (no retained route copy) and accumulating arc length so each
+    /// kept sample carries its along-route progress. Always keeps the span's true end.
+    #[inline(never)]
+    fn build(orig: &RouteReader, target_m: u32) -> Tail {
+        let total = orig.total_distance_m;
+        let hi = target_m.saturating_add(TRIM_LOOKAHEAD_M).min(total);
+        let window = hi.saturating_sub(target_m);
+        let stride = if window == 0 {
+            TRIM_MIN_SAMPLE_M
+        } else {
+            (window as f32 / (TRIM_TAIL_MAX_PTS - 1) as f32).max(TRIM_MIN_SAMPLE_M)
+        };
+
+        let mut pts: heapless::Vec<(i32, i32, u32), TRIM_TAIL_MAX_PTS> = heapless::Vec::new();
+        let mut cl = 1.0f32;
+        let mut since_kept = 0.0f32;
+        let mut acc = 0.0f32; // arc length from the window start
+        let mut last_seen: Option<(i32, i32)> = None;
+        orig.visit_points_between(target_m, hi, |slice| {
+            for &p in slice {
+                if pts.is_empty() {
+                    cl = cos_lat(p.1);
+                    let _ = pts.push((p.0, p.1, target_m));
+                    last_seen = Some(p);
+                    continue;
+                }
+                let prev = last_seen.unwrap_or(p);
+                // Chunk seams repeat the boundary point; a zero-length hop advances nothing.
+                let d = ground_dist_m_cl(prev, p, cl);
+                acc += d;
+                since_kept += d;
+                last_seen = Some(p);
+                if since_kept >= stride && !pts.is_full() {
+                    let _ = pts.push((p.0, p.1, target_m.saturating_add(acc as u32)));
+                    since_kept = 0.0;
+                }
+            }
+        });
+        // Always keep the span's true end so the tail reaches the route's actual end.
+        if let Some(end) = last_seen {
+            let prog = target_m.saturating_add(acc as u32);
+            if pts.last().map(|&(x, y, _)| (x, y)) != Some(end) {
+                if pts.is_full() {
+                    let n = pts.len();
+                    pts[n - 1] = (end.0, end.1, prog);
+                } else {
+                    let _ = pts.push((end.0, end.1, prog));
+                }
+            }
+        }
+
+        let bbox = trim_inflated_bbox(&pts, cl);
+        Tail { pts, bbox, cl }
+    }
+
+    /// The nearest tail segment to `p`: `(segment index, t along it, cross-track distance m)`, or
+    /// `None` when `p` is outside the inflated bbox (the cheap reject). Requires `pts.len() >= 2`.
+    fn nearest(&self, p: (i32, i32)) -> Option<TailHit> {
+        if !self.bbox_contains(p) {
+            return None;
+        }
+        let mut best: Option<TailHit> = None;
+        for i in 0..self.pts.len() - 1 {
+            let a = (self.pts[i].0, self.pts[i].1);
+            let b = (self.pts[i + 1].0, self.pts[i + 1].1);
+            let (t, d) = project_to_segment(a, b, p, self.cl);
+            if best.is_none_or(|(_, _, bd)| d < bd) {
+                best = Some((i, t, d));
+            }
+        }
+        best
+    }
+
+    /// Interpolate the along-route progress at fraction `t` of tail segment `seg`.
+    fn progress_at(&self, seg: usize, t: f32) -> u32 {
+        let p0 = self.pts[seg].2 as f32;
+        let p1 = self.pts[seg + 1].2 as f32;
+        libm::roundf(p0 + (p1 - p0) * t) as u32
+    }
+
+    fn bbox_contains(&self, p: (i32, i32)) -> bool {
+        p.0 >= self.bbox.min_lon && p.0 <= self.bbox.max_lon && p.1 >= self.bbox.min_lat && p.1 <= self.bbox.max_lat
+    }
+}
+
+/// Union bbox of `pts`, inflated by [`TRIM_CONTACT_M`] (µdeg at band `cl`) — the tail's cheap
+/// reject. Mirrors the corridor's `inflated_bbox`.
+fn trim_inflated_bbox(pts: &[(i32, i32, u32)], cl: f32) -> BBox {
+    let mut bbox = BBox { min_lon: i32::MAX, min_lat: i32::MAX, max_lon: i32::MIN, max_lat: i32::MIN };
+    for &(lon, lat, _) in pts {
+        bbox.min_lon = bbox.min_lon.min(lon);
+        bbox.max_lon = bbox.max_lon.max(lon);
+        bbox.min_lat = bbox.min_lat.min(lat);
+        bbox.max_lat = bbox.max_lat.max(lat);
+    }
+    if pts.is_empty() {
+        return BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 };
+    }
+    let m_per_udeg_lat = M_PER_DEG as f32 * 1e-6;
+    let pad_lat = (TRIM_CONTACT_M / m_per_udeg_lat) as i32 + 1;
+    let pad_lon = (TRIM_CONTACT_M / (m_per_udeg_lat * cl.max(0.05))) as i32 + 1;
+    bbox.min_lon -= pad_lon;
+    bbox.max_lon += pad_lon;
+    bbox.min_lat -= pad_lat;
+    bbox.max_lat += pad_lat;
+    bbox
+}
+
+/// Walk the detour in route order and return the first hugging pair: `(trim_index, rejoin_m)` where
+/// `trim_index` is the distinct-point index of the pair's **first** point and `rejoin_m` is that
+/// point's along-route progress projected onto the tail (clamped `>= target_m`). `None` if no two
+/// consecutive detour points both lie within [`TRIM_CONTACT_M`] of the tail.
+///
+/// `#[inline(never)]` — the ~2 kB decode buffer is reused across the whole walk in this popped
+/// frame, never the caller's (the #419/#501 stack discipline).
+#[inline(never)]
+fn first_tail_contact(detour: &RouteReader, tail: &Tail, target_m: u32) -> Result<Option<(usize, u32)>, Error> {
+    let mut buf = heapless::Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+    let mut gi = 0usize; // distinct-point index
+    let mut prev: Option<(usize, Option<TailHit>)> = None; // (index, its tail projection)
+    for k in 0..detour.chunks().len() {
+        detour.decode_chunk(k, &mut buf)?;
+        // Chunk k>0 re-decodes chunk k−1's last point as its anchor — skip the duplicate.
+        let skip = usize::from(k > 0);
+        for p in buf.iter().skip(skip) {
+            let near = tail.nearest((p.lon, p.lat));
+            if let Some((pgi, pnear)) = prev {
+                let a_hug = pnear.is_some_and(|(_, _, d)| d <= TRIM_CONTACT_M);
+                let b_hug = near.is_some_and(|(_, _, d)| d <= TRIM_CONTACT_M);
+                if a_hug && b_hug {
+                    let (seg, t, _) = pnear.expect("a_hug implies Some");
+                    let rejoin_m = tail.progress_at(seg, t).max(target_m);
+                    return Ok(Some((pgi, rejoin_m)));
+                }
+            }
+            prev = Some((gi, near));
+            gi += 1;
+        }
+    }
+    Ok(None)
+}
+
+/// Re-emit `detour[0..=trim_index]` (distinct-point indices) through a fresh [`ObcrEmitter`] into
+/// `sink` — the trimmed detour: elevations zeroed (the seam lerp is reapplied by the splice), the
+/// detour name kept, no waypoints, header total the emitter's re-measured polyline length.
+///
+/// `#[inline(never)]` — owns both the ~9 kB emitter and the 2 kB decode buffer; keep the frame off
+/// the caller's stack.
+#[inline(never)]
+fn emit_trimmed(detour: &RouteReader, trim_index: usize, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
+    let mut em = ObcrEmitter::new(sink)?;
+    let mut buf = heapless::Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+    let mut gi = 0usize;
+    'outer: for k in 0..detour.chunks().len() {
+        detour.decode_chunk(k, &mut buf)?;
+        let skip = usize::from(k > 0);
+        for p in buf.iter().skip(skip) {
+            em.push(sink, p.lon, p.lat, 0, 0)?;
+            if gi == trim_index {
+                break 'outer;
+            }
+            gi += 1;
+        }
+    }
+    let mut wps: Vec<WpPlace, MAX_WAYPOINTS> = Vec::new();
+    let stats = EmitStats { min_ele_m: 0, max_ele_m: 0, ascent_m: 0, descent_m: 0, total_distance_m: None };
+    em.finish(sink, detour.name(), stats, &mut wps)
+}
+
+/// Count a route's distinct points (seam duplicates excluded): `Σ point_count − (chunks − 1)`.
+fn detour_distinct_count(r: &RouteReader) -> usize {
+    let chunks = r.chunks();
+    if chunks.is_empty() {
+        return 0;
+    }
+    let sum: usize = chunks.iter().map(|c| c.point_count as usize).sum();
+    sum - (chunks.len() - 1)
 }
 
 /// One-shot convenience over [`Splicer`]: loop [`step`](Splicer::step) to completion — the

@@ -18,8 +18,8 @@ use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::corridor::{Corridor, CORRIDOR_MAX_PTS, MIN_DETOUR_SPAN_M};
 use obc_route::nav::{plan_detour, plan_route, NavError, NavScratch};
 use obc_route::reader::for_each_waypoint;
-use obc_route::splice::splice_detour;
-use obc_route::{RouteIndex, RoutePoint, RouteReader};
+use obc_route::splice::{splice_detour, trim_detour_to_tail};
+use obc_route::{RouteIndex, RoutePoint, RouteReader, TrimOutcome};
 
 /// Global bbox (µdeg) — roomy so the node quadtree genuinely subdivides (see tests/nav.rs).
 const GLOBAL: (i64, i64, i64, i64) = (0, 0, 1_000_000, 1_000_000);
@@ -543,6 +543,148 @@ fn splice_self_input_is_previous_output() {
     let idx = RouteIndex::read(&src).expect("a re-spliced route still parses");
     assert_eq!(idx.name(), "Detour · Road trip", "no stacked name prefixes");
     assert_eq!(idx.total_distance_m, stats.total_distance_m);
+}
+
+// ---------------------------------------------------------------------------- rejoin-at-first-contact
+
+/// Run [`trim_detour_to_tail`] over an original + detour OBCR at `target_m`; return the outcome and
+/// the (possibly trimmed) sink bytes.
+fn trim_run(orig_obcr: &[u8], detour_obcr: &[u8], target_m: u32) -> (Option<TrimOutcome>, Vec<u8>) {
+    let osrc = SliceSource(orig_obcr);
+    let oidx = RouteIndex::read(&osrc).unwrap();
+    let orig = RouteReader::new(&oidx, &osrc);
+    let dsrc = SliceSource(detour_obcr);
+    let didx = RouteIndex::read(&dsrc).unwrap();
+    let det = RouteReader::new(&didx, &dsrc);
+    let mut sink = VecSink::default();
+    let out = trim_detour_to_tail(&orig, &det, target_m, &mut sink).unwrap();
+    (out, sink.buf)
+}
+
+/// Splice an original + detour and return the spliced route's header total distance.
+fn spliced_total(orig_obcr: &[u8], detour_obcr: &[u8], split_m: u32, rejoin_m: u32, detour_len_m: u32) -> u32 {
+    let osrc = SliceSource(orig_obcr);
+    let oidx = RouteIndex::read(&osrc).unwrap();
+    let orig = RouteReader::new(&oidx, &osrc);
+    let dsrc = SliceSource(detour_obcr);
+    let didx = RouteIndex::read(&dsrc).unwrap();
+    let det = RouteReader::new(&didx, &dsrc);
+    let mut sink = VecSink::default();
+    splice_detour(&orig, &det, split_m, rejoin_m, detour_len_m, &mut sink).unwrap().total_distance_m
+}
+
+/// The headline #882 fix: with connectors only at the road's ends, a plan to a mid-route rejoin
+/// (target ≈ node 9) must overshoot to road12 up the parallel street and ride the route tail back
+/// down (12→…→9) to reach the goal. `trim_detour_to_tail` advances the rejoin to that first tail
+/// contact (≈ the road end), truncating the retrace — and the spliced route is far shorter.
+#[test]
+fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
+    let bytes = map_with(&road_graph(true, false));
+    let obcr = road_route_obcr();
+    let target = 2_500;
+    let (res, detour) = detour_over(&bytes, &obcr, 0, target);
+    let dstats = res.expect("the street detour plans");
+
+    // Fixture check: the UNTRIMMED plan reproduces the bug — it overshoots to road12 and then
+    // descends the tail to the goal node9 (the retrace the rider sees on glass).
+    let untrimmed = route_points(&detour);
+    assert!(
+        untrimmed.iter().any(|p| (p.lon, p.lat) == road_at(SEGS)),
+        "the untrimmed plan overshoots to road12 (the ring)"
+    );
+    let last = untrimmed.last().unwrap();
+    assert_eq!((last.lon, last.lat), road_at(9), "…then descends the tail to land at the goal node9");
+
+    // Trim: rejoin advances to the first contact near the road end, past the chosen minimum.
+    let (out, trimmed) = trim_run(&obcr, &detour, target);
+    let out = out.expect("the retrace is trimmed");
+    assert!(out.rejoin_m > target + 500, "rejoin advances toward the road end (got {})", out.rejoin_m);
+
+    // The trimmed detour ends at the ring (road12) and no longer descends the tail.
+    let tpts = route_points(&trimmed);
+    assert_eq!(
+        (tpts.last().unwrap().lon, tpts.last().unwrap().lat),
+        road_at(SEGS),
+        "the trimmed detour ends at the first contact (road12), not back down at node9"
+    );
+    for p in &tpts {
+        let descends_tail = p.lat == BASE.1 && p.lon > BASE.0 + 9 * SP && p.lon < BASE.0 + SEGS * SP;
+        assert!(!descends_tail, "no trimmed point rides the tail between node9 and node12 ({}, {})", p.lon, p.lat);
+    }
+
+    // The whole splice is far shorter: the retrace is gone from both the detour and the re-ridden tail.
+    let untrimmed_total = spliced_total(&obcr, &detour, 0, target, dstats.total_distance_m);
+    let trimmed_total = spliced_total(&obcr, &trimmed, 0, out.rejoin_m, out.detour_len_m);
+    assert!(
+        untrimmed_total >= trimmed_total + 1_000,
+        "the trimmed splice drops ≥1 km (untrimmed {untrimmed_total}, trimmed {trimmed_total})"
+    );
+}
+
+/// A normal landing that touches the route tail only at its final pair, right at the goal, is a
+/// no-op: every plan hugs the tail near the goal by construction, so the trim must not churn bytes.
+/// Hand-built detour (loops north, lands on the road at node6 = the target, rides one segment to
+/// node7) so the landing geometry is exact.
+#[test]
+fn trim_is_a_noop_for_a_normal_landing() {
+    let obcr = road_route_obcr();
+    // node6 ≈ 1 670 m along; the detour lands there and rides one segment forward (node7).
+    let target = 1_670;
+    let n = |k: i32| road_at(k);
+    let north = |k: i32| (road_at(k).0, BASE.1 + STREET_OFF);
+    let detour = convert(
+        "Detour leg",
+        &format!(
+            "<gpx><trk><trkseg>\n\
+             <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n\
+             <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n\
+             <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n\
+             <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n\
+             <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n\
+             </trkseg></trk></gpx>",
+            n(2).1 as f64 * 1e-6,
+            n(2).0 as f64 * 1e-6, // node2 (rider)
+            north(2).1 as f64 * 1e-6,
+            north(2).0 as f64 * 1e-6, // north
+            north(6).1 as f64 * 1e-6,
+            north(6).0 as f64 * 1e-6, // east, north of the landing
+            n(6).1 as f64 * 1e-6,
+            n(6).0 as f64 * 1e-6, // land on the road at the target
+            n(7).1 as f64 * 1e-6,
+            n(7).0 as f64 * 1e-6, // ride one segment forward
+        ),
+    );
+    let (out, _) = trim_run(&obcr, &detour, target);
+    assert_eq!(out, None, "a final-pair landing at the goal is not trimmed");
+}
+
+/// A detour that merely *crosses* the route tail once (a single near point, its neighbours ~400 m
+/// off to either side) must not trim — the same both-points rule the corridor uses, so a crossing
+/// or a bridge overpass never triggers.
+#[test]
+fn trim_ignores_a_perpendicular_crossing() {
+    let obcr = road_route_obcr();
+    let target = 1_670;
+    // NW → (on the road at node8) → SE: the middle point is the only one near the tail.
+    let cross = road_at(8);
+    let detour = convert(
+        "Detour leg",
+        &format!(
+            "<gpx><trk><trkseg>\n\
+             <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n\
+             <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n\
+             <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n\
+             </trkseg></trk></gpx>",
+            (BASE.1 + STREET_OFF) as f64 * 1e-6,
+            (cross.0 - SP) as f64 * 1e-6, // NW
+            cross.1 as f64 * 1e-6,
+            cross.0 as f64 * 1e-6, // on the road (crossing)
+            (BASE.1 - STREET_OFF) as f64 * 1e-6,
+            (cross.0 + SP) as f64 * 1e-6, // SE
+        ),
+    );
+    let (out, _) = trim_run(&obcr, &detour, target);
+    assert_eq!(out, None, "a single-point crossing is not sustained contact");
 }
 
 /// A rejoin at the route end: the tail is empty, the spliced route ends at the detour's last

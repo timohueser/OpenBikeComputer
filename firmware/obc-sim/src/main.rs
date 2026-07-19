@@ -573,20 +573,25 @@ fn run_detour_request(
     use obc_host_core::{finish_detour_plan, DetourPlan};
     // The scripted flow can plan before the post-script route open — make the active bytes real.
     store.sync_active(app.active_route_index());
-    let plan = store.active_source().and_then(|src| {
-        let idx = obc_route::RouteIndex::read(&src).ok()?;
-        let orig = obc_route::RouteReader::new(&idx, &src);
-        DetourPlan::start(req, app.settings().bike_profile_idx, &orig)
-    });
-    let Some(mut plan) = plan else {
+    // Bind the original route's source/index/reader at fn scope: the reader both seeds the plan's
+    // corridor *and* is handed to `finish_detour_plan` for the first-tail-contact trim (#882), so it
+    // must outlive the step loop — not a closure temporary.
+    let src = store.active_source();
+    let idx = src.as_ref().and_then(|s| obc_route::RouteIndex::read(s).ok());
+    let orig = match (idx.as_ref(), src.as_ref()) {
+        (Some(idx), Some(s)) => Some(obc_route::RouteReader::new(idx, s)),
+        _ => None,
+    };
+    let plan = orig.as_ref().and_then(|orig| DetourPlan::start(req, app.settings().bike_profile_idx, orig));
+    let (Some(mut plan), Some(orig)) = (plan, orig.as_ref()) else {
         app.apply_event(obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath)));
         return None;
     };
     loop {
         match plan.step(reader) {
             obc_route::Step::Running => {}
-            obc_route::Step::Done(stats) => return finish_detour_plan(app, Ok(stats), plan),
-            obc_route::Step::Failed(e) => return finish_detour_plan(app, Err(e), plan),
+            obc_route::Step::Done(stats) => return finish_detour_plan(app, Ok(stats), plan, Some(orig)),
+            obc_route::Step::Failed(e) => return finish_detour_plan(app, Err(e), plan, Some(orig)),
         }
     }
 }
