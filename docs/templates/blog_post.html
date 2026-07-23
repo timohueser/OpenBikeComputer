@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{title}} — OpenBikeComputer log</title>
+  <meta name="description" content="{{description}}" />
+  <link rel="stylesheet" href="{{css}}" />
+  <link rel="stylesheet" href="{{blog_css}}" />
+  <link rel="alternate" type="application/atom+xml" title="OpenBikeComputer log" href="{{base}}feed.xml" />
+</head>
+
+<body class="blog">
+  {{site_head}}
+
+  <main class="post-wrap">
+    <article class="prose post">
+      <header class="post-head">
+        <a class="back" href="{{base}}">&#8592; Expedition log</a>
+        <h1>{{title}}</h1>
+        <p class="post-meta">
+          <time datetime="{{date_iso}}">{{date_human}}</time>
+          <span class="dot-sep">&#183;</span> {{minutes}} min read
+        </p>
+      </header>
+      {{content}}
+    </article>
+
+    {{prevnext}}
+
+    <footer class="doc-foot">
+      <a class="edit" href="https://github.com/timohueser/OpenBikeComputer/tree/main/docs/content/blog" target="_blank" rel="noopener">Read the source of this entry →</a>
+      <span class="foot-trail">Headed for the trail.</span>
+    </footer>
+  </main>
+
+  <script src="{{base}}assets/blog.js" defer></script>
+  <script src="{{base}}assets/glb-viewer.js" defer></script>
+</body>
+
+</html>
