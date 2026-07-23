@@ -194,16 +194,24 @@ impl MenuScreen {
 }
 
 /// Which menu's station glyphs the shared compass chrome draws. The main-menu arm is deliberately
-/// unchanged; the ride-menu arm may dim its first two route-dependent stations.
+/// unchanged; the ride-menu arm may dim its route-dependent stations — Waypoints needs a route,
+/// Detour additionally needs a nav-graph map and an on-route rider (#882).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CompassIcons {
     Main,
-    Ride { route_loaded: bool },
+    Ride { route_loaded: bool, detour_available: bool },
 }
 
 impl CompassIcons {
     pub(super) fn enabled(self, i: usize) -> bool {
-        !matches!(self, CompassIcons::Ride { route_loaded: false } if i < 2)
+        match self {
+            CompassIcons::Main => true,
+            CompassIcons::Ride { route_loaded, detour_available } => match i {
+                0 => route_loaded,
+                1 => detour_available,
+                _ => true,
+            },
+        }
     }
 }
 

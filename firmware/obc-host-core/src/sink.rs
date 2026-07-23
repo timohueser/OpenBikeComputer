@@ -14,6 +14,11 @@ impl VecSink {
     pub fn bytes(&self) -> &[u8] {
         &self.buf
     }
+
+    /// Take the collected bytes by value — the detour plan's held-until-commit handoff (#882).
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.buf
+    }
 }
 
 impl ByteSink for VecSink {

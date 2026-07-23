@@ -13,8 +13,8 @@
   "board": {
     "default": {
       "features": "default (real sensors + LS021/FLPR, constrained nrf-mem capacities)",
-      "measured_resident": 202992,
-      "resident_ram_max": 202992,
+      "measured_resident": 204616,
+      "resident_ram_max": 204616,
       "floating_stable_observation": {
         "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
         "bss": 202904,
@@ -24,7 +24,7 @@
         "flash": 658484
       },
       "uninit_max": 1024,
-      "measured_flash": 670168,
+      "measured_flash": 685484,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 52,
@@ -32,7 +32,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 37040,
+        "app": 37592,
         "map_cache": 14444,
         "map_tables": 4060,
         "route_cache": 6180,
@@ -40,7 +40,7 @@
         "renderer": 8352,
         "nav_scratch": 19976,
         "nav_tile_cache": 4140,
-        "nav_planner": 9024,
+        "nav_planner": 10096,
         "stack_reserve": 36864,
         "ble_total": 0,
         "ble_mpsl": 0,
@@ -56,10 +56,10 @@
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE, constrained nrf-mem capacities)",
-      "measured_resident": 214984,
-      "resident_ram_max": 214984,
+      "measured_resident": 215536,
+      "resident_ram_max": 215536,
       "uninit_max": 1024,
-      "measured_flash": 1110228,
+      "measured_flash": 1124104,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 6240,
@@ -76,7 +76,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 37040,
+        "app": 37592,
         "map_cache": 14444,
         "map_tables": 4060,
         "route_cache": 6180,
@@ -84,7 +84,7 @@
         "renderer": 8352,
         "nav_scratch": 19976,
         "nav_tile_cache": 4140,
-        "nav_planner": 9024,
+        "nav_planner": 10096,
         "stack_reserve": 36864,
         "ble_total": 32106,
         "ble_mpsl": 0,

@@ -32,7 +32,7 @@ mod sink;
 mod stores;
 
 pub use dispatch::HostLoop;
-pub use nav::{finish_nav_plan, NavPlan};
+pub use nav::{finish_detour_commit, finish_detour_plan, finish_nav_plan, DetourPlan, DetourReady, NavPlan};
 pub use replay::{initial_camera, replay_step, ReplaySensors};
 pub use repo::{RideRepository, RouteRepository, TrackRepository, TripCatalog};
 pub use session::{fill_nav_preview, ActiveRouteSession};

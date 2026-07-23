@@ -28,16 +28,17 @@ pois = "POIs"
 map = "Map"
 settings = "Settings"
 
-# --- The mid-ride compass, Waypoints list, and Skip-ahead chooser ---
+# --- The mid-ride compass, Waypoints list, and Detour chooser ---
 [ride_menu]
 title = "RIDE MENU"
 waypoints = "Waypoints"
-skip_ahead = "Skip ahead"
+detour = "Detour"
 inspect_rejoin = "Inspect rejoin"
 main_menu = "Main menu"
 no_route = "No route loaded"
 off_route = "Return to route"
 route_end = "Route ends here"
+no_nav = "No routing data"
 
 [waypoints]
 none = "No waypoints"
@@ -389,6 +390,13 @@ route_removed = "Route removed"
 recording = "Recording a ride"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
+# --- The Detour flow (#882): planning copy, preview title, failure hints ---
+[detour]
+title = "DETOUR"
+planning = "Planning detour..."
+commit_failed = "Couldn't apply detour."
+rejoin_hint = "Try a farther rejoin."
+
 [nav_route]
 create_route = "Create route"
 cancel = "Cancel"

@@ -156,6 +156,36 @@ MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
     --script "B r r w p r r r p d p p p" --inject-nav-fail exhausted --png "$OUT/nav-toofar.png"
 "$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8140000,46480000 --heading 0 \
     --script "B r r w p p d p p p d" --png "$OUT/nav-nopath.png"
+
+# The routed-detour flow (#882) on the dense monaco graph, where a corridor detour genuinely has
+# side-street alternatives. The shared prefix plans a ~1.6 km POI route (7th Resupply hit), accepts
+# it from the overview (which starts the ride), then `T` runs one route-aware tick — the GUI ticks
+# every frame, but the headless script path doesn't, and the Detour chooser reads the tick-built
+# `route_total_m`. The chooser opens off the ride menu (`B r p`); the flow then walks
+# plan → preview (+cost line) → commit — the commit splices INTO the reserved `_nav.obcr` the
+# prefix planned (the self-splice case) and lands back on the riding map.
+DETOUR_PRE="B r r w p r r r p d r r r r r r p p p d p T"
+# (a) The chooser: skipped-span ink + rejoin ring over the fitted camera, the 600 m minimum span.
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$DETOUR_PRE B r p w" --png "$OUT/detour-chooser.png"
+# (b) The planning spinner (detour copy; Back would cancel). `--detour-hold` leaves the request
+# un-drained so the screen stays up, exactly like `--nav-hold`.
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$DETOUR_PRE B r p w p" --detour-hold --png "$OUT/detour-planning.png"
+# (c) The preview: a real corridor-blacklisted A* plan over the monaco graph — the detour polyline
+# in blue over the warning-colored skipped span, the signed distance-cost line on the HUD.
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$DETOUR_PRE B r p r r p d" --png "$OUT/detour-preview.png"
+# (d) The failure card: detour title + the one honest remedy hint ("Try a farther rejoin."),
+# injected through the real `DetourPlanned` seam with the planning screen on top (the range tier
+# is unreachable on the small fixture graphs, same as nav-toofar).
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$DETOUR_PRE B r p w p" --inject-detour-fail exhausted --png "$OUT/detour-fail.png"
+# (e) Committed: preview Press splices `original[0..rider] + detour + original[rejoin..]` into the
+# reserved route, re-adopts it (session kept), and truncates the flow back to the riding map; the
+# trailing `T` re-syncs the route-derived state so the map draws the spliced line.
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$DETOUR_PRE B r p r r p d p d T" --png "$OUT/detour-committed.png"
 # The Settings list (Date & Time, Auto-delete, Units, Bike type, Stats, Display, Power, Bluetooth,
 # Sensors, Language, System, Reset — Auto-delete inserted at index 1 by the auto-expiry epic #638 S5,
 # so every row past Date & Time shifts one turn further in).

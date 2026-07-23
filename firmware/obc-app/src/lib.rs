@@ -47,7 +47,7 @@ pub mod trip;
 pub(crate) mod ui_runtime;
 pub mod wall_clock;
 
-pub use activity::{Activity, DfuAction, Mode, NavRequest, TrackAction};
+pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, TrackAction};
 pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanAxis, NAV_PREVIEW_MAX};
 pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;
@@ -60,7 +60,7 @@ pub use hal::{
     SettingsStore, TemperatureSource, TrackError, TrackSink,
 };
 pub use hold_hint::HoldHints;
-pub use host::{DrainStatus, HostCommand, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
+pub use host::{DetourPreview, DrainStatus, HostCommand, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 pub use i18n::{t, Msg};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;

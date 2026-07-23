@@ -104,6 +104,14 @@ pub(crate) struct CatalogState {
     /// staleness key (the render gates on it so an old plan's shape can never draw under a
     /// different route). Cleared when a plan commits so every plan starts preview-less.
     nav_preview_route: Option<usize>,
+    /// The **detour preview** polyline (#882): the planned-but-uncommitted detour's decimated
+    /// shape, drawn by the Detour preview screen *over* the still-active original route.
+    /// Host-filled when the detour plan completes; cleared on commit, cancel, or route change.
+    detour_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
+    /// The route index the [`detour_preview`](CatalogState::detour_preview) was planned against —
+    /// its staleness key (a route swap or rescan mid-preview blanks the overlay rather than
+    /// drawing a stale detour over different geometry).
+    detour_preview_route: Option<usize>,
 }
 
 impl CatalogState {
@@ -123,6 +131,8 @@ impl CatalogState {
             ride_preview_for: None,
             nav_preview: heapless::Vec::new(),
             nav_preview_route: None,
+            detour_preview: heapless::Vec::new(),
+            detour_preview_route: None,
         }
     }
 
@@ -150,6 +160,8 @@ impl CatalogState {
             addr_of_mut!((*slot).ride_preview_for).write(None);
             addr_of_mut!((*slot).nav_preview).write(heapless::Vec::new());
             addr_of_mut!((*slot).nav_preview_route).write(None);
+            addr_of_mut!((*slot).detour_preview).write(heapless::Vec::new());
+            addr_of_mut!((*slot).detour_preview_route).write(None);
             // Exhaustiveness guard: a field added to `CatalogState` fails to compile here until
             // its `addr_of_mut!(...).write(...)` is added above (see `App::init_idle`).
             let CatalogState {
@@ -166,6 +178,8 @@ impl CatalogState {
                 ride_preview_for: _,
                 nav_preview: _,
                 nav_preview_route: _,
+                detour_preview: _,
+                detour_preview_route: _,
             } = &*slot;
         }
     }
@@ -488,5 +502,30 @@ impl CatalogState {
     pub(crate) fn clear_nav_preview(&mut self) {
         self.nav_preview.clear();
         self.nav_preview_route = None;
+    }
+
+    /// Hand in a planned detour's decimated polyline (#882), keyed to the route it was planned
+    /// against ([`detour_preview_for`](CatalogState::detour_preview_for) gates on the same key).
+    pub(crate) fn set_detour_preview(&mut self, pts: &[(i32, i32)], active_route: Option<usize>) {
+        self.detour_preview.clear();
+        for &p in pts.iter().take(NAV_PREVIEW_MAX) {
+            let _ = self.detour_preview.push(p);
+        }
+        self.detour_preview_route = active_route;
+    }
+
+    /// The detour-preview polyline for `active_route`, or the empty slice when missing/stale.
+    pub(crate) fn detour_preview_for(&self, active_route: Option<usize>) -> &[(i32, i32)] {
+        if self.detour_preview_route.is_some() && self.detour_preview_route == active_route {
+            &self.detour_preview
+        } else {
+            &[]
+        }
+    }
+
+    /// Clear the detour preview and its key — a commit, cancel, or failure ends the preview.
+    pub(crate) fn clear_detour_preview(&mut self) {
+        self.detour_preview.clear();
+        self.detour_preview_route = None;
     }
 }

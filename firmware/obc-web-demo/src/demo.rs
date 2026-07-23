@@ -359,6 +359,7 @@ impl Demo {
         let mut app = App::new(state);
         // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label.
         app.set_nav_profiles(self.tables.nav_profiles());
+        app.set_map_nav_graph(self.tables.has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
         app.set_rides(self.rides.catalog(), self.rides.ids());
         // Manual climb mode for *both* baselines — see [`Baseline`]: the whole demo ride is a
