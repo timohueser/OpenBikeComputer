@@ -10,3 +10,8 @@ dist/
 # directory is excluded.
 docs/*
 !docs/.gitkeep
+
+# Same deal for the rendered blog (source is content/blog/**; Trunk copy-dirs blog/
+# into dist/blog/).
+blog/*
+!blog/.gitkeep

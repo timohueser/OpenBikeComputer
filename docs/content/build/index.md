@@ -25,4 +25,4 @@ Putting it together — fitting the board and display, the controls, the battery
 
 ---
 
-Until then: everything you need to *understand* the project is in the [software docs](../../software/rendering/), and the source — firmware, simulator, and the map tools — is [on GitHub](https://github.com/timohueser/OpenBikeComputer).
+Until then: everything you need to *understand* the project is in the [software docs](../software/rendering/), and the source — firmware, simulator, and the map tools — is [on GitHub](https://github.com/timohueser/OpenBikeComputer).

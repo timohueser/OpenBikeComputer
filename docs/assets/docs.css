@@ -74,6 +74,17 @@ a:hover { color: var(--forest-deep); }
 .head-links .gh svg { width: 17px; height: 17px; }
 .nav-toggle { display: none; background: none; border: 0; color: var(--ink); cursor: pointer; padding: 6px; }
 .nav-toggle svg { width: 24px; height: 24px; }
+/* Narrow screens: shed header weight instead of overflowing (an overflowing header
+   widens the layout viewport and the whole page renders zoomed out). The OBC mark
+   stays and is itself the home link, so the Home text link can go too. */
+@media (max-width: 640px) {
+  .head-inner { gap: 12px; padding: 0 16px; }
+  .brand .name { display: none; }
+  .head-links { gap: 13px; font-size: 13.5px; }
+}
+@media (max-width: 420px) {
+  .head-links .home { display: none; }
+}
 
 /* ----------------------------------------------------------------- layout */
 .layout {

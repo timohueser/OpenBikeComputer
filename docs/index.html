@@ -40,6 +40,8 @@
   <link data-trunk rel="rust" href="../firmware/obc-web-demo/Cargo.toml" data-wasm-opt="z" />
   <!-- Ship the placeholder docs page (dist/docs/index.html) until real docs exist. -->
   <link data-trunk rel="copy-dir" href="docs" />
+  <!-- The blog ("expedition log") — rendered by the same build_docs.py pre_build hook. -->
+  <link data-trunk rel="copy-dir" href="blog" />
   <!-- The device poster (a real sim frame) — shown inside the housing from first paint, behind the
        readiness gate and the wasm fallback. copy-file lands it at the dist root as device-poster.png. -->
   <link data-trunk rel="copy-file" href="assets/device-poster.png" />
@@ -515,6 +517,7 @@
         <a href="#demo">Demo</a>
         <a href="#features">Features</a>
         <a href="docs/">Docs</a>
+        <a href="blog/">Blog</a>
       </nav>
     </div>
   </header>

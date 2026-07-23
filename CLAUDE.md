@@ -17,7 +17,10 @@ and the simulator + tests first-class.
 - `docs/` — the public docs site (below), published at
   <https://timohueser.github.io/OpenBikeComputer/>: it's the **conceptual**
   reference (architecture, formats, rendering, UI, display protocol). `docs/
-  index.html` is the marketing landing, `docs/content/` the source. `packer/` —
+  index.html` is the marketing landing, `docs/content/` the source. The blog
+  ("expedition log", `/blog/`) lives in `docs/content/blog/<slug>/` — one folder
+  per post, rendered by the same `build_docs.py`; authoring guide + the
+  ```compare / ```model directives: [docs/BLOG.md](docs/BLOG.md). `packer/` —
   the web builder (FastAPI `web_builder/` + Svelte `web_builder/frontend/`,
   built into `static/dist/` — gitignored, `npm run build`; CI runs the `web`
   job) and the style presets in `packer/presets/` (each a complete, CLI-usable
