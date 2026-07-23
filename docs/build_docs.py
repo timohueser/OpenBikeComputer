@@ -23,6 +23,9 @@ headings (auto-slugged), paragraphs, `**bold**`, `*italic*`, `` `code` ``,
 pipe tables, `>` blockquote callouts, `---` rules, and **raw block HTML/SVG
 passthrough** (a line starting with a block tag at column 0 is emitted verbatim — this
 is how the inline SVG figures embed). A `src:` link scheme expands to a repo file link.
+HTML comment blocks (a line starting with `<!--`, through the line carrying `-->`) are
+authoring notes: stripped from the output. The shared topo/header shell lives in
+`templates/_sitehead.html` and is injected into every page as `{{site_head}}`.
 
 Run directly (`python3 docs/build_docs.py`) or let the Trunk hook run it. Pass
 `--check-links` to additionally verify every internal anchor link resolves to a real
@@ -41,8 +44,17 @@ from urllib.parse import urljoin
 ROOT = Path(__file__).resolve().parent          # docs/
 CONTENT = ROOT / "content"
 TEMPLATE = ROOT / "templates" / "page.html"
+SITEHEAD_TEMPLATE = ROOT / "templates" / "_sitehead.html"   # shared topo + header
 ASSETS = ROOT / "assets"
 OUT = ROOT / "docs"                              # generated; Trunk copy-dirs this
+
+# The docs pages have a slide-out sidebar on mobile; the toggle only ships there
+# (blog pages have no sidebar, so the partial gets an empty {{nav_toggle}}).
+NAV_TOGGLE = (
+    '<button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">'
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+    'stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>'
+)
 
 BLOG_CONTENT = CONTENT / "blog"                  # one folder per post
 BLOG_OUT = ROOT / "blog"                         # generated; second Trunk copy-dir
@@ -101,7 +113,8 @@ def inline(text):
         return "\x00%d\x00" % (len(store) - 1)
 
     text = IMG_RE.sub(
-        lambda m: stash('<img src="%s" alt="%s">' % (esc(m.group(2)), esc(m.group(1)))),
+        lambda m: stash('<img src="%s" alt="%s" loading="lazy">'
+                        % (esc(m.group(2)), esc(m.group(1)))),
         text,
     )
     text = CODE_RE.sub(lambda m: stash("<code>%s</code>" % esc(m.group(1))), text)
@@ -167,7 +180,7 @@ def render_directive(lang, buf):
     return (
         '<figure class="fig model" data-glb="%s">'
         '<div class="model-stage" tabindex="0" role="img" aria-label="%s"></div>'
-        '<div class="model-bar"><span class="model-hint">drag to orbit &#183; scroll to zoom'
+        '<div class="model-bar"><span class="model-hint">drag to orbit &#183; click + scroll to zoom'
         " &#183; double-click to reset</span>%s</div>%s</figure>"
         % (attr(kv.get("glb", "")), attr(kv.get("caption", "Interactive 3D model")), dl, cap)
     )
@@ -295,6 +308,13 @@ def render_blocks(md):
     while i < n:
         line = lines[i]
         if not line.strip():
+            i += 1
+            continue
+        if line.lstrip().startswith("<!--"):
+            # HTML comments are authoring notes — dropped from the output entirely
+            # (the blog_new.py scaffold leans on this to keep its examples unpublished).
+            while i < n and "-->" not in lines[i]:
+                i += 1
             i += 1
             continue
         if raw_tag(line):
@@ -486,10 +506,15 @@ def render_timeline(posts):
 
 
 def absolutize(content, base):
-    """Rewrite relative src/href attributes to absolute URLs (for feed readers)."""
+    """Rewrite src/href attributes to absolute URLs for feed readers. urljoin both
+    normalizes relative paths ('../feed.xml' loses its dot-segments) and anchors bare
+    `#fragment` links to the post URL — a feed reader has no page to resolve them
+    against. The `#` heading anchors themselves are stripped first: they'd render as
+    stray '#' glyphs outside our CSS."""
+    content = re.sub(r'<a class="anchor"[^>]*>#</a>', "", content)
     return re.sub(
-        r'(src|href)="(?!(?:[a-z][a-z0-9+.-]*:|//|#|/))([^"]+)"',
-        lambda m: '%s="%s"' % (m.group(1), base + m.group(2)),
+        r'(src|href)="([^"]+)"',
+        lambda m: '%s="%s"' % (m.group(1), urljoin(base, m.group(2))),
         content,
     )
 
@@ -524,7 +549,8 @@ def write_feed(posts, rendered_posts):
 
 
 def prevnext_html(posts, idx):
-    """Older/newer links under a post (list is newest-first: idx+1 is older)."""
+    """Older/newer links under a post (list is newest-first: idx+1 is older).
+    Returns the whole <nav>, or '' for a lone post — no point shipping an empty grid."""
     cells = []
     if idx + 1 < len(posts):
         o = posts[idx + 1]
@@ -536,13 +562,22 @@ def prevnext_html(posts, idx):
         nw = posts[idx - 1]
         cells.append('<a class="pn newer" href="../%s/"><span>Newer &#8594;</span>%s</a>'
                      % (attr(nw["slug"]), esc(nw["title"])))
-    return "".join(cells)
+    if len(posts) < 2:
+        return ""
+    return '<nav class="post-pn" aria-label="Adjacent entries">%s</nav>' % "".join(cells)
 
 
 def fill(template, repl):
     for k, v in repl.items():
         template = template.replace("{{%s}}" % k, v)
     return template
+
+
+def site_head(site_root, crumb, nav_toggle=""):
+    """Expand the shared topo + header partial (templates/_sitehead.html) — one copy
+    of the markup, so a nav change can't drift between the docs and blog shells."""
+    return fill(SITEHEAD_TEMPLATE.read_text(),
+                {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle})
 
 
 def build_blog(rendered):
@@ -572,7 +607,9 @@ def build_blog(rendered):
                 shutil.copy2(f, dest / f.name)
         page = fill(post_tpl, {
             "title": esc(p["title"]),
-            "description": esc(p["description"] or "OpenBikeComputer expedition log."),
+            # attr(): these land in content="…" attributes — esc() leaves `"` alone.
+            "description": attr(p["description"] or "OpenBikeComputer expedition log."),
+            "site_head": site_head("../../", "/ log"),
             "base": "../",
             "site_root": "../../",
             "css": "../assets/docs.css",
@@ -592,6 +629,7 @@ def build_blog(rendered):
     index_page = fill(index_tpl, {
         "title": "Expedition log",
         "description": "Build notes and field reports from the OpenBikeComputer workbench.",
+        "site_head": site_head("../", "/ log"),
         "base": "",
         "site_root": "../",
         "css": "assets/docs.css",
@@ -677,10 +715,10 @@ def main():
         title = fm.get("title") or nav_title_for(nav, path)
         desc = fm.get("description", "Documentation for OpenBikeComputer.")
 
-        out_html = template
-        repl = {
+        out_html = fill(template, {
             "title": esc(title),
-            "description": esc(desc),
+            "description": attr(desc),   # lands in content="…"; esc() leaves `"` alone
+            "site_head": site_head(base + "../", "/ docs", NAV_TOGGLE),
             "base": base,
             "site_root": base + "../",
             "css": base + "assets/docs.css",
@@ -688,9 +726,7 @@ def main():
             "toc": render_toc(toc),
             "content": content,
             "has_toc": "has-toc" if render_toc(toc) else "",
-        }
-        for k, v in repl.items():
-            out_html = out_html.replace("{{%s}}" % k, v)
+        })
 
         dest = OUT / "index.html" if url == "" else OUT / url / "index.html"
         dest.parent.mkdir(parents=True, exist_ok=True)

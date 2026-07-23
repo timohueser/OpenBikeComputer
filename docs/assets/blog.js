@@ -18,7 +18,9 @@
 
     var img = lb.querySelector("img");
     var cap = lb.querySelector(".lb-cap");
+    var closeBtn = lb.querySelector(".lb-close");
     var scale = 1, tx = 0, ty = 0;
+    var opener = null;   // element to hand focus back to on close
 
     function apply() {
       img.style.transform = "translate(" + tx + "px," + ty + "px) scale(" + scale + ")";
@@ -27,14 +29,18 @@
     function close() {
       lb.classList.remove("open");
       document.body.style.overflow = "";
+      if (opener && opener.focus) opener.focus();
+      opener = null;
     }
 
     lb.open = function (src, caption) {
+      opener = document.activeElement;
       img.src = src;
       cap.textContent = caption || "";
       reset();
       lb.classList.add("open");
       document.body.style.overflow = "hidden";
+      closeBtn.focus();   // put keyboard users inside the dialog
     };
 
     lb.addEventListener("click", function (e) {
@@ -65,23 +71,49 @@
       if (scale > 1) { reset(); } else { scale = 2.5; apply(); }
     });
 
-    var pan = null;
+    // One pointer pans (only once zoomed — at scale 1 there is nothing to pan);
+    // two pointers pinch-zoom, so touch users aren't stuck with double-tap only.
+    var pointers = {}, lastPinch = 0;
     img.addEventListener("pointerdown", function (e) {
       e.preventDefault();
-      pan = { x: e.clientX - tx, y: e.clientY - ty };
-      img.classList.add("panning");
+      pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
       img.setPointerCapture(e.pointerId);
+      var ids = Object.keys(pointers);
+      if (ids.length === 2) {
+        lastPinch = Math.hypot(pointers[ids[0]].x - pointers[ids[1]].x,
+                               pointers[ids[0]].y - pointers[ids[1]].y);
+      } else if (scale > 1) {
+        img.classList.add("panning");
+      }
     });
     img.addEventListener("pointermove", function (e) {
-      if (!pan) return;
-      tx = e.clientX - pan.x;
-      ty = e.clientY - pan.y;
-      apply();
+      var p = pointers[e.pointerId];
+      if (!p) return;
+      var dx = e.clientX - p.x, dy = e.clientY - p.y;
+      p.x = e.clientX; p.y = e.clientY;
+      var ids = Object.keys(pointers);
+      if (ids.length === 2) {
+        var a = pointers[ids[0]], b = pointers[ids[1]];
+        var pinch = Math.hypot(a.x - b.x, a.y - b.y);
+        if (lastPinch) {
+          scale = Math.min(8, Math.max(1, scale * pinch / lastPinch));
+          if (scale === 1) { tx = 0; ty = 0; }
+        }
+        lastPinch = pinch;
+        tx += dx / 2; ty += dy / 2;
+        apply();
+      } else if (scale > 1) {
+        tx += dx; ty += dy;
+        apply();
+      }
     });
-    img.addEventListener("pointerup", function () {
-      pan = null;
-      img.classList.remove("panning");
-    });
+    function release(e) {
+      delete pointers[e.pointerId];
+      lastPinch = 0;
+      if (!Object.keys(pointers).length) img.classList.remove("panning");
+    }
+    img.addEventListener("pointerup", release);
+    img.addEventListener("pointercancel", release);
     return lb;
   }
 
@@ -137,6 +169,8 @@
     });
     stage.addEventListener("pointermove", function (e) { if (down) fromEvent(e); });
     stage.addEventListener("pointerup", function () { down = false; });
+    // touch-action: pan-y — the browser takes over vertical swipes and cancels us.
+    stage.addEventListener("pointercancel", function () { down = false; });
     stage.addEventListener("keydown", function (e) {
       if (e.key === "ArrowLeft") { set(pct - 4); e.preventDefault(); }
       if (e.key === "ArrowRight") { set(pct + 4); e.preventDefault(); }
