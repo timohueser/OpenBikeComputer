@@ -275,6 +275,18 @@
     // Orbit state.
     var theta = 0.7, phi = 0.42, dist = dist0, target = center0.slice();
     var autoSpin = true, needsDraw = true;
+    // rAF discipline: the loop only re-arms itself while auto-spinning in view.
+    // Once the user grabs the model (autoSpin off), each interaction schedules a
+    // single frame via invalidate() and the viewer costs nothing while idle.
+    var inView = true, rafPending = false;
+
+    function schedule() {
+      if (!rafPending) { rafPending = true; requestAnimationFrame(frame); }
+    }
+    function invalidate() {
+      needsDraw = true;
+      if (inView) schedule();
+    }
 
     function eyePos() {
       return [
@@ -322,11 +334,20 @@
     }
 
     function frame() {
+      rafPending = false;
       if (autoSpin) { theta += 0.0035; needsDraw = true; }
       if (needsDraw) { draw(); needsDraw = false; }
-      requestAnimationFrame(frame);
+      if (inView && autoSpin) schedule();
     }
-    requestAnimationFrame(frame);
+    schedule();
+
+    // Pause the auto-spin (and any drawing) while scrolled out of view.
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (entries) {
+        inView = entries.some(function (e) { return e.isIntersecting; });
+        if (inView) schedule();
+      }).observe(stage);
+    }
 
     /* ------------------------------------------------------------ interaction */
     function stopSpin() { autoSpin = false; }
@@ -343,6 +364,7 @@
     var pointers = {}, lastPinch = 0;
     stage.addEventListener("pointerdown", function (e) {
       stopSpin();
+      stage.focus({ preventScroll: true });   // engages wheel-zoom (see wheel handler)
       stage.classList.add("dragging");
       stage.setPointerCapture(e.pointerId);
       pointers[e.pointerId] = { x: e.clientX, y: e.clientY, btn: e.button, shift: e.shiftKey };
@@ -372,7 +394,7 @@
         theta -= dx * 0.008;
         phi = Math.min(1.5, Math.max(-1.5, phi + dy * 0.008));
       }
-      needsDraw = true;
+      invalidate();
     });
     function release(e) {
       delete pointers[e.pointerId];
@@ -383,15 +405,19 @@
     stage.addEventListener("pointercancel", release);
     stage.addEventListener("contextmenu", function (e) { e.preventDefault(); });
     stage.addEventListener("wheel", function (e) {
+      // Zoom only once the viewer is engaged (clicked or tabbed to) or with a
+      // modifier held — a bare scroll over the full-width stage must keep
+      // scrolling the page, not hijack it into a zoom.
+      if (document.activeElement !== stage && !e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
       stopSpin();
       dist = Math.min(dist0 * 6, Math.max(dist0 * 0.15, dist * Math.pow(1.1, e.deltaY > 0 ? 1 : -1)));
-      needsDraw = true;
+      invalidate();
     }, { passive: false });
     stage.addEventListener("dblclick", function (e) {
       e.preventDefault();
       theta = 0.7; phi = 0.42; dist = dist0; target = center0.slice();
-      needsDraw = true;
+      invalidate();
     });
     stage.addEventListener("keydown", function (e) {
       var step = 0.12;
@@ -403,11 +429,11 @@
       else if (e.key === "-") dist = Math.min(dist0 * 6, dist * 1.15);
       else return;
       stopSpin();
-      needsDraw = true;
+      invalidate();
       e.preventDefault();
     });
 
-    if ("ResizeObserver" in window) new ResizeObserver(function () { needsDraw = true; }).observe(stage);
+    if ("ResizeObserver" in window) new ResizeObserver(invalidate).observe(stage);
   }
 
   /* -------------------------------------------------------------------- init */

@@ -77,11 +77,11 @@
 }
 .post-head .back:hover { color: var(--forest); }
 .post-head h1 { font-size: clamp(32px, 4.6vw, 44px); margin: 12px 0 8px; }
-.post-meta { font-family: var(--mono); font-size: 13px; color: var(--ink-faint); margin: 0; }
+/* .post .post-meta: two classes, so the meta line outranks the `.post p` body rule. */
+.post .post-meta { font-family: var(--mono); font-size: 13px; color: var(--ink-faint); margin: 0; }
 .post-meta .dot-sep { color: var(--coral); padding: 0 2px; }
 .post p { font-size: 17px; }
-.post h1 + p { font-size: 17px; color: var(--ink); }
-.post-head + p, .post-head + .lede { font-size: 19px !important; color: var(--ink-soft) !important; }
+.post .post-head + p { font-size: 19px; color: var(--ink-soft); }
 
 /* Standalone images (a paragraph that is just one image) become framed exhibits. */
 .post p > img:only-child {
@@ -151,7 +151,9 @@
 /* --------------------------------------------------------- compare (before/after) */
 .cmp .cmp-stage {
   position: relative; overflow: hidden; border-radius: 10px;
-  touch-action: none; cursor: ew-resize; outline: none;
+  /* pan-y: a vertical swipe starting on the slider still scrolls the page — the
+     browser cancels the pointer (blog.js handles pointercancel). */
+  touch-action: pan-y; cursor: ew-resize; outline: none;
 }
 .cmp .cmp-stage img {
   display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none;

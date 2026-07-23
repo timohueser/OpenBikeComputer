@@ -36,7 +36,7 @@ an orbit viewer — hand-rolled WebGL, a few KB, no engine dependency.
 
 ```model
 glb: demo-case.glb
-caption: A placeholder case — drag to orbit, scroll to zoom, double-click to reset.
+caption: A placeholder case, standing in until the real enclosure is ready to show.
 ```
 
 When there's a real enclosure to show, the same block will carry a

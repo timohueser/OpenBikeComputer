@@ -32,6 +32,10 @@ The h1 comes from `title:` — start the body with a paragraph, not a heading. T
 first paragraph renders as the lede. Posts are sorted newest-first and grouped by
 month on `/blog/`; an Atom feed is generated at `/blog/feed.xml`.
 
+HTML comments (`<!-- … -->` starting at the beginning of a line) are stripped from
+the rendered page — use them for drafts, notes-to-self, or to park an example
+without publishing it (the scaffold does exactly that).
+
 ## Images
 
 A paragraph containing just one image becomes a framed, click-to-zoom exhibit
