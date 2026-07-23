@@ -29,6 +29,7 @@ use crate::settings::{DateTime, Settings, Units};
 use crate::{t, Msg};
 
 mod climb;
+mod detour;
 mod dfu;
 mod home;
 mod list;
@@ -49,12 +50,12 @@ mod route_overview;
 mod route_received;
 mod route_swap;
 mod settings;
-mod skip_ahead;
 mod statistics;
 mod trip_delete;
 mod warning;
 
 pub use climb::ClimbScreen;
+pub use detour::{DetourPreviewScreen, DetourScreen};
 pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
     DfuProgressScreen, DfuUpdatedScreen,
@@ -63,7 +64,7 @@ pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use menu::MenuScreen;
-pub use nav_route::{needle_region, NavConfirmScreen, NavFailScreen, NavPlanningScreen};
+pub use nav_route::{needle_region, NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
@@ -82,7 +83,6 @@ pub use settings::{
     LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen, SettingsScreen,
     StatFieldsScreen, SystemScreen, UnitsScreen,
 };
-pub use skip_ahead::SkipAheadScreen;
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 pub use warning::{WarningFlags, WarningScreen};
@@ -262,6 +262,10 @@ pub struct Render<'a, 'd> {
     /// hands an empty slice when it's missing or stale). Only the Ride detail's track pager page
     /// draws it.
     pub ride_preview: &'a [(i32, i32)],
+    /// The planned-but-uncommitted detour's decimated polyline (#882) — host-filled when the
+    /// detour plan completes, keyed to the active route (empty when missing or stale). Only the
+    /// Detour preview screen draws it, over the still-active original route.
+    pub detour_preview: &'a [(i32, i32)],
     /// The single [`App`](crate::App)-owned POI-list snapshot buffer, **read-only** here (#803).
     /// Only the [`PoiList`](crate::screen::poi_list) screen reads it, drawing the frozen snapshot its
     /// [`prepare`](Screen::prepare) pass already took (see [`PoiScratch`] / [`Prepare`]); every other
@@ -363,10 +367,13 @@ pub struct Prepare<'a, 'd> {
     /// The rider's current fix, `(lon, lat)` µdeg — the POI list's nearest-16 query origin.
     pub user_fix: Option<Fix>,
     /// Copy of the active route slot and live matched progress at this frame's prepare boundary.
-    /// The Skip chooser advances its selection anchor with the rider before resolving geometry.
+    /// The Detour chooser advances its selection anchor with the rider before resolving geometry.
     pub active_route: Option<usize>,
     pub progress_m: u32,
     pub route_total_m: u32,
+    /// The planned detour's decimated polyline (#882) — the Detour preview folds it into its
+    /// fitted camera bounds; empty for every other screen (and while nothing is planned).
+    pub detour_preview: &'a [(i32, i32)],
 }
 
 /// A screen's classification, declared **in its `screens!` table row** so it can never drift from
@@ -667,12 +674,14 @@ screens! {
     /// tracking session with no route via [`start_ride_routeless`].
     RideStart(RideStartScreen) => Caps::nav(),
     Menu(MenuScreen) => Caps::nav().timed(),
-    /// The five-station mid-ride compass: Waypoints / Skip ahead / POIs / Routes / Main menu.
+    /// The five-station mid-ride compass: Waypoints / Detour / POIs / Routes / Main menu.
     RideMenu(RideMenuScreen) => Caps::nav().timed(),
     /// The ride menu's route-ordered waypoint plan: distance/climb-to-go with passed rows muted.
     RideWaypoints(RideWaypointsScreen) => Caps::nav(),
-    /// Pure-skip chooser: a map base with streamed selected-stretch ink and an auto-fit camera.
-    SkipAhead(SkipAheadScreen) => Caps::map().remap(RemapKind::Route),
+    /// Detour chooser (#882): a map base with streamed skipped-stretch ink and an auto-fit camera.
+    Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),
+    /// Detour preview (#882): the planned detour + cost line over the map; Press commits the splice.
+    DetourPreview(DetourPreviewScreen) => Caps::map().remap(RemapKind::Route),
     /// The POIs browser's category list (Menu → POIs).
     PoiMenu(PoiMenuScreen) => Caps::nav(),
     /// One category's distance-sorted nearest-16 with live bearing arrows.
@@ -797,7 +806,8 @@ impl Screen {
         match self {
             Screen::PoiList(s) => s.prepare(px),
             Screen::PoiDetail(s) => s.prepare(px),
-            Screen::SkipAhead(s) => s.prepare(px),
+            Screen::Detour(s) => s.prepare(px),
+            Screen::DetourPreview(s) => s.prepare(px),
             _ => {}
         }
     }
@@ -1483,6 +1493,10 @@ pub mod palette {
     /// Magenta — the planned route line on the Map. The classic GPS route hue: it lands on no
     /// base-map feature, so it always reads as "the line to follow".
     pub const ROUTE: u16 = rgb565(255, 0, 255); // → (255,0,255) magenta
+    /// Blue — the planned detour's polyline on the Detour preview (#882): the replanned portion
+    /// reads apart from the magenta route it will replace, the warning-orange skipped span, and
+    /// the (recessive navy) breadcrumb behind it.
+    pub const DETOUR: u16 = rgb565(0, 90, 255); // → (0,85,255) blue
     /// Navy — the recorded breadcrumb (travelled path), stroked over the route and under the marker.
     /// Recessive so the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
@@ -1757,7 +1771,8 @@ mod tests {
         assert!(named("Passkey").idle_exempt, "the passkey card is idle-exempt");
         assert!(named("RouteSwap").idle_exempt, "the route-swap prompt is idle-exempt");
         assert_eq!(named("RouteMenu").remap, RemapKind::Route);
-        assert_eq!(named("SkipAhead").remap, RemapKind::Route);
+        assert_eq!(named("Detour").remap, RemapKind::Route);
+        assert_eq!(named("DetourPreview").remap, RemapKind::Route);
         assert_eq!(named("Rides").remap, RemapKind::Ride);
         // Each capability value is used by at least one screen (nothing dead-declared).
         assert!(caps.iter().any(|c| c.reader == ReaderNeed::Always));

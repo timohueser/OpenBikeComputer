@@ -35,6 +35,7 @@ extern crate alloc;
 pub mod climb;
 pub mod climb_profile;
 pub mod convert;
+pub mod corridor;
 pub mod deadband;
 mod geo;
 pub mod gpx;
@@ -43,6 +44,7 @@ pub mod nav;
 pub mod profile;
 pub mod reader;
 pub mod ride;
+pub mod splice;
 pub mod track;
 pub mod trip;
 
@@ -51,11 +53,12 @@ pub use climb::{
 };
 pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
 pub use convert::{gpx_to_obcr, RouteStats};
+pub use corridor::{Corridor, CORRIDOR_WIDTH_M, MIN_DETOUR_SPAN_M};
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2_cl};
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner};
 pub use matcher::{Match, RouteMatch};
-pub use nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
+pub use nav::{plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
 // `obc-formats` owns the byte-I/O seam. `Error` is re-exported here **solely** so obc-route's own
 // public GPX/OBCR writer signatures (`track_to_gpx` and the `ByteSink::{write, patch_at}` helpers)
 // can name it as `obc_route::Error` — it is not a downstream byte-I/O path. Every consumer, obc-route
@@ -71,6 +74,9 @@ pub use reader::{
     RouteSummary, Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
 };
 pub use ride::{track_to_ride, RideInfo, RideStats};
+pub use splice::{
+    splice_detour, trim_detour_to_tail, SpliceStep, Splicer, TrimOutcome, TRIM_CONTACT_M, TRIM_LOOKAHEAD_M,
+};
 pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint};
 pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
 

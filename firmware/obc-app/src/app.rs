@@ -136,6 +136,11 @@ pub struct AppState {
     /// the sim. A pending app→host command, carried here because `AppState` is the one mutable
     /// app-wide state a screen's `handle` reaches (the `TrackAction` pattern, one plane over).
     pub ble_forget_pending: bool,
+    /// Whether the loaded map carries a non-empty §8 nav graph (#882) — fed once at map open by
+    /// [`App::set_map_nav_graph`]; the Detour station/chooser gate on it (a graph-less map dims
+    /// the station instead of failing a plan). Carried here because both `handle` (the gate) and
+    /// `draw` (the dimming) need it without a `Reader`.
+    pub has_nav_graph: bool,
 }
 
 impl AppState {
@@ -157,6 +162,7 @@ impl AppState {
             ble_link: crate::BleLink::Advertising,
             ble_paired: false,
             ble_forget_pending: false,
+            has_nav_graph: false,
         }
     }
 
@@ -618,10 +624,10 @@ impl App {
         if self.ride.sync_route_state(&mut self.activity, route) {
             self.ui.map_dirty = true;
         }
-        // A Skip-ahead Press is queued by the screen because input handling deliberately owns no
-        // host `RouteReader`. Install its forward-only matcher floor before this tick's fresh fix,
-        // then re-derive every guidance consumer from the new progress.
-        if self.ride.apply_pending_skip(&mut self.activity, route) {
+        // A detour commit queues a seam re-anchor because the commit handler owns no host
+        // `RouteReader`. Install matcher progress + the forward-only floor at the splice seam
+        // before this tick's fresh fix, then re-derive every guidance consumer from it.
+        if self.ride.apply_pending_seam(&mut self.activity, route) {
             if let Some(route) = route {
                 self.update_active_climb(route);
                 self.update_next_waypoint(route);
@@ -1099,7 +1105,8 @@ impl App {
                 Screen::RouteSwap(sw) => sw.remap_routes(&remap),
                 Screen::RouteReceived(rc) => rc.remap_routes(&remap),
                 Screen::RouteUpdated(ru) => ru.remap_routes(&remap),
-                Screen::SkipAhead(skip) => skip.remap_routes(&remap),
+                Screen::Detour(d) => d.remap_routes(&remap),
+                Screen::DetourPreview(p) => p.remap_routes(&remap),
                 _ => {}
             }
         }
@@ -1333,6 +1340,92 @@ impl App {
             Err(_) => Screen::NavFail(crate::screen::NavFailScreen::not_found()),
         };
         self.ui.stack[i] = screen;
+        self.ui.map_dirty = true;
+    }
+
+    /// [`HostEvent::DetourPlanned`] (#882): land the plan answer in the detour planning screen —
+    /// success replaces it with the preview (cost line + the polyline handed in via
+    /// [`set_detour_preview`](App::set_detour_preview)), failure with the fail card carrying the
+    /// "try a farther rejoin" hint. A late answer whose planning screen is gone (the rider
+    /// cancelled) is dropped, and the stale preview slot cleared.
+    fn on_detour_planned(&mut self, result: Result<crate::host::DetourPreview, obc_route::nav::NavError>) {
+        use obc_route::nav::NavError;
+        let Some(i) = self
+            .ui
+            .stack
+            .iter()
+            .position(|s| matches!(s, Screen::NavPlanning(p) if p.kind() == crate::screen::PlanKind::Detour))
+        else {
+            self.catalogs.clear_detour_preview();
+            return;
+        };
+        // The chooser below the planning screen carries the request context the preview inherits.
+        let chooser = self.ui.stack.iter().find_map(|s| match s {
+            Screen::Detour(d) => Some(*d),
+            _ => None,
+        });
+        let screen = match (result, chooser) {
+            (Ok(preview), Some(d)) => Screen::DetourPreview(crate::screen::DetourPreviewScreen::new(&d, preview)),
+            // No chooser below (stack surgery raced the answer): treat as the generic failure.
+            (Ok(_), None) | (Err(NavError::NoPath), _) => {
+                Screen::NavFail(crate::screen::NavFailScreen::detour_not_found())
+            }
+            (Err(NavError::Exhausted), _) => Screen::NavFail(crate::screen::NavFailScreen::detour_too_far()),
+        };
+        self.ui.stack[i] = screen;
+        self.ui.map_dirty = true;
+    }
+
+    /// [`HostEvent::DetourCommitted`] (#882): re-adopt the spliced route and land back on the
+    /// riding view — or surface the failure on the preview with the old route fully intact.
+    ///
+    /// Success order matters: drop every cache derived from the old geometry, point
+    /// `active_route` at the spliced route (the tracking session is deliberately untouched — the
+    /// RouteSwap precedent), queue the seam re-anchor (the tick that owns the `RouteReader`
+    /// installs matcher progress + floor at the splice seam), then truncate the detour flow off
+    /// the stack so the rider lands on the exact riding view they left.
+    fn on_detour_committed(&mut self, result: Result<u16, obc_route::nav::NavError>) {
+        let resolved = result.and_then(|id| self.catalogs.route_index_of(id).ok_or(obc_route::nav::NavError::NoPath));
+        match resolved {
+            Ok(idx) => {
+                let anchor = self.ui.stack.iter().find_map(|s| match s {
+                    Screen::DetourPreview(p) => Some(p.anchor_m()),
+                    _ => None,
+                });
+                self.ride.drop_route_derived_state(&mut self.activity);
+                self.activity.active_route = Some(idx);
+                self.activity.request_seam(idx, anchor.unwrap_or(0));
+                self.catalogs.clear_detour_preview();
+                if let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::Detour(_))) {
+                    self.ui.stack.truncate(i.max(1)); // never below the Home root
+                }
+                self.ui.map_dirty = true;
+            }
+            Err(_) => {
+                // The splice failed before anything was adopted: the old route + session are
+                // untouched. Surface it inline on the preview (if it is still up).
+                for s in self.ui.stack.iter_mut() {
+                    if let Screen::DetourPreview(p) = s {
+                        p.set_commit_failed();
+                    }
+                }
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    /// Feed whether the loaded map carries a non-empty §8 nav graph (#882) — called once at map
+    /// open by every host (`reader.nav_directory().is_empty()` is the source). Gates the ride
+    /// menu's Detour station and the chooser.
+    pub fn set_map_nav_graph(&mut self, present: bool) {
+        self.state.has_nav_graph = present;
+    }
+
+    /// Hand in the planned detour's decimated polyline (#882) — the detour twin of
+    /// [`set_nav_preview`](App::set_nav_preview), keyed to the active route the detour was
+    /// planned against.
+    pub fn set_detour_preview(&mut self, pts: &[(i32, i32)]) {
+        self.catalogs.set_detour_preview(pts, self.activity.active_route);
         self.ui.map_dirty = true;
     }
 
@@ -1966,7 +2059,7 @@ impl App {
         self.catalogs.drop_stale_ride_views(self.activity.viewed_ride);
 
         // Pre-draw acquisition (#803): the base screen resolves any streamed-reader state (POI
-        // snapshot / hours or Skip-ahead route geometry) before the draw loop, so `Render` carries
+        // snapshot / hours or Detour route geometry) before the draw loop, so `Render` carries
         // the POI scratch read-only and every screen's `draw` is side-effect-free.
         self.ui.prepare_base(
             reader,
@@ -1975,6 +2068,7 @@ impl App {
             self.activity.active_route,
             self.activity.progress_m,
             self.activity.route_total_m,
+            self.catalogs.detour_preview_for(self.activity.active_route),
         );
 
         // Computed before the field borrow below splits `self`.
@@ -2008,6 +2102,7 @@ impl App {
         // (route/ride changed, preview not re-fed yet) hands the screens an empty slice.
         let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(activity.active_route);
         let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(activity.viewed_ride);
+        let detour_preview: &[(i32, i32)] = catalogs.detour_preview_for(activity.active_route);
         // Bundle the active climb for the screens: the resident detail buffer is only meaningful
         // when a climb is active, so hand out the `(seg, profile)` pair exactly when `active_climb`
         // resolves to a live segment — a stale buffer is never reachable through `Render`.
@@ -2034,6 +2129,7 @@ impl App {
             breadcrumb: &ride.breadcrumb,
             nav_preview,
             ride_preview,
+            detour_preview,
             poi_scratch: &ui.poi_scratch,
             sensor_status: ui.sensor_status.as_slice(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
@@ -2209,6 +2305,8 @@ impl App {
             HostEvent::RouteUploaded { id, replaced, elevation } => self.on_route_uploaded(id, replaced, elevation),
             HostEvent::Warning(flags) => self.on_warning(flags),
             HostEvent::NavPlanned(result) => self.on_nav_planned(result),
+            HostEvent::DetourPlanned(result) => self.on_detour_planned(result),
+            HostEvent::DetourCommitted(result) => self.on_detour_committed(result),
             HostEvent::CardScanned { free_bytes } => {
                 self.card_free_bytes = free_bytes;
                 self.ui.map_dirty = true;
@@ -2247,6 +2345,7 @@ impl App {
         match class {
             HostCommandClass::RescanStore => self.host.store_changed_pending() > 0,
             HostCommandClass::CancelRoutePlan => self.activity.nav_cancel_pending(),
+            HostCommandClass::CancelDetour => self.activity.detour_cancel_pending(),
             // The delete classes are pended by either the UI hold-to-delete (an Activity slot) or the
             // auto-expiry sweep (a queued action) — the host handles both identically (#638 S3).
             HostCommandClass::DeleteRoute => {
@@ -2260,6 +2359,8 @@ impl App {
             HostCommandClass::StampRideSynced => self.retention.has(crate::retention::SweepKind::StampRide),
             HostCommandClass::FinishTrack => self.activity.has_track_action(),
             HostCommandClass::PlanRoute => self.activity.has_nav_request(),
+            HostCommandClass::PlanDetour => self.activity.has_detour_request(),
+            HostCommandClass::CommitDetour => self.activity.detour_commit_pending(),
             HostCommandClass::Dfu => self.activity.has_dfu_request(),
             HostCommandClass::ForgetBond => self.state.ble_forget_pending,
             HostCommandClass::PersistSettings => self.settings_persist_ready(),
@@ -2285,6 +2386,11 @@ impl App {
             HostCommandClass::CancelRoutePlan => {
                 self.activity.take_nav_cancel().then_some(HostCommand::CancelRoutePlan)
             }
+            HostCommandClass::CancelDetour => self.activity.take_detour_cancel().then(|| {
+                // The preview polyline dies with the plan it previewed.
+                self.catalogs.clear_detour_preview();
+                HostCommand::CancelDetour
+            }),
             HostCommandClass::DeleteRoute => {
                 // The UI hold-to-delete (index-resolved to a durable id) takes priority; a retention
                 // delete drains after it, re-validated against live state and one in flight at a time
@@ -2323,6 +2429,8 @@ impl App {
             }
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
             HostCommandClass::PlanRoute => self.activity.take_nav_request().map(HostCommand::PlanRoute),
+            HostCommandClass::PlanDetour => self.activity.take_detour_request().map(HostCommand::PlanDetour),
+            HostCommandClass::CommitDetour => self.activity.take_detour_commit().then_some(HostCommand::CommitDetour),
             HostCommandClass::Dfu => self.activity.take_dfu_request().map(HostCommand::Dfu),
             HostCommandClass::ForgetBond => {
                 core::mem::take(&mut self.state.ble_forget_pending).then_some(HostCommand::ForgetBond)
@@ -3731,7 +3839,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_commit_atomically_reanchors_progress_matcher_and_guidance() {
+    fn seam_commit_atomically_reanchors_progress_matcher_and_guidance() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
@@ -3743,12 +3851,12 @@ mod tests {
         app.activity.progress_m = 1_000;
         let session = app.activity.session();
         let mode = app.activity.mode;
-        app.activity.request_skip(0, 12_000); // lands on the fixture's second climb
+        app.activity.request_seam(0, 12_000); // lands on the fixture's second climb
         tick_without_fix(&mut app, Some(&route));
         assert_eq!(app.activity.progress_m, 12_000);
         assert!(!app.activity.off_route);
         assert_eq!(app.activity.active_climb, Some(1), "climb guidance re-derived at the new anchor");
-        assert!(app.activity.pending_skip().is_none());
+        assert!(app.activity.pending_seam().is_none());
         assert_eq!(app.activity.session(), session);
         assert_eq!(app.activity.mode, mode);
 
@@ -3800,8 +3908,8 @@ mod tests {
         assert!(!app.activity.off_route);
         assert!(app.activity.progress_m < 3_000, "route reload cleared the old 12 km floor");
 
-        // A new session on the same route also clears every skip-derived anchor.
-        app.activity.request_skip(0, 8_000);
+        // A new session on the same route also clears every seam-derived anchor.
+        app.activity.request_seam(0, 8_000);
         tick_without_fix(&mut app, Some(&route));
         assert_eq!(app.activity.progress_m, 8_000);
         app.activity.end_session();
@@ -3812,7 +3920,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_skip_seek_keeps_old_anchor_and_retries() {
+    fn failed_seam_seek_keeps_old_anchor_and_retries() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
@@ -3821,60 +3929,62 @@ mod tests {
         app.activity.start_session();
         tick_without_fix(&mut app, Some(&route));
         app.activity.progress_m = 1_000;
-        app.activity.request_skip(0, 4_000);
+        app.activity.request_seam(0, 4_000);
 
         let empty = SliceSource(&[]);
         let unreadable = RouteReader::new(&idx, &empty);
         tick_without_fix(&mut app, Some(&unreadable));
         assert_eq!(app.activity.progress_m, 1_000, "failed decode does not split Activity from matcher");
-        assert!(app.activity.pending_skip().is_some(), "transient failure remains retryable");
+        assert!(app.activity.pending_seam().is_some(), "transient failure remains retryable");
 
         tick_without_fix(&mut app, Some(&route));
         assert_eq!(app.activity.progress_m, 4_000);
-        assert!(app.activity.pending_skip().is_none());
+        assert!(app.activity.pending_seam().is_none());
     }
 
-    fn app_with_skip_chooser_on_beta() -> App {
+    fn app_with_detour_chooser_on_beta() -> App {
         let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.state.has_nav_graph = true;
+        app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
         app.set_routes_with_ids(&[summary("Alpha"), summary("Beta"), summary("Gamma")], &[10, 20, 30]);
         app.activity.active_route = Some(1);
         app.activity.progress_m = 1_000;
         app.activity.route_total_m = 5_000;
         app.activity.start_session();
-        let chooser = crate::screen::SkipAheadScreen::new(&app.activity);
-        *app.ui.stack.last_mut().unwrap() = Screen::SkipAhead(chooser);
+        let chooser = crate::screen::DetourScreen::new(&app.activity);
+        *app.ui.stack.last_mut().unwrap() = Screen::Detour(chooser);
         app
     }
 
     #[test]
-    fn skip_chooser_and_queued_commit_follow_route_identity_across_rescans() {
-        let mut app = app_with_skip_chooser_on_beta(); // Beta id 20 at index 1
+    fn detour_chooser_and_queued_plan_follow_route_identity_across_rescans() {
+        let mut app = app_with_detour_chooser_on_beta(); // Beta id 20 at index 1
         app.set_routes_with_ids(&[summary("Gamma"), summary("Alpha"), summary("Beta")], &[30, 10, 20]);
         assert_eq!(app.activity.active_route, Some(2), "active navigation followed Beta to index 2");
 
         app.apply_gesture(Gesture::Press);
-        assert_eq!(app.activity.pending_skip().unwrap().route, 2, "the open chooser followed Beta too");
+        assert_eq!(app.activity.pending_detour_request().unwrap().route, 2, "the open chooser followed Beta too");
 
-        // Before the next route-aware tick consumes the request, another rescan moves Beta again.
+        // Before the host drains the request, another rescan moves Beta again.
         app.set_routes_with_ids(&[summary("Beta"), summary("Gamma"), summary("Alpha")], &[20, 30, 10]);
         assert_eq!(app.activity.active_route, Some(0));
-        assert_eq!(app.activity.pending_skip().unwrap().route, 0, "the queued one-tick request follows Beta");
+        assert_eq!(app.activity.pending_detour_request().unwrap().route, 0, "the queued plan request follows Beta");
     }
 
     #[test]
-    fn vanished_skip_route_disables_the_chooser_and_clears_a_queued_commit() {
-        let mut open = app_with_skip_chooser_on_beta();
+    fn vanished_detour_route_disables_the_chooser_and_clears_a_queued_plan() {
+        let mut open = app_with_detour_chooser_on_beta();
         open.set_routes_with_ids(&[summary("Alpha"), summary("Gamma")], &[10, 30]);
         assert_eq!(open.activity.active_route, None, "vanished Beta unloads navigation");
         open.apply_gesture(Gesture::Press);
-        assert!(matches!(open.top_screen(), Screen::SkipAhead(_)), "an unavailable chooser stays safely cancellable");
-        assert!(open.activity.pending_skip().is_none(), "it never retargets the route now at old index 1");
+        assert!(matches!(open.top_screen(), Screen::Detour(_)), "an unavailable chooser stays safely cancellable");
+        assert!(open.activity.pending_detour_request().is_none(), "it never retargets the route now at old index 1");
 
-        let mut queued = app_with_skip_chooser_on_beta();
+        let mut queued = app_with_detour_chooser_on_beta();
         queued.apply_gesture(Gesture::Press);
-        assert!(queued.activity.pending_skip().is_some());
+        assert!(queued.activity.pending_detour_request().is_some());
         queued.set_routes_with_ids(&[summary("Alpha"), summary("Gamma")], &[10, 30]);
-        assert!(queued.activity.pending_skip().is_none(), "a queued commit for vanished Beta is cancelled");
+        assert!(queued.activity.pending_detour_request().is_none(), "a queued plan for vanished Beta is cancelled");
     }
 
     /// Drive the active-climb state directly through `App::update_active_climb` with a controlled
@@ -3990,27 +4100,30 @@ mod tests {
         );
     }
 
-    /// Skip ahead is map-backed and live, but it is an interaction in progress rather than an
-    /// auto-switch sibling. A climb entry must preserve both the chooser and its selected distance.
+    /// The Detour chooser is map-backed and live, but it is an interaction in progress rather
+    /// than an auto-switch sibling. A climb entry must preserve both the chooser and its
+    /// selected distance.
     #[test]
-    fn auto_never_switches_away_from_skip_ahead() {
-        use crate::screen::SkipAheadScreen;
+    fn auto_never_switches_away_from_the_detour_chooser() {
+        use crate::screen::DetourScreen;
         use crate::settings::ClimbMode;
         let (mut app, idx) = climb_app(ClimbMode::Auto);
+        app.state.has_nav_graph = true;
+        app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
         app.activity.active_route = Some(0);
         app.activity.progress_m = 1_000;
         app.activity.route_total_m = 20_000;
         app.activity.start_session();
-        let chooser = SkipAheadScreen::new(&app.activity);
-        *app.ui.stack.last_mut().unwrap() = Screen::SkipAhead(chooser);
-        app.apply_gesture(Gesture::Turn(2)); // selected distance = 3 × 100 m
+        let chooser = DetourScreen::new(&app.activity);
+        *app.ui.stack.last_mut().unwrap() = Screen::Detour(chooser);
+        app.apply_gesture(Gesture::Turn(2)); // selected distance = the 600 m minimum + 200 m
 
         enter_first_climb(&mut app, &idx); // live anchor advances to 5 km on climb entry
-        assert!(matches!(app.top_screen(), Screen::SkipAhead(_)), "climb entry preserves the open chooser");
+        assert!(matches!(app.top_screen(), Screen::Detour(_)), "climb entry preserves the open chooser");
 
         app.apply_gesture(Gesture::Press);
-        let req = app.activity.pending_skip().expect("the preserved chooser still commits");
-        assert_eq!((req.route, req.target_m), (0, 5_300), "the 300 m selection survives the climb edge");
+        let req = app.activity.pending_detour_request().expect("the preserved chooser still plans");
+        assert_eq!((req.route, req.target_m), (0, 5_800), "the 800 m selection survives the climb edge");
     }
 
     /// Manual and Off never auto-switch on entry (the rider reaches the Climb screen only by cycling
@@ -4043,11 +4156,13 @@ mod tests {
     }
 
     /// If ride chrome was opened from Climb, the crest repairs that hidden caller without
-    /// dismissing the interaction on top. Back from Skip ahead must reveal Map, never No climb.
+    /// dismissing the interaction on top. Back from the Detour chooser must reveal Map, never
+    /// No climb.
     #[test]
-    fn crest_repairs_a_hidden_climb_below_skip_ahead() {
+    fn crest_repairs_a_hidden_climb_below_the_detour_chooser() {
         use crate::settings::ClimbMode;
         let (mut app, idx) = climb_app(ClimbMode::Auto);
+        app.state.has_nav_graph = true;
         enter_first_climb(&mut app, &idx); // top = Climb
         app.activity.active_route = Some(0);
         app.activity.route_total_m = 50_000;
@@ -4055,15 +4170,15 @@ mod tests {
 
         app.apply_gesture(Gesture::BackHold); // [Home, Climb, RideMenu]
         app.apply_gesture(Gesture::Turn(1));
-        app.apply_gesture(Gesture::Press); // RideMenu Replace → [Home, Climb, SkipAhead]
-        assert!(matches!(app.top_screen(), Screen::SkipAhead(_)));
+        app.apply_gesture(Gesture::Press); // RideMenu Replace → [Home, Climb, Detour]
+        assert!(matches!(app.top_screen(), Screen::Detour(_)));
 
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
         app.activity.progress_m = 50_000;
         app.update_active_climb(&route);
         assert_eq!(app.activity.active_climb, None);
-        assert!(matches!(app.top_screen(), Screen::SkipAhead(_)), "crest does not dismiss the chooser");
+        assert!(matches!(app.top_screen(), Screen::Detour(_)), "crest does not dismiss the chooser");
         assert!(
             matches!(app.ui.stack[app.ui.stack.len() - 2], Screen::Map(_)),
             "the hidden Climb caller is repaired in place"
@@ -4639,6 +4754,14 @@ mod tests {
         app.apply_event(crate::HostEvent::StoreChanged);
         app.activity.request_nav_cancel(); // posted before the plan — a later cancel annihilates it
         app.activity.request_nav(NavRequest::new((0, 0), (500, 500), "To the col"));
+        app.activity.request_detour_cancel(); // same annihilation rule as the nav pair (#882)
+        app.activity.request_detour(crate::activity::DetourRequest {
+            route: 0,
+            from: (0, 0),
+            progress_m: 100,
+            target_m: 800,
+        });
+        app.activity.request_detour_commit();
         app.activity.request_dfu(DfuAction::Scan);
         app.activity.request_route_delete(1);
         app.activity.request_trip_delete(42);
@@ -4665,6 +4788,7 @@ mod tests {
                 [
                     HostCommand::RescanStore { commits: 2 },
                     HostCommand::CancelRoutePlan,
+                    HostCommand::CancelDetour,
                     HostCommand::DeleteRoute { id: 11 },
                     HostCommand::DeleteTrip { id: 42 },
                     HostCommand::DeleteRide { id: 7 },
@@ -4672,6 +4796,8 @@ mod tests {
                     HostCommand::StampRideSynced { id: 7, .. },
                     HostCommand::FinishTrack(TrackAction::Save),
                     HostCommand::PlanRoute(_),
+                    HostCommand::PlanDetour(_),
+                    HostCommand::CommitDetour,
                     HostCommand::Dfu(DfuAction::Scan),
                     HostCommand::ForgetBond,
                     HostCommand::PersistSettings { .. },

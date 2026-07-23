@@ -355,6 +355,7 @@ impl UiRuntime {
     /// or Skip-ahead geometry) into immutable prepared state before the draw loop. Called by
     /// [`render_map_timed`](App::render_map_timed) ahead of building the draw context, so `Render`
     /// carries the POI scratch read-only and draw stays side-effect-free.
+    #[allow(clippy::too_many_arguments)] // the per-frame prepare snapshot, one value per field
     pub(crate) fn prepare_base(
         &mut self,
         reader: Option<&Reader>,
@@ -363,6 +364,7 @@ impl UiRuntime {
         active_route: Option<usize>,
         progress_m: u32,
         route_total_m: u32,
+        detour_preview: &[(i32, i32)],
     ) {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         if let Some(scr) = self.stack.get_mut(base) {
@@ -374,6 +376,7 @@ impl UiRuntime {
                 active_route,
                 progress_m,
                 route_total_m,
+                detour_preview,
             };
             scr.prepare(&mut px);
         }

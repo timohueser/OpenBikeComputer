@@ -134,6 +134,14 @@ struct Args {
     /// graphs: grimsel plans even ~25 km routes inside the 1536-node table and monaco spans ~4 km.
     /// The script must leave the CREATE ROUTE confirm on top (the card replaces it).
     inject_nav_fail: Option<String>,
+    /// Headless `--png` only: leave a recorded **detour-plan** request un-drained (#882), so the
+    /// detour planning spinner stays on top for its snapshot. Implied by `--inject-detour-fail`.
+    detour_hold: bool,
+    /// Headless `--png` only: inject a **detour-planning failure** (`exhausted` | `nopath`) after
+    /// the script runs, through the real `DetourPlanned` seam — the fail card with the "try a
+    /// farther rejoin" hint renders deterministically. The script must leave the detour planning
+    /// screen on top (the card replaces it).
+    inject_detour_fail: Option<String>,
     /// Headless `--png` only: inject a committed route upload `(object id, replaced-existing)`
     /// after the script runs (epic #447, P4), so the three upload popups render — the idle
     /// "ROUTE RECEIVED" prompt, the mid-ride swap prompt, or (`--inject-upload-replace` of the
@@ -238,6 +246,8 @@ impl Default for Args {
             sensors_screen: false,
             nav_hold: false,
             inject_nav_fail: None,
+            detour_hold: false,
+            inject_detour_fail: None,
             inject_upload: None,
             inject_warning: None,
             boot_fault: None,
@@ -406,6 +416,14 @@ fn parse_args() -> Result<Args, String> {
                 }
                 a.inject_nav_fail = Some(kind);
             }
+            "--detour-hold" => a.detour_hold = true,
+            "--inject-detour-fail" => {
+                let kind = it.next().ok_or("--inject-detour-fail needs exhausted|nopath")?;
+                if kind != "exhausted" && kind != "nopath" {
+                    return Err("--inject-detour-fail needs exhausted|nopath".into());
+                }
+                a.inject_detour_fail = Some(kind);
+            }
             "--inject-upload" => {
                 let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload needs an object id")?;
                 a.inject_upload = Some((id, false));
@@ -541,6 +559,51 @@ fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Read
     finish_nav_plan(app, store, outcome, sink.bytes(), stats);
 }
 
+/// Headless one-shot for a drained **detour-plan** request (#882): resolve the rejoin + corridor
+/// off the active route, loop the corridor-aware planner to completion, and answer through the
+/// shared [`finish_detour_plan`] — returning the planned-but-uncommitted bytes the caller holds
+/// until `CommitDetour`/`CancelDetour` (the live GUI steps an
+/// [`InflightPlan::Detour`](obc_host_core::HostLoop) instead).
+fn run_detour_request(
+    app: &mut obc_app::App,
+    store: &mut RouteStore,
+    reader: &Reader,
+    req: &obc_app::DetourRequest,
+) -> Option<obc_host_core::DetourReady> {
+    use obc_host_core::{finish_detour_plan, DetourPlan};
+    // The scripted flow can plan before the post-script route open — make the active bytes real.
+    store.sync_active(app.active_route_index());
+    // Bind the original route's source/index/reader at fn scope: the reader both seeds the plan's
+    // corridor *and* is handed to `finish_detour_plan` for the first-tail-contact trim (#882), so it
+    // must outlive the step loop — not a closure temporary.
+    let src = store.active_source();
+    let idx = src.as_ref().and_then(|s| obc_route::RouteIndex::read(s).ok());
+    let orig = match (idx.as_ref(), src.as_ref()) {
+        (Some(idx), Some(s)) => Some(obc_route::RouteReader::new(idx, s)),
+        _ => None,
+    };
+    let plan = orig.as_ref().and_then(|orig| DetourPlan::start(req, app.settings().bike_profile_idx, orig));
+    let (Some(mut plan), Some(orig)) = (plan, orig.as_ref()) else {
+        app.apply_event(obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath)));
+        return None;
+    };
+    loop {
+        match plan.step(reader) {
+            obc_route::Step::Running => {}
+            obc_route::Step::Done(stats) => return finish_detour_plan(app, Ok(stats), plan, Some(orig)),
+            obc_route::Step::Failed(e) => return finish_detour_plan(app, Err(e), plan, Some(orig)),
+        }
+    }
+}
+
+/// Headless one-shot for a drained **detour commit** (#882): splice + write + rescan + answer
+/// through the shared [`finish_detour_commit`] tail.
+fn run_detour_commit(app: &mut obc_app::App, store: &mut RouteStore, ready: Option<obc_host_core::DetourReady>) {
+    store.sync_active(app.active_route_index());
+    let orig_index = store.active_source().and_then(|src| obc_route::RouteIndex::read(&src).ok());
+    obc_host_core::finish_detour_commit(app, store, orig_index.as_ref(), ready);
+}
+
 /// The fixed card-free stand-in the sim answers a card-free scan with (the sim has no FAT to scan):
 /// ~1.2 GiB → the System screen reads "1.2 GB".
 const SIM_CARD_FREE: u64 = 1_288_490_188;
@@ -555,6 +618,7 @@ const SIM_CARD_FREE: u64 = 1_288_490_188;
 /// replay/save-track paths' `reconcile_tracks` (which reads that slot directly, not the drain) still
 /// sees it. The two derived fill levels and the host-specific commands the sim has no analogue for
 /// are ignored.
+#[allow(clippy::too_many_arguments)] // the headless drain's per-pass context, one value per seam
 fn apply_host_commands(
     app: &mut App,
     store: &mut RouteStore,
@@ -562,6 +626,8 @@ fn apply_host_commands(
     trip_store: &mut TripStore,
     reader: &Reader,
     hold_nav: bool,
+    hold_detour: bool,
+    detour_ready: &mut Option<obc_host_core::DetourReady>,
 ) {
     let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
     let _ = app.drain_host_commands(&mut mailbox);
@@ -572,6 +638,13 @@ fn apply_host_commands(
                     run_nav_request(app, store, reader, &req);
                 }
             }
+            obc_app::HostCommand::PlanDetour(req) => {
+                if !hold_detour {
+                    *detour_ready = run_detour_request(app, store, reader, &req);
+                }
+            }
+            obc_app::HostCommand::CommitDetour => run_detour_commit(app, store, detour_ready.take()),
+            obc_app::HostCommand::CancelDetour => *detour_ready = None,
             obc_app::HostCommand::DeleteRoute { id } => {
                 if store.delete_by_id(id) {
                     app.set_routes_with_ids(store.catalog(), store.ids());
@@ -648,6 +721,15 @@ impl InputSource for ScriptInput {
     }
 }
 
+/// A host-side effect a script token requests from `apply_script`'s hook closure.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScriptHook {
+    /// Draw one throwaway frame (the `d` token).
+    Render,
+    /// Run one route-aware tick (the `T` token).
+    Tick,
+}
+
 /// Feed one batch of raw events to the app at time `now` (ms).
 fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
     app.handle_input(InputClock(now), &mut ScriptInput(events.into()));
@@ -657,12 +739,16 @@ fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
 /// events with a rising clock — including the threshold crossing that turns a held button
 /// into a `Hold`/`BackHold` — exactly as the real recognizer would see them.
 ///
-/// `render` draws one throwaway headless frame against the current app state — the `d` token uses
-/// it to **flush lazy draw-time state** that only fills at draw (the POI-list snapshot, then the
-/// detail's hours read), so a script can `p` into a POI *and then* `d p` to open its detail (the
-/// Press needs the snapshot the first draw takes). Without a `d` the whole script runs before the
-/// single final render, so lazy state never fills mid-script.
-fn apply_script(app: &mut App, script: &str, render: &mut dyn FnMut(&mut App)) {
+/// `hook` runs the host-side effects a token asks for: [`ScriptHook::Render`] draws one throwaway
+/// headless frame against the current app state — the `d` token uses it to **flush lazy draw-time
+/// state** that only fills at draw (the POI-list snapshot, then the detail's hours read), so a
+/// script can `p` into a POI *and then* `d p` to open its detail. Without a `d` the whole script
+/// runs before the single final render, so lazy state never fills mid-script.
+/// [`ScriptHook::Tick`] runs one **route-aware tick** (the `T` token): the GUI ticks every frame,
+/// but the headless script path never does — so route-derived `Activity` state (`route_total_m`,
+/// the climbs/waypoints caches) stays unbuilt without it. A mid-ride flow that *reads* that state
+/// (the Detour chooser, #882) scripts a `T` after starting the ride.
+fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, ScriptHook)) {
     let down = |b| InputEvent::Button(ButtonEvent::Down(b));
     let up = |b| InputEvent::Button(ButtonEvent::Up(b));
     let hold = obc_app::DEFAULT_HOLD_MS;
@@ -721,7 +807,10 @@ fn apply_script(app: &mut App, script: &str, render: &mut dyn FnMut(&mut App)) {
             // Draw one throwaway frame to flush lazy draw-time state (the POI-list snapshot / the
             // detail's hours read) so the next gesture sees it — e.g. `p d p` opens a POI list, fills
             // its snapshot, then presses a POI into its detail.
-            'd' => render(app),
+            'd' => hook(app, ScriptHook::Render),
+            // One route-aware tick (see the fn doc): sync + open the active route and run the
+            // once-per-load state builds the GUI's per-frame tick would have run.
+            'T' => hook(app, ScriptHook::Tick),
             // Idle-elapse: jump the clock 5 min forward with no input and run one animation pass, so
             // the app-level idle-return timeout (Part B) fires deterministically for a snapshot —
             // e.g. `B l p I` sits in Settings, elapses, and lands back on Home. Longer than every
@@ -739,7 +828,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
             std::process::exit(2);
         }
     };
@@ -925,8 +1014,10 @@ fn main() {
             }
             app.set_settings(settings);
         }
-        // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label (N5).
+        // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label (N5),
+        // and whether it carries a nav graph at all (#882: gates the ride menu's Detour station).
         app.set_nav_profiles(tables.nav_profiles());
+        app.set_map_nav_graph(tables.has_nav_graph());
         // Device-info built-ins for the System settings screen (T8 item 6): the running firmware
         // version (the sim's own crate version stands in for the board's git-describe tag) and the
         // loaded map's name (filename stem) + OBCM version from the parsed header. The card-free scan
@@ -938,6 +1029,9 @@ fn main() {
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
         app.set_routes_with_ids(store.catalog(), store.ids());
+        // A planned-but-uncommitted detour (#882), held between the plan drain and commit/cancel —
+        // the headless twin of `HostLoop::detour_ready`.
+        let mut detour_ready: Option<obc_host_core::DetourReady> = None;
         // `--route-retention` (epic #638 S5): overlay every route's retention meta so the Route
         // overview's expiry row renders (the board reads this from the SD retention sidecar). The
         // `last_used` stamp is anchored to the wall clock — `AGE` seconds before now — so the
@@ -975,27 +1069,81 @@ fn main() {
             // `--nav-hold` / `--inject-nav-fail` leave the request un-drained so the planning
             // screen stays up (for its own snapshot, or for the injected answer to land in).
             let hold_nav = args.nav_hold || args.inject_nav_fail.is_some();
-            let mut render = |app: &mut App| {
-                // A pending Ride-detail track request (#680) fills before the draw, so a `d` frame
-                // (and every gesture after it) sees the elevation band, mirroring the GUI's
-                // per-frame drain. `LoadRideTrack` is a derived level — answered off the pure
-                // predicate, nothing consumed.
-                if let Some(id) = app.ride_track_request() {
-                    app.set_ride_profile(ride_store.profile_by_id(id));
-                    app.set_ride_preview(&ride_store.preview_by_id(id));
+            let hold_detour = args.detour_hold || args.inject_detour_fail.is_some();
+            let mut hook = |app: &mut App, what: ScriptHook| match what {
+                ScriptHook::Render => {
+                    // A pending Ride-detail track request (#680) fills before the draw, so a `d` frame
+                    // (and every gesture after it) sees the elevation band, mirroring the GUI's
+                    // per-frame drain. `LoadRideTrack` is a derived level — answered off the pure
+                    // predicate, nothing consumed.
+                    if let Some(id) = app.ride_track_request() {
+                        app.set_ride_profile(ride_store.profile_by_id(id));
+                        app.set_ride_preview(&ride_store.preview_by_id(id));
+                    }
+                    let mut fb = Framebuffer::new(rw, rh);
+                    let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
+                    // Drain the typed host protocol each `d` (mirroring the GUI's per-frame dispatch):
+                    // a create-route request's answer swaps the confirm for the overview/failure card
+                    // so the next token acts on it; a scripted delete re-feeds the catalog.
+                    apply_host_commands(
+                        app,
+                        &mut store,
+                        &mut ride_store,
+                        &mut trip_store,
+                        &reader,
+                        hold_nav,
+                        hold_detour,
+                        &mut detour_ready,
+                    );
                 }
-                let mut fb = Framebuffer::new(rw, rh);
-                let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
-                // Drain the typed host protocol each `d` (mirroring the GUI's per-frame dispatch):
-                // a create-route request's answer swaps the confirm for the overview/failure card
-                // so the next token acts on it; a scripted delete re-feeds the catalog.
-                apply_host_commands(app, &mut store, &mut ride_store, &mut trip_store, &reader, hold_nav);
+                ScriptHook::Tick => {
+                    // One route-aware tick (`T`): open the active route and run the once-per-load
+                    // state builds (`route_total_m`, climbs, waypoints) the GUI's per-frame tick
+                    // would have run — a mid-ride flow that reads them (the Detour chooser, #882)
+                    // scripts this right after starting the ride.
+                    store.sync_active(app.active_route_index());
+                    let src = store.active_source();
+                    let idx = src.as_ref().and_then(|s| RouteIndex::read(s).ok());
+                    let route = match (idx.as_ref(), src.as_ref()) {
+                        (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
+                        _ => None,
+                    };
+                    struct NoFix;
+                    impl obc_ports::LocationSource for NoFix {
+                        fn poll(&mut self) -> Option<obc_ports::Fix> {
+                            None
+                        }
+                    }
+                    let mut loc = NoFix;
+                    let sensors = obc_ports::Sensors {
+                        loc: &mut loc,
+                        altimeter: None,
+                        temperature: None,
+                        clock: None,
+                        compass: None,
+                        track: None,
+                        fuel: None,
+                        hr: None,
+                        power: None,
+                        cadence: None,
+                    };
+                    app.tick(obc_ports::RideClock(0), sensors, route.as_ref());
+                }
             };
-            apply_script(&mut app, script, &mut render);
+            apply_script(&mut app, script, &mut hook);
             // Anything the script's last press recorded with no trailing `d`: drain + apply it now so
-            // the final render reflects the answer (the create-route commit, the hold-to-delete
-            // re-feed, the trip cascade — all in the shared dispatcher's canonical order).
-            apply_host_commands(&mut app, &mut store, &mut ride_store, &mut trip_store, &reader, hold_nav);
+            // the final render reflects the answer (the create-route commit, the detour plan/commit,
+            // the hold-to-delete re-feed, the trip cascade — all in the canonical order).
+            apply_host_commands(
+                &mut app,
+                &mut store,
+                &mut ride_store,
+                &mut trip_store,
+                &reader,
+                hold_nav,
+                hold_detour,
+                &mut detour_ready,
+            );
             // An open Ride detail's track request left by the script's last press (no trailing
             // `d`): fill the resident ride profile now so the final render draws the band.
             if let Some(id) = app.ride_track_request() {
@@ -1011,6 +1159,14 @@ fn main() {
         if let Some(kind) = &args.inject_nav_fail {
             let err = if kind == "exhausted" { obc_route::NavError::Exhausted } else { obc_route::NavError::NoPath };
             app.apply_event(obc_app::HostEvent::NavPlanned(Err(err)));
+        }
+
+        // Inject a detour-planning failure (#882) after the script left the detour planning
+        // screen on top: the answer goes through the real `DetourPlanned` seam, so the snapshot
+        // pins the fail card with its "try a farther rejoin" hint.
+        if let Some(kind) = &args.inject_detour_fail {
+            let err = if kind == "exhausted" { obc_route::NavError::Exhausted } else { obc_route::NavError::NoPath };
+            app.apply_event(obc_app::HostEvent::DetourPlanned(Err(err)));
         }
 
         // Inject a committed route upload (epic #447, P4) after the script (so a `p p p` script

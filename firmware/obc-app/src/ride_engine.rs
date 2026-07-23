@@ -301,14 +301,16 @@ impl RideEngine {
     pub(crate) fn sync_route_state(&mut self, activity: &mut Activity, route: Option<&RouteReader>) -> bool {
         let mut dirty = false;
         if activity.active_route != self.matched_route {
+            // Deliberately do NOT clear a pending seam re-anchor here: a detour commit queues it
+            // for the *just-adopted* spliced route, so this route-change edge is exactly the tick
+            // it must survive into. Stale seams die on the request's own route-key check.
             self.route_match.reset();
-            activity.clear_skip();
             self.matched_route = activity.active_route;
             dirty = true; // route load / swap repaints the route line + recenters
         }
         if activity.session != self.ride_session {
             // A new tracking session on the same route is a new navigation pass too: discard a
-            // previous session's skip floor before the first match.
+            // previous session's floor before the first match.
             self.route_match.reset();
             activity.reset_ride();
             self.breadcrumb.clear();
@@ -381,18 +383,19 @@ impl RideEngine {
         activity.apply_match(m);
     }
 
-    /// Apply a chooser commit once matching route geometry is available. Returns `true` when the
+    /// Apply a queued seam re-anchor (#882) once matching route geometry is available: install
+    /// matcher progress + the forward-only floor at the splice seam. Returns `true` when the
     /// matcher/progress floor moved; a transient `None` reader leaves the request queued, while a
     /// route-key mismatch drops it rather than applying the distance to different geometry.
-    pub(crate) fn apply_pending_skip(&mut self, activity: &mut Activity, route: Option<&RouteReader>) -> bool {
-        let Some(req) = activity.pending_skip() else { return false };
+    pub(crate) fn apply_pending_seam(&mut self, activity: &mut Activity, route: Option<&RouteReader>) -> bool {
+        let Some(req) = activity.pending_seam() else { return false };
         if activity.active_route != Some(req.route) {
-            activity.clear_skip();
+            activity.clear_seam();
             return false;
         }
         let Some(route) = route else { return false };
-        if let Some(pos) = self.route_match.set_progress_floor(route, req.target_m) {
-            activity.clear_skip();
+        if let Some(pos) = self.route_match.set_progress_floor(route, req.anchor_m) {
+            activity.clear_seam();
             activity.apply_match(obc_route::Match { progress_m: pos.progress_m, off_route: false, dist_m: 0 });
             activity.active_climb = None;
             activity.next_waypoint = None;
@@ -527,7 +530,7 @@ impl RideEngine {
         activity.progress_m = 0;
         activity.off_route = false;
         activity.dist_to_route_m = 0;
-        activity.clear_skip();
+        activity.clear_seam();
     }
 
     /// Re-point every route-keyed cache after a catalog replacement (#450): each build key follows
@@ -540,9 +543,11 @@ impl RideEngine {
         // navigation unloads and the stale per-route state is dropped with it.
         let old_active = activity.active_route;
         activity.active_route = old_active.and_then(remap);
-        // A chooser Press can be queued for one tick before route geometry consumes it. It follows
-        // the same durable route identity as `active_route`, or is cancelled if that route vanished.
-        activity.remap_skip_route(remap);
+        // A queued seam re-anchor (one tick between detour commit and geometry) and a queued
+        // detour-plan request both follow the same durable route identity as `active_route`, or
+        // are cancelled if that route vanished.
+        activity.remap_seam_route(remap);
+        activity.remap_detour_route(remap);
         if old_active.is_some() && activity.active_route.is_none() {
             self.route_match.reset(); // drop stale progress/off-route from the vanished route
         }
