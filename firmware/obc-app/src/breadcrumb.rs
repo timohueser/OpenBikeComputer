@@ -37,12 +37,8 @@ const RECENT_MIN_M: f32 = 4.0;
 
 /// Whole-ride spine capacity (points). The spine holds exactly this many once warmed (~6 KB
 /// regardless of ride length); the only lever for long-ride fidelity is this number, at linear RAM
-/// cost. The constrained `nrf-mem` profile quarters it to 256 (~1.5 KB — issue #270's cull: the
-/// map path must leave room for the BLE stack on the 256 KB DK); the `recent` tail is untouched.
-#[cfg(not(feature = "nrf-mem"))]
+/// cost. The `recent` tail is sized independently.
 const SPINE_CAP: usize = 1024;
-#[cfg(feature = "nrf-mem")]
-const SPINE_CAP: usize = 256;
 
 /// The travelled path drawn on the map: a full-res recent tail over a coarse whole-ride spine.
 /// Owned by [`App`](crate::App) (kilobytes, so *not* the `Copy` [`Activity`](crate::Activity));

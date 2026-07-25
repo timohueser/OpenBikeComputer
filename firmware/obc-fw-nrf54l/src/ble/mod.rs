@@ -112,12 +112,10 @@ bind_interrupts!(struct Irqs {
 });
 
 /// Concurrent **sensor** links the central role holds (SE6, epic #707) — the HR/power/cadence
-/// straps the manager connects to beside the phone link. **Locked at 1 on the 256 KB DK**: phone +
-/// one sensor is enough for the Garmin-watch HR bring-up, and every extra central link costs
-/// ~2.3 KB of SDC memory (see [`SDC_MEM_SIZE`]) plus host arena. The 512 KB **LM20 profile raises
-/// this to 3** (all three quantities live at once), keyed the same way the `nrf-mem` trims are keyed
-/// — one const here, arbitrated by the `main.rs` budget assert.
-const SENSOR_LINKS: usize = 1;
+/// straps the manager connects to beside the phone link. 3 on the LM20 — HR, power, and cadence
+/// all live at once. Every central link costs ~2.3 KB of SDC memory (see [`SDC_MEM_SIZE`]) plus
+/// host arena; one const here, arbitrated by the `main.rs` budget assert.
+const SENSOR_LINKS: usize = 3;
 /// Total ACL links the host tracks: the one phone (peripheral role) + [`SENSOR_LINKS`] sensors
 /// (central role). One `Stack` runs both roles concurrently (trouble-host 0.7).
 const CONNECTIONS_MAX: usize = 1 + SENSOR_LINKS;
@@ -143,13 +141,11 @@ const L2CAP_RXQ: u8 = 3;
 /// Peripheral-only was 4704 B (measured on glass 2026-07-02). Adding the central role + scan (SE6,
 /// epic #707) grows it by the SDC header math — `SDC_MEM_PER_CENTRAL_LINK(251,251,3,3)` ≈ 2310 B ×
 /// [`SENSOR_LINKS`], plus `SDC_MEM_SCAN(3)` ≈ 720 B, plus ~21 B shared → 4704 + 2310 + 720 + 21 ≈
-/// **7755 B** at 1 sensor link. Pinned at 8704 with ~950 B of margin over that estimate, because
-/// this build **cannot boot here** (no radio) to read the exact figure.
-///
-/// **CONFIRM on glass**: the boot RTT logs `ble: sdc required_memory = N bytes (SDC_MEM_SIZE =
-/// 8704)` — set this to that `N` (rounded up a little). If `build()` ever logs "Memory buffer too
-/// small. N bytes needed", raise it to `N`.
-pub(crate) const SDC_MEM_SIZE: usize = 8704;
+/// **MEASURED ON GLASS 2026-07-24** (LM20-DK, 3 sensor links): the boot RTT's
+/// `ble: sdc required_memory = 11336 bytes` — pinned exactly, so the SDC neither errors ("Memory
+/// buffer too small") nor warns ("Memory buffer too big", which the earlier 13 312 estimate did).
+/// Re-read that line and re-pin after any Builder/buffer_cfg/[`SENSOR_LINKS`] change.
+pub(crate) const SDC_MEM_SIZE: usize = 11336;
 
 /// TrouBLE's host arena for this config (connection state + the DefaultPacketPool at MTU 251 + the
 /// single-peer bond storage the `security` feature adds).

@@ -96,21 +96,11 @@ const NAV_EDGE_WINDOW: usize = 128;
 /// defaults to 4096), so this caps the scratch below the format ceiling to save RAM. A chunk
 /// between a cache slot and this decodes through the scratch, uncached.
 ///
-/// `nrf-mem` halves the scratch (issue #270 — the map path must coexist with the BLE stack on
-/// the 256 KB DK): a map packed with `chunk_size` past 8192 loads on the host/sim but is
-/// rejected on the device. The packer default (4096) clears it with room; the 512 KB LM20
-/// re-decides the cap.
-///
-/// **Do not trim this below 8192 under `nrf-mem`** (tried in #116 R4, reverted): `nrf-mem` is an
-/// *additive* feature the all-features host CI enables, so this constant is an **acceptance**
-/// bound, not just a buffer size — shrinking it makes the host reader reject the deliberately
-/// large chunks the round-trip suite packs (obc-pack's `max_feat_pts_boundary_survives` puts two
-/// features, one at `MAX_FEAT_PTS`, into one 8192-byte chunk). Reclaiming the scratch's headroom
-/// would first need acceptance decoupled from the `nrf-mem` scratch size.
-#[cfg(not(feature = "nrf-mem"))]
+/// This is an **acceptance** bound, not just a buffer size: shrinking it makes the reader reject
+/// deliberately large chunks the round-trip suite packs (obc-pack's
+/// `max_feat_pts_boundary_survives` puts two features, one at `MAX_FEAT_PTS`, into one 8192-byte
+/// chunk), and device and host share the one profile — so a map that packs, loads.
 pub const MAX_CHUNK_BYTES: usize = 16384;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_CHUNK_BYTES: usize = 8192;
 
 /// Size of one geometry-chunk **cache** slot. A chunk this size or smaller is cached (kept
 /// resident across the frame's two collect passes); a larger one — up to [`MAX_CHUNK_BYTES`] — is
@@ -119,33 +109,21 @@ pub const MAX_CHUNK_BYTES: usize = 8192;
 const CACHE_SLOT_BYTES: usize = 4096;
 
 /// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer walks the visible-chunk set
-/// twice per frame (pass A selects candidates, pass B re-decodes the winners), so the cache must
-/// hold the whole working set or pass B re-reads every winner chunk and SD I/O dominates. Size it to
-/// the **visible-chunk count**, not a fixed 16: the worst zooms (LOD1, ~3–4 m/px) put ~50 chunks in
-/// view, so 64 slots keep them resident across both passes and across frames (a slow pan
-/// re-hits last frame's chunks). 64 × 4 KB = 256 KB.
-///
-/// The constrained `nrf-mem` profile drops to a single slot: a riding-zoom working set already
-/// exceeded the previous 3 slots (measured: 0 hits, misses ≈ chunks × passes — the DK is
-/// SD-bound either way), so extra slots bought nothing; what the cull buys is room for the
-/// BLE stack next to the map path — and stack headroom under the combined build's deep ride
-/// path — on the 256 KB part (issue #270). A one-chunk view still hits across passes and frames.
-#[cfg(not(feature = "nrf-mem"))]
-const MAP_CHUNK_SLOTS: usize = 64;
-#[cfg(feature = "nrf-mem")]
-const MAP_CHUNK_SLOTS: usize = 1;
+/// twice per frame (pass A selects candidates, pass B re-decodes the winners), so the cache should
+/// hold the working set or pass B re-reads every winner chunk and SD I/O dominates. 12 slots cover
+/// the riding-zoom working set with room across frames (a slow pan re-hits last frame's chunks) —
+/// the cache-or-thrash knee: a cache smaller than the working set measured ~0 hits on the old
+/// 256 KB DK, and the coarse-overview set (LOD1, ~3–4 m/px, ~50 chunks in view) is too big to
+/// cache on the LM20's budget, so those zooms stay SD-bound by design. 4 × ~4.5 KB ≈ 18 KB of
+/// slots+tags (~35 KB with the decode scratch); the one knob to re-tune against the measured ELF
+/// budget — 6/8/12 slots were tried and ate the ≥65 KB stack target of the all-features build.
+const MAP_CHUNK_SLOTS: usize = 4;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
-/// reads per walk rather than one read per node. ≈4 KB total on the host; `nrf-mem` halves the
-/// block count (epic #116 R4's squeeze — the nav statics needed the room back): the walks stay
-/// block-coalesced, a wide index just re-reads a couple more 512 B blocks per walk on the
-/// already-SD-bound device.
+/// reads per walk rather than one read per node. ≈4 KB total.
 const INDEX_BLOCK: usize = 512;
-#[cfg(not(feature = "nrf-mem"))]
 const INDEX_BLOCKS: usize = 8;
-#[cfg(feature = "nrf-mem")]
-const INDEX_BLOCKS: usize = 4;
 
 // A slot must fit any chunk it caches, and the scratch any chunk the reader accepts; `chunk_size`
 // is a `u16`, so the accepted cap stays within range.

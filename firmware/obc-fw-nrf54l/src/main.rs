@@ -94,7 +94,7 @@
 //!     ISRs every build has (display/SD SPIM, VCOM UARTE, RRAMC, and the EGU20 frame-ack — the
 //!     FLPR's per-frame doorbell the async present awaits, #347).
 //!   - **P3**: the SWI01 `InterruptExecutor` (input/bulge plane + the DK COM task) and the
-//!     SERIAL30 sensor-bus ISR.
+//!     SERIAL22 sensor-bus ISR.
 //!   - **Thread mode**: the map plane (`run_app`), the BLE stack (`ble::run`, `ble` builds), and the sensor task.
 //!
 //!   MPSL's P0 lane preempts everything, including the P3 planes — safe by construction for the
@@ -125,11 +125,9 @@ mod com;
 // no GPIOTE — so the default DK build keeps `com::com_task`. See `com_hw.rs`.
 #[cfg(feature = "com-hw")]
 mod com_hw;
-// `com-hw`'s placeholder COM pins (P1.04/05) are the VCOM-UART pins the `debug-uart` host feed uses,
-// so the two can't share the board. Fail fast with a clear message rather than a confusing
-// double-consume error.
-#[cfg(all(feature = "com-hw", feature = "debug-uart"))]
-compile_error!("`com-hw` and `debug-uart` both claim P1.04/P1.05 — the hardware-COM build is the production low-power path, not the host-feed dev build");
+// (`com-hw`'s COM pins moved to P1.06/07/13 on the LM20 — GPIOTE20-capable and clash-free with
+// the VCOM UART on P1.16/17, so `com-hw` + `debug-uart` now compose. The whole harness rides
+// two DK headers: port P1 for gates+sensors+COM, port P2 for display data + SD.)
 // The LS021/FLPR panel — this crate's display-contract presenter backend (the impls are folded in
 // at the bottom of the module), the single screen-write interface the map plane drives through
 // (`fb_mut` + `present`). The seam itself + the other backend (the simulator) live in obc-platform.
@@ -234,11 +232,10 @@ use embassy_nrf::buffered_uarte::{self, BufferedUarte, BufferedUarteRx, Buffered
 #[cfg(feature = "debug-uart")]
 use embassy_nrf::uarte;
 
-// SERIAL00 backs the display SPIM; SERIAL22 the microSD SPIM. Both handlers are always registered
+// SERIAL00 backs the microSD SPIM (the only 32 MHz instance). Both handlers are always registered
 // (harmless when a feature is off — the peripheral is never constructed, so its interrupt never fires).
 bind_interrupts!(struct Irqs {
     SERIAL00 => spim::InterruptHandler<peripherals::SERIAL00>;
-    SERIAL22 => spim::InterruptHandler<peripherals::SERIAL22>;
 });
 
 // VCOM UARTE20 RX/TX → the `BufferedUarte`'s interrupt-fed ring buffers.
@@ -247,10 +244,12 @@ bind_interrupts!(struct UartIrqs {
     SERIAL20 => buffered_uarte::InterruptHandler<peripherals::SERIAL20>;
 });
 
-// TWIM30 (== SERIAL30) backs the shared GPS + altimeter I²C bus; bound only on the real-sensor build.
+// TWIM22 (== SERIAL22, the instance the SD freed when it moved to SPIM00) backs the shared
+// GPS + altimeter I²C bus on P1 — one header for the whole harness; bound only on the
+// real-sensor build. (TWIM30 would force the bus onto P0: the LP-domain instance is P0-only.)
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 bind_interrupts!(struct SensorIrqs {
-    SERIAL30 => twim::InterruptHandler<peripherals::SERIAL30>;
+    SERIAL22 => twim::InterruptHandler<peripherals::SERIAL22>;
 });
 
 // ============================ Board memory budget ============================
@@ -300,7 +299,7 @@ const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// overflowing the stack on glass.
 /// On the combined `ble` build the SDC/host futures and MPSL's ISRs also ride the main stack on top
 /// of the deep-render path, so keep the same generous floor.
-const STACK_RESERVE: usize = 36 * 1024;
+const STACK_RESERVE: usize = 64 * 1024;
 /// The single RGB222 framebuffer: one byte per pixel over the 240×320 frame = 75 KB.
 const FB_BYTES: usize = FRAME_W * FRAME_H;
 
@@ -782,8 +781,9 @@ async fn main(_spawner: Spawner) {
         v
     };
 
-    // LED0 (P2_09) heartbeat — a liveness blink visible even before looking at the panel.
-    let mut led = Output::new(p.P2_09, Level::Low, OutputDrive::Standard);
+    // LED1 (P1_25) heartbeat — a liveness blink visible even before looking at the panel.
+    // (LED0's pin P1.22 carries VCOM — its buffered LED shimmers at 60 Hz, a free COM-alive light.)
+    let mut led = Output::new(p.P1_25, Level::Low, OutputDrive::Standard);
 
     // load → ride → save: stream the SD `.obcm` into the resident RGB222 framebuffer through the
     // shared `obc-app`, pick a route from the card catalog, ride it (VCOM-streamed GPS or the
@@ -818,8 +818,8 @@ async fn main(_spawner: Spawner) {
             };
             let uart = BufferedUarte::new(
                 p.SERIAL20,
-                p.P1_05, // RXD: host → device (fixes / input injection)
-                p.P1_04, // TXD: device → host (telemetry)
+                p.P1_17, // RXD: host → device (fixes / input injection)
+                p.P1_16, // TXD: device → host (telemetry)
                 UartIrqs,
                 uarte::Config::default(), // 8N1 @ 115200 — matches `obc-usb-host`'s default baud
                 rx_buf,
@@ -828,16 +828,16 @@ async fn main(_spawner: Spawner) {
             let (rx, tx) = uart.split();
             _spawner.spawn(defmt::unwrap!(vcom_rx_task(rx, SENSOR_HUB.injector())));
             _spawner.spawn(defmt::unwrap!(vcom_tx_task(tx)));
-            info!("VCOM debug sensors up on UARTE20 (J-Link VCOM, TX P1_04 / RX P1_05) @ 115200");
+            info!("VCOM debug sensors up on UARTE20 (J-Link VCOM 'UART1', TX P1_16 / RX P1_17) @ 115200");
         }
 
         // The four DK push-buttons (active-low, internal pull-up; polled by `ButtonInput`). User
         // mapping: BTN0 PREV, BTN1 NEXT, BTN3 SELECT, BTN2 BACK — `new(prev, next, select, back)`.
         // Shared by both backends — their pins (P1.13/09/08, P0.04) clash with neither panel's bus.
         let buttons = ButtonInput::new(
-            Input::new(p.P1_13, Pull::Up), // BTN0 PREV   → Turn(-1)
+            Input::new(p.P1_26, Pull::Up), // BTN0 PREV   → Turn(-1)
             Input::new(p.P1_09, Pull::Up), // BTN1 NEXT   → Turn(+1)
-            Input::new(p.P0_04, Pull::Up), // BTN3 SELECT → encoder press / hold
+            Input::new(p.P0_05, Pull::Up), // BTN3 SELECT → encoder press / hold
             Input::new(p.P1_08, Pull::Up), // BTN2 BACK   → back / back-hold
         );
         // The high-priority plane(s) run at P3 — above thread mode (so they preempt the map render) and
@@ -850,7 +850,7 @@ async fn main(_spawner: Spawner) {
         // event-driven sensor task on the thread-mode executor; it probes both chips, configures the M10,
         // and publishes coherent (fix, altitude, temperature) datapoints through its
         // `SensorTaskLink` into `SENSOR_HUB`, which `run_app`'s consumer sources drain. The task is
-        // fully async (TWIM is DMA-backed). SERIAL30's ISR runs at P3. ---
+        // fully async (TWIM is DMA-backed). SERIAL22's ISR runs at P3. ---
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         {
             // EasyDMA can't fetch a write buffer from flash, so byte-literal register writes need a RAM
@@ -863,13 +863,14 @@ async fn main(_spawner: Spawner) {
             twim_cfg.frequency = twim::Frequency::K400; // fast-mode; both chips' DDC/I²C support it
             twim_cfg.sda_pullup = true; // belt-and-braces over the Qwiic board's external pull-ups
             twim_cfg.scl_pullup = true;
-            let twim = Twim::new(p.SERIAL30, SensorIrqs, p.P0_01, p.P0_02, twim_cfg, twim_tx);
-            interrupt::SERIAL30.set_priority(Priority::P3);
+            // SDA P1.04 sits beside the clock-capable SCL P1.03 (the datasheet's data-near-clock rule).
+            let twim = Twim::new(p.SERIAL22, SensorIrqs, p.P1_04, p.P1_03, twim_cfg, twim_tx);
+            interrupt::SERIAL22.set_priority(Priority::P3);
             // TX-Ready (DDC data-ready) on the lone spare GPIO. Active-high, so pull down: a floating
             // / unconfigured line then reads low and the task's poll fallback drives fixes instead.
-            let txready = Input::new(p.P0_03, Pull::Down);
+            let txready = Input::new(p.P1_05, Pull::Down);
             _spawner.spawn(defmt::unwrap!(sensors::sensor_task(twim, txready, SENSOR_HUB.task_link())));
-            info!("sensors: SAM-M10Q + BMP581 task spawned on TWIM30 (SDA P0.01 / SCL P0.02, TX-Ready P0.03)");
+            info!("sensors: SAM-M10Q + BMP581 task spawned on TWIM22 (SDA P1.04 / SCL P1.03, TX-Ready P1.05)");
         }
 
         // ============= FLPR LS021 backend: two-plane display + input =============
@@ -882,20 +883,18 @@ async fn main(_spawner: Spawner) {
         // each is broken out on your DK and remap all three together if not (the source bus, BCK, and
         // COM stay on P2).
         let mut display = {
-            // Gate + frame lines (P1) — GSP P1.00, GCK P1.01, GEN P1.12, INTB P1.10; held configured.
-            // The DK breaks out only P1.00–14 (P1.02/03 are NFC, off-limits), which is one pin short
-            // for everything on P1 — so SD `CS` moved to P0.00 (below), freeing P1.12 for GEN, and
-            // INTB takes P1.10 (LED1 — it glows while a frame is drawing, a free activity indicator).
+            // Gate + frame lines: one contiguous P1.10–14 run (with BSP below) so the gate harness
+            // is a single uninterrupted cable on the DK's port-1 header. (P1.01/02 stay NFC.)
             let gate_bus = [
-                Output::new(p.P1_00, Level::Low, OutputDrive::Standard), // GSP
-                Output::new(p.P1_01, Level::Low, OutputDrive::Standard), // GCK
-                Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN  (freed SD-CS pin)
-                Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // INTB (LED1)
+                Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // GSP
+                Output::new(p.P1_11, Level::Low, OutputDrive::Standard), // GCK
+                Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
+                Output::new(p.P1_13, Level::Low, OutputDrive::Standard), // INTB
             ];
             // Source bus: BSP on P1.14 (the lone P1 source line), BCK + the 6 data lines on P2.
             let src_bus = [
                 Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
-                Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // BCK
+                Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK (P2.06 is the SD's SPIM00 SCK clock pin)
                 Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
                 Output::new(p.P2_01, Level::Low, OutputDrive::Standard), // R1 (even)
                 Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0
@@ -914,17 +913,17 @@ async fn main(_spawner: Spawner) {
             // then go unused. `HwCom::start` establishes VA's inverse phase before enabling the toggle.
             #[cfg(not(feature = "com-hw"))]
             let (vcom, vb, va) = (
-                Output::new(p.P2_07, Level::Low, OutputDrive::HighDrive),
-                Output::new(p.P2_08, Level::Low, OutputDrive::HighDrive),
-                Output::new(p.P2_10, Level::Low, OutputDrive::HighDrive),
+                Output::new(p.P1_22, Level::Low, OutputDrive::HighDrive),
+                Output::new(p.P1_23, Level::Low, OutputDrive::HighDrive),
+                Output::new(p.P1_24, Level::Low, OutputDrive::HighDrive),
             );
             #[cfg(feature = "com-hw")]
             let (vcom, vb, va) = {
                 use embassy_nrf::gpiote::{OutputChannel, OutputChannelPolarity::Toggle};
                 (
-                    OutputChannel::new(p.GPIOTE20_CH0, p.P1_04, Level::Low, OutputDrive::HighDrive, Toggle),
-                    OutputChannel::new(p.GPIOTE20_CH1, p.P1_05, Level::Low, OutputDrive::HighDrive, Toggle),
-                    OutputChannel::new(p.GPIOTE20_CH2, p.P1_15, Level::Low, OutputDrive::HighDrive, Toggle),
+                    OutputChannel::new(p.GPIOTE20_CH0, p.P1_22, Level::Low, OutputDrive::HighDrive, Toggle),
+                    OutputChannel::new(p.GPIOTE20_CH1, p.P1_23, Level::Low, OutputDrive::HighDrive, Toggle),
+                    OutputChannel::new(p.GPIOTE20_CH2, p.P1_24, Level::Low, OutputDrive::HighDrive, Toggle),
                 )
             };
 
@@ -1009,20 +1008,35 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        // microSD on its own SPIM (SERIAL22, P1 header — separate from the FLPR panel lines).
-        // Init ≤400 kHz (SD spec); `sd::init` re-clocks to 8 MHz once the card answers. CS idles HIGH,
-        // then `init` holds it LOW for the session (the per-byte-CS workaround — see `sd::NoCs`).
-        // `orc = 0xFF` so any over-read clocks the SD idle byte.
+        // microSD on **SERIAL00 / SPIM00** — the LM20's only high-speed (PLL-clocked, 32 MHz)
+        // instance, on the fast P2 pads: SCK P2.06 (a dedicated clock pin — SPIM00's SCK mux
+        // reaches only P2.01/P2.06, and P2.01 carries display data), MOSI/SDO P2.08, MISO/SDI
+        // P2.09. Init ≤400 kHz (SD spec); `sd::init` re-clocks to `sd::SD_FAST_HZ` once the card
+        // answers. CS idles HIGH, then `init` holds it LOW for the session (the per-byte-CS
+        // workaround — see `sd::NoCs`). `orc = 0xFF` so any over-read clocks the SD idle byte.
         let mut sd_cfg = spim::Config::default();
         sd_cfg.frequency = sd::SD_INIT_HZ;
         sd_cfg.orc = 0xFF;
-        let sd_spi = spim::Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
+        let sd_spi = spim::Spim::new(p.SERIAL00, Irqs, p.P2_06, p.P2_09, p.P2_08, sd_cfg);
+        // 32 MHz on the fast pads needs **extra-high drive (E0/E1)** on SCK/MOSI plus the highest
+        // HS-pad slew (datasheet §8.9.6 — "always use the highest slew rate"). embassy's
+        // `OutputDrive` can't express E0/E1, so poke the retained PIN_CNF/BIAS registers directly
+        // after `Spim::new` has claimed the pins. (High drive alone caps the timing budget at
+        // ~16 MHz — tSPIM,SUMI 34 ns vs 13 ns at extra-high.)
+        {
+            use embassy_nrf::pac;
+            use embassy_nrf::pac::gpio::vals::Drive;
+            for pin in [6usize, 8, 9] {
+                pac::P2_S.pin_cnf(pin).modify(|w| {
+                    w.set_drive0(Drive::E);
+                    w.set_drive1(Drive::E);
+                });
+            }
+            pac::GPIOHSPADCTRL_S.bias().modify(|w| w.set_hsbias(3));
+        }
         // CS is a plain GPIO held LOW for the session (the `sd::NoCs` workaround), not a SPIM-bus
-        // pin — so it can sit on any free GPIO. P1.12 carries the FLPR's GEN line, and the DK's
-        // P1.00–14 are one pin short, so CS sits on **P0.00** (M33 GPIO, the same port + drive as
-        // BTN3) — one jumper on the SD breakout. The SPIM bus pins (SCK/MISO/MOSI on P1.11/07/06)
-        // are unchanged.
-        let sd_cs = Output::new(p.P0_00, Level::High, OutputDrive::Standard);
+        // pin — it sits on **P2.10** so the whole SD bus lives on one port next to its clock.
+        let sd_cs = Output::new(p.P2_10, Level::High, OutputDrive::Standard);
         let storage = sd::init(sd_spi, sd_cs);
         // A missing/bad card is fatal — the map streams from it. The display is already up (brought
         // up above, before the card), so instead of failing silently we put an **undismissable**
