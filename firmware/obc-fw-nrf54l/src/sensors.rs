@@ -2,8 +2,9 @@
 //! (the **AK09916** magnetometer inside a TDK **ICM-20948**) on a shared I²C bus — the board-specific
 //! transport + the event-driven sensor task.
 //!
-//! All three chips sit on one **TWIM30** I²C bus on the low-power P0 domain (SDA P0.01 / SCL P0.02);
-//! the GPS **TX-Ready** line is the single interrupt (P0.03). The pure decode — UBX NAV-PVT framing,
+//! All three chips sit on one **TWIM22** I²C bus on P1 (SDA P1.04 / SCL P1.03 — the clock-capable
+//! pin, with SDA adjacent per the data-near-clock rule); the GPS **TX-Ready** line is the single
+//! interrupt (P1.05). The pure decode — UBX NAV-PVT framing,
 //! NAV-PVT → [`Fix`](obc_ports::Fix), BMP581 raw → metres, magnetometer axes → heading — lives
 //! host-tested in [`obc_sensors::ubx`] / [`obc_sensors::bmp581`] / [`obc_sensors::compass`] /
 //! [`obc_sensors::icm20948`]; this module owns only the concrete `Twim` transactions and the
@@ -62,7 +63,7 @@ const DDC_DATA_REG: u8 = 0xFF;
 /// the sensor hub's rate latch right after it loads settings, so this only governs the first second.
 const DEFAULT_INTERVAL_S: u16 = 1;
 
-/// TX-Ready config: the module PIO wired to P0.03, active-high, asserting when ~one NAV-PVT is
+/// TX-Ready config: the module PIO wired to P1.05, active-high, asserting when ~one NAV-PVT is
 /// pending (`THRESHOLD × 8` ≈ 96 B). **VERIFY the PIO number against the SAM-M10Q datasheet on first
 /// bring-up** — but note the task does not depend on it: the DDC-poll timeout below keeps fixes
 /// flowing if TX-Ready never fires.
@@ -152,7 +153,7 @@ struct FixState {
 /// Spawned once from `main`; never returns.
 #[embassy_executor::task]
 pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, link: SensorTaskLink<'static>) {
-    info!("sensors: TWIM30 up (SDA P0.01 / SCL P0.02); probing the I²C bus…");
+    info!("sensors: TWIM22 up (SDA P1.04 / SCL P1.03); probing the I²C bus…");
 
     // --- Boot probe: loud RTT so a wiring/power fault is obvious before anything else. ---
     let baro_addr = probe_bmp581(&mut twim).await;
@@ -309,7 +310,7 @@ async fn wait_data_event(txready: &mut Input<'static>, interval_s: u16, st: &mut
 
 /// Log the TX-Ready / poll-fallback edge the first time each is observed: a TX-Ready edge means the
 /// event-driven path is live; the timeout fallback is the normal path on a board that
-/// doesn't break TX-Ready out (and points at the P0.03 wiring / PIO on one that does).
+/// doesn't break TX-Ready out (and points at the P1.05 wiring / PIO on one that does).
 fn note_wait_edge(st: &mut FixState, txready_edge: bool) {
     if txready_edge {
         if !st.txready_seen {

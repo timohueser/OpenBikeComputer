@@ -13,7 +13,7 @@ target = "thumbv8m.main-none-eabihf"
 rustflags = ["-C", "target-feature=+strict-align"]
 # `--verify`: read the RRAM back after programming (the nRF54L15 DK's first flash after a
 # code change is corruption-prone; --verify turns that into a loud failure — just rerun).
-runner = "probe-rs run --chip nRF54L15 --verify"
+runner = "probe-rs run --chip nRF54LM20A --verify"
 
 [env]
 DEFMT_LOG = "info"

@@ -2,7 +2,7 @@
 //! its [`Span`], in strict global priority order.
 //!
 //! **Two-phase "stub-select" collect (issue #564).** The device streams map chunks off SPI SD
-//! through a tiny cache (one slot under `nrf-mem`), so the collect phase must touch each visible
+//! through a small cache, so the collect phase must touch each visible
 //! chunk as few times as possible. A single chunk-major walk that filled the frame buffers directly
 //! would break the priority-drop guarantee (an early chunk's low-priority features would take
 //! capacity a late chunk's high-priority feature needs), so selection is split from geometry

@@ -42,7 +42,8 @@
  *
  * **Two ports (the F2 lesson, still load-bearing).** The timing-critical bus — the 6 data lines +
  * `BCK` — is all on **P2** (the FLPR's fast trace domain); the gate lines (`GSP`/`GCK`/`GEN`/
- * `INTB`) and `BSP` are on P1. COM (`VCOM`/`VB`/`VA`, P2.07/08/10) free-runs on the **M33** the
+ * `INTB`) and `BSP` are on P1 as the contiguous P1.10-14 run. COM (`VCOM`/`VB`/`VA`,
+ * P1.22/23/24) free-runs on the **M33** the
  * entire time — both cores drive the shared **P2** port at once, which is exactly why every GPIO
  * touch below is a single atomic OUTSET/OUTCLR of *this core's* pin mask (never a read-modify-write
  * of OUT): the M33's COM set/clears and the FLPR's source set/clears on disjoint pins never corrupt
@@ -74,7 +75,7 @@
  * `pack_word` below packs a pixel pair's 6 data bits already shifted to these positions
  * (DATA_MASK), so presenting a column is `OUTCLR the zeros, OUTSET the ones`. */
 #define DATA_MASK 0x3Fu        /* P2.00..05 = R0,R1,G0,G1,B0,B1 (the 6 source data lines) */
-#define BCK_MASK  (1u << 6)    /* P2.06 = BCK (source/shift clock) */
+#define BCK_MASK  (1u << 7)    /* P2.07 = BCK (source/shift clock; P2.06 is the SD's SPIM00 SCK) */
 
 /* Gate + frame pin masks on P1 (bit position = P1 pin index). All µs-scale, so P1 is fine — P2 is
  * reserved for the fast bus.
@@ -83,10 +84,10 @@
  * pin is not broken out on your DK, remap it here *and* there (issue #165 moved them off the
  * SD/VCOM pins the bring-up bench borrowed). */
 #define BSP_MASK  (1u << 14)   /* P1.14 = BSP  (sub-line start pulse) */
-#define GSP_MASK  (1u << 0)    /* P1.00 = GSP  (gate start pulse, once per frame) */
-#define GCK_MASK  (1u << 1)    /* P1.01 = GCK  (gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase) */
+#define GSP_MASK  (1u << 10)   /* P1.10 = GSP  (gate start pulse, once per frame) */
+#define GCK_MASK  (1u << 11)   /* P1.11 = GCK  (gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase; P1.01 is NFC on the LM20-DK) */
 #define GEN_MASK  (1u << 12)   /* P1.12 = GEN  (gate output enable — latches the GCK-level-selected block) */
-#define INTB_MASK (1u << 10)   /* P1.10 = INTB (frame envelope — HIGH for the whole frame write; LED1) */
+#define INTB_MASK (1u << 13)   /* P1.13 = INTB (frame envelope — HIGH for the whole frame write) */
 
 /* FLPR → M33 doorbell via EGU20 (secure 0x500C_9000) — the M33 arms EGU20's TRIGGERED[0] IRQ and
  * awaits it as the frame ack (issue #347; previously written but unarmed). */

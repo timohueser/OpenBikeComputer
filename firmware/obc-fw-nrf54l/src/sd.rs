@@ -22,12 +22,12 @@
 //!                      lives in the name, mirroring `RT{id}.OBR`). The device writes no GPX —
 //!                      the phone owns human-format export after sync.
 //!
-//! ## SPI wiring (nRF54L15-DK, **SERIAL22 / SPIM22** — its own bus, separate from the display)
-//!   SCK P1_11 · MISO P1_07 · MOSI P1_06 · CS **P1_12** (software, held low) · GND · 3V3.
+//! ## SPI wiring (nRF54LM20-DK, **SERIAL00 / SPIM00** — the fast P2 pads, beside the display's)
+//!   SCK P2_06 · MISO P2_09 · MOSI P2_08 · CS **P2_10** (software, held low) · GND · 3V3.
 //! The card is initialised at [`SD_INIT_HZ`] (≤400 kHz, SD spec) then the bus is re-clocked to
 //! [`SD_FAST_HZ`] for bulk transfer — see [`init`]. embassy-nrf's `Spim` exposes no internal MISO
 //! pull-up (its `Config` has no `miso_pull`), so the card's DO line must be pulled high externally
-//! — most microSD breakouts include this; if not, add a 10 kΩ from MISO (P1_07) to 3V3. (DO
+//! — most microSD breakouts include this; if not, add a 10 kΩ from MISO (P2_09) to 3V3. (DO
 //! floating low during init reads `0x00`, which looks like a hung card.)
 
 // The route-selection + ride-save half of this module (`reconcile_route`/`reconcile_track`,
@@ -60,16 +60,28 @@ use obc_route::{
 use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 
-/// SD clock during the init handshake — the spec caps it at 400 kHz. embassy-nrf's discrete
-/// [`Frequency`] ladder has no 400 kHz step, so [`Frequency::K250`] is the fastest in-spec choice
-/// (250 kHz). The caller configures the bus at this speed *before* [`init`], which re-clocks to
-/// [`SD_FAST_HZ`] once the card is up — `pub` so that single source of the init speed is named.
-pub const SD_INIT_HZ: Frequency = Frequency::K250;
+/// SD clock config during the init handshake. ⚠️ **SPIM00 cannot reach the SD spec's ≤400 kHz
+/// identification clock**: its PRESCALER divisor is 7 bits (÷127 max) off the 128 MHz PLL, so the
+/// floor is ~1.008 MHz — and embassy's `Frequency::K250`/`K500`/`M1` all silently truncate to a
+/// **zero divisor** on this instance (`(clk/freq) as u8`, then a 7-bit field), which stops SCK
+/// entirely and hangs the blocking init forever. So: the caller configures `M2` (÷64, a *valid*
+/// divisor) and [`init`] immediately overrides the prescaler to the true floor, ÷127 ≈ 1.008 MHz,
+/// for the acquire. Initialising SD cards at ~1 MHz in SPI mode is a documented spec deviation
+/// that virtually all SDHC/SDXC cards accept; there is no slower path on the fast P2 pads (PSEL
+/// cannot cross power domains, so no 16 MHz-base SERIAL2x instance can drive these pins).
+pub const SD_INIT_HZ: Frequency = Frequency::M2;
 
-/// SD clock for bulk transfer once the card is initialised. [`Frequency::M8`] (8 MHz) is the
-/// fastest SERIAL22 reaches on the PERI-domain P1 header (its 16 MHz base ÷2) and well within the
-/// 25 MHz default-speed limit — conservative for breadboard jumpers.
-const SD_FAST_HZ: Frequency = Frequency::M8;
+/// The init-phase prescaler divisor poked directly (see [`SD_INIT_HZ`]): 128 MHz / 127 ≈ 1.008 MHz.
+const SD_INIT_DIVISOR: u8 = 127;
+
+/// SD clock for bulk transfer once the card is initialised. SPIM00 is PLL-clocked (128 MHz base)
+/// and rated 32 Mbps on the extra-high-drive P2 pads — but **M32 failed on-glass over the DK
+/// jumper harness (2026-07-24)**, so this sits at the proven [`Frequency::M8`] (÷16) for now.
+/// The ladder back up (M16, then M32) is a `sd_bench` exercise — its FNV integrity guard is the
+/// referee — and worth re-running on the production PCB's short traces where 32 MHz has a real
+/// chance. Even M8 here beats the old SERIAL22 path: CMD18 batching + the bigger LM20 chunk cache
+/// carry the throughput gain.
+pub const SD_FAST_HZ: Frequency = Frequency::M8;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -375,6 +387,9 @@ pub fn init(mut spi: SdSpi, mut cs: Output<'static>) -> Option<Storage> {
     // `ExclusiveDevice` drives a no-op [`NoCs`], so the real CS never toggles high between a command
     // and its reply — which embassy's SPI can't survive (the card drops the bus and CMD0's `0x01` is
     // lost; toggling = CardNotFound, held low = mounts).
+    // Drop the bus to SPIM00's true minimum (~1.008 MHz) for the whole acquire — see the
+    // [`SD_INIT_HZ`] doc for why this is a raw prescaler poke and not a `Frequency` value.
+    embassy_nrf::pac::SPIM00.prescaler().write(|w| w.set_divisor(SD_INIT_DIVISOR));
     cs.set_high();
     let _ = spi.blocking_write(&[0xFFu8; 10]);
     cs.set_low();
@@ -384,7 +399,7 @@ pub fn init(mut spi: SdSpi, mut cs: Output<'static>) -> Option<Storage> {
     // SAFETY: sole writer of SD_CARD; `init` runs once per boot on the one thread-mode executor,
     // and a warm-reset re-run overwrites in place (no `Drop`), the `init_static` contract.
     let card: &'static Sd = unsafe { crate::init_static(core::ptr::addr_of_mut!(SD_CARD), SdCard::new(dev, Delay)) };
-    // `num_bytes` forces the SPI init sequence (must be ≤400 kHz, the bus's current setting).
+    // `num_bytes` forces the SPI init sequence (at the ~1 MHz floor set above).
     match card.num_bytes() {
         Ok(bytes) => defmt::info!("SD: card initialised, {=u64} MB", bytes >> 20),
         Err(e) => {
@@ -1366,7 +1381,7 @@ impl Storage {
     /// retries the build on a later redraw, so a transient glitch doesn't hide the route.
     ///
     /// **In place** into the caller's resident slot (`RouteIndex::read_into`), never by value: the
-    /// ~6.7 KB index returned through `Option<RouteIndex>` rode the stack at the ride pass's deepest
+    /// ~24.6 KB index returned through `Option<RouteIndex>` rode the stack at the ride pass's deepest
     /// point, and the post-upload rescan's rebuild overflowed the 44 KB main stack the moment `.bss`
     /// crept 216 B (STKOF HardFault inside `RouteIndex::read`, 2026-07-12).
     pub fn build_route_index_into(&self, idx: &mut RouteIndex) -> bool {

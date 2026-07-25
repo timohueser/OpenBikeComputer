@@ -9,7 +9,7 @@
 //! Pins + frequencies are deliberate **duplicates** of the board crate's SD bring-up — the
 //! source of truth is `../obc-fw-nrf54l/src/sd.rs` (`SD_INIT_HZ`/`SD_FAST_HZ`, the `NoCs`
 //! held-low-CS workaround) and the SPIM/CS construction in `../obc-fw-nrf54l/src/main.rs`
-//! (SERIAL22: SCK P1_11 · MISO P1_07 · MOSI P1_06 · CS **P0_00** held low for the session).
+//! (SERIAL00: SCK P2_06 · MISO P2_09 · MOSI P2_08 · CS **P2_10** held low for the session).
 //! The crates don't share a pins module today; keep the copies in lockstep by hand.
 //!
 //! The one genuine difference from the app: there is no executor and no `embassy_time`, so the
@@ -22,19 +22,23 @@ use embassy_nrf::{bind_interrupts, peripherals, spim, Peri};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_sdmmc::{Block, BlockDevice, BlockIdx, SdCard};
 
-// SERIAL22 backs the microSD SPIM, exactly as in the board crate. The handler is registered but
+// SERIAL00 backs the microSD SPIM, exactly as in the board crate. The handler is registered but
 // the blocking transfer path never enables its NVIC line under load we care about; `jump_to_app`
 // quiesces the NVIC regardless.
 bind_interrupts!(struct Irqs {
-    SERIAL22 => spim::InterruptHandler<peripherals::SERIAL22>;
+    SERIAL00 => spim::InterruptHandler<peripherals::SERIAL00>;
 });
 
-/// SD clock during the init handshake — ≤400 kHz per the SD spec; `K250` is embassy-nrf's
-/// fastest in-spec ladder step. Copied from `obc-fw-nrf54l/src/sd.rs::SD_INIT_HZ` (source of
+/// SD clock config during the init handshake. ⚠️ SPIM00's 7-bit PRESCALER off the PLL cannot
+/// reach the SD spec's ≤400 kHz — `K250`/`K500`/`M1` truncate to a ZERO divisor and stop SCK
+/// (a silent hang in the blocking init). `M2` is a valid placeholder; `try_init` pokes the true
+/// ÷127 floor (~1 MHz @ CK128) right after re-clocking. Mirrors `obc-fw-nrf54l/src/sd.rs` (source of
 /// truth) — keep in lockstep.
-const SD_INIT_HZ: Frequency = Frequency::K250;
+const SD_INIT_HZ: Frequency = Frequency::M2;
+/// SPIM00's true minimum divisor (7-bit field): PLL/127 ≈ 1.008 MHz @ 128 MHz, ~504 kHz @ 64 MHz.
+const SD_INIT_DIVISOR: u8 = 127;
 
-/// SD clock for bulk transfer once the card is up — 8 MHz, the fastest SERIAL22 reaches on the
+/// SD clock for bulk transfer once the card is up — 8 MHz, the fastest SERIAL00 reaches on the
 /// PERI-domain P1 header. Copied from `obc-fw-nrf54l/src/sd.rs::SD_FAST_HZ` — keep in lockstep.
 const SD_FAST_HZ: Frequency = Frequency::M8;
 
@@ -53,7 +57,7 @@ impl embedded_hal::delay::DelayNs for BusyDelay {
 /// A no-op chip-select for [`ExclusiveDevice`] — the held-low-CS workaround, copied from
 /// `obc-fw-nrf54l/src/sd.rs::NoCs` (see its doc for the full story): embedded-sdmmc issues each
 /// byte as its own `SpiDevice` op, and a real CS toggling between a command and its reply drops
-/// the card off the bus. The *real* CS (P0_00) is held LOW for the whole session instead.
+/// the card off the bus. The *real* CS (P2_10) is held LOW for the whole session instead.
 struct NoCs;
 impl embedded_hal::digital::ErrorType for NoCs {
     type Error = core::convert::Infallible;
@@ -72,7 +76,7 @@ type BootSd = SdCard<ExclusiveDevice<Spim<'static>, NoCs, BusyDelay>, BusyDelay>
 /// The bootloader's raw-block card handle: init + absolute block reads, nothing else.
 pub struct SdBlocks {
     card: BootSd,
-    /// The real chip-select (P0_00), driven HIGH for the wake clocks and LOW for the session —
+    /// The real chip-select (P2_10), driven HIGH for the wake clocks and LOW for the session —
     /// never handed to the card driver (see [`NoCs`]).
     cs: Output<'static>,
 }
@@ -82,11 +86,11 @@ impl SdBlocks {
     /// module doc). Does **not** talk to the card yet; call [`try_init`](Self::try_init) until
     /// it succeeds.
     pub fn new(
-        serial: Peri<'static, peripherals::SERIAL22>,
-        sck: Peri<'static, peripherals::P1_11>,
-        miso: Peri<'static, peripherals::P1_07>,
-        mosi: Peri<'static, peripherals::P1_06>,
-        cs: Peri<'static, peripherals::P0_00>,
+        serial: Peri<'static, peripherals::SERIAL00>,
+        sck: Peri<'static, peripherals::P2_06>,
+        miso: Peri<'static, peripherals::P2_09>,
+        mosi: Peri<'static, peripherals::P2_08>,
+        cs: Peri<'static, peripherals::P2_10>,
     ) -> SdBlocks {
         let mut cfg = SpiConfig::default();
         cfg.frequency = SD_INIT_HZ;
@@ -109,6 +113,9 @@ impl SdBlocks {
     pub fn try_init(&mut self) -> bool {
         self.card.mark_card_uninit();
         self.set_speed(SD_INIT_HZ);
+        // Drop to the instance's real floor for the acquire (see SD_INIT_HZ doc) — raw poke, no
+        // embassy Frequency reaches it.
+        embassy_nrf::pac::SPIM00.prescaler().write(|w| w.set_divisor(SD_INIT_DIVISOR));
         self.cs.set_high();
         self.card.spi(|dev| {
             let _ = dev.bus_mut().blocking_write(&[0xFFu8; 10]);
