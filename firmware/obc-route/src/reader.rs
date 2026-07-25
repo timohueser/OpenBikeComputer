@@ -25,12 +25,18 @@ use obc_formats::obcr::{MAGIC, POINT_RECORD_LEN, VERSIONS, VERSION_V2};
 /// waypoints (a phone-side encoder isn't bound by this), so [`RouteReader::load_waypoints`] windows
 /// + truncates a longer file rather than overflowing.
 pub const MAX_WAYPOINTS: usize = 32;
-/// Resident chunk-index capacity. A route past the cap fails conversion with
-/// [`Error::TooLarge`] rather than being silently coarsened (~131 k points, ~24.6 KB index).
-/// Matches the host packer's cap, so any route the packer emits loads on the device. Note
-/// [`read`](RouteIndex::read) builds the index/`cum_seg` `Vec`s on the stack before returning
-/// by value — the ~24.6 KB transient is real; the LM20 stack reserve is sized with it in mind.
-pub const MAX_ROUTE_CHUNKS: usize = 512;
+/// Resident chunk-index capacity — **the one knob that sets both the max route length and a
+/// large slice of the device's stack peak**, because a [`RouteIndex`] is `MAX_ROUTE_CHUNKS × 48 B`
+/// and several call paths hold one (or more) on the stack. A route past the cap fails conversion
+/// with [`Error::TooLarge`] rather than being silently coarsened; the value is shared with the
+/// host packer, so anything that packs, loads.
+///
+/// **256** ≈ 65 k points (~650 km at 10 m spacing) for a ~12.3 KB index. 512 was tried during the
+/// LM20 retarget and measured *far* too expensive on glass: it put a 73.7 KB frame in
+/// [`elevation_sparkline`](crate::elevation_sparkline) — larger than the whole 69 KB stack region,
+/// i.e. a guaranteed overflow on the first phone route upload (2026-07-24). Raising it again means
+/// first making the by-value paths resident (see [`read_into`](RouteIndex::read_into)).
+pub const MAX_ROUTE_CHUNKS: usize = 256;
 const _: () = assert!(MAX_ROUTE_CHUNKS < u16::MAX as usize);
 /// Max points a single chunk may hold (bounds the per-chunk decode buffer).
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
@@ -212,11 +218,17 @@ impl RouteIndex {
     /// Parse the header and chunk index from `src`. Validates magic/version and that
     /// every chunk lies within the source and within the resident buffers.
     ///
-    /// Returns the ~24.6 KB index **by value** — fine on a std host (the sim, tests, `obc-pack`),
+    /// Returns the ~12.3 KB index **by value** — fine on a std host (the sim, tests, `obc-pack`),
     /// but on the MCU that value transits the stack right where the ride pass is deepest. A
     /// board caller must use [`read_into`](Self::read_into) on its resident slot instead: the
     /// by-value return is exactly what overflowed the 44 KB main stack on the 256 KB DK when the
     /// post-upload rescan rebuilt the index (STKOF HardFault in this frame, 2026-07-12).
+    ///
+    /// `#[inline(never)]` is load-bearing, not a hint: inlined into a caller, the index-building
+    /// temporaries coexist with the returned value in *one* frame — measured as ~3 live copies
+    /// (73.7 KB) in `elevation_sparkline` on the LM20. Kept out of line, the build temporaries
+    /// live in this frame and pop before the caller continues, so a caller pays for one index.
+    #[inline(never)]
     pub fn read(src: &dyn ByteSource) -> Result<RouteIndex, Error> {
         let mut idx = RouteIndex::empty();
         idx.read_into(src)?;
@@ -255,35 +267,11 @@ impl RouteIndex {
         for k in 0..h.chunk_count {
             let off = h.index_offset + k * CHUNK_META_LEN as u32;
             src.read_at(off, &mut meta)?;
-            let point_count = rd_u16(&meta, 26);
-            if point_count as usize > MAX_POINTS_PER_CHUNK {
-                return Err(Error::TooLarge);
-            }
-            let cm = ChunkMeta {
-                bbox: BBox {
-                    min_lon: rd_i32(&meta, 0),
-                    min_lat: rd_i32(&meta, 4),
-                    max_lon: rd_i32(&meta, 8),
-                    max_lat: rd_i32(&meta, 12),
-                },
-                anchor_lon: rd_i32(&meta, 16),
-                anchor_lat: rd_i32(&meta, 20),
-                anchor_ele: rd_i16(&meta, 24),
-                point_count,
-                cum_distance_m: rd_u32(&meta, 28),
-                cum_ascent_m: rd_u32(&meta, 32),
-                byte_offset: rd_u32(&meta, 36),
-                byte_len: rd_u32(&meta, 40),
-            };
-            // Bounds-check the chunk's data region up front (no per-decode checks).
-            let end = cm.byte_offset.checked_add(cm.byte_len).ok_or(Error::BadOffset)?;
-            if end > src.len() {
-                return Err(Error::BadOffset);
-            }
+            let cm = parse_chunk_meta(&meta, src.len())?;
             // Running segment prefix sum, built alongside the index so the matcher never
             // re-walks the chunk list per fix.
             self.cum_seg.push(seg_acc).map_err(|_| Error::TooLarge)?;
-            seg_acc += (point_count as u32).saturating_sub(1);
+            seg_acc += (cm.point_count as u32).saturating_sub(1);
             self.index.push(cm).map_err(|_| Error::TooLarge)?;
         }
         self.bbox = h.bbox;
@@ -624,7 +612,40 @@ pub(crate) fn decode_route_points_between(
 
 /// Decode chunk `m` (its `n` points) from `src` into the already-cleared `out`: the anchor,
 /// then each delta-stepped point. Shared by the cached and uncached decode paths.
-fn decode_chunk_from(
+/// Decode one §2 chunk-meta record (validating its point count and that its data region lies
+/// inside `src_len`). Factored out of [`RouteIndex::fill_from`] so a **streaming** consumer —
+/// one that walks chunks without ever materialising the whole index — parses metas through the
+/// exact same code path; see [`elevation_sparkline`](crate::elevation_sparkline).
+pub(crate) fn parse_chunk_meta(meta: &[u8; CHUNK_META_LEN], src_len: u32) -> Result<ChunkMeta, Error> {
+    let point_count = rd_u16(meta, 26);
+    if point_count as usize > MAX_POINTS_PER_CHUNK {
+        return Err(Error::TooLarge);
+    }
+    let cm = ChunkMeta {
+        bbox: BBox {
+            min_lon: rd_i32(meta, 0),
+            min_lat: rd_i32(meta, 4),
+            max_lon: rd_i32(meta, 8),
+            max_lat: rd_i32(meta, 12),
+        },
+        anchor_lon: rd_i32(meta, 16),
+        anchor_lat: rd_i32(meta, 20),
+        anchor_ele: rd_i16(meta, 24),
+        point_count,
+        cum_distance_m: rd_u32(meta, 28),
+        cum_ascent_m: rd_u32(meta, 32),
+        byte_offset: rd_u32(meta, 36),
+        byte_len: rd_u32(meta, 40),
+    };
+    // Bounds-check the chunk's data region up front (no per-decode checks).
+    let end = cm.byte_offset.checked_add(cm.byte_len).ok_or(Error::BadOffset)?;
+    if end > src_len {
+        return Err(Error::BadOffset);
+    }
+    Ok(cm)
+}
+
+pub(crate) fn decode_chunk_from(
     src: &dyn ByteSource,
     m: &ChunkMeta,
     n: usize,
@@ -890,23 +911,23 @@ impl core::ops::Deref for RouteReader<'_> {
 }
 
 /// Parsed header fields (shared by [`RouteIndex::read`] and [`RouteSummary::read`]).
-struct Header {
-    version: u8,
-    bbox: BBox,
-    start_lon: i32,
-    start_lat: i32,
-    point_count: u32,
-    total_distance_m: u32,
-    total_ascent_m: u32,
-    total_descent_m: u32,
-    min_ele_m: i16,
-    max_ele_m: i16,
-    chunk_count: u32,
-    index_offset: u32,
-    name: String<NAME_CAP>,
+pub(crate) struct Header {
+    pub(crate) version: u8,
+    pub(crate) bbox: BBox,
+    pub(crate) start_lon: i32,
+    pub(crate) start_lat: i32,
+    pub(crate) point_count: u32,
+    pub(crate) total_distance_m: u32,
+    pub(crate) total_ascent_m: u32,
+    pub(crate) total_descent_m: u32,
+    pub(crate) min_ele_m: i16,
+    pub(crate) max_ele_m: i16,
+    pub(crate) chunk_count: u32,
+    pub(crate) index_offset: u32,
+    pub(crate) name: String<NAME_CAP>,
 }
 
-fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
+pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     let mut h = [0u8; HEADER_LEN];
     src.read_at(0, &mut h).map_err(|_| Error::BadOffset)?;
     if &h[0..4] != MAGIC {
