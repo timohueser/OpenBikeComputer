@@ -75,13 +75,13 @@ pub const SD_INIT_HZ: Frequency = Frequency::M2;
 const SD_INIT_DIVISOR: u8 = 127;
 
 /// SD clock for bulk transfer once the card is initialised. SPIM00 is PLL-clocked (128 MHz base)
-/// and rated 32 Mbps on the extra-high-drive P2 pads — but **M32 failed on-glass over the DK
-/// jumper harness (2026-07-24)**, so this sits at the proven [`Frequency::M8`] (÷16) for now.
-/// The ladder back up (M16, then M32) is a `sd_bench` exercise — its FNV integrity guard is the
-/// referee — and worth re-running on the production PCB's short traces where 32 MHz has a real
-/// chance. Even M8 here beats the old SERIAL22 path: CMD18 batching + the bigger LM20 chunk cache
-/// carry the throughput gain.
-pub const SD_FAST_HZ: Frequency = Frequency::M8;
+/// and rated 32 Mbps on the extra-high-drive P2 pads (main.rs sets E0/E1 + max HS-pad slew).
+/// **M32 failed on-glass over the DK jumper harness (2026-07-24)**; this is the middle rung,
+/// [`Frequency::M16`] (÷8) — 2× the old SERIAL22 ceiling, which that instance could never reach
+/// at any setting. `sd_bench`'s FNV integrity guard is the referee if a card/harness combination
+/// misbehaves; drop to `M8` (proven) if so, and re-try `M32` on the production PCB's short
+/// matched traces.
+pub const SD_FAST_HZ: Frequency = Frequency::M16;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
