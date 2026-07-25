@@ -154,7 +154,8 @@ impl obc_render::Clock for InstantClock {
 /// sequentially with (never under) that deep render path, so it adds nothing to the pass's peak.
 #[inline(never)]
 pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
-    let catalog = storage.scan_routes();
+    let mut catalog = heapless::Vec::new();
+    storage.scan_routes_into(&mut catalog);
     // Carry each route's device-local retention meta (auto-expiry epic #638, S3) from the
     // `/routes` sidecar, pairwise with the ids, so the sweep reads device truth.
     let metas = storage.route_retention_metas();
@@ -168,7 +169,8 @@ pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
 /// on return, never resident under the deep render path.
 #[inline(never)]
 pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
-    let catalog = storage.scan_rides();
+    let mut catalog = heapless::Vec::new();
+    storage.scan_rides_into(&mut catalog);
     app.set_rides(&catalog, storage.ride_ids());
     // Feed the **full** compact ride-retention inventory (finding #876-2): every synced ride, not
     // just the newest-32 the menu shows, so the auto-delete sweep + eager stamp reach older synced
@@ -597,7 +599,7 @@ pub(crate) async fn run_app(
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
     // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
-    // `Option<RouteIndex>` built by value: the slot is ~24.6 KB and permanently part of this frame
+    // `Option<RouteIndex>` built by value: the slot is ~12.3 KB and permanently part of this frame
     // either way, but a by-value build (`RouteIndex::read`'s return) also transits the stack at
     // the pass's deepest point — which is what overflowed the 44 KB main stack on the post-upload
     // rescan (STKOF HardFault, 2026-07-12). `build_route_index_into` fills it in place.
