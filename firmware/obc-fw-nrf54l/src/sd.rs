@@ -516,8 +516,11 @@ impl Storage {
     /// Matching is on the **long** name: the 8.3 short name truncates `.obcr`/`.obcm` to the
     /// 3-char `OBC`, so the short extension can't tell routes from maps. The long name also lets
     /// us skip macOS `._*`/`.DS_Store` clutter (any dot-prefixed name).
-    pub fn scan_routes(&mut self) -> Vec<RouteSummary, MAX_ROUTES> {
-        let mut catalog: Vec<RouteSummary, MAX_ROUTES> = Vec::new();
+    /// Fills the **caller's** catalog rather than returning one: a `Vec<RouteSummary, MAX_ROUTES>`
+    /// is ~6 KB, and a by-value return keeps the builder's copy and the caller's alive in one
+    /// frame (measured 12.3 KB in `ride::load_routes`, 2026-07-24 — two copies of exactly this).
+    pub fn scan_routes_into(&mut self, catalog: &mut Vec<RouteSummary, MAX_ROUTES>) {
+        catalog.clear();
         // A file this `Storage` already holds open can't be opened a second time — embedded-sdmmc
         // 0.9 answers `FileAlreadyOpen` for *any* re-open, ReadOnly included — so a scan that meets
         // one must read through the existing handle or the route silently drops out of the catalog
@@ -529,7 +532,7 @@ impl Storage {
             self.open_route.and_then(|(i, f, len)| self.route_files.get(i).map(|n| (n.clone(), f, len)));
         self.route_files.clear();
         self.route_ids.clear();
-        let Some(dir) = self.routes_dir else { return catalog };
+        let Some(dir) = self.routes_dir else { return };
 
         let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
         let mut overflow = false;
@@ -589,7 +592,6 @@ impl Storage {
             }
         }
         defmt::info!("SD: {=usize} route(s) in /routes", catalog.len());
-        catalog
     }
 
     /// Each catalog entry's object id, parallel to the catalog [`scan_routes`](Storage::scan_routes)
@@ -694,12 +696,16 @@ impl Storage {
     /// twin in `App`+`Storage` ate the deep-render path's last ~1.6 KB of margin — statics and
     /// stack are zero-sum on this part. Now the catalog is [`UI_RIDES_CAP`]-capped (~1.4 KB) and
     /// ordering is a bounded **top-K insertion** as summaries are read — no sort temp at all.
-    pub fn scan_rides(&mut self) -> Vec<obc_app::RideSummary, UI_RIDES_CAP> {
-        let mut catalog: Vec<obc_app::RideSummary, UI_RIDES_CAP> = Vec::new();
+    /// Fills the **caller's** catalog rather than returning one — see [`scan_routes_into`] for
+    /// why (the by-value return doubles the catalog on the caller's frame).
+    ///
+    /// [`scan_routes_into`]: Self::scan_routes_into
+    pub fn scan_rides_into(&mut self, catalog: &mut Vec<obc_app::RideSummary, UI_RIDES_CAP>) {
+        catalog.clear();
         self.ride_files.clear();
         self.ride_ids.clear();
         let synced = self.load_synced_set();
-        let Some(dir) = self.tracks_dir else { return catalog };
+        let Some(dir) = self.tracks_dir else { return };
 
         // Collect (id, name) for every RD{id}.ORD; an in-flight download's open handle is read
         // through rather than re-opened (embedded-sdmmc refuses a second open, #480).
@@ -759,7 +765,6 @@ impl Storage {
             defmt::info!("SD: rides menu lists the newest {=usize} of {=usize} stored", catalog.len(), entries.len());
         }
         defmt::info!("SD: {=usize} ride(s) in /tracks", catalog.len());
-        catalog
     }
 
     /// Each ride catalog entry's durable object id, parallel to the catalog
@@ -1381,7 +1386,7 @@ impl Storage {
     /// retries the build on a later redraw, so a transient glitch doesn't hide the route.
     ///
     /// **In place** into the caller's resident slot (`RouteIndex::read_into`), never by value: the
-    /// ~24.6 KB index returned through `Option<RouteIndex>` rode the stack at the ride pass's deepest
+    /// ~12.3 KB index returned through `Option<RouteIndex>` rode the stack at the ride pass's deepest
     /// point, and the post-upload rescan's rebuild overflowed the 44 KB main stack the moment `.bss`
     /// crept 216 B (STKOF HardFault inside `RouteIndex::read`, 2026-07-12).
     pub fn build_route_index_into(&self, idx: &mut RouteIndex) -> bool {

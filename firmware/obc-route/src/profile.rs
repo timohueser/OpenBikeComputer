@@ -24,8 +24,9 @@ use heapless::Vec;
 
 use crate::deadband::DeadBand;
 use crate::geo::seg_dist_m;
-use crate::reader::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_formats::io::{ByteSource, Error};
+use obc_formats::obcr::CHUNK_META_LEN;
 
 /// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
 /// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
@@ -313,7 +314,17 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     let point_len = ride_point_len(info.version);
     let points_at = name_len + ride_header_len(info.version) as u32;
 
-    let mut cols = [(i16::MAX, i16::MIN); TOTAL_COLS];
+    // Build the band **into the result value**, not a separate `cols` scratch: the array is
+    // `TOTAL_COLS × 4 B` and moving a local into the returned `Profile` at the end leaves both
+    // live in the frame at once. Written in place it exists once (the ascent curve stays a local
+    // — it integrates as `f32` and is quantised into the struct's `u32` at the end).
+    let mut out = Profile {
+        cols: [(i16::MAX, i16::MIN); TOTAL_COLS],
+        cum_ascent: [0; ASCENT_COLS],
+        min_ele_m: 0,
+        max_ele_m: 0,
+        peak_col: 0,
+    };
     let mut casc = [0f32; ASCENT_COLS];
     let total = info.distance_m.max(1) as f64;
     let base_last = PROFILE_COLS - 1;
@@ -350,7 +361,7 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
             max_ele = max_ele.max(ele);
             let frac = dist / total;
             let col = ((frac * base_last as f64) as usize).min(base_last);
-            let slot = &mut cols[col];
+            let slot = &mut out.cols[col];
             slot.0 = slot.0.min(ele);
             slot.1 = slot.1.max(ele);
             let acol = ((frac * asc_last as f64) as usize).min(asc_last);
@@ -364,11 +375,13 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     if min_ele > max_ele {
         (min_ele, max_ele) = (0, 0);
     }
-    fill_gaps(&mut cols[..PROFILE_COLS], (min_ele, max_ele));
-    downsample_levels(&mut cols);
-    let cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
-    let peak_col = peak_column(&cols[..PROFILE_COLS]);
-    Ok(Profile { cols, cum_ascent, min_ele_m: min_ele, max_ele_m: max_ele, peak_col })
+    fill_gaps(&mut out.cols[..PROFILE_COLS], (min_ele, max_ele));
+    downsample_levels(&mut out.cols);
+    out.cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
+    out.peak_col = peak_column(&out.cols[..PROFILE_COLS]);
+    out.min_ele_m = min_ele;
+    out.max_ele_m = max_ele;
+    Ok(out)
 }
 
 /// A stored ride's recorded-track polyline decimated to at most `N` points — uniform by point
@@ -448,23 +461,38 @@ pub const SPARKLINE_BUCKETS: usize = 64;
 /// there), so the mini band reads as a coarser copy of the full Route-overview band. `O(points)`,
 /// one pass over the geometry — call it once at commit time on the host, never on the render path.
 pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKETS]> {
-    let idx = RouteIndex::read(src).ok()?;
-    let lo = idx.min_ele_m as i32;
-    let span = idx.max_ele_m as i32 - lo;
+    // **Streams the chunk index; never materialises it.** A `RouteIndex` is
+    // `MAX_ROUTE_CHUNKS × 48 B` and is returned by value, so building one here put tens of KB on
+    // the stack to produce this function's 64-byte result (73.7 KB measured on the LM20 at 512
+    // chunks — more than the whole stack region; issue: LM20 retarget, 2026-07-24). Nothing here
+    // needs random access: the walk is strictly forward, one chunk at a time, so it reads each
+    // 48-byte meta straight from the source through the same `parse_chunk_meta` the index build
+    // uses. Resident cost is now the point scratch alone, independent of `MAX_ROUTE_CHUNKS`.
+    let h = read_header(src).ok()?;
+    let lo = h.min_ele_m as i32;
+    let span = h.max_ele_m as i32 - lo;
     if span <= 0 {
         return None; // flat / no elevation — omit the band
     }
-    let reader = RouteReader::new(&idx, src);
-    let total = idx.total_distance_m.max(1) as f64;
+    let total = h.total_distance_m.max(1) as f64;
     let last = SPARKLINE_BUCKETS - 1;
     // Peak height per bucket; sentinel `i16::MIN` = "no point landed here" (gap-filled below).
     let mut maxes = [i16::MIN; SPARKLINE_BUCKETS];
     let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
-    for k in 0..reader.chunks().len() {
-        if reader.decode_chunk(k, &mut buf).is_err() {
+    let mut meta_bytes = [0u8; CHUNK_META_LEN];
+    let src_len = src.len();
+    for k in 0..h.chunk_count {
+        let off = h.index_offset + k * CHUNK_META_LEN as u32;
+        if src.read_at(off, &mut meta_bytes).is_err() {
             continue;
         }
-        let mut dist = reader.chunks()[k].cum_distance_m as f64;
+        let Ok(m) = parse_chunk_meta(&meta_bytes, src_len) else { continue };
+        let n = m.point_count as usize;
+        buf.clear();
+        if n == 0 || decode_chunk_from(src, &m, n, &mut buf).is_err() {
+            continue;
+        }
+        let mut dist = m.cum_distance_m as f64;
         let mut prev: Option<(i32, i32)> = None;
         for p in &buf {
             if let Some(pr) = prev {
