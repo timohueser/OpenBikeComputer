@@ -274,10 +274,15 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
             f"{args.profile} framebuffer `{symbol.name}` is {symbol.size} B, expected "
             f"{framebuffer_bytes} B (240 x 320 x 1)",
         )
+    # Distinct from `framebuffer_count` (a *name*-matched count): this is the size-based
+    # "no accidental second framebuffer" net. It is not always 1 — since the LM20 retarget `APP`
+    # legitimately exceeds a frame (it embeds the ~90 KB renderer scratch), so the expected count
+    # is pinned per profile and any *new* frame-sized allocation still trips the guard.
+    expected_full_frame = profile.get("full_frame_sized_writable_count", expected_count)
     require(
-        len(measured.full_frame_sized_writable) == expected_count,
+        len(measured.full_frame_sized_writable) == expected_full_frame,
         f"{args.profile} has {len(measured.full_frame_sized_writable)} writable allocation(s) at "
-        f"least one full frame ({framebuffer_bytes} B), expected {expected_count}; "
+        f"least one full frame ({framebuffer_bytes} B), expected {expected_full_frame}; "
         f"candidates: {[(s.name, s.size) for s in measured.full_frame_sized_writable]}",
     )
     if include_poll:

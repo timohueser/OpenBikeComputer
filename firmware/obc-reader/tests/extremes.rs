@@ -56,8 +56,8 @@ fn decode_status(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> (Vec<Dec
 /// never published, with one explicit capacity outcome.
 #[test]
 fn exterior_past_max_feat_pts_drops_whole_feature() {
-    // Sized to also fit the *smaller* `nrf-mem` chunk cap (8 KB): at ~2 bytes per
-    // 8-bit-delta point, 2560 points pack to ~5 KB — over MAX_FEAT_PTS, inside MAX_CHUNK_BYTES.
+    // At ~2 bytes per 8-bit-delta point, 2560 points pack to ~5 KB — over MAX_FEAT_PTS,
+    // comfortably inside MAX_CHUNK_BYTES.
     const DECL: u16 = MAX_FEAT_PTS as u16 + 512;
     let anchor = (10, 20);
     let deltas: Vec<(i8, i8)> = vec![(1i8, 1i8); DECL as usize - 1];
@@ -164,18 +164,18 @@ fn second_pass_over_same_chunk_hits_the_cache_via_public_api() {
 
 /// LRU eviction ordering observed at the `Reader` level: once more distinct chunks are queried than
 /// the cache has slots, the least-recently-used chunk is evicted, so re-querying it misses again
-/// while a recently-touched one still hits. The cache has 64 chunk slots (reader.rs
-/// `MAP_CHUNK_SLOTS`); this drives 65 distinct chunks so exactly one is evicted, and asserts it is
+/// while a recently-touched one still hits. The cache has 4 chunk slots (reader.rs
+/// `MAP_CHUNK_SLOTS`); this drives 5 distinct chunks so exactly one is evicted, and asserts it is
 /// the oldest. Two leaves are *not* enough — this needs the full slot set, which only a public-API
 /// walk over many leaves exercises.
 #[test]
 fn lru_evicts_the_oldest_chunk_at_the_reader_level() {
     // We need more *distinct cached chunks* in one viewport than the cache has slots. An NW-chain
     // where each level hangs three leaf chunks (NE/SW/SE) off it and continues NW yields 3 leaves
-    // per level, so ~22 levels gives 65 leaves — all overlapping a whole-bbox view, and the chain
+    // per level, so a couple of levels give 5 leaves — all overlapping a whole-bbox view, and the chain
     // stays well under the depth cap (`MAX_QUADTREE_DEPTH` = 32). Every child index strictly exceeds
     // its parent's, so the well-formed `child > idx` invariant holds.
-    const SLOTS: usize = 64; // reader.rs MAP_CHUNK_SLOTS
+    const SLOTS: usize = 4; // reader.rs MAP_CHUNK_SLOTS
     const LEAVES: usize = SLOTS + 1; // 65 → exactly one eviction
     const CS: usize = 64;
 

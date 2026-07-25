@@ -49,14 +49,25 @@ use embedded_sdmmc::{Block, BlockDevice, BlockIdx, SdCard, TimeSource, Timestamp
 use obc_storage::fat_extents::{ExtentTable, SharedBlockDevice};
 use {defmt_rtt as _, panic_probe as _};
 
+// Linking nrf-mpsl (via the default `ble` feature) provides the critical-section impl; the
+// bench never inits MPSL — the impl works from reset.
+use nrf_mpsl as _;
+
 bind_interrupts!(struct Irqs {
-    SERIAL22 => spim::InterruptHandler<peripherals::SERIAL22>;
+    SERIAL00 => spim::InterruptHandler<peripherals::SERIAL00>;
 });
 
-/// The init-handshake clock (≤400 kHz SD spec; K250 is embassy's fastest in-spec step).
-const INIT_HZ: Frequency = Frequency::K250;
+/// The init-handshake clock config. SPIM00's 7-bit prescaler off the 128 MHz PLL floors at
+/// ~1.008 MHz (÷127) — `K250`/`K500`/`M1` all truncate to a zero divisor and stop SCK dead (the
+/// app's `sd.rs` has the full story). `M2` is a valid placeholder; the ÷127 floor is poked below.
+const INIT_HZ: Frequency = Frequency::M2;
+/// SPIM00's true minimum: 128 MHz / 127 ≈ 1.008 MHz, poked directly into PRESCALER for the acquire.
+const INIT_DIVISOR: u8 = 127;
 
-/// The bulk clock — `M8` only. Round 1 proved SERIAL22 can't exceed it (see the module doc).
+/// The bulk clock under test on SPIM00 — the referee for `sd::SD_FAST_HZ` (the FNV integrity
+/// guard decides). M32 failed on-glass over DK jumpers (2026-07-24, app-level reads); bench at
+/// M8 = the shipping setting. Hand-bump to M16/M32 here to probe the ceiling (esp. on the
+/// production PCB's short traces).
 const FAST_HZ: Frequency = Frequency::M8;
 
 /// Scratch depth (blocks) = the largest batch. 64 × 512 = 32 KB — lives in a `.bss` static (see
@@ -93,7 +104,7 @@ impl TimeSource for NullTime {
     }
 }
 
-/// The no-op chip-select — the real CS (P0_00) is held LOW for the session, exactly as `sd::NoCs`.
+/// The no-op chip-select — the real CS (P2_10) is held LOW for the session, exactly as `sd::NoCs`.
 struct NoCs;
 impl embedded_hal::digital::ErrorType for NoCs {
     type Error = core::convert::Infallible;
@@ -207,8 +218,23 @@ async fn main(_spawner: Spawner) {
     let mut sd_cfg = SpiConfig::default();
     sd_cfg.frequency = INIT_HZ;
     sd_cfg.orc = 0xFF;
-    let mut spi = Spim::new(p.SERIAL22, Irqs, p.P1_11, p.P1_07, p.P1_06, sd_cfg);
-    let mut cs = Output::new(p.P0_00, Level::High, OutputDrive::Standard);
+    let mut spi = Spim::new(p.SERIAL00, Irqs, p.P2_06, p.P2_09, p.P2_08, sd_cfg);
+    // The ~1 MHz init floor (see INIT_DIVISOR): poked raw — no embassy Frequency reaches it.
+    embassy_nrf::pac::SPIM00.prescaler().write(|w| w.set_divisor(INIT_DIVISOR));
+    // Mirror main.rs's fast-pad setup: 32 MHz needs extra-high drive (E0/E1) on SCK/MOSI + the
+    // highest HS-pad slew — without it the timing budget caps near 16 MHz.
+    {
+        use embassy_nrf::pac;
+        use embassy_nrf::pac::gpio::vals::Drive;
+        for pin in [6usize, 8, 9] {
+            pac::P2_S.pin_cnf(pin).modify(|w| {
+                w.set_drive0(Drive::E);
+                w.set_drive1(Drive::E);
+            });
+        }
+        pac::GPIOHSPADCTRL_S.bias().modify(|w| w.set_hsbias(3));
+    }
+    let mut cs = Output::new(p.P2_10, Level::High, OutputDrive::Standard);
     cs.set_high();
     let _ = spi.blocking_write(&[0xFFu8; 10]);
     cs.set_low();

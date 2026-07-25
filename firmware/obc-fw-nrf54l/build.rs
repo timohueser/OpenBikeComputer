@@ -36,18 +36,21 @@ use std::process::Command;
 mod contract {
     /// M33 SRAM base — the fixed origin the carve is measured from.
     pub const SRAM_BASE: usize = 0x2000_0000;
-    /// Top of the 256 KB SRAM — the carve grows down from here.
-    pub const SRAM_TOP: usize = 0x2004_0000;
+    /// Top of the carve — NOT the physical 512 KB top (0x2008_0000): the datasheet reserves the
+    /// last ~704 B for the VPR saved context (0x2007_FD40) + ProtectedRAM/KMU (0x2007_FF00), and
+    /// BLE's CRACEN/KMU path may use ProtectedRAM — so the whole top 4 KB page is left unmapped
+    /// rather than shared with them.
+    pub const SRAM_TOP: usize = 0x2007_F000;
     /// FLPR execution base: the M33 copies the blob here and points `INITPC` at it. Everything from
     /// here up is the FLPR's (image + stack up to [`CONTROL_ADDR`], then the SHARED page), so the
     /// M33's carved `RAM` region ends here. **4 KB** for the image + stack: the scan blob is ~820 B
     /// with a shallow leaf-call stack (no recursion, no .bss), so 4 KB is still generous — shrunk
     /// from 8 KB when the on-glass stack margin ran out (#347: the M33's residual main stack is
     /// `RAM top − statics`, and the deep-render peak needs every KB this carve doesn't).
-    pub const FLPR_RAM_BASE: usize = 0x2003_E000;
+    pub const FLPR_RAM_BASE: usize = 0x2007_D000;
     /// The SHARED handshake page base = the control block's address (both cores reach it by this
     /// hardcoded address, never via a linker) = the top of the FLPR's stack.
-    pub const CONTROL_ADDR: usize = 0x2003_F000;
+    pub const CONTROL_ADDR: usize = 0x2007_E000;
     /// Dirty-row span-list cap — the `spans[]` length on **both** sides of the contract.
     pub const MAX_DIRTY_SPANS: usize = 16;
     /// Control-block layout/version tag — the FLPR refuses to act otherwise. **v2** (issue #347):
@@ -63,10 +66,9 @@ mod contract {
 }
 
 /// The carved `memory.x` for the FLPR builds, generated from [`contract`]: the M33 keeps SRAM below
-/// [`contract::FLPR_RAM_BASE`] (248 KB); the top 8 KB is the FLPR's — a 4 KB image/stack + the
-/// 4 KB SHARED handshake page. (F0's bring-up `FLPR_RAM` was 28 KB; #165 shrank it to 8 KB, and
-/// #347 to 4 KB — the scan blob is ~820 B with a shallow leaf stack, and the M33's deep-render
-/// stack margin needs every carved KB back.) The M33 reaches the FLPR region only by hardcoded address (`memcpy` + the
+/// [`contract::FLPR_RAM_BASE`] (500 KB on the LM20); above it sit the FLPR's 4 KB image/stack +
+/// the 4 KB SHARED handshake page, and the top 4 KB stays unmapped (the VPR-context/ProtectedRAM
+/// reservation — see [`contract::SRAM_TOP`]). The M33 reaches the FLPR region only by hardcoded address (`memcpy` + the
 /// handshake word), never via the linker, so shrinking `RAM` is all that's needed here. It *also*
 /// carves the RRAM tail (epic #615 S2, #617): the app is linked at **0x8000** — the 32 KB below
 /// belong to the `obc-boot` bootloader (`firmware/obc-boot`, its own static `memory.x` — keep the
@@ -75,9 +77,9 @@ mod contract {
 ///
 /// ```text
 ///   0x0000_0000  obc-boot          32 KB
-///   0x0000_8000  app slot        1484 KB   (FLASH below)
-///   0x0017_B000  BOOT_STATE page    4 KB
-///   0x0017_C000  SETTINGS page      4 KB   (unchanged address — settings survive the carve)
+///   0x0000_8000  app slot        1996 KB   (FLASH below)
+///   0x001F_B000  BOOT_STATE page    4 KB
+///   0x001F_C000  SETTINGS page      4 KB   (top of the LM20's 2036 KB RRAM)
 /// ```
 fn flpr_memory_x() -> String {
     use contract::*;
@@ -85,9 +87,9 @@ fn flpr_memory_x() -> String {
         "\
 MEMORY
 {{
-    FLASH      : ORIGIN = 0x00008000, LENGTH = 0x173000 /* app slot (1484K) above the 32K obc-boot (#617) */
-    BOOT_STATE : ORIGIN = 0x0017B000, LENGTH = 4K    /* DFU boot-state handoff page (#617, OBCU_Spec.md §2) */
-    SETTINGS   : ORIGIN = 0x0017C000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
+    FLASH      : ORIGIN = 0x00008000, LENGTH = 0x1F3000 /* app slot (1996K) above the 32K obc-boot (#617) */
+    BOOT_STATE : ORIGIN = 0x001FB000, LENGTH = 4K    /* DFU boot-state handoff page (#617, OBCU_Spec.md §2) */
+    SETTINGS   : ORIGIN = 0x001FC000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
     RAM        : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
     /* Reserved for the FLPR (not linked by the M33; see the generated flpr.ld):
          FLPR_RAM {FLPR_RAM_BASE:#010X} .. {CONTROL_ADDR:#010X}  ({flpr_kb}K)   FLPR image + stack (INITPC = {FLPR_RAM_BASE:#010X})
@@ -117,26 +119,15 @@ fn main() {
 
     // The map plane compiles into **every** build (issue #270): map + BLE coexist in one image — the
     // `ble` build streams the map *and* serves the companion link, both driving the shared SD +
-    // settings store, so the old text-only BLE status UI is retired. The `nrf-mem` caps are trimmed
-    // (PR #421) so the combined resident set fits the 256 KB DK; the budget assert in main.rs is the
-    // binding check. The map path is unconditional — `has_nav` (below) is the only build-shape cfg,
-    // and it keys purely on `ble`.
+    // settings store, so the old text-only BLE status UI is retired. The budget assert in main.rs
+    // is the binding check.
 
-    // The on-device POI router (epic #116, R4) — present on every build **except** `ble`. Its two
-    // `.bss` statics (`NavScratch` ~10.2 KB + `NavTileCache` ~4.1 KB) don't fit next to the BLE stack
-    // on the 256 KB DK: with them the combined image's stack region lands at ~33.9 KB, ~1.9 KB
-    // **below** the ~35.8 KB measured deep-render peak — a silent on-glass overflow — and the
-    // acceptance-neutral `nrf-mem` trims are exhausted (PR #496's RAM table). A 256 KB-DK
-    // artifact, the same compile-time-fact pattern as main.rs's `MAP_RESIDENT`/`BLE_RESIDENT`
-    // arbitration: the 512 KB LM20 deletes this gate and the router rides every build. The gated
-    // ride loop still drains a create-route request and answers the generic failure tier
-    // ("Couldn't find a route."), so the POI confirm never hangs.
-    let ble = env::var_os("CARGO_FEATURE_BLE").is_some();
-    let has_nav = !ble;
+    // The on-device POI router (epic #116, R4) rides **every** build on the LM20 — `has_nav` was
+    // a 256 KB-L15-DK gate (the NavScratch/NavTileCache statics didn't fit beside the BLE stack
+    // there) and is now unconditionally on; the cfg stays so the `#[cfg(has_nav)]` sites need no
+    // churn, but no build shape turns it off any more.
     println!("cargo:rustc-check-cfg=cfg(has_nav)");
-    if has_nav {
-        println!("cargo:rustc-cfg=has_nav");
-    }
+    println!("cargo:rustc-cfg=has_nav");
 
     fs::write(out.join("memory.x"), flpr_memory_x()).unwrap();
     println!("cargo:rustc-link-search={}", out.display());

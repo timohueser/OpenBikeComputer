@@ -34,9 +34,9 @@ cortex-m-rt = "0.7"
 
 # Blocking HAL only — **no executor, no time driver, no gpiote**: this crate needs exactly
 # GPIO for the LED codes, blocking Spim for the SD card, and Rramc for the app-slot/state
-# writes. `nrf54l15-app-s` matches the board crate's die selection; the version pin matches
+# writes. `nrf54lm20-app-s` matches the board crate's die selection; the version pin matches
 # its Cargo.lock (embassy-nrf 0.11.0).
-embassy-nrf = { version = "0.11.0", features = ["nrf54l15-app-s"] }
+embassy-nrf = { version = "0.11.0", features = ["nrf54lm20-app-s", "unstable-pac"] }
 # `SetConfig` only — the seam for re-clocking the SD bus 250 kHz → 8 MHz after card init
 # (same as the board crate's sd::init). No default features (no time driver here).
 embassy-embedded-hal = { version = "0.6.0", default-features = false }

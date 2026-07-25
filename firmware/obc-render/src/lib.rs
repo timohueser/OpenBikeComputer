@@ -36,63 +36,29 @@ use fill::fill_polygon_proj;
 use stroke::{draw_line, Stroker};
 
 // Per-frame buffer capacities. Statically allocated (heapless::Vec); growing one costs boot
-// RAM, not per-frame. Two memory profiles select the caps:
-//   - default (512 KB nRF54LM20 / sim / tests): the shipping-part profile. The renderer scratch
-//     (`MCU_RENDERER_BYTES` below, ~90 KB) is sized to the LM20's 512 KB budget alongside the
-//     75 KB RGB222 framebuffer, the map/route caches, the on-device router, the BLE stack (issue
-//     #270 — map + BLE share one image), and a larger stack reserve than the 256 KB DK can spare
-//     (the DK's ~36 KB residual stack has overflowed the deep render path more than once). The
-//     **simulator builds this profile**, so it renders exactly what the LM20 will — features start
-//     dropping at the same busy coarse zooms (deliberate: an over-dense frame is slow on-glass, so
-//     the sim shows that limit rather than an unattainable host-fidelity map).
-//   - `nrf-mem`: constrained 256 KB nRF54L15-DK profile — culled hard (~8.5 KB scratch after
-//     #677: the caps were quartered again so the freed `.bss` becomes MSP stack — the BLE
-//     pairing path (trouble-host's synchronous software-P256 SMP) needs the headroom, and
-//     on-glass pairing was the binding constraint, not map fidelity). The board crate's budget
-//     assert is the binding check. The cost: features drop at busier coarse zooms than on the
-//     LM20 (see [`render`]); the shipping 512 KB LM20 profile is untouched.
-// On `nrf-mem` even the single-feature decode buffers (`MAX_DECODE_*`) are trimmed below the
-// format's per-feature bound; such a feature is dropped whole and counted explicitly.
+// RAM, not per-frame. One profile for everything: the shipping 512 KB nRF54LM20 budget, which the
+// simulator and tests build too, so they render exactly what the device will — features start
+// dropping at the same busy coarse zooms (deliberate: an over-dense frame is slow on-glass, so the
+// sim shows that limit rather than an unattainable host-fidelity map). The renderer scratch
+// (`MCU_RENDERER_BYTES` below, ~90 KB) is sized alongside the 75 KB RGB222 framebuffer, the
+// map/route caches, the on-device router, the BLE stack (issue #270 — map + BLE share one image),
+// and a ~75 KB stack reserve. The board crate's budget assert is the binding fit check.
+// (The old `nrf-mem` feature — the culled 256 KB nRF54L15-DK profile — was deleted when the LM20
+// hardware arrived; its history lives in git and the #677/#270 discussions.)
 
 /// Maximum visible features per frame (each is a [`Span`] — 14 bytes). Saturates first at coarse
 /// zoom (many small features).
-#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_SPANS: usize = 1152;
-// Trimmed hard on nrf-mem: the ride loop's deep per-frame render path (per-frame source adapter +
-// streamed-chunk decode over embedded-sdmmc) needs a large MSP stack that must coexist with the
-// resident `RouteCache`/`RouteIndex` — and, on the combined image, the BLE stack — on the 256 KB
-// part; freeing scratch buys that headroom.
-#[cfg(feature = "nrf-mem")]
-pub const MAX_SPANS: usize = 96;
 
 /// Maximum total vertices across all visible features per frame (8 bytes each).
-///
-/// Known `nrf-mem` oddity, kept deliberately: there the frame cap (768) sits *below* the
-/// single-feature decode cap [`MAX_DECODE_POINTS`] (1024), so a decoded max-size feature can
-/// never be admitted to the frame buffers — the capacity check drops it every frame, and it
-/// counts into `features_dropped`. It's undroppable-by-design: a 256 KB-DK artifact (the shipping
-/// LM20 relaxes the trim), and real map features rarely approach these sizes. Do not "fix" it by
-/// raising this cap.
-#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_POINTS: usize = 4768;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_POINTS: usize = 192;
 
 /// Maximum total ring entries across all visible features per frame.
-#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_FRAME_RINGS: usize = 1024;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_FRAME_RINGS: usize = 48;
 
-/// Maximum vertices for a single feature during decode (reused per feature). On the host this
-/// equals the OBCM production source's maximum feature size — full format fidelity. On `nrf-mem` it is
-/// trimmed **below the format's per-feature bound**: a feature past the cap is consumed but dropped
-/// whole and reported in [`RenderStats::feature_decode_capacity_drops`]. A deliberate 256 KB-DK compromise (issue #270 —
-/// the map path must coexist with the BLE stack); the 512 KB LM20 restores the format bound.
-#[cfg(not(feature = "nrf-mem"))]
+/// Maximum vertices for a single feature during decode (reused per feature). Equals the OBCM
+/// production source's maximum feature size — full format fidelity.
 pub const MAX_DECODE_POINTS: usize = 2048;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_DECODE_POINTS: usize = 256;
 
 /// Maximum rings for a single feature during decode. Matches the production source bound.
 pub const MAX_DECODE_RINGS: usize = 32;
@@ -101,10 +67,7 @@ pub const MAX_DECODE_RINGS: usize = 32;
 /// **every** vertex of a decoded feature into this buffer before walking it, so it must hold a
 /// whole decode buffer (invariant asserted below; dropping under it makes `fill_polygon` index
 /// past the projected points).
-#[cfg(not(feature = "nrf-mem"))]
 pub const MAX_SCREEN_POINTS: usize = 2048;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_SCREEN_POINTS: usize = 256;
 
 /// Maximum scanline crossings buffered for one polygon-fill row. A row whose
 /// outline crossings exceed this is skipped rather than mis-filled (see
@@ -121,13 +84,12 @@ const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
 // (`screen[base..base + len]`), so it must hold at least a full decode buffer or it indexes
 // past the points and panics.
 const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
-// These values are pinned by the production-source integration tests. On `nrf-mem`, the deliberate
-// trim below that source bound remains an explicit whole-feature drop.
+// These values are pinned by the production-source integration tests.
 
 /// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
 /// without re-deriving the formula. (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on
-/// the MCU.) ~90 KB on the default (512 KB LM20 / sim) profile, 8,352 bytes on `nrf-mem`.
+/// the MCU.) ~90 KB.
 pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
     + MAX_FRAME_POINTS * 8

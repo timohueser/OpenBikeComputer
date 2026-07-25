@@ -26,16 +26,11 @@ use obc_formats::obcr::{MAGIC, POINT_RECORD_LEN, VERSIONS, VERSION_V2};
 /// + truncates a longer file rather than overflowing.
 pub const MAX_WAYPOINTS: usize = 32;
 /// Resident chunk-index capacity. A route past the cap fails conversion with
-/// [`Error::TooLarge`] rather than being silently coarsened (full profile: ~131 k points,
-/// ~24 KB index; `nrf-mem`: 128 chunks, ~33 k points, ~6 KB). The `nrf-mem` trim is the
-/// tightest RAM knob because a `RouteIndex` is held resident across frames *and*
+/// [`Error::TooLarge`] rather than being silently coarsened (~131 k points, ~24.6 KB index).
+/// Matches the host packer's cap, so any route the packer emits loads on the device. Note
 /// [`read`](RouteIndex::read) builds the index/`cum_seg` `Vec`s on the stack before returning
-/// by value — a 24 KB index would overflow the 256 KB part's stack during that build. The
-/// host packer keeps 512, so a route packed past 128 chunks won't load on `nrf-mem` firmware.
-#[cfg(not(feature = "nrf-mem"))]
+/// by value — the ~24.6 KB transient is real; the LM20 stack reserve is sized with it in mind.
 pub const MAX_ROUTE_CHUNKS: usize = 512;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_ROUTE_CHUNKS: usize = 128;
 const _: () = assert!(MAX_ROUTE_CHUNKS < u16::MAX as usize);
 /// Max points a single chunk may hold (bounds the per-chunk decode buffer).
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
@@ -217,7 +212,7 @@ impl RouteIndex {
     /// Parse the header and chunk index from `src`. Validates magic/version and that
     /// every chunk lies within the source and within the resident buffers.
     ///
-    /// Returns the ~6.7 KB index **by value** — fine on a std host (the sim, tests, `obc-pack`),
+    /// Returns the ~24.6 KB index **by value** — fine on a std host (the sim, tests, `obc-pack`),
     /// but on the MCU that value transits the stack right where the ride pass is deepest. A
     /// board caller must use [`read_into`](Self::read_into) on its resident slot instead: the
     /// by-value return is exactly what overflowed the 44 KB main stack on the 256 KB DK when the
@@ -676,13 +671,9 @@ fn next_route_identity() -> Result<u32, Error> {
 
 /// Resident decoded-route-chunk cache slots. Only the chunks crossing the view are decoded,
 /// so a small LRU holds a frame's working set, sized to also absorb a wide zoomed-out view of
-/// a winding route. `nrf-mem` trims to 2 slots (~6 KB) — the matcher's chunk plus one more for
-/// the riding-zoom view, accepting re-decodes on a wide zoomed-out pan (issue #270: the cull
-/// makes room for the BLE stack next to the map path on the 256 KB DK).
-#[cfg(not(feature = "nrf-mem"))]
-const ROUTE_CHUNK_SLOTS: usize = 32;
-#[cfg(feature = "nrf-mem")]
-const ROUTE_CHUNK_SLOTS: usize = 2;
+/// a winding route: the matcher's chunk, the riding-zoom view, and one spare for a zoomed-out
+/// pan (3 × ~3 KB ≈ 9 KB; a very wide view of a winding route still re-decodes, accepted).
+const ROUTE_CHUNK_SLOTS: usize = 3;
 
 /// One cache slot: a decoded chunk's points, keyed by chunk index, with LRU recency. The owning
 /// route identity lives once on [`RouteCacheInner`]. The key is stored as `index + 1`, reserving

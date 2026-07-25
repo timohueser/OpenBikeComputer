@@ -244,7 +244,7 @@ fn sparse_index_chain(levels: usize) -> Vec<u32> {
 
 #[test]
 fn second_index_walk_failure_never_reinterprets_unplaced_stubs() {
-    const LEVELS: usize = 12; // beyond both the 8-slot host and 4-slot nrf-mem index caches
+    const LEVELS: usize = 24; // beyond the 16-block index cache
     let bytes = build_file(
         (0, 0, 10_000, 10_000),
         STYLES,

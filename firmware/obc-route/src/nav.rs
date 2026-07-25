@@ -191,24 +191,13 @@ pub enum NavError {
 /// `came_from` as a slot index (slots never move — open addressing, no deletion)
 /// both saves 2 B and turns the emit chain-walk into direct indexing.
 ///
-/// Per-target `N` (the const must stay trivial to bump):
-/// - **host/sim** (`not(nrf-mem)`): 1536 nodes × 26 B = 39 936 B — deliberately
-///   **emulating the final device's (LM20) 40 kB nav-budget cap** (Timo, 2026-07-06)
-///   rather than using free host RAM, so the sim's plannable range **is** the final
-///   device's range by construction. (The LM20's map gets RAM priority — real maps
-///   are far bigger than the fixtures — with 60 kB the absolute nav ceiling only if
-///   the map turns out not to need the space.) The sim still heap-allocates the
-///   table (a stack local would trap the wasm build).
-/// - **device (DK)** (`nrf-mem`): 768 nodes ≈ 20 KB of `.bss`. Budget math
-///   (2026-07-06, DK debug-uart build): stack region 69 736 B, pre-nav render peak
-///   35 808 B; the flattened plan frame's excursion is assumed ≤ render peak +
-///   ~8 KB ≈ 44 KB; keeping ≥ 6 KB of margin leaves ~20 KB for this table (the ~4 KB
-///   tile cache rides the same nav budget), i.e. ~800 slimmed nodes — chosen
-///   conservatively at 768; the coordinator re-measures on-glass and bumps.
-#[cfg(not(feature = "nrf-mem"))]
+/// `N` = 1536 nodes × 26 B = 39 936 B — the device's (LM20) **40 kB nav-budget cap**
+/// (Timo, 2026-07-06), shared by host/sim/device so the sim's plannable range **is**
+/// the device's range by construction. (The map gets RAM priority — real maps are far
+/// bigger than the fixtures — with 60 kB the absolute nav ceiling only if the map
+/// turns out not to need the space.) The sim still heap-allocates the table (a stack
+/// local would trap the wasm build).
 pub const NAV_MAX_NODES: usize = 1536;
-#[cfg(feature = "nrf-mem")]
-pub const NAV_MAX_NODES: usize = 768;
 
 /// `meta` bit 15: the slot is occupied (the open-addressing "live" marker).
 const META_OCCUPIED: u16 = 1 << 15;
@@ -354,12 +343,8 @@ pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     eps_den: u16,
 }
 
-// Per-target table budget, enforced at compile time: the device table must stay a
-// ~20 KB `.bss` static (the R4 budget math above); slot indices — heap positions and
+// Table budget, enforced at compile time; slot indices — heap positions and
 // `came_from` — are 14-bit, with `HEAP_NONE` left over as the sentinel.
-#[cfg(feature = "nrf-mem")]
-const _: () = assert!(core::mem::size_of::<NavScratch<NAV_MAX_NODES>>() <= 20 * 1024, "NavScratch busts ~20 kB");
-#[cfg(not(feature = "nrf-mem"))]
 const _: () =
     assert!(core::mem::size_of::<NavScratch<NAV_MAX_NODES>>() <= 40 * 1024, "NavScratch busts the LM20 40 kB cap");
 const _: () = assert!(NAV_MAX_NODES < HEAP_NONE as usize, "table indices are 14-bit (meta packs flags above them)");

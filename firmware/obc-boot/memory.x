@@ -4,11 +4,12 @@
  * ../obc-fw-nrf54l/build.rs — keep the two in agreement):
  *
  *   0x0000_0000  obc-boot          32 KB   (this crate — FLASH below)
- *   0x0000_8000  app slot        1484 KB   (the board crate, linked at 0x8000)
- *   0x0017_B000  BOOT_STATE page    4 KB   (the obc-dfu handoff page — read here)
- *   0x0017_C000  SETTINGS page      4 KB   (the app's persistent settings, #193 — never ours)
+ *   0x0000_8000  app slot        1996 KB   (the board crate, linked at 0x8000)
+ *   0x001F_B000  BOOT_STATE page    4 KB   (the obc-dfu handoff page — read here)
+ *   0x001F_C000  SETTINGS page      4 KB   (the app's persistent settings, #193 — never ours)
  *
- * RAM is the full 256 KB: the bootloader runs alone (the app re-initialises RAM from its own
+ * RAM is the full 512 KB (minus the chip's top-of-RAM VPR/ProtectedRAM reservation, which the
+ * bootloader also never touches — it keeps the same 500 KB extent as the app for simplicity): the bootloader runs alone (the app re-initialises RAM from its own
  * reset path after the jump, so nothing here needs to survive). No FLPR carve — the bootloader
  * never touches the FLPR coprocessor; the app starts it itself.
  *
@@ -18,8 +19,8 @@
 MEMORY
 {
     FLASH      : ORIGIN = 0x00000000, LENGTH = 32K
-    BOOT_STATE : ORIGIN = 0x0017B000, LENGTH = 4K   /* boot-state handoff page (OBCU_Spec.md §2) */
-    RAM        : ORIGIN = 0x20000000, LENGTH = 256K
+    BOOT_STATE : ORIGIN = 0x001FB000, LENGTH = 4K   /* boot-state handoff page (OBCU_Spec.md §2) */
+    RAM        : ORIGIN = 0x20000000, LENGTH = 500K
 }
 
 /* Base of the boot-state page — same symbol convention as the app's `__settings_base`

@@ -182,7 +182,7 @@ pub(crate) fn firmware_revision() -> heapless09::String<24> {
 
 /// The DIS **Hardware Revision** string: the board id. The DK today; the LM20 board crate changes this
 /// const when it lands.
-pub(crate) const HARDWARE_REVISION: &str = "nrf54l15-dk";
+pub(crate) const HARDWARE_REVISION: &str = "nrf54lm20-dk";
 
 /// A **static random** address derived from the factory device id (top two bits must be `11` per the
 /// spec), so every board advertises a stable, distinct address.

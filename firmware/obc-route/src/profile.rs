@@ -30,20 +30,14 @@ use obc_formats::io::{ByteSource, Error};
 /// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
 /// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
 /// must stay even for the pair-merge downsample). The one RAM/zoom-depth knob: doubling it
-/// doubles both (~16 KB for the whole pyramid at 2048). `nrf-mem` trims to 256 (~2.3 KB) for the
-/// narrow panel — one zoom-in step over the 240-px base view — freeing RAM for the renderer, the
-/// ride loop's resident route index/cache, and the BLE stack sharing the 256 KB DK (issue #270).
-#[cfg(not(feature = "nrf-mem"))]
-pub const PROFILE_COLS: usize = 2048;
-#[cfg(feature = "nrf-mem")]
-pub const PROFILE_COLS: usize = 256;
+/// doubles both (~4 KB for the whole pyramid at 512 — one clean zoom-in step over the 240-px
+/// panel; the freed RAM funds the all-features build's ≥65 KB stack reserve).
+pub const PROFILE_COLS: usize = 512;
 
 /// Per-level column counts, finest first — each a clean halving so the pair-merge downsample
-/// lands exactly. On the full profile the coarsest level (256) still covers the 240-px panel,
-/// so a full-route draw walks ~256 columns, not the 2048-wide base; on `nrf-mem` the *base*
-/// (256) is what just covers the panel — the full-route draw uses it directly and the coarser
-/// levels serve only narrower draws ([`Profile::window`] takes the coarsest level that still
-/// fills the target pixels, so nothing upsamples chunkily).
+/// lands exactly. The coarsest levels sit under the 240-px panel, so a full-route draw walks
+/// the 256 level, not the 512-wide base ([`Profile::window`] takes the coarsest level that
+/// still fills the target pixels, so nothing upsamples chunkily).
 const LEVEL_COLS: [usize; 4] = [PROFILE_COLS, PROFILE_COLS / 2, PROFILE_COLS / 4, PROFILE_COLS / 8];
 /// Number of pyramid levels (length of [`LEVEL_COLS`]).
 const NUM_LEVELS: usize = LEVEL_COLS.len();

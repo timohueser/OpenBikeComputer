@@ -3,6 +3,10 @@ name = "obc-fw-nrf54l"
 version = "0.1.0"
 edition = "2021"
 publish = false  # board firmware — not published to crates.io
+# `cargo run --release` = the firmware. Needed since `ble` became a default feature: that made
+# `ble_central_repro`'s `required-features` satisfiable in a default build, so cargo could no
+# longer pick a binary on its own (the diagnostic bins are explicit `--bin` runs).
+default-run = "obc-fw-nrf54l"
 description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + the reflective LS021B7DD02 memory-LCD driven by the FLPR coprocessor). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
 
 # Standalone crate with its own (empty) workspace table so the firmware/ host
@@ -28,19 +32,25 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # without a sky view build `--features synth` (the square-loop stand-in) or `--features debug-uart`.
 # Build with `cargo run --release` (add `--features debug-uart` to stream a recorded ride from a host).
 # See `firmware/docs/ls021-flpr.md` + the crate README.
-default = ["obc-platform/sensor-link", "obc-platform/input-wait", "cs-single-core", "sd-bench"]
+#
+# **The default build IS the all-features build** (LM20, 2026-07-23): map + ride loop + on-device
+# router + the full BLE stack in one image — there is no separate non-BLE shape any more (the
+# 512 KB part fits them together; the budget assert + measured-residual notes in main.rs are the
+# margins). The critical-section impl therefore comes from MPSL on every normal build;
+# `cs-single-core` remains only as an escape hatch for a hypothetical radio-less bring-up build
+# (`--no-default-features --features cs-single-core,...`).
+default = ["ble", "sd-bench"]
 
 # The critical-section impl for every non-BLE build (what used to be the always-on
 # `cortex-m/critical-section-single-core`). A **feature** because it is mutually exclusive with
 # the MPSL-provided impl the BLE stack requires (`nrf-mpsl/critical-section-impl` — MPSL's radio
 # timing forbids global-interrupt-disable critical sections, and two impls = duplicate link
-# symbols). The `ble` build therefore builds with `--no-default-features --features ble` (see
-# the `ble` feature below).
+# symbols). Not part of any default build since `ble` became the default; kept as the
+# escape hatch for a radio-less bring-up build.
 cs-single-core = ["cortex-m/critical-section-single-core"]
 
-# Marker for the default-only SD throughput diagnostic. `required-features` on the bin keeps it
-# out of `--no-default-features --features ble`, whose MPSL critical-section implementation is
-# intentionally incompatible with this standalone non-BLE harness.
+# Marker for the SD throughput diagnostic bin. Rides the default (ble) feature set — MPSL's
+# critical-section impl works from reset without MPSL init, so the harness needs nothing special.
 sd-bench = []
 
 # Replace the real GPS/altimeter with the always-compiled `SynthLocation` square-loop stand-in (no
@@ -77,17 +87,12 @@ com-hw = []
 # table costs them no flash or RAM. See `firmware/ARCHITECTURE_RESOURCE_BASELINE.md`.
 resource-report = []
 
-# The BLE build (issue #270, epic #267): fold the nrf-sdc/MPSL/TrouBLE stack into `main.rs`
-# behind one feature (the A1 spike bin is retired). Build with
-#   cargo run --release --no-default-features --features ble
-# `--no-default-features` is **mandatory**: it swaps the critical-section impl from `cortex-m`'s
-# global-irq-disable one (`cs-single-core`) to MPSL's, which the radio's timing requires — a
-# `compile_error!` in main.rs catches the wrong invocation. The feature re-enables the two
-# obc-platform default legs itself, so nothing else is lost with `--no-default-features`.
-# Map + BLE run **in one image** (#270): `ble::run` is spawned beside the ride loop and both
-# drive the shared SD + settings store, fitting the 256 KB DK on the culled `nrf-mem` caps (the
-# budget assert + the residual-stack margin arbitrate at compile time; the 512 KB LM20 relaxes
-# everything). Composes with `debug-uart`/`synth` for a headless ride beside a live link.
+# The all-features stack (issue #270, epic #267): nrf-sdc/MPSL/TrouBLE folded into `main.rs`.
+# **Part of `default` since the LM20 retarget** — map + router + BLE run in one image, sharing
+# the SD + settings store. MPSL provides the critical-section impl (its radio timing forbids
+# global-irq-disable critical sections); a `compile_error!` in main.rs rejects `ble` +
+# `cs-single-core` together. Composes with `debug-uart`/`synth` for a headless ride beside a
+# live link.
 ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "dep:heapless09", "dep:obc-ble", "obc-platform/sensor-link", "obc-platform/input-wait"]
 
 # The `SoftdeviceController: 50:701` isolation harness (epic #707): MPSL + SDC + trouble-host
@@ -107,12 +112,12 @@ name = "sd_bench"
 required-features = ["sd-bench"]
 
 [dependencies]
-# embassy HAL for the nRF54L15 app core. `nrf54l15-app-s` selects the secure-app die
+# embassy HAL for the nRF54L15 app core. `nrf54lm20-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
 # embassy-time with the GRTC (the nRF54L has no legacy RTC time-driver); `gpiote` is the
 # GPIO task/event peripheral the button input path (#126) needs; `time` pulls the
 # embassy-time integration. Pinned to embassy-nrf 0.11.0 (first release with nRF54L15).
-embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54l15-app-s", "time-driver-grtc", "gpiote", "time"] }
+embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54lm20-app-s", "time-driver-grtc", "gpiote", "time", "unstable-pac"] }
 # embassy-executor 0.10. `executor-thread`
 # is the thread-mode executor `#[embassy_executor::main]` runs on; `executor-interrupt` adds the
 # high-priority `InterruptExecutor` the two-plane input/overlay plane runs on (#126 — pended from
@@ -184,7 +189,7 @@ embedded-graphics = "0.8"
 # so this single edge trims every shared crate's resident buffers for the 256 KB part; Cargo's
 # feature unification then applies it to the obc-render/obc-reader/obc-route edges below (and
 # obc-platform's transitive ones) too. The board crate is the nRF, so it's always on.
-obc-app = { path = "../obc-app", features = ["nrf-mem"] } # App/init_map + render_map (#125); MAX_ROUTES / TrackAction / TrackSink for the SD `Storage`; the budget assert's App/cache sizes
+obc-app = { path = "../obc-app" } # App/init_map + render_map (#125); MAX_ROUTES / TrackAction / TrackSink for the SD `Storage`; the budget assert's App/cache sizes
 obc-ports = { path = "../obc-ports" } # Semantic sensor/input/track/settings contracts implemented by board composition.
 obc-formats = { path = "../obc-formats" } # OBCR `NAME_CAP` (route/ride name cap) for the SD store's resident name buffers.
 obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the N4 map path renders from (#125)
@@ -212,18 +217,20 @@ heapless = "0.8"
 # --- The BLE stack (issue #270; pins proven by the #269 spike) — all optional, pulled in only by `ble` above ---
 # Nordic's SoftDevice Controller + MPSL, via alexmoon/nrf-sdc's Rust bindings. The crates.io
 # releases (nrf-sdc 0.3 / nrf-mpsl 0.3) predate nRF54L support *and* pin embassy-nrf 0.7, so this
-# is a **git pin**: main (unreleased 0.4.0) grows the `nrf54l15-app-s` feature and targets exactly
+# is a **git pin**: main (unreleased 0.4.0) grows the `nrf54lm20-app-s` feature and targets exactly
 # the embassy set this crate already ships (embassy-nrf 0.11 / embassy-sync 0.8) — no embassy bump
-# or patch needed. Pinned to the same rev TrouBLE's `examples/nrf54` pins, so the trio is a proven
-# combination. The device is peripheral-only (phone connects to us), but `central` must be on
+# or patch needed. Rev pinned at **f54b638** (2026-07-02, "use dedicated nrf54lm MPSL lib for
+# nRF54LM20A"): earlier revs mapped the LM20 to the generic `nrf54l` (= nRF54L15) MPSL library,
+# whose peripheral map differs — `mpsl_init` busfaulted at `0x5004_7004` (the L15's ECB00; the
+# LM20 moved it to 0x5004_B000) on every boot of the LM20-DK. Same embassy set, so drop-in. The device is peripheral-only (phone connects to us), but `central` must be on
 # anyway: trouble-host's *unconditional* Controller bound includes `LeCreateConnCancel` (its
 # cleanup path issues it even on peripheral-only hosts), and only the multirole SDC lib variant
 # exports that symbol — `peripheral` alone is a link error. Costs flash, not RAM (the Builder
 # never enables central roles, so the controller's memory stays peripheral-sized).
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", features = ["defmt", "peripheral", "central", "nrf54l15-app-s"], optional = true }
+nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "peripheral", "central", "nrf54lm20-app-s"], optional = true }
 # `critical-section-impl` must live on nrf-mpsl (it *provides* the critical-section impl on
 # nRF54L, replacing cortex-m's `critical-section-single-core` — see the cortex-m dep note below).
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", features = ["defmt", "critical-section-impl"], optional = true }
+nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "critical-section-impl"], optional = true }
 # The HCI types nrf-sdc's controller trait + trouble-host speak; same ^0.9 both resolve.
 bt-hci = { version = "0.9", default-features = false, features = ["defmt"], optional = true }
 # The BLE host (released 0.7 pins embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 —
