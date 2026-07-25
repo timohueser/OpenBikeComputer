@@ -21,8 +21,14 @@
 #![no_std]
 #![no_main]
 
+// The real driver modules, pulled in by path (this is a `bin`, not a lib consumer). A checker
+// this small exercises only the panel-bring-up subset of each, so the items the app uses and it
+// doesn't — `Ls021Flpr::reset_diff`, the carve constants the budget assert reads — are dead here
+// by construction, not by accident.
+#[allow(dead_code)]
 #[path = "../com.rs"]
 mod com;
+#[allow(dead_code)]
 #[path = "../ls021_flpr.rs"]
 mod ls021_flpr;
 
