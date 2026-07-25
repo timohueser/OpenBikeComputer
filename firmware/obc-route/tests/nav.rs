@@ -993,9 +993,8 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
 /// the extract, so pinning against the extract bbox is what survives a re-pack). Verified
 /// divergent on **both** the currently-committed fixture and the canonical re-pack of PR #549
 /// (identical road/mtb lengths, 8 867 m / 6 051 m, on the two packs), so the test stays green
-/// whichever lands first — and verified under **both** `NAV_MAX_NODES` sizes (the default 1536
-/// host table and the `nrf-mem` 768 one this test gets under `--all-features` feature
-/// unification), so both plans stay well inside the small table. A future re-pack from a newer
+/// whichever lands first — both plans stay well inside the 1536-node table. A future re-pack
+/// from a newer
 /// OSM snapshot could still move the graph enough to need a re-pin — the sweep in this PR's
 /// description is the recipe.
 // Reads the real grimsel fixture from disk, which Miri's default isolation forbids (and the 6.5 MB

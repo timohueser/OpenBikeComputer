@@ -29,7 +29,7 @@ rustflags = ["-C", "target-feature=+strict-align"]
 # enough to matter — a mangled byte → a deterministic boot HardFault at a random PC (re-flashing the
 # identical bytes fixes it). `--verify` turns that silent corruption into a loud, immediate failure:
 # if it fails, just `cargo run` again. (The old "G2 intermittent first-boot panic" was this all along.)
-runner = "probe-rs run --chip nRF54L15 --verify"
+runner = "probe-rs run --chip nRF54LM20A --verify"
 
 # `cargo rtt` — **attach** to an already-flashed, running board and stream defmt/RTT. `probe-rs
 # attach` re-downloads only when the built ELF *differs* from what's on the chip; when it matches
@@ -42,9 +42,9 @@ runner = "probe-rs run --chip nRF54L15 --verify"
 # `DEFMT_LOG=debug cargo run` but `cargo rtt` rebuilds at the `info` default below, the ELF differs
 # and attach re-downloads — keep the level the same (or set `DEFMT_LOG=debug` here during bring-up);
 # (2) any source edit since the flash. To attach to *whatever* is running with zero rebuild, skip
-# cargo and run `probe-rs attach --chip nRF54L15 <the ELF>` directly.
+# cargo and run `probe-rs attach --chip nRF54LM20A <the ELF>` directly.
 [alias]
-rtt = ["run", "--release", "--config", "target.'cfg(all(target_arch = \"arm\", target_os = \"none\"))'.runner = 'probe-rs attach --chip nRF54L15'"]
+rtt = ["run", "--release", "--config", "target.'cfg(all(target_arch = \"arm\", target_os = \"none\"))'.runner = 'probe-rs attach --chip nRF54LM20A'"]
 
 [env]
 DEFMT_LOG = "info"

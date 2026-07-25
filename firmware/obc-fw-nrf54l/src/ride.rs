@@ -597,7 +597,7 @@ pub(crate) async fn run_app(
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
     // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
-    // `Option<RouteIndex>` built by value: the slot is ~6.7 KB and permanently part of this frame
+    // `Option<RouteIndex>` built by value: the slot is ~24.6 KB and permanently part of this frame
     // either way, but a by-value build (`RouteIndex::read`'s return) also transits the stack at
     // the pass's deepest point — which is what overflowed the 44 KB main stack on the post-upload
     // rescan (STKOF HardFault, 2026-07-12). `build_route_index_into` fills it in place.

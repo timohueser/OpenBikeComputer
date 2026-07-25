@@ -23,13 +23,10 @@ use obc_route::MAX_TRIP_STAGES;
 
 use crate::route::RouteSummary;
 
-/// Maximum trips the resident menu catalog holds (epic #526: cap 16). The constrained `nrf-mem`
-/// profile halves it, mirroring the route/ride caps — each [`TripSummary`] costs a name + two small
-/// stage `Vec`s (~`4·MAX_TRIP_STAGES` bytes), so the table is a couple of KB of static RAM.
-#[cfg(not(feature = "nrf-mem"))]
+/// Maximum trips the resident menu catalog holds (epic #526: cap 16). Each [`TripSummary`] costs
+/// a name + two small stage `Vec`s (~`4·MAX_TRIP_STAGES` bytes), so the table is a couple of KB
+/// of static RAM.
 pub const MAX_TRIPS: usize = 16;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_TRIPS: usize = 8;
 
 /// The app's resident trip catalog: the folders the Route menu lists above the unfiled routes.
 pub type Trips = heapless::Vec<TripSummary, MAX_TRIPS>;

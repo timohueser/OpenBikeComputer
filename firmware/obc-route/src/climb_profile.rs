@@ -3,7 +3,7 @@
 //!
 //! **Why a separate profile from [`Profile`](crate::profile).** The whole-route
 //! [`Profile`] is decimated to [`PROFILE_COLS`](crate::profile::PROFILE_COLS) columns for the
-//! *entire* route — 256 on `nrf-mem`. A single 5 km climb on a 100 km route lands in ~12 of
+//! *entire* route. A single 5 km climb on a 100 km route lands in a handful of
 //! those columns: far too coarse for the ClimbPro-style striped panel the Climb screen (C4)
 //! draws. This module re-buckets **one climb** into [`COLS`] columns, so a climb of any length
 //! gets the same detail (~climb_len / 200 m per column), without growing `PROFILE_COLS` (the

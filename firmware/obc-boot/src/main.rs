@@ -107,7 +107,7 @@ fn main() -> ! {
 /// diverge inside.
 fn boot(p: embassy_nrf::Peripherals) {
     // One short blink: visible proof the bootloader ran, even with nothing else working.
-    let mut led = Led::new(Output::new(p.P2_09, Level::High, OutputDrive::Standard));
+    let mut led = Led::new(Output::new(p.P1_25, Level::High, OutputDrive::Standard));
     led.pulse_ms(100);
 
     // The whole decision matrix is pure, host-tested obc-dfu logic; garbage decodes to Idle.
@@ -137,12 +137,12 @@ fn boot(p: embassy_nrf::Peripherals) {
     // duplication, the same policy as the SD pins in `sd.rs`. All of it drops back to the
     // reset state when `boot` returns, exactly like the SPI/LED pins.
     let _panel_pins = [
-        Output::new(p.P1_00, Level::Low, OutputDrive::Standard), // GSP
-        Output::new(p.P1_01, Level::Low, OutputDrive::Standard), // GCK
+        Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // GSP
+        Output::new(p.P1_11, Level::Low, OutputDrive::Standard), // GCK (P1.01 is NFC on the LM20-DK)
         Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
-        Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // INTB
+        Output::new(p.P1_13, Level::Low, OutputDrive::Standard), // INTB
         Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
-        Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // BCK
+        Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK (P2.06 is the app's SD SCK)
         Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
         Output::new(p.P2_01, Level::Low, OutputDrive::Standard), // R1 (even)
         Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0
@@ -155,9 +155,9 @@ fn boot(p: embassy_nrf::Peripherals) {
     // GPIOTE-capable pins for the app's `com-hw` feature (P1_04/05/15 today) — when that board
     // lands, mirror its routing here too.
     let mut com = com::Com::start(
-        Output::new(p.P2_07, Level::Low, OutputDrive::HighDrive), // VCOM
-        Output::new(p.P2_08, Level::Low, OutputDrive::HighDrive), // VB
-        Output::new(p.P2_10, Level::Low, OutputDrive::HighDrive), // VA
+        Output::new(p.P1_22, Level::Low, OutputDrive::HighDrive), // VCOM
+        Output::new(p.P1_23, Level::Low, OutputDrive::HighDrive), // VB
+        Output::new(p.P1_24, Level::Low, OutputDrive::HighDrive), // VA
     );
 
     // The watchdog across the boot chain (DR1, #729 — the policy lives on `wdt::BootDog`): the
@@ -190,7 +190,7 @@ fn boot(p: embassy_nrf::Peripherals) {
     // Only decisions that stream extents need the card at all.
     let mut card = match decision {
         BootDecision::Install { .. } | BootDecision::Rollback { .. } => {
-            Some(sd::SdBlocks::new(p.SERIAL22, p.P1_11, p.P1_07, p.P1_06, p.P0_00))
+            Some(sd::SdBlocks::new(p.SERIAL00, p.P2_06, p.P2_09, p.P2_08, p.P2_10))
         }
         _ => None,
     };
@@ -326,7 +326,7 @@ fn jump_to_app() -> ! {
     let app_base = app_slot_base();
     unsafe {
         // 1. Quiesce the NVIC: disable + clear-pend every external interrupt line, so nothing
-        //    a bootloader HAL touched (the S3 SPIM bring-up registers SERIAL22) can vector
+        //    a bootloader HAL touched (the S3 SPIM bring-up registers SERIAL00) can vector
         //    into the app before it is ready. PRIMASK is deliberately left CLEAR: we never
         //    set it, the app's cortex-m-rt entry does not re-enable interrupts, and at reset
         //    PRIMASK is clear — masking here would hand the app a dead interrupt system.

@@ -132,17 +132,16 @@ fn flat_route_has_flat_gap_free_band() {
     }
 }
 
-/// Pyramid depth (length of the profile's per-level column table) — a structural constant across
-/// profiles; only the base width (`PROFILE_COLS`) varies with `nrf-mem`, not the number of levels.
+/// Pyramid depth (length of the profile's per-level column table) — a structural constant;
+/// only the base width (`PROFILE_COLS`) is the tunable knob, not the number of levels.
 const PYRAMID_LEVELS: usize = 4;
 
 #[test]
 fn pyramid_downsample_keeps_extremes() {
     // The coarse levels are min/max merges, not averages — so *every* level, however coarse, still
     // spans the route's full 200..300 m envelope, with the peak's max and the valley's min intact.
-    // (Which level a full-route `window` reads is profile-dependent — on `nrf-mem` the 256-col base
-    // already covers the panel, so it needn't be a *coarse* level — but this property holds at every
-    // level regardless; see `window_full_route_spans_everything` for the window mechanics.)
+    // (Which level a full-route `window` reads depends on the base width, but this property holds
+    // at every level regardless; see `window_full_route_spans_everything` for the window mechanics.)
     let bytes = convert("Peaked Ridge", PEAKED);
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();

@@ -17,16 +17,10 @@ use obc_route::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 pub use obc_route::RouteSummary;
 
 /// Maximum routes the resident menu catalog holds. Each summary is ~80 bytes, so the cap costs a
-/// few KB of static RAM. The constrained `nrf-mem` profile trims it (epic #116 R4 — the on-device
-/// router's ~14 KB of `.bss` statics squeezed the combined `ble` build's stack region): the cap
-/// also sizes the board's parallel filename/id tables and the boot scan's stack-side catalog, so
-/// each trimmed slot pays back roughly twice. 48 stays far past any sane card (the board's
-/// `scan_routes` warns and lists the first 48 if a card somehow exceeds it); the 512 KB LM20
-/// restores the generous cap.
-#[cfg(not(feature = "nrf-mem"))]
+/// few KB of static RAM — the cap also sizes the board's parallel filename/id tables and the boot
+/// scan's stack-side catalog, so each slot pays roughly twice. 64 stays far past any sane card
+/// (the board's `scan_routes` warns and lists the first 64 if a card somehow exceeds it).
 pub const MAX_ROUTES: usize = 64;
-#[cfg(feature = "nrf-mem")]
-pub const MAX_ROUTES: usize = 48;
 
 /// The app's resident route catalog: the summaries the Route menu lists and
 /// [`Activity::active_route`](crate::Activity::active_route) indexes.
