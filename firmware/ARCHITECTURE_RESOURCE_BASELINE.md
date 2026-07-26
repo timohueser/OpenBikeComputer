@@ -177,7 +177,7 @@ board was plugged in for this change, and a USB task adds ISR-context work a sta
 histogram does not model. See the pending device-capture table below; static frame
 analysis is not a substitute for it.
 
-**#934 — the VBUS gate, +64 B.** The first on-glass run of the unconditional plane did
+**#936 — the VBUS gate, +64 B.** The first on-glass run of the unconditional plane did
 not finish booting with J3 empty, which is the normal riding case; both profiles now
 carry the fix's cost. Re-measured on the same pinned rustc 1.96.0 host, against the
 develop merge base `333e1fca`:
@@ -202,6 +202,39 @@ host measures the two profiles byte-identical for flash (1,192,936 B each); the 
 1,192,632 B for `ble` predates it. `floating_stable_observation` is **not** re-measured
 here — no CI run exists for this branch yet — and is flagged known-stale in the JSON with
 the expected deltas, rather than left to look current.
+
+**#937 — the event-driven VBUS park, +8 B resident and −80 B flash.** #936's gate parked
+the plane on a 500 ms timer, so a device riding with nothing in J3 woke twice a second
+forever to re-read a register only a human can change. The park now waits on a VREGUSB
+interrupt — a board handler bound *alongside* embassy's on the same vector, waking an
+`AtomicWaker` — with a 30 s timer left only as a self-healing net. Re-measured on the same
+pinned rustc 1.96.0 host, against develop at `ccbf8100`:
+
+| | before (#936) | after (event-driven) | Δ |
+| :-- | --: | --: | --: |
+| `.bss` | 416,056 B | 416,064 B | +8 B |
+| `.data` | 5,136 B | 5,136 B | 0 |
+| **linked resident** | **421,192 B** | **421,200 B** | **+8 B** |
+| `.uninit` | 1,024 B | 1,024 B | 0 |
+| flash (default) | 1,192,944 B | 1,192,864 B | **−80 B** |
+| flash (ble) | 1,192,928 B | 1,192,856 B | **−72 B** |
+| largest guarded poll frame | 9,728 B | 9,728 B | 0 (limit 12,288 B, unchanged) |
+
+Both `resident_ram_max` ceilings move **421,192 → 421,200 B**. Unlike #936 this change
+*does* add a static, and the whole +8 B is it: `usb::VBUS_WAKER`, verified at
+`0x200656c8` by `llvm-nm`. It is counted into `usb::RESIDENT_BYTES`, so `usb_named` moves
+**2,644 → 2,652 B** by exactly the same 8 and the report stays at 23 entries — the
+resident step is a named term rather than an unexplained jump in the `.bss` gate. Flash
+*falls*, because the timer loop cost more code than the `poll_fn` + `select` replacing it.
+`build_plane`'s 956 B transient boot frame and the 108 B `data_plane::run` async frame are
+unchanged.
+
+Two measurement notes, because they contradict the paragraph above. This host does **not**
+measure the two profiles byte-identical for flash: develop itself links 1,192,944
+(`default`) vs 1,192,928 (`ble`) here, and 1,192,944 is already 8 B above the 1,192,936
+recorded under #936 — so the *deltas* in this table are the trustworthy figures and the
+absolutes are host-and-tree specific. `floating_stable_observation` is again **not**
+re-measured (it predates both USB changes) and stays flagged known-stale in the JSON.
 
 The routed detour (#882) replaces the pure skip: the `NavPlanner` gains the
 resident **corridor blacklist** (`Option<Corridor>` — a 128-point downsampled
