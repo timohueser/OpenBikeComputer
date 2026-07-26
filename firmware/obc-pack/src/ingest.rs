@@ -318,13 +318,17 @@ impl<T> Keyed<T> {
     }
 
     /// Put the items back in ascending-id order — the order a merged, sorted
-    /// `.pbf` would have handed them to the same pass. Duplicates are dropped
-    /// before this runs, so the keys are unique and the order is total.
+    /// `.pbf` would have handed them to the same pass.
+    ///
+    /// The sort is **stable**, so a file that repeats an id inside itself (a
+    /// history file, which the fold's cross-source dedup never sees) keeps its own
+    /// order instead of picking one arbitrarily. Determinism is the whole point of
+    /// this function; it must not have a case where it flips a coin.
     ///
     /// The already-sorted check is not just an optimization: sources are normally
-    /// sorted and mostly disjoint, so the common case is one or two runs that are
-    /// already in order, and skipping keeps the transient pair vector (the only
-    /// copy of the payload this whole merge makes) out of the picture entirely.
+    /// sorted and mostly disjoint, so the common case is a couple of runs that are
+    /// already in order, and skipping keeps the transient pair vector — the only
+    /// copy of the payload this whole merge makes — out of the picture entirely.
     fn sort(&mut self) {
         debug_assert!(self.tagged && self.keys.len() == self.items.len());
         if self.keys.is_sorted() {
@@ -333,7 +337,7 @@ impl<T> Keyed<T> {
         let keys = std::mem::take(&mut self.keys);
         let items = std::mem::take(&mut self.items);
         let mut pairs: Vec<(i64, T)> = keys.into_iter().zip(items).collect();
-        pairs.sort_unstable_by_key(|(k, _)| *k);
+        pairs.sort_by_key(|(k, _)| *k);
         (self.keys, self.items) = pairs.into_iter().unzip();
     }
 
