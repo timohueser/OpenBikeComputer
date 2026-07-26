@@ -8,11 +8,12 @@
 //! prints one stage string per phase ("Cropping", "Merging", "Pass 0/1/2",
 //! "Calculating BBox", "Generating land", "Building Quadtree", "Serializing",
 //! "Writing") so the web builder UI can show progress — it matches these
-//! prefixes, and their order here is the order it expects. `obc-pack schema` prints the config's JSON
-//! Schema envelope — the web builder serves it so the editor's capability always
-//! matches the binary that packs (`schema --catalog` prints the catalog manifest's
-//! schema instead). `obc-pack catalog <bake-tree>` walks a bakery's output tree and
-//! writes the map-catalog manifest (`OBCC_Spec.md`).
+//! prefixes, and their order here is the order it expects. `obc-pack schema`
+//! prints the config's JSON Schema envelope — the web builder serves it so the
+//! editor's capability always matches the binary that packs (`schema --catalog`
+//! prints the catalog manifest's schema instead). `obc-pack catalog <bake-tree>`
+//! walks a bakery's output tree and writes the map-catalog manifest
+//! (`OBCC_Spec.md`).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -69,7 +70,8 @@ fn parse_args() -> Result<Args, String> {
     if positional.len() < 3 {
         return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land] \
                     [--dump-pois] [--dump-hours]\n       \
-                    obc-pack schema   (print the config JSON Schema envelope)"
+                    obc-pack schema                                 (print the config JSON Schema envelope)\n       \
+                    obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)"
             .into());
     }
     let output = positional.pop().unwrap();
