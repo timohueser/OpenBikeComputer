@@ -144,8 +144,13 @@ class WebUsbPipe implements BytePipe {
                 signal,
                 "the read",
             );
-            if (result.status === "stall") {
-                throw new PipeError("device-error", `The device stalled endpoint ${this.inEndpoint}.`);
+            // `stall` and `babble` both mean the endpoint is no longer trustworthy — anything but
+            // `ok` has to surface, not be read past.
+            if (result.status !== "ok") {
+                throw new PipeError(
+                    "device-error",
+                    `The device answered "${result.status}" on endpoint ${this.inEndpoint}.`,
+                );
             }
             const bytes = result.data ? new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength) : null;
             // A zero-length packet is a USB-level marker, not data; a caller that got an empty array
@@ -470,8 +475,9 @@ export class WebUsbWatcher {
 
     private async connect(device: UsbDeviceLike): Promise<boolean> {
         this.publish({ ...this.state, status: "connecting", error: null });
+        let link: WebUsbLink | null = null;
         try {
-            const link = await openWebUsbLink(device, this.options.layout);
+            link = await openWebUsbLink(device, this.options.layout);
             const client = new ProtocolClient(link, { timeoutMs: this.options.timeoutMs });
             // The identity read is first on every connection and gates everything else: a version
             // mismatch is surfaced and stopped on rather than best-effort decoded (§1).
@@ -481,6 +487,9 @@ export class WebUsbWatcher {
             this.publish({ status: "ready", client, identity, info, error: null });
             return true;
         } catch (cause) {
+            // A device claimed but never handshaken still holds its interface. Releasing it is what
+            // lets a retry — or another tab — get at the device instead of finding it busy.
+            await link?.close().catch(() => undefined);
             this.link = null;
             this.publish({ status: "error", client: null, identity: null, info: null, error: describe(cause) });
             return false;

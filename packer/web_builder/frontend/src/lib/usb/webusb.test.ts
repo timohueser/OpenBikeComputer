@@ -15,7 +15,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { DeviceError } from "./client";
-import { MockDevice, loopbackLink, type LoopbackLink } from "./loopback";
+import { MockDevice, loopbackLink, type LoopbackLink, type MockDeviceOptions } from "./loopback";
 import { ObjectType } from "./protocol";
 import {
     OBC_USB_FILTERS,
@@ -160,9 +160,9 @@ class FakeUsb implements UsbLike {
 }
 
 /** A USB host with one OBC on the far end of a loopback. */
-function rig(options: Parameters<typeof loopbackLink>[0] = {}) {
+function rig(options: Parameters<typeof loopbackLink>[0] = {}, deviceOptions: MockDeviceOptions = {}) {
     const link = loopbackLink(options);
-    const device = new MockDevice(link.device);
+    const device = new MockDevice(link.device, deviceOptions);
     void device.run();
     const usbDevice = new FakeUsbDevice(link);
     const usb = new FakeUsb();
@@ -228,6 +228,20 @@ describe("the permission model", () => {
         expect(await watcher.requestDevice()).toBe(true);
         expect(usb.filtersSeen).toEqual([[{ vendorId: VID, productId: PID }]]);
         expect(watcher.current.status).toBe("ready");
+        await watcher.close();
+    });
+
+    it("releases the interface when the handshake fails", async () => {
+        // A device claimed but never handshaken still holds its interface, and USB grants it to one
+        // claimant. Leaking it here would leave the device unreachable to a retry or another tab
+        // until it is physically re-plugged.
+        const { usb, usbDevice } = rig({}, { protocolVersion: 3 });
+        usb.permitted = [usbDevice];
+        const watcher = new WebUsbWatcher({ usb });
+        expect(await watcher.start()).toBe(false);
+        expect(watcher.current.status).toBe("error");
+        expect(watcher.current.error).toMatch(/protocol v3/);
+        expect(usbDevice.claimed, "the interface must be released").toBeNull();
         await watcher.close();
     });
 
