@@ -3,8 +3,17 @@
 //! Each function constructs one fixture directly from the spec text
 //! (`obc-ble-interface-spec.md` / `OBCR_Spec.md`), independently of the production
 //! codecs on either side. The checked-in fixture files are these builders' output;
-//! `tests/vectors.rs` asserts they haven't drifted. Regenerate after a deliberate
-//! spec change with:
+//! `tests/vectors.rs` asserts they haven't drifted.
+//!
+//! **Two documented exceptions**, both conversion *outputs* rather than wire layouts:
+//! [`build_route`] runs the real `gpx_to_obcr` and [`track_export_gpx`] the real
+//! `track_to_gpx`, because neither serialization has a spec to rebuild from — the converter
+//! *is* the contract. Those two fixtures therefore pin **agreement**, not correctness: a bug
+//! in the converter moves the fixture with it. What they catch is a second implementation
+//! drifting from the first, which is exactly their job — the iOS OBCR encoder and the
+//! browser's wasm bridge are both held to these bytes.
+//!
+//! Regenerate after a deliberate spec change with:
 //!
 //! ```text
 //! cargo test -p obc-vectors regenerate -- --ignored
