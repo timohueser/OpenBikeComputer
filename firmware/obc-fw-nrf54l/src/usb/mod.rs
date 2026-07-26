@@ -31,6 +31,13 @@
 //! The USBHS is a **high-speed** core (`PhyType::InternalHighSpeed`), so every bulk endpoint is
 //! 512 bytes by USB rule; there is no full-speed fallback to size for.
 //!
+//! ## VBUS is a hard gate, not a convenience (#934)
+//!
+//! **The device must boot and ride with nothing plugged into J3** — that is the overwhelmingly
+//! common case, and USB is the exception. Nothing in this module may touch the USBHS core, or any
+//! future that reads it, unless a cable is *actually* present; see [`vbus_present`] for the
+//! mechanism and the on-glass failure it fixes.
+//!
 //! ## Pins, clocks, interrupts
 //!
 //! **Zero GPIO cost**: D+/D−/VBUS/TXRTUNE are dedicated USBHS pins, so nothing in the board's pin
@@ -51,13 +58,16 @@
 pub(crate) mod control;
 pub(crate) mod data_plane;
 
+use core::future::{poll_fn, Future};
 use core::mem::MaybeUninit;
+use core::task::Poll;
 
-use defmt::info;
+use defmt::{info, warn};
 use embassy_futures::join::join;
-use embassy_nrf::usb::vbus_detect::HardwareVbusDetect;
+use embassy_nrf::usb::vbus_detect::{HardwareVbusDetect, VbusDetect};
 use embassy_nrf::usb::{self as nrf_usb, Driver as UsbhsDriver};
-use embassy_nrf::{bind_interrupts, peripherals, Peri};
+use embassy_nrf::{bind_interrupts, pac, peripherals, Peri};
+use embassy_time::{Duration, Timer};
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::{Builder, Config, UsbDevice};
 
@@ -158,11 +168,108 @@ pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
     + 2 * MAX_PACKET as usize
     + core::mem::size_of::<heapless::String<16>>();
 
+// ============================ The VBUS gate (#934) ============================
+//
+// On glass, with J3 empty, the board faulted its way out of a boot — probe-rs reported
+// `DAP FAULT (sticky_err, sticky_orun)` and lost the target, not a panic — and booted perfectly the
+// moment a cable was plugged in. The mechanism is legible in the driver source:
+//
+//   - `UsbDevice::run` powers the Synopsys core up **only** on `Event::PowerDetected`, and
+//     `Bus::poll` (embassy-nrf `usb/usbhs.rs`) does not emit that event until VBUS is detected.
+//     With no cable the core stays behind `USBHS.ENABLE.CORE = 0` with its 24 MHz PHY clock
+//     stopped, and its AHB slave does not answer.
+//   - `Endpoint::wait_enabled` — the very first thing both `control::run` and `data_plane::run`
+//     await — reads `USBHSCORE.DOEPCTL`. That read is the fault.
+//
+// With a cable the identical code is safe purely by poll order, which is why this was invisible
+// until #930 put the plane in the default build: `join` polls `device.run()` first, and on this
+// part `Bus::enable` contains no `await` that yields (the Synopsys `Bus::enable`/`disable` are
+// documented no-op stubs), so the core is fully up before the endpoint futures are polled once.
+//
+// Hence two gates, and the second one matters as much as the first: an unplug takes the core back
+// down (`PowerRemoved` → `Bus::disable` → `ENABLE.CORE/PHY = 0`, XO24M stopped) while the endpoint
+// futures are still alive and will be re-polled the next time anything wakes this task.
+//
+//   1. **Before construction** — [`run`] parks until a cable is present, and only then builds.
+//   2. **Before every delegated poll** — the guard in [`run`] re-reads VBUS synchronously in the
+//      same instruction stream, so there is no window in which a poll of an endpoint future can
+//      follow a power-down.
+
+/// How often a parked plane re-reads VBUS.
+///
+/// This is the only cost the gate imposes on the common (cable-less) case: two timer wake-ups a
+/// second of an otherwise empty task, against a ride loop that already wakes far more often. It is
+/// also the worst-case latency from plugging a cable in to the device asserting its D+ pull-up, so
+/// it trades directly against enumeration feel — half a second is imperceptible to a human
+/// plugging in a cable and invisible next to the host's own enumeration.
+///
+/// A timer rather than an interrupt because embassy's VBUS wakers (`BUS_WAKER` / `POWER_WAKER` in
+/// `usb/vbus_detect.rs`) are private, and this part's `VbusDetect::wait_power_ready` resolves
+/// *immediately* with `Ok`/`Err` rather than waiting — there is no edge-driven wait to borrow.
+const VBUS_POLL: Duration = Duration::from_millis(500);
+
+/// Is a cable in J3 **right now**?
+///
+/// A *level* read of `VREGUSB.STATUS.VBUSDETECTED`, deliberately not the edge-driven flag
+/// embassy's VREGUSB interrupt maintains: a gate that has to hold on every poll cannot depend on
+/// an interrupt having already been serviced. embassy reads the same register the same way
+/// (`vbus_detect.rs::initial_vbus_detected`) and for the same reason — `nrf-pac` 0.4 models
+/// VREGUSB's tasks, events and interrupt registers but not `STATUS`, so the offset is spelled out.
+///
+/// Only meaningful once `VREGUSB.TASKS_START` has been issued, which [`HardwareVbusDetect::new`]
+/// does; every caller here is downstream of that.
+fn vbus_present() -> bool {
+    /// `VREGUSB.STATUS` — the one register `nrf-pac` omits.
+    const STATUS_OFFSET: usize = 0x400;
+    /// `STATUS.VBUSDETECTED`.
+    const VBUS_DETECTED: u32 = 1 << 2;
+    // SAFETY: an aligned volatile read of a peripheral register embassy itself starts and reads,
+    // inside a block the PAC hands out as a raw base pointer. No side effects.
+    let status = unsafe { (pac::VREGUSB.as_ptr() as *const u32).add(STATUS_OFFSET / 4).read_volatile() };
+    status & VBUS_DETECTED != 0
+}
+
+/// Park until a cable is present. Silent when one already is.
+async fn wait_for_vbus() {
+    while !vbus_present() {
+        Timer::after(VBUS_POLL).await;
+    }
+}
+
+/// The board's [`VbusDetect`], so the driver and the gate above cannot disagree.
+///
+/// Structurally, not probabilistically: [`HardwareVbusDetect`] answers from an `AtomicBool` its
+/// interrupt handler maintains, which means the driver's view of the cable and [`vbus_present`]'s
+/// are two variables that converge rather than one that is read twice. Handing the driver the same
+/// level read removes the window in which the guard could wave an endpoint poll through *before*
+/// `UsbDevice` had processed the matching `PowerDetected` and enabled the core.
+///
+/// [`HardwareVbusDetect::new`] is still constructed once in [`run`] — it is what issues
+/// `VREGUSB.TASKS_START` and enables the vector whose handler wakes `Bus::poll` on a plug event.
+/// This type replaces only the *answer*, never the arming.
+pub(crate) struct BoardVbusDetect;
+
+impl VbusDetect for BoardVbusDetect {
+    fn is_usb_detected(&self) -> bool {
+        vbus_present()
+    }
+
+    /// Matches embassy's own LM20 implementation exactly: on this part there is no separate
+    /// "regulator output ready" signal to wait for, so the answer is the VBUS level, now.
+    async fn wait_power_ready(&mut self) -> Result<(), ()> {
+        if vbus_present() {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+}
+
 // ============================ Bring-up ============================
 
 /// The concrete driver this board's USBHS produces, and its endpoint types. embassy-nrf keeps the
 /// Synopsys endpoint type private, so they are named through the trait's associated types.
-type UsbhsBusDriver = UsbhsDriver<'static, HardwareVbusDetect>;
+type UsbhsBusDriver = UsbhsDriver<'static, BoardVbusDetect>;
 pub(crate) type EpIn = <UsbhsBusDriver as embassy_usb::driver::Driver<'static>>::EndpointIn;
 pub(crate) type EpOut = <UsbhsBusDriver as embassy_usb::driver::Driver<'static>>::EndpointOut;
 
@@ -183,6 +290,11 @@ struct UsbPlane {
 /// for the rest of the device's life. Here it lives in a transient frame that is popped before the
 /// first `await`.
 ///
+/// Called **only with VBUS present** — see the gate above. Nothing here reads the USBHS core
+/// today (`UsbhsDriver::new`, endpoint allocation and `Builder::build` are all bookkeeping over
+/// `.bss`), but that is an implementation detail of two upstream crates, not a contract, and the
+/// cost of waiting first is one boot log line.
+///
 /// # Safety
 /// Sole writer of every static above; called exactly once, from [`run`].
 #[inline(never)]
@@ -199,8 +311,9 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
 
     // The driver forces `vbus_detection = false` itself on this part (VBUS events arrive through
     // VREGUSB, not the OTG core's session events), so the default config is the right one.
-    let driver =
-        UsbhsDriver::new(usb_p, Irqs, HardwareVbusDetect::new(Irqs), ep_out_buffer, nrf_usb::Config::default());
+    // [`BoardVbusDetect`] rather than embassy's `HardwareVbusDetect` so the driver and the poll
+    // guard read the one register, not two views of it — the arming still happened in [`run`].
+    let driver = UsbhsDriver::new(usb_p, Irqs, BoardVbusDetect, ep_out_buffer, nrf_usb::Config::default());
 
     let mut config = Config::new(VENDOR_ID, PRODUCT_ID);
     config.manufacturer = Some(MANUFACTURER);
@@ -256,12 +369,38 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
 /// the bulk object stream, all three joined on the thread-mode executor beside the ride loop and
 /// the BLE stack.
 ///
+/// **Cable-driven** (#934): nothing but VBUS detection is armed until a cable is in J3, and the
+/// endpoint futures are polled only while one is — see the gate above. A boot with J3 empty must
+/// reach the ride loop exactly as it did before this plane existed, and it says so in the log
+/// rather than going quiet: a device that silently has no USB is indistinguishable from one whose
+/// USB is broken, and that ambiguity is what let this ship.
+///
 /// An **embassy task**, not a plain future, and reached through a trampoline
 /// ([`crate::spawn_usb_stack`]) — the same #677 discipline the BLE stack documents: a task's state
 /// machine belongs in its own `.bss` pool, and the token construction belongs somewhere shallow.
 #[embassy_executor::task]
 pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::LinkStores) -> ! {
     let crate::link::LinkStores { shared, objects: store, epoch: store_epoch } = stores;
+
+    // Arm VBUS detection, and *only* that: `HardwareVbusDetect::new` touches VREGUSB (clear the two
+    // events, unmask them, `TASKS_START`) and enables its vector. That is the entire hardware
+    // footprint of a cable-less boot from here on — the value itself is discarded, because
+    // `BoardVbusDetect` is what answers questions (see its doc).
+    //
+    // Logged *before* the touch, not after, and this is deliberate. The bug this fixes was
+    // diagnosed by which log line failed to appear, and that bisect cost a round trip because the
+    // first USB hardware access had nothing in front of it. If a cable-less boot ever dies here
+    // again, this line is the last one printed and VREGUSB — not USBHS — is the culprit, which is
+    // the one reading the analysis below cannot rule out from source alone.
+    info!("usb: arming VBUS detect (VREGUSB); no USBHS access until a cable is present");
+    let _vbus_armed = HardwareVbusDetect::new(Irqs);
+
+    if !vbus_present() {
+        info!("usb: no VBUS on J3 — device plane parked; it comes up when a cable is plugged in");
+        wait_for_vbus().await;
+    }
+    info!("usb: VBUS present — bringing the device plane up");
+
     let UsbPlane { mut device, ctrl_in, ctrl_out, bulk_in, bulk_out } = build_plane(usb_p);
     info!(
         "usb: device plane up — {=u16:04x}:{=u16:04x}, serial '{}', HS bulk {} B",
@@ -281,13 +420,41 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
     // device → host control message shares one ordering domain.
     let tx = ControlTx::new(ctrl_in);
 
-    join(
-        device.run(),
-        join(
-            control::run(&tx, ctrl_out, ctrl_rx, store, shared, store_epoch),
-            data_plane::run(&tx, bulk_in, bulk_out, bulk_buf, store, shared),
-        ),
-    )
+    // Built once and pinned, not rebuilt per cable: both halves own their endpoints for the life of
+    // the task and already re-arm themselves across an unplug (`wait_enabled` at the top of each
+    // loop, `link_reset` on the way round). The cable cycle is expressed by *whether they are
+    // polled*, which keeps their signatures — and their `.bss` footprint — unchanged.
+    let planes = join(
+        control::run(&tx, ctrl_out, ctrl_rx, store, shared, store_epoch),
+        data_plane::run(&tx, bulk_in, bulk_out, bulk_buf, store, shared),
+    );
+    let mut planes = core::pin::pin!(planes);
+
+    join(device.run(), async {
+        loop {
+            // Serve while the cable is in. The VBUS re-read sits *before* the delegated poll, in
+            // the same instruction stream, which is what closes the unplug race: the outer `join`
+            // polls `device.run()` first, so the core may have been powered down by `PowerRemoved`
+            // microseconds ago, inside this very pass.
+            poll_fn(|cx| {
+                if !vbus_present() {
+                    return Poll::Ready(());
+                }
+                match planes.as_mut().poll(cx) {
+                    Poll::Pending => Poll::Pending,
+                    // Both halves are `-> !`.
+                    Poll::Ready(_) => unreachable!(),
+                }
+            })
+            .await;
+            // Reached when the cable goes: the endpoint wakers and `Bus::poll`'s VBUS watch share
+            // this task, so a removal wakes us. If it somehow did not, the failure mode is a plane
+            // that stays parked — never one that reads a powered-down core.
+            warn!("usb: VBUS removed — device plane parked, endpoints idle until a cable returns");
+            wait_for_vbus().await;
+            info!("usb: VBUS back — device plane serving again");
+        }
+    })
     .await;
     // `UsbDevice::run` is `-> !`, so the join never completes.
     unreachable!()
