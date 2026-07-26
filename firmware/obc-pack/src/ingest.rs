@@ -16,6 +16,41 @@
 //!
 //! Coordinates use `decimicro / 1e7`, never `* 1e-7`, so the f64 lon/lat match
 //! osmium's exactly and everything downstream lines up.
+//!
+//! # Cropping to a `--bbox` ([`Bbox`], [`select_crop`])
+//!
+//! With a bbox the ingest gains a **pass 0** that reproduces `osmium extract
+//! --bbox` in-process, so a cropped build needs no second C++ tool on `PATH`.
+//! The strategy emulated is osmium's default, **`complete_ways`**, and matching
+//! that one on purpose matters:
+//!
+//! - **`simple`** (keep the nodes inside the box, keep the ways touching it, and
+//!   resolve nothing outside) is the naive filter, and it is actively wrong here.
+//!   A way crossing the boundary would be missing node locations, and
+//!   [`resolve_coords`] drops such a way *whole* — it does not trim it at the
+//!   border. Every road leaving the box would disappear back to its last node
+//!   inside, taking its nav-graph edges with it: the map would fray inwards and
+//!   the router would lose real exits, not just geometry.
+//! - **`complete_ways`** pulls in the nodes a kept way needs even when they lie
+//!   outside the box. Ways stay whole, so the nav graph keeps whole edges too —
+//!   an edge ends where the *way* ends, never at an arbitrary vertex on the box
+//!   edge, so no phantom junction or dead-end is invented at the boundary.
+//! - **`smart`** additionally completes relation members. We deliberately do not
+//!   go there: it would pull in geometry osmium's default leaves out, and the
+//!   committed fixtures (`firmware/obc-sim/assets/repack.sh`) were packed from
+//!   that default.
+//!
+//! Relations need no filter of their own. osmium keeps a relation iff it
+//! references a kept node or way, but assembly below already requires *all*
+//! member ways to be present — so a relation osmium would have dropped is one
+//! whose members are all absent, and it is dropped here by that same rule.
+//! Collecting every relation in pass 1 is therefore equivalent, and cheaper than
+//! tracking membership.
+//!
+//! The cost is one extra whole-file read that collects only ids. What it buys is
+//! the property that makes osmium's extract two-pass in the first place: both the
+//! id sets and the pass-1 coordinate store are bounded by the *box*, not by the
+//! source file, so cropping a country-sized `.pbf` stays affordable.
 
 use std::collections::{HashMap, HashSet};
 
@@ -63,9 +98,221 @@ fn to_deg(decimicro: i32) -> f64 {
     decimicro as f64 / 1e7
 }
 
+/// A `--bbox` crop region, held in the PBF's own **decimicro-degree** (`1e-7`)
+/// integer grid — the same fixed point `osmium::Location` stores. Keeping the
+/// edges on that grid makes [`Bbox::contains`] an integer comparison, so the
+/// in-process crop cannot disagree with `osmium extract` over a node sitting a
+/// float ULP from the boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bbox {
+    min_lon: i32,
+    min_lat: i32,
+    max_lon: i32,
+    max_lat: i32,
+}
+
+/// Degrees → osmium's fixed point: `std::round` half-away-from-zero, same as
+/// libosmium's `double_to_fix`. Rust's `f64::round` rounds the same way.
+#[inline]
+fn to_fix(deg: f64) -> i32 {
+    (deg * 1e7).round() as i32
+}
+
+impl Bbox {
+    /// Parse a `W,S,E,N` degrees spec, as strictly as `osmium extract` parses its
+    /// own `--bbox`: four finite in-range numbers, west **strictly** west of east
+    /// and south strictly south of north.
+    ///
+    /// A box wrapping the antimeridian is rejected rather than quietly packed
+    /// inside-out. Every stage downstream — the header bbox, the quadtree's
+    /// root box, the land clip — assumes `min < max` in plain degrees, so
+    /// accepting a wrapping box would be a contract we cannot honor; osmium
+    /// refuses it too. Riders who want both sides of 180° pass two boxes.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = spec.split(',').map(str::trim).collect();
+        if parts.len() != 4 {
+            return Err(format!("--bbox wants four comma-separated numbers W,S,E,N (got {spec:?})"));
+        }
+        let mut v = [0.0f64; 4];
+        for (slot, text) in v.iter_mut().zip(&parts) {
+            *slot = text
+                .parse::<f64>()
+                .ok()
+                .filter(|f| f.is_finite())
+                .ok_or_else(|| format!("--bbox: {text:?} is not a finite number (expected degrees, W,S,E,N)"))?;
+        }
+        let [w, s, e, n] = v;
+        for (name, deg, limit) in [("west", w, 180.0), ("east", e, 180.0), ("south", s, 90.0), ("north", n, 90.0)] {
+            if deg < -limit || deg > limit {
+                return Err(format!("--bbox: {name} {deg} is outside ±{limit}°"));
+            }
+        }
+        if w >= e {
+            return Err(format!(
+                "--bbox: west ({w}) must be strictly west of east ({e}); a box crossing the antimeridian is not \
+                 supported — pack the two halves separately"
+            ));
+        }
+        if s >= n {
+            return Err(format!("--bbox: south ({s}) must be strictly south of north ({n})"));
+        }
+        Ok(Bbox { min_lon: to_fix(w), min_lat: to_fix(s), max_lon: to_fix(e), max_lat: to_fix(n) })
+    }
+
+    /// The box back in degrees, snapped to the decimicro grid it was parsed onto.
+    /// Handed to `osmium extract` on the multi-input merge path so both croppers
+    /// see the identical box.
+    pub fn to_degrees(self) -> (f64, f64, f64, f64) {
+        (to_deg(self.min_lon), to_deg(self.min_lat), to_deg(self.max_lon), to_deg(self.max_lat))
+    }
+
+    /// Closed on all four edges, exactly like `osmium::Box::contains`.
+    #[inline]
+    fn contains(&self, lon: i32, lat: i32) -> bool {
+        lon >= self.min_lon && lon <= self.max_lon && lat >= self.min_lat && lat <= self.max_lat
+    }
+}
+
+/// A grow-then-freeze set of OSM ids, backed by a sorted `Vec`.
+///
+/// The crop's three id sets are the memory floor of a `--bbox` run over a large
+/// source, so this trades a `HashSet`'s per-entry overhead for 8 flat bytes and a
+/// binary search. It works because each set is filled in one pass and only read
+/// in a later one; [`IdSet::freeze`] runs at that seam. `contains` on an unfrozen
+/// set would silently lie, so freezing is the type's one rule.
+#[derive(Default)]
+struct IdSet(Vec<i64>);
+
+impl IdSet {
+    #[inline]
+    fn insert(&mut self, id: i64) {
+        self.0.push(id);
+    }
+
+    /// End the fill phase. Idempotent, so pass 0 can freeze the node set early
+    /// (the first way needs it) and freeze the rest at the end without tracking
+    /// which already happened.
+    fn freeze(&mut self) {
+        self.0.sort_unstable();
+        self.0.dedup();
+        self.0.shrink_to_fit();
+    }
+
+    #[inline]
+    fn contains(&self, id: i64) -> bool {
+        self.0.binary_search(&id).is_ok()
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// The id sets that define a `--bbox` crop — `osmium extract`'s `complete_ways`
+/// selection, computed in-process (see the module docs).
+pub struct Crop {
+    /// Nodes whose location falls inside the box.
+    inside: IdSet,
+    /// Nodes *outside* the box that a kept way still references — the halo that
+    /// keeps boundary-crossing ways whole.
+    halo: IdSet,
+    /// Ways with at least one node inside the box.
+    ways: IdSet,
+}
+
+impl Crop {
+    /// Nodes the extract would contain: inside the box, or needed by a kept way.
+    #[inline]
+    fn keeps_node(&self, id: i64) -> bool {
+        self.inside.contains(id) || self.halo.contains(id)
+    }
+
+    #[inline]
+    fn keeps_way(&self, id: i64) -> bool {
+        self.ways.contains(id)
+    }
+
+    /// Nothing at all inside the box *and* no way reaching into it — the caller
+    /// should fail loudly rather than pack an empty map.
+    fn is_empty(&self) -> bool {
+        self.inside.len() == 0 && self.ways.len() == 0
+    }
+}
+
+/// **Pass 0** — select the crop: nodes inside `bbox`, ways touching one of them,
+/// and the outside nodes those ways still need.
+///
+/// One sweep suffices because a PBF is type-sorted (nodes, then ways, then
+/// relations) — the same property pass 1 already relies on to see relations after
+/// nodes. The node set is frozen when the first way arrives.
+fn select_crop(pbf_path: &str, bbox: Bbox) -> Result<Crop, String> {
+    println!("Pass 0: selecting bbox...");
+    let mut inside = IdSet::default();
+    let mut halo = IdSet::default();
+    let mut ways = IdSet::default();
+    let mut nodes_done = false;
+    ElementReader::from_path(pbf_path)
+        .map_err(|e| format!("open {pbf_path}: {e}"))?
+        .for_each(|el| match el {
+            Element::Node(n) => {
+                if bbox.contains(n.decimicro_lon(), n.decimicro_lat()) {
+                    inside.insert(n.id());
+                }
+            }
+            Element::DenseNode(n) => {
+                if bbox.contains(n.decimicro_lon(), n.decimicro_lat()) {
+                    inside.insert(n.id());
+                }
+            }
+            Element::Way(w) => {
+                if !nodes_done {
+                    inside.freeze();
+                    nodes_done = true;
+                }
+                if w.refs().any(|r| inside.contains(r)) {
+                    ways.insert(w.id());
+                    // The halo: every other node this way needs. Ids already
+                    // `inside` are skipped — `keeps_node` checks both sets, and a
+                    // dense urban box would otherwise store most of its nodes twice.
+                    for r in w.refs() {
+                        if !inside.contains(r) {
+                            halo.insert(r);
+                        }
+                    }
+                }
+            }
+            Element::Relation(_) => {}
+        })
+        .map_err(|e| format!("pass 0 {pbf_path}: {e}"))?;
+    // A file with no ways at all never hit the way branch.
+    if !nodes_done {
+        inside.freeze();
+    }
+    halo.freeze();
+    ways.freeze();
+    println!("  {} node(s) in box, {} way(s) kept (+{} boundary node(s))", inside.len(), ways.len(), halo.len());
+    Ok(Crop { inside, halo, ways })
+}
+
 /// Two-pass ingest of a single `.osm.pbf` (lines + closed-way polygons +
-/// relation-assembled area polygons).
-pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
+/// relation-assembled area polygons). `bbox` crops the input to a box first (a
+/// third, id-only pass; see the module docs).
+pub fn ingest_osm(pbf_path: &str, config: &Config, bbox: Option<Bbox>) -> Result<Ingested, String> {
+    // --- Pass 0 (only with --bbox): the `complete_ways` id selection. ---
+    let crop = match bbox {
+        Some(bb) => {
+            let crop = select_crop(pbf_path, bb)?;
+            if crop.is_empty() {
+                let (w, s, e, n) = bb.to_degrees();
+                return Err(format!("--bbox {w},{s},{e},{n} does not overlap any data in {pbf_path}"));
+            }
+            Some(crop)
+        }
+        None => None,
+    };
+    let keeps_node = |id: i64| crop.as_ref().is_none_or(|c| c.keeps_node(id));
+    let keeps_way = |id: i64| crop.as_ref().is_none_or(|c| c.keeps_way(id));
+
     // --- Pass 1: node-location store + relation collection. ---
     // The PBF is node-sorted, so the store is filled before any relation is read.
     // The stage strings are matched by the web builder's progress UI — print each
@@ -77,17 +324,24 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
     // POI candidates from both passes, deduped after assembly. Classification is
     // config-free (hardcoded table — locked decision on #115).
     let mut poi_cands: Vec<Poi> = Vec::new();
+    // Cropped: only the nodes the extract would contain — which includes the halo,
+    // so a tagged node just outside the box that a kept way needs becomes a POI
+    // here exactly as it would in an `osmium extract` output (osmium writes those
+    // nodes whole, tags and all). Matching that is the point.
     ElementReader::from_path(pbf_path)
         .map_err(|e| format!("open {pbf_path}: {e}"))?
         .for_each(|el| match el {
-            Element::Node(n) => {
+            Element::Node(n) if keeps_node(n.id()) => {
                 nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
                 push_node_poi(n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut poi_cands);
             }
-            Element::DenseNode(n) => {
+            Element::DenseNode(n) if keeps_node(n.id()) => {
                 nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
                 push_node_poi(n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut poi_cands);
             }
+            // Relations are collected unfiltered even when cropping: the
+            // all-members-present rule below already drops exactly the ones
+            // osmium's crop would have left out (module docs).
             Element::Relation(r) => collect_relation(&r, config, &mut pending, &mut needed_ways),
             _ => {}
         })
@@ -106,6 +360,9 @@ pub fn ingest_osm(pbf_path: &str, config: &Config) -> Result<Ingested, String> {
         .map_err(|e| format!("open {pbf_path}: {e}"))?
         .for_each(|el| {
             if let Element::Way(w) = el {
+                if !keeps_way(w.id()) {
+                    return;
+                }
                 let refs: Vec<i64> = w.refs().collect();
                 // A missing node aborts the whole way — osmium would raise
                 // `InvalidLocationError` here, and the way is dropped.
@@ -331,7 +588,7 @@ mod tests {
         );
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let ing = ingest_osm(TINY_PBF, &cfg).expect("ingest");
+        let ing = ingest_osm(TINY_PBF, &cfg, None).expect("ingest");
 
         // W8 (way 109) is the only coastline; nodes 29,30 ⇒ 2 points.
         assert_eq!(ing.coastlines.len(), 1, "exactly one coastline");
@@ -382,7 +639,7 @@ mod tests {
         );
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let ing = ingest_osm(POI_PBF, &cfg).expect("ingest");
+        let ing = ingest_osm(POI_PBF, &cfg, None).expect("ingest");
 
         // 7 candidates (5 nodes + 2 way-centroids), 2 dedup-dropped ⇒ 5 kept.
         assert_eq!(ing.pois.len(), 5, "expected 5 POIs, got: {:?}", ing.pois);
@@ -412,6 +669,133 @@ mod tests {
         assert_eq!((w2.lat_udeg, w2.lon_udeg, w2.from_node), (48_000_200, 7_870_200, false));
         // N4 (amenity=parking) never classified.
         assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("water 3").count(), 1);
+    }
+
+    /// The `--bbox` contract is user-facing, so the parser is as strict as
+    /// `osmium extract`'s: four in-range numbers, west of east, south of north.
+    #[test]
+    fn bbox_parse_is_strict_about_the_box() {
+        let ok = Bbox::parse("7.39,43.71,7.47,43.77").expect("valid box");
+        assert_eq!(ok.to_degrees(), (7.39, 43.71, 7.47, 43.77), "degrees survive the decimicro round trip");
+        assert_eq!(Bbox::parse(" 7.39 , 43.71 , 7.47 , 43.77 ").expect("whitespace"), ok, "fields are trimmed");
+        // The edges land on osmium's grid: round-half-away-from-zero at 1e-7.
+        assert_eq!(to_fix(7.39), 73_900_000);
+        assert_eq!(to_fix(-7.39), -73_900_000);
+
+        for bad in [
+            "7.39,43.71,7.47",         // three fields
+            "7.39,43.71,7.47,43.77,1", // five
+            "west,43.71,7.47,43.77",   // not a number
+            "nan,43.71,7.47,43.77",    // not finite
+            "-181,43.71,7.47,43.77",   // lon out of range
+            "7.39,-91,7.47,43.77",     // lat out of range
+            "7.47,43.71,7.39,43.77",   // east of west (the antimeridian wrap)
+            "7.39,43.71,7.39,43.77",   // zero width
+            "7.39,43.77,7.47,43.71",   // north below south
+        ] {
+            assert!(Bbox::parse(bad).is_err(), "{bad:?} must be rejected");
+        }
+        // A wrapping box names the reason, not just "invalid".
+        let msg = Bbox::parse("179,-1,-179,1").unwrap_err();
+        assert!(msg.contains("antimeridian"), "wrap error should explain itself: {msg}");
+    }
+
+    /// The `complete_ways` crop, over the `tiny.osm` truth table. The box covers
+    /// R1 whole, takes only one of R2's two outer rings, and clips the middle of
+    /// both open highways:
+    ///
+    /// - **ways stay whole**: W7b (trunk) reaches to lon 7.855, far outside the
+    ///   box, because one of its nodes is inside. That is the property `simple`
+    ///   would lose — and losing it would delete the way outright here, since
+    ///   [`resolve_coords`] drops a way with any unresolvable node.
+    /// - **relations stay all-or-nothing**: R2 lost member W4, so it is dropped
+    ///   entirely rather than assembled from the surviving ring.
+    #[test]
+    fn bbox_crop_keeps_ways_whole_and_relations_all_or_nothing() {
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
+        // lon 7.798..7.809, lat 47.979..47.995 — see tiny.osm's node grid.
+        let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
+        let ing = ingest_osm(TINY_PBF, &cfg, Some(bbox)).expect("ingest");
+
+        let mut counts: HashMap<(u8, bool), usize> = HashMap::new();
+        for f in &ing.features {
+            *counts.entry((f.style_id, is_polygon(&f.geom))).or_insert(0) += 1;
+        }
+        let n = |id: u8, poly: bool| counts.get(&(id, poly)).copied().unwrap_or(0);
+
+        // R1 (both member ways inside) still assembles, hole and all.
+        assert_eq!(n(32, true), 1, "R1 lake survives whole");
+        let lake = ing.features.iter().find(|f| f.style_id == 32 && is_polygon(&f.geom)).expect("water polygon");
+        match &lake.geom {
+            Geom::Polygon { interiors, .. } => assert_eq!(interiors.len(), 1, "island hole kept"),
+            _ => unreachable!(),
+        }
+        // R2 kept W3 but lost W4 ⇒ no forest at all, not a half-forest.
+        assert_eq!(n(39, true), 0, "R2 is incomplete ⇒ dropped, never assembled from survivors");
+        // Out of the box entirely: W5/W6/W11 (lat ≥ 47.996), W9 (48.000), W8 coast.
+        assert_eq!(n(15, true), 0, "W11 pedestrian area is north of the box");
+        assert_eq!(n(12, false), 0, "W6 residential loop is north of the box");
+        assert_eq!(n(42, false), 0, "W9 admin line is north of the box");
+        assert!(ing.coastlines.is_empty(), "W8 coastline sits east of the box");
+        // Kept: W7 primary, W7b trunk, W12 water line — plus R1's polygon.
+        assert_eq!(n(5, false), 1, "W7 primary crosses the east edge and is kept");
+        assert_eq!(n(3, false), 1, "W7b trunk crosses the east edge and is kept");
+        assert_eq!(n(32, false), 1, "W12 water line is inside");
+        assert_eq!(ing.features.len(), 4, "1 lake polygon + 3 lines");
+
+        // The headline: the trunk is not trimmed at the box edge (lon 7.809) — it
+        // keeps its far node at 7.855, exactly as `osmium extract` would emit it.
+        let trunk = ing.features.iter().find(|f| f.style_id == 3).expect("trunk line");
+        let (_, _, maxx, _) = trunk.geom.bounds();
+        assert!((maxx - 7.855).abs() < 1e-9, "trunk must reach its real end at 7.855, got {maxx}");
+    }
+
+    /// A box that swallows the whole file must change nothing — the crop path is
+    /// a filter, not a second code path with its own behaviour.
+    #[test]
+    fn bbox_covering_everything_is_a_no_op() {
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
+        let plain = ingest_osm(TINY_PBF, &cfg, None).expect("ingest");
+        let boxed = ingest_osm(TINY_PBF, &cfg, Some(Bbox::parse("-180,-90,180,90").expect("world"))).expect("ingest");
+        assert_eq!(plain.features.len(), boxed.features.len());
+        assert_eq!(plain.coastlines, boxed.coastlines);
+        assert_eq!(plain.pois.len(), boxed.pois.len());
+        for (a, b) in plain.features.iter().zip(&boxed.features) {
+            assert_eq!((a.style_id, a.min_lod, a.geom.bounds()), (b.style_id, b.min_lod, b.geom.bounds()));
+        }
+    }
+
+    /// A box over empty water fails with a sentence naming the box, rather than
+    /// packing a valid-but-empty `.obcm` the rider only discovers on the device.
+    #[test]
+    fn bbox_missing_the_data_is_an_error() {
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
+        let Err(err) = ingest_osm(TINY_PBF, &cfg, Some(Bbox::parse("10,10,11,11").expect("box"))) else {
+            panic!("a box off in the Mediterranean must not ingest");
+        };
+        assert!(err.contains("does not overlap"), "unexpected message: {err}");
+    }
+
+    /// [`IdSet`] is only correct if `freeze` runs between filling and querying —
+    /// and `freeze` must be safe to call twice (pass 0 freezes the node set early).
+    #[test]
+    fn id_set_freezes_and_dedupes() {
+        let mut s = IdSet::default();
+        for id in [9_i64, 3, 9, -1, 3] {
+            s.insert(id);
+        }
+        s.freeze();
+        s.freeze();
+        assert_eq!(s.len(), 3, "duplicates collapse");
+        for id in [-1, 3, 9] {
+            assert!(s.contains(id));
+        }
+        for id in [0, 4, 10] {
+            assert!(!s.contains(id));
+        }
     }
 
     fn tags(pairs: &[(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
