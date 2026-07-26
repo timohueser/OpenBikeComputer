@@ -49,6 +49,22 @@ pub enum ObjectType {
     Trip = 9,
     /// The trip catalog list object (device → app), spec §7.4 — 76-byte entries mirroring `routeList`.
     TripList = 10,
+    /// An `.obcm` map (host → device, upload only), introduced by the USB transport (#889).
+    ///
+    /// **Why this type exists only now:** a map is hundreds of megabytes, so it was never uploadable
+    /// over BLE and the type would have been dead weight. A USB bulk endpoint makes it possible, so
+    /// USB is what introduces it.
+    ///
+    /// **Why 16 and not 11:** `11`–`15` are reserved in the spec for the sensor work (M4), and
+    /// stepping into a reserved band to save five discriminants would trade a real future collision
+    /// for nothing — the byte is a `u8` with 240 values still free. `16` opens the band for
+    /// transport-introduced types that BLE could never have carried.
+    ///
+    /// The transfer layer stays format-blind, as it is for `FwImage`: the payload is opaque bytes.
+    /// **The device does not yet accept one** — see the note in the board's
+    /// `link::transfer::classify_transfer`; the storage side (8.3 naming, collision policy, and how
+    /// an uploaded map becomes the one the renderer streams from) is its own piece of work.
+    Map = 16,
 }
 
 impl ObjectType {
@@ -69,6 +85,8 @@ impl ObjectType {
             8 => Self::Echo,
             9 => Self::Trip,
             10 => Self::TripList,
+            // 11–15 stay reserved (sensors, M4) and keep rejecting.
+            16 => Self::Map,
             other => return Err(DescriptorError::UnknownType(other)),
         })
     }

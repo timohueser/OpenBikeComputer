@@ -150,6 +150,11 @@ cargo run --release --features debug-uart
 # the critical-section impl to MPSL's — a compile_error catches the wrong invocation).
 # Composes with debug-uart/synth (headless ride beside a live link).
 cargo run --release --no-default-features --features ble
+
+# The USB device plane (issue #889): the default build **plus** the LM20's USBHS as a
+# vendor bulk interface, speaking the same object protocol as the radio. Off by default
+# until it is confirmed on glass; see the USB section below for the bring-up recipe.
+cargo run --release --features usb
 ```
 
 ### SD read throughput diagnostic
@@ -328,6 +333,57 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
   phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
   device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
   contact pairs with a fresh passkey.
+
+## USB link to a host (`usb`, issue #889) — **not yet verified on glass**
+
+`--features usb` adds a second transport for the *same* companion protocol: the LM20's USBHS
+behind one vendor-specific interface, so the web builder (WebUSB, Chromium) or the desktop app can
+push a map / route / firmware image to a plugged-in device. The wire protocol is canonical in
+[`obc-ble-interface-spec.md`](../../obc-ble-interface-spec.md) — USB is a transport under it, not a
+second protocol. What is **board-specific** and worth knowing:
+
+- **Zero GPIO cost.** D+/D−/VBUS/TXRTUNE are dedicated USBHS pins; nothing in the pin map above
+  moves. The driver ships in embassy-nrf 0.11 (`src/usb/usbhs.rs`, a full `embassy_usb_driver::Driver`
+  over the Synopsys OTG core, plus `vbus_detect.rs`), gated on the `nrf54lm20-app-s` feature this
+  crate already selects. It needs AHB ≥ 30 MHz — the board runs 128.
+- **Plug into J3 on the LM20-DK, not J4.** J4 is the on-board debugger (it is what `cargo run` and
+  RTT use); **J3 is the USB connector wired to the SoC**. You want both cables: J4 to flash and
+  watch RTT, J3 to the host that talks to the device. A production board with a routed USB port is
+  *not* a prerequisite for bring-up.
+- **Two vectors, no clashes:** `USBHS` and `VREGUSB`. MPSL takes `RADIO_0` / `TIMER10` / `GRTC_3` /
+  `CLOCK_POWER` / `SWI00`, and the high-priority input executor is on `SWI01`.
+- **Endpoint layout** (the host reads it off the descriptors): one interface, class `0xFF`, four
+  bulk endpoints at the high-speed-mandated 512 B — `0x81/0x01` control frames, `0x82/0x02` the
+  object stream. Control frames are `selector u8 · payload`, one frame per transfer.
+- **Windows needs no driver install**: MS OS 2.0 BOS descriptors declare the `WINUSB` compatible id
+  and a stable `DeviceInterfaceGUIDs` property, so Windows auto-binds WinUSB with no `.inf` and no
+  Zadig.
+- **VID/PID `1209:0001`** is pid.codes' *prototype* pair — deliberately the id that means "not
+  allocated yet". Allocating a real PID is an owner action; when it lands, two constants change
+  (`src/usb/mod.rs` and the web builder's `OBC_USB_FILTERS`).
+
+### Bring-up recipe
+
+Everything below is **unverified** — no board was plugged in for the PR that added it.
+
+1. Flash `cargo run --release --features usb` over **J4** (remember the flash-twice quirk and keep
+   `--verify`; retry 2–3× if probe-rs errors). Watch RTT for
+   `usb: device plane up — 1209:0001, serial '…', HS bulk 512 B`.
+2. Plug **J3** into the host. On macOS `system_profiler SPUSBDataType` (or Linux `lsusb -v -d
+   1209:0001`) should show `OpenBikeComputer`, the FICR serial as `iSerialNumber`, **Speed: Up to
+   480 Mb/s**, one vendor-specific interface and four bulk endpoints.
+3. In Chromium, `chrome://device-log` shows the enumeration; the web builder's connect button opens
+   the chooser and the identity + device-info reads answer.
+4. RTT should show `usb: [ctl] endpoint enabled` and `usb: [bulk] endpoint enabled` once the host
+   claims the interface.
+
+**Known failure modes.** No enumeration at all with no RTT line → the task never started (check the
+`usb` feature is on). Enumeration at 12 Mb/s instead of 480 → the PHY fell back to full speed, and
+the 512 B bulk descriptors are then illegal; that is a real bug, not a slow link. A device that
+enumerates but whose transfers hang → look for `discarded N unclaimed bytes while idle` (the host
+wrote payload before its descriptor was acked) or a `busy` status (the cross-transport
+one-transfer gate — a BLE transfer is in flight). `Code 43` on Windows means the MS OS 2.0
+descriptor set was rejected; re-read it with `usbview`.
 
 ## Driving it from a host (`debug-uart`)
 
