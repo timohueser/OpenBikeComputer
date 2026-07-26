@@ -1,14 +1,18 @@
 <script lang="ts">
-    import type { Preset } from "../lib/config/model";
+    import type { BuildablePreset } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
 
-    let { presets }: { presets: Preset[] } = $props();
+    // Config-carrying presets only: picking one here *is* copying its config
+    // into the working copy, so a catalog preset (which names a baked artifact
+    // and has no config) has no meaning in this card. The hosted tier renders
+    // components/catalog/PresetStep.svelte instead.
+    let { presets }: { presets: BuildablePreset[] } = $props();
 
     const basedOn = $derived(working.envelope?.based_on?.id ?? null);
     const modified = $derived(working.envelope?.modified ?? false);
     const basedOnName = $derived(presets.find((p) => p.id === basedOn)?.name ?? basedOn);
 
-    function pick(preset: Preset) {
+    function pick(preset: BuildablePreset) {
         if (modified && basedOn === preset.id) return; // keep custom edits; reset lives in the editor
         working.applyPreset(preset);
     }
@@ -27,7 +31,7 @@
                 {#if basedOn === preset.id && !modified}<span class="check">✓</span>{/if}
             </span>
             <span class="swatches">
-                {#each preset.swatch as c (c)}
+                {#each preset.swatch ?? [] as c (c)}
                     <span class="sw" style:background={c}></span>
                 {/each}
             </span>

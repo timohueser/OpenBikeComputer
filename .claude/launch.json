@@ -15,6 +15,13 @@
       "port": 5173
     },
     {
+      "name": "web-builder-static",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5173"],
+      "cwd": "packer/web_builder/frontend",
+      "port": 5173
+    },
+    {
       "name": "landing-page",
       "runtimeExecutable": "trunk",
       "runtimeArgs": ["serve", "--config", "docs/Trunk.toml"],
