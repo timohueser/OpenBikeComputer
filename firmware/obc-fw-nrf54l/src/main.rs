@@ -159,8 +159,19 @@ mod sensors;
 // `ble` builds only; spawned beside the ride loop (see `spawn_ble_stack`).
 #[cfg(feature = "ble")]
 mod ble;
+// The USB device plane (#889): the LM20's USBHS behind a vendor interface, carrying the *same*
+// companion protocol as the radio — a browser or the desktop app plugs in and speaks the object
+// model directly. `usb` builds only; spawned beside the ride loop (see `spawn_usb_stack`).
+#[cfg(feature = "usb")]
+mod usb;
+// The transport-free companion-link core: the §4.4 command handler, descriptor classification, the
+// cross-transport one-transfer gate, the identity blobs, and the one shared `ObjectStore`. Both the
+// radio and the USB plane call into it, which is what keeps "USB is a second transport, not a second
+// protocol" true in the code rather than only in the spec.
+#[cfg(feature = "ble")]
+mod link;
 // The device object store: object ids / revision / upload state over the SD catalog, and the Config ↔
-// RRAM-settings bridge the BLE control plane drives. `ble` builds only.
+// RRAM-settings bridge every control plane drives. `ble` builds only.
 #[cfg(feature = "ble")]
 mod object_store;
 
@@ -330,11 +341,21 @@ const BLE_RESIDENT: usize = ble::RESIDENT_BYTES;
 #[cfg(not(feature = "ble"))]
 const BLE_RESIDENT: usize = 0;
 
+/// The USB device plane's residents (`usb::RESIDENT_BYTES`: the driver's EP-OUT staging buffer, the
+/// descriptor + control buffers, and the two planes' frame/chunk scratch); zero without the feature.
+/// Counted in the same sum as the map and BLE planes so "USB doesn't fit beside them" would be a
+/// *compile-time* fact rather than an on-glass overflow — the same arbitration `ble` gets.
+#[cfg(feature = "usb")]
+const USB_RESIDENT: usize = usb::RESIDENT_BYTES;
+#[cfg(not(feature = "usb"))]
+const USB_RESIDENT: usize = 0;
+
 /// The resident set that must coexist during a redraw (see the table above).
 const RESIDENT_BYTES: usize = FB_BYTES
     + core::mem::size_of::<RowDiff<FRAME_H>>() // the self-diffing present store (#201, 1.28 KB)
     + MAP_RESIDENT
-    + BLE_RESIDENT;
+    + BLE_RESIDENT
+    + USB_RESIDENT;
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
     "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
@@ -536,11 +557,26 @@ async fn spawn_ble_stack(
     mpsl_p: nrf_sdc::mpsl::Peripherals<'static>,
     sdc_p: nrf_sdc::Peripherals<'static>,
     cracen_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::CRACEN>,
-    shared: &'static SharedStoreMutex,
-    store_epoch: Option<u32>,
+    stores: link::LinkStores,
     sensor_injector: obc_platform::sensor_hub::SampleInjector<'static>,
 ) {
-    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, shared, store_epoch, sensor_injector)));
+    spawner.spawn(defmt::unwrap!(ble::run(spawner, mpsl_p, sdc_p, cracen_p, stores, sensor_injector)));
+}
+
+/// Spawn-trampoline for the USB device plane (#889) — the same reasoning as [`spawn_ble_stack`]:
+/// constructing [`usb::run`]'s spawn token materializes its future as a stack temporary in the
+/// constructing function's poll frame, and a poll frame's full slot set is allocated at entry. Doing
+/// it in `main` would charge `main` for the USB task's whole state machine from its first
+/// instruction, on every poll, forever. This tiny task's own pool static holds just the arguments
+/// until the inner spawn moves them into [`usb::run`]'s.
+#[cfg(feature = "usb")]
+#[embassy_executor::task]
+async fn spawn_usb_stack(
+    spawner: Spawner,
+    usb_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::USBHS>,
+    stores: link::LinkStores,
+) {
+    spawner.spawn(defmt::unwrap!(usb::run(usb_p, stores)));
 }
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
@@ -1219,9 +1255,8 @@ async fn main(_spawner: Spawner) {
             )
         };
 
-        // (The `ble` build's ObjectStore is built inside `ble::run` — the ~8 KB value and its
-        // construction temporary must not cost `main`'s frame or the trampoline's pool; see
-        // `spawn_ble_stack`.)
+        // (The companion-link object store is built after the store-epoch mint below — the catalog
+        // scan must see the settled id-era, exactly as it did when `ble::run` built it.)
 
         // --- Store-epoch nonce (protocol v2, #632 item 5 / #767; card-resident #776): mint & persist
         // the store's id-era nonce. The epoch now lives on the **card** (`EPOCH.OBE`, so the card
@@ -1305,6 +1340,24 @@ async fn main(_spawner: Spawner) {
             }
         };
 
+        // --- The one companion-link object store, and the handles every link plane is composed
+        // with. Built here rather than inside `ble::run`: with USB as a second transport (#889),
+        // two independently-constructed stores would each keep their own catalog, id allocator and
+        // upload temp over the *same* SD card. Built **after** the epoch mint above, which is where
+        // `ble::run` used to build it — the catalog scan must see the settled id-era.
+        //
+        // `link::init_store` is `#[inline(never)]`, so its ~13.5 KB construction temporary lives in
+        // *that* transient frame (a measured ~27.6 KB prologue, popped immediately) and `main`'s
+        // frame pays only the reference — the #677 rule, unchanged. ---
+        #[cfg(feature = "ble")]
+        let link_stores = {
+            let objects = {
+                let mut guard = shared_store.lock().await;
+                link::init_store(&mut guard)
+            };
+            link::LinkStores { shared: shared_store, objects, epoch: _store_epoch }
+        };
+
         // --- The BLE stack, `ble` builds: group the peripheral claims (MPSL: GRTC CH7–11 + TIMER10/20
         // + TEMP + its PPI/PPIB lanes; SDC: the PPI10 fan-out + PPIB bridges; CRACEN for the LL's crypto
         // RNG) and spawn [`spawn_ble_stack`] — the trampoline that spawns [`ble::run`] from a shallow
@@ -1359,11 +1412,18 @@ async fn main(_spawner: Spawner) {
                 mpsl_p,
                 sdc_p,
                 cracen_p,
-                shared_store,
-                _store_epoch,
+                link_stores,
                 SENSOR_HUB.injector()
             )));
         }
+
+        // --- The USB device plane (#889), `usb` builds: the LM20's USBHS on its dedicated D+/D−/
+        // VBUS pins (zero GPIO cost — nothing above needs re-planning), speaking the same object
+        // model as the radio over a vendor bulk interface. Spawned through its own trampoline for
+        // the same #677 reason as the BLE stack: constructing the task's future in `main` would put
+        // its whole state machine in `main`'s poll frame. ---
+        #[cfg(feature = "usb")]
+        _spawner.spawn(defmt::unwrap!(spawn_usb_stack(_spawner, p.USBHS, link_stores)));
 
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
         // `display` (one of the two `MapDisplay` definitions) is the only per-backend value crossing this

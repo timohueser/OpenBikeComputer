@@ -130,6 +130,16 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `10` | `tripList` | device → app | the trip catalog — fixed-size **76 B** entries, mirroring `routeList`'s core (no auto-expiry tail) |
 | `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
 | `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
+| `16` | `map` | host → device (upload) | an [OBCM](../formats/) map — **the cable only**, see below |
+
+`map` is the one type Bluetooth could never have carried, and it is the clearest
+illustration of what a second transport buys: a map is hundreds of megabytes, so
+the type would have been dead weight until [a wire existed](#the-same-link-down-a-cable)
+that could move one. The device does not accept a map upload yet — the byte is
+agreed so both sides mean the same thing, but where an uploaded map *lands* on
+the card is an unsolved question rather than a small one, because the map the
+renderer streams from is chosen by filename at boot and held open for the whole
+session.
 
 The key move is that **a route on the wire is the same bytes as a route on the
 card.** The phone converts an imported GPX or TCX to an OBCR file and streams
@@ -793,11 +803,56 @@ of the data-formats page (normative bytes in the
 
 ---
 
+## The same link, down a cable
+
+The nRF54LM20 has a real USB device peripheral, and pointing it at this protocol
+turns out to cost almost nothing — because of a decision made long before USB was
+on the table.
+
+Look again at what a transfer actually needs from its transport. The bulk plane
+needs a channel that is **reliable, ordered, and unframed**; that is exactly what
+principle two asks of the CoC, and exactly what a **USB bulk endpoint** is. So
+the object stream — the descriptors, the payload bytes, the single whole-object
+CRC — crosses a cable with *no translation whatsoever*. The same state machine,
+the same fixtures, the same bytes.
+
+Only the control plane needs anything at all, and it needs one byte. GATT gives
+each control message its own addressed characteristic, so "which message is
+this?" is answered by the transport rather than by any byte of ours. USB has one
+endpoint pair, so that routing becomes a leading **selector byte** — and the rest
+of the frame is the *exact* payload the matching characteristic would have
+carried. That is the whole delta. USB is a second **transport**, not a second
+protocol.
+
+Two consequences are worth naming, because they are what makes the wired path a
+real product rather than a demo:
+
+- **The device keeps working while a map lands.** Storage is arbitrated behind
+  one async mutex, and each store call takes it only for its own duration — so
+  the ride loop's redraws interleave between chunks. This is why USB **Mass
+  Storage** was rejected outright: handing a host raw block access would force
+  the firmware to release the card entirely (two filesystem writers is
+  corruption), and you would be back to a device that becomes a disk instead of
+  remaining a bike computer.
+- **One transfer at a time means one across *both* wires.** The gate is shared
+  rather than per-transport, because what it protects is the device's single
+  upload temp and open download source — not the wire. Start a transfer over the
+  cable while the phone is mid-upload and you get the same typed `busy` the phone
+  would get from another phone.
+
+Everything else about the link is unchanged by the choice of wire: the same
+objects, the same restart-don't-resume rule, the same change signal, the same
+`status` ordering domain. Pairing is the one genuine exception — encryption and
+bonding are BLE mechanisms, and the cable's authentication is that someone is
+holding it.
+
 ## Where this lives
 
-- The wire contract, normative: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md)
+- The wire contract, normative: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (§10 is the USB binding)
 - The host-tested, radio-free core — descriptor codecs, CRC-32, the transfer state machine: [`obc-ble`](src:firmware/obc-ble) ([`transfer.rs`](src:firmware/obc-ble/src/transfer.rs) · [`descriptor.rs`](src:firmware/obc-ble/src/descriptor.rs))
+- On the device, shared by every transport — the command handler, descriptor classification, the identity blobs, the one object store, and the cross-transport transfer gate: [`obc-fw-nrf54l/src/link/`](src:firmware/obc-fw-nrf54l/src/link)
 - On the device — the GATT server, connection lifecycle, and the CoC data plane: [`obc-fw-nrf54l/src/ble/`](src:firmware/obc-fw-nrf54l/src/ble)
+- On the device — the USB vendor interface, the selector envelope, and the bulk object stream: [`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb)
 - The central-role **sensor manager** — scan / connect / subscribe / decode / dispatch, the `SENSOR_LINKS` cap and its budget: [`obc-fw-nrf54l/src/ble/sensors.rs`](src:firmware/obc-fw-nrf54l/src/ble/sensors.rs)
 - The radio-free sensor profile codecs, the advertisement classifier, and the crank→rpm accumulator: [`obc-ble`](src:firmware/obc-ble) (`sensors.rs`)
 - The app-facing sensor mailboxes both the radio manager and the injection path feed — one instance-owned `SensorHub`, handed to each task at spawn: [`obc-platform/src/sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)
