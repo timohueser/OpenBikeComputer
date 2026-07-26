@@ -9,14 +9,24 @@ whose ingest outcome is known by construction.
 - [`poi/poi.osm`](poi/poi.osm) — exercises POI extraction (#422): node + closed-way
   classification, name folding, and the dedup pair
   (`ingest::tests::poi_fixture_end_to_end`).
+- [`tiny_split/`](tiny_split/) — `tiny.osm` cut into two overlapping halves for
+  the native multi-`.pbf` merge (#920). Their union is exactly `tiny.osm`, so
+  ingesting the pair must reproduce ingesting the whole — same features, same
+  order, same POIs, same nav graph — while they disagree on purpose about one way
+  and one node so the "first source listed wins" tie-break is observable
+  (`ingest::tests::merging_two_overlapping_halves_rebuilds_the_whole`,
+  `…::the_first_source_carrying_an_id_wins_it`). `tiny_west.osm`'s header comment
+  is the map of what each difference is for.
 - [`unsorted/unsorted.osm`](unsorted/unsorted.osm) — a way written *before* its
-  nodes. `--bbox` selects ways in a single pass and so needs the file type-sorted;
-  this pins the refusal rather than a silently empty crop (#910,
-  `ingest::tests::bbox_refuses_an_unsorted_pbf`).
+  nodes. The `--bbox` crop's pass 0 stops its node phase at the first way and so
+  needs the file type-sorted; this pins the refusal rather than a silently empty
+  crop (#910, `ingest::tests::bbox_refuses_an_unsorted_pbf`).
 - [`build_corpus.sh`](build_corpus.sh) — converts each to `data/*.osm.pbf` with
   `osmium cat`. The derived `.pbf`s are **also committed** (the tests hard-fail
   without them), so re-run the script and commit the regenerated `.pbf` whenever
-  a source `.osm` changes.
+  a source `.osm` changes. This script is the last thing in the tree that wants
+  `osmium-tool` (`brew install osmium-tool`), and only as an XML→PBF converter —
+  nothing here packs a map, and the packer itself needs no osmium at all.
 
 > Historically this directory held a larger validation corpus (monaco, malta,
 > Freiburg extracts) used to validate the Rust port against a Python oracle. That
