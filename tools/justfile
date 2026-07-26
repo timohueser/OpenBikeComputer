@@ -59,7 +59,10 @@ flash *args:
     (( synth )) && feats+=(synth)
     (( ${#feats[@]} )) && a+=(--features "$(IFS=,; echo "${feats[*]}")")
     cd "$OBC_ROOT/firmware/obc-fw-nrf54l"
-    _run cargo "$action" --release "${a[@]}"
+    # `${a[@]+"${a[@]}"}`, not `"${a[@]}"`: macOS ships bash 3.2, where expanding an EMPTY array
+    # under `set -u` is an "unbound variable" error. That is the no-options case — i.e. plain
+    # `obc flash`, now the common one since the USB plane stopped being a feature.
+    _run cargo "$action" --release ${a[@]+"${a[@]}"}
 
 # Feed a recorded ride to a debug-uart board over VCOM (obc-usb-host).
 # Args: [TRACK.gpx] [-- --port TTY | --baud N | --list].
@@ -93,7 +96,8 @@ debug *args:
     [[ -n "$ble" ]] && { feats="ble,debug-uart"; nodef=(--no-default-features); }
     elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
     _say "building debug-uart firmware…"
-    ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release "${nodef[@]}" --features "$feats" )
+    # Same bash-3.2 empty-array trap as `flash` above: `nodef` is empty unless `ble` was passed.
+    ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release ${nodef[@]+"${nodef[@]}"} --features "$feats" )
     _say "flashing over J-Link…"
     _run probe-rs download --chip nRF54L15 --verify "$elf"
     _run probe-rs reset --chip nRF54L15

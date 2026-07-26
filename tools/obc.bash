@@ -17,6 +17,11 @@ _obc_root() {
   dirname "$t"
 }
 
+# zsh runs this file through `bashcompinit`, which supplies `compgen`/`complete` but NOT
+# `mapfile` (a bash builtin) — so filling COMPREPLY portably is on us. Reads NUL-free lines,
+# which is what compgen emits.
+_obc_reply() { COMPREPLY=(); local _l; while IFS= read -r _l; do COMPREPLY+=("$_l"); done; }
+
 # Task names, from the justfile (falls back to a static list).
 _obc_tasks() {
   local t; t="$(_obc_toolsdir)"
@@ -55,12 +60,17 @@ _obc_posidx() {
 }
 
 _obc() {
+  # zsh arrays are 1-based, bash's are 0-based, and `bashcompinit` does not change that — so
+  # `COMP_WORDS[1]` is the *task* in bash and the *command name* in zsh, and every per-task case
+  # below silently matched nothing. `ksh_arrays` gives this function bash indexing; `local_options`
+  # restores the shell's own setting on return. Guarded by ZSH_VERSION so bash never runs it.
+  [ -n "${ZSH_VERSION:-}" ] && setopt local_options ksh_arrays
   local cur task idx
   cur="${COMP_WORDS[COMP_CWORD]}"
   task="${COMP_WORDS[1]:-}"
 
   if (( COMP_CWORD == 1 )); then
-    mapfile -t COMPREPLY < <(compgen -W "$(_obc_tasks)" -- "$cur")
+    _obc_reply < <(compgen -W "$(_obc_tasks)" -- "$cur")
     return
   fi
 
@@ -68,32 +78,32 @@ _obc() {
   case "$task" in
     sim)
       case "$idx" in
-        0) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -W "$(_obc_maps)" -- "$cur"; compgen -f -X '!*.obcm' -- "$cur") ;;
-        1) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -W "$(_obc_gpx) none" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
+        0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_maps)" -- "$cur"; compgen -f -X '!*.obcm' -- "$cur") ;;
+        1) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_gpx) none" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
       esac ;;
     uart)
-      (( idx == 0 )) && { compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -W "$(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur"); } ;;
+      (( idx == 0 )) && { compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur"); } ;;
     debug)
       compopt -o filenames 2>/dev/null
-      mapfile -t COMPREPLY < <(compgen -W "ble $(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
+      _obc_reply < <(compgen -W "ble $(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
     flash)
-      mapfile -t COMPREPLY < <(compgen -W "ble debug-uart synth build" -- "$cur") ;;
+      _obc_reply < <(compgen -W "ble debug-uart synth build" -- "$cur") ;;
     pack)
       case "$idx" in
-        0) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -f -X '!*.pbf' -- "$cur"; compgen -d -- "$cur") ;;
-        1) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -W "$(_obc_presets)" -- "$cur"; compgen -f -X '!*.json' -- "$cur") ;;
-        *) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -f -- "$cur") ;;
+        0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -f -X '!*.pbf' -- "$cur"; compgen -d -- "$cur") ;;
+        1) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_presets)" -- "$cur"; compgen -f -X '!*.json' -- "$cur") ;;
+        *) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -f -- "$cur") ;;
       esac ;;
     bench)
-      (( idx == 0 )) && mapfile -t COMPREPLY < <(compgen -W "check write" -- "$cur") ;;
+      (( idx == 0 )) && _obc_reply < <(compgen -W "check write" -- "$cur") ;;
     desktop)
-      mapfile -t COMPREPLY < <(compgen -W "dev build" -- "$cur") ;;
+      _obc_reply < <(compgen -W "dev build" -- "$cur") ;;
     check)
-      mapfile -t COMPREPLY < <(compgen -W "fmt clippy test device docs board frontend deny wasm" -- "$cur") ;;
+      _obc_reply < <(compgen -W "fmt clippy test device docs board frontend deny wasm" -- "$cur") ;;
     doctor)
-      mapfile -t COMPREPLY < <(compgen -W "--install" -- "$cur") ;;
+      _obc_reply < <(compgen -W "--install" -- "$cur") ;;
     test)
-      mapfile -t COMPREPLY < <(compgen -W "-p --release --" -- "$cur") ;;
+      _obc_reply < <(compgen -W "-p --release --" -- "$cur") ;;
   esac
 }
 
