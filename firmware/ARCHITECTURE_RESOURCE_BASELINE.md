@@ -207,8 +207,12 @@ the expected deltas, rather than left to look current.
 the plane on a 500 ms timer, so a device riding with nothing in J3 woke twice a second
 forever to re-read a register only a human can change. The park now waits on a VREGUSB
 interrupt — a board handler bound *alongside* embassy's on the same vector, waking an
-`AtomicWaker` — with a 30 s timer left only as a self-healing net. Re-measured on the same
-pinned rustc 1.96.0 host, against develop at `ccbf8100`:
+`AtomicWaker`. A 30 s timer shipped alongside it as a self-healing net and was **removed
+immediately after**, on glass evidence: `wait_for_vbus` registers before it reads, and reads a
+level rather than a latched edge, so a wake cannot be lost and the net guarded nothing. That
+removal is a further **−24 B resident / −496 B flash** (421,200 → 421,176; 1,192,864 → 1,192,368),
+leaving the park a pure interrupt wait. Re-measured on the same pinned rustc 1.96.0 host, against
+develop at `ccbf8100`:
 
 | | before (#936) | after (event-driven) | Δ |
 | :-- | --: | --: | --: |
