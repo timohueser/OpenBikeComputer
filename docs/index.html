@@ -252,29 +252,33 @@
     .device-stage:focus-visible .device { outline: 3px solid var(--amber); outline-offset: 4px; }
     /* The celadon base the body is seated on: a slightly larger slab behind it, offset down,
        so it reads as the lighter lower shell peeking out. */
+    /* Proportioned off the reference render: a ≈0.65 w:h body around the 3:4 panel, the bezel
+       reaching to within ~6% of each side, and a chin ≈22% of the height under it. */
     .device {
       position: relative;
-      width: min(330px, 88vw);
-      padding: 5.5% 7.5% 0;
+      /* 82vw leaves room for the pads + rim hanging off both flanks on a narrow phone. */
+      width: min(330px, 82vw);
+      padding: 5.2% 5.85% 0;
       background: linear-gradient(163deg, #3d7a63 0%, var(--device-body) 48%, #1f4739 100%);
-      border-radius: clamp(22px, 9%, 34px);
+      border-radius: clamp(28px, 13.6%, 46px);
       box-shadow:
         inset 0 2px 2px rgba(206, 255, 232, 0.28),
         inset 0 -4px 8px rgba(6, 32, 22, 0.36),
         0 22px 30px rgba(44, 33, 20, 0.30);
     }
+    /* The celadon base: an even rim on all four sides, concentric with the body. */
     .device::before {
       content: ""; position: absolute; z-index: -1;
-      left: -2.6%; right: -2.6%; top: 3%; bottom: -3.4%;
+      inset: -1.95%;
       background: linear-gradient(163deg, var(--device-accent) 0%, #6fd3a7 100%);
-      border-radius: clamp(24px, 10%, 38px);
+      border-radius: clamp(30px, 15.5%, 50px);
       box-shadow: 0 10px 18px rgba(31, 71, 57, 0.28);
     }
     /* The four side buttons: dark textured rubber pads that protrude from each flank.
        Decorative twins of the real controls underneath — they sink in when the matching
        control does. UP/DOWN sit on the left, SELECT/BACK on the right, at matching heights. */
     .side {
-      position: absolute; width: 10px; height: 13%;
+      position: absolute; width: 12px; height: 12.5%;
       background: #2b2f36;
       background-image:
         repeating-linear-gradient(180deg, rgba(0,0,0,0.30) 0 1px, transparent 1px 4px),
@@ -282,10 +286,12 @@
       box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(6, 32, 22, 0.4);
       transition: transform .08s ease, background-color .08s ease;
     }
-    .side-l { left: -10px; border-radius: 6px 0 0 6px; }
-    .side-r { right: -10px; border-radius: 0 6px 6px 0; }
-    .side-up, .side-select { top: 24%; }
-    .side-down, .side-back { top: 41%; }
+    .side-l { left: -12px; border-radius: 6px 0 0 6px; }
+    .side-r { right: -12px; border-radius: 0 6px 6px 0; }
+    /* The pair straddles the body's vertical midpoint, as on the real device:
+       50% − (pad + gap/2) and 50% + gap/2, with pad 12.5% and gap 4.5%. */
+    .side-up, .side-select { top: 35.25%; }
+    .side-down, .side-back { top: 52.25%; }
     /* A press sinks the pad into the body — so the direction flips with the flank. */
     .side-l.pressed { transform: translateX(3px); background-color: #1f2229; }
     .side-l.held { transform: translateX(4px); background-color: #171a20; }
@@ -295,8 +301,8 @@
     .bezel {
       position: relative;
       background: #101317;
-      border-radius: 12px;
-      padding: 4%;
+      border-radius: 14px;
+      padding: 5.9%;
       box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.65), 0 1px 0 rgba(206, 255, 232, 0.16);
     }
     .panel { position: relative; aspect-ratio: 3 / 4; }
@@ -338,11 +344,11 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     /* chin: the wordmark, softly embossed into the body */
-    .chin { display: flex; align-items: center; justify-content: center; padding: 4.5% 0 6.5%; }
+    .chin { display: flex; align-items: center; justify-content: center; padding: 12% 0 15.3%; }
     .wordmark {
-      font-family: var(--mono); font-size: clamp(13px, 5%, 16px); font-weight: 700;
+      font-family: var(--mono); font-size: clamp(14px, 6%, 19px); font-weight: 700;
       letter-spacing: 0.34em; text-indent: 0.34em; /* re-centre the tracked glyphs */
-      color: rgba(9, 42, 31, 0.62);
+      color: rgba(9, 42, 31, 0.7);
       text-shadow: 0 1px 0 rgba(206, 255, 232, 0.3);
     }
 

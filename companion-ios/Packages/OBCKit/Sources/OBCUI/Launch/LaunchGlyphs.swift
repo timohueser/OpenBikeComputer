@@ -33,14 +33,19 @@ struct BluetoothRune: Shape {
     }
 }
 
-/// The hardware drawing: the two-tone shell (forest body seated on a celadon base that shows as a
-/// lip), a white memory-LCD screen with the rust title bar, and the four side buttons — UP / DOWN
-/// on the left flank, SELECT / BACK on the right. Two variants straight from the §4 frames.
+/// The hardware drawing: the two-tone shell (forest body inside a concentric celadon rim), the
+/// black bezel around a white memory-LCD screen with the rust title bar, and the four side buttons
+/// — UP / DOWN on the left flank, SELECT / BACK on the right, the pair centred on the body's
+/// midpoint as on the real device.
+///
+/// Every dimension is derived from the shell **height** through [`Metrics`], off the same 308×470
+/// body / 240×320 panel proportions the simulator housing uses — so the glyph is the real device
+/// in miniature (≈0.65 w:h, a tall chin under the bezel) rather than a rounded square.
 struct DeviceGlyphView: View {
     enum Variant {
-        /// A (104×128): named title bar + the amber track squiggle.
+        /// A: named title bar + the amber track squiggle.
         case home(name: String)
-        /// D1 (88×108): blank title bar + "PAIR" on screen.
+        /// D1: blank title bar + "PAIR" on screen. Drawn a little smaller.
         case pairing
     }
 
@@ -51,58 +56,97 @@ struct DeviceGlyphView: View {
         return false
     }
 
+    /// The device's real proportions, scaled to a given glyph height. Ratios are `dimension / 470`
+    /// (the body height in the housing's screen-pixel units).
+    private struct Metrics {
+        let height: CGFloat
+
+        var width: CGFloat { height * 308 / 470 }
+        var radius: CGFloat { height * 42 / 470 }
+        /// The celadon rim, even on all four sides.
+        var lip: CGFloat { max(2, height * 6 / 470) }
+        var screenWidth: CGFloat { height * 240 / 470 }
+        var screenHeight: CGFloat { height * 320 / 470 }
+        /// Screen top, measured from the body's top edge — the chin below is much deeper.
+        var screenTop: CGFloat { height * 32 / 470 }
+        var bezelGap: CGFloat { height * 16 / 470 }
+        var bezelRadius: CGFloat { height * 26 / 470 }
+        var screenRadius: CGFloat { height * 10 / 470 }
+        var buttonWidth: CGFloat { max(4, height * 19 / 470) }
+        var buttonHeight: CGFloat { height * 54 / 470 }
+        var buttonGap: CGFloat { height * 26 / 470 }
+        /// How far a pad protrudes past the body edge.
+        var buttonProtrude: CGFloat { height * 13 / 470 }
+        /// The wordmark's baseline inset from the body's bottom edge, centring it in the chin.
+        var chinInset: CGFloat { height * 30 / 470 }
+    }
+
+    private var m: Metrics { Metrics(height: isHome ? 148 : 126) }
+
     var body: some View {
-        let shell: CGSize = isHome ? CGSize(width: 104, height: 128) : CGSize(width: 88, height: 108)
-        let screen: CGSize = isHome ? CGSize(width: 80, height: 98) : CGSize(width: 66, height: 82)
-        let radius: CGFloat = isHome ? 20 : 18
-        let lip: CGFloat = isHome ? 3 : 2.5
-
-        ZStack {
-            // The celadon base peeking out below and to the sides of the body.
-            RoundedRectangle(cornerRadius: radius + lip)
+        let m = self.m
+        ZStack(alignment: .top) {
+            // The celadon rim: the same slab grown evenly on all four sides.
+            RoundedRectangle(cornerRadius: m.radius + m.lip)
                 .fill(OBCTheme.deviceAccent)
-                .padding(.top, lip * 2)
-                .padding(.horizontal, -lip)
-                .padding(.bottom, -lip)
+                .padding(-m.lip)
 
-            RoundedRectangle(cornerRadius: radius)
+            RoundedRectangle(cornerRadius: m.radius)
                 .fill(OBCTheme.deviceBody)
                 .shadow(color: OBCTheme.deviceBody.opacity(0.3), radius: 13, y: isHome ? 14 : 0)
 
-            screenContent
-                .frame(width: screen.width, height: screen.height)
-                .background(.white)
-                .clipShape(RoundedRectangle(cornerRadius: isHome ? 8 : 7))
+            // Bezel + screen, seated high in the body so the wordmark chin reads below them.
+            RoundedRectangle(cornerRadius: m.bezelRadius)
+                .fill(OBCTheme.deviceBezel)
+                .frame(width: m.screenWidth + 2 * m.bezelGap, height: m.screenHeight + 2 * m.bezelGap)
+                .overlay {
+                    screenContent
+                        .frame(width: m.screenWidth, height: m.screenHeight)
+                        .background(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: m.screenRadius))
+                }
+                .padding(.top, m.screenTop - m.bezelGap)
+
+            // The wordmark embossed into the chin, as on the real shell.
+            Text("OBC")
+                .font(.obcMono(size: m.width * 0.13, weight: .bold))
+                .kerning(m.width * 0.05)
+                .foregroundStyle(OBCTheme.deviceAccent.opacity(0.28))
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .padding(.bottom, m.chinInset)
         }
-        .frame(width: shell.width, height: shell.height)
-        .overlay(alignment: .topLeading) { sideButtons.offset(x: -3, y: isHome ? 34 : 28) }
-        .overlay(alignment: .topTrailing) { sideButtons.offset(x: 3, y: isHome ? 34 : 28) }
+        .frame(width: m.width, height: m.height)
+        .overlay(alignment: .leading) { sideButtons.offset(x: -m.buttonProtrude) }
+        .overlay(alignment: .trailing) { sideButtons.offset(x: m.buttonProtrude) }
     }
 
     @ViewBuilder
     private var screenContent: some View {
+        let m = self.m
         switch variant {
         case .home(let name):
             VStack(spacing: 0) {
                 Text(name.uppercased())
-                    .font(.obcMono(size: 8.5, weight: .bold))
+                    .font(.obcMono(size: m.screenWidth * 0.113, weight: .bold))
                     .kerning(0.5)
+                    .minimumScaleFactor(0.7)
+                    .lineLimit(1)
                     .foregroundStyle(OBCTheme.deviceHeaderText)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 20)
+                    .frame(height: m.screenHeight * 0.2)
                     .background(OBCTheme.deviceHeader)
                 TrackSquiggle()
                     .stroke(OBCTheme.deviceTrack, style: StrokeStyle(lineWidth: 3.4, lineCap: .round))
                     .frame(maxHeight: .infinity)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, m.screenWidth * 0.08)
+                    .padding(.vertical, m.screenHeight * 0.08)
             }
         case .pairing:
             VStack(spacing: 0) {
                 OBCTheme.deviceHeader
-                    .frame(height: 17)
+                    .frame(height: m.screenHeight * 0.2)
                 Text("PAIR")
-                    .font(.obcMono(size: 10, weight: .bold))
+                    .font(.obcMono(size: m.screenWidth * 0.16, weight: .bold))
                     .foregroundStyle(OBCTheme.deviceHeader)
                     .frame(maxHeight: .infinity)
             }
@@ -110,13 +154,15 @@ struct DeviceGlyphView: View {
     }
 
     /// One flank's pair of buttons — the same shape on both sides, so the device reads symmetric
-    /// (UP / DOWN on the left, SELECT / BACK on the right).
+    /// (UP / DOWN on the left, SELECT / BACK on the right). The `.leading`/`.trailing` overlay
+    /// alignment centres the pair on the body's vertical midpoint, matching the hardware.
     private var sideButtons: some View {
-        VStack(spacing: isHome ? 9 : 8) {
+        let m = self.m
+        return VStack(spacing: m.buttonGap) {
             ForEach(0..<2, id: \.self) { _ in
                 RoundedRectangle(cornerRadius: 2)
                     .fill(OBCTheme.deviceButton)
-                    .frame(width: 5, height: isHome ? 15 : 13)
+                    .frame(width: m.buttonWidth, height: m.buttonHeight)
             }
         }
     }

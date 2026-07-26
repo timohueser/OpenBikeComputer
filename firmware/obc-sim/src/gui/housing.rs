@@ -126,14 +126,15 @@ enum Flank {
 /// whole device while the screen stays an exact multiple. The draw code derives every rect
 /// from these.
 pub struct HousingStyle {
-    /// Colored body padding around the screen (left/right, above, below). The bottom
-    /// is roomier to seat the `OBC` wordmark.
+    /// Colored body padding around the screen (left/right, above, below). The bottom is much
+    /// roomier — the real device wears a tall chin under the bezel, embossed with the wordmark.
     pub pad_x: f32,
     pub pad_top: f32,
     pub pad_bottom: f32,
     /// Outer body corner radius.
     pub body_radius: f32,
-    /// How far the lighter accent base peeks out past the upper shell, all round.
+    /// How far the lighter accent base peeks out past the upper shell — an even lip on all four
+    /// sides, so the two-tone edge reads as one concentric rim rather than a dropped shadow.
     pub accent_lip: f32,
     /// Black bezel thickness around the screen, and its corner radius.
     pub bezel_gap: f32,
@@ -144,13 +145,11 @@ pub struct HousingStyle {
     pub btn_protrude: f32,
     pub btn_radius: f32,
     pub btn_press: f32,
-    /// Button pad height, and the vertical centers of the upper (UP / SELECT) and lower
-    /// (DOWN / BACK) pairs as a fraction of body height. Both flanks share the pair,
-    /// so the device reads symmetric — and the lower-right pad sits under the Back
-    /// long-press bulge the app draws at the screen's right edge.
+    /// Button pad height and the gap between the two pads of a flank. The pair is centred on the
+    /// body's vertical midpoint — as on the real device — and both flanks share it, so UP/SELECT
+    /// sit level with each other and DOWN/BACK likewise.
     pub btn_h: f32,
-    pub btn_upper_cy: f32,
-    pub btn_lower_cy: f32,
+    pub btn_gap: f32,
     /// Spacing of the grid moulded into each rubber pad.
     pub btn_grid: f32,
     /// `OBC` wordmark font size.
@@ -159,12 +158,14 @@ pub struct HousingStyle {
 
 impl Default for HousingStyle {
     fn default() -> Self {
+        // Proportioned off the reference render: a 308×470 body (≈0.65 w:h) around the 240×320
+        // panel, the bezel reaching to within ~6% of each side, and a chin ≈22% of the height.
         HousingStyle {
-            pad_x: 30.0,
-            pad_top: 30.0,
-            pad_bottom: 74.0,
-            body_radius: 40.0,
-            accent_lip: 7.0,
+            pad_x: 34.0,
+            pad_top: 32.0,
+            pad_bottom: 118.0,
+            body_radius: 42.0,
+            accent_lip: 6.0,
             bezel_gap: 16.0,
             bezel_radius: 26.0,
             btn_inset: 6.0,
@@ -172,10 +173,9 @@ impl Default for HousingStyle {
             btn_radius: 7.0,
             btn_press: 3.0,
             btn_h: 54.0,
-            btn_upper_cy: 0.34,
-            btn_lower_cy: 0.58,
+            btn_gap: 26.0,
             btn_grid: 7.0,
-            wordmark_size: 24.0,
+            wordmark_size: 26.0,
         }
     }
 }
@@ -204,7 +204,8 @@ impl HousingStyle {
     pub fn device_size_px(&self, screen: Vec2) -> Vec2 {
         let body_w = screen.x + 2.0 * self.pad_x;
         let body_h = screen.y + self.pad_top + self.pad_bottom;
-        Vec2::new(body_w + 2.0 * self.btn_protrude, body_h + self.accent_lip)
+        // The pads hang off both flanks; the accent lip rings the whole body.
+        Vec2::new(body_w + 2.0 * (self.btn_protrude + self.accent_lip), body_h + 2.0 * self.accent_lip)
     }
 
     /// Window footprint: the device plus the backdrop [`WINDOW_MARGIN`] on every side,
@@ -228,14 +229,12 @@ impl HousingStyle {
         let origin = (available.center() - self.device_size_px(screen) * s / 2.0).round();
         let body_w = (screen.x + 2.0 * self.pad_x) * s;
         let body_h = (screen.y + self.pad_top + self.pad_bottom) * s;
-        // The body is inset by the button protrusion, so the pads have room on both flanks.
-        let body = Rect::from_min_size(origin + Vec2::new(self.btn_protrude * s, 0.0), Vec2::new(body_w, body_h));
-        // The accent base is the same slab, grown by the lip everywhere but the top (it reads as
-        // the lower shell the body is seated on).
-        let base = Rect::from_min_max(
-            Pos2::new(body.left() - self.accent_lip * s, body.top() + self.accent_lip * s),
-            Pos2::new(body.right() + self.accent_lip * s, body.bottom() + self.accent_lip * s),
-        );
+        // The body is inset by the button protrusion + the lip, so both have room on both flanks.
+        let inset = (self.btn_protrude + self.accent_lip) * s;
+        let body = Rect::from_min_size(origin + Vec2::new(inset, self.accent_lip * s), Vec2::new(body_w, body_h));
+        // The accent base is the same slab grown evenly on all four sides — a concentric rim, so
+        // the two-tone edge is symmetric rather than reading as a dropped shadow.
+        let base = body.expand(self.accent_lip * s);
 
         let screen_rect = Rect::from_min_size(
             body.min + Vec2::new(self.pad_x * s, self.pad_top * s),
@@ -243,9 +242,11 @@ impl HousingStyle {
         );
         let bezel = screen_rect.expand(self.bezel_gap * s);
 
-        // Button pads, hung on both body edges at the two shared heights.
-        let pad = |flank: Flank, cy_frac: f32| {
-            let cy = body.top() + cy_frac * body_h;
+        // Button pads, hung on both body edges. The pair straddles the body's vertical midpoint,
+        // so the two pads sit `btn_gap` apart around the centre line.
+        let half_pitch = (self.btn_h + self.btn_gap) / 2.0 * s;
+        let pad = |flank: Flank, upper: bool| {
+            let cy = body.center().y + if upper { -half_pitch } else { half_pitch };
             let (x0, x1) = match flank {
                 Flank::Left => (body.left() - self.btn_protrude * s, body.left() + self.btn_inset * s),
                 Flank::Right => (body.right() - self.btn_inset * s, body.right() + self.btn_protrude * s),
@@ -260,10 +261,10 @@ impl HousingStyle {
             base,
             bezel,
             screen: screen_rect,
-            up: pad(Flank::Left, self.btn_upper_cy),
-            down: pad(Flank::Left, self.btn_lower_cy),
-            select: pad(Flank::Right, self.btn_upper_cy),
-            back: pad(Flank::Right, self.btn_lower_cy),
+            up: pad(Flank::Left, true),
+            down: pad(Flank::Left, false),
+            select: pad(Flank::Right, true),
+            back: pad(Flank::Right, false),
             wordmark_center,
             wordmark_size: self.wordmark_size * s,
             scale: s,
