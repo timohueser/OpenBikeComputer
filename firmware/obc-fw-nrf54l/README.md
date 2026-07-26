@@ -72,11 +72,11 @@ pull-up on MISO — see below); the four DK buttons and LED0 are on-board; the J
 | P1.06 | SD MOSI | SPIM22                                 |
 | P1.07 | SD MISO | SPIM22 (external pull-up to 3V3)       |
 | P1.08 | BTN2    | BACK                                   |
-| P1.09 | BTN1    | NEXT                                   |
+| P1.09 | BTN1    | DOWN                                   |
 | P1.10 | INTB    | frame envelope; LED1 pin               |
 | P1.11 | SD SCK  | SPIM22                                 |
 | P1.12 | GEN     | gate enable (the freed SD-CS pin)      |
-| P1.13 | BTN0    | PREV                                   |
+| P1.13 | BTN0    | UP                                     |
 | P1.14 | BSP     | source sub-line start                  |
 
 **Port P0 — low-power domain (P0.00–P0.04):**
@@ -339,7 +339,7 @@ cargo run -p obc-usb-host -- --gpx ../kandel.gpx        # add --port <VCOM tty> 
 ```
 
 `obc-usb-host` streams the `.gpx` as fake GPS fixes (plus a baro/compass slider and an
-on-screen button row that injects encoder/Back presses), and shows the device's
+on-screen button row that injects the four buttons' presses), and shows the device's
 render-stats telemetry coming back. It's the same `obc-platform::debug_link` wire
 protocol the simulator uses — only the transport differs (a VCOM UART here). `--list`
 enumerates serial ports; the VCOM is the J-Link CDC port.

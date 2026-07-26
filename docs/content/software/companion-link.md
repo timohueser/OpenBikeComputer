@@ -117,7 +117,7 @@ writes to the card root verbatim — the transfer layer stays format-blind, exac
 as with a route's OBCR bytes. **Staging is not installing.** A committed `fwImage`
 only *places* the file; the app then sends a separate `installFw` command to
 *request* an install, and the device runs its own scan and shows a **confirm card**
-that the rider must approve with a physical encoder press. The phone can never arm
+that the rider must approve with a physical Select press. The phone can never arm
 or reboot the device on its own — the same on-glass gate the pairing passkey uses.
 The whole trust model, the two delivery paths, and the RRAM layout are on the
 [firmware updates](../firmware-updates/) page.
@@ -183,7 +183,7 @@ over the CoC, confirm over GATT.** Here is an upload — a route leaving the pho
 The checksum is a **whole-object CRC-32/IEEE**, verified once at commit — the
 same variant as gzip/PNG. It is deliberately *not* a per-packet CRC (the link
 already covers the air); it catches what the link can't — an encode bug, a
-storage error — **end to end**, from the phone's encoder to the device's flash
+storage error — **end to end**, from the phone's request to the device's flash
 and back.
 
 > **Restart, not resume.** An object is tens of kilobytes — a couple of seconds

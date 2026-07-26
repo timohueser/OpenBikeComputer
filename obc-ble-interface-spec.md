@@ -508,7 +508,7 @@ connect (and after edits, as it likes). Rules:
 device to install it. The command returns as soon as the request is **accepted**
 — it does *not* wait for the human. The device then runs its on-device flow:
 scan + validate the staged image, show a **confirm card**, and install only on a
-physical **encoder press** by the rider. The reply codes map onto the existing
+physical **Select press** by the rider. The reply codes map onto the existing
 `commandResult` status vocabulary (§4.3) — no new status byte:
 
 | `installFw` outcome | `commandResult.status` | Meaning |
@@ -531,7 +531,7 @@ updated over BLE".
 **Security posture — no silent installs, ever.** Staging a `fwImage` over BLE is
 authenticated only by the bonded, encrypted link (§8): a paired phone can drop an
 image on the card, nothing more. **Installing** is gated on **physical
-confirmation at the device** — the encoder press on the confirm card, symmetric
+confirmation at the device** — the Select press on the confirm card, symmetric
 with the pairing-passkey pattern (the phone can request, only the rider at the
 device acts). `installFw` therefore never arms or reboots on its own; it posts a
 request the on-device confirm flow must approve. Image authenticity beyond the
