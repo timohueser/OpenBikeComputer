@@ -28,11 +28,12 @@ class QueueFull(Exception):
 
 # `obc-pack` prints these stage strings on stdout; they map to a coarse UI phase.
 # Order matters to the UI: it derives a percentage from the phase's index, so a
-# marker must never fire after a later-indexed one. "Cropping" only appears on
-# the multi-source path (obc-pack crops each input before merging them); a
-# single-source bbox build crops inside ingest, as pass 0.
+# marker must never fire after a later-indexed one. "Merging" is a one-line
+# announcement on the multi-region path, not a stage of its own: since #920 the
+# merge happens *inside* the ingest passes rather than as an osmium step before
+# them, so it prints once and "Pass 0/1/2" follow immediately. (The old
+# "Cropping" marker is gone with the `osmium extract` call that printed it.)
 _STAGE_MARKERS = {
-    "Cropping": "cropping",
     "Merging": "merging",
     "Pass 0": "ingest",
     "Pass 1": "ingest",
@@ -65,7 +66,7 @@ class Job:
         self.bbox = bbox  # [west, south, east, north] in degrees, or None
         self.created_at = time.time()
         # Coarse lifecycle for /api/jobs/{id}; the SSE events carry the
-        # fine-grained phase strings (downloading/cropping/converting/...).
+        # fine-grained phase strings (downloading/merging/ingest/...).
         self.state = "queued"  # queued | running | done | error
         self.error = None
         self.download_name = _sanitize_output_name(output_name)
@@ -246,6 +247,11 @@ def _run(job):
         os.makedirs(job.out_dir, exist_ok=True)
         job.emit({"type": "status", "status": "converting", "detail": "starting"})
 
+        # Several regions are handed over as-is: obc-pack merges them inside its
+        # own ingest passes (#920), so there is no `osmium` on the box and no
+        # merged intermediate `.pbf` in the cache. On a duplicate id — adjacent
+        # regions share their border — the FIRST region listed wins, which is the
+        # order `region_pbf_urls` returned them in.
         cmd = [rust_bin, *pbf_paths, cfg_path, job.out_path,
                "--chunk-size", str(job.chunk_size)]
         # Bounding-box build: obc-pack crops during ingest (issue #910), so no

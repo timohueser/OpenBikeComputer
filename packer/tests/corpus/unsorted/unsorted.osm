@@ -3,11 +3,11 @@
   Hand-authored obc-pack corpus fixture: a deliberately UNSORTED .osm — the way
   is written before the nodes it references.
 
-  A real PBF is type-sorted (nodes, then ways, then relations), and `--bbox`'s
-  pass 0 leans on that: it freezes the "inside the box" node set the moment the
-  first way arrives. A file in this shape would otherwise select nothing and
-  pack a silently empty map, so the packer refuses it by name instead.
-  `ingest::tests::bbox_refuses_an_unsorted_pbf` pins that refusal.
+  A real PBF is type-sorted (nodes, then ways, then relations), and the bbox
+  crop's pass 0 leans on that: its node phase stops at the first way-bearing
+  blob and its way phase resumes there. A file in this shape would otherwise
+  select nothing and pack a silently empty map, so the packer refuses it by name
+  instead. `ingest::tests::bbox_refuses_an_unsorted_pbf` pins that refusal.
 
   Regenerate the derived .pbf via packer/tests/corpus/build_corpus.sh —
   `osmium cat` preserves the order as written, which is the whole point here.

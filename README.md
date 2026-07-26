@@ -78,7 +78,7 @@ The nRF54L firmware and the website's
 | For… | You need |
 | :-- | :-- |
 | Building anything Rust | A stable Rust toolchain (`rustup`). |
-| The packer (`obc-pack`) | System **GEOS** (`brew install geos`) — linked for multipolygon area assembly. Optionally the [`osmium`](https://osmcode.org/osmium-tool/) CLI on `PATH` — *only* to merge/sort when you pass multiple `.pbf` inputs. A single-input build, `--bbox` included, needs no osmium. |
+| The packer (`obc-pack`) | System **GEOS** (`brew install geos`) — linked for multipolygon area assembly, and the packer's only native dependency. |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew setup**. |
 | The web builder (optional) | Python 3.13 + the deps in `packer/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `packer/web_builder/frontend/`). |
 | Checking the shared crates build for the device | `rustup target add thumbv8m.main-none-eabihf`. |
@@ -118,11 +118,18 @@ firmware/target/release/obc-pack region.osm.pbf packer/presets/default.json regi
 usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land]
 ```
 
-- **Multiple `.pbf` inputs** are merged + sorted (via `osmium`) before ingest.
-- `--bbox W,S,E,N` crops the source to a box (degrees) **during ingest** — no
+- **Multiple `.pbf` inputs** are merged **during ingest** — no external tool and
+  no merged intermediate on disk. Where two regions overlap (adjacent extracts
+  share their border), an object present in several files is taken from the
+  **first one listed**, whatever the later copies say. List your regions in the
+  order you'd want a tie resolved, and prefer extracts downloaded on the same
+  day: two copies of the same road from different dates are two different roads
+  as far as any merge can tell.
+- `--bbox W,S,E,N` crops the sources to a box (degrees) **during ingest** — no
   `osmium extract` step and no temporary cropped `.pbf`. Ways crossing the
   boundary are kept whole (osmium's `complete_ways` strategy), so the map and
-  the nav graph don't fray at the edge.
+  the nav graph don't fray at the edge. Cropping needs each input type-sorted
+  (nodes, then ways, then relations); every Geofabrik extract is.
 - `--chunk-size N` sets the quadtree chunk payload target (default `4096`).
 - `--no-land` skips coastline/land-polygon generation.
 - LOD tiers and feature styling come from `config.json`. When `natural.land` is
@@ -386,7 +393,8 @@ cd firmware && cargo test                                    # the whole workspa
 
 The `obc-pack` tests use fixtures under `packer/tests/corpus/` — the committed
 `tiny/tiny.osm` plus a `config.json`. Regenerate the binary fixtures with
-`packer/tests/corpus/build_corpus.sh` (needs `osmium`).
+`packer/tests/corpus/build_corpus.sh`, the one thing left in the tree that wants
+`osmium-tool` (for `osmium cat`, XML → PBF; it packs no map).
 
 ---
 
