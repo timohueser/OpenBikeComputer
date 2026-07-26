@@ -366,10 +366,12 @@ second protocol. What is **board-specific** and worth knowing:
   `DAP FAULT (sticky_err, sticky_orun)`, never a panic. If you ever see that signature again,
   suspect a *new* USBHS access that escaped the gate, not a stack or a panic handler.
 - **The parked plane costs nothing (#937).** It waits on the VREGUSB interrupt, not a timer, so a
-  ride with J3 empty produces **zero** USB wake-ups — the 500 ms poll #936 shipped is gone. The
-  30 s `VBUS_RESYNC` still in `src/usb/mod.rs` is a self-healing net for a hypothetically missed
-  edge, not the mechanism; if plug-in ever feels like it takes *seconds*, that net is what carried
-  it and the interrupt path is broken.
+  ride with J3 empty produces **zero** USB wake-ups — the 500 ms poll #936 shipped is gone, and so
+  is the 30 s fallback that briefly replaced it. There is **no timer here at all**: `wait_for_vbus`
+  registers on `VBUS_WAKER` *before* reading the level, and the level is a level rather than a
+  latched edge, so a wake cannot be lost and a periodic re-check could only ever help if one were.
+  Confirmed on glass 2026-07-26. If plug-in is ever *not* immediate, that is a broken interrupt
+  path to fix — not a latency to paper over.
 - **Two vectors, no clashes:** `USBHS` and `VREGUSB`. MPSL takes `RADIO_0` / `TIMER10` / `GRTC_3` /
   `CLOCK_POWER` / `SWI00`, and the high-priority input executor is on `SWI01`. `VREGUSB` carries
   **two** handlers — ours (wake the park) and embassy's (clear the events, wake the driver's own
@@ -402,8 +404,8 @@ step 4 on is still **unverified**.
    `usb: device plane up — 1209:0001, serial '…', HS bulk 512 B`. **Watch the clock here** — that is
    the #937 check. The defmt timestamp on `VBUS present` should be within a few milliseconds of the
    connector seating, because a VREGUSB interrupt woke the task. If instead it lands *seconds*
-   later — anywhere up to 30 — the interrupt path did not fire and `VBUS_RESYNC`, the fallback,
-   carried it: the plane still works, but the idle cost #937 removed is back. On macOS
+   later, or not at all, the VREGUSB wake is not arriving — there is no fallback timer to carry it
+   any more, so this is a hard failure rather than a slow success. On macOS
    `system_profiler SPUSBDataType` (or Linux `lsusb -v -d 1209:0001`) should show
    `OpenBikeComputer`, the FICR serial as `iSerialNumber`, **Speed: Up to 480 Mb/s**, one
    vendor-specific interface and four bulk endpoints.
@@ -425,10 +427,10 @@ before the spawn). `usb: no VBUS …` while a cable *is* in J3 → VBUS detectio
 J3 really is the SoC connector on your DK revision and that `VREGUSB.TASKS_START` ran (that log
 line is printed after it). A `DAP FAULT (sticky_err, sticky_orun)` that loses the target is the
 #936 signature — a USBHS core access that escaped the VBUS gate; it is not a panic and not a stack
-overflow, so look for a new register read, not a new buffer. A plug or re-plug that takes **up to
-30 s** to be noticed is the #937 signature: the park's VREGUSB wake is not arriving and only
-`VBUS_RESYNC` is getting through — check that both handlers are still on the `VREGUSB` arm of
-`bind_interrupts!`. Enumeration at 12 Mb/s instead of 480 →
+overflow, so look for a new register read, not a new buffer. A plug or re-plug that is **never
+noticed** is the #937 signature: the park's VREGUSB wake is not arriving, and since the fallback
+timer is gone nothing else will rescue it — check that both handlers are still on the `VREGUSB` arm
+of `bind_interrupts!`. Enumeration at 12 Mb/s instead of 480 →
 the PHY fell back to full speed, and the 512 B bulk descriptors are then illegal; that is a real
 bug, not a slow link. A device that enumerates but whose transfers hang → look for `discarded N
 unclaimed bytes while idle` (the host wrote payload before its descriptor was acked) or a `busy`
