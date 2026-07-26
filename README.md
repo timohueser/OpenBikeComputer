@@ -197,6 +197,12 @@ Python server mounts; the other two have no back end yet:
 | `npm run build:web` | the static hosted site (no backend) | `frontend/dist/web/` |
 | `npm run build:desktop` | the Tauri desktop app | `frontend/dist/desktop/` |
 
+All of them — and `npm run check` and `npm test` — need the wasm conversion
+bridge built once first (`npm run build:wasm`, which wants a Rust toolchain and
+`wasm-pack`): route conversion runs client-side through the firmware's own
+converter, so the TypeScript imports bindings that don't exist until it's built.
+See [`firmware/README.md`](firmware/README.md#build-the-conversion-bridge-obc-web-convert).
+
 ---
 
 ## Viewing & simulating
