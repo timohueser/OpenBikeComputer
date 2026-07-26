@@ -30,7 +30,9 @@ export const platform: Platform = {
 
     regions: () => pending("regions", "D1 #906"),
     presets: () => pending("presets", "D1 #906"),
-    catalog: () => pending("catalog", "A3 #897"),
+    // A3 (#897) settled the manifest format and C1 (#900) reads it; what is
+    // still owed here is the desktop shell's own way of fetching it.
+    catalog: () => pending("catalog", "D1 #906"),
 
     // Non-null here, unlike on the web tier: the desktop app builds maps and
     // ships the style editor, so it has both callers and a linked-in obc-pack

@@ -61,6 +61,11 @@ tools/obc.local
 packer/web_builder/frontend/node_modules/
 packer/web_builder/frontend/dist/
 packer/web_builder/static/dist/
+# The static tier's data files (#900): the Geofabrik index is ~1.7 MB of
+# generated JSON that goes stale weekly, and the catalog manifest belongs to the
+# bakery — both are produced at deploy time, never committed.
+# `python -m packer.web_builder.static_data --out <this dir>`
+packer/web_builder/frontend/public/data/
 
 # XcodeBuildMCP session defaults (local tool state)
 .xcodebuildmcp/

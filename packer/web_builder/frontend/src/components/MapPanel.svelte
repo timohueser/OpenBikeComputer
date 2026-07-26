@@ -2,16 +2,31 @@
     import { onDestroy, onMount } from "svelte";
     import { platform } from "../lib/platform";
     import { bboxAreaKm2Raw } from "../lib/map/geo";
-    import { RegionPicker, type Bbox } from "../lib/map/regionPicker";
+    import { RegionPicker, type Bbox, type CatalogHints } from "../lib/map/regionPicker";
     import { emptySelection, type AreaSelection } from "../lib/map/selection";
+    import { DESKTOP_ROUTE } from "../lib/routes";
 
     let {
         active = true,
         onchange,
+        hints = null,
+        singleSelect = false,
     }: {
         active?: boolean;
         onchange: (sel: AreaSelection) => void;
+        /** Catalog coverage to paint, when the tier gets its maps pre-baked. */
+        hints?: CatalogHints | null;
+        singleSelect?: boolean;
     } = $props();
+
+    // Cropping needs a packer to crop with. Shown-but-disabled rather than
+    // removed: the missing feature is the pitch for the desktop app (#894).
+    // C2 (#901) owns the `<Gated>` primitive and the one place all "why is this
+    // disabled" copy lives (`GATES.bboxCrop`) — when that lands, this control
+    // and the line under it become a `<Gated need="bboxCrop">` and this sentence
+    // goes away. The control could not wait for it: left live on a tier with no
+    // packer, it draws a box nothing can honour.
+    const canCrop = platform.caps.bboxCrop;
 
     let mapEl: HTMLDivElement;
     let picker = $state<RegionPicker | null>(null);
@@ -59,7 +74,7 @@
                 regionIds: string[];
                 bbox: Bbox | null;
             };
-            if (last.mode === "bbox" && last.bbox) {
+            if (last.mode === "bbox" && last.bbox && canCrop) {
                 setMode("bbox");
                 picker.setBbox(last.bbox, true);
             } else if (last.regionIds?.length) {
@@ -80,19 +95,23 @@
     );
 
     onMount(async () => {
-        picker = new RegionPicker(mapEl, {
-            onSelectionChange(ids) {
-                regionIds = ids;
-                emit();
+        picker = new RegionPicker(
+            mapEl,
+            {
+                onSelectionChange(ids) {
+                    regionIds = ids;
+                    emit();
+                },
+                onBboxChange(b) {
+                    bbox = b;
+                    emit();
+                },
+                onDrawStateChange(armed) {
+                    drawArmed = armed;
+                },
             },
-            onBboxChange(b) {
-                bbox = b;
-                emit();
-            },
-            onDrawStateChange(armed) {
-                drawArmed = armed;
-            },
-        });
+            { singleSelect },
+        );
         try {
             picker.setRegions(await platform.regions());
             restoreLastArea();
@@ -100,6 +119,11 @@
             loadError = e instanceof Error ? e.message : String(e);
         }
         emit();
+    });
+
+    // Hints arrive after the manifest does, which is later than the polygons.
+    $effect(() => {
+        picker?.setCatalogHints(hints);
     });
 
     onDestroy(() => picker?.destroy());
@@ -121,6 +145,14 @@
     /** Deselect a single region — the Area card's chip × calls this. */
     export function removeRegion(id: string) {
         if (picker?.selected.has(id)) picker.toggleRegion(id);
+    }
+
+    /** Select a region from outside the map, and show it — the catalog card's
+     *  "covered by / baked inside it" chips jump this way. */
+    export function selectRegion(id: string) {
+        if (!picker) return;
+        picker.setSelection([id]);
+        picker.fitRegion(id);
     }
 
     function pickSearchResult(id: string) {
@@ -198,10 +230,21 @@
         <button type="button" class:active={mode === "regions"} onclick={() => setMode("regions")}>
             Regions
         </button>
-        <button type="button" class:active={mode === "bbox"} onclick={() => setMode("bbox")}>
+        <button
+            type="button"
+            class:active={mode === "bbox"}
+            disabled={!canCrop}
+            title={canCrop ? undefined : "Cropping to a box needs the desktop app"}
+            onclick={() => setMode("bbox")}
+        >
             Draw box
         </button>
     </div>
+    {#if !canCrop}
+        <div class="overlay top-right seg-note small faint">
+            Whole regions only · <a href={DESKTOP_ROUTE}>the desktop app</a> crops to a box
+        </div>
+    {/if}
 
     {#if mode === "bbox" && !bbox && !drawArmed}
         <div class="overlay bottom-left chip">
@@ -245,6 +288,21 @@
     .top-right {
         top: 12px;
         right: 12px;
+    }
+
+    .seg-note {
+        top: 46px;
+        right: 12px;
+        background: var(--panel);
+        border: 1px solid var(--parchment-3);
+        border-radius: 999px;
+        padding: 3px 11px;
+        box-shadow: 0 2px 8px rgba(36, 51, 28, 0.14);
+    }
+
+    .seg button:disabled {
+        opacity: 0.5;
+        cursor: default;
     }
 
     .bottom-left {
