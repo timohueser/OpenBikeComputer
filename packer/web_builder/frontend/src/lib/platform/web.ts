@@ -34,14 +34,23 @@ export const platform: Platform = {
     },
 
     regions: () => pending("regions", "C1 #900"),
-    presets: () => pending("presets", "B2 #899"),
-    schema: () => pending("schema", "C6 #905"),
-    palette: () => pending("palette", "C6 #905"),
+    // The hosted tier's preset list is the catalog manifest's own `presets[]`
+    // (id, name, blurb, preview reference) — A3 owns that format, C1 renders
+    // it. B2's demo maps and preview images hang off those entries; they are
+    // not what produces the list.
+    presets: () => pending("presets", "A3 #897 (first consumed by C1 #900)"),
     catalog: () => pending("catalog", "A3 #897"),
 
     buildMap: null,
     device: () => pending("device", "C3 #902"),
     rides: null,
+
+    // Both absent by design, not pending: `schema` has no caller without
+    // `caps.build` or `caps.styleEditor` and `palette` none without the color
+    // picker, and this tier has neither — permanently, because having neither
+    // is what makes it serverless. Nothing to serve, and no issue that owes it.
+    schema: null,
+    palette: null,
 };
 
 export const loadStyleEditor: LoadStyleEditor | null = null;

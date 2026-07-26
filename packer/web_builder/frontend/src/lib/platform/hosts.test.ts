@@ -20,6 +20,7 @@ const GATED: Array<[keyof Caps, (p: Platform) => unknown]> = [
     ["build", (p) => p.buildMap],
     ["deviceUsb", (p) => p.device],
     ["rideLibrary", (p) => p.rides],
+    ["styleEditor", (p) => p.palette],
 ];
 
 describe.each(Object.entries(HOSTS))("%s host", (name, host) => {
@@ -33,6 +34,15 @@ describe.each(Object.entries(HOSTS))("%s host", (name, host) => {
 
     it("loads the style editor exactly when the cap says so", () => {
         expect(host.loadStyleEditor !== null).toBe(host.platform.caps.styleEditor);
+    });
+
+    it("serves a schema exactly when something would read one", () => {
+        // The one gate that is a disjunction: the build card and the style
+        // editor are `schema`'s only two callers, so a tier with neither has
+        // nothing to serve — and never will, which is why it is null and not
+        // a PlatformNotImplemented owed by some later issue.
+        const { caps, schema } = host.platform;
+        expect(schema !== null).toBe(caps.build || caps.styleEditor);
     });
 
     it("fails unimplemented seams with PlatformNotImplemented, naming its issue", async () => {
@@ -52,6 +62,10 @@ describe("the hosts as a set", () => {
         expect(web.platform.caps.styleEditor).toBe(false);
         expect(web.platform.caps.bboxCrop).toBe(false);
         expect(web.platform.caps.rideLibrary).toBe(false);
+        // Which is *why* the hosted tier has no schema and no palette: both are
+        // absent by design, so neither may become a seam some issue owes.
+        expect(web.platform.schema).toBeNull();
+        expect(web.platform.palette).toBeNull();
         expect(desktop.platform.caps).toEqual({
             build: true,
             bboxCrop: true,

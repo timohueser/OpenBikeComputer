@@ -35,7 +35,9 @@
 
     onMount(async () => {
         if (!working.envelope) working.restore();
-        platform.schema().then((s) => (schema = s)).catch(() => (schema = null));
+        // Non-null wherever this route can load — `schema` is gated on
+        // `caps.build || caps.styleEditor` and the editor is the latter.
+        platform.schema?.().then((s) => (schema = s)).catch(() => (schema = null));
         platform.presets().then((p) => (presets = p)).catch(() => {});
         // The OSM tag-key catalog for the category rail — a static asset on
         // every host, and unrelated to the platform's `catalog()` (baked maps).

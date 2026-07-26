@@ -30,9 +30,13 @@ export const platform: Platform = {
 
     regions: () => pending("regions", "D1 #906"),
     presets: () => pending("presets", "D1 #906"),
+    catalog: () => pending("catalog", "A3 #897"),
+
+    // Non-null here, unlike on the web tier: the desktop app builds maps and
+    // ships the style editor, so it has both callers and a linked-in obc-pack
+    // to answer them. D1 wires them to Tauri commands.
     schema: () => pending("schema", "D1 #906"),
     palette: () => pending("palette", "D1 #906"),
-    catalog: () => pending("catalog", "A3 #897"),
 
     // The one seam that has to throw synchronously — it hands back a session,
     // not a promise. Better here than on first use: a build that reports
