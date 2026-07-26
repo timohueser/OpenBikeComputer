@@ -22,11 +22,15 @@
     // One session per mount, deliberately: a build in flight must not be
     // replaced because a prop identity changed underneath it.
     const tracker = untrack(() => buildMap());
+    // Non-null on any host that can build (`schema` is gated on
+    // `caps.build || caps.styleEditor`), which is the only place this mounts.
+    const loadSchema = platform.schema;
 
     onMount(async () => {
         tracker.reattach();
+        if (!loadSchema) return;
         try {
-            schema = await platform.schema();
+            schema = await loadSchema();
         } catch (e) {
             // A 503 means obc-pack isn't built — builds will fail, so surface
             // the server's build instructions up front.

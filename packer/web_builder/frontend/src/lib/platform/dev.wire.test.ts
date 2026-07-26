@@ -65,11 +65,13 @@ afterEach(() => {
 });
 
 describe("dev host requests", () => {
+    // The `!`s are this suite asserting what hosts.test.ts proves: the dev host
+    // has every capability-gated member these five sit behind.
     it.each([
         ["regions", () => platform.regions(), "/api/regions"],
         ["presets", () => platform.presets(), "/api/presets"],
-        ["schema", () => platform.schema(), "/api/schema"],
-        ["palette", () => platform.palette(), "/api/palette"],
+        ["schema", () => platform.schema!(), "/api/schema"],
+        ["palette", () => platform.palette!(), "/api/palette"],
         ["legacyConfig", () => platform.legacyConfig!(), "/api/config/legacy"],
     ])("%s GETs %s", async (_name, call, url) => {
         await call();

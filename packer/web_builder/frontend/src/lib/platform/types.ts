@@ -150,10 +150,6 @@ export interface Platform {
     regions(): Promise<RegionFeature[]>;
     /** The shipped style presets, default first. */
     presets(): Promise<Preset[]>;
-    /** obc-pack's config JSON Schema envelope — the editor's capability probe. */
-    schema(): Promise<SchemaEnvelope>;
-    /** The device's color gamut for the picker grid. */
-    palette(): Promise<Palette>;
     /** The pre-baked map catalog (see `MapCatalog`). */
     catalog(): Promise<MapCatalog>;
 
@@ -163,6 +159,23 @@ export interface Platform {
     readonly device: (() => Promise<DeviceSession>) | null;
     /** Non-null exactly when `caps.rideLibrary`. */
     readonly rides: (() => Promise<RideLibrary>) | null;
+
+    /**
+     * obc-pack's config JSON Schema envelope — what the editor and the build
+     * card derive their capability from.
+     *
+     * The only member whose gate is a disjunction: non-null exactly when
+     * `caps.build || caps.styleEditor`, its two callers. A tier with neither
+     * has no config to validate and no packer to validate it against, so there
+     * is nothing for it to serve — which is a permanent fact about that tier,
+     * not a seam anyone is going to fill in. Hence `null`, like the rest.
+     */
+    readonly schema: (() => Promise<SchemaEnvelope>) | null;
+
+    /** The device's color gamut for the picker grid. Non-null exactly when
+     *  `caps.styleEditor`: the color picker is its only caller, and it lives
+     *  inside the editor's code-split chunk. */
+    readonly palette: (() => Promise<Palette>) | null;
 
     /**
      * The retired editor's server-side `user_config.json`, offered once for
