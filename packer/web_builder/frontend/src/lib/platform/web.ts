@@ -48,7 +48,16 @@ export const platform: Platform = {
     catalog: () => pending("catalog", "A3 #897"),
 
     buildMap: null,
-    device: () => pending("device", "C3 #902"),
+    // WebUSB, loaded on demand. The import is dynamic so the transport, the
+    // protocol codecs and the client land in their own chunk: a visitor who only
+    // downloads a map never pays for the device stack, and a browser without
+    // WebUSB never fetches it at all. The session it returns is `unsupported`
+    // there rather than absent — the tier *has* the capability, this browser
+    // doesn't, and those are different sentences for the UI to say.
+    device: async () => {
+        const { openWebUsbSession } = await import("../usb/session.svelte");
+        return openWebUsbSession();
+    },
     rides: null,
 
     // Both absent by design, not pending: `schema` has no caller without
