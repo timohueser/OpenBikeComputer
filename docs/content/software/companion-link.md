@@ -837,7 +837,11 @@ real product rather than a demo:
   until the hardware reports bus voltage, and a device that reached into it
   anyway would trade the common case (riding) for the rare one (a transfer). The
   device says which state it is in on every boot, because "no cable" and "USB
-  broken" must never look the same from the outside.
+  broken" must never look the same from the outside. And the *waiting* is free:
+  the parked plane is asleep on the bus-voltage interrupt rather than asking a
+  timer how things are, so a bike ridden all day with nothing plugged in spends
+  no energy at all on the possibility of a cable. On a device running off a
+  battery, "poll for the rare case" is a cost paid by every ride.
 - **The device keeps working while a map lands.** Storage is arbitrated behind
   one async mutex, and each store call takes it only for its own duration — so
   the ride loop's redraws interleave between chunks. This is why USB **Mass
