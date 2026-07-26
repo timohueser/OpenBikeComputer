@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regenerate the obc-pack test fixtures (tiny.osm.pbf, poi.osm.pbf,
-# unsorted.osm.pbf) from the committed XML. Idempotent. Requires `osmium`
+# Regenerate the obc-pack test fixtures (tiny.osm.pbf, tiny_west/tiny_east.osm.pbf,
+# poi.osm.pbf, unsorted.osm.pbf) from the committed XML. Idempotent. Requires `osmium`
 # (brew install osmium-tool) — for `osmium cat`, which is the only thing in the
 # tree that still needs it: nothing here packs a map.
 set -euo pipefail
@@ -20,6 +20,16 @@ command -v osmium >/dev/null 2>&1 || {
 echo ">> tiny"
 osmium cat "$HERE/tiny/tiny.osm" -o "$DATA/tiny.osm.pbf" --overwrite
 echo "done: $DATA/tiny.osm.pbf"
+
+# tiny_west / tiny_east — the two-file split of tiny.osm that pins the native
+# multi-`.pbf` merge (#920). Their union is exactly tiny.osm, and they overlap:
+# `ingest::tests::merging_two_overlapping_halves_rebuilds_the_whole` hard-fails
+# without the committed .pbfs. Each is written sorted, as a merge input must be.
+echo ">> tiny_split"
+for half in west east; do
+  osmium cat "$HERE/tiny_split/tiny_$half.osm" -o "$DATA/tiny_$half.osm.pbf" --overwrite
+  echo "done: $DATA/tiny_$half.osm.pbf"
+done
 
 # poi — same deal for the POI-extraction fixture (#422): poi/poi.osm is the
 # source of truth; `ingest::tests::poi_fixture_end_to_end` hard-fails without

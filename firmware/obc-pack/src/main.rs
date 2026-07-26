@@ -1,11 +1,12 @@
-//! `obc-pack` CLI — the full end-to-end pipeline (`.osm.pbf` → `.obcm`): multi-PBF
-//! **merge** → ingest (lines + closed ways + multipolygon relations) → bbox →
-//! **land generation** → per-LOD simplify + quadtree → serialize. Positional CLI:
-//! `<pbf...> <config.json> <out.obcm>`, plus `--bbox W,S,E,N` (crop the source to
-//! a box during ingest — see [`obc_pack::ingest`]), `--chunk-size`, `--no-land`,
+//! `obc-pack` CLI — the full end-to-end pipeline (`.osm.pbf` → `.obcm`): ingest
+//! (lines + closed ways + multipolygon relations, merging several `.pbf`s as it
+//! reads them) → bbox → **land generation** → per-LOD simplify + quadtree →
+//! serialize. Positional CLI: `<pbf...> <config.json> <out.obcm>`, plus
+//! `--bbox W,S,E,N` (crop the sources to a box during ingest — see
+//! [`obc_pack::ingest`]), `--chunk-size`, `--no-land`,
 //! `--dump-pois` (print the classified POI list for eyeballing), and
 //! `--dump-hours` (print each POI's parsed weekly schedule). It
-//! prints one stage string per phase ("Cropping", "Merging", "Pass 0/1/2",
+//! prints one stage string per phase ("Merging", "Pass 0/1/2",
 //! "Calculating BBox", "Generating land", "Building Quadtree", "Serializing",
 //! "Writing") so the web builder UI can show progress — it matches these
 //! prefixes, and their order here is the order it expects. `obc-pack schema`
@@ -17,7 +18,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use rayon::prelude::*;
 
@@ -86,58 +87,12 @@ fn run() -> Result<(), String> {
     // Fail loud before any work if chunk_size would let a feature outgrow the reader's cap.
     obc_pack::serialize::validate_chunk_size(chunk_size)?;
 
-    // --- Merge: >1 input ⇒ shell out to `osmium merge` + `osmium sort`, then ingest.
-    // `_temps` keeps the intermediates alive until run() returns. ---
-    let mut _temps: Vec<TempPath> = Vec::new();
-    let pbf_to_ingest: String = if args.pbfs.len() > 1 {
-        // Cropping each source FIRST when `--bbox` is set is a size decision, not a
-        // semantic one. Merging whole countries and cropping afterwards would hand
-        // `osmium sort` gigabytes it holds in memory; osmium is already mandatory
-        // on this branch (id-wise dedupe + re-sorting are not things ingest can
-        // do), so spending it on the crop too costs nothing new. The in-ingest
-        // filter still runs over the merged crop and is a no-op there:
-        // `complete_ways` is idempotent, because an extract's nodes are exactly
-        // "inside the box" plus the halo its own kept ways need. So the result
-        // does not depend on which side did the cropping.
-        let sources: Vec<String> = match args.bbox {
-            Some(bb) => {
-                println!("Cropping {} files to bbox...", args.pbfs.len());
-                let (w, s, e, n) = bb.to_degrees();
-                let spec = format!("{w},{s},{e},{n}");
-                let mut cropped = Vec::with_capacity(args.pbfs.len());
-                for (i, src) in args.pbfs.iter().enumerate() {
-                    let out = TempPath::new(&format!("crop{i}"))?;
-                    run_osmium(&["extract", "--overwrite", "--bbox", &spec, src, "-o", out.as_str()])?;
-                    cropped.push(out.as_str().to_string());
-                    _temps.push(out);
-                }
-                cropped
-            }
-            None => args.pbfs.clone(),
-        };
-        println!("Merging {} files...", sources.len());
-        let merged = TempPath::new("merged")?;
-        let sorted = TempPath::new("sorted")?;
-        let mut merge_args: Vec<&str> = vec!["merge", "--overwrite"];
-        for p in &sources {
-            merge_args.push(p);
-        }
-        merge_args.push("-o");
-        merge_args.push(merged.as_str());
-        run_osmium(&merge_args)?;
-        run_osmium(&["sort", "--overwrite", merged.as_str(), "-o", sorted.as_str()])?;
-        let path = sorted.as_str().to_string();
-        _temps.push(merged);
-        _temps.push(sorted);
-        path
-    } else {
-        args.pbfs[0].clone()
-    };
-
     // --- Ingest (two passes: nodes, then ways — three with `--bbox`, which adds
     // the id-only crop selection; prints its own Pass 0/1/2 stages and the
-    // per-category POI counts line). ---
-    let mut ingested = ingest_osm(&pbf_to_ingest, &config, args.bbox)?;
+    // per-category POI counts line). Several `.pbf`s are merged *inside* those
+    // passes — no external tool, no merged intermediate on disk (see
+    // [`obc_pack::ingest`]). ---
+    let mut ingested = ingest_osm(&args.pbfs, &config, args.bbox)?;
     if ingested.features.is_empty() && ingested.coastlines.is_empty() {
         return Err("no features found matching config".into());
     }
@@ -327,42 +282,6 @@ fn compute_bbox(ing: &obc_pack::ingest::Ingested) -> (i64, i64, i64, i64) {
     }
     // `as i64` truncates toward zero — NOT a floor for negatives; see the doc above.
     ((minx * 1e6) as i64, (miny * 1e6) as i64, (maxx * 1e6) as i64, (maxy * 1e6) as i64)
-}
-
-/// Run an `osmium` subcommand (merge/sort), erroring helpfully if the CLI is
-/// missing.
-fn run_osmium(args: &[&str]) -> Result<(), String> {
-    let status = Command::new("osmium")
-        .args(args)
-        .status()
-        .map_err(|e| format!("failed to run `osmium` ({e}); install osmium-tool"))?;
-    if !status.success() {
-        return Err(format!("osmium {} failed with {status}", args.first().copied().unwrap_or("")));
-    }
-    Ok(())
-}
-
-/// A temp file path that deletes itself on drop — the merge/sort intermediates.
-struct TempPath(PathBuf);
-
-impl TempPath {
-    fn new(tag: &str) -> Result<Self, String> {
-        let nanos =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let mut p = std::env::temp_dir();
-        p.push(format!("obc-pack-{}-{nanos}-{tag}.osm.pbf", std::process::id()));
-        Ok(TempPath(p))
-    }
-
-    fn as_str(&self) -> &str {
-        self.0.to_str().expect("temp path is utf-8")
-    }
-}
-
-impl Drop for TempPath {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
 }
 
 /// `obc-pack catalog <bake-tree> --base-url <url> [--out <path>|-] [--generated-at <ts>]`
