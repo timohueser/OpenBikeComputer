@@ -1,5 +1,6 @@
 <script lang="ts">
     import { LINKS } from "../lib/constants";
+    import { platform } from "../lib/platform";
 </script>
 
 <header>
@@ -21,7 +22,9 @@
             <span class="crumb mono">map builder</span>
         </div>
         <nav>
-            <a href="#/advanced">Advanced editor</a>
+            {#if platform.caps.styleEditor}
+                <a href="#/advanced">Advanced editor</a>
+            {/if}
             <a href={LINKS.docs}>Docs</a>
             <a href={LINKS.simulator}>Simulator</a>
             <a href={LINKS.github}>GitHub</a>

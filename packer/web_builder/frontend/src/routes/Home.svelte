@@ -3,12 +3,17 @@
     import BuildCard from "../components/BuildCard.svelte";
     import MapPanel from "../components/MapPanel.svelte";
     import PresetCards from "../components/PresetCards.svelte";
-    import { api } from "../lib/api/client";
+    import { platform } from "../lib/platform";
     import type { Preset } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
     import type { AreaSelection } from "../lib/map/selection";
 
     let { active = true }: { active?: boolean } = $props();
+
+    // Narrowed once: non-null exactly on a host with `caps.build`, which is
+    // also the only gating input step 3 has. C2 (#901) replaces the bare
+    // `{#if}` below with an inline disabled affordance that says why.
+    const buildMap = platform.buildMap;
 
     let presets = $state<Preset[]>([]);
     let presetError = $state<string | null>(null);
@@ -18,7 +23,7 @@
     onMount(async () => {
         const restored = working.restore();
         try {
-            presets = await api.presets();
+            presets = await platform.presets();
             // First visit: the default preset is the working config.
             if (!restored && presets.length) working.applyPreset(presets[0]);
         } catch (e) {
@@ -101,13 +106,15 @@
             {/if}
         </section>
 
-        <section class="card">
-            <div class="step-head">
-                <span class="num">3</span>
-                <h3>Build</h3>
-            </div>
-            <BuildCard {selection} />
-        </section>
+        {#if buildMap}
+            <section class="card">
+                <div class="step-head">
+                    <span class="num">3</span>
+                    <h3>Build</h3>
+                </div>
+                <BuildCard {selection} {buildMap} />
+            </section>
+        {/if}
     </div>
 </div>
 

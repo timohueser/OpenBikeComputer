@@ -424,7 +424,13 @@ jobs:
 
   # Single aggregate gate: make THIS the required status check on main/develop. It succeeds
   # only if no needed job failed or was cancelled; jobs skipped by the path filters are fine.
-  # The web builder's Svelte frontend: type-check, unit tests, production build.
+  # The web builder's Svelte frontend: type-check, unit tests, production builds.
+  #
+  # One source tree, three hosts (#895): `npm run build` is the local FastAPI one,
+  # `build:web` the static hosted site and `build:desktop` the Tauri shell. All three
+  # are built here — a host that stops compiling is otherwise invisible until someone
+  # tries to ship it. The *contents* of the web bundle (no job polling, no style
+  # editor) are asserted by vitest, which builds and inspects the emitted chunks.
   web:
     needs: changes
     if: needs.changes.outputs.web == 'true'
@@ -444,8 +450,8 @@ jobs:
         run: npm run check
       - name: vitest
         run: npm test
-      - name: production build
-        run: npm run build
+      - name: production builds (dev + web + desktop hosts)
+        run: npm run build:all
 
   ci:
     if: always()
