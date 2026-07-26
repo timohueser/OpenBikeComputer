@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenBikeComputer map catalog",
+  "description": "The manifest of pre-baked .obcm maps: what exists, what it covers, what it was built from, and which OBCM format version it is. `obcm_version` is read from each artifact's own header, so a consumer can refuse a map the target firmware cannot read before downloading it. Normative contract: OBCC_Spec.md.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "Manifest envelope version. A consumer that does not recognise it rejects the entire document rather than reading the fields it happens to understand.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "const": 1
+    },
+    "generated_at": {
+      "description": "When this manifest was generated, RFC 3339 UTC (`YYYY-MM-DDTHH:MM:SSZ`).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "presets": {
+      "description": "The presets artifacts were built with, sorted by `id`. Display order is the consumer's business, not the manifest's.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PresetEntry"
+      }
+    },
+    "artifacts": {
+      "description": "Every published artifact, sorted by `(region_id, preset_id)`.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ArtifactEntry"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "generated_at",
+    "presets",
+    "artifacts"
+  ],
+  "$defs": {
+    "PresetEntry": {
+      "description": "One style preset offered to the user.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable preset id, e.g. `default`. Matches `preset_id` on artifacts.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "name": {
+          "description": "Display name, e.g. `Bikepacking`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "description": "One-line description of what this preset draws.",
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "description": "Preset content version — bumped whenever the preset's styling changes, so a consumer can tell \"same preset, restyled\" from \"same bytes\".",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "preview": {
+          "description": "Optional reference to a rendered preview asset, resolved against the same base URL as `url` on artifacts. Absent until the preview exists.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "version"
+      ]
+    },
+    "ArtifactEntry": {
+      "description": "One published `.obcm` artifact: a (region, preset) pair.",
+      "type": "object",
+      "properties": {
+        "region_id": {
+          "description": "Slash-separated region id mirroring the Geofabrik hierarchy, e.g. `europe/switzerland`. Derived from the artifact's directory path.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*$"
+        },
+        "region_name": {
+          "description": "Human-readable region name, e.g. `Switzerland`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "preset_id": {
+          "description": "The preset this artifact was built with; matches a `presets[].id`.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "preset_version": {
+          "description": "The preset's `version` at build time. Equal to the matching `presets[].version` for a coherent tree; a mismatch means the preset moved without a re-bake.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "obcm_version": {
+          "description": "OBCM format version, read from the artifact's own header — never from the builder's intent. A consumer MUST refuse an artifact whose version the target firmware cannot read (`OBCC_Spec.md` §6).",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "bytes": {
+          "description": "Artifact size in bytes.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the artifact bytes.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bbox": {
+          "description": "Coverage bbox, copied from the artifact header. Descriptive output, never a build input — see [`CoverageBBox`].",
+          "$ref": "#/$defs/CoverageBBox"
+        },
+        "built_at": {
+          "description": "When the artifact was packed, RFC 3339 UTC.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "source_snapshot": {
+          "description": "Date of the OSM extract it was packed from, `YYYY-MM-DD`.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "url": {
+          "description": "Absolute or root-relative URL the artifact can be fetched from.",
+          "type": "string",
+          "pattern": "^(https?://|/)"
+        }
+      },
+      "required": [
+        "region_id",
+        "region_name",
+        "preset_id",
+        "preset_version",
+        "obcm_version",
+        "bytes",
+        "sha256",
+        "bbox",
+        "built_at",
+        "source_snapshot",
+        "url"
+      ]
+    },
+    "CoverageBBox": {
+      "description": "What the packed artifact actually covers, in integer microdegrees, copied from its OBCM header. Always a little wider than the extract box it was cut from (complete ways, stray coastline). Descriptive output only: it MUST NOT be fed back as a packer input bbox — see OBCC_Spec.md §4.",
+      "type": "object",
+      "properties": {
+        "min_lat": {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -90000000,
+          "maximum": 90000000
+        },
+        "min_lon": {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -180000000,
+          "maximum": 180000000
+        },
+        "max_lat": {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -90000000,
+          "maximum": 90000000
+        },
+        "max_lon": {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -180000000,
+          "maximum": 180000000
+        }
+      },
+      "required": [
+        "min_lat",
+        "min_lon",
+        "max_lat",
+        "max_lon"
+      ]
+    }
+  }
+}
