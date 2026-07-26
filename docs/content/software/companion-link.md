@@ -827,9 +827,17 @@ of the frame is the *exact* payload the matching characteristic would have
 carried. That is the whole delta. USB is a second **transport**, not a second
 protocol.
 
-Two consequences are worth naming, because they are what makes the wired path a
+Three consequences are worth naming, because they are what makes the wired path a
 real product rather than a demo:
 
+- **The cable is what brings the plane into existence.** A bike computer spends
+  almost all of its life with nothing plugged into it, so the wired plane is
+  built *when a cable appears* and parked again when it goes — not armed at boot
+  and left waiting. That ordering is not tidiness: the USB core is unpowered
+  until the hardware reports bus voltage, and a device that reached into it
+  anyway would trade the common case (riding) for the rare one (a transfer). The
+  device says which state it is in on every boot, because "no cable" and "USB
+  broken" must never look the same from the outside.
 - **The device keeps working while a map lands.** Storage is arbitrated behind
   one async mutex, and each store call takes it only for its own duration — so
   the ride loop's redraws interleave between chunks. This is why USB **Mass
