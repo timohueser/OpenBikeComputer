@@ -148,6 +148,21 @@ authority for resident RAM). It is itemized now precisely because it is uncondit
 growth in the newest resident block should be legible in the report rather than arriving
 as a few thousand anonymous bytes.
 
+**`floating_stable_observation` is refreshed here, and given provenance.** It had been
+carried forward unchanged since the #876/#886 era — `resident 214,976 B`, `flash
+1,084,052 B`, `poll_frame 6,240 B` — which after the LM20 retarget disagreed with the
+gate sitting beside it in the same profile by 206 KB. Nothing regenerates the field, and
+its `rustc` stamp (1.97.1, `8bab26f4f 2026-07-14`) happens to be *exactly* the toolchain
+CI still runs, so the staleness was undetectable from the record itself. It now carries
+this PR's CI measurement — `.bss 415,992 + .data 5,136 = 421,128 B` resident, `.uninit
+1,024 B`, flash 1,166,584 B, poll frame 9,728 B, on rustc 1.97.1 / LLVM 22.1.6 /
+`x86_64-unknown-linux-gnu` — plus `source_commit`, `source_run` and `host`, so a future
+reader can date it instead of trusting it. Note what it says: the floating-stable
+toolchain links the **same resident set and the same poll frame** as the pinned 1.96.0
+measurement, to the byte; only flash differs (1,166,584 vs 1,192,640 B, and flash is not
+gated on this target). Both board profiles link identically, so the single observation
+under `ble` covers both.
+
 **Stack margin.** `llvm-objdump -d --demangle` + the per-function `sub sp, #imm`
 histogram puts the head of the shipping default at `link::init_store` 27,648 B,
 `__embassy_main` 19,456 B, `ride::fill_ride_profile` 17,280 B, `NavPlanner::finish_emit`
