@@ -110,23 +110,71 @@ added on top, matching the last several re-baselines); flash observations move t
 allocation-report entries are unchanged — `ble_object_store` still reports 13,528 B, now
 sourced from `link::OBJECT_STORE_BYTES`.
 
-The `usb` feature itself is **not a pinned profile**. It is off by default until the
-peripheral is confirmed on glass, so the two shipping profiles above are still the
-authority. Measured on the same host for reference, `cargo build --release --features
-usb` links `.bss 415,992 + .data 5,136 = 421,128 B` resident (**+5,096 B** over the
-default profile) and 1,192,184 B of flash, with the guarded poll frame at 9,728 B
-(+64 B, against the unchanged 12,288 B limit). The resident cost is all named:
-`usb::run::POOL` 1,736 B (the task future — the three joined planes plus their control
-frame buffers), the driver's EP-OUT staging buffer 1,088 B (EP0-OUT 64 + two 512-byte
-bulk OUT endpoints), embassy-nrf's `USBHS` endpoint state 596 B, the control and bulk
-chunk scratch 512 B each, the MS OS 2.0 / BOS / config descriptor buffers 256 + 96 +
-96 B, the EP0 control buffer 64 B, and `spawn_usb_stack::POOL` 64 B. Statically,
-`usb::build_plane` carries a ~950 B transient boot frame (the `embassy_usb::Builder`,
-kept out of the task's poll frame by `#[inline(never)]` — the #677 rule) and no USB
-function enters the top of the stack histogram, whose head (`link::init_store` 27,648 B,
+**The USB device plane is now unconditional** (owner call, 2026-07-26): the `usb` Cargo
+feature is gone, `embassy-usb` is a plain dependency, and `src/usb/` compiles in every
+build. Both pinned profiles therefore *are* the USB shape — there is no non-USB shipping
+ELF to compare against any more, and the two former `clippy (usb)` / `build (usb,
+release)` CI legs were deleted because the default and BLE legs now build, lint and
+resource-gate the same tree.
+
+Re-measured on the pinned rustc 1.96.0 host against develop `7afc890d`:
+
+| | before (no USB) | after (USB unconditional) | Δ |
+| :-- | --: | --: | --: |
+| `.bss` | 411,528 B | 415,992 B | +4,464 B |
+| `.data` | 4,504 B | 5,136 B | +632 B |
+| **linked resident** | **416,032 B** | **421,128 B** | **+5,096 B** |
+| `.uninit` | 1,024 B | 1,024 B | 0 |
+| flash (default / BLE) | 1,146,952 B | 1,192,640 / 1,192,632 B | +45,688 B |
+| largest guarded poll frame | 9,664 B | 9,728 B | +64 B (limit 12,288 B, unchanged) |
+
+Both `resident_ram_max` ceilings move **416,032 → 421,128 B** — the exact measurement,
+no toolchain margin added, matching the last several re-baselines. Framebuffer count and
+the two full-frame-sized writable symbols are unchanged. (The earlier `--features usb`
+reference measurement in this document read 1,192,184 B of flash; the 448 B difference
+is develop moving since, not USB — the *pre-change* default on this host measures
+1,146,952 B against the 1,146,736 B recorded at its own pin.)
+
+The resident cost is all named: `usb::run::POOL` 1,736 B (the task future — the three
+joined planes plus their control frame buffers), the driver's EP-OUT staging buffer
+1,088 B (EP0-OUT 64 + two 512-byte bulk OUT endpoints), embassy-nrf's `USBHS` endpoint
+state 596 B, the control and bulk chunk scratch 512 B each, the MS OS 2.0 / BOS / config
+descriptor buffers 256 + 96 + 96 B, the EP0 control buffer 64 B, and
+`spawn_usb_stack::POOL` 64 B. The allocation report grows from 22 to **23 entries**: the
+new `usb_named` entry reports `usb::RESIDENT_BYTES` = **2,644 B**, the crate-nameable
+half of that list (the task future and embassy-nrf's endpoint bookkeeping are not
+nameable from this crate and land only in the linked `.bss + .data` gate, which stays the
+authority for resident RAM). It is itemized now precisely because it is unconditional:
+growth in the newest resident block should be legible in the report rather than arriving
+as a few thousand anonymous bytes.
+
+**`floating_stable_observation` is refreshed here, and given provenance.** It had been
+carried forward unchanged since the #876/#886 era — `resident 214,976 B`, `flash
+1,084,052 B`, `poll_frame 6,240 B` — which after the LM20 retarget disagreed with the
+gate sitting beside it in the same profile by 206 KB. Nothing regenerates the field, and
+its `rustc` stamp (1.97.1, `8bab26f4f 2026-07-14`) happens to be *exactly* the toolchain
+CI still runs, so the staleness was undetectable from the record itself. It now carries
+this PR's CI measurement — `.bss 415,992 + .data 5,136 = 421,128 B` resident, `.uninit
+1,024 B`, flash 1,166,584 B, poll frame 9,728 B, on rustc 1.97.1 / LLVM 22.1.6 /
+`x86_64-unknown-linux-gnu` — plus `source_commit`, `source_run` and `host`, so a future
+reader can date it instead of trusting it. Note what it says: the floating-stable
+toolchain links the **same resident set and the same poll frame** as the pinned 1.96.0
+measurement, to the byte; only flash differs (1,166,584 vs 1,192,640 B, and flash is not
+gated on this target). Both board profiles link identically, so the single observation
+under `ble` covers both.
+
+**Stack margin.** `llvm-objdump -d --demangle` + the per-function `sub sp, #imm`
+histogram puts the head of the shipping default at `link::init_store` 27,648 B,
 `__embassy_main` 19,456 B, `ride::fill_ride_profile` 17,280 B, `NavPlanner::finish_emit`
-16,064 B) is byte-identical to the merge base. **On-glass stack high-water for the `usb`
-profile is unmeasured** — see the pending device-capture table below; static frame
+16,064 B, `ride::nav_begin` 14,528 B — byte-identical to the pre-USB build. The deepest
+USB frame is `usb::build_plane` at **956 B**, a transient boot frame (the
+`embassy_usb::Builder`, kept out of the task's poll frame by `#[inline(never)]` — the
+#677 rule); the deepest USB *async* frame is `usb::data_plane::run` at 108 B, and every
+other USB-named frame is ≤ 44 B. So the plane changes the guarded poll frame by 64 B and
+does not enter the histogram head at all. **On-glass stack high-water with the plane
+enumerating is still unmeasured** — the last capture (56,292 / 69,448 B) predates USB, no
+board was plugged in for this change, and a USB task adds ISR-context work a static
+histogram does not model. See the pending device-capture table below; static frame
 analysis is not a substitute for it.
 
 The routed detour (#882) replaces the pure skip: the `NavPlanner` gains the
@@ -484,6 +532,7 @@ photodiode trace are.
 | overlay cadence, idle / during long render | **PENDING — owner device capture** |
 | confirm pop / retract / final trailing-edge clear | **PENDING — owner device capture** |
 | BLE + object-store contention | **PENDING — owner device capture** |
+| USB enumeration + upload-while-riding contention (#889) | **PENDING — owner device capture** |
 | default / BLE stack high-water | **PENDING — owner device capture** |
 
 The PR carrying this baseline is not device-verified and must not merge until
