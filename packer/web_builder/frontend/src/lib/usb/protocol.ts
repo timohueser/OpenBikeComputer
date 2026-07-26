@@ -5,13 +5,13 @@
  *
  * These are ports of `firmware/obc-ble/src/descriptor.rs`, field for field, and they are pinned to
  * the **same** `protocol-vectors/` fixtures the firmware's `cargo test -p obc-vectors` and the iOS
- * app's `swift test` assert against (see `protocol.test.ts`). Three implementations, one set of
+ * app's `swift test` assert against (see `vectors.test.ts`). Three implementations, one set of
  * bytes: a divergence here is a bug here, never a reason to move a fixture.
  *
  * USB is a second *transport*, not a second protocol — everything in this file is the wire the BLE
- * link already carries. What USB adds is the frame that says which of BLE's characteristics a
- * control message belongs to, and that lives in `transport.ts`, on its own, so it can be re-cut
- * when #889 settles the device side without touching a byte of the protocol.
+ * link already carries. What USB adds is a frame saying which of BLE's characteristics a control
+ * message belongs to; its encoding lives in `transport.ts` and is provisional until #889 settles the
+ * device side. **Nothing in this file moves when that is decided** — which is the whole point.
  *
  * All integers are little-endian, matching OBCM/OBCR.
  */

@@ -19,10 +19,22 @@
  * ## Status: provisional, and owned jointly with #889
  *
  * #889 owns the device side — the embassy-nrf USBHS driver question, the VID/PID allocation, and
- * the endpoint layout — and it has not landed. This envelope is therefore the host's *proposal*:
- * minimal, mechanical, and confined to this file precisely so that ratifying a different shape is a
- * one-file change with the protocol codecs, the client, the mock device and every test untouched.
- * Anything that must survive that re-cut lives in `protocol.ts` / `objects.ts` instead.
+ * the endpoint layout — and it has not landed. This envelope is therefore the host's *proposal*,
+ * and if #889 ratifies a different one, here is honestly what moves.
+ *
+ * **The wire encoding is confined to this file**: the selector values, {@link encodeFrame} /
+ * {@link decodeFrame}, and the device-info string packing. Nothing else builds or parses a frame.
+ *
+ * **The *assumption* that control messages are routed by a leading selector is not** — it is shared
+ * with `client.ts`, whose `dispatch` switches on `frame.selector`, and `loopback.ts`, which switches
+ * on it and encodes replies. A scheme that routed some other way (separate endpoints per
+ * characteristic, a CDC line protocol) would touch those two as well. Small, mechanical edits, but
+ * three files rather than one — worth knowing before you start.
+ *
+ * **What does not move at all, under any envelope**: the object model, the transfer descriptors, the
+ * status envelope, the commands, the object layouts, the CRC-32, and every `protocol-vectors/`
+ * fixture. Those live in `protocol.ts` / `objects.ts` and are the reason USB is a second transport
+ * rather than a second protocol. That is the claim worth protecting; the rest is plumbing.
  */
 
 import { DecodeError } from "./protocol";
