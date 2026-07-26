@@ -35,6 +35,7 @@
       "obc-sim",
       "obc-usb-host",
       "obc-vectors",
+      "obc-web-convert",
       "obc-web-demo",
       "obcm-testkit"
     ],
