@@ -38,10 +38,12 @@ export class CatalogStore {
     error = $state<string | null>(null);
 
     /**
-     * The device the maps are for, or null when none is known. C3 (#902) owns
-     * the USB session and is what will set this; until then it is null except
-     * for the test hook below, and null is the hosted tier's designed case —
-     * every path here works with nothing plugged in.
+     * The device the maps are for, or null when none is known — the hosted
+     * tier's designed case, and the only one reachable today: C3's session
+     * reports a protocol version and a firmware string, neither of which is the
+     * OBCM format version §6(c) turns on (see `DeviceMapSupport`). Null is not
+     * a degraded mode; it is the branch the spec writes for "no known target
+     * firmware".
      */
     device = $state<DeviceMapSupport | null>(null);
     /** True when `device` came from the URL hook rather than a real device. */
@@ -95,7 +97,9 @@ export class CatalogStore {
         this.state = "ready";
     }
 
-    /** Called by C3 when a device attaches or detaches. */
+    /** The seam a device session calls once it can state which OBCM version the
+     *  firmware reads. Kept deliberately independent of C3's `DeviceSession`:
+     *  the catalog wants one number, not a connection. */
     setDevice(device: DeviceMapSupport | null): void {
         this.device = device;
         this.deviceIsSimulated = false;
