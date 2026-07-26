@@ -19,8 +19,12 @@
 #   ./repack.sh all          [switzerland.osm.pbf] [monaco.osm.pbf]
 #
 # With no source argument the current Geofabrik snapshot is downloaded (the
-# Switzerland file is ~600 MB). Requires `osmium` (brew install osmium-tool)
-# and the workspace toolchain (obc-pack builds with system GEOS).
+# Switzerland file is ~600 MB). Needs only the workspace toolchain (obc-pack
+# builds with system GEOS) — the crop is `obc-pack --bbox`, which reproduces
+# `osmium extract`'s default complete_ways strategy during ingest (#910), so
+# osmium-tool is no longer required to regenerate a fixture. The three bboxes
+# below were verified to pack byte-for-byte identically either way before the
+# switch; the fixtures were NOT re-packed for it.
 #
 # After re-packing, run the full workspace test suite — a few sim/reader tests
 # exercise fixture content (they are written content-agnostic, but verify) —
@@ -57,12 +61,9 @@ fetch() { # fetch <url> <dest>
 
 repack() { # repack <name> <source_pbf> <bbox>
     local name="$1" src="$2" bbox="$3"
-    local extract="$WORK/$name-extract.osm.pbf"
-    echo "extracting $name (bbox $bbox) ..."
-    osmium extract --overwrite --bbox "$bbox" -o "$extract" "$src"
-    echo "packing $name.obcm ..."
+    echo "packing $name.obcm (bbox $bbox) ..."
     (cd "$FIRMWARE_DIR" && cargo run --release --bin obc-pack -- \
-        "$extract" "$PRESET" "$ASSETS_DIR/$name.obcm")
+        "$src" "$PRESET" "$ASSETS_DIR/$name.obcm" --bbox "$bbox")
     ls -la "$ASSETS_DIR/$name.obcm"
 }
 
