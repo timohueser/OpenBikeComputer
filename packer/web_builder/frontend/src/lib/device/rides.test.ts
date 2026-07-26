@@ -232,7 +232,7 @@ describe("the exported GPX", () => {
     it("reproduces the native exporter byte-for-byte, pulled from the device", async () => {
         const log = vector("track-log.obct");
         const ride = rideFromTrackLog(log, TRACK_NAME, 1_783_598_400);
-        const { client, entries, source, close } = deviceWith([{ id: 4, ride }]);
+        const { entries, source, close } = deviceWith([{ id: 4, ride }]);
         try {
             // The catalog is what a rider picks from, so the export starts where they do.
             const listed = await source.listRides();
@@ -243,7 +243,6 @@ describe("the exported GPX", () => {
             expect(exported.gpx).toBe(withoutSegmentBreak(expected));
             expect(exported.points).toBe(5);
             expect(exported.bytes).toBe(entries[0].byteLen);
-            void client;
         } finally {
             await close();
         }
