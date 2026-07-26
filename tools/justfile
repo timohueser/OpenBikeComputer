@@ -193,6 +193,10 @@ web *args:
 # embeds the built frontend, so the frontend is built first. Opts: dev (live-reload
 # against Vite), build (compile only, don't open the window).
 #   obc desktop         obc desktop dev        obc desktop build
+# Every mode compiles a vendored static GEOS (#907), so cmake is the only native
+# prerequisite; `dev` drops *only* `custom-protocol`, because that feature is the one
+# about embedding the frontend and dropping more would make one flag mean two things.
+# `ensure_geos` stays for the workspace commands this file also runs.
 # Build & run the desktop app. Opts: dev (live-reload) build (compile only)
 desktop *args:
     #!/usr/bin/env bash
@@ -215,7 +219,7 @@ desktop *args:
       # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
       _say "starting Vite (desktop mode) on :5173 — leave it running, then this window follows it"
       ( cd "$fe" && npm run dev -- --mode desktop & )
-      cd "$OBC_ROOT/firmware/obc-desktop"; _run cargo run --no-default-features
+      cd "$OBC_ROOT/firmware/obc-desktop"; _run cargo run --no-default-features --features vendored-geos
     else
       _say "building the desktop frontend bundle…"
       ( cd "$fe" && _run npm run build:desktop )
@@ -392,7 +396,11 @@ doctor *args:
     ck just     "just"                      'command -v just'   'obc doctor --install'
     ck thumbv8m "device target (thumbv8m)"  'rustup target list --installed | grep -q thumbv8m.main-none-eabihf' 'obc doctor --install'
     ck wasm     "wasm target (docs demo)"   'rustup target list --installed | grep -q wasm32-unknown-unknown'     'obc doctor --install'
-    ck geos     "GEOS (obc-pack)"           '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'obc doctor --install (builds GEOS ≥3.14 from source)'
+    ck geos     "GEOS (obc-pack, workspace)" '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'obc doctor --install (builds GEOS ≥3.14 from source)'
+    # The desktop app does not use that one — it compiles a vendored GEOS in (#907),
+    # which is why CMake is now a gate rather than a coincidence. Not auto-installable:
+    # it is a system package everywhere and `obc doctor --install` does not use sudo.
+    ck cmake    "cmake (obc-desktop's GEOS)" 'command -v cmake' 'install cmake (brew install cmake · apt install cmake · winget install Kitware.CMake)'
     ck riscv    "RISC-V gcc (board FLPR)"   'command -v riscv64-elf-gcc || command -v riscv-none-elf-gcc || command -v riscv64-unknown-elf-gcc || { [[ -n "${RISCV_GCC:-}" && -x "${RISCV_GCC:-/nonexistent}" ]]; }' 'obc doctor --install (fetches an xPack toolchain)'
     ck probe    "probe-rs (flashing)"       'command -v probe-rs' 'obc doctor --install'
     ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
@@ -415,6 +423,7 @@ doctor *args:
       probe)    _run cargo install probe-rs-tools --locked ;;
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
+      cmake)    _err "install cmake via your system package manager (needs sudo)" ;;
       venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/packer/requirements.txt" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;

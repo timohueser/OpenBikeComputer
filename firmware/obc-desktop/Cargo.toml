@@ -29,7 +29,10 @@ default = ["custom-protocol", "vendored-geos"]
 # So it is ON by default here, and the live-reload loop is the explicit opt-out:
 #
 #     npm --prefix ../../packer/web_builder/frontend run dev -- --mode desktop
-#     cargo run --no-default-features       # window follows the Vite dev server
+#     cargo run --no-default-features --features vendored-geos   # follows Vite
+#
+# Keep the other default explicitly named there: the two features are orthogonal,
+# and `--no-default-features` alone would silently also drop the vendored GEOS.
 custom-protocol = ["tauri/custom-protocol"]
 
 # `vendored-geos` (D2, #907) is what makes this crate buildable and shippable on a
