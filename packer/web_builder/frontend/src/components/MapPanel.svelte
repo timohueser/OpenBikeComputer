@@ -2,16 +2,30 @@
     import { onDestroy, onMount } from "svelte";
     import { platform } from "../lib/platform";
     import { bboxAreaKm2Raw } from "../lib/map/geo";
-    import { RegionPicker, type Bbox } from "../lib/map/regionPicker";
+    import { RegionPicker, type Bbox, type CatalogHints } from "../lib/map/regionPicker";
     import { emptySelection, type AreaSelection } from "../lib/map/selection";
+    import { available } from "../lib/platform/gating";
+    import Gated from "./Gated.svelte";
 
     let {
         active = true,
         onchange,
+        hints = null,
+        singleSelect = false,
     }: {
         active?: boolean;
         onchange: (sel: AreaSelection) => void;
+        /** Catalog coverage to paint, when the tier gets its maps pre-baked. */
+        hints?: CatalogHints | null;
+        singleSelect?: boolean;
     } = $props();
+
+    // Cropping needs a packer to crop with, so on a tier without one the mode
+    // has to be shut off — left live it draws a box nothing can honour. The
+    // control itself is gated below with the rest of them; this is the same
+    // requirement asked in script, for the one thing markup can't do: refuse to
+    // restore a stored box into a mode that no longer exists.
+    const canCrop = available("bboxCrop");
 
     let mapEl: HTMLDivElement;
     let picker = $state<RegionPicker | null>(null);
@@ -59,7 +73,7 @@
                 regionIds: string[];
                 bbox: Bbox | null;
             };
-            if (last.mode === "bbox" && last.bbox) {
+            if (last.mode === "bbox" && last.bbox && canCrop) {
                 setMode("bbox");
                 picker.setBbox(last.bbox, true);
             } else if (last.regionIds?.length) {
@@ -80,19 +94,23 @@
     );
 
     onMount(async () => {
-        picker = new RegionPicker(mapEl, {
-            onSelectionChange(ids) {
-                regionIds = ids;
-                emit();
+        picker = new RegionPicker(
+            mapEl,
+            {
+                onSelectionChange(ids) {
+                    regionIds = ids;
+                    emit();
+                },
+                onBboxChange(b) {
+                    bbox = b;
+                    emit();
+                },
+                onDrawStateChange(armed) {
+                    drawArmed = armed;
+                },
             },
-            onBboxChange(b) {
-                bbox = b;
-                emit();
-            },
-            onDrawStateChange(armed) {
-                drawArmed = armed;
-            },
-        });
+            { singleSelect },
+        );
         try {
             picker.setRegions(await platform.regions());
             restoreLastArea();
@@ -100,6 +118,11 @@
             loadError = e instanceof Error ? e.message : String(e);
         }
         emit();
+    });
+
+    // Hints arrive after the manifest does, which is later than the polygons.
+    $effect(() => {
+        picker?.setCatalogHints(hints);
     });
 
     onDestroy(() => picker?.destroy());
@@ -121,6 +144,14 @@
     /** Deselect a single region — the Area card's chip × calls this. */
     export function removeRegion(id: string) {
         if (picker?.selected.has(id)) picker.toggleRegion(id);
+    }
+
+    /** Select a region from outside the map, and show it — the catalog card's
+     *  "covered by / baked inside it" chips jump this way. */
+    export function selectRegion(id: string) {
+        if (!picker) return;
+        picker.setSelection([id]);
+        picker.fitRegion(id);
     }
 
     function pickSearchResult(id: string) {
@@ -194,13 +225,37 @@
         {/if}
     </div>
 
-    <div class="overlay top-right seg">
-        <button type="button" class:active={mode === "regions"} onclick={() => setMode("regions")}>
-            Regions
-        </button>
-        <button type="button" class:active={mode === "bbox"} onclick={() => setMode("bbox")}>
-            Draw box
-        </button>
+    <!-- The mode toggle, and the one control on this panel that a tier can
+         lack. The pill is written twice rather than nested inside the gate,
+         because `<Gated>` puts its reason sentence next to the stand-in and a
+         paragraph inside the pill would break it. -->
+    <div class="overlay top-right modes">
+        <Gated need="bboxCrop">
+            <div class="seg">
+                <button
+                    type="button"
+                    class:active={mode === "regions"}
+                    onclick={() => setMode("regions")}
+                >
+                    Regions
+                </button>
+                <button type="button" class:active={mode === "bbox"} onclick={() => setMode("bbox")}>
+                    Draw box
+                </button>
+            </div>
+            {#snippet unavailable(reason)}
+                <!-- Regions is the only mode here, so it is permanently the
+                     active one; it keeps its handler rather than becoming a
+                     decorative span, so the pill reads and behaves the same
+                     either way. -->
+                <div class="seg">
+                    <button type="button" class="active" onclick={() => setMode("regions")}>
+                        Regions
+                    </button>
+                    <button type="button" disabled aria-describedby={reason}>Draw box</button>
+                </div>
+            {/snippet}
+        </Gated>
     </div>
 
     {#if mode === "bbox" && !bbox && !drawArmed}
@@ -245,6 +300,34 @@
     .top-right {
         top: 12px;
         right: 12px;
+    }
+
+    /* The pill, and under it whatever the gate has to say — right-aligned so
+       both hang off the same corner. The reason belongs to `<Gated>`, so it is
+       reached with :global and given the same chip treatment as the pill;
+       without a background it would be text on map tiles. */
+    .modes {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
+    }
+
+    .modes :global(p.reason) {
+        margin: 0;
+        max-width: 260px;
+        justify-content: flex-end;
+        text-align: right;
+        background: var(--panel);
+        border: 1px solid var(--parchment-3);
+        border-radius: 12px;
+        padding: 5px 11px;
+        box-shadow: 0 2px 8px rgba(36, 51, 28, 0.14);
+    }
+
+    .seg button:disabled {
+        opacity: 0.5;
+        cursor: default;
     }
 
     .bottom-left {

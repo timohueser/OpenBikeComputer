@@ -229,6 +229,28 @@ select:focus {
     font-weight: 600;
 }
 
+/* Catalog states in the click popup: a baked region carries a forest dot, one
+   the catalog doesn't have (or the device can't read) carries the reason. */
+.region-popup button.tone-available::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 7px;
+    border-radius: 50%;
+    background: var(--forest);
+}
+
+.region-popup button .tag {
+    margin-left: 8px;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+}
+
+.region-popup button.tone-unsupported .tag {
+    color: #8a6410;
+}
+
 .bbox-handle {
     background: var(--parchment);
     border: 2px solid var(--coral);

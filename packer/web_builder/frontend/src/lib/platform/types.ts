@@ -21,6 +21,7 @@
 // is deliberately no `isWeb`.
 
 import type { Component } from "svelte";
+import type { Catalog } from "../catalog/manifest";
 import type { Preset, SchemaEnvelope } from "../config/model";
 import type { DeviceSession } from "../usb/session";
 
@@ -111,13 +112,15 @@ export type StartBuild = () => BuildSession;
 // C3 (#902) defined it.
 
 /**
- * The catalog of pre-baked maps. A3 (#897) owns the manifest format and the
- * version law that binds it to OBCM; C1 (#900) is its first consumer.
+ * The catalog of pre-baked maps: the OBCC manifest, whole and validated. A3
+ * (#897) owns the format (`OBCC_Spec.md`) and the version law that binds it to
+ * OBCM; a host implementing this method has already read one entire body and
+ * parsed it as one document, because §7 admits nothing partial.
  *
  * Not to be confused with `public/osm_catalog.json`, which is the OSM tag-key
  * catalog the style editor's category rail reads.
  */
-export type MapCatalog = unknown;
+export type MapCatalog = Catalog;
 
 /**
  * A device connection, followed over its lifetime — C3 (#902) defines it, over
