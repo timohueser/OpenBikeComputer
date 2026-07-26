@@ -15,6 +15,10 @@ description = "OpenBikeComputer desktop app: the web builder in a Tauri shell, w
 [workspace]
 
 [features]
+# Both defaults are about the same thing — that plain `cargo build` in this
+# directory produces a *shippable app*, not a developer's private configuration.
+default = ["custom-protocol", "vendored-geos"]
+
 # `tauri/custom-protocol` is what decides whether the app *is* an app: with it,
 # `tauri::generate_context!` embeds the built frontend and the webview loads it
 # over the `tauri://` protocol; without it, Tauri is in "dev" mode and points the
@@ -26,8 +30,30 @@ description = "OpenBikeComputer desktop app: the web builder in a Tauri shell, w
 #
 #     npm --prefix ../../packer/web_builder/frontend run dev -- --mode desktop
 #     cargo run --no-default-features       # window follows the Vite dev server
-default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# `vendored-geos` (D2, #907) is what makes this crate buildable and shippable on a
+# machine that has never heard of GEOS. `obc-pack` links libGEOS through the `geos`
+# crate; by default that means *system* GEOS ≥ 3.14, which is a Homebrew/apt/vcpkg
+# errand no user of a desktop app should be asked to run — and on Windows barely
+# exists. Enabling it here pulls `geos-src`, which carries the GEOS 3.14.1 C++
+# sources inside the crate and builds them with CMake into a **static** archive
+# that links straight into this binary. Nothing to install, nothing to ship
+# alongside, no `.dll`/`.dylib`/`.so` search path at runtime.
+#
+# The mechanism is cargo's feature unification, so it is worth spelling out: this
+# crate names `geos` directly *only* to turn on `geos/static`, and because
+# `obc-pack`'s `geos` dependency resolves to the same package in this build graph,
+# it gets the vendored, static libGEOS too. There is deliberately no matching
+# feature on `obc-pack`: the `firmware/` workspace is a separate cargo root, so its
+# `--all-features` clippy/test runs (and the CLI packer, and CI's host jobs) keep
+# using system GEOS and stay fast. The app vendors; the dev workspace does not.
+# `tests/geos_smoke.rs` is what stops that from being a claim in a comment.
+#
+# Opt out for a fast local edit loop when you *do* have system GEOS ≥ 3.14:
+#
+#     cargo build --no-default-features --features custom-protocol
+vendored-geos = ["dep:geos"]
 
 [build-dependencies]
 # Generates the Tauri context (config + the embedded frontend bundle).
@@ -37,6 +63,13 @@ tauri-build = { version = "2", features = [] }
 # The whole point of this crate: obc-pack is a library dependency, not a
 # subprocess. `pipeline::pack` is the same function the CLI calls.
 obc-pack = { path = "../obc-pack" }
+# Not called for its geometry — `obc-pack` owns all of that. This entry exists to
+# add `static` to the feature set of the *same* `geos` package `obc-pack` depends
+# on (see `vendored-geos` above), and the version must therefore stay pinned to
+# `obc-pack`'s. `geos_version_is_the_one_obc_pack_asked_for` in tests/geos_smoke.rs
+# fails if the two drift, because a silently *older* system GEOS satisfying
+# `v3_14_0`'s runtime check is exactly the bug this vendoring exists to prevent.
+geos = { version = "11.1.1", features = ["v3_14_0", "static"], optional = true }
 tauri = { version = "2", features = [] }
 # Used from Rust only (no JS permission needed): "show the file I just built" in
 # the platform's own file manager.

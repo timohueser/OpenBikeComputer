@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use geos::{Geom as _, Geometry};
 
 use crate::geom::{box_polygon, collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
+use crate::net;
 use crate::progress::Progress;
 
 /// EPSG:3857 auxiliary-sphere radius = WGS84 semi-major axis (see the `.prj`).
@@ -276,8 +277,25 @@ fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
 
 // --- Dataset cache ---------------------------------------------------------
 
-fn cache_dir() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME").ok_or("HOME not set")?;
+/// Where the unpacked dataset lives: `$OBCM_CACHE_DIR/land`, else
+/// `~/.cache/obcm/land`.
+///
+/// The override and the Windows home variable are not decoration. The desktop app
+/// (`obc-desktop/src/paths.rs`) documents this directory as *the shared cache* —
+/// the CLI, the dev server and the app all point at one 2.3 GB dataset instead of
+/// three — and it reads `OBCM_CACHE_DIR` to find it. This function ignoring the
+/// variable would have quietly split that dataset in two the first time anyone set
+/// it, and `HOME` alone is simply unset on Windows, where the packer would have
+/// failed with "HOME not set" for a user who has no idea what `HOME` is (#907).
+pub(crate) fn cache_dir() -> Result<PathBuf, String> {
+    if let Some(dir) = std::env::var_os("OBCM_CACHE_DIR") {
+        return Ok(PathBuf::from(dir).join("land"));
+    }
+    #[cfg(windows)]
+    let home_var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let home_var = "HOME";
+    let home = std::env::var_os(home_var).ok_or("neither OBCM_CACHE_DIR nor the home directory is set")?;
     Ok(PathBuf::from(home).join(".cache/obcm/land"))
 }
 
@@ -289,6 +307,12 @@ fn cache_dir() -> Result<PathBuf, String> {
 /// extracted directory is renamed into place. Two cold-cache packers racing each
 /// other both succeed — the loser's rename fails against the winner's directory
 /// and its temp files are cleaned up.
+///
+/// Both steps run **in process** ([`crate::net`]). They used to shell out to `curl`
+/// and `unzip`, which was fine while the packer was a developer's CLI and fatal the
+/// moment it became the engine inside a shipped Windows app (#907): `unzip` is not
+/// a Windows program. The in-process versions are also cancellable and report a
+/// percentage, neither of which a subprocess could do.
 fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
     let dir = cache_dir()?;
     let dataset = dir.join("land-polygons-split-3857");
@@ -298,21 +322,35 @@ fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let pid = std::process::id();
-    let zip = dir.join(format!("land-polygons.zip.part-{pid}"));
+    let zip = dir.join(format!("land-polygons-{pid}.zip"));
     let extract_dir = dir.join(format!("extract-{pid}"));
-    let zip_s = zip.to_string_lossy();
-    let extract_s = extract_dir.to_string_lossy();
     // Reported rather than printed: on the desktop app this is the one step that
     // can stall a first build for minutes, and a silent app is indistinguishable
     // from a hung one. (Still stderr on the CLI — `Progress::stdout`'s `warn`.)
     progress.warn(format!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ..."));
-    run_tool("curl", &["-fL", "--retry", "3", "-o", &zip_s, LAND_URL])?;
+    let mut last = 0u8;
+    let downloaded = net::download(LAND_URL, &zip, progress, |pct| {
+        // Every 5 %: a one-time 950 MB download over a slow link is minutes of
+        // silence otherwise, and per-percent lines would bury the build log.
+        if pct >= last + 5 || pct == 100 {
+            last = pct;
+            progress.warn(format!("  land polygons: {pct}%"));
+        }
+    });
+    if let Err(e) = downloaded {
+        let _ = std::fs::remove_file(&zip);
+        return Err(e);
+    }
     progress.warn("Extracting land polygons ...");
-    run_tool("unzip", &["-o", "-q", &zip_s, "-d", &extract_s])?;
+    let extracted = net::extract_zip(&zip, &extract_dir, progress);
+    let _ = std::fs::remove_file(&zip);
+    if let Err(e) = extracted {
+        let _ = std::fs::remove_dir_all(&extract_dir);
+        return Err(e);
+    }
     // Move the extracted dataset into place; a rename failure is fine iff a
     // concurrent run installed the dataset first.
     let installed = std::fs::rename(extract_dir.join("land-polygons-split-3857"), &dataset);
-    let _ = std::fs::remove_file(&zip);
     let _ = std::fs::remove_dir_all(&extract_dir);
     if !shp.exists() {
         return Err(match installed {
@@ -321,17 +359,6 @@ fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
         });
     }
     Ok(shp)
-}
-
-fn run_tool(cmd: &str, args: &[&str]) -> Result<(), String> {
-    let status = std::process::Command::new(cmd)
-        .args(args)
-        .status()
-        .map_err(|e| format!("failed to run `{cmd}` ({e}); install it or pre-populate the land cache"))?;
-    if !status.success() {
-        return Err(format!("`{cmd}` exited with {status}"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
