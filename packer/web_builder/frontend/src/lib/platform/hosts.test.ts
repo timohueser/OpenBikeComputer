@@ -50,12 +50,11 @@ describe.each(Object.entries(HOSTS))("%s host", (name, host) => {
 describe("unimplemented seams", () => {
     // Each still-empty seam names the issue that owes it, so a stack trace says
     // who to chase. The list shrinking is the point: the web host's `catalog()`
-    // left it when C1 (#900) implemented it, and its `device()` when C3 (#902)
-    // did — every remaining row is a real debt with an owner.
+    // left it when C1 (#900) implemented it, its `device()` when C3 (#902) did,
+    // and the desktop host's data calls when D1 (#906) built the Tauri backend —
+    // every remaining row is a real debt with an owner.
     it.each([
         ["dev catalog", () => dev.platform.catalog(), /A3 #897/],
-        ["desktop catalog", () => desktop.platform.catalog(), /D1 #906/],
-        ["desktop regions", () => desktop.platform.regions(), /D1 #906/],
         ["desktop device", () => desktop.platform.device!(), /D4 #909/],
         ["desktop rides", () => desktop.platform.rides!(), /E2 #912/],
     ])("%s rejects with PlatformNotImplemented", async (_name, call, owner) => {
@@ -106,5 +105,19 @@ describe("the hosts as a set", () => {
         expect(typeof dev.platform.legacyConfig).toBe("function");
         expect(web.platform.legacyConfig).toBeUndefined();
         expect(desktop.platform.legacyConfig).toBeUndefined();
+    });
+
+    it("reports and clears caches only where the app owns a filesystem", () => {
+        // The same shape as `legacyConfig`: optional, not a capability, because
+        // a tier without a disk has nothing to report and no gate sentence worth
+        // writing. The desktop app's caches reach gigabytes (#906), so it does.
+        expect(desktop.platform.storage).toBeDefined();
+        expect(web.platform.storage).toBeUndefined();
+        expect(dev.platform.storage).toBeUndefined();
+        // `revealFile` answers "where did my map go", and only makes sense where
+        // a build result carries a path at all.
+        expect(typeof desktop.platform.revealFile).toBe("function");
+        expect(web.platform.revealFile).toBeUndefined();
+        expect(dev.platform.revealFile).toBeUndefined();
     });
 });

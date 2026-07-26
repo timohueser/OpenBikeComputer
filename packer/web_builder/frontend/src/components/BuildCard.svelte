@@ -42,6 +42,24 @@
     const busy = $derived(tracker.state === "starting" || tracker.state === "running");
     const ready = $derived(selection !== null && selectionReady(selection) && working.envelope !== null);
 
+    // Both non-null only where the host has a filesystem: the desktop app writes
+    // the map into a folder the user already has, so the "download" is a place
+    // rather than a transfer. Read once — neither changes while the app runs.
+    const revealFile = platform.revealFile;
+    // Null on a host that cannot stop a build (see `BuildSession.cancel`), which
+    // is why this is a member check and not a platform-name check.
+    const stop = tracker.cancel;
+    let revealError = $state<string | null>(null);
+
+    async function reveal(path: string) {
+        revealError = null;
+        try {
+            await revealFile?.(path);
+        } catch (e) {
+            revealError = e instanceof Error ? e.message : String(e);
+        }
+    }
+
     async function build() {
         validation = null;
         strippedNote = null;
@@ -79,6 +97,9 @@
     <button type="button" class="btn primary" onclick={build} disabled={busy || !ready}>
         {busy ? "Building…" : "Build map"}
     </button>
+    {#if stop && busy}
+        <button type="button" class="btn" onclick={stop}>Cancel</button>
+    {/if}
 </div>
 
 {#if schemaNote}
@@ -105,11 +126,33 @@
 
 {#if tracker.state === "done" && tracker.result}
     <div class="done">
-        <a class="btn primary" href={tracker.result.downloadUrl} download={tracker.result.filename}>
-            Download {tracker.result.filename}
-        </a>
-        <span class="small muted">{formatBytes(tracker.result.size)} — copy it onto the device's SD card</span>
+        {#if revealFile && tracker.result.path}
+            <!-- A real filesystem: the map is already where it belongs, so the
+                 action is "show me", not "download". -->
+            {@const path = tracker.result.path}
+            <button type="button" class="btn primary" onclick={() => reveal(path)}>
+                Show {tracker.result.filename}
+            </button>
+            <span class="small muted">
+                {formatBytes(tracker.result.size)} — copy it onto the device's SD card
+            </span>
+            <span class="small faint mono path">{path}</span>
+        {:else}
+            <a class="btn primary" href={tracker.result.downloadUrl} download={tracker.result.filename}>
+                Download {tracker.result.filename}
+            </a>
+            <span class="small muted">{formatBytes(tracker.result.size)} — copy it onto the device's SD card</span>
+        {/if}
     </div>
+{/if}
+
+{#if revealError}
+    <p class="note error small">{revealError}</p>
+{/if}
+
+{#if tracker.state === "cancelled"}
+    <!-- Muted, not red: this is what the user asked for. -->
+    <p class="note small muted">Build cancelled — nothing was written.</p>
 {/if}
 
 {#if tracker.state === "error"}
@@ -174,6 +217,13 @@
         align-items: center;
         gap: 10px;
         flex-wrap: wrap;
+    }
+
+    /* The full path, on its own line: it is the answer to "where did it go",
+       and it is long. */
+    .done .path {
+        flex-basis: 100%;
+        word-break: break-all;
     }
 
     .log {

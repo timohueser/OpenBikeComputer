@@ -1,11 +1,6 @@
 import { API_BASE, api } from "./client";
+import { downloadPct, phasePct } from "../build/phases";
 import type { BuildRequest, BuildResult, BuildSession, BuildState } from "../platform/types";
-
-// Coarse pipeline phases in order; a status event's `detail` indexes into this
-// to derive an overall percentage (ported from the legacy app.js PHASES).
-// "cropping" is gone since #920 — the packer no longer shells out to osmium to
-// pre-crop each region, so nothing emits that phase any more.
-const PHASES = ["downloading", "merging", "ingest", "bbox", "land", "quadtree", "serialize"];
 
 const ACTIVE_JOB_KEY = "obcm.activeJob";
 
@@ -23,6 +18,15 @@ export class JobTracker implements BuildSession {
     transientLine = $state<string | null>(null);
     result = $state<BuildResult | null>(null);
     error = $state<string | null>(null);
+
+    /**
+     * Null, and a statement about this host rather than a gap: the build is a
+     * subprocess behind a job queue with no cancel endpoint, so there is nothing
+     * to call. Killing it would also need the queue to learn what a half-written
+     * output directory means. The desktop host (#906) runs the pack in-process
+     * against a cancel token and has a real button.
+     */
+    readonly cancel = null;
 
     private es: EventSource | null = null;
     private jobId: string | null = null;
@@ -106,9 +110,9 @@ export class JobTracker implements BuildSession {
         switch (ev.type) {
             case "status": {
                 const detail = String(ev.detail ?? "");
-                const i = PHASES.indexOf(detail);
-                if (i >= 0) {
-                    this.pct = Math.round(((i + 1) / (PHASES.length + 1)) * 100);
+                const pct = phasePct(detail);
+                if (pct !== null) {
+                    this.pct = pct;
                     this.phase = detail;
                 } else {
                     this.phase = `${ev.status}: ${detail}`;
@@ -117,7 +121,7 @@ export class JobTracker implements BuildSession {
             }
             case "progress":
                 if (ev.phase === "download") {
-                    this.pct = Math.round(((ev.pct as number) / 100) * (100 / (PHASES.length + 1)));
+                    this.pct = downloadPct(ev.pct as number);
                     this.phase = `downloading ${ev.region} ${ev.pct}%`;
                 }
                 break;
