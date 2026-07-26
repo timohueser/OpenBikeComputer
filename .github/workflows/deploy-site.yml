@@ -1,16 +1,78 @@
 name: Deploy site
 
-# Builds the obc-web-demo live demo (the thin wasm host around the shared firmware
-# crates) and publishes it to GitHub Pages. Because the demo is the firmware's own
-# render path compiled to wasm, every push rebuilds it — the site can never show a
-# stale screenshot.
+# The whole public site, published as ONE GitHub Pages artifact on every push to
+# `develop`. Four surfaces, three builders, one upload:
+#
+#   /                     landing page + the live device demo   trunk (obc-web-demo → wasm)
+#   /docs/  /blog/        docs site + expedition log            build_docs.py (trunk pre_build hook)
+#   /builder/             the static map builder (#894 phase C) vite --mode web
+#   /builder/data/…       the Geofabrik region index            packer.web_builder.static_data
+#
+# Because the demo is the firmware's own render path compiled to wasm, every push
+# rebuilds it — the site can never show a stale screenshot. And everything here is
+# static files: there is no backend on this tier at all. Route conversion runs as wasm
+# in the tab (#896), maps are pre-baked artifacts listed in a catalog manifest (#898),
+# and the only server involved is whoever serves the bytes.
+#
+# ── What GitHub Pages can and cannot do (C6 #905; measured 2026-07-26) ──────────────
+#
+# Pages serves every object with a fixed header set and offers **no** configuration
+# surface for response headers — no `_headers`, no `.htaccess`, no per-path rules:
+#
+#     $ curl -sSI https://timohueser.github.io/OpenBikeComputer/
+#     cache-control: max-age=600
+#     access-control-allow-origin: *
+#     (no Cross-Origin-Opener-Policy, no Cross-Origin-Embedder-Policy)
+#
+# Two consequences this deploy is designed around:
+#
+# 1. **Cache-Control is not ours to set.** Hashed assets cannot be marked `immutable`
+#    — they are served `max-age=600` like everything else. That is harmless: the
+#    filenames are content-hashed, so a new build is a new URL and an old max-age can
+#    never serve stale code. What it does mean is that "the catalog manifest must be
+#    short-lived" is unsatisfiable for anything served from here — and the manifest
+#    must not live here anyway, because a manifest published beside the site could
+#    only change by redeploying the site, which is exactly what #905 says a fresh bake
+#    must not require. So the manifest lives **with the artifacts**, on whatever object
+#    storage the bakery (B1 #898) publishes to, where its cache policy is that host's
+#    to set (OBCC_Spec.md §7 states the ≤ 60 s expectation). This workflow carries only
+#    its URL — see OBC_CATALOG_URL below.
+#
+# 2. **No cross-origin isolation, ever, on this host.** Setting
+#    `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy:
+#    require-corp` is the only way to reach `crossOriginIsolated === true`, and with it
+#    `SharedArrayBuffer` — which is what wasm *threads* need (wasm-bindgen-rayon,
+#    Emscripten pthreads). Pages cannot set them, so anything needing threads (the
+#    hypothetical in-browser packer, which #894 lists as out of scope) forces a move to
+#    a host with header control. The service-worker shim that fakes isolation on static
+#    hosts is not a way out here: under `require-corp` every cross-origin subresource
+#    needs CORP/CORS headers, and this tier's whole point is fetching map artifacts
+#    from another origin. Nothing shipped today wants isolation — obc-web-convert and
+#    obc-web-demo are both single-threaded — so this is a recorded constraint, not a
+#    present problem.
+#
+# ── Portability across a domain move ───────────────────────────────────────────────
+#
+# The site is expected to move to its own domain, so nothing published here may assume
+# the project-Pages `/<repo>/` sub-path: trunk gets `--public-url ./` (which emits
+# `<base href="./">`) and Vite is configured `base: "./"` (#895), so the artifact is
+# mountable at any prefix. The "mountable at any prefix" step below proves that on
+# every deploy by serving the artifact from a deep sub-path and fetching each page's
+# own assets through it.
+#
+# ── Which branch the world sees ────────────────────────────────────────────────────
+#
+# `develop`, per #905's acceptance criterion — the integration branch is what the
+# public site tracks. (It was `main`, which had drifted 365 commits behind.) One
+# trigger only: two branches deploying into one Pages environment would fight.
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
     paths:
       - "docs/**"
       - "firmware/**"
+      - "packer/**"
       - ".github/workflows/deploy-site.yml"
   workflow_dispatch:
 
@@ -23,6 +85,14 @@ permissions:
 concurrency:
   group: pages
   cancel-in-progress: false
+
+env:
+  # Where the builder reads the OBCC catalog manifest (#897). A repository variable
+  # rather than a code constant, because the manifest lives with the artifacts and B1
+  # (#898) owns where that is — the frontend already treats it as configuration
+  # (platform/web.ts). Unset until something is baked: the builder is still published,
+  # says it has no catalog, and nothing on the site links to it (see OBC_BUILDER_PATH).
+  OBC_CATALOG_URL: ${{ vars.OBC_CATALOG_URL }}
 
 jobs:
   build:
@@ -40,15 +110,135 @@ jobs:
         with:
           workspaces: firmware
 
-      - name: Install Trunk
+      # Pinned to the versions ci.yml builds these with, so the deploy cannot differ
+      # from the tools that gated the PR.
+      - name: Install Trunk + wasm-pack
         uses: taiki-e/install-action@v2
         with:
-          tool: trunk@0.21.14
+          tool: trunk@0.21.14,wasm-pack@0.15.0
 
-      # Project Pages serve under /<repo>/, so the wasm/js asset URLs must be prefixed
-      # or they 404. --release turns on wasm-opt (see data-wasm-opt in index.html).
-      - name: Build (release)
-        run: trunk build --release --config docs/Trunk.toml --public-url "/${{ github.event.repository.name }}/"
+      # --public-url ./ rather than /<repo>/: relative asset URLs work under the
+      # project-Pages sub-path AND at a domain root, so the move costs a DNS record
+      # instead of a rebuild. --release turns on wasm-opt (see data-wasm-opt in
+      # index.html). The pre_build hook renders docs/ + blog/ into dist as it goes.
+      - name: Build the landing page, the demo, and the docs
+        env:
+          # The docs/blog header links the builder only when the builder has something
+          # to offer. A nav link to a map builder that opens on "couldn't load the map
+          # catalog" is a broken front door, and the front door is the one place never
+          # worth being brave about.
+          OBC_BUILDER_PATH: ${{ vars.OBC_CATALOG_URL != '' && 'builder/' || '' }}
+        run: trunk build --release --config docs/Trunk.toml --public-url "./"
+
+      # The builder imports this: the shared obc-route GPX↔OBCR path as wasm (#896).
+      # Same invocation as ci.yml's wasm-convert job.
+      - name: Build the wasm conversion bridge
+        run: |
+          wasm-pack build firmware/obc-web-convert --release --target web \
+            --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg \
+            --out-name obc_web_convert
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+
+      # VITE_SITE_BASE makes the builder's links to the docs and the landing relative:
+      # they are siblings inside this artifact, so naming them by absolute URL would be
+      # the one place a domain move still bit us. Left unset everywhere else (dev
+      # server, desktop app), where the site genuinely is somewhere else.
+      - name: Build the static map builder
+        working-directory: packer/web_builder/frontend
+        env:
+          VITE_SITE_BASE: "../"
+          VITE_CATALOG_URL: ${{ env.OBC_CATALOG_URL }}
+        run: |
+          npm ci
+          npm run build:web
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The region picker's polygons. The FastAPI dev host computes this per request
+      # from the Geofabrik index; a tier with no backend needs it as a file, and
+      # without it the picker draws nothing at all — a hard dependency of a working
+      # site, not a nice-to-have. static_data.py refuses to write an index below its
+      # feature floor, which turns "Geofabrik changed shape" into a failed deploy
+      # rather than an empty map. Deliberately uncached: deploys are rare and the index
+      # is ~4 MB, so fetching it fresh is cheaper than reasoning about staleness.
+      - name: Bake the region index
+        run: |
+          pip install -r packer/requirements-static.txt
+          python -m packer.web_builder.static_data \
+            --out packer/web_builder/frontend/dist/web/data
+
+      - name: Assemble the site
+        run: |
+          mkdir -p docs/dist/builder
+          cp -R packer/web_builder/frontend/dist/web/. docs/dist/builder/
+          du -sh docs/dist/* | sort -h
+
+      # Two ways a deploy ships something broken without anyone noticing. Both checks
+      # are cheap; both catch a class of failure that is invisible until a user hits it.
+      # Path-absolute references only: `href="/OpenBikeComputer/…"`, not
+      # `https://timohueser.github.io/OpenBikeComputer/…`. The landing page's
+      # og:image/twitter:image MUST be absolute — scrapers don't resolve relative URLs
+      # — so those two tags are the one place the current origin is legitimately baked
+      # in, and they are the one thing to hand-edit on the day the domain changes.
+      - name: No baked-in site path
+        run: |
+          if grep -rIlE "[\"'(=]/OpenBikeComputer/" docs/dist/builder docs/dist/index.html; then
+            echo "::error::the bundle hard-codes the project-Pages sub-path — it would 404 on a custom domain"
+            exit 1
+          fi
+          echo "no absolute site paths in the published bundle"
+
+      # Mount the artifact at a deep prefix, then fetch each page AND the assets it
+      # names, resolved relative to that page. A page that loads while its script 404s
+      # would pass a naive existence check; this does not.
+      - name: Mountable at any prefix
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/mount"
+          rm -rf "$root"; mkdir -p "$root/some/deep/prefix"
+          cp -R docs/dist/. "$root/some/deep/prefix/"
+          python3 -m http.server 8123 --directory "$root" >/dev/null 2>&1 &
+          server=$!
+          trap 'kill $server' EXIT
+          for _ in $(seq 1 30); do curl -sf -o /dev/null "http://127.0.0.1:8123/" && break; sleep 0.2; done
+          base="http://127.0.0.1:8123/some/deep/prefix"
+          fail=0
+          check() {  # check <page-url> — fetch the page, then every asset it references
+            local page="$1" html ref n=0
+            html=$(curl -sf "$page") || { echo "  x $page"; fail=1; return; }
+            echo "  ok $page"
+            for ref in $(printf '%s' "$html" | grep -oE '(src|href)="[^"]+\.(js|css|wasm)"' | cut -d'"' -f2); do
+              case "$ref" in
+                *:*|//*) continue ;;                                    # external, not ours
+                /*) echo "     x $ref (rooted at /)"; fail=1; continue ;;
+                ./*) ref="${ref#./}" ;;
+              esac
+              n=$((n + 1))
+              # Relative, so it resolves against the page's own directory — which is
+              # exactly the property under test.
+              if curl -sf -o /dev/null "${page%/}/$ref"; then echo "     ok $ref"
+              else echo "     x $ref"; fail=1; fi
+            done
+            # A page that referenced nothing would pass every assertion above without
+            # testing anything, so say so instead.
+            [ "$n" -gt 0 ] || { echo "     x no local assets referenced — check is vacuous"; fail=1; }
+          }
+          check "$base/"
+          check "$base/builder/"
+          check "$base/docs/"
+          if curl -sf -o /dev/null "$base/builder/data/regions.json"; then
+            echo "  ok builder/data/regions.json"
+          else
+            echo "  x builder/data/regions.json"; fail=1
+          fi
+          [ "$fail" = 0 ] || { echo "::error::the artifact is not mountable at a sub-path"; exit 1; }
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
