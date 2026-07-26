@@ -358,6 +358,15 @@ describe("the native pipe's transport contract", () => {
         // …and stays closed: a later call fails immediately instead of making another doomed round
         // trip, which is the difference between one error message and a stuck spinner.
         await expect(link.bulk.read()).rejects.toMatchObject({ code: "closed" });
+
+        // The abandoned command settles *after* the caller was failed by the unplug — `dead()` won
+        // the race, so its rejection lands on nobody. It must stay harmless: no second error, no
+        // resurrected pipe, and a `close()` afterwards that still works on a link whose device is
+        // already gone. (`Promise.race` attaches to both arms, so the late rejection is handled by
+        // construction; this is the path that proves it rather than a comment claiming it.)
+        await wire!.host.close();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(link.bulk.open).toBe(false);
         await watcher.close();
     });
 
