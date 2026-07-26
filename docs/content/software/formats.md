@@ -5,7 +5,7 @@ description: OBCM maps and OBCR routes — the binary, table-driven formats a mi
 
 # Data formats
 
-The device reads two kinds of file: an **OBCM** map and an **OBCR** route. Both are binary, and both exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws.
+The device reads two kinds of file: an **OBCM** map and an **OBCR** route. Both are binary, and both exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (A third format, the [catalog manifest](#the-catalog-a-third-format-for-finding-the-first-two), never reaches the device at all — it's how a host decides *which* map to hand it.)
 
 This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:OBCM_Spec.md) and [`OBCR_Spec.md`](src:OBCR_Spec.md) — so here we focus on *why* the bytes are shaped the way they are. Those root specifications remain the normative contracts; the dependency-free [`obc-formats`](src:firmware/obc-formats) crate is the code authority beneath them for version numbers, fixed record lengths, flags, sentinels, endian primitives, and the shared byte-I/O seam. Parsing, caching, conversion, and file assembly stay in the reader, route, and packer crates.
 
@@ -913,6 +913,20 @@ On the host that's a slice of memory; on the device it's a file on the SD card. 
 
 The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority-the-clever-bit) walks the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. With it, pass B's winner chunks are already resident, and a slow pan re-hits last frame's chunks. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
 
+## The catalog — a third format, for finding the first two
+
+Everything above is read by the device. There is one more format in the family that the device never sees, and it exists because of a single number in the OBCM header: the **version byte**.
+
+The reader supports exactly one OBCM version at a time — v10 today, and the versions before it were hard cuts, not fallbacks. That's the right trade for a microcontroller (no branching parsers, no dead code paths in 512 KB), and it costs nothing while maps are built one at a time on the rider's own machine: you rebuild, you copy, you ride. But a distribution that **bakes maps centrally** — build the popular regions once, serve them as static files, amortise the CPU across everyone — turns that one byte into a hazard. The artifacts are large, cached at the edge, and nobody re-checks them by hand. The day the format moves, every one of them silently becomes a file the device will refuse.
+
+The fix is to make the version *knowable before the download*. **OBCC** — the [catalog manifest](src:OBCC_Spec.md) — is a single JSON document listing every baked artifact with its region, its preset, its coverage box, its size and digest, and the OBCM version **read out of its own header** rather than taken from the build recipe. A site holding that manifest can grey out a map the connected device can't read, instead of streaming two hundred megabytes and failing at the last byte.
+
+The same document carries the two things a build system needs to stay honest about it. The generator refuses to emit a manifest whose artifacts aren't all at the packer's current OBCM version, so a half-re-baked catalog is a failed build rather than a published one; and it is written temp-file-then-rename, as one self-delimiting document, so a consumer sees the whole previous manifest or the whole new one — a truncated catalog can't parse, which is exactly the property you want from a file that decides what a device is allowed to be handed.
+
+Two smaller decisions are worth naming, because both are places where the obvious choice is wrong. The manifest's `bbox` is the **coverage** box copied from the artifact header, not the extract box it was cut from — those differ, because completing partially-in-box ways and dragging in coastline pushes the packed box outward, and the packer's own fixture tooling forbids feeding a header box back in as an extract box for exactly that reason (it ratchets wider on every re-pack). Here it's an output, not an input: the honest answer to *what does this download cover?*. And the generator reads a wall clock exactly once, for `generated_at`; build times come from the bake itself, ordering is content-derived rather than filesystem-derived, and the same tree therefore produces byte-identical output.
+
+The manifest layout, the bake-tree shape, the sidecar, and the version law are normative in [`OBCC_Spec.md`](src:OBCC_Spec.md); it is generated by `obc-pack catalog`.
+
 ---
 
 ## Where this lives
@@ -923,5 +937,6 @@ The map's caches matter because the [stub-select collector](../rendering/#4-deco
 - The recorded-track log + its GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec + the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
+- The catalog manifest — spec [`OBCC_Spec.md`](src:OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:firmware/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:firmware/obc-pack/schema/catalog.schema.json)
 
 Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).
