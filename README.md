@@ -256,6 +256,24 @@ cd packer/web_builder/frontend && npm run dev -- --mode web
 
 The desktop host has no back end yet (D1, #906).
 
+### Driving the device step without a device
+
+The USB writes (map, route, firmware) need an OBC on the other end of a cable,
+and the LM20's USB peripheral is still ahead (#889). `dev-harness/` is a second
+entry point that mounts the whole app against the **simulated device** —
+`lib/usb/loopback.ts`, the real protocol over an in-memory pipe, paced to the SD
+card's ~700 KB/s so progress, throughput and the remaining-time estimate behave
+the way they will on hardware. It lives outside `src/` because no build has it as
+an input, which is what keeps the simulated device out of every shipped bundle.
+
+```sh
+cd packer/web_builder/frontend
+VITE_DATA_BASE=/data npm run dev -- --mode web   # then open /dev-harness/
+```
+
+`VITE_DATA_BASE` is root-relative here because the harness is served from a
+sub-path, and the default `./data` would resolve under it.
+
 All of them — and `npm run check` and `npm test` — need the wasm conversion
 bridge built once first (`npm run build:wasm`, which wants a Rust toolchain and
 `wasm-pack`): route conversion runs client-side through the firmware's own

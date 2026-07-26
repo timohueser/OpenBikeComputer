@@ -6,3 +6,21 @@ export function formatBytes(n: number): string {
     if (n >= 1 << 10) return (n / (1 << 10)).toFixed(1) + " KB";
     return n + " B";
 }
+
+/** Throughput, for a transfer whose speed is worth stating — a map upload runs
+ *  at the SD card's pace, and the number is what makes "minutes" credible. */
+export function formatRate(bytesPerSecond: number): string {
+    return formatBytes(Math.round(bytesPerSecond)) + "/s";
+}
+
+/** A rough remaining time. Rounded coarsely and prefixed by the caller with
+ *  "about", because a to-the-second estimate off a moving average is a
+ *  precision nobody has. */
+export function formatDuration(seconds: number): string {
+    if (seconds < 60) return `${Math.max(1, Math.round(seconds))} s`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
