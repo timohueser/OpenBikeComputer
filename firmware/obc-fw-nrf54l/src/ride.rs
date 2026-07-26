@@ -404,11 +404,11 @@ fn nav_finish(
 
 /// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb
 /// (issue #755 field forensics). Lives board-side because `obc-app` stays defmt-free
-/// (host-agnostic); `Turn`'s detent count is logged separately at the call site. Ungated — the
+/// (host-agnostic); `Step`'s count is logged separately at the call site. Ungated — the
 /// breadcrumb logs in every build variant.
 fn gesture_name(g: obc_app::Gesture) -> &'static str {
     match g {
-        obc_app::Gesture::Turn(_) => "Turn",
+        obc_app::Gesture::Step(_) => "Step",
         obc_app::Gesture::Press => "Press",
         obc_app::Gesture::Hold => "Hold",
         obc_app::Gesture::Back => "Back",
@@ -741,10 +741,10 @@ pub(crate) async fn run_app(
             }
             // Field forensics (#755): every drained gesture, with the screen it lands on — the
             // RTT record that discriminates "the press never happened" (input-plane dead window)
-            // from "the press landed on the wrong screen/row" (e.g. a press-nudged detent turned
+            // from "the press landed on the wrong screen/row" (e.g. a press-nudged step turned
             // a 2-row confirm to Cancel first). Human-rate events; always on, a handful of bytes.
-            if let obc_app::Gesture::Turn(n) = g {
-                defmt::info!("input: Turn {=i32} on {=str}", n, app.top_screen().name());
+            if let obc_app::Gesture::Step(n) = g {
+                defmt::info!("input: Step {=i32} on {=str}", n, app.top_screen().name());
             } else {
                 defmt::info!("input: {=str} on {=str}", gesture_name(g), app.top_screen().name());
             }
@@ -1397,7 +1397,7 @@ pub(crate) async fn run_app(
 
             // A pending debug `Z` camera-scale command (render benchmark): pin the map to an exact
             // meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one fresh,
-            // stage-timed frame per setting instead of stepping the encoder's 1.2× detents.
+            // stage-timed frame per setting instead of stepping the selection's 1.2× steps.
             #[cfg(feature = "debug-uart")]
             if let Some(mpp) = obc_platform::debug_link::take_zoom() {
                 app.set_map_mpp(mpp);
@@ -1570,7 +1570,7 @@ pub(crate) async fn run_app(
                 route.as_ref(),
             );
 
-            // Feed the high-priority plane's encoder hold-progress to the map render so the in-screen
+            // Feed the high-priority plane's Select hold-progress to the map render so the in-screen
             // confirm fills (the factory-Reset bar) track the hold — `App`'s own input plane isn't
             // driven here, so the render would otherwise read 0 and the bar would never fill.
             let hold_p = display.hold_progress();

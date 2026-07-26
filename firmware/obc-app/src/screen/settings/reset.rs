@@ -116,7 +116,7 @@ impl ResetScreen {
             return;
         }
 
-        // Step 2: armed → the hold-to-erase prompt over a bar that fills with the live encoder hold.
+        // Step 2: armed → the hold-to-erase prompt over a bar that fills with the live Select hold.
         let p = rx.hold_progress.clamp(0.0, 1.0);
         let prompt = if p > 0.02 { rx.t(Msg::ResetKeepHolding) } else { rx.t(Msg::ResetHoldToErase) };
         cv.text(prompt, Point::new(w / 2, TITLE_BAR_H + 150), Font::Body, TextAlign::Center, INK);

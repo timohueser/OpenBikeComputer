@@ -7,12 +7,12 @@
 //! geometry the Map draws — so [`RouteReader::elevation_profile`] reduces the route to
 //! a [`Profile`] of per-column min/max elevation.
 //!
-//! **Why a pyramid.** Zooming must not re-stream the route on every encoder detent. One
+//! **Why a pyramid.** Zooming must not re-stream the route on every Up/Down step. One
 //! load-time pass builds a **fine base** level ([`PROFILE_COLS`] columns); the coarser
 //! levels are pure **min/max downsamples** of the finer one (merge adjacent column pairs —
 //! a few array passes, no extra chunk decodes), the same trick the OBCM map format uses
 //! (v5). Drawing a view then [picks the level](Profile::window) whose resolution matches
-//! the visible window and walks only ~chart-width columns, so the per-detent cost is flat
+//! the visible window and walks only ~chart-width columns, so the per-step cost is flat
 //! across every zoom level and touches no geometry.
 //!
 //! The resolution is decoupled from any display width: the screen maps columns onto its
@@ -189,7 +189,7 @@ impl Profile {
     /// level is the **coarsest** one that still puts at least `target_px` columns inside
     /// that span — so the draw has a source column per pixel without walking more than
     /// ~`2·target_px`. Pure arithmetic over the cached pyramid: no geometry is read, so
-    /// this is cheap to call per detent.
+    /// this is cheap to call per step.
     pub fn window(&self, center_frac: f32, zoom: f32, target_px: u32) -> Window {
         let zoom = zoom.max(1.0);
         let span = (1.0 / zoom).min(1.0);

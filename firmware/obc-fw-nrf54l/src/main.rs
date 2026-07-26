@@ -31,10 +31,10 @@
 //! LED0 (P2_09) blinks once per drawn frame as a liveness heartbeat.
 //!
 //! ## Push-buttons (active-LOW, internal pull-up) — Zephyr `sw0..3`, the UI input
-//!   BTN0 P1_13 PREV | BTN1 P1_09 NEXT | BTN2 P1_08 BACK | BTN3 P0_04 SELECT
+//!   BTN0 P1_13 UP | BTN1 P1_09 DOWN | BTN2 P1_08 BACK | BTN3 P0_04 SELECT
 //! Map to obc-platform's board-agnostic `ButtonInput` debouncer → the shared gesture recogniser.
-//! Roles: BTN0/1 → encoder Turn∓1, BTN3 → encoder press/hold, BTN2 → Back/back-hold
-//! (`ButtonInput::new` order is prev, next, select, back). Read as plain **polled** `gpio::Input`
+//! Roles: BTN0/1 → Up/Down Step∓1, BTN3 → Select press/hold, BTN2 → Back/back-hold
+//! (`ButtonInput::new` order is up, down, select, back). Read as plain **polled** `gpio::Input`
 //! (the debouncer samples levels each loop — no GPIOTE async wait needed). They stay free because
 //! the display lives on P2 (below).
 //!
@@ -832,12 +832,12 @@ async fn main(_spawner: Spawner) {
         }
 
         // The four DK push-buttons (active-low, internal pull-up; polled by `ButtonInput`). User
-        // mapping: BTN0 PREV, BTN1 NEXT, BTN3 SELECT, BTN2 BACK — `new(prev, next, select, back)`.
+        // mapping: BTN0 UP, BTN1 DOWN, BTN3 SELECT, BTN2 BACK — `new(up, down, select, back)`.
         // Shared by both backends — their pins (P1.13/09/08, P0.04) clash with neither panel's bus.
         let buttons = ButtonInput::new(
-            Input::new(p.P1_26, Pull::Up), // BTN0 PREV   → Turn(-1)
-            Input::new(p.P1_09, Pull::Up), // BTN1 NEXT   → Turn(+1)
-            Input::new(p.P0_05, Pull::Up), // BTN3 SELECT → encoder press / hold
+            Input::new(p.P1_26, Pull::Up), // BTN0 UP     → Step(-1)
+            Input::new(p.P1_09, Pull::Up), // BTN1 DOWN   → Step(+1)
+            Input::new(p.P0_05, Pull::Up), // BTN3 SELECT → Select press / hold
             Input::new(p.P1_08, Pull::Up), // BTN2 BACK   → back / back-hold
         );
         // The high-priority plane(s) run at P3 — above thread mode (so they preempt the map render) and

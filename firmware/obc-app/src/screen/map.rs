@@ -5,7 +5,7 @@
 //! (stepping up above the chip while one is up), a low-battery cue in the top-left corner, and the
 //! pan HUD.
 //!
-//! Bindings depend on whether a ride is being tracked. Shared: `turn` = zoom, `hold` = enter Pan
+//! Bindings depend on whether a ride is being tracked. Shared: up/down = zoom, `hold` = enter Pan
 //! mode, `back-hold` = Ride menu. **Tracking** (the riding map): `press` = pause → Ride control, `back` =
 //! the sibling Statistics view. **Not tracking** (the route-less browse map, reached from the Menu's
 //! Map station): `press` = the start card, `back` = pop back to the Menu (there's no Statistics
@@ -35,7 +35,7 @@ use obc_ports::Fix;
 
 use super::{Ctx, Render, Screen, ScreenTick, StatisticsScreen, Transition};
 
-/// Zoom multiplier per encoder detent (matches the scroll-wheel feel).
+/// Zoom multiplier per Up/Down step (matches the scroll-wheel feel).
 const ZOOM_STEP: f32 = 1.2;
 /// Zoom clamps (pixels per microdegree-lat), same spirit as the sim's bounds.
 pub(crate) const MIN_ZOOM: f32 = 1e-6;
@@ -187,13 +187,13 @@ impl MapScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         // Pan mode is a sub-mode of the Map: while the shared camera holds a `pan`,
-        // the encoder/Back drive panning instead of the Follow bindings below.
+        // Select/Back drive panning instead of the Follow bindings below.
         if cx.state.pan.is_some() {
             return handle_pan(g, cx);
         }
         match g {
-            Gesture::Turn(n) => {
-                // Multiply per detent (no_std: no powf).
+            Gesture::Step(n) => {
+                // Multiply per step (no_std: no powf).
                 let step = if n >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
                 let mut z = cx.state.zoom;
                 for _ in 0..n.unsigned_abs() {
@@ -441,12 +441,12 @@ fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry
 }
 
 /// Pan-mode gesture bindings, active while [`AppState::pan`](crate::AppState::pan) is `Some`.
-/// `turn` pans along the active axis, `press` toggles the axis, `hold` flips north-up ↔ heading-up,
+/// Up/Down pans along the active axis, `press` toggles the axis, `hold` flips north-up ↔ heading-up,
 /// `back` recenters on the rider (staying in pan), `back-hold` exits to Follow. This deliberately
 /// overrides the global `back-hold` = Ride menu while panning — exit pan first to reach it.
 fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
-        Gesture::Turn(n) => cx.state.pan_step(n),
+        Gesture::Step(n) => cx.state.pan_step(n),
         Gesture::Press => cx.state.toggle_pan_axis(),
         Gesture::Hold => cx.state.toggle_pan_orientation(),
         Gesture::Back => cx.state.recenter_on_user(),
@@ -849,7 +849,7 @@ fn scale_label(dist: u32, units: Units) -> heapless::String<8> {
     s
 }
 
-/// Pan-mode HUD geometry — every tunable pixel size in one place. (The camera-travel-per-detent
+/// Pan-mode HUD geometry — every tunable pixel size in one place. (The camera-travel-per-step
 /// knob lives with the pan logic as [`crate::app::PAN_STEP_PX`].)
 mod hud {
     /// Active-axis chevron — an open, round-capped "Λ" caret: tip `REACH` ahead of the centre, back

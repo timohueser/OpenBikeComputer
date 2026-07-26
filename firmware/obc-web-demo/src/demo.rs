@@ -72,7 +72,7 @@ pub enum Cmd {
 }
 
 /// Parse one command string — the page-facing vocabulary (exact strings): `press`, `back`,
-/// `hold`, `backhold`, `turn:<n>` (signed detents), `play`, `pause`, `seek:<secs>`, `enter`,
+/// `hold`, `backhold`, `step:<n>` (signed Up/Down steps), `play`, `pause`, `seek:<secs>`, `enter`,
 /// `exit`, `ambient`. `None` for unknown or malformed input — the page can't crash the demo
 /// with a typo.
 pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
@@ -87,8 +87,8 @@ pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
         "exit" => Some(Cmd::Exit),
         "ambient" => Some(Cmd::Ambient),
         other => {
-            if let Some(n) = other.strip_prefix("turn:") {
-                n.trim().parse::<i32>().ok().map(|n| Cmd::Gesture(Gesture::Turn(n)))
+            if let Some(n) = other.strip_prefix("step:") {
+                n.trim().parse::<i32>().ok().map(|n| Cmd::Gesture(Gesture::Step(n)))
             } else if let Some(t) = other.strip_prefix("seek:") {
                 t.trim().parse::<f64>().ok().map(Cmd::Seek)
             } else {
@@ -140,7 +140,7 @@ pub struct Demo {
     frame: RgbaFrame,
     /// Page commands queued since the last [`tick`](Demo::tick), drained **in full, in order,
     /// once per tick** (not one-per-tick — a guided-tour step deliberately pushes several cmds in
-    /// one frame, e.g. `["turn:2", "press"]`, and relies on the app draining them in that order
+    /// one frame, e.g. `["step:2", "press"]`, and relies on the app draining them in that order
     /// within the single frame; one-per-tick would stall every multi-cmd step across extra frames
     /// and break that contract).
     ///
@@ -430,7 +430,7 @@ mod tests {
         d.cmd("ambient");
         d.tick(32.0);
         assert_eq!(d.state(), "Map", "ambient resets to the Map baseline");
-        for junk in ["", "prss", "turn:", "turn:x", "seek:", "seek:x", "hold ", "TURN:1"] {
+        for junk in ["", "prss", "step:", "step:x", "seek:", "seek:x", "hold ", "STEP:1"] {
             d.cmd(junk);
         }
         d.tick(48.0);

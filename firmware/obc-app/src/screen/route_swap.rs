@@ -93,7 +93,7 @@ impl RouteSwapScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, GUARDS.len()),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, GUARDS.len()),
             Gesture::Press => match self.selected {
                 // Swap only: keep the session (no `start_session`), just re-navigate.
                 SWAP => self.swap_route(cx),

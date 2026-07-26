@@ -129,17 +129,17 @@ impl PoiListScreen {
             // scratch `cx` carries, so once the query has run the count is known right here (it
             // wasn't when this screen was born, and wrapping over the 16-record cap left the
             // cursor walking phantom rows: on a shorter list the highlight sat "stuck" on the
-            // last row for the missing detents before wrapping — owner review round 2). Before
+            // last row for the missing steps before wrapping — owner review round 2). Before
             // the snapshot lands (first draw hasn't run / no fix yet) the list is empty and a
-            // detent is a no-op.
-            Gesture::Turn(n) => {
+            // step is a no-op.
+            Gesture::Step(n) => {
                 let len = if cx.poi_scratch.holds(self.category) { cx.poi_scratch.len() } else { 0 };
                 self.selected = self.selected.min(len.saturating_sub(1));
-                list::on_turn(&mut self.selected, n, len)
+                list::on_step(&mut self.selected, n, len)
             }
             // Open the detail screen for the highlighted POI (epic #439 P4 #444). The snapshot is
             // taken at draw, so it lives in the App-owned scratch `cx` carries read-only; clamp the
-            // selection to the real length (a turn can wrap past a short list). An empty scratch
+            // selection to the real length (a step can wrap past a short list). An empty scratch
             // (never drawn / no fix) ⇒ `get` is `None` ⇒ nothing to open, stay put.
             Gesture::Press => match cx.poi_scratch.get(self.selected.min(cx.poi_scratch.len().saturating_sub(1))) {
                 Some(poi) => Transition::Push(Screen::PoiDetail(PoiDetailScreen::new(poi.clone()))),
@@ -353,7 +353,7 @@ mod tests {
         scratch
     }
 
-    fn turn(scr: &mut PoiListScreen, scratch: &PoiScratch, n: i32) {
+    fn step(scr: &mut PoiListScreen, scratch: &PoiScratch, n: i32) {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
@@ -369,39 +369,39 @@ mod tests {
             sensor_scan_hits: &[],
             now_ms: 0,
         };
-        scr.handle(Gesture::Turn(n), &mut cx);
+        scr.handle(Gesture::Step(n), &mut cx);
     }
 
-    /// The turn wraps over the **real** snapshot count, not the 16-record cap: on a 5-result list
-    /// every detent moves exactly one real row and the wrap is immediate at both ends — no dead
-    /// detents on phantom rows past the last item (the pre-#678 bug the owner hit: the cursor
+    /// The step wraps over the **real** snapshot count, not the 16-record cap: on a 5-result list
+    /// every step moves exactly one real row and the wrap is immediate at both ends — no dead
+    /// steps on phantom rows past the last item (the pre-#678 bug the owner hit: the cursor
     /// walked the cap's empty slots and looked stuck on the last row).
     #[test]
     fn turn_wraps_over_the_real_count_not_the_cap() {
         let scratch = scratch_with(5);
         let mut scr = PoiListScreen::new(PoiCategory::Water);
-        // Ten forward detents from row 0 walk the 5 rows exactly twice — position after each is
+        // Ten forward steps from row 0 walk the 5 rows exactly twice — position after each is
         // deterministic, with the wrap firing straight past the last row.
         for (i, expected) in [1, 2, 3, 4, 0, 1, 2, 3, 4, 0].into_iter().enumerate() {
-            turn(&mut scr, &scratch, 1);
-            assert_eq!(scr.selected, expected, "detent {} lands on row {}", i + 1, expected);
+            step(&mut scr, &scratch, 1);
+            assert_eq!(scr.selected, expected, "step {} lands on row {}", i + 1, expected);
         }
         // Backward off the top wraps to the last *real* row, not slot 15.
-        turn(&mut scr, &scratch, -1);
+        step(&mut scr, &scratch, -1);
         assert_eq!(scr.selected, 4, "up from the top lands on the last real row");
     }
 
     /// Before the snapshot lands (no query yet, or the scratch holds another category) the list is
-    /// empty — a detent is a no-op, never a walk over the cap.
+    /// empty — a step is a no-op, never a walk over the cap.
     #[test]
     fn turn_before_the_snapshot_is_a_noop() {
         let empty = PoiScratch::new();
         let mut scr = PoiListScreen::new(PoiCategory::Water);
-        turn(&mut scr, &empty, 1);
+        step(&mut scr, &empty, 1);
         assert_eq!(scr.selected, 0, "no snapshot — the cursor stays put");
         let other = scratch_with(3); // a stale snapshot for a different category
         let mut scr = PoiListScreen::new(PoiCategory::Pharmacy);
-        turn(&mut scr, &other, 1);
+        step(&mut scr, &other, 1);
         assert_eq!(scr.selected, 0, "another category's snapshot doesn't count");
     }
 
@@ -449,7 +449,7 @@ mod tests {
         // 10° WEST of north wraps to… still octant 0 (nearest); 30° west snaps to octant 7.
         let w30 = (6_992_105, 43_010_000);
         assert_eq!(bearing_octant(pos, w30, 0.0), 7);
-        // A heading turn walks the octants: the 30°-east POI seen while heading 90° (east) sits
+        // A heading change walks the octants: the 30°-east POI seen while heading 90° (east) sits
         // 60° to the left ⇒ nearest step is −45° ⇒ octant 7.
         assert_eq!(bearing_octant(pos, ne, 90.0), 7);
     }

@@ -132,46 +132,46 @@ fn map_press_pauses_into_ride_control() {
 fn map_turn_zooms_in_place() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     let z0 = st.zoom;
-    let t = MapScreen::new().handle(Gesture::Turn(2), &mut ctx(&mut st, &mut act));
+    let t = MapScreen::new().handle(Gesture::Step(2), &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::None));
-    assert!(st.zoom > z0, "clockwise turn zooms in");
+    assert!(st.zoom > z0, "a Down step zooms in");
 }
 
-/// Map zoom is `×ZOOM_STEP` per detent, compounding — pins the per-detent multiply so a regression
+/// Map zoom is `×ZOOM_STEP` per step, compounding — pins the per-step multiply so a regression
 /// to an additive step is caught.
 #[test]
-fn map_turn_multiplies_zoom_per_detent() {
+fn map_turn_multiplies_zoom_per_step() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
-    MapScreen::new().handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
+    MapScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act));
     let one = st.zoom;
-    assert!(one > 1.0, "one detent zooms in past 1.0, got {one}");
-    MapScreen::new().handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
-    // The second detent multiplies again: zoom/one == one/1.0 (a constant ratio per detent).
-    assert!((st.zoom / one - one).abs() < 1e-3, "each detent is the same ×ratio, got {} then {}", one, st.zoom);
+    assert!(one > 1.0, "one step zooms in past 1.0, got {one}");
+    MapScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act));
+    // The second step multiplies again: zoom/one == one/1.0 (a constant ratio per step).
+    assert!((st.zoom / one - one).abs() < 1e-3, "each step is the same ×ratio, got {} then {}", one, st.zoom);
 }
 
-/// A huge forward turn saturates at `MAX_ZOOM` instead of overflowing to `inf` (a `Turn(1000)` would
+/// A huge forward step saturates at `MAX_ZOOM` instead of overflowing to `inf` (a `Step(1000)` would
 /// multiply `1.2^1000` straight to infinity).
 #[test]
 fn map_turn_saturates_at_max_zoom() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
-    MapScreen::new().handle(Gesture::Turn(1000), &mut ctx(&mut st, &mut act));
+    MapScreen::new().handle(Gesture::Step(1000), &mut ctx(&mut st, &mut act));
     let saturated = st.zoom;
-    assert!(saturated.is_finite(), "a huge turn must clamp, not overflow to inf, got {saturated}");
-    // A second huge turn can't push it any higher — it's pinned at the cap.
-    MapScreen::new().handle(Gesture::Turn(1000), &mut ctx(&mut st, &mut act));
+    assert!(saturated.is_finite(), "a huge step must clamp, not overflow to inf, got {saturated}");
+    // A second huge step can't push it any higher — it's pinned at the cap.
+    MapScreen::new().handle(Gesture::Step(1000), &mut ctx(&mut st, &mut act));
     assert_eq!(st.zoom, saturated, "already at MAX_ZOOM — further zoom-in is a no-op");
 }
 
-/// A huge backward turn saturates at `MIN_ZOOM` instead of underflowing toward 0 (which would invert
+/// A huge backward step saturates at `MIN_ZOOM` instead of underflowing toward 0 (which would invert
 /// / blank the view).
 #[test]
 fn map_turn_saturates_at_min_zoom() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
-    MapScreen::new().handle(Gesture::Turn(-1000), &mut ctx(&mut st, &mut act));
+    MapScreen::new().handle(Gesture::Step(-1000), &mut ctx(&mut st, &mut act));
     let saturated = st.zoom;
     assert!(saturated > 0.0, "min-zoom clamp keeps the scale positive, got {saturated}");
-    MapScreen::new().handle(Gesture::Turn(-1000), &mut ctx(&mut st, &mut act));
+    MapScreen::new().handle(Gesture::Step(-1000), &mut ctx(&mut st, &mut act));
     assert_eq!(st.zoom, saturated, "already at MIN_ZOOM — further zoom-out is a no-op");
 }
 
@@ -218,7 +218,7 @@ fn ride_menu_waypoints_navigation_preserves_session_and_returns_to_map() {
     app.apply_gesture(Gesture::Press); // north/default station = Waypoints
     assert!(matches!(app.top_screen(), Screen::RideWaypoints(_)));
 
-    for g in [Gesture::Turn(1), Gesture::Press, Gesture::Hold, Gesture::BackHold] {
+    for g in [Gesture::Step(1), Gesture::Press, Gesture::Hold, Gesture::BackHold] {
         app.apply_gesture(g);
         assert!(matches!(app.top_screen(), Screen::RideWaypoints(_)), "{g:?} stays in the MVP list");
         assert_eq!(app.activity.mode, Mode::Riding);
@@ -255,7 +255,7 @@ fn ride_control_back_resumes() {
 fn guarded_action_needs_a_completed_hold_not_a_press() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Paused));
     let mut rc = RideControl::new();
-    rc.handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act)); // move to Finish (guarded)
+    rc.handle(Gesture::Step(1), &mut ctx(&mut st, &mut act)); // move to Finish (guarded)
     assert!(rc.selection_is_guarded());
 
     // A press must NOT commit an irreversible action.
@@ -285,7 +285,7 @@ fn menu_back_returns_to_caller() {
     assert!(matches!(t, Transition::Pop));
 }
 
-/// The Menu's compass-needle sweep contract: a turn arms a per-frame wake, the sweep converges in
+/// The Menu's compass-needle sweep contract: a step arms a per-frame wake, the sweep converges in
 /// well under a second of ticks, and a settled menu is [`ScreenTick::idle`] — so a resting menu
 /// costs the event-driven host no timed repaints (the invariant
 /// `ms_until_next_wake_reports_the_home_minute_then_none_on_a_static_menu` also leans on).
@@ -295,9 +295,9 @@ fn menu_needle_sweep_arms_then_settles() {
     let mut m = MenuScreen::new();
     assert_eq!(m.tick_timers(0), ScreenTick::idle(), "a fresh menu has no animation pending");
 
-    m.handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
+    m.handle(Gesture::Step(1), &mut ctx(&mut st, &mut act));
     let t0 = m.tick_timers(1_000);
-    assert!(t0.next_wake_ms.is_some(), "a turn puts the sweep in flight");
+    assert!(t0.next_wake_ms.is_some(), "a step puts the sweep in flight");
 
     let mut now = 1_000;
     let mut settled = false;
@@ -324,9 +324,9 @@ fn home_press_and_back_hold_both_open_the_menu() {
     assert!(matches!(p, Transition::Push(Screen::Menu(_))), "press opens the Menu");
     let b = HomeScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
     assert!(matches!(b, Transition::Push(Screen::Menu(_))), "back-hold opens the Menu too");
-    // A turn on Home is ignored.
-    let t = HomeScreen::new().handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
-    assert!(matches!(t, Transition::None), "encoder turns on Home are ignored");
+    // A step on Home is ignored.
+    let t = HomeScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::None), "Up/Down steps on Home are ignored");
 }
 
 #[test]
@@ -342,7 +342,7 @@ fn route_menu_press_opens_the_overview_and_preloads_the_route() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
     let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
-    rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
+    rm.handle(Gesture::Step(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
     let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
     assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))), "picking opens the overview");
     assert_eq!(act.active_route, Some(1), "the pick preloads the route so the overview gets a profile");
@@ -390,7 +390,7 @@ fn route_menu_back_returns_to_caller() {
 
 #[test]
 fn route_menu_with_no_routes_ignores_press() {
-    // An empty catalog: press/turn are no-ops, so a routeless device can't "load" one.
+    // An empty catalog: press/step are no-ops, so a routeless device can't "load" one.
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
     let t = RouteMenuScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::None));
@@ -412,7 +412,7 @@ fn loading_a_different_route_mid_session_prompts() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
     let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
-    rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
+    rm.handle(Gesture::Step(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight route 1
     let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
     assert!(matches!(t, Transition::Push(Screen::RouteSwap(_))), "a different route mid-ride asks");
     assert_eq!(act.active_route, Some(0), "the prompt hasn't changed the route yet");
@@ -423,7 +423,7 @@ fn reselecting_the_active_route_mid_session_returns_to_the_map() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(1));
     let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
-    rm.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight the active route 1
+    rm.handle(Gesture::Step(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight the active route 1
     let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
     assert!(matches!(t, Transition::Root(Screen::Map(_))), "re-picking the active route just rides it");
 }
@@ -447,7 +447,7 @@ fn route_swap_save_and_new_saves_then_starts_a_fresh_session() {
     let before = act.session();
     let routes = test_routes();
     let mut rs = RouteSwapScreen::new(2);
-    rs.handle(Gesture::Turn(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight "Save & new"
+    rs.handle(Gesture::Step(1), &mut route_ctx(&mut st, &mut act, &routes)); // highlight "Save & new"
     assert!(rs.selection_is_guarded());
     // A press must not commit the guarded option — only a completed hold.
     let t = rs.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &routes));
@@ -468,7 +468,7 @@ fn ride_control_finish_saves_and_discard_discards() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
     act.mode = Mode::Paused;
     let mut rc = RideControl::new();
-    rc.handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act)); // → Finish
+    rc.handle(Gesture::Step(1), &mut ctx(&mut st, &mut act)); // → Finish
     let t = rc.handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::Home));
     assert_eq!(act.mode, Mode::Idle);
@@ -480,7 +480,7 @@ fn ride_control_finish_saves_and_discard_discards() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0));
     act.mode = Mode::Paused;
     let mut rc = RideControl::new();
-    rc.handle(Gesture::Turn(2), &mut ctx(&mut st, &mut act)); // → Discard
+    rc.handle(Gesture::Step(2), &mut ctx(&mut st, &mut act)); // → Discard
     let t = rc.handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::Home));
     assert!(!act.is_tracking());
@@ -630,7 +630,7 @@ fn rescan_follows_the_open_route_menu_selection() {
     app.set_routes_with_ids(&routes, &IDS3);
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // Menu → Route menu
-    app.apply_gesture(Gesture::Turn(1)); // highlight Beta
+    app.apply_gesture(Gesture::Step(1)); // highlight Beta
     app.set_routes_with_ids(&routes[1..], &IDS3[1..]); // Alpha deleted under the open menu
     app.apply_gesture(Gesture::Press); // open the highlighted route
     let active = app.active_route_index().expect("the overview loaded the highlighted route");
@@ -645,7 +645,7 @@ fn rescan_clamps_a_vanished_menu_selection() {
     app.set_routes_with_ids(&routes, &IDS3);
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // Menu → Route menu
-    app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (last row)
+    app.apply_gesture(Gesture::Step(2)); // highlight Gamma (last row)
     app.set_routes_with_ids(&routes[..2], &IDS3[..2]); // Gamma deleted
     app.apply_gesture(Gesture::Press); // open whatever is highlighted now
     let active = app.active_route_index().expect("a clamped highlight still opens a real route");
@@ -666,12 +666,12 @@ fn hold_delete_requests_the_highlighted_route_id() {
     app.set_routes_with_ids(&test_routes(), &IDS3); // ids 10, 20, 30
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // Menu → Route menu
-    app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
+    app.apply_gesture(Gesture::Step(1)); // highlight Beta (id 20)
     app.apply_gesture(Gesture::Press); // Beta → Route overview
     assert_eq!(took_route_delete(&mut app), None, "no request until the hold completes");
     app.apply_gesture(Gesture::Hold); // hold with START selected (the entry state) — round 2: no delete
     assert_eq!(took_route_delete(&mut app), None, "a hold with START selected records nothing");
-    app.apply_gesture(Gesture::Turn(1)); // cursor → the Delete row
+    app.apply_gesture(Gesture::Step(1)); // cursor → the Delete row
     app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = delete Beta
     assert_eq!(took_route_delete(&mut app), Some(20), "the hold recorded Beta's durable id, not its index");
     assert_eq!(took_route_delete(&mut app), None, "the one-shot drains");
@@ -687,7 +687,7 @@ fn deleting_a_non_highlighted_route_keeps_the_highlight_by_id() {
     app.set_routes_with_ids(&routes, &IDS3);
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // Menu → Route menu
-    app.apply_gesture(Gesture::Turn(1)); // highlight Beta (id 20)
+    app.apply_gesture(Gesture::Step(1)); // highlight Beta (id 20)
 
     // Simulate the host handling a delete of Alpha (a *different* route) — remove it and rescan.
     let keep = [routes[1].clone(), routes[2].clone()];
@@ -708,9 +708,9 @@ fn deleting_the_highlighted_route_moves_the_highlight_sanely() {
     app.set_routes_with_ids(&routes, &IDS3);
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // Menu → Route menu
-    app.apply_gesture(Gesture::Turn(2)); // highlight Gamma (id 30, last row)
+    app.apply_gesture(Gesture::Step(2)); // highlight Gamma (id 30, last row)
     app.apply_gesture(Gesture::Press); // Gamma → Route overview
-    app.apply_gesture(Gesture::Turn(1)); // cursor → the Delete row (round 2: no hold-anywhere)
+    app.apply_gesture(Gesture::Step(1)); // cursor → the Delete row (round 2: no hold-anywhere)
     app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = request its delete
     assert_eq!(took_route_delete(&mut app), Some(30));
 
@@ -734,9 +734,9 @@ fn app_with_pending_swap_on_gamma() -> App {
     assert_eq!(app.mode(), Mode::Riding);
     assert_eq!(app.active_route_index(), Some(0));
     app.apply_gesture(Gesture::BackHold); // Map → Ride menu (Waypoints selected)
-    app.apply_gesture(Gesture::Turn(3)); // → Routes station
+    app.apply_gesture(Gesture::Step(3)); // → Routes station
     app.apply_gesture(Gesture::Press); // Ride menu → Route menu
-    app.apply_gesture(Gesture::Turn(2)); // highlight Gamma
+    app.apply_gesture(Gesture::Step(2)); // highlight Gamma
     app.apply_gesture(Gesture::Press); // a different route mid-ride → the swap prompt
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "the swap prompt is up");
     app
@@ -781,11 +781,11 @@ fn take_store_changed_drains_the_pending_count() {
     assert_eq!(app.store_changed_pending(), 0, "drained");
 }
 
-/// Feed a single encoder press (down+up within the threshold) to the app.
+/// Feed a single Select press (down+up within the threshold) to the app.
 fn press(app: &mut App) {
     let mut s = keys(&[
-        InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
-        InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
+        InputEvent::Button(ButtonEvent::Down(Button::Select)),
+        InputEvent::Button(ButtonEvent::Up(Button::Select)),
     ]);
     app.handle_input(InputClock(0), &mut s);
 }
@@ -836,8 +836,8 @@ fn pausing_swaps_the_map_for_the_paused_page() {
 
     // A press (Down+Up within the threshold) pauses into the Paused page.
     let mut press = keys(&[
-        InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
-        InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
+        InputEvent::Button(ButtonEvent::Down(Button::Select)),
+        InputEvent::Button(ButtonEvent::Up(Button::Select)),
     ]);
     app.handle_input(InputClock(0), &mut press);
     assert_eq!(app.mode(), Mode::Paused, "press paused the ride");
@@ -876,17 +876,17 @@ fn pan_freezes_camera_against_fixes() {
     assert_eq!(st.user_fix.map(|f| (f.lon, f.lat)), Some((7000, 5000)), "but the fix is recorded");
 }
 
-/// `turn` moves the frozen camera along the active axis: a positive detent on a
+/// Up/Down moves the frozen camera along the active axis: a positive step on a
 /// north-up map pans up (+latitude), leaving longitude alone, and reversing returns
 /// to the start (within microdegree rounding).
 #[test]
 fn pan_turn_moves_camera_along_axis() {
     let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
     st.enter_pan(); // north-up (heading_up defaults false)
-    MapScreen::new().handle(Gesture::Turn(1), &mut ctx(&mut st, &mut act));
-    assert!(st.cam_lat > 0, "a positive detent pans up = +latitude");
+    MapScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act));
+    assert!(st.cam_lat > 0, "a positive step pans up = +latitude");
     assert_eq!(st.cam_lon, 0, "the vertical axis leaves longitude unchanged");
-    MapScreen::new().handle(Gesture::Turn(-1), &mut ctx(&mut st, &mut act));
+    MapScreen::new().handle(Gesture::Step(-1), &mut ctx(&mut st, &mut act));
     assert!(st.cam_lat.abs() <= 1 && st.cam_lon.abs() <= 1, "reversing returns to the start (±1 µdeg)");
 }
 
@@ -924,7 +924,7 @@ fn pan_back_recenters_and_back_hold_exits() {
     let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
     st.user_fix = Some(Fix::at(5000, 7000));
     st.enter_pan();
-    MapScreen::new().handle(Gesture::Turn(2), &mut ctx(&mut st, &mut act)); // pan away
+    MapScreen::new().handle(Gesture::Step(2), &mut ctx(&mut st, &mut act)); // pan away
     assert_ne!((st.cam_lon, st.cam_lat), (7000, 5000));
 
     let t = MapScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act));
@@ -958,16 +958,16 @@ fn bike_type_cycles_and_persists_across_reboot() {
 
     // Home → Menu → Settings → Ride → the Bike type row (the first row of the Ride group).
     app.apply_gesture(Gesture::BackHold); // → Menu
-    app.apply_gesture(Gesture::Turn(-1)); // compass: one ccw detent to Settings
+    app.apply_gesture(Gesture::Step(-1)); // compass: one ccw step to Settings
     app.apply_gesture(Gesture::Press); // → Settings list (Ride is the first row)
     app.apply_gesture(Gesture::Press); // → Ride screen (Bike type is the first row)
     app.apply_gesture(Gesture::Press); // → Bike type screen
     assert!(matches!(app.top_screen(), crate::Screen::BikeType(_)), "navigated to the Bike type screen");
 
-    // Two detents: Road → Gravel → MTB.
-    app.apply_gesture(Gesture::Turn(1));
-    app.apply_gesture(Gesture::Turn(1));
-    assert_eq!(app.settings().bike_profile_idx, 2, "two detents from Road land on MTB");
+    // Two steps: Road → Gravel → MTB.
+    app.apply_gesture(Gesture::Step(1));
+    app.apply_gesture(Gesture::Step(1));
+    assert_eq!(app.settings().bike_profile_idx, 2, "two steps from Road land on MTB");
 
     // The save is debounced to leaving the settings subtree (Bike type → Ride → Settings list → Menu).
     assert!(!settings_dirty(&mut app), "no save cue while still inside Settings");

@@ -78,7 +78,7 @@ impl NavConfirmScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
             Gesture::Press if self.selected == CREATE => {
                 // The request's start is the rider's fix. No position at all (never a fix this
                 // session) can't be routed — degrade to the generic failure tier rather than

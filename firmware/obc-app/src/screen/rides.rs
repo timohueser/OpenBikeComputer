@@ -71,7 +71,7 @@ impl RidesScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let len = cx.rides.len();
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, len),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, len),
             // Press opens the highlighted ride's detail (#680). `viewed_ride` keys the host's
             // track-profile fill — the detail's elevation band streams the ride's `RD{id}.ORD`
             // once while the page is up (the Route overview's `active_route` idiom).
@@ -282,7 +282,7 @@ mod tests {
         let rides = [summary("A", true), summary("B", false)];
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RidesScreen::new();
-        run(&mut scr, &mut act, &rides, Gesture::Turn(1)); // highlight row 1 ("B")
+        run(&mut scr, &mut act, &rides, Gesture::Step(1)); // highlight row 1 ("B")
         let t = run(&mut scr, &mut act, &rides, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::RideDetail(_))), "press pushes the Ride detail");
         assert_eq!(act.viewed_ride, Some(1), "the detail's track request is keyed on the pressed row");

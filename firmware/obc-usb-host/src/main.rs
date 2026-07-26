@@ -2,13 +2,13 @@
 //!
 //! Replays a recorded `.gpx` over the device's USB-CDC debug link as fake fixes, driving the same
 //! [`GpxPlayer`]/[`BaroSensor`] the simulator uses (deriving course/speed from motion, throttled to
-//! ~1 Hz). A compass slider sets the stopped heading, a button row injects encoder/Back input (taps
+//! ~1 Hz). A compass slider sets the stopped heading, a button row injects the four buttons' input (taps
 //! + holds) so the UI is drivable without the hardware, and a readout shows render-stats telemetry.
 //!
 //! Wire format (see `obc-platform::debug_link`): host→device `F <lat> <lon> <course|-> <speed|->`,
 //! `A <m>`, `C <deg>`, `H <bpm>` / `P <watts>` / `R <rpm>` (fake BLE sensor injection, epic #707
 //! SE8), `Z <mpp>` (set the map's exact meters-per-pixel — the render-benchmark hook), and input
-//! injection `K t <n>` / `K e <d|u>` / `K b <d|u>`; device→host
+//! injection `K t <n>` / `K s <d|u>` / `K b <d|u>`; device→host
 //! `T <frame_us> <lod> <feat_drawn> <feat_tried> <feat_dropped> <chunks> <hits> <misses> <reads>
 //! <bytes> <collect_us> <read_us> <sort_us> <draw_us> <overlay_us> <mpp_milli>` — the last six are
 //! the per-stage render breakdown + the frame's camera scale. ASCII, newline-terminated.
@@ -563,24 +563,24 @@ impl eframe::App for FeederApp {
             });
             ui.add_space(6.0);
 
-            // --- Input injection (drive the device's encoder + Back remotely) ---
+            // --- Input injection (drive the device's four buttons remotely) ---
             full_group(ui, |ui| {
-                ui.label(egui::RichText::new("Input (encoder + Back)").strong());
+                ui.label(egui::RichText::new("Input (Up/Down · Select · Back)").strong());
                 ui.add_enabled_ui(connected, |ui| {
                     ui.horizontal(|ui| {
-                        if ui.button("◀ Prev").clicked() {
+                        if ui.button("▲ Up").clicked() {
                             self.key("K t -1");
                         }
-                        if ui.button("Next ▶").clicked() {
+                        if ui.button("▼ Down").clicked() {
                             self.key("K t 1");
                         }
                     });
                     ui.horizontal(|ui| {
                         if ui.button("Select (tap)").clicked() {
-                            self.tap('e');
+                            self.tap('s');
                         }
                         if ui.button("Select (hold)").clicked() {
-                            self.hold('e');
+                            self.hold('s');
                         }
                     });
                     ui.horizontal(|ui| {

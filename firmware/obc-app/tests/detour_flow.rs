@@ -137,7 +137,7 @@ fn riding_app() -> (App, Vec<u8>) {
 /// Open the Detour chooser from the riding view.
 fn open_chooser(app: &mut App) {
     app.apply_gesture(Gesture::BackHold); // → ride menu
-    app.apply_gesture(Gesture::Turn(1)); // Waypoints → Detour
+    app.apply_gesture(Gesture::Step(1)); // Waypoints → Detour
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Detour(_)), "the Detour station opens the chooser");
 }
@@ -149,8 +149,8 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     let progress = app.activity.progress_m();
     open_chooser(&mut app);
 
-    // Chooser: two detents past the 600 m minimum, then Press → the planning spinner + request.
-    app.apply_gesture(Gesture::Turn(2));
+    // Chooser: two steps past the 600 m minimum, then Press → the planning spinner + request.
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "Press starts the plan flow");
     let cmds = drained(&mut app);
@@ -163,7 +163,7 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
         .expect("Press drains a PlanDetour request");
     assert_eq!(req.route, 0);
     assert_eq!(req.progress_m, progress, "the corridor anchor freezes at Press");
-    assert_eq!(req.target_m, progress + 800, "600 m minimum + two detents");
+    assert_eq!(req.target_m, progress + 800, "600 m minimum + two steps");
 
     // Host answers: preview polyline + figures → the preview screen with the cost line.
     app.set_detour_preview(&[(7_512_000, 43_501_000), (7_516_000, 43_501_000)]);
@@ -200,7 +200,7 @@ fn planning_back_cancels_and_failures_show_the_detour_tiers() {
     // Back on the spinner: pops to the chooser and drains the cancel (annihilating the plan).
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::Detour(_)), "cancel returns to the chooser, detents intact");
+    assert!(matches!(app.top_screen(), Screen::Detour(_)), "cancel returns to the chooser, steps intact");
     let cmds = drained(&mut app);
     assert!(cmds.iter().any(|c| matches!(c, HostCommand::CancelDetour)), "Back drains CancelDetour");
     assert!(!cmds.iter().any(|c| matches!(c, HostCommand::PlanDetour(_))), "the cancel annihilated the request");

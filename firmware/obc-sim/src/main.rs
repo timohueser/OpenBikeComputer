@@ -65,10 +65,10 @@ struct Args {
     /// Render the font/palette preview instead of the map. Needs no map.
     text_demo: bool,
     /// A gesture script applied before a headless `--png` render, to snapshot a specific
-    /// screen. Tokens (one char, spaces ignored): `r`/`l` = turn cw/ccw, `p` = press,
-    /// `h` = hold, `b` = back, `B` = back-hold, `H`/`M` = leave the encoder / Back held
-    /// partway (snapshots the in-flight long-press hint), `w` = wait ~800 ms so an
-    /// in-flight animation (the Menu needle sweep) settles before the snapshot.
+    /// screen. Tokens (one char, spaces ignored) mirror the four buttons: `d`/`u` = one Down /
+    /// Up step, `p` = press (Select), `h` = Select hold, `b` = back, `B` = back-hold, `H`/`M` =
+    /// leave Select / Back held partway (snapshots the in-flight long-press hint), `w` = wait
+    /// ~800 ms so an in-flight animation (the Menu needle sweep) settles before the snapshot.
     script: Option<String>,
     /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
     /// no route) instead of straight from the map.
@@ -735,14 +735,14 @@ fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
     app.handle_input(InputClock(now), &mut ScriptInput(events.into()));
 }
 
-/// Apply a gesture script (see `Args::script`) to `app`. Synthesizes the raw encoder/Back
+/// Apply a gesture script (see `Args::script`) to `app`. Synthesizes the raw four-button
 /// events with a rising clock — including the threshold crossing that turns a held button
 /// into a `Hold`/`BackHold` — exactly as the real recognizer would see them.
 ///
 /// `hook` runs the host-side effects a token asks for: [`ScriptHook::Render`] draws one throwaway
-/// headless frame against the current app state — the `d` token uses it to **flush lazy draw-time
+/// headless frame against the current app state — the `f` token uses it to **flush lazy draw-time
 /// state** that only fills at draw (the POI-list snapshot, then the detail's hours read), so a
-/// script can `p` into a POI *and then* `d p` to open its detail. Without a `d` the whole script
+/// script can `p` into a POI *and then* `f p` to open its detail. Without an `f` the whole script
 /// runs before the single final render, so lazy state never fills mid-script.
 /// [`ScriptHook::Tick`] runs one **route-aware tick** (the `T` token): the GUI ticks every frame,
 /// but the headless script path never does — so route-derived `Activity` state (`route_total_m`,
@@ -754,9 +754,9 @@ fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, Scri
     let hold = obc_app::DEFAULT_HOLD_MS;
     let mut now: u32 = 100;
 
-    // A turn detent: feed it, then nudge the clock.
-    let turn = |app: &mut App, now: &mut u32, dir: i32| {
-        feed(app, *now, vec![InputEvent::Turn(dir)]);
+    // One selection step: feed it, then nudge the clock.
+    let step = |app: &mut App, now: &mut u32, dir: i32| {
+        feed(app, *now, vec![InputEvent::Step(dir)]);
         *now += 30;
     };
     // A tap: down, then up 80 ms later (well under the long-press threshold).
@@ -785,13 +785,13 @@ fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, Scri
     for ch in script.chars() {
         match ch {
             ' ' => {}
-            'r' => turn(app, &mut now, 1),
-            'l' => turn(app, &mut now, -1),
-            'p' => tap(app, &mut now, Button::Encoder),
+            'd' => step(app, &mut now, 1),
+            'u' => step(app, &mut now, -1),
+            'p' => tap(app, &mut now, Button::Select),
             'b' => tap(app, &mut now, Button::Back),
-            'h' => press_hold(app, &mut now, Button::Encoder),
+            'h' => press_hold(app, &mut now, Button::Select),
             'B' => press_hold(app, &mut now, Button::Back),
-            'H' => partial_hold(app, &mut now, Button::Encoder),
+            'H' => partial_hold(app, &mut now, Button::Select),
             'M' => partial_hold(app, &mut now, Button::Back),
             // Settle: step the clock ~800 ms in animation-sized ticks (a sweep integrates a
             // dt-capped step per poll, so one big jump would leave it mid-flight) until any
@@ -805,15 +805,15 @@ fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, Scri
                 }
             }
             // Draw one throwaway frame to flush lazy draw-time state (the POI-list snapshot / the
-            // detail's hours read) so the next gesture sees it — e.g. `p d p` opens a POI list, fills
+            // detail's hours read) so the next gesture sees it — e.g. `p f p` opens a POI list, fills
             // its snapshot, then presses a POI into its detail.
-            'd' => hook(app, ScriptHook::Render),
+            'f' => hook(app, ScriptHook::Render),
             // One route-aware tick (see the fn doc): sync + open the active route and run the
             // once-per-load state builds the GUI's per-frame tick would have run.
             'T' => hook(app, ScriptHook::Tick),
             // Idle-elapse: jump the clock 5 min forward with no input and run one animation pass, so
             // the app-level idle-return timeout (Part B) fires deterministically for a snapshot —
-            // e.g. `B l p I` sits in Settings, elapses, and lands back on Home. Longer than every
+            // e.g. `B u p I` sits in Settings, elapses, and lands back on Home. Longer than every
             // configurable timeout (max 5 min), so it fires for any `Idle return` setting but Never.
             'I' => {
                 now += 5 * 60_000 + 1_000;
@@ -1198,8 +1198,8 @@ fn main() {
                 // Confirm (Install is the default selection) → the arm one-shot + the progress
                 // spinner. A tap: down, then up 80 ms later, well under the long-press threshold.
                 let now = 500_000u32;
-                feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Encoder))]);
-                feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Encoder))]);
+                feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Select))]);
+                feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Select))]);
                 // The board drain's terminal swap: spinner → the static "Installing update" card
                 // (the pre-reset frame), through the same `DfuInstallBegan` seam the device uses.
                 if args.dfu_installing {

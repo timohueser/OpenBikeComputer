@@ -39,7 +39,7 @@ impl PoiMenuScreen {
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         let len = PoiCategory::ALL.len();
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, len),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, len),
             Gesture::Press => {
                 let cat = PoiCategory::ALL[self.selected.min(len - 1)];
                 Transition::Push(Screen::PoiList(PoiListScreen::new(cat)))

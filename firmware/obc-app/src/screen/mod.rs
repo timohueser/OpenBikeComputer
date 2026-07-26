@@ -192,7 +192,7 @@ pub struct ActiveClimb<'a> {
 }
 
 /// Render context handed to [`Screen::draw`]: the read-only state plus the map
-/// `Reader`, the reusable `MapRenderer`, and the in-flight encoder hold-progress
+/// `Reader`, the reusable `MapRenderer`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a, 'd> {
     /// The streamed-map `Reader` — `None` when the base screen doesn't draw the map (a menu, the

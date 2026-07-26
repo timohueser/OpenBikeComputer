@@ -3,7 +3,7 @@
 //! - [`Buf`] — a recording `Rgb888` `DrawTarget` with per-test accessors ([`Buf::count`],
 //!   [`Buf::get`], [`Buf::edge_halves`]).
 //! - [`build_min_obcm`] — the minimal flat-backdrop `.obcm` builder.
-//! - The scripted hardware: [`Keys`] / [`keys`] / [`down`] / [`up`] / [`turn`] / [`tap`] inputs, and
+//! - The scripted hardware: [`Keys`] / [`keys`] / [`down`] / [`up`] / [`step`] / [`tap`] inputs, and
 //!   the [`LocationSource`] stand-ins [`ReplayFix`] (replay forever) vs [`OnceFix`] (emit once).
 //!
 //! `#[allow(dead_code)]` keeps unused-per-binary items from warning.
@@ -211,8 +211,8 @@ pub fn keys(evs: &[InputEvent]) -> Keys {
     Keys(evs.iter().copied().collect())
 }
 
-pub fn turn(n: i32) -> InputEvent {
-    InputEvent::Turn(n)
+pub fn step(n: i32) -> InputEvent {
+    InputEvent::Step(n)
 }
 pub fn down(b: Button) -> InputEvent {
     InputEvent::Button(ButtonEvent::Down(b))
@@ -220,7 +220,7 @@ pub fn down(b: Button) -> InputEvent {
 pub fn up(b: Button) -> InputEvent {
     InputEvent::Button(ButtonEvent::Up(b))
 }
-/// A tap (down then up within the hold threshold) → a `Press` (Encoder) or `Back` gesture.
+/// A tap (down then up within the hold threshold) → a `Press` (Select) or `Back` gesture.
 pub fn tap(b: Button) -> [InputEvent; 2] {
     [down(b), up(b)]
 }

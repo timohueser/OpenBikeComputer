@@ -8,7 +8,7 @@ use obc_app::{App, AppState, Button, Gesture, InputClock, InputEvent, InputPlane
 use obc_reader::BBox;
 
 mod common;
-use common::{down, keys, turn, up};
+use common::{down, keys, step, up};
 
 /// One minimal route summary so the Route menu has something to load.
 fn one_route() -> RouteSummary {
@@ -36,20 +36,20 @@ fn drive_split(app: &mut App, plane: &mut InputPlane, t: u32, evs: &[InputEvent]
 /// threshold so both `Hold` (enter pan) and `BackHold` (exit pan) fire through `gestures.tick`.
 fn script() -> Vec<(u32, Vec<InputEvent>)> {
     vec![
-        (0, vec![down(Button::Encoder)]),
-        (80, vec![up(Button::Encoder)]),     // Home press → Menu (Routes selected)
-        (200, vec![down(Button::Encoder)]),  //
-        (280, vec![up(Button::Encoder)]),    // press Routes → Route menu
-        (400, vec![turn(1)]),                // Map zoom in
-        (450, vec![turn(-1)]),               // Map zoom out
-        (600, vec![down(Button::Encoder)]),  // begin an encoder hold…
-        (800, vec![]),                       // …charging past the dead zone (overlay live)
-        (1200, vec![]),                      // crosses 500 ms → Hold fires → enter pan
-        (1260, vec![up(Button::Encoder)]),   // release (silent after the hold)
-        (1300, vec![turn(2)]),               // pan along the axis
-        (1340, vec![down(Button::Encoder)]), // encoder press in pan → toggle axis
-        (1380, vec![up(Button::Encoder)]),
-        (1400, vec![turn(-1)]),           // pan back
+        (0, vec![down(Button::Select)]),
+        (80, vec![up(Button::Select)]),     // Home press → Menu (Routes selected)
+        (200, vec![down(Button::Select)]),  //
+        (280, vec![up(Button::Select)]),    // press Routes → Route menu
+        (400, vec![step(1)]),               // Map zoom in
+        (450, vec![step(-1)]),              // Map zoom out
+        (600, vec![down(Button::Select)]),  // begin an Select hold…
+        (800, vec![]),                      // …charging past the dead zone (overlay live)
+        (1200, vec![]),                     // crosses 500 ms → Hold fires → enter pan
+        (1260, vec![up(Button::Select)]),   // release (silent after the hold)
+        (1300, vec![step(2)]),              // pan along the axis
+        (1340, vec![down(Button::Select)]), // Select press in pan → toggle axis
+        (1380, vec![up(Button::Select)]),
+        (1400, vec![step(-1)]),           // pan back
         (1500, vec![down(Button::Back)]), // begin a Back hold…
         (2100, vec![]),                   // …crosses 500 ms → BackHold → exit pan
         (2160, vec![up(Button::Back)]),   // release
@@ -95,12 +95,12 @@ fn split_path_matches_handle_input_state_and_map_dirty() {
 
 #[test]
 fn standalone_input_plane_recognizes_the_same_gestures_as_handle_input() {
-    // The recogniser is clock-driven, so a held encoder crossing 500 ms must yield `Hold` from
+    // The recogniser is clock-driven, so a held Select crossing 500 ms must yield `Hold` from
     // a standalone plane exactly as it does inside `App`.
     let mut plane = InputPlane::new();
     let mut got: Vec<Gesture> = Vec::new();
 
-    plane.recognize(InputClock(0), &mut keys(&[down(Button::Encoder)]), |g| got.push(g));
+    plane.recognize(InputClock(0), &mut keys(&[down(Button::Select)]), |g| got.push(g));
     assert!(got.is_empty(), "a bare button-down recognises nothing");
     plane.recognize(InputClock(300), &mut keys(&[]), |g| got.push(g));
     assert!(got.is_empty(), "still charging before the threshold");
@@ -109,10 +109,10 @@ fn standalone_input_plane_recognizes_the_same_gestures_as_handle_input() {
     plane.recognize(InputClock(600), &mut keys(&[]), |g| got.push(g));
     assert_eq!(got, vec![Gesture::Hold], "the long-press fires the instant it crosses 500 ms");
 
-    // A turn detent recognises immediately; a release after the hold is silent.
+    // A step recognises immediately; a release after the hold is silent.
     got.clear();
-    plane.recognize(InputClock(620), &mut keys(&[turn(3), up(Button::Encoder)]), |g| got.push(g));
-    assert_eq!(got, vec![Gesture::Turn(3)], "turn fires immediately; the post-hold release is silent");
+    plane.recognize(InputClock(620), &mut keys(&[step(3), up(Button::Select)]), |g| got.push(g));
+    assert_eq!(got, vec![Gesture::Step(3)], "the step fires immediately; the post-hold release is silent");
 }
 
 /// `recognize` drains the whole frame's input, emitting one gesture per event in arrival order. Pins
@@ -123,16 +123,16 @@ fn multiple_events_in_one_poll_all_fire_in_order() {
     let mut plane = InputPlane::new();
     let mut got: Vec<Gesture> = Vec::new();
 
-    // One frame's worth: two zoom detents, a reverse detent, then a quick encoder tap
+    // One frame's worth: two zoom steps, a reverse step, then a quick Select tap
     // (down+up under the hold threshold → a single `Press`), all in one poll batch.
     plane.recognize(
         InputClock(1000),
-        &mut keys(&[turn(1), turn(2), turn(-1), down(Button::Encoder), up(Button::Encoder)]),
+        &mut keys(&[step(1), step(2), step(-1), down(Button::Select), up(Button::Select)]),
         |g| got.push(g),
     );
     assert_eq!(
         got,
-        vec![Gesture::Turn(1), Gesture::Turn(2), Gesture::Turn(-1), Gesture::Press],
+        vec![Gesture::Step(1), Gesture::Step(2), Gesture::Step(-1), Gesture::Press],
         "every queued event surfaces once, in arrival order, from a single frame"
     );
 }

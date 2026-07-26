@@ -51,7 +51,7 @@ use crate::ls021_flpr::{relaunch_flpr, Frame64, Ls021Flpr};
 // The hold-bulge's right-edge overlay **columns**. Both bulges erupt from the right screen edge ≤12 px
 // deep, so this fixed 16-px column band bounds them with margin. The map plane re-presents the bulge
 // through the presenter's `present_overlay` over the clean framebuffer, addressing only the live
-// bulge's *rows* (`InputPlane::overlay_rows`: encoder ≈ 59–171, Back ≈ 182–246) — the FLPR the
+// bulge's *rows* (`InputPlane::overlay_rows`: Select ≈ 59–171, Back ≈ 182–246) — the FLPR the
 // full-width rows of that span (the presenter has its own `MAX_OVERLAY_*` scratch bound).
 /// First overlay column: the rightmost 16 px (bulge depth ≤12 + margin).
 const OVL_X0: u16 = (FRAME_W - 16) as u16;
@@ -139,12 +139,12 @@ impl MapDisplay {
         })
     }
 
-    /// The live encoder hold-progress from the shared input plane (0.0–1.0). Fed to the map render
+    /// The live Select hold-progress from the shared input plane (0.0–1.0). Fed to the map render
     /// so the in-screen confirm fills (the factory-Reset bar) track the hold — `App`'s own input
     /// plane isn't driven on the two-plane firmware, so without this the bar never fills.
     #[inline(always)]
     pub(crate) fn hold_progress(&self) -> f32 {
-        self.input_plane.lock(|c| c.borrow().encoder_hold_progress())
+        self.input_plane.lock(|c| c.borrow().select_hold_progress())
     }
 
     /// Whether a hold is **charging** right now — either button down, its long-press not yet fired.
@@ -154,7 +154,7 @@ impl MapDisplay {
     pub(crate) fn hold_charging(&self) -> bool {
         self.input_plane.lock(|c| {
             let p = c.borrow();
-            p.encoder_hold_progress() > 0.0 || p.back_hold_progress() > 0.0
+            p.select_hold_progress() > 0.0 || p.back_hold_progress() > 0.0
         })
     }
 

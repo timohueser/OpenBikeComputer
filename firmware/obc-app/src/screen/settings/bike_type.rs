@@ -2,7 +2,7 @@
 //! (routing-v2 N5, epic #533). The choice is a bare **index** into the loaded map's §8.6 profile
 //! table ([`Settings::bike_profile_idx`](crate::Settings)); this screen cycles it through the map's
 //! profile **names** ([`NavProfiles`](crate::NavProfiles)), so a custom web-builder profile shows up
-//! automatically — no hardcoded list. A single value row that a press or a turn steps in place, like
+//! automatically — no hardcoded list. A single value row that a press or a step walks in place, like
 //! the Units screen, only over N names instead of two.
 //!
 //! Inert without a map: an `ble` image ships without the router, and a fresh boot has no map loaded,
@@ -40,10 +40,10 @@ impl BikeTypeScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // A turn browses the loaded map's profile names, wrapping at both ends. A no-op when the
+            // A step browses the loaded map's profile names, wrapping at both ends. A no-op when the
             // map carries zero or one profile — nothing to cycle to — so a router-less / no-map
             // device just leaves the index at 0.
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 let count = cx.nav_profiles.len();
                 if count > 1 {
                     let cur = cx.settings.bike_profile_idx as i32;
@@ -143,7 +143,7 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// A turn cycles the index through the map's profiles, wrapping at both ends; Select and Back
+    /// A step cycles the index through the map's profiles, wrapping at both ends; Select and Back
     /// both close the screen and a Select does **not** advance the selection (the browse-then-confirm
     /// model — the edits are already live).
     #[test]
@@ -152,13 +152,13 @@ mod tests {
         let mut s = Settings::default();
         let mut scr = BikeTypeScreen::new();
         assert_eq!(s.bike_profile_idx, 0, "defaults to profile 0");
-        run(&mut scr, &mut s, &profs, Gesture::Turn(1));
-        assert_eq!(s.bike_profile_idx, 1, "a turn steps forward one detent");
-        run(&mut scr, &mut s, &profs, Gesture::Turn(2));
-        assert_eq!(s.bike_profile_idx, 3, "a turn walks by its detents");
-        run(&mut scr, &mut s, &profs, Gesture::Turn(1));
+        run(&mut scr, &mut s, &profs, Gesture::Step(1));
+        assert_eq!(s.bike_profile_idx, 1, "a step moves forward one profile");
+        run(&mut scr, &mut s, &profs, Gesture::Step(2));
+        assert_eq!(s.bike_profile_idx, 3, "a multi-step move walks by its count");
+        run(&mut scr, &mut s, &profs, Gesture::Step(1));
         assert_eq!(s.bike_profile_idx, 0, "wraps past the last profile");
-        run(&mut scr, &mut s, &profs, Gesture::Turn(-1));
+        run(&mut scr, &mut s, &profs, Gesture::Step(-1));
         assert_eq!(s.bike_profile_idx, 3, "and back past the first");
 
         // Select closes the screen without changing the browsed selection.
@@ -169,7 +169,7 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, &profs, Gesture::Back), Transition::Pop));
     }
 
-    /// With zero or one profile there is nothing to cycle to — a turn is a no-op (the inert
+    /// With zero or one profile there is nothing to cycle to — a step is a no-op (the inert
     /// no-map / single-profile case; "no behavior change when the map has exactly one profile").
     #[test]
     fn single_or_no_profile_is_inert() {
@@ -177,12 +177,12 @@ mod tests {
 
         let none = profiles(&[]);
         let mut s = Settings::default();
-        run(&mut scr, &mut s, &none, Gesture::Turn(3));
-        assert_eq!(s.bike_profile_idx, 0, "no profiles → a turn is a no-op");
+        run(&mut scr, &mut s, &none, Gesture::Step(3));
+        assert_eq!(s.bike_profile_idx, 0, "no profiles → a step is a no-op");
 
         let one = profiles(&["Road"]);
         let mut s = Settings::default();
-        run(&mut scr, &mut s, &one, Gesture::Turn(5));
+        run(&mut scr, &mut s, &one, Gesture::Step(5));
         assert_eq!(s.bike_profile_idx, 0, "a single profile has nowhere to step");
     }
 }

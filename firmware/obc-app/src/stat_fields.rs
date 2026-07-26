@@ -1188,7 +1188,7 @@ mod tests {
         assert_eq!(l.as_slice()[2], StatField::WaypointList);
     }
 
-    /// A single stepping past the panel hops the whole panel in one detent, keeping its order
+    /// A single stepping past the panel hops the whole panel in one step, keeping its order
     /// relative to the other singles (the panel moves as one page-sized unit, not something to land
     /// inside).
     #[test]
