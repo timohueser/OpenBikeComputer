@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-26T09:00:00Z",
+  "presets": [
+    {
+      "id": "default",
+      "name": "Bikepacking",
+      "description": "The full touring map: roads by class, trails and cycleways, rail, water, forests and landuse.",
+      "version": 3,
+      "preview": "previews/default.png"
+    },
+    {
+      "id": "minimal",
+      "name": "Minimal",
+      "description": "The big picture: major roads, rail, rivers and lakes. Small files, fast builds.",
+      "version": 2
+    }
+  ],
+  "artifacts": [
+    {
+      "region_id": "europe/monaco",
+      "region_name": "Monaco",
+      "preset_id": "default",
+      "preset_version": 3,
+      "obcm_version": 10,
+      "bytes": 168,
+      "sha256": "bb1e01529478f3da53f0ec3c9bc0e512ba8bdf60590c46acddaca6195036d611",
+      "bbox": {
+        "min_lat": 43724355,
+        "min_lon": 7409055,
+        "max_lat": 43751930,
+        "max_lon": 7439812
+      },
+      "built_at": "2026-07-20T02:44:19Z",
+      "source_snapshot": "2026-07-19",
+      "url": "https://maps.example.org/catalog/v1/regions/europe/monaco/default.obcm"
+    },
+    {
+      "region_id": "europe/monaco",
+      "region_name": "Monaco",
+      "preset_id": "minimal",
+      "preset_version": 2,
+      "obcm_version": 10,
+      "bytes": 104,
+      "sha256": "f3dd3e0cfc3e412a611ca526d564a3ee7a64c7e4e6c4a5a4066b71f7ca3f41cb",
+      "bbox": {
+        "min_lat": 43724355,
+        "min_lon": 7409055,
+        "max_lat": 43751930,
+        "max_lon": 7439812
+      },
+      "built_at": "2026-07-20T02:44:41Z",
+      "source_snapshot": "2026-07-19",
+      "url": "https://maps.example.org/catalog/v1/regions/europe/monaco/minimal.obcm"
+    },
+    {
+      "region_id": "europe/switzerland",
+      "region_name": "Switzerland",
+      "preset_id": "default",
+      "preset_version": 3,
+      "obcm_version": 10,
+      "bytes": 1064,
+      "sha256": "a59ad4a57fdd31408eaf356ad42eb5de7cefcf2b7e125d9f71349251e3303a00",
+      "bbox": {
+        "min_lat": 45817995,
+        "min_lon": 5955911,
+        "max_lat": 47808455,
+        "max_lon": 10492294
+      },
+      "built_at": "2026-07-20T02:14:07Z",
+      "source_snapshot": "2026-07-19",
+      "url": "https://maps.example.org/catalog/v1/regions/europe/switzerland/default.obcm"
+    },
+    {
+      "region_id": "europe/switzerland",
+      "region_name": "Switzerland",
+      "preset_id": "minimal",
+      "preset_version": 2,
+      "obcm_version": 10,
+      "bytes": 552,
+      "sha256": "a4c262895addc86c1541c32ccc6d75a1a5111c6628ee3c516ce6c50c08b247cb",
+      "bbox": {
+        "min_lat": 45817995,
+        "min_lon": 5955911,
+        "max_lat": 47808455,
+        "max_lon": 10492294
+      },
+      "built_at": "2026-07-20T02:31:55Z",
+      "source_snapshot": "2026-07-19",
+      "url": "https://maps.example.org/catalog/v1/regions/europe/switzerland/minimal.obcm"
+    },
+    {
+      "region_id": "europe/switzerland/ticino",
+      "region_name": "Ticino",
+      "preset_id": "default",
+      "preset_version": 3,
+      "obcm_version": 10,
+      "bytes": 296,
+      "sha256": "801c8ba7319b50232d704b1b7ee6761c6186dd652da78c1633ea29aa8b934da5",
+      "bbox": {
+        "min_lat": 45817995,
+        "min_lon": 8380000,
+        "max_lat": 46630000,
+        "max_lon": 9170000
+      },
+      "built_at": "2026-07-20T02:41:02Z",
+      "source_snapshot": "2026-07-19",
+      "url": "https://maps.example.org/catalog/v1/regions/europe/switzerland/ticino/default.obcm"
+    }
+  ]
+}
