@@ -278,7 +278,7 @@
        Decorative twins of the real controls underneath — they sink in when the matching
        control does. UP/DOWN sit on the left, SELECT/BACK on the right, at matching heights. */
     .side {
-      position: absolute; width: 12px; height: 12.5%;
+      position: absolute; width: 12px; height: 14%;
       background: #2b2f36;
       background-image:
         repeating-linear-gradient(180deg, rgba(0,0,0,0.30) 0 1px, transparent 1px 4px),
@@ -289,9 +289,9 @@
     .side-l { left: -12px; border-radius: 6px 0 0 6px; }
     .side-r { right: -12px; border-radius: 0 6px 6px 0; }
     /* The pair straddles the body's vertical midpoint, as on the real device:
-       50% − (pad + gap/2) and 50% + gap/2, with pad 12.5% and gap 4.5%. */
-    .side-up, .side-select { top: 35.25%; }
-    .side-down, .side-back { top: 52.25%; }
+       50% − (pad + gap/2) and 50% + gap/2, with pad 14% and gap 4.7%. */
+    .side-up, .side-select { top: 33.65%; }
+    .side-down, .side-back { top: 52.35%; }
     /* A press sinks the pad into the body — so the direction flips with the flank. */
     .side-l.pressed { transform: translateX(3px); background-color: #1f2229; }
     .side-l.held { transform: translateX(4px); background-color: #171a20; }
