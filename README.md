@@ -221,13 +221,33 @@ Vite proxies `/api` to port 8000.
 
 The same Svelte source builds for three hosts, chosen by Vite mode (issue #895).
 `npm run build` is the local FastAPI one described above and the only one the
-Python server mounts; the other two have no back end yet:
+Python server mounts:
 
 | Script | Host | Output |
 | :-- | :-- | :-- |
 | `npm run build` | the local FastAPI dev server | `packer/web_builder/static/dist/` |
 | `npm run build:web` | the static hosted site (no backend) | `frontend/dist/web/` |
 | `npm run build:desktop` | the Tauri desktop app | `frontend/dist/desktop/` |
+
+The static host has no API to call, so it reads two files instead: `regions.json`
+(the trimmed Geofabrik index the picker draws — the same document `/api/regions`
+returns) and `catalog.json` (the [OBCC](OBCC_Spec.md) manifest of pre-baked maps,
+produced by `obc-pack catalog`). Both default to `./data/` beside the app;
+`VITE_DATA_BASE` and `VITE_CATALOG_URL` move them. To run that host locally:
+
+```sh
+# regions.json — needs the packer venv (Geofabrik index + shapely)
+.venv/bin/python -m packer.web_builder.static_data \
+    --out packer/web_builder/frontend/public/data
+
+# catalog.json — from a bake tree (OBCC_Spec.md §8), pointed at where it is served
+firmware/target/release/obc-pack catalog <bake-tree> \
+    --base-url http://localhost:5173/data
+
+cd packer/web_builder/frontend && npm run dev -- --mode web
+```
+
+The desktop host has no back end yet (D1, #906).
 
 All of them — and `npm run check` and `npm test` — need the wasm conversion
 bridge built once first (`npm run build:wasm`, which wants a Rust toolchain and
