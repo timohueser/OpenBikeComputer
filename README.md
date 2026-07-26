@@ -152,11 +152,18 @@ obc-pack catalog <bake-tree> --base-url … --out -   # print instead, for inspe
 obc-pack schema --catalog                           # the manifest's JSON Schema
 ```
 
-The tree is self-describing — `presets/<id>.json` (the exact packer config used) and
-`regions/<a>/<b>/<preset>.obcm` next to a small `<preset>.obcm.json` sidecar carrying
-the region name, build time and Geofabrik snapshot date. Everything else is read out
-of the artifact bytes, including the **OBCM version**, which is what lets a consumer
-refuse a map a device can't read before downloading a few hundred megabytes.
+The tree is self-describing — `presets/<id>.json` (the preset's current definition) and
+`regions/<a>/<b>/<preset>.obcm` next to a small `<preset>.obcm.json` sidecar. The
+sidecar records what the *bake* knew and the bytes can't state: region name, the preset
+version it was packed with, build time, and the Geofabrik snapshot date. Everything
+else is read out of the artifact itself, including the **OBCM version**, which is what
+lets a consumer refuse a map a device can't read before downloading a few hundred
+megabytes.
+
+Nothing in the sidecar is re-derived at generation time, which is what lets the manifest
+stay honest across a *partial* re-bake: restyle one preset, re-bake half the regions,
+and the untouched artifacts keep reporting the version they were actually built with
+instead of being relabelled with the new one.
 
 The manifest layout, the sidecar, and the version law (an OBCM bump invalidates every
 baked artifact) are normative in [`OBCC_Spec.md`](OBCC_Spec.md); pass
