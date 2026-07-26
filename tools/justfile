@@ -228,6 +228,12 @@ desktop *args:
 # Builds it, writes regions.json beside it, and serves on :4173. Args: [PORT].
 # A catalog.json is the bakery's output (B1 #898); without one the site says so and
 # shows no styles — that is OBCC_Spec.md §7 refusing a manifest it hasn't got, not a bug.
+# Point it at a real one with OBC_CATALOG_URL=… (the deploy passes the same value as
+# VITE_CATALOG_URL from a repository variable — .github/workflows/deploy-site.yml).
+# Two deliberate differences from the deploy: this mounts the builder at the server
+# root rather than at /builder/ (nothing else is being served beside it), and it leaves
+# VITE_SITE_BASE unset, so the Docs/Home links point at the published site instead of
+# at siblings that aren't here.
 # Build & serve the static hosted tier (no backend) on :4173. Args: [PORT]
 site *args:
     #!/usr/bin/env bash
@@ -239,7 +245,7 @@ site *args:
     [[ -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" ]] || \
       { _say "building the wasm convert bridge…"; ( cd "$fe" && _run npm run build:wasm ); }
     _say "building the static web tier…"
-    ( cd "$fe" && _run npm run build:web )
+    ( cd "$fe" && export VITE_CATALOG_URL="${OBC_CATALOG_URL:-}" && _run npm run build:web )
     cd "$OBC_ROOT"
     if [[ ! -x .venv/bin/python ]]; then
       _say "creating .venv + installing packer deps…"
@@ -248,7 +254,7 @@ site *args:
       _run .venv/bin/pip install -q -r packer/requirements.txt
     fi
     # The Geofabrik index the picker draws. The FastAPI host computes it per request;
-    # a site with no backend needs it as a file (C6 #905 wires this into the deploy).
+    # a site with no backend needs it as a file — the deploy runs this same module.
     _run .venv/bin/python -m packer.web_builder.static_data --out "$fe/dist/web/data"
     _say "serving http://localhost:$port  (Ctrl-C to stop)"
     # Absolute interpreter + `--directory`, not `cd` + a relative `.venv/bin/python`: the relative
