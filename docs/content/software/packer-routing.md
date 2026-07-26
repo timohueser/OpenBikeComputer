@@ -54,7 +54,7 @@ The pipeline is a straight line from an `.osm.pbf` extract to a finished `.obcm`
   <rect class="d-panel" x="772" y="104" width="40" height="32" rx="5" style="fill:#e7ead8" />
   <text class="d-sub" x="792" y="124" text-anchor="middle" style="font-size:9px">.obcm</text>
 </svg>
-<figcaption>Inputs are merged (via <code>osmium</code>) only when there's more than one. Each LOD tier is built and streamed to disk before the next begins, so peak memory is roughly <i>one</i> tier's quadtree rather than the whole pyramid plus the output — the same "never resident if it doesn't have to be" instinct the device's reader uses.</figcaption>
+<figcaption>Inputs are merged (via <code>osmium</code>) only when there's more than one; a single input needs no external tool, even when it's <a href="#cropping-to-a-box">cropped to a box</a>. Each LOD tier is built and streamed to disk before the next begins, so peak memory is roughly <i>one</i> tier's quadtree rather than the whole pyramid plus the output — the same "never resident if it doesn't have to be" instinct the device's reader uses.</figcaption>
 </figure>
 
 ### Styling: first match wins
@@ -123,7 +123,7 @@ Within a `tag_key`, the value `"*"` is a **catch-all**: an exact value match sti
 
 ### Ingest: two passes, then assemble
 
-OSM is nodes, ways and relations, stored in that order. The ingester reads the `.pbf` twice. **Pass 1** builds a `node id → coordinate` store and notes which *area relations* exist (lakes-with-islands, multi-part forests). **Pass 2** turns ways into lines and polygons — and captures the geometry of any way a relation needs. Then each relation's member ways are assembled into a polygon-with-holes.
+OSM is nodes, ways and relations, stored in that order. The ingester reads the `.pbf` twice. **Pass 1** builds a `node id → coordinate` store and notes which *area relations* exist (lakes-with-islands, multi-part forests). **Pass 2** turns ways into lines and polygons — and captures the geometry of any way a relation needs. Then each relation's member ways are assembled into a polygon-with-holes. (Cropping to a box adds a third pass in front of these — [below](#cropping-to-a-box).)
 
 <figure class="fig">
 <svg viewBox="0 0 720 280" role="img" aria-label="Ingest in two passes. Pass 1 reads the pbf into a node store and collects area relations. Pass 2 turns ways into lines and closed-way polygons and coastlines, capturing member geometry. Then relation member ways are assembled via build_area into a polygon with a hole — a lake with an island.">
@@ -170,6 +170,18 @@ OSM is nodes, ways and relations, stored in that order. The ingester reads the `
 </svg>
 <figcaption>Relations are assembled with GEOS <code>build_area</code>, which sorts member rings into outers and holes by geometry — so a lake with an island comes out as a polygon with one interior ring, ready for the <a href="../formats/#features-an-anchor-then-deltas">holes encoding</a>. A closed way is a polygon only if its tags say it encloses an area; a closed <code>highway</code> loop stays a line, never also a filled blob.</figcaption>
 </figure>
+
+### Cropping to a box
+
+You rarely want a whole country. `--bbox W,S,E,N` crops the source **during ingest**, in a **pass 0** that reads only ids: the nodes inside the box, the ways touching one of them, and — the part that matters — the nodes those ways still need *outside* the box.
+
+That last clause is the whole design. The naive filter is "drop everything outside the box", and it fails in a way you'd only notice on the road. A way that leaves the box would be missing node positions, and the ingester drops a way it cannot fully resolve rather than guess at half of it — so every road crossing the boundary would vanish back to its last node inside. The map would fray inwards from its own edge, and the [navigation graph](#building-the-navigation-graph) would lose real exits: not a road drawn short, an exit the router doesn't know exists.
+
+So a way is kept **whole** or not at all. An edge ends where the *way* ends, a little outside the box, rather than at an arbitrary vertex on the box edge — no phantom junction, no invented dead-end at the border. Relations follow the same all-or-nothing rule they already follow: one member way missing and the relation is dropped, never assembled from the survivors into a shape that was never there.
+
+Two consequences worth expecting. The finished map's header bounding box is always a little **wider** than the box you asked for, because it's measured from the packed content and complete ways stick out — which is why an extract box must never be re-derived from a packed map's header, or it ratchets outward on every re-pack. And peak memory tracks the *box*, not the source file: the id sets and the coordinate store only ever hold what the box selected, so cropping a 500 MB country costs about what packing the resulting small map costs.
+
+This is exactly the strategy [`osmium extract`](https://osmcode.org/osmium-tool/) calls `complete_ways`, and it's deliberately the same one — down to the integer grid the edge test runs on — so the packer needed to grow a crop rather than the toolchain needing to grow a second C++ dependency.
 
 ### Land and sea
 
@@ -587,7 +599,7 @@ That this is the *same* quadtree the device walks closes the loop with the other
 
 ### The web builder
 
-Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a drawn box the sources are cropped to), pick a style, build, download. Three ideas shape it:
+Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a [drawn box](#cropping-to-a-box) the sources are cropped to), pick a style, build, download. Three ideas shape it:
 
 - **Presets over knobs.** The main page offers complete style presets — Bikepacking, Minimal, High detail — each a full packer config shipped in [`packer/presets/`](src:packer/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
 - **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the web server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten.
