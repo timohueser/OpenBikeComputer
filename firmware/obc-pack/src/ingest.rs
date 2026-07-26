@@ -243,23 +243,29 @@ impl Crop {
 /// and the outside nodes those ways still need.
 ///
 /// One sweep suffices because a PBF is type-sorted (nodes, then ways, then
-/// relations) — the same property pass 1 already relies on to see relations after
-/// nodes. The node set is frozen when the first way arrives.
+/// relations), so the node set is complete — and can be frozen — the moment the
+/// first way arrives. Passes 1 and 2 don't care about order (they are separate
+/// reads and relations only carry ids), so this is the one place that does; a
+/// node arriving *after* a way therefore has to be an error rather than a
+/// quietly wrong crop.
 fn select_crop(pbf_path: &str, bbox: Bbox) -> Result<Crop, String> {
     println!("Pass 0: selecting bbox...");
     let mut inside = IdSet::default();
     let mut halo = IdSet::default();
     let mut ways = IdSet::default();
     let mut nodes_done = false;
+    let mut out_of_order = false;
     ElementReader::from_path(pbf_path)
         .map_err(|e| format!("open {pbf_path}: {e}"))?
         .for_each(|el| match el {
             Element::Node(n) => {
+                out_of_order |= nodes_done;
                 if bbox.contains(n.decimicro_lon(), n.decimicro_lat()) {
                     inside.insert(n.id());
                 }
             }
             Element::DenseNode(n) => {
+                out_of_order |= nodes_done;
                 if bbox.contains(n.decimicro_lon(), n.decimicro_lat()) {
                     inside.insert(n.id());
                 }
@@ -284,6 +290,12 @@ fn select_crop(pbf_path: &str, bbox: Bbox) -> Result<Crop, String> {
             Element::Relation(_) => {}
         })
         .map_err(|e| format!("pass 0 {pbf_path}: {e}"))?;
+    if out_of_order {
+        return Err(format!(
+            "{pbf_path} is not sorted (a node follows a way), so --bbox cannot select ways in one pass — sort it \
+             first with `osmium sort`"
+        ));
+    }
     // A file with no ways at all never hit the way branch.
     if !nodes_done {
         inside.freeze();
@@ -777,6 +789,32 @@ mod tests {
             panic!("a box off in the Mediterranean must not ingest");
         };
         assert!(err.contains("does not overlap"), "unexpected message: {err}");
+    }
+
+    /// Pass 0 is the one place that needs the PBF type-sorted, and a file that
+    /// isn't would otherwise select nothing at all and pack a silently empty map.
+    /// The committed `unsorted.osm.pbf` writes its way before its nodes.
+    #[test]
+    fn bbox_refuses_an_unsorted_pbf() {
+        const UNSORTED_PBF: &str =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/unsorted.osm.pbf");
+        assert!(
+            std::path::Path::new(UNSORTED_PBF).exists(),
+            "corpus fixture missing: {UNSORTED_PBF}. It is committed; rebuild from unsorted/unsorted.osm via \
+             packer/tests/corpus/build_corpus.sh"
+        );
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
+        // The box covers both nodes, so a sorted file would have kept the way.
+        let bbox = Bbox::parse("7.79,47.98,7.81,48.0").expect("box");
+        let Err(err) = ingest_osm(UNSORTED_PBF, &cfg, Some(bbox)) else {
+            panic!("an unsorted .pbf must not be cropped silently");
+        };
+        assert!(err.contains("not sorted"), "unexpected message: {err}");
+        // Without a box the ingest is order-agnostic (passes 1 and 2 are separate
+        // reads), so the same file still packs — the refusal is scoped to --bbox.
+        let ing = ingest_osm(UNSORTED_PBF, &cfg, None).expect("uncropped ingest is order-agnostic");
+        assert_eq!(ing.features.len(), 1, "the primary way survives without a box");
     }
 
     /// [`IdSet`] is only correct if `freeze` runs between filling and querying —
