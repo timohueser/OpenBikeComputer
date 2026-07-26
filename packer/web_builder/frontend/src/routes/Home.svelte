@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import BuildCard from "../components/BuildCard.svelte";
+    import DeviceStep from "../components/device/DeviceStep.svelte";
     import Gated from "../components/Gated.svelte";
     import MapPanel from "../components/MapPanel.svelte";
     import PresetCards from "../components/PresetCards.svelte";
@@ -122,6 +123,19 @@
                     </button>
                 {/snippet}
             </Gated>
+        </section>
+
+        <section class="card">
+            <div class="step-head">
+                <span class="num">4</span>
+                <h3>Device</h3>
+            </div>
+            <!-- The map to send comes from the catalog: C1 (#900) owns the
+                 picker and the artifact behind it, and passing it here is the
+                 one line that wires them together. Until it does, the step
+                 sends a `.obcm` the rider already has, which is also the only
+                 path a desktop-built map can take. -->
+            <DeviceStep />
         </section>
     </div>
 </div>

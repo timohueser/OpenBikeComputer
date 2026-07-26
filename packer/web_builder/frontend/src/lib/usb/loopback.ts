@@ -301,6 +301,15 @@ export interface MockDeviceOptions {
     maxTrips?: number;
     /** Bulk write size the device uses when streaming a download. */
     chunkSize?: number;
+    /**
+     * Verify an upload's CRC as bytes arrive and keep **nothing** — what a device with a 300 MB map
+     * coming down the cable actually does, since it sinks to the card and has no RAM to buffer in.
+     *
+     * Off by default because most tests want to assert on {@link MockDevice.stored}; on for the
+     * flat-memory measurement, where a device that buffered the object would be the thing consuming
+     * the memory rather than the code under test.
+     */
+    sinkUploads?: boolean;
 }
 
 /**
@@ -315,6 +324,7 @@ export class MockDevice {
     private readonly maxFwImageLen: number;
     private readonly maxRoutes: number;
     private readonly maxTrips: number;
+    private readonly sinkUploads: boolean;
 
     private storeEpoch: number | null;
     private readonly protocolVersion: number;
@@ -324,6 +334,9 @@ export class MockDevice {
     private readonly routes = new Map<number, Stored>();
     private readonly rides = new Map<number, Stored>();
     private readonly trips = new Map<number, Stored>();
+    /** Maps (`ObjectType.Map`, provisional — see `protocol.ts`). No list object exists for them,
+     *  so this is a plain store with no catalog entry beside it. */
+    private readonly maps = new Map<number, Stored>();
     private readonly routeEntries = new Map<number, RouteListEntry>();
     private readonly rideEntries = new Map<number, RideListEntry>();
     private readonly tripEntries = new Map<number, TripListEntry>();
@@ -334,6 +347,7 @@ export class MockDevice {
     private nextRouteId = 1;
     private nextRideId = 1;
     private nextTripId = 1;
+    private nextMapId = 1;
     private readonly revisions = new Map<number, number>();
 
     /** The wall clock a `setClock` established, if any — untrusted until then. */
@@ -360,6 +374,7 @@ export class MockDevice {
         this.maxRoutes = options.maxRoutes ?? MAX_ROUTES;
         this.maxTrips = options.maxTrips ?? MAX_TRIPS;
         this.chunkSize = options.chunkSize ?? 4096;
+        this.sinkUploads = options.sinkUploads ?? false;
     }
 
     // --- seeding ---------------------------------------------------------------
@@ -387,6 +402,12 @@ export class MockDevice {
     /** The bytes the device holds for an object, or `null` — what a test asserts an upload against. */
     stored(type: ObjectType, objectId: number): Uint8Array | null {
         return this.storeFor(type)?.get(objectId)?.bytes ?? null;
+    }
+
+    /** The committed length of a stored object, or `null` if it holds none. The one thing a
+     *  {@link MockDeviceOptions.sinkUploads} device can still be asked, since it keeps no bytes. */
+    storedLength(type: ObjectType, objectId: number): number | null {
+        return this.storeFor(type)?.get(objectId)?.byteLen ?? null;
     }
 
     /** The staged `/UPDATE.BIN`, if a `fwImage` upload has committed one. */
@@ -513,14 +534,16 @@ export class MockDevice {
             return;
         }
 
-        const buffer = new Uint8Array(d.totalLen);
+        // A sinking device holds nothing: the real one writes each slice to the card and keeps only
+        // the running CRC, which is the *only* way a 300 MB map fits on a microcontroller at all.
+        const buffer = this.sinkUploads ? null : new Uint8Array(d.totalLen);
         const crc = new Crc32();
         let got = 0;
         try {
             while (got < d.totalLen) {
                 const slice = await this.link.bulk.read(signal);
                 const take = Math.min(slice.length, d.totalLen - got);
-                buffer.set(slice.subarray(0, take), got);
+                buffer?.set(slice.subarray(0, take), got);
                 crc.update(slice.subarray(0, take));
                 got += take;
             }
@@ -544,7 +567,7 @@ export class MockDevice {
             });
             return;
         }
-        const objectId = this.commit(d, buffer);
+        const objectId = this.commit(d, buffer, got);
         await this.status({
             msg: "transferResult",
             objectId,
@@ -569,7 +592,7 @@ export class MockDevice {
         return d.objectId === NEW_OBJECT_ID ? null : TransferStatus.NotFound;
     }
 
-    private commit(d: TransferControl, bytes: Uint8Array): number {
+    private commit(d: TransferControl, bytes: Uint8Array | null, byteLen: number): number {
         if (d.type === ObjectType.FwImage) {
             // A CRC-verified commit promotes the staged bytes over any existing UPDATE.BIN, and
             // the singleton slot means the result echoes id 0 rather than assigning one.
@@ -583,17 +606,17 @@ export class MockDevice {
             // Fresh-upload dedup: identical content already stored answers with the *existing* id
             // and stores nothing, so a retry after a lost ack converges instead of minting a twin.
             for (const [id, stored] of store) {
-                if (stored.crc32 === d.crc32 && stored.byteLen === bytes.length) return id;
+                if (stored.crc32 === d.crc32 && stored.byteLen === byteLen) return id;
             }
         }
         const id = d.objectId === NEW_OBJECT_ID ? this.mintId(d.type) : d.objectId;
-        store.set(id, { bytes, crc32: d.crc32, byteLen: bytes.length });
+        store.set(id, { bytes, crc32: d.crc32, byteLen });
         if (d.type === ObjectType.Route && !this.routeEntries.has(id)) {
             // The device would read these from the stored OBCR header; this mock does not parse
             // OBCR, so an uploaded route lists with a generated name and zeroed metrics.
             this.routeEntries.set(id, {
                 objectId: id,
-                byteLen: bytes.length,
+                byteLen,
                 distanceM: 0,
                 ascentM: 0,
                 pointCount: 0,
@@ -606,13 +629,13 @@ export class MockDevice {
         }
         const entry = this.routeEntries.get(id);
         if (d.type === ObjectType.Route && entry) {
-            this.routeEntries.set(id, { ...entry, byteLen: bytes.length, crc32: d.crc32 });
+            this.routeEntries.set(id, { ...entry, byteLen, crc32: d.crc32 });
         }
         if (d.type === ObjectType.Trip) {
             const existing = this.tripEntries.get(id);
             this.tripEntries.set(id, {
                 objectId: id,
-                byteLen: bytes.length,
+                byteLen,
                 totalDistanceM: existing?.totalDistanceM ?? 0,
                 totalAscentM: existing?.totalAscentM ?? 0,
                 stageCount: existing?.stageCount ?? 0,
@@ -627,6 +650,7 @@ export class MockDevice {
     private mintId(type: ObjectType): number {
         if (type === ObjectType.Route) return this.nextRouteId++;
         if (type === ObjectType.Trip) return this.nextTripId++;
+        if (type === ObjectType.Map) return this.nextMapId++;
         return this.nextRideId++;
     }
 
@@ -688,6 +712,7 @@ export class MockDevice {
         if (type === ObjectType.Route) return this.routes;
         if (type === ObjectType.Ride) return this.rides;
         if (type === ObjectType.Trip) return this.trips;
+        if (type === ObjectType.Map) return this.maps;
         return null;
     }
 
