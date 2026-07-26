@@ -3,8 +3,17 @@
 //! Each function constructs one fixture directly from the spec text
 //! (`obc-ble-interface-spec.md` / `OBCR_Spec.md`), independently of the production
 //! codecs on either side. The checked-in fixture files are these builders' output;
-//! `tests/vectors.rs` asserts they haven't drifted. Regenerate after a deliberate
-//! spec change with:
+//! `tests/vectors.rs` asserts they haven't drifted.
+//!
+//! **Two documented exceptions**, both conversion *outputs* rather than wire layouts:
+//! [`build_route`] runs the real `gpx_to_obcr` and [`track_export_gpx`] the real
+//! `track_to_gpx`, because neither serialization has a spec to rebuild from — the converter
+//! *is* the contract. Those two fixtures therefore pin **agreement**, not correctness: a bug
+//! in the converter moves the fixture with it. What they catch is a second implementation
+//! drifting from the first, which is exactly their job — the iOS OBCR encoder and the
+//! browser's wasm bridge are both held to these bytes.
+//!
+//! Regenerate after a deliberate spec change with:
 //!
 //! ```text
 //! cargo test -p obc-vectors regenerate -- --ignored
@@ -49,22 +58,94 @@ pub fn route_gpx_plain() -> String {
     })
 }
 
+/// An in-memory [`ByteSink`] for the streaming converters below.
+struct VecSink(Vec<u8>);
+
+impl ByteSink for VecSink {
+    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
+        self.0.extend_from_slice(b);
+        Ok(())
+    }
+    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
+        let o = off as usize;
+        self.0[o..o + b.len()].copy_from_slice(b);
+        Ok(())
+    }
+}
+
 /// Convert a GPX string to OBCR v2 bytes via the reference converter.
 pub fn build_route(gpx: &str) -> Vec<u8> {
-    struct VecSink(Vec<u8>);
-    impl ByteSink for VecSink {
-        fn write(&mut self, b: &[u8]) -> Result<(), Error> {
-            self.0.extend_from_slice(b);
-            Ok(())
-        }
-        fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
-            let o = off as usize;
-            self.0[o..o + b.len()].copy_from_slice(b);
-            Ok(())
-        }
-    }
     let mut sink = VecSink(Vec::new());
     gpx_to_obcr(&SliceSource(gpx.as_bytes()), ROUTE_NAME, &mut sink).unwrap();
+    sink.0
+}
+
+/// Recorded-track fixture name — carries an `&` so the GPX export's XML escaping is pinned too.
+pub const TRACK_NAME: &str = "Schauinsland & back";
+
+/// A recorded `.obct` ride log: a flat array of 20-byte records, **no header**
+/// (`obc-formats/src/track.rs`, the byte authority). Built field-by-field from that layout rather
+/// than through `encode_record`, so the fixture pins the record independently of the production
+/// codec — the same rule the rest of this module follows.
+///
+/// Shaped for **coverage, not plausibility** (it teleports between hemispheres): five points
+/// spanning every branch the GPX exporter has —
+///
+/// | # | why it is here |
+/// | :-- | :-- |
+/// | 0 | first point (always opens a `<trkseg>`), all three sensor fields present |
+/// | 1 | cadence absent — the `TrackPointExtension` wrapper still appears, one element short |
+/// | 2 | every sensor absent — no `<extensions>` block at all |
+/// | 3 | `segment_start` after a pause (a second `<trkseg>`), negative lat/lon/elevation, and **power only** (no wrapper) |
+/// | 4 | zeroes everywhere: `0.000000` coordinate formatting, and `hr`/`cad`/`pwr` = 0 as real values, distinct from the `0xFF`/`0xFFFF` absent sentinels |
+///
+/// …plus a deliberate **7-byte partial record** at the end: a power-loss mid-write leaves one, and
+/// the log stays valid to the 20-byte boundary, so the exporter must ignore it.
+pub fn track_log() -> Vec<u8> {
+    /// One record's fields, named after the layout they serialize into. `0xFF` / `0xFFFF` in the
+    /// sensor fields are the "absent" sentinels.
+    struct Rec {
+        lon: i32,
+        lat: i32,
+        ele: i16,
+        flags: u16,
+        t_ms: u32,
+        hr: u8,
+        cad: u8,
+        pwr: u16,
+    }
+    let rec = |lon, lat, ele, flags, t_ms, hr, cad, pwr| Rec { lon, lat, ele, flags, t_ms, hr, cad, pwr };
+    let points = [
+        rec(7_842_000, 47_995_000, 300, 1, 0, 132, 78, 185),
+        rec(7_843_500, 47_996_000, 305, 0, 1_000, 138, 0xFF, 190),
+        rec(7_845_000, 47_997_200, 318, 0, 2_000, 0xFF, 0xFF, 0xFFFF),
+        rec(-122_419_400, -37_774_900, -12, 1, 63_000, 0xFF, 0xFF, 240),
+        rec(0, 0, 0, 0, 64_000, 0, 0, 0),
+    ];
+    let mut v = Vec::with_capacity(points.len() * 20 + 7);
+    for p in points {
+        v.extend_from_slice(&p.lon.to_le_bytes()); // 0..4
+        v.extend_from_slice(&p.lat.to_le_bytes()); // 4..8
+        v.extend_from_slice(&p.ele.to_le_bytes()); // 8..10
+        v.extend_from_slice(&le16(p.flags)); // 10..12 — bit 0 = segment_start
+        v.extend_from_slice(&le32(p.t_ms)); // 12..16
+        v.push(p.hr); // 16
+        v.push(p.cad); // 17
+        v.extend_from_slice(&le16(p.pwr)); // 18..20
+    }
+    v.extend_from_slice(&[0xAB; 7]); // the truncated trailing record
+    v
+}
+
+/// The GPX 1.1 export of [`track_log`], through the production converter (`track_to_gpx`).
+///
+/// Unlike the binary fixtures there is no independent spec to rebuild this from — the exporter's
+/// serialization *is* the contract — so this goes through the real code, exactly like
+/// [`build_route`] does for OBCR. Its value is cross-implementation: the browser bridge
+/// (`obc-web-convert`, compiled to wasm) must reproduce these bytes character-for-character.
+pub fn track_export_gpx() -> Vec<u8> {
+    let mut sink = VecSink(Vec::new());
+    obc_route::track_to_gpx(&SliceSource(&track_log()), TRACK_NAME, &mut sink).unwrap();
     sink.0
 }
 
@@ -452,6 +533,11 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
+        // The recorded-track pair (epic #894, A2): the device's 20-byte-record ride log and the
+        // GPX its Finish conversion writes from it. Checked in together because the *pair* is the
+        // contract the browser conversion bridge must reproduce byte-for-byte in wasm.
+        ("track-log.obct", track_log()),
+        ("track-export.gpx", track_export_gpx()),
         ("ride-v1.bin", ride_v1()),
         ("ride-v2.bin", ride_v2()),
         ("config-v1.bin", config_v1()),

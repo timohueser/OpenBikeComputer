@@ -1,9 +1,9 @@
 # Shared wire-protocol test vectors (S0)
 
 Binary fixtures pinning the byte layouts of
-[`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md) and the OBCR v2
-waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), consumed by **both**
-sides of the link:
+[`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR v2
+waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), and the device's own
+recorded-track log, consumed by **three** implementations:
 
 - **Firmware**: `cargo test -p obc-vectors` (workspace `firmware/`) verifies every
   file byte-for-byte against builders written straight from the spec text, and
@@ -11,8 +11,13 @@ sides of the link:
 - **App**: the `OBCKit` Swift tests pin their codecs (`ProvisionalRideCodec`,
   `ProvisionalConfigCodec`, `TransferDescriptor`, the OBCR route encoder) to the
   same files.
+- **Browser**: the hosted builder's wasm conversion bridge
+  (`firmware/obc-web-convert`, #896) must reproduce the route and track fixtures
+  byte-for-byte from the same inputs — `packer/web_builder/frontend/src/lib/convert/
+  bridge.test.ts`. That is what keeps client-side conversion honest: the file a
+  visitor downloads is the file the device would have written.
 
-A drift on either side fails that side's tests — the files are the contract.
+A drift on any side fails that side's tests — the files are the contract.
 
 ## Files
 
@@ -20,6 +25,8 @@ A drift on either side fails that side's tests — the files are the contract.
 |---|---|---|
 | `route-waypoints.obcr` | OBCR v2 | "Vector Loop", 9-point track at 48°N, 2 waypoints (`Brunnen` @ 0 m with ele 238, `Pass Summit` mid-route without ele) |
 | `route-plain.obcr` | OBCR v2 | the same track, no waypoints — must ride identically |
+| `track-log.obct` | recorded track log (flat 20-byte records, no header — `obc-formats/src/track.rs`) | 5 points shaped for coverage, not plausibility: two `<trkseg>`s, sensor presence walking all → one-absent → none → power-only → all-zero, one point at negative lat/lon/elevation, plus a **7-byte partial trailing record** (what a power-loss leaves) that the exporter must ignore |
+| `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of `track-log.obct` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization *is* the contract, so this file is its output, and its value is cross-implementation |
 | `ride-v1.bin` | ride object v1 (spec §7.2) | "Höhenweg", 3 points, the last without elevation |
 | `ride-v2.bin` | ride object v2 (spec §7.2, epic #707) | "Sensor Ride", 3 points, BLE-sensor summary + per-point hr/cad/pwr with mixed present/absent (0xFF/0xFFFF sentinels) — the app must accept v1 **and** v2 |
 | `config-v1.bin` | Config v1 (spec §7.3) | name "OBC Tourer", metric |
@@ -50,5 +57,5 @@ GPX→OBCR converter; everything else is built from spec constants). After a
 cd firmware && cargo test -p obc-vectors regenerate -- --ignored
 ```
 
-…then update `manifest.json` to match and flag the app side — its tests pin the
-same bytes.
+…then update `manifest.json` to match and flag the app side **and** the web
+builder — both pin the same bytes.
