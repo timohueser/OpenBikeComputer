@@ -110,8 +110,17 @@ pub struct ArtifactEntry {
     pub region_name: String,
     /// The preset this artifact was built with; matches a `presets[].id`.
     pub preset_id: String,
-    /// The preset's `version` at build time. Equal to the matching `presets[].version`
-    /// for a coherent tree; a mismatch means the preset moved without a re-bake.
+    /// The preset's `version` **as recorded by the bake job that produced this
+    /// artifact** — read from its sidecar, not from the preset config sitting in the
+    /// tree when the manifest was generated.
+    ///
+    /// That distinction is the whole point of the field. A preset restyle invalidates
+    /// only that preset's artifacts, so partial re-bakes are the normal operation (a
+    /// full bake is ~20 CPU-hours). Copied from the current preset config it would
+    /// equal `presets[].version` by construction and could never signal anything,
+    /// while every not-yet-re-baked artifact silently claimed styling it does not
+    /// have. Lower than the matching `presets[].version` means exactly one thing: this
+    /// artifact carries older styling (`OBCC_Spec.md` §3).
     pub preset_version: u32,
     /// OBCM format version, read from the artifact's own header — never from the
     /// builder's intent. A consumer MUST refuse an artifact whose version the target
@@ -361,13 +370,13 @@ fn read_region(
 
     for (preset_id, path) in artifacts {
         validate_id(&preset_id).map_err(|e| format!("{}: preset id {e}", path.display()))?;
-        let preset = presets.get(&preset_id).ok_or_else(|| {
-            format!(
-                "{}: preset `{preset_id}` is not described in `{PRESETS_DIR}/{preset_id}.json` — the tree must carry \
-                 the exact preset every artifact was built with",
+        if !presets.contains_key(&preset_id) {
+            return Err(format!(
+                "{}: preset `{preset_id}` is not described in `{PRESETS_DIR}/{preset_id}.json` — the tree must \
+                 describe every preset it holds artifacts for",
                 path.display()
-            )
-        })?;
+            ));
+        }
         let sidecar_path = path.with_file_name(format!("{preset_id}{SIDECAR_EXT}"));
         let sidecar = read_sidecar(&sidecar_path)?;
         sidecars.retain(|s| s != &preset_id);
@@ -411,7 +420,7 @@ fn read_region(
             region_id: region_id.to_string(),
             region_name: sidecar.region_name,
             preset_id,
-            preset_version: preset.version,
+            preset_version: sidecar.preset_version,
             obcm_version: header.version,
             bytes,
             sha256,
@@ -432,10 +441,19 @@ fn read_region(
 }
 
 /// The facts a bake job knows that the artifact bytes cannot state.
+///
+/// Every field here is a *record of the bake*, fixed when the artifact was written.
+/// Nothing in this struct may be re-derived at generation time from the tree's current
+/// state — that is what lets the manifest describe an artifact the tree has since
+/// moved past.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ArtifactSidecar {
     region_name: String,
+    /// The `_meta.version` of the preset config this artifact was actually packed
+    /// with. Recorded here rather than read back off the tree's preset config, which
+    /// the next restyle moves out from under already-baked artifacts.
+    preset_version: u32,
     /// RFC 3339 UTC instant the artifact was packed.
     built_at: String,
     /// `YYYY-MM-DD` date of the Geofabrik extract it was packed from.
@@ -444,7 +462,10 @@ struct ArtifactSidecar {
 
 fn read_sidecar(path: &Path) -> Result<ArtifactSidecar, String> {
     let text = fs::read_to_string(path).map_err(|e| {
-        format!("{}: {e} — every artifact needs a sidecar (region_name, built_at, source_snapshot)", path.display())
+        format!(
+            "{}: {e} — every artifact needs a sidecar (region_name, preset_version, built_at, source_snapshot)",
+            path.display()
+        )
     })?;
     let sidecar: ArtifactSidecar = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     if sidecar.region_name.trim().is_empty() {
@@ -455,9 +476,10 @@ fn read_sidecar(path: &Path) -> Result<ArtifactSidecar, String> {
     Ok(sidecar)
 }
 
-/// `_meta` from a packer preset config. The preset file in the tree is the exact
-/// config the artifacts were built with, so its `_meta` is the one source of truth
-/// for the preset's identity and version — nothing is restated in a sidecar.
+/// `_meta` from a packer preset config. The preset file in the tree is the **current**
+/// definition of a preset: it names and describes it, and its `version` is what a fresh
+/// bake would produce. What an already-baked artifact was built with is its sidecar's
+/// business, not this file's.
 #[derive(Debug, Deserialize)]
 struct PresetDoc {
     #[serde(rename = "_meta")]
@@ -479,8 +501,7 @@ struct PresetMeta {
 fn read_presets(dir: &Path) -> Result<BTreeMap<String, PresetEntry>, String> {
     if !dir.is_dir() {
         return Err(format!(
-            "{}: no `{PRESETS_DIR}/` directory — the bake tree must carry the exact preset config used for every \
-             artifact",
+            "{}: no `{PRESETS_DIR}/` directory — the bake tree must describe every preset it holds artifacts for",
             dir.display()
         ));
     }
@@ -545,9 +566,46 @@ fn check_coherence(
         }
     }
 
+    let mut warnings = Vec::new();
+
+    // Artifact vs. the tree's current preset config. Now that `preset_version` records
+    // the bake instead of mirroring the tree, the two can disagree — and each direction
+    // means something different.
+    for a in artifacts {
+        // `read_region` already refused an artifact whose preset is undescribed.
+        let Some(current) = presets.get(a.preset_id.as_str()) else { continue };
+        match a.preset_version.cmp(&current.version) {
+            // Artifact newer than the config that supposedly describes it: the tree is
+            // internally inconsistent (a reverted preset, or one copied in from the
+            // wrong place), and the catalog cannot describe that artifact honestly.
+            std::cmp::Ordering::Greater => {
+                return Err(format!(
+                    "region `{}` preset `{}`: the artifact was baked at preset version {} but \
+                     `{PRESETS_DIR}/{}.json` is only version {} — the tree's preset config is older than an artifact \
+                     built from it, so the catalog cannot describe that artifact's styling. Update the preset config \
+                     in the tree, or re-bake the region.",
+                    a.region_id, a.preset_id, a.preset_version, a.preset_id, current.version
+                ));
+            }
+            // Artifact older: a lagging partial re-bake. Deliberately NOT fatal. Unlike
+            // an OBCM bump the artifact is perfectly readable — it is styled the way the
+            // preset looked last month — so refusing to publish would turn a cosmetic lag
+            // into total unavailability for every region not yet re-baked, and make a
+            // ~20 CPU-hour full bake a precondition for any publish. The manifest states
+            // the lag truthfully instead; §3 defines what a consumer may conclude. B1
+            // owns whether a lag blocks a given publish: that is policy, and it gets
+            // this list.
+            std::cmp::Ordering::Less => warnings.push(format!(
+                "region `{}` preset `{}`: artifact was baked at preset version {}, but the tree's preset is now \
+                 version {} — it carries older styling until re-baked",
+                a.region_id, a.preset_id, a.preset_version, current.version
+            )),
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+
     // Coverage holes are legitimate (a bake can be partial) but never silent: a
     // region that quietly failed for one preset reads to a user as a curation choice.
-    let mut warnings = Vec::new();
     let mut by_region: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for a in artifacts {
         by_region.entry(a.region_id.as_str()).or_default().push(a.preset_id.as_str());
@@ -974,12 +1032,22 @@ mod tests {
         fs::write(dir.join(format!("{preset}{ARTIFACT_EXT}")), obcm_bytes(version, bbox, pad)).expect("artifact");
     }
 
-    fn write_sidecar(tree: &Path, region: &str, preset: &str, name: &str, built: &str, snapshot: &str) {
+    /// Write a sidecar. `preset_version` is what the *bake* recorded — tests that
+    /// care about lag pass a different number from the tree's preset config.
+    fn write_sidecar(
+        tree: &Path,
+        region: &str,
+        preset: &str,
+        name: &str,
+        preset_version: u32,
+        built: &str,
+        snapshot: &str,
+    ) {
         write(
             &tree.join(REGIONS_DIR).join(region).join(format!("{preset}{SIDECAR_EXT}")),
             &format!(
-                "{{\n  \"region_name\": \"{name}\",\n  \"built_at\": \"{built}\",\n  \"source_snapshot\": \
-                 \"{snapshot}\"\n}}\n"
+                "{{\n  \"region_name\": \"{name}\",\n  \"preset_version\": {preset_version},\n  \
+                 \"built_at\": \"{built}\",\n  \"source_snapshot\": \"{snapshot}\"\n}}\n"
             ),
         );
     }
@@ -1012,7 +1080,7 @@ mod tests {
             bbox(45_817_995, 5_955_911, 47_808_455, 10_492_294),
             1_024,
         );
-        write_sidecar(tree, "europe/switzerland", "default", "Switzerland", "2026-07-20T02:14:07Z", "2026-07-19");
+        write_sidecar(tree, "europe/switzerland", "default", "Switzerland", 3, "2026-07-20T02:14:07Z", "2026-07-19");
         write_artifact(
             tree,
             "europe/switzerland",
@@ -1021,7 +1089,7 @@ mod tests {
             bbox(45_817_995, 5_955_911, 47_808_455, 10_492_294),
             512,
         );
-        write_sidecar(tree, "europe/switzerland", "minimal", "Switzerland", "2026-07-20T02:31:55Z", "2026-07-19");
+        write_sidecar(tree, "europe/switzerland", "minimal", "Switzerland", 2, "2026-07-20T02:31:55Z", "2026-07-19");
 
         // A sub-region baked separately from its parent — the nested case the picker
         // has to get right.
@@ -1033,7 +1101,7 @@ mod tests {
             bbox(45_817_995, 8_380_000, 46_630_000, 9_170_000),
             256,
         );
-        write_sidecar(tree, "europe/switzerland/ticino", "default", "Ticino", "2026-07-20T02:41:02Z", "2026-07-19");
+        write_sidecar(tree, "europe/switzerland/ticino", "default", "Ticino", 3, "2026-07-20T02:41:02Z", "2026-07-19");
 
         write_artifact(
             tree,
@@ -1043,7 +1111,7 @@ mod tests {
             bbox(43_724_355, 7_409_055, 43_751_930, 7_439_812),
             128,
         );
-        write_sidecar(tree, "europe/monaco", "default", "Monaco", "2026-07-20T02:44:19Z", "2026-07-19");
+        write_sidecar(tree, "europe/monaco", "default", "Monaco", 3, "2026-07-20T02:44:19Z", "2026-07-19");
         write_artifact(
             tree,
             "europe/monaco",
@@ -1052,7 +1120,7 @@ mod tests {
             bbox(43_724_355, 7_409_055, 43_751_930, 7_439_812),
             64,
         );
-        write_sidecar(tree, "europe/monaco", "minimal", "Monaco", "2026-07-20T02:44:41Z", "2026-07-19");
+        write_sidecar(tree, "europe/monaco", "minimal", "Monaco", 2, "2026-07-20T02:44:41Z", "2026-07-19");
     }
 
     const DEFAULT_BLURB: &str =
@@ -1103,7 +1171,7 @@ mod tests {
         assert_eq!(a.region_name, "Monaco");
         assert_eq!(a.built_at, "2026-07-20T02:44:41Z");
         assert_eq!(a.source_snapshot, "2026-07-19");
-        assert_eq!(a.preset_version, 2, "preset_version comes from the preset config in the tree");
+        assert_eq!(a.preset_version, 2, "preset_version comes from the sidecar the bake job wrote");
         assert_eq!(a.url, "https://maps.example.org/catalog/v1/regions/europe/monaco/minimal.obcm");
         assert_eq!(a.sha256.len(), 64);
         assert!(a.sha256.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()), "lowercase hex");
@@ -1144,7 +1212,7 @@ mod tests {
             bbox(43_724_355, 7_409_055, 43_751_930, 7_439_812),
             64,
         );
-        write_sidecar(b.path(), "europe/monaco", "minimal", "Monaco", "2026-07-20T02:44:41Z", "2026-07-19");
+        write_sidecar(b.path(), "europe/monaco", "minimal", "Monaco", 2, "2026-07-20T02:44:41Z", "2026-07-19");
         write_artifact(
             b.path(),
             "europe/switzerland/ticino",
@@ -1153,7 +1221,15 @@ mod tests {
             bbox(45_817_995, 8_380_000, 46_630_000, 9_170_000),
             256,
         );
-        write_sidecar(b.path(), "europe/switzerland/ticino", "default", "Ticino", "2026-07-20T02:41:02Z", "2026-07-19");
+        write_sidecar(
+            b.path(),
+            "europe/switzerland/ticino",
+            "default",
+            "Ticino",
+            3,
+            "2026-07-20T02:41:02Z",
+            "2026-07-19",
+        );
         write_artifact(
             b.path(),
             "europe/monaco",
@@ -1162,7 +1238,7 @@ mod tests {
             bbox(43_724_355, 7_409_055, 43_751_930, 7_439_812),
             128,
         );
-        write_sidecar(b.path(), "europe/monaco", "default", "Monaco", "2026-07-20T02:44:19Z", "2026-07-19");
+        write_sidecar(b.path(), "europe/monaco", "default", "Monaco", 3, "2026-07-20T02:44:19Z", "2026-07-19");
         write_artifact(
             b.path(),
             "europe/switzerland",
@@ -1171,7 +1247,15 @@ mod tests {
             bbox(45_817_995, 5_955_911, 47_808_455, 10_492_294),
             512,
         );
-        write_sidecar(b.path(), "europe/switzerland", "minimal", "Switzerland", "2026-07-20T02:31:55Z", "2026-07-19");
+        write_sidecar(
+            b.path(),
+            "europe/switzerland",
+            "minimal",
+            "Switzerland",
+            2,
+            "2026-07-20T02:31:55Z",
+            "2026-07-19",
+        );
         write_artifact(
             b.path(),
             "europe/switzerland",
@@ -1180,7 +1264,15 @@ mod tests {
             bbox(45_817_995, 5_955_911, 47_808_455, 10_492_294),
             1_024,
         );
-        write_sidecar(b.path(), "europe/switzerland", "default", "Switzerland", "2026-07-20T02:14:07Z", "2026-07-19");
+        write_sidecar(
+            b.path(),
+            "europe/switzerland",
+            "default",
+            "Switzerland",
+            3,
+            "2026-07-20T02:14:07Z",
+            "2026-07-19",
+        );
         write_preset(b.path(), "default", "Bikepacking", DEFAULT_BLURB, 3, Some("previews/default.png"));
         assert_eq!(first, manifest_json(&generated(b.path()).manifest), "output must not depend on creation order");
     }
@@ -1289,6 +1381,59 @@ mod tests {
 
     // --- loud failures ----------------------------------------------------------------------
 
+    /// A partial re-bake after a preset restyle. The lagging artifact must report the
+    /// version it was *baked* with — not the tree's current one — and say so out loud,
+    /// because that field is the only signal a consumer has that the styling is old.
+    #[test]
+    fn a_lagging_preset_version_is_recorded_not_papered_over() {
+        let t = TempTree::new("preset-lag");
+        example_tree(t.path());
+        // The restyle: `minimal` moves 2 → 3, and only Switzerland gets re-baked.
+        write_preset(t.path(), "minimal", "Minimal", MINIMAL_BLURB, 3, None);
+        write_sidecar(
+            t.path(),
+            "europe/switzerland",
+            "minimal",
+            "Switzerland",
+            3,
+            "2026-07-26T04:02:11Z",
+            "2026-07-25",
+        );
+
+        let g = generated(t.path());
+        let by = |region: &str| {
+            g.manifest
+                .artifacts
+                .iter()
+                .find(|a| a.region_id == region && a.preset_id == "minimal")
+                .expect("minimal artifact")
+                .preset_version
+        };
+        assert_eq!(by("europe/switzerland"), 3, "the re-baked region carries the new styling");
+        assert_eq!(by("europe/monaco"), 2, "the lagging region must NOT be relabelled to 3");
+        assert_eq!(
+            g.manifest.presets.iter().find(|p| p.id == "minimal").unwrap().version,
+            3,
+            "presets[].version is the current definition — what a fresh bake would produce"
+        );
+        assert!(
+            g.warnings.iter().any(|w| w.contains("europe/monaco") && w.contains("older styling")),
+            "a lag must be reported, not silent: {:?}",
+            g.warnings
+        );
+    }
+
+    /// The other direction is not a lag, it is an inconsistent tree: a preset config
+    /// older than an artifact built from it cannot be described honestly at all.
+    #[test]
+    fn an_artifact_newer_than_its_preset_config_fails() {
+        let t = TempTree::new("preset-ahead");
+        example_tree(t.path());
+        write_sidecar(t.path(), "europe/monaco", "minimal", "Monaco", 9, "2026-07-20T02:44:41Z", "2026-07-19");
+        let err = generate(t.path(), &opts()).expect_err("an artifact ahead of its preset config must fail");
+        assert!(err.contains("older than an artifact built from it"), "{err}");
+    }
+
     #[test]
     fn a_missing_sidecar_fails() {
         let t = TempTree::new("no-sidecar");
@@ -1302,7 +1447,7 @@ mod tests {
     fn a_sidecar_with_no_artifact_fails() {
         let t = TempTree::new("orphan-sidecar");
         example_tree(t.path());
-        write_sidecar(t.path(), "europe/monaco", "high-detail", "Monaco", "2026-07-20T02:44:41Z", "2026-07-19");
+        write_sidecar(t.path(), "europe/monaco", "high-detail", "Monaco", 3, "2026-07-20T02:44:41Z", "2026-07-19");
         let err = generate(t.path(), &opts()).expect_err("an orphan sidecar must fail");
         assert!(err.contains("no artifact"), "{err}");
     }
@@ -1312,7 +1457,7 @@ mod tests {
         let t = TempTree::new("unknown-preset");
         example_tree(t.path());
         write_artifact(t.path(), "europe/monaco", "high-detail", OBCM_VERSION, bbox(1, 1, 2, 2), 0);
-        write_sidecar(t.path(), "europe/monaco", "high-detail", "Monaco", "2026-07-20T02:44:41Z", "2026-07-19");
+        write_sidecar(t.path(), "europe/monaco", "high-detail", "Monaco", 3, "2026-07-20T02:44:41Z", "2026-07-19");
         let err = generate(t.path(), &opts()).expect_err("an artifact for an undescribed preset must fail");
         assert!(err.contains("high-detail"), "{err}");
     }
@@ -1330,7 +1475,7 @@ mod tests {
     fn disagreeing_region_names_fail() {
         let t = TempTree::new("region-name");
         example_tree(t.path());
-        write_sidecar(t.path(), "europe/monaco", "minimal", "Monaco-Ville", "2026-07-20T02:44:41Z", "2026-07-19");
+        write_sidecar(t.path(), "europe/monaco", "minimal", "Monaco-Ville", 2, "2026-07-20T02:44:41Z", "2026-07-19");
         let err = generate(t.path(), &opts()).expect_err("two names for one region must fail");
         assert!(err.contains("conflicting region_name"), "{err}");
     }
@@ -1390,7 +1535,8 @@ mod tests {
         example_tree(t.path());
         write(
             &t.path().join("regions/europe/monaco/minimal.obcm.json"),
-            r#"{"region_name": "Monaco", "built_at": "2026-07-20T02:44:41Z", "sourceSnapshot": "2026-07-19"}"#,
+            r#"{"region_name": "Monaco", "preset_version": 2, "built_at": "2026-07-20T02:44:41Z",
+                 "sourceSnapshot": "2026-07-19"}"#,
         );
         let err = generate(t.path(), &opts()).expect_err("an unknown sidecar key must fail");
         assert!(err.contains("sourceSnapshot") || err.contains("unknown field"), "{err}");
@@ -1400,10 +1546,10 @@ mod tests {
     fn bad_timestamps_fail() {
         let t = TempTree::new("timestamps");
         example_tree(t.path());
-        write_sidecar(t.path(), "europe/monaco", "minimal", "Monaco", "2026-07-20T02:44:41+02:00", "2026-07-19");
+        write_sidecar(t.path(), "europe/monaco", "minimal", "Monaco", 2, "2026-07-20T02:44:41+02:00", "2026-07-19");
         assert!(generate(t.path(), &opts()).unwrap_err().contains("built_at"), "offsets are not accepted");
 
-        write_sidecar(t.path(), "europe/monaco", "minimal", "Monaco", "2026-07-20T02:44:41Z", "2026-02-30");
+        write_sidecar(t.path(), "europe/monaco", "minimal", "Monaco", 2, "2026-07-20T02:44:41Z", "2026-02-30");
         assert!(generate(t.path(), &opts()).unwrap_err().contains("source_snapshot"), "2026-02-30 is not a day");
     }
 

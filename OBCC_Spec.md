@@ -31,6 +31,11 @@ The key words MUST, MUST NOT, SHOULD and MAY are to be interpreted as in RFC 211
    bytes — its OBCM version, its coverage box, its size, its digest — is read out of
    the bytes, never taken from the build recipe. A manifest that reports what the
    builder *meant* to produce is worse than no manifest, because it is trusted.
+   Facts the bytes cannot state (the region's name, when it was built, which extract
+   and which preset revision it came from) are **recorded at bake time** and read back
+   verbatim, never re-derived from whatever the tree looks like when the manifest is
+   generated. Re-derivation is the same failure wearing a different coat: it makes a
+   stale artifact describe something it is not.
 2. **Knowable before the download.** A country-scale artifact is hundreds of
    megabytes. Everything a consumer needs to decide *whether to fetch it at all* —
    format version, size, coverage, freshness — is in the manifest.
@@ -98,8 +103,12 @@ A style preset: one of the small number of looks the catalog is baked in.
 | `id` | string | yes | Stable id, `^[a-z0-9]+(-[a-z0-9]+)*$`, e.g. `default`. |
 | `name` | string | yes | Display name, e.g. `Bikepacking`. Non-empty. |
 | `description` | string | yes | One line describing what the preset draws. Non-empty. |
-| `version` | integer | yes | Preset content version; bumped when the styling changes. |
+| `version` | integer | yes | The preset's **current** content version; bumped when the styling changes. |
 | `preview` | string | no | Reference to a rendered preview asset, resolved like `url` (§3). Absent until a preview exists. |
+
+`version` describes the preset **as it is now** — what a fresh bake would produce. It
+is *not* a claim about the artifacts: an artifact states what it was built with in its
+own `preset_version` (§3), and the two are allowed to differ.
 
 `presets` is sorted by `id`. Display order is the consumer's decision, not the
 manifest's.
@@ -116,7 +125,7 @@ One published `.obcm` file: a (region, preset) pair.
 | `region_id` | string | Slash-separated region id mirroring the Geofabrik hierarchy, `^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*$`, e.g. `europe/switzerland`. |
 | `region_name` | string | Human-readable region name, e.g. `Switzerland`. |
 | `preset_id` | string | The preset it was built with; matches a `presets[].id`. |
-| `preset_version` | integer | That preset's `version` at build time. |
+| `preset_version` | integer | The preset's `version` **recorded by the bake job that produced this artifact** — never re-derived from the tree's current preset config. |
 | `obcm_version` | integer | OBCM format version, **read from the artifact's header** (§6). |
 | `bytes` | integer | Size of the artifact in bytes. |
 | `sha256` | string | Lowercase hex SHA-256 of the artifact bytes, `^[0-9a-f]{64}$`. |
@@ -132,8 +141,33 @@ A **region** is a unit of coverage, and regions nest: `europe/switzerland` and
 each `region_id` as its own selectable entry and MUST NOT assume a parent's artifact
 subsumes a child's, or vice versa.
 
-`preset_version` SHOULD equal the matching `presets[].version`. A difference means
-the preset moved without a re-bake; a consumer MAY surface that as staleness.
+### `preset_version` — a record of the bake, not a copy of the config
+
+`preset_version` MUST be the version the producing bake job recorded (§8), and MUST NOT
+be re-derived from the preset config in the tree when the manifest is generated.
+
+The distinction is load-bearing, not pedantry. **A preset restyle invalidates only that
+preset's artifacts**, so unlike an OBCM bump (§6) it does not force a full re-bake — and
+with a full bake costing tens of CPU-hours, a partial re-bake is the normal operation.
+So the interesting state is routine: a preset moves from version 2 to 3, some regions
+are re-baked and some are not. If `preset_version` were copied from the current config
+it would equal `presets[].version` by construction, could never signal anything, and
+every not-yet-re-baked artifact would silently claim styling it does not have — with no
+other field a consumer could use to notice.
+
+Recorded at bake time, the two numbers carry meaning:
+
+| Relation | Means | Consumer |
+| :-- | :-- | :-- |
+| `preset_version == presets[].version` | current styling | nothing to say |
+| `preset_version < presets[].version` | built with an older revision of this preset | MAY surface it as "older styling"; MUST NOT refuse the artifact — it is valid, readable, and complete, just styled the way the preset looked earlier |
+| `preset_version > presets[].version` | MUST NOT occur; the catalog is malformed (§7) | reject the document |
+
+A consumer MUST NOT infer anything else from the value — in particular, `preset_version`
+says nothing about map data freshness (that is `source_snapshot`) or about whether the
+device can read the file (that is `obcm_version`).
+
+Producers: see §8 for what a generator does with each relation.
 
 ## 4. `bbox` — coverage, not extract
 
@@ -265,7 +299,7 @@ The generator walks a **self-describing** output tree:
 ```
 <tree>/
   presets/
-    <preset_id>.json                 the exact packer config used, `_meta` describes the preset
+    <preset_id>.json                 the preset's current definition; `_meta` describes it
   regions/
     <segment>/…/<segment>/
       <preset_id>.obcm               the artifact; its directory path is the region id
@@ -282,21 +316,42 @@ A sidecar carries exactly the facts the artifact's bytes cannot state:
 ```json
 {
   "region_name": "Switzerland",
+  "preset_version": 3,
   "built_at": "2026-07-20T02:14:07Z",
   "source_snapshot": "2026-07-19"
 }
 ```
 
-All three are REQUIRED, and **unknown keys are rejected** — a sidecar is machine-
+All four are REQUIRED, and **unknown keys are rejected** — a sidecar is machine-
 written, so a misspelled key is a bug, not metadata riding along. (This differs
 deliberately from the packer's *config* parser, which ignores unknown keys so
 user-authored tooling metadata can ride along.)
 
-`presets/<preset_id>.json` is the packer config the artifacts were built with; the
-catalog reads only its `_meta` block (`id`, `name`, `description`, `version`, and the
-optional `preview`), and `_meta.id` MUST match the filename. The tree MUST carry the
-exact config used, so `preset_version` is correct by construction rather than
-restated.
+Every field in a sidecar is a **record of the bake**, fixed at the moment the artifact
+was written. A generator MUST NOT re-derive any of them from the tree's current state.
+`preset_version` is the one where that rule has teeth: it MUST be the `_meta.version`
+of the config the bake job actually packed with, which is why a bake job writes it
+rather than a generator reading it back off `presets/`.
+
+`presets/<preset_id>.json` is the **current** definition of the preset. The catalog
+reads only its `_meta` block (`id`, `name`, `description`, `version`, and the optional
+`preview`), and `_meta.id` MUST match the filename. It is a description, not a record:
+the restyle that bumps it does not touch artifacts already baked, which is precisely
+the state `preset_version` exists to make visible.
+
+**A generator MUST compare each artifact's recorded `preset_version` against that
+config and act on the three cases in §3:**
+
+- equal — nothing to report;
+- artifact **lower** — a lagging partial re-bake. Report it as a **warning** and publish
+  it. It MUST NOT be fatal: unlike an OBCM bump, the artifact is fully readable, and
+  refusing the catalog would convert a cosmetic lag into total unavailability for every
+  region not yet re-baked — making a full re-bake a precondition for any publish at all.
+  Whether a given publish tolerates a lag is the bakery's policy, taken from that
+  warning list; it is not the format's decision;
+- artifact **higher** — the tree's preset config is older than an artifact built from
+  it (a reverted or wrongly-copied config). The catalog cannot describe that artifact's
+  styling at all, so generation MUST fail.
 
 Walk rules:
 
