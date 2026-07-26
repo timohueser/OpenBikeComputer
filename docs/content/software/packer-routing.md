@@ -606,18 +606,32 @@ rayon::join(|| (build(nw), build(ne)), || (build(sw), build(se)))
 
 That this is the *same* quadtree the device walks closes the loop with the other pages: the packer writes it, the [format](../formats/#the-quadtree-index) stores it as a flat `u32` array, and the [renderer](../rendering/#3-the-quadtree-cull-only-the-chunks-you-can-see) walks it to cull.
 
-### The web builder
+### The builder
 
-Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a [drawn box](#cropping-to-a-box) the sources are cropped to), pick a style, build, download. Four ideas shape it:
+Everything above hides behind an app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a [drawn box](#cropping-to-a-box) the sources are cropped to), pick a style, build, download. Four ideas shape it:
 
 - **Presets over knobs.** The main page offers complete style presets — Bikepacking, Minimal, High detail — each a full packer config shipped in [`packer/presets/`](src:packer/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
-- **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the web server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten.
-- **A stateless server.** The working config lives in the browser ("Custom — based on Bikepacking"), never on the server; builds run through a bounded queue into per-job directories and stream progress live. That shape runs locally today and would survive a shared deployment unchanged.
+- **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the local dev server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten; the desktop app has no fallback to reach for, because there the schema comes out of the packer it is linked against.
+- **No state anywhere.** The working config lives in the browser ("Custom — based on Bikepacking"), never on a server; builds stream their progress live. That shape survives having no server at all, which is what the two shipping tiers below actually do.
 - **Routes need no server at all.** The GPX→OBCR converter is `no_std` Rust, so it compiles to wasm and runs *in the tab* ([`obc-web-convert`](src:firmware/obc-web-convert)) — the same routine the device runs, producing the same bytes, held to the [shared fixtures](src:protocol-vectors). Dropping a route on the builder uploads nothing; the same shim also turns a recorded `.obct` ride log back into a GPX. Map building is the part that still needs real CPU.
 
-### The same app with no packer behind it
+### One source, three hosts
 
-Map building is also the part that cannot be *hosted* — it is memory-hungry, it runs one job at a time, and a country is minutes of CPU per user. So the same Svelte source builds a second way: a **static tier** with no back end at all, which serves maps that were baked once, centrally, and listed in a [catalog manifest](../formats/#the-catalog-a-third-format-for-finding-the-first-two). The region picker is the same map; what changes is where a region's contents come from.
+That last sentence decides the shape of everything. Map building is memory-hungry, runs one job at a time, and costs a country's worth of CPU per user — so it cannot be *hosted*, and the builder is built three ways from one Svelte source. Which one is compiled in is a build-time alias, so the two hosts you didn't build never enter the bundle.
+
+| | serves a map by | runs the packer |
+| :-- | :-- | :-- |
+| **Static site** | handing over an artifact baked once, centrally | no — see below |
+| **Desktop app** | building it on your machine | yes, in-process |
+| **`python -m packer.web_builder`** | building it on your machine | yes, as a subprocess |
+
+The Python server is the local development host and the CLI's companion; the two the world sees are the other two. What the app adds is not features bolted on but the two things a browser tab does not have: real CPU, and a real filesystem. Custom styles, [cropping to a box](#cropping-to-a-box), a rides folder and a USB cable all follow from those.
+
+**The packer is a library, not a subprocess.** The dev server spawns `obc-pack` and reads its stdout to guess which stage it is in; the app links the crate and calls [`pipeline::pack`](src:firmware/obc-pack/src/pipeline.rs) — the same function the CLI's `main` calls, which is what makes "the app and the CLI produce the same bytes" a property rather than a hope. Two consequences are visible in the UI. The packer *names* its phases now instead of printing them for something else to match, so the progress bar reads a value; and a build can be **cancelled**, because the flag that stops it is read inside the ingest passes, the land clip, and the per-feature simplify, rather than between them.
+
+### The static tier, with no packer behind it
+
+The site with no back end serves maps that were baked once and listed in a [catalog manifest](../formats/#the-catalog-a-third-format-for-finding-the-first-two). The region picker is the same map; what changes is where a region's contents come from.
 
 Three states, and the interesting one is the third. A region the bakery has built is shaded and clickable, and says what the download is: size, build date, and the date of the OSM extract it was packed from. A region nobody has baked is greyed with the reason and a way forward rather than a dead click. And a map whose `obcm_version` the *connected device* cannot read is shown as **unsupported with the reason** — not hidden, because hiding it would make a rider's out-of-date firmware look like a hole in the coverage, and not offered either, because the download would be a file the device refuses. That is [OBCC §6(c)](src:OBCC_Spec.md) as a UI state; with nothing plugged in there is no such judgement to make, so the map is offered and its version stated.
 
@@ -740,10 +754,10 @@ let (back, fwd) = if !self.started {
 
 ## Where this lives
 
-- The packer pipeline driver: [`obc-pack/src/main.rs`](src:firmware/obc-pack/src/main.rs)
+- The packer pipeline, end to end and callable from either host: [`obc-pack/src/pipeline.rs`](src:firmware/obc-pack/src/pipeline.rs); the phase vocabulary and the cancel token it carries: [`obc-pack/src/progress.rs`](src:firmware/obc-pack/src/progress.rs); the CLI around it: [`obc-pack/src/main.rs`](src:firmware/obc-pack/src/main.rs)
 - Config + first-match styling: [`obc-pack/src/config.rs`](src:firmware/obc-pack/src/config.rs)
 - The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:firmware/obc-pack/schema/config.schema.json)
-- The web builder — FastAPI server + Svelte app: [`packer/web_builder/`](src:packer/web_builder); its browser-side GPX↔OBCR conversion (wasm over `obc-route`): [`obc-web-convert`](src:firmware/obc-web-convert)
+- The builder's Svelte source and its local FastAPI dev host: [`packer/web_builder/`](src:packer/web_builder); the desktop app that links the packer instead of spawning it: [`obc-desktop`](src:firmware/obc-desktop); the browser-side GPX↔OBCR conversion (wasm over `obc-route`): [`obc-web-convert`](src:firmware/obc-web-convert)
 - OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:firmware/obc-pack/src/ingest.rs)
 - The quadtree build: [`obc-pack/src/quadtree.rs`](src:firmware/obc-pack/src/quadtree.rs)
 - Land generation: [`obc-pack/src/land.rs`](src:firmware/obc-pack/src/land.rs)
