@@ -1,7 +1,7 @@
 // Pure region geometry (no Leaflet): point-in-polygon hit-testing and the
 // bbox -> covering-regions sampler. Ported unchanged from the legacy app.js.
 
-import type { RegionFeature } from "../api/client";
+import type { RegionFeature } from "../platform/types";
 
 export interface IndexedRegion extends RegionFeature {
     _bbox: [number, number, number, number];

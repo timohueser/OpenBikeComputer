@@ -41,7 +41,10 @@ tools/obc.local
 .venv/
 /maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
+# The dev host builds into static/dist/ (what the FastAPI server mounts); the
+# static-web and desktop hosts into frontend/dist/<host>/ — see #895.
 packer/web_builder/frontend/node_modules/
+packer/web_builder/frontend/dist/
 packer/web_builder/static/dist/
 
 # XcodeBuildMCP session defaults (local tool state)

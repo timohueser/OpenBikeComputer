@@ -1,8 +1,21 @@
 <script lang="ts">
     import Header from "./components/Header.svelte";
-    import Advanced from "./routes/Advanced.svelte";
     import Home from "./routes/Home.svelte";
+    import { loadStyleEditor, type StyleEditorModule } from "./lib/platform";
     import { router } from "./lib/router.svelte";
+
+    // The advanced editor is desktop-only (the locked decision in #894), so it
+    // is reached through an `import()` that only the hosts with
+    // `caps.styleEditor` declare — the web host has no reference to the route
+    // anywhere in its graph, so Rollup can't emit the chunk at all rather than
+    // emitting one nothing loads. Copied to a local const so the narrowing
+    // survives into the closure; the promise is memoized so re-renders don't
+    // restart the await block.
+    const load = loadStyleEditor;
+    let editor: Promise<StyleEditorModule> | undefined;
+    const openEditor = load ? () => (editor ??= load()) : null;
+
+    const showEditor = $derived(router.route === "advanced" && openEditor !== null);
 </script>
 
 <!-- Contour-line backdrop, the field-guide signature (see docs/index.html). -->
@@ -17,11 +30,13 @@
 
 <!-- Home stays mounted (display toggle) so the Leaflet map survives navigation. -->
 <main>
-    <div class="route" hidden={router.route !== "home"}>
-        <Home active={router.route === "home"} />
+    <div class="route" hidden={showEditor}>
+        <Home active={!showEditor} />
     </div>
-    {#if router.route === "advanced"}
-        <Advanced />
+    {#if showEditor && openEditor}
+        {#await openEditor() then { default: StyleEditor }}
+            <StyleEditor />
+        {/await}
     {/if}
 </main>
 

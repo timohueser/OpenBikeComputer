@@ -13,7 +13,7 @@ import {
     smallestRegionAt,
     type IndexedRegion,
 } from "./geo";
-import type { RegionFeature } from "../api/client";
+import type { RegionFeature } from "../platform/types";
 
 export type Bbox = [number, number, number, number]; // [W, S, E, N] degrees
 

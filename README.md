@@ -182,6 +182,16 @@ For frontend development, run the API (`.venv/bin/python -m packer.web_builder
 --no-browser`) and `npm run dev` in `packer/web_builder/frontend/` side by side —
 Vite proxies `/api` to port 8000.
 
+The same Svelte source builds for three hosts, chosen by Vite mode (issue #895).
+`npm run build` is the local FastAPI one described above and the only one the
+Python server mounts; the other two have no back end yet:
+
+| Script | Host | Output |
+| :-- | :-- | :-- |
+| `npm run build` | the local FastAPI dev server | `packer/web_builder/static/dist/` |
+| `npm run build:web` | the static hosted site (no backend) | `frontend/dist/web/` |
+| `npm run build:desktop` | the Tauri desktop app | `frontend/dist/desktop/` |
+
 ---
 
 ## Viewing & simulating
