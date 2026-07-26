@@ -5,8 +5,7 @@
     import OutputTab from "../components/advanced/OutputTab.svelte";
     import ProfilesTab from "../components/advanced/ProfilesTab.svelte";
     import StyleTable from "../components/advanced/StyleTable.svelte";
-    import { api } from "../lib/api/client";
-    import { API_BASE } from "../lib/constants";
+    import { platform } from "../lib/platform";
     import { exportFile, importFile } from "../lib/config/edit";
     import type { Preset, SchemaEnvelope } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
@@ -36,16 +35,21 @@
 
     onMount(async () => {
         if (!working.envelope) working.restore();
-        api.schema().then((s) => (schema = s)).catch(() => (schema = null));
-        api.presets().then((p) => (presets = p)).catch(() => {});
+        // Non-null wherever this route can load — `schema` is gated on
+        // `caps.build || caps.styleEditor` and the editor is the latter.
+        platform.schema?.().then((s) => (schema = s)).catch(() => (schema = null));
+        platform.presets().then((p) => (presets = p)).catch(() => {});
+        // The OSM tag-key catalog for the category rail — a static asset on
+        // every host, and unrelated to the platform's `catalog()` (baked maps).
         fetch(`${import.meta.env.BASE_URL}osm_catalog.json`)
             .then((r) => (r.ok ? r.json() : { keys: {} }))
             .then((c) => (catalog = c?.keys ? c : { keys: {} }))
             .catch(() => {});
-        // One-shot migration offer for pre-redesign server-side edits.
+        // One-shot migration offer for pre-redesign server-side edits. Only the
+        // dev host ever had a server-side config, hence the optional call.
         if (!localStorage.getItem("obcm.legacyPromptDismissed")) {
-            fetch(`${API_BASE}/config/legacy`)
-                .then((r) => (r.ok ? r.json() : null))
+            platform
+                .legacyConfig?.()
                 .then((cfg) => (legacyConfig = cfg))
                 .catch(() => {});
         }

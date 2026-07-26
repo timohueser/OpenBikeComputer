@@ -16,6 +16,11 @@ __pycache__/
 # (issue #95). Source of truth is the committed tiny/tiny.osm; rebuild via
 # packer/tests/corpus/build_corpus.sh.
 !packer/tests/corpus/data/tiny.osm.pbf
+# ...and the other two corpus fixtures, in-repo for the same reason: the POI
+# end-to-end test (#422) and the 233-byte deliberately-unsorted file that pins
+# `--bbox`'s refusal to crop a file whose ways precede their nodes (#910).
+!packer/tests/corpus/data/poi.osm.pbf
+!packer/tests/corpus/data/unsorted.osm.pbf
 # The simulator's default route + track stores (its "SD card") — runtime artifacts.
 firmware/routes/
 firmware/tracks/
@@ -41,7 +46,10 @@ tools/obc.local
 .venv/
 /maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
+# The dev host builds into static/dist/ (what the FastAPI server mounts); the
+# static-web and desktop hosts into frontend/dist/<host>/ — see #895.
 packer/web_builder/frontend/node_modules/
+packer/web_builder/frontend/dist/
 packer/web_builder/static/dist/
 
 # XcodeBuildMCP session defaults (local tool state)

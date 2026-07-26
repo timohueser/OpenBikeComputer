@@ -1,5 +1,5 @@
-import { API_BASE } from "../constants";
-import { api, type JobRequest } from "./client";
+import { API_BASE, api } from "./client";
+import type { BuildRequest, BuildResult, BuildSession, BuildState } from "../platform/types";
 
 // Coarse pipeline phases in order; a status event's `detail` indexes into this
 // to derive an overall percentage (ported from the legacy app.js PHASES).
@@ -7,32 +7,26 @@ const PHASES = ["downloading", "cropping", "merging", "ingest", "bbox", "land", 
 
 const ACTIVE_JOB_KEY = "obcm.activeJob";
 
-export interface JobResult {
-    downloadUrl: string;
-    filename: string;
-    size: number;
-}
-
 /**
- * Follows one build job over SSE with reactive state for the UI. The server's
- * event log is append-only and replayed on (re)connect, so reconnecting once
- * after a dropped stream is always safe; a normal stream close at job end must
- * not be treated as an error.
+ * Follows one build job over SSE with reactive state for the UI — the dev
+ * host's `BuildSession`. The server's event log is append-only and replayed on
+ * (re)connect, so reconnecting once after a dropped stream is always safe; a
+ * normal stream close at job end must not be treated as an error.
  */
-export class JobTracker {
-    state = $state<"idle" | "starting" | "running" | "done" | "error">("idle");
+export class JobTracker implements BuildSession {
+    state = $state<BuildState>("idle");
     phase = $state("");
     pct = $state(0);
     logLines = $state<string[]>([]);
     transientLine = $state<string | null>(null);
-    result = $state<JobResult | null>(null);
+    result = $state<BuildResult | null>(null);
     error = $state<string | null>(null);
 
     private es: EventSource | null = null;
     private jobId: string | null = null;
     private reconnected = false;
 
-    async start(req: JobRequest) {
+    async start(req: BuildRequest) {
         this.reset();
         this.state = "starting";
         try {
@@ -156,10 +150,4 @@ export class JobTracker {
         this.es?.close();
         this.es = null;
     }
-}
-
-export function formatBytes(n: number): string {
-    if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
-    if (n >= 1 << 10) return (n / (1 << 10)).toFixed(1) + " KB";
-    return n + " B";
 }

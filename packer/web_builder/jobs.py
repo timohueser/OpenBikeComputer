@@ -27,8 +27,14 @@ class QueueFull(Exception):
 
 
 # `obc-pack` prints these stage strings on stdout; they map to a coarse UI phase.
+# Order matters to the UI: it derives a percentage from the phase's index, so a
+# marker must never fire after a later-indexed one. "Cropping" only appears on
+# the multi-source path (obc-pack crops each input before merging them); a
+# single-source bbox build crops inside ingest, as pass 0.
 _STAGE_MARKERS = {
+    "Cropping": "cropping",
     "Merging": "merging",
+    "Pass 0": "ingest",
     "Pass 1": "ingest",
     "Pass 2": "ingest",
     "Calculating BBox": "bbox",
@@ -193,35 +199,6 @@ def _download_pbf(job, region_id, url):
     return dest
 
 
-def _crop_pbf(job, src_path, region_id, bbox, out_dir):
-    """Crop one source PBF to `bbox` ([W, S, E, N], degrees) with `osmium extract`.
-
-    Returns the cropped path, or None if the crop is empty / fails (e.g. the
-    region doesn't actually reach into the box). Cropping each source up front
-    keeps obc-pack from chewing through whole countries for a city-sized box.
-    """
-    w, s, e, n = bbox
-    out = os.path.join(out_dir, f"{region_id}.crop.osm.pbf")
-    cmd = [
-        "osmium", "extract", "--overwrite",
-        "-b", f"{w},{s},{e},{n}",
-        src_path, "-o", out,
-    ]
-    job.emit({"type": "log", "line": "$ " + " ".join(cmd), "transient": False})
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        job.emit({"type": "log",
-                  "line": f"crop {region_id} failed: {proc.stderr.strip()}",
-                  "transient": False})
-        return None
-    if not os.path.exists(out) or os.path.getsize(out) == 0:
-        return None
-    job.emit({"type": "log",
-              "line": f"Cropped {region_id} to box ({os.path.getsize(out)} bytes)",
-              "transient": False})
-    return out
-
-
 def _stream_process(job, proc):
     """Read proc output, splitting on both \\n and \\r so tqdm bars surface as
     transient log lines while normal prints are committed lines."""
@@ -245,27 +222,10 @@ def _stream_process(job, proc):
 
 
 def _run(job):
-    crop_dir = None
     job.state = "running"
     try:
         urls = geofabrik.region_pbf_urls(job.region_ids)
         pbf_paths = [_download_pbf(job, rid, url) for rid, url in urls]
-
-        # Bounding-box build: crop each source PBF to the box before packing, so
-        # obc-pack only sees the area of interest (and merges the crops as usual).
-        if job.bbox:
-            job.emit({"type": "status", "status": "cropping", "detail": "cropping"})
-            crop_dir = tempfile.mkdtemp(prefix="obcm-crop-")
-            cropped = []
-            for (rid, _url), src in zip(urls, pbf_paths):
-                out = _crop_pbf(job, src, rid, job.bbox, crop_dir)
-                if out:
-                    cropped.append(out)
-            if not cropped:
-                raise RuntimeError(
-                    "The bounding box does not overlap any of the selected regions' data."
-                )
-            pbf_paths = cropped
 
         # The native obc-pack binary is the only backend; fail fast (before any
         # temp file) with a clear message if it isn't built.
@@ -288,6 +248,13 @@ def _run(job):
 
         cmd = [rust_bin, *pbf_paths, cfg_path, job.out_path,
                "--chunk-size", str(job.chunk_size)]
+        # Bounding-box build: obc-pack crops during ingest (issue #910), so no
+        # `osmium extract` step and no temporary cropped PBFs on disk. It also
+        # errors out itself, with the box in the message, when the box misses the
+        # selected regions entirely.
+        if job.bbox:
+            w, s, e, n = job.bbox
+            cmd += ["--bbox", f"{w},{s},{e},{n}"]
         job.emit({"type": "log", "line": "$ " + " ".join(cmd), "transient": False})
 
         proc = subprocess.Popen(
@@ -310,8 +277,6 @@ def _run(job):
         job.error = str(exc)
         job.emit({"type": "error", "message": str(exc)})
     finally:
-        if crop_dir:
-            shutil.rmtree(crop_dir, ignore_errors=True)
         job.finished = True
 
 

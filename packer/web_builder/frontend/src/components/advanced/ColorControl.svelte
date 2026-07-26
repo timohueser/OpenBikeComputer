@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { getPalette, type Palette } from "../../lib/api/palette";
+    import { getPalette, type Palette } from "../../lib/palette";
     import { formatRgb565, hexToRgb565, parseRgb565, rgb565ToDeviceHex, rgb565ToHex } from "../../lib/color/rgb565";
 
     let {
