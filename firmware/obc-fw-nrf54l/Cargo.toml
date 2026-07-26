@@ -34,19 +34,26 @@ description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hard
 # See `firmware/docs/ls021-flpr.md` + the crate README.
 #
 # **The default build IS the all-features build** (LM20, 2026-07-23): map + ride loop + on-device
-# router + the full BLE stack in one image — there is no separate non-BLE shape any more (the
-# 512 KB part fits them together; the budget assert + measured-residual notes in main.rs are the
-# margins). The critical-section impl therefore comes from MPSL on every normal build;
-# `cs-single-core` remains only as an escape hatch for a hypothetical radio-less bring-up build
-# (`--no-default-features --features cs-single-core,...`).
+# router + the full BLE stack + the USB device plane in one image — there is no separate non-BLE
+# shape any more, and since 2026-07-26 no separate non-USB shape either (the 512 KB part fits them
+# together; the budget assert + measured-residual notes in main.rs are the margins). The
+# critical-section impl therefore comes from MPSL on every build.
 default = ["ble", "sd-bench"]
 
-# The critical-section impl for every non-BLE build (what used to be the always-on
+# The critical-section impl for a non-BLE build (what used to be the always-on
 # `cortex-m/critical-section-single-core`). A **feature** because it is mutually exclusive with
 # the MPSL-provided impl the BLE stack requires (`nrf-mpsl/critical-section-impl` — MPSL's radio
 # timing forbids global-interrupt-disable critical sections, and two impls = duplicate link
-# symbols). Not part of any default build since `ble` became the default; kept as the
-# escape hatch for a radio-less bring-up build.
+# symbols). Not part of any default build since `ble` became the default.
+#
+# ⚠️ **The radio-less shape it exists for does not currently compile**, and had already stopped
+# compiling before USB became unconditional: `main.rs` uses `obc_platform::SensorHub` and
+# `input_plane.rs` uses `ButtonInput::wait_for_any_press` with no cfg, and both live behind
+# `obc-platform`'s `sensor-link` / `input-wait` features which only `ble` turns on — so
+# `--no-default-features --features cs-single-core` fails with five unresolved-item errors
+# (`SensorHub` ×2, `obc_platform::sensor_hub`, `nrf_mpsl`, `wait_for_any_press`). Nothing in CI
+# builds it. Kept as the feature *flag* because restoring a radio-less build is a cfg job, not a
+# redesign — but treat it as unbuilt, not as a working escape hatch.
 cs-single-core = ["cortex-m/critical-section-single-core"]
 
 # Marker for the SD throughput diagnostic bin. Rides the default (ble) feature set — MPSL's
@@ -93,31 +100,16 @@ resource-report = []
 # global-irq-disable critical sections); a `compile_error!` in main.rs rejects `ble` +
 # `cs-single-core` together. Composes with `debug-uart`/`synth` for a headless ride beside a
 # live link.
+#
+# It also carries the **USB device plane** (`src/usb/`, #889), which is unconditional code: the
+# transport-free companion-link core it drives (`src/link/`, `src/object_store.rs`) and everything
+# the protocol touches on this board — the settings ↔ Config bridge, the ride loop's
+# recording/clock/store-changed crossings, the on-device delete tasks, ~70 cfg sites in
+# `ride.rs`/`settings.rs` — are gated on `ble`. That was the reason the old `usb` feature implied
+# `ble`; with no `usb` feature left, the implication is simply that `ble` is what the whole
+# companion link hangs off. If a radio-less link build is ever wanted, those gates become a `link`
+# cfg — a mechanical rename, not a redesign.
 ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:static_cell", "dep:heapless09", "dep:obc-ble", "obc-platform/sensor-link", "obc-platform/input-wait"]
-
-# The **USB device plane** (issue #889): the nRF54LM20's USBHS behind a vendor-specific bulk
-# interface, carrying the *same* companion protocol the radio carries — so the web builder (WebUSB,
-# Chromium) and the desktop app (native USB) can push a map, a route or a firmware image straight to
-# a plugged-in device. embassy-nrf 0.11 already ships the driver (`src/usb/usbhs.rs`, a full
-# `embassy_usb_driver::Driver` over the Synopsys OTG core + `vbus_detect.rs`), gated on the
-# `nrf54lm20-app-s` feature this crate already selects, on **dedicated D+/D−/VBUS/TXRTUNE pins** —
-# so it costs no GPIO and re-plans nothing in the pin map. It needs AHB ≥ 30 MHz; the board runs 128.
-#
-# **`usb` implies `ble`, deliberately.** Not because USB needs a radio, but because everything the
-# protocol touches on this board — the object store, the settings ↔ Config bridge, the ride loop's
-# recording/clock/store-changed crossings, the on-device delete tasks — is already reachable only
-# under `ble` (which has been part of `default` since the LM20 retarget: "the default build IS the
-# all-features build"). Re-cutting ~70 `#[cfg(feature = "ble")]` sites across `ride.rs`/`settings.rs`
-# to `any(ble, usb)` for a radio-less shape nobody ships would be churn with a real regression
-# surface and no user. If a radio-less USB build is ever wanted, those gates become a `link` cfg —
-# a mechanical rename, not a redesign.
-#
-# **Off by default until on-glass.** The peripheral bring-up is unverified on hardware (no board in
-# CI and no probe here), so the shipping profiles stay exactly as pinned in
-# `firmware/tools/resource_baseline.json`. Flip it into `default` once a real enumeration is
-# confirmed. Build with (the default set already carries `ble`):
-#   cargo run --release --features usb
-usb = ["ble", "dep:embassy-usb"]
 
 # The `SoftdeviceController: 50:701` isolation harness (epic #707): MPSL + SDC + trouble-host
 # only — no FLPR / SD / app — scanning for and connecting an HR strap with the exact ship
@@ -290,13 +282,13 @@ static_cell = { version = "2", optional = true }
 # fixtures pin it to the Swift side. A workspace member built here for the M33 target.
 obc-ble = { path = "../obc-ble", optional = true }
 
-# --- The USB device stack (issue #889) — optional, pulled in only by `usb` above ---
+# --- The USB device stack (issue #889) — in **every** build; the device plane is not optional ---
 # embassy's async USB device stack. 0.6 is the release that pairs with the `embassy-usb-driver` 0.2
 # trait version embassy-nrf 0.11 implements for the LM20's USBHS, so no patch or bump anywhere.
 # `default-features = false` drops `usbd-hid` (we expose one vendor interface, no HID). `msos-descriptor`
 # support is unconditional in 0.6 — it is what makes Windows auto-bind WinUSB with no .inf and no
 # Zadig, which is the difference between "plug it in" and "install a driver first".
-embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"], optional = true }
+embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"] }
 
 [profile.release]
 opt-level = 3

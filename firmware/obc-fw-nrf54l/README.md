@@ -130,7 +130,8 @@ From this crate directory (it's a standalone crate built for `thumbv8m.main-none
 
 ```sh
 # Default: full map + ride loop on the **LS021 panel via the FLPR** (issues #165 / #173),
-# driving the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C bus (issue #218).
+# driving the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C bus (issue #218),
+# with **both companion transports up** — the BLE radio and the USB device plane (#889).
 # Builds the RISC-V blob, so it needs an rv32emc gcc (below) + the LS021 wiring + Board-Configurator
 # settings. With no Qwiic hardware attached it still boots and idles waiting for a fix (watch RTT).
 cargo run --release
@@ -150,12 +151,10 @@ cargo run --release --features debug-uart
 # the critical-section impl to MPSL's — a compile_error catches the wrong invocation).
 # Composes with debug-uart/synth (headless ride beside a live link).
 cargo run --release --no-default-features --features ble
-
-# The USB device plane (issue #889): the default build **plus** the LM20's USBHS as a
-# vendor bulk interface, speaking the same object protocol as the radio. Off by default
-# until it is confirmed on glass; see the USB section below for the bring-up recipe.
-cargo run --release --features usb
 ```
+
+**There is no `usb` feature.** The USB device plane (#889) is in every build above — see the
+"USB device plane" section further down for the bring-up recipe.
 
 ### SD read throughput diagnostic
 
@@ -334,11 +333,15 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
   device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
   contact pairs with a fresh passkey.
 
-## USB link to a host (`usb`, issue #889) — **not yet verified on glass**
+## The USB device plane (issue #889) — **in every build; not yet verified on glass**
 
-`--features usb` adds a second transport for the *same* companion protocol: the LM20's USBHS
+Every build ships a second transport for the *same* companion protocol: the LM20's USBHS
 behind one vendor-specific interface, so the web builder (WebUSB, Chromium) or the desktop app can
-push a map / route / firmware image to a plugged-in device. The wire protocol is canonical in
+push a map / route / firmware image to a plugged-in device. It was briefly behind a `usb` Cargo
+feature; **that feature is gone** — the plane is part of the device, not an option of it, and the
+resource baseline in [`firmware/tools/resource_baseline.json`](../tools/resource_baseline.json) pins
+the shape that includes it (+5,096 B resident, +45,688 B flash, guarded poll frame 9,664 → 9,728 B
+against the unchanged 12,288 B limit). The wire protocol is canonical in
 [`obc-ble-interface-spec.md`](../../obc-ble-interface-spec.md) — USB is a transport under it, not a
 second protocol. What is **board-specific** and worth knowing:
 
@@ -366,8 +369,9 @@ second protocol. What is **board-specific** and worth knowing:
 
 Everything below is **unverified** — no board was plugged in for the PR that added it.
 
-1. Flash `cargo run --release --features usb` over **J4** (remember the flash-twice quirk and keep
-   `--verify`; retry 2–3× if probe-rs errors). Watch RTT for
+1. Flash `cargo run --release` over **J4** — the plain default build; no feature flag selects the
+   plane any more (remember the flash-twice quirk and keep `--verify`; retry 2–3× if probe-rs
+   errors). Watch RTT for
    `usb: device plane up — 1209:0001, serial '…', HS bulk 512 B`.
 2. Plug **J3** into the host. On macOS `system_profiler SPUSBDataType` (or Linux `lsusb -v -d
    1209:0001`) should show `OpenBikeComputer`, the FICR serial as `iSerialNumber`, **Speed: Up to
@@ -377,8 +381,10 @@ Everything below is **unverified** — no board was plugged in for the PR that a
 4. RTT should show `usb: [ctl] endpoint enabled` and `usb: [bulk] endpoint enabled` once the host
    claims the interface.
 
-**Known failure modes.** No enumeration at all with no RTT line → the task never started (check the
-`usb` feature is on). Enumeration at 12 Mb/s instead of 480 → the PHY fell back to full speed, and
+**Known failure modes.** No enumeration at all with no RTT line → the task never started (it is
+spawned unconditionally, so this is a real bring-up failure, not a missing build flag — check for a
+panic or a `USBHS` peripheral fault before the spawn). Enumeration at 12 Mb/s instead of 480 → the
+PHY fell back to full speed, and
 the 512 B bulk descriptors are then illegal; that is a real bug, not a slow link. A device that
 enumerates but whose transfers hang → look for `discarded N unclaimed bytes while idle` (the host
 wrote payload before its descriptor was acked) or a `busy` status (the cross-transport

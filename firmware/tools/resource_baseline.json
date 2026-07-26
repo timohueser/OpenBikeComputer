@@ -1,25 +1,25 @@
 {
   "schema_version": 1,
   "measurement": {
-    "source_commit": "fded8d6444bd3e17fae7f916fd10a7eea0611700",
+    "source_commit": "7afc890dba19e8e94cd4fb6578a3a14e2c4cb12d",
     "rustc": "1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.2",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
     "riscv_binutils": "GNU objcopy (GNU Binutils) 2.46.1",
     "build_host": "MacBookPro18,3 (arm64), macOS 26.5.1 (25F80)",
     "target": "thumbv8m.main-none-eabihf",
-    "capacity_profile": "LM20 (nRF54LM20-DK, 512 KiB SRAM; 500 KiB M33 carve; default = all-features/ble; SDC size measured on glass 2026-07-24)"
+    "capacity_profile": "LM20 (nRF54LM20-DK, 512 KiB SRAM; 500 KiB M33 carve; default = all-features/ble + the unconditional USB device plane; SDC size measured on glass 2026-07-24)"
   },
   "board": {
     "default": {
-      "features": "default (= all-features: map + router + BLE, LS021/FLPR, real sensors)",
-      "measured_resident": 416032,
-      "resident_ram_max": 416032,
+      "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
+      "measured_resident": 421128,
+      "resident_ram_max": 421128,
       "uninit_max": 1024,
-      "measured_flash": 1146736,
+      "measured_flash": 1192640,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
-      "poll_frame_measured": 9664,
+      "poll_frame_measured": 9728,
       "poll_frame_limit": 12288,
       "compile_time_allocations": {
         "framebuffer": 76800,
@@ -43,19 +43,20 @@
         "ble_object_store": 13528,
         "ble_server": 2128,
         "ble_gap_name": 52,
-        "ble_sensor_manager": 370
+        "ble_sensor_manager": 370,
+        "usb_named": 2644
       },
       "full_frame_sized_writable_count": 2
     },
     "ble": {
-      "features": "--no-default-features --features ble (map + BLE, constrained nrf-mem capacities)",
-      "measured_resident": 416032,
-      "resident_ram_max": 416032,
+      "features": "--no-default-features --features ble (map + BLE + USB device plane, constrained nrf-mem capacities)",
+      "measured_resident": 421128,
+      "resident_ram_max": 421128,
       "uninit_max": 1024,
-      "measured_flash": 1146736,
+      "measured_flash": 1192632,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
-      "poll_frame_measured": 9664,
+      "poll_frame_measured": 9728,
       "poll_frame_limit": 12288,
       "floating_stable_observation": {
         "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
@@ -88,7 +89,8 @@
         "ble_object_store": 13528,
         "ble_server": 2128,
         "ble_gap_name": 52,
-        "ble_sensor_manager": 370
+        "ble_sensor_manager": 370,
+        "usb_named": 2644
       },
       "full_frame_sized_writable_count": 2
     }

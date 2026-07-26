@@ -27,9 +27,10 @@
 //! handle vs. a USB selector byte), how a device → host message is *delivered* (an ATT notify vs. a
 //! bulk-IN frame), and the link lifecycle (advertising/bonding vs. enumeration/VBUS).
 //!
-//! Compiled whenever the companion link exists at all. `usb` implies `ble` (see `Cargo.toml`), so
-//! gating on `ble` and gating on "either link" are the same set today; the module is named for the
-//! concept rather than the radio so a future radio-less build is a cfg rename, not a redesign.
+//! Compiled whenever the companion link exists at all. The USB plane is unconditional and the
+//! radio is in every build that compiles, so gating on `ble` and gating on "either link" are the
+//! same set today; the module is named for the concept rather than the radio so a future
+//! radio-less build is a cfg rename, not a redesign.
 
 pub(crate) mod command;
 pub(crate) mod identity;
