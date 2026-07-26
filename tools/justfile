@@ -157,6 +157,70 @@ web *args:
     fi
     _run .venv/bin/python -m packer.web_builder "$@"
 
+# Run the desktop app (Tauri + obc-pack linked in as a library, #906). The Rust side
+# embeds the built frontend, so the frontend is built first. Opts: dev (live-reload
+# against Vite), build (compile only, don't open the window).
+#   obc desktop         obc desktop dev        obc desktop build
+# Build & run the desktop app. Opts: dev (live-reload) build (compile only)
+desktop *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init; ensure_geos
+    mode=run
+    for o in "$@"; do case "$o" in
+      dev)              mode=dev ;;
+      build|build-only) mode=build ;;
+      *) _err "unknown desktop option: '$o'  (want: dev build)"; exit 1 ;;
+    esac; done
+    fe="$OBC_ROOT/packer/web_builder/frontend"
+    [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
+    # The wasm GPX↔OBCR bridge (#896) is imported by the app, and `npm run check`/
+    # `test`/`build` all fail without it — build it before anything else needs it.
+    [[ -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" ]] || \
+      { _say "building the wasm convert bridge…"; ( cd "$fe" && _run npm run build:wasm ); }
+    if [[ "$mode" == dev ]]; then
+      # `custom-protocol` is a default feature here, which is what makes plain
+      # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
+      _say "starting Vite (desktop mode) on :5173 — leave it running, then this window follows it"
+      ( cd "$fe" && npm run dev -- --mode desktop & )
+      cd "$OBC_ROOT/firmware/obc-desktop"; _run cargo run --no-default-features
+    else
+      _say "building the desktop frontend bundle…"
+      ( cd "$fe" && _run npm run build:desktop )
+      cd "$OBC_ROOT/firmware/obc-desktop"
+      [[ "$mode" == build ]] && { _run cargo build --release; _say "built: $PWD/target/release/obc-desktop"; exit 0; }
+      _run cargo run --release
+    fi
+
+# Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
+# Builds it, writes regions.json beside it, and serves on :4173. Args: [PORT].
+# A catalog.json is the bakery's output (B1 #898); without one the site says so and
+# shows no styles — that is OBCC_Spec.md §7 refusing a manifest it hasn't got, not a bug.
+# Build & serve the static hosted tier (no backend) on :4173. Args: [PORT]
+site *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    port="${1:-4173}"
+    fe="$OBC_ROOT/packer/web_builder/frontend"
+    [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
+    [[ -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" ]] || \
+      { _say "building the wasm convert bridge…"; ( cd "$fe" && _run npm run build:wasm ); }
+    _say "building the static web tier…"
+    ( cd "$fe" && _run npm run build:web )
+    cd "$OBC_ROOT"
+    if [[ ! -x .venv/bin/python ]]; then
+      _say "creating .venv + installing packer deps…"
+      _run python3 -m venv .venv
+      _run .venv/bin/pip install -q --upgrade pip
+      _run .venv/bin/pip install -q -r packer/requirements.txt
+    fi
+    # The Geofabrik index the picker draws. The FastAPI host computes it per request;
+    # a site with no backend needs it as a file (C6 #905 wires this into the deploy).
+    _run .venv/bin/python -m packer.web_builder.static_data --out "$fe/dist/web/data"
+    _say "serving http://localhost:$port  (Ctrl-C to stop)"
+    cd "$fe/dist/web"; _run .venv/bin/python -m http.server "$port"
+
 # ── Host workspace chores ────────────────────────────────────────────────────
 
 # Build the host workspace (simulator + shared crates + packer).
@@ -173,7 +237,9 @@ test *args:
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT/firmware"; _run cargo test "$@"
 
-# Format everything: the workspace AND the excluded board crate (the required two-step).
+# The workspace excludes three crates, and rustfmt walks up from each file to find its
+# own manifest — so this is a FOUR-step and the fmt CI guard fails if a leg is skipped.
+# Format everything: the workspace + board crate + bootloader + desktop app (four-step).
 fmt:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -181,6 +247,8 @@ fmt:
     cd "$OBC_ROOT/firmware"
     _run cargo fmt --all
     _run cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml
+    _run cargo fmt --manifest-path obc-boot/Cargo.toml
+    _run cargo fmt --manifest-path obc-desktop/Cargo.toml
 
 # Render benchmark + pixel-hash tripwire. Args: (none) | check | write.
 bench *args:
@@ -209,15 +277,17 @@ check *args:
     #!/usr/bin/env bash
     set -uo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    sel=("$@"); (( ${#sel[@]} )) || sel=(fmt clippy test device docs board deny wasm)
+    sel=("$@"); (( ${#sel[@]} )) || sel=(fmt clippy test device docs board frontend deny wasm)
     want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
     FAILED=(); PASSED=(); SKIPPED=()
     step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
              if _run "$@"; then PASSED+=("$label"); else _err "$label FAILED"; FAILED+=("$label"); fi; }
     cd "$OBC_ROOT/firmware"
     if want fmt; then
-      step "fmt (workspace)"  cargo fmt --all --check
+      step "fmt (workspace)"   cargo fmt --all --check
       step "fmt (board crate)" cargo fmt --check --manifest-path obc-fw-nrf54l/Cargo.toml
+      step "fmt (bootloader)"  cargo fmt --check --manifest-path obc-boot/Cargo.toml
+      step "fmt (desktop app)" cargo fmt --check --manifest-path obc-desktop/Cargo.toml
     fi
     want clippy && step "clippy (workspace, all-targets/features)" \
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -237,6 +307,21 @@ check *args:
         step "board build (ble, release)"    cargo build --release --locked --no-default-features --features ble
         popd >/dev/null
       else _warn "skip board gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("board"); fi
+    fi
+    if want frontend; then
+      if command -v npm >/dev/null 2>&1; then
+        fe="$OBC_ROOT/packer/web_builder/frontend"
+        pushd "$fe" >/dev/null
+        [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
+        # Not optional: the TS wrapper imports the generated bindings, so svelte-check
+        # and the byte-identity drift guard both fail without the module present. CI
+        # gets it as an artifact from the `wasm-convert` job; locally we build it.
+        step "wasm convert bridge"   npm run build:wasm
+        step "frontend svelte-check" npm run check
+        step "frontend vitest"       npm test
+        step "frontend builds (dev + web + desktop)" npm run build:all
+        popd >/dev/null
+      else _warn "skip frontend — npm not installed"; SKIPPED+=("frontend"); fi
     fi
     if want deny; then
       if command -v cargo-deny >/dev/null 2>&1; then

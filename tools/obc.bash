@@ -23,7 +23,7 @@ _obc_tasks() {
   if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
     just --justfile "$t/justfile" --summary 2>/dev/null && return
   fi
-  echo "sim flash uart debug rtt pack web build test fmt bench check check-device doctor setup"
+  echo "sim flash uart debug rtt pack web site desktop build test fmt bench check check-device doctor setup"
 }
 
 # .obcm maps across the repo root, maps/, and the web-builder cache.
@@ -86,8 +86,10 @@ _obc() {
       esac ;;
     bench)
       (( idx == 0 )) && mapfile -t COMPREPLY < <(compgen -W "check write" -- "$cur") ;;
+    desktop)
+      mapfile -t COMPREPLY < <(compgen -W "dev build" -- "$cur") ;;
     check)
-      mapfile -t COMPREPLY < <(compgen -W "fmt clippy test device docs board deny wasm" -- "$cur") ;;
+      mapfile -t COMPREPLY < <(compgen -W "fmt clippy test device docs board frontend deny wasm" -- "$cur") ;;
     doctor)
       mapfile -t COMPREPLY < <(compgen -W "--install" -- "$cur") ;;
     test)
