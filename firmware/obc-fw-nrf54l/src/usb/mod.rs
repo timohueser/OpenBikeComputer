@@ -64,9 +64,11 @@ use core::task::Poll;
 
 use defmt::{info, warn};
 use embassy_futures::join::join;
+use embassy_futures::select::select;
 use embassy_nrf::usb::vbus_detect::{HardwareVbusDetect, VbusDetect};
 use embassy_nrf::usb::{self as nrf_usb, Driver as UsbhsDriver};
-use embassy_nrf::{bind_interrupts, pac, peripherals, Peri};
+use embassy_nrf::{bind_interrupts, interrupt, pac, peripherals, Peri};
+use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::{Duration, Timer};
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::{Builder, Config, UsbDevice};
@@ -78,7 +80,9 @@ use control::ControlTx;
 
 bind_interrupts!(struct Irqs {
     USBHS => nrf_usb::InterruptHandler<peripherals::USBHS>;
-    VREGUSB => nrf_usb::vbus_detect::InterruptHandler;
+    // Two handlers on the one vector, and the order between them does not matter — see
+    // [`VbusEdge`] for why ours reads nothing and clears nothing.
+    VREGUSB => VbusEdge, nrf_usb::vbus_detect::InterruptHandler;
 });
 
 // ============================ Identity on the wire ============================
@@ -166,7 +170,10 @@ pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
     + MSOS_DESC_LEN
     + CONTROL_BUF_LEN
     + 2 * MAX_PACKET as usize
-    + core::mem::size_of::<heapless::String<16>>();
+    + core::mem::size_of::<heapless::String<16>>()
+    // [`VBUS_WAKER`] — 8 B, and itemized rather than waved through so the whole of #937's resident
+    // cost is a named term instead of an unexplained step in the linked `.bss` gate.
+    + core::mem::size_of::<AtomicWaker>();
 
 // ============================ The VBUS gate (#934) ============================
 //
@@ -194,19 +201,56 @@ pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
 //   2. **Before every delegated poll** — the guard in [`run`] re-reads VBUS synchronously in the
 //      same instruction stream, so there is no window in which a poll of an endpoint future can
 //      follow a power-down.
+//
+// Parking is **event-driven** (#937): the wait is on a VREGUSB interrupt ([`VbusEdge`]), so the
+// cable-less case — the common one — costs no wake-ups at all. That is a power decision on a
+// battery-powered device, and the reason it is even available is that #934 already made
+// [`vbus_present`] the single level source: the driver reads VBUS through [`BoardVbusDetect`], so
+// nothing of ours depends on embassy's private VBUS state and the vector is free to share.
 
-/// How often a parked plane re-reads VBUS.
+/// The parked plane's **safety net**, not its mechanism (#937).
 ///
-/// This is the only cost the gate imposes on the common (cable-less) case: two timer wake-ups a
-/// second of an otherwise empty task, against a ride loop that already wakes far more often. It is
-/// also the worst-case latency from plugging a cable in to the device asserting its D+ pull-up, so
-/// it trades directly against enumeration feel — half a second is imperceptible to a human
-/// plugging in a cable and invisible next to the host's own enumeration.
+/// The mechanism is [`VbusEdge`]: a cable edge raises VREGUSB, which wakes this task directly, so
+/// a device riding with nothing in J3 does not wake *at all* on USB's account and plug-in is
+/// perceived instantly rather than up to an interval later. This timer exists only so that a
+/// hypothetically missed edge self-heals on its own instead of parking the plane forever, and it is
+/// deliberately far too coarse to be a poll: at half a minute it is 60× cheaper than the 500 ms
+/// loop it replaces, and if it is ever what actually brings the plane up, that is a bug worth
+/// noticing rather than a latency worth tuning.
+const VBUS_RESYNC: Duration = Duration::from_secs(30);
+
+/// Woken on **every** VREGUSB edge — plug or unplug — by [`VbusEdge`].
 ///
-/// A timer rather than an interrupt because embassy's VBUS wakers (`BUS_WAKER` / `POWER_WAKER` in
-/// `usb/vbus_detect.rs`) are private, and this part's `VbusDetect::wait_power_ready` resolves
-/// *immediately* with `Ok`/`Err` rather than waiting — there is no edge-driven wait to borrow.
-const VBUS_POLL: Duration = Duration::from_millis(500);
+/// One task registers here ([`run`], through [`wait_for_vbus`]), so a single [`AtomicWaker`] is the
+/// whole synchronisation story.
+static VBUS_WAKER: AtomicWaker = AtomicWaker::new();
+
+/// The board's VREGUSB interrupt handler: wake [`VBUS_WAKER`], and nothing else.
+///
+/// Bound **alongside** embassy's `vbus_detect::InterruptHandler` rather than instead of it (see
+/// [`Irqs`]), which is what makes the ordering between the two irrelevant and is worth spelling out,
+/// because "own the vector" is the obvious reading of #937 and it is the weaker design:
+///
+///   - **Ours reads nothing and clears nothing.** It cannot lose an edge to a handler that ran
+///     first and already consumed `events_vbusdetected` / `events_vbusremoved`, because it never
+///     looks at them. Every waiter downstream re-reads the *level* ([`vbus_present`]) anyway, so an
+///     unconditional wake is not just sufficient, it is the only thing that can be correct here.
+///   - **Embassy's still runs**, so `VREGUSB`'s events still get cleared (nobody else does it, and
+///     an uncleared event is an interrupt storm), and embassy's private `BUS_WAKER` — the one
+///     `Bus::poll` registers on — still gets woken. That last point is the load-bearing one: it
+///     means the driver's wake path does not silently become a consequence of [`run`] happening to
+///     `join` the device pump and the endpoint futures into *one* task. It is true today (see
+///     [`wait_for_vbus`]) and it would stay true if someone split them tomorrow.
+///
+/// The cost of keeping embassy's handler is one atomic store and two wakes of wakers nothing of
+/// ours registers on, on an event a human generates by hand.
+struct VbusEdge;
+
+impl interrupt::typelevel::Handler<interrupt::typelevel::VREGUSB> for VbusEdge {
+    unsafe fn on_interrupt() {
+        VBUS_WAKER.wake();
+    }
+}
 
 /// Is a cable in J3 **right now**?
 ///
@@ -229,10 +273,29 @@ fn vbus_present() -> bool {
     status & VBUS_DETECTED != 0
 }
 
-/// Park until a cable is present. Silent when one already is.
+/// Park until a cable is present. Silent when one already is, and — the point of #937 — **free**
+/// while it is not: no timer in the common path, just a task asleep on an interrupt.
+///
+/// Two properties make this loop correct, and both are about ordering:
+///
+///   - [`VBUS_WAKER`] is registered *before* the level is read. An edge landing in between is
+///     therefore never lost: the wake either finds the registration (and re-polls us) or the read
+///     that follows it already sees the new level.
+///   - The outer `while` re-reads the level after every wake, so a wake for the *wrong* edge, a
+///     wake that predates the first registration, and the [`VBUS_RESYNC`] tick are all the same
+///     thing — a reason to look again — rather than three cases.
 async fn wait_for_vbus() {
     while !vbus_present() {
-        Timer::after(VBUS_POLL).await;
+        let edge = poll_fn(|cx| {
+            VBUS_WAKER.register(cx.waker());
+            if vbus_present() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        });
+        // The timer is the self-healing net described on [`VBUS_RESYNC`], not the mechanism.
+        select(edge, Timer::after(VBUS_RESYNC)).await;
     }
 }
 
@@ -387,6 +450,10 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
     // footprint of a cable-less boot from here on — the value itself is discarded, because
     // `BoardVbusDetect` is what answers questions (see its doc).
     //
+    // Arming is still embassy's, deliberately: it is also what enables the vector `VbusEdge` rides
+    // on, so the event-driven park (#937) comes for free out of the same call rather than out of a
+    // second, hand-rolled copy of these four register writes that could drift from it.
+    //
     // Logged *before* the touch, not after, and this is deliberate. The bug this fixes was
     // diagnosed by which log line failed to appear, and that bisect cost a round trip because the
     // first USB hardware access had nothing in front of it. If a cable-less boot ever dies here
@@ -447,10 +514,18 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
                 }
             })
             .await;
-            // Reached when the cable goes: the endpoint wakers and `Bus::poll`'s VBUS watch share
-            // this task, so a removal wakes us. If it somehow did not, the failure mode is a plane
-            // that stays parked — never one that reads a powered-down core.
+            // Reached when the cable goes: `VbusEdge` wakes this task on the removal edge and the
+            // guard above re-reads the level. If a wake were somehow missed, the failure mode is a
+            // plane that stays parked — never one that reads a powered-down core.
             warn!("usb: VBUS removed — device plane parked, endpoints idle until a cable returns");
+            // Asleep on the VREGUSB vector, not on a timer (#937). The device pump keeps its place
+            // in this same `join` while we are parked, and that is fine in both directions: the
+            // return edge wakes the *task*, which re-polls `device.run()`, whose `Bus::poll`
+            // observes VBUS as a **level read through `BoardVbusDetect`** (embassy-nrf
+            // `usb/usbhs.rs`, both arms of `poll`) rather than as a wait on any state private to
+            // embassy. Its `BUS_WAKER` registration is a way to *be* woken, not the thing it looks
+            // at — and it goes on being woken regardless, because embassy's handler is still bound
+            // next to ours.
             wait_for_vbus().await;
             info!("usb: VBUS back — device plane serving again");
         }
