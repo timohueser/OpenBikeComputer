@@ -3,7 +3,9 @@ import type { BuildRequest, BuildResult, BuildSession, BuildState } from "../pla
 
 // Coarse pipeline phases in order; a status event's `detail` indexes into this
 // to derive an overall percentage (ported from the legacy app.js PHASES).
-const PHASES = ["downloading", "cropping", "merging", "ingest", "bbox", "land", "quadtree", "serialize"];
+// "cropping" is gone since #920 — the packer no longer shells out to osmium to
+// pre-crop each region, so nothing emits that phase any more.
+const PHASES = ["downloading", "merging", "ingest", "bbox", "land", "quadtree", "serialize"];
 
 const ACTIVE_JOB_KEY = "obcm.activeJob";
 

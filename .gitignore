@@ -21,6 +21,10 @@ __pycache__/
 # `--bbox`'s refusal to crop a file whose ways precede their nodes (#910).
 !packer/tests/corpus/data/poi.osm.pbf
 !packer/tests/corpus/data/unsorted.osm.pbf
+# ...and the two overlapping halves of tiny.osm that pin the native multi-`.pbf`
+# merge (#920): ingesting the pair must reproduce ingesting the whole.
+!packer/tests/corpus/data/tiny_west.osm.pbf
+!packer/tests/corpus/data/tiny_east.osm.pbf
 # The simulator's default route + track stores (its "SD card") — runtime artifacts.
 firmware/routes/
 firmware/tracks/

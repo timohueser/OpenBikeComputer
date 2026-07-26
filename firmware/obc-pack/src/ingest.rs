@@ -1,7 +1,7 @@
-//! `ingest.rs` — read an `.osm.pbf` into styled features (lines, closed-way
-//! polygons, and multipolygon/`boundary` relation areas). Two `osmpbf` passes —
-//! three with a `--bbox`, which prepends a **pass 0** (see the cropping section
-//! at the end of this doc):
+//! `ingest.rs` — read one or more `.osm.pbf` files into styled features (lines,
+//! closed-way polygons, and multipolygon/`boundary` relation areas). Two `osmpbf`
+//! passes — three with a `--bbox`, which prepends a **pass 0** (see the cropping
+//! section at the end of this doc):
 //!
 //!   - **Pass 1** builds the `node_id → coord` store and collects qualifying area
 //!     relations. Relations sit last in a sorted PBF, so one whole-file read sees
@@ -18,6 +18,35 @@
 //!
 //! Coordinates use `decimicro / 1e7`, never `* 1e-7`, so the f64 lon/lat match
 //! osmium's exactly and everything downstream lines up.
+//!
+//! # Merging several sources ([`Keyed`], [`par_sources`])
+//!
+//! Given more than one `.pbf`, every pass reads **every** source and the results
+//! are folded together — there is no merged intermediate file, and nothing is
+//! buffered to be sorted afterwards. Two rules define the merge, and both are
+//! chosen rather than inherited:
+//!
+//! - **Duplicates: the first source on the command line wins, decided on the
+//!   `(type, id)` alone.** Adjacent Geofabrik extracts genuinely share their
+//!   border features, and the shared copies can differ — different tags, a
+//!   different version, even a moved node — if the two files were downloaded on
+//!   different days. Deciding on the id means a way whose *first* copy carries no
+//!   style still shadows a later, tagged copy: the winner is a whole object, never
+//!   a mix of two. `osmium merge` is explicitly **undefined** here (its own manual
+//!   says so, and it is observably inconsistent between object types), and worse,
+//!   it keeps *both* copies when their versions differ — which made the old path
+//!   emit the same road twice. So there is no behaviour to match, only one to pick.
+//! - **Order: ascending id, per type** — what a merged, sorted file would have
+//!   handed to the same pass. This is not cosmetic. Feature order decides which
+//!   quadtree chunk a feature lands in and therefore the packed bytes, so the
+//!   sources' outputs are tagged with the id that produced them ([`Keyed`]) and
+//!   put back in that order after the fold. A single source is already in file
+//!   order and is left strictly alone — untagged, unsorted, byte-for-byte as
+//!   before.
+//!
+//! Sources are read in parallel ([`par_sources`]); the fold that combines them is
+//! sequential and in command-line order, so the result never depends on which
+//! thread finished first.
 //!
 //! # Cropping to a `--bbox` ([`Bbox`], [`select_crop`])
 //!
@@ -56,7 +85,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use osmpbf::{Element, ElementReader, RelMemberType};
+use osmpbf::{BlobReader, BlobType, ByteOffset, Element, RelMemberType};
+use rayon::prelude::*;
 
 use crate::config::Config;
 use crate::geom::{assemble_multipolygon, polygon_is_valid, Geom};
@@ -175,6 +205,147 @@ impl Bbox {
     }
 }
 
+/// What a blob scan should do after the element it was just handed.
+enum Scan {
+    /// Keep going.
+    Continue,
+    /// Stop here. [`scan_blobs`] returns the offset of the blob this element came
+    /// from, so a later pass can resume at exactly this point.
+    StopAtThisBlob,
+}
+
+/// Stream a `.pbf`'s data blobs — from `start`, or from the beginning — handing
+/// every element to `f`, and return the offset of the blob the scan stopped in
+/// (`None` if it ran to the end of the file).
+///
+/// This is `ElementReader::for_each` plus the two things the passes want from the
+/// file's *structure* rather than its contents: the ability to stop, and the
+/// ability to resume. A sorted PBF stores nodes, then ways, then relations, and
+/// the node section is ~85 % of the bytes — so a pass that only wants ways skips
+/// straight to them instead of inflating and discarding every node blob. Blob
+/// offsets come from the seekable reader; `start` is always an offset this
+/// function returned earlier for the same file.
+fn scan_blobs<F>(path: &str, start: Option<ByteOffset>, mut f: F) -> Result<Option<ByteOffset>, String>
+where
+    F: FnMut(Element) -> Scan,
+{
+    let mut reader = BlobReader::seekable_from_path(path).map_err(|e| format!("open {path}: {e}"))?;
+    if let Some(pos) = start {
+        reader.seek(pos).map_err(|e| format!("seek {path}: {e}"))?;
+    }
+    for blob in reader {
+        let blob = blob.map_err(|e| format!("read {path}: {e}"))?;
+        // The header blob carries no elements; only OSMData blocks do.
+        if !matches!(blob.get_type(), BlobType::OsmData) {
+            continue;
+        }
+        let offset = blob.offset();
+        let block = blob.to_primitiveblock().map_err(|e| format!("decode {path}: {e}"))?;
+        for el in block.elements() {
+            if let Scan::StopAtThisBlob = f(el) {
+                return Ok(offset);
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Run `f` over every source in parallel, collecting the results **in source
+/// order**.
+///
+/// The sources are the natural unit of parallelism here: each pass reads each
+/// file independently, and only the fold that combines them has to be ordered.
+/// It is also where the wall clock the old `osmium merge` path got from
+/// multi-core blob decoding comes back — one thread per input rather than one
+/// thread per blob.
+fn par_sources<T, F>(paths: &[String], f: F) -> Result<Vec<T>, String>
+where
+    T: Send,
+    F: Fn(usize, &str) -> Result<T, String> + Sync,
+{
+    paths.par_iter().enumerate().map(|(i, p)| f(i, p.as_str())).collect()
+}
+
+/// Per-element output tagged with the id of the OSM object that produced it.
+///
+/// The tag is what lets several `.pbf`s be read independently and still come out
+/// exactly as one merged file would have produced them: later copies of an
+/// already-seen object dropped ([`Keyed::retain_keys`]), everything back in id
+/// order ([`Keyed::sort`]). With a single source there is nothing to merge, so
+/// nothing is tagged and this is a plain `Vec<T>` — an uncropped country pack
+/// must not start paying 8 bytes per feature for a merge it isn't doing.
+struct Keyed<T> {
+    tagged: bool,
+    keys: Vec<i64>,
+    items: Vec<T>,
+}
+
+impl<T> Keyed<T> {
+    fn new(tagged: bool) -> Self {
+        Keyed { tagged, keys: Vec::new(), items: Vec::new() }
+    }
+
+    #[inline]
+    fn push(&mut self, key: i64, item: T) {
+        if self.tagged {
+            self.keys.push(key);
+        }
+        self.items.push(item);
+    }
+
+    /// Concatenate a later source's outputs onto this one.
+    fn append(&mut self, mut other: Self) {
+        self.keys.append(&mut other.keys);
+        self.items.append(&mut other.items);
+    }
+
+    /// Drop every item whose key `keep` rejects, preserving order. Tagged only —
+    /// it is a merge operation and never runs on a single-source ingest.
+    fn retain_keys(&mut self, mut keep: impl FnMut(i64) -> bool) {
+        debug_assert!(self.tagged && self.keys.len() == self.items.len());
+        let mut w = 0;
+        for r in 0..self.items.len() {
+            if keep(self.keys[r]) {
+                if w != r {
+                    self.keys.swap(w, r);
+                    self.items.swap(w, r);
+                }
+                w += 1;
+            }
+        }
+        self.keys.truncate(w);
+        self.items.truncate(w);
+    }
+
+    /// Put the items back in ascending-id order — the order a merged, sorted
+    /// `.pbf` would have handed them to the same pass.
+    ///
+    /// The sort is **stable**, so a file that repeats an id inside itself (a
+    /// history file, which the fold's cross-source dedup never sees) keeps its own
+    /// order instead of picking one arbitrarily. Determinism is the whole point of
+    /// this function; it must not have a case where it flips a coin.
+    ///
+    /// The already-sorted check is not just an optimization: sources are normally
+    /// sorted and mostly disjoint, so the common case is a couple of runs that are
+    /// already in order, and skipping keeps the transient pair vector — the only
+    /// copy of the payload this whole merge makes — out of the picture entirely.
+    fn sort(&mut self) {
+        debug_assert!(self.tagged && self.keys.len() == self.items.len());
+        if self.keys.is_sorted() {
+            return;
+        }
+        let keys = std::mem::take(&mut self.keys);
+        let items = std::mem::take(&mut self.items);
+        let mut pairs: Vec<(i64, T)> = keys.into_iter().zip(items).collect();
+        pairs.sort_by_key(|(k, _)| *k);
+        (self.keys, self.items) = pairs.into_iter().unzip();
+    }
+
+    fn into_items(self) -> Vec<T> {
+        self.items
+    }
+}
+
 /// A grow-then-freeze set of OSM ids, backed by a sorted `Vec`.
 ///
 /// The crop's three id sets are the memory floor of a `--bbox` run over a large
@@ -186,9 +357,14 @@ impl Bbox {
 struct IdSet(Vec<i64>);
 
 impl IdSet {
-    #[inline]
-    fn insert(&mut self, id: i64) {
-        self.0.push(id);
+    /// Take another source's ids wholesale. Moves the first batch instead of
+    /// copying it, so the single-source case allocates once.
+    fn absorb(&mut self, mut ids: Vec<i64>) {
+        if self.0.is_empty() {
+            self.0 = ids;
+        } else {
+            self.0.append(&mut ids);
+        }
     }
 
     /// End the fill phase. Idempotent, so pass 0 can freeze the node set early
@@ -241,154 +417,180 @@ impl Crop {
     }
 }
 
-/// **Pass 0** — select the crop: nodes inside `bbox`, ways touching one of them,
-/// and the outside nodes those ways still need.
+/// **Pass 0** — select the crop across every source: nodes inside `bbox`, ways
+/// touching one of them, and the outside nodes those ways still need. Also
+/// returns, per source, the offset of the first blob that holds a way — pass 2
+/// resumes there instead of decoding the node section a third time.
 ///
-/// One sweep suffices because a PBF is type-sorted (nodes, then ways, then
-/// relations), so the node set is complete — and can be frozen — the moment the
-/// first way arrives. Passes 1 and 2 don't care about order (they are separate
-/// reads and relations only carry ids), so this is the one place that does; a
-/// node arriving *after* a way therefore has to be an error rather than a
-/// quietly wrong crop.
-fn select_crop(pbf_path: &str, bbox: Bbox) -> Result<Crop, String> {
+/// Two phases rather than one sweep, and that is a merge requirement rather than
+/// a refactor: a way in one file can have its only in-box node in *another* file
+/// (adjacent extracts share their border, and one side may hold the node while
+/// the other holds the way), so the node phase has to finish across **all**
+/// sources before any file's ways can be judged. The split costs nothing,
+/// because it falls where the file is already split: phase A walks the node
+/// section and stops at the first way-bearing blob, phase B resumes exactly
+/// there. Together they decode the file once, the same as the single sweep they
+/// replace.
+///
+/// Passes 1 and 2 don't care about element order (they are separate reads, and
+/// relations only carry ids), so this is the one place that does: phase A stops
+/// at the first way, so a node *after* a way would be silently skipped. Phase B
+/// sees the whole tail and turns that into an error rather than a quietly wrong
+/// crop.
+fn select_crop(paths: &[String], bbox: Bbox) -> Result<(Crop, Vec<Option<ByteOffset>>), String> {
     println!("Pass 0: selecting bbox...");
-    let mut inside = IdSet::default();
-    let mut halo = IdSet::default();
-    let mut ways = IdSet::default();
-    let mut nodes_done = false;
-    let mut out_of_order = false;
-    ElementReader::from_path(pbf_path)
-        .map_err(|e| format!("open {pbf_path}: {e}"))?
-        .for_each(|el| match el {
+    // --- Phase A: the in-box node ids, from every source. ---
+    let scans = par_sources(paths, |_, path| {
+        let mut ids: Vec<i64> = Vec::new();
+        let mut in_box = |lon: i32, lat: i32, id: i64| {
+            if bbox.contains(lon, lat) {
+                ids.push(id);
+            }
+        };
+        let ways_at = scan_blobs(path, None, |el| match el {
             Element::Node(n) => {
-                out_of_order |= nodes_done;
-                if bbox.contains(n.decimicro_lon(), n.decimicro_lat()) {
-                    inside.insert(n.id());
-                }
+                in_box(n.decimicro_lon(), n.decimicro_lat(), n.id());
+                Scan::Continue
             }
             Element::DenseNode(n) => {
-                out_of_order |= nodes_done;
-                if bbox.contains(n.decimicro_lon(), n.decimicro_lat()) {
-                    inside.insert(n.id());
-                }
+                in_box(n.decimicro_lon(), n.decimicro_lat(), n.id());
+                Scan::Continue
             }
-            Element::Way(w) => {
-                if !nodes_done {
-                    inside.freeze();
-                    nodes_done = true;
-                }
-                if w.refs().any(|r| inside.contains(r)) {
-                    ways.insert(w.id());
-                    // The halo: every other node this way needs. Ids already
-                    // `inside` are skipped — `keeps_node` checks both sets, and a
-                    // dense urban box would otherwise store most of its nodes twice.
-                    for r in w.refs() {
-                        if !inside.contains(r) {
-                            halo.insert(r);
+            // The first way: the node section is behind us and phase B takes over
+            // from this blob. (A file with no ways at all just runs to the end.)
+            Element::Way(_) => Scan::StopAtThisBlob,
+            Element::Relation(_) => Scan::Continue,
+        })?;
+        Ok((ids, ways_at))
+    })?;
+    let mut inside = IdSet::default();
+    let mut ways_at = Vec::with_capacity(paths.len());
+    for (ids, at) in scans {
+        inside.absorb(ids);
+        ways_at.push(at);
+    }
+    inside.freeze();
+
+    // --- Phase B: the ways that touch the box, and the halo they still need. ---
+    let scans = par_sources(paths, |i, path| {
+        let (mut ways, mut halo) = (Vec::new(), Vec::new());
+        let (mut saw_way, mut out_of_order) = (false, false);
+        scan_blobs(path, ways_at[i], |el| {
+            match el {
+                Element::Way(w) => {
+                    saw_way = true;
+                    if w.refs().any(|r| inside.contains(r)) {
+                        ways.push(w.id());
+                        // The halo: every other node this way needs. Ids already
+                        // `inside` are skipped — `keeps_node` checks both sets, and a
+                        // dense urban box would otherwise store most of its nodes twice.
+                        for r in w.refs() {
+                            if !inside.contains(r) {
+                                halo.push(r);
+                            }
                         }
                     }
                 }
+                // Nodes before the first way of the resume blob are ones phase A
+                // already saw; anything after a way means the file isn't sorted.
+                Element::Node(_) | Element::DenseNode(_) => out_of_order |= saw_way,
+                Element::Relation(_) => {}
             }
-            Element::Relation(_) => {}
-        })
-        .map_err(|e| format!("pass 0 {pbf_path}: {e}"))?;
-    if out_of_order {
-        return Err(format!(
-            "{pbf_path} is not sorted (a node follows a way), so --bbox cannot select ways in one pass — sort it \
-             first with `osmium sort`"
-        ));
+            Scan::Continue
+        })?;
+        if out_of_order {
+            return Err(format!(
+                "{path} is not sorted (a node follows a way), so --bbox cannot select its ways — sort it first \
+                 (e.g. `osmium sort`)"
+            ));
+        }
+        Ok((ways, halo))
+    })?;
+    let (mut ways, mut halo) = (IdSet::default(), IdSet::default());
+    for (w, h) in scans {
+        ways.absorb(w);
+        halo.absorb(h);
     }
-    // A file with no ways at all never hit the way branch.
-    if !nodes_done {
-        inside.freeze();
-    }
-    halo.freeze();
     ways.freeze();
+    halo.freeze();
     println!("  {} node(s) in box, {} way(s) kept (+{} boundary node(s))", inside.len(), ways.len(), halo.len());
-    Ok(Crop { inside, halo, ways })
+    Ok((Crop { inside, halo, ways }, ways_at))
 }
 
-/// Two-pass ingest of a single `.osm.pbf` (lines + closed-way polygons +
-/// relation-assembled area polygons). `bbox` crops the input to a box first (a
-/// third, id-only pass; see the module docs).
-pub fn ingest_osm(pbf_path: &str, config: &Config, bbox: Option<Bbox>) -> Result<Ingested, String> {
-    // --- Pass 0 (only with --bbox): the `complete_ways` id selection. ---
-    let crop = match bbox {
+/// One source's pass-1 harvest.
+struct NodeScan {
+    nodes: HashMap<i64, (i32, i32)>,
+    pois: Keyed<Poi>,
+    rels: Keyed<PendingRelation>,
+}
+
+/// One source's pass-2 harvest, plus the way ids it claims.
+struct WayScan {
+    features: Keyed<IngestFeature>,
+    coastlines: Keyed<Vec<(f64, f64)>>,
+    pois: Keyed<Poi>,
+    routable: Keyed<RoutableWay>,
+    member_geom: HashMap<i64, Vec<(f64, f64)>>,
+    /// Every way id this source processed — **including** the ones that produced
+    /// nothing at all. Ownership is decided on the id alone, so an untagged or
+    /// unresolvable copy here still has to shadow a later source's copy; a list
+    /// of what actually came *out* could not say that. Left empty for a single
+    /// source, which claims everything by definition.
+    claimed: Vec<i64>,
+}
+
+/// Two-pass ingest of one or more `.osm.pbf`s (lines + closed-way polygons +
+/// relation-assembled area polygons), merged as described in the module docs.
+/// `bbox` crops the inputs to a box first (a third, id-only pass).
+pub fn ingest_osm(paths: &[String], config: &Config, bbox: Option<Bbox>) -> Result<Ingested, String> {
+    if paths.is_empty() {
+        return Err("no .osm.pbf input given".into());
+    }
+    // More than one source ⇒ every output gets tagged with the id that produced
+    // it, which is what the fold needs to drop duplicates and restore the order a
+    // single merged file would have had.
+    let merging = paths.len() > 1;
+    if merging {
+        println!("Merging {} sources (on a duplicate id, the first source wins)...", paths.len());
+    }
+
+    // --- Pass 0 (only with --bbox): the `complete_ways` id selection, plus the
+    // per-source offset where the ways begin (pass 2 resumes there). ---
+    let (crop, ways_at) = match bbox {
         Some(bb) => {
-            let crop = select_crop(pbf_path, bb)?;
+            let (crop, ways_at) = select_crop(paths, bb)?;
             if crop.is_empty() {
                 let (w, s, e, n) = bb.to_degrees();
-                return Err(format!("--bbox {w},{s},{e},{n} does not overlap any data in {pbf_path}"));
+                return Err(format!("--bbox {w},{s},{e},{n} does not overlap any data in {}", paths.join(", ")));
             }
-            Some(crop)
+            (Some(crop), ways_at)
         }
-        None => None,
+        None => (None, vec![None; paths.len()]),
     };
-    let keeps_node = |id: i64| crop.as_ref().is_none_or(|c| c.keeps_node(id));
-    let keeps_way = |id: i64| crop.as_ref().is_none_or(|c| c.keeps_way(id));
 
-    // --- Pass 1: node-location store + relation collection. ---
-    // The PBF is node-sorted, so the store is filled before any relation is read.
+    // --- Pass 1: node-location store + relation collection, per source. ---
     // The stage strings are matched by the web builder's progress UI — print each
     // when its pass actually starts, not both up front.
     println!("Pass 1: reading nodes...");
-    let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
-    let mut pending: Vec<PendingRelation> = Vec::new();
-    let mut needed_ways: HashSet<i64> = HashSet::new();
-    // POI candidates from both passes, deduped after assembly. Classification is
-    // config-free (hardcoded table — locked decision on #115).
-    let mut poi_cands: Vec<Poi> = Vec::new();
-    // Cropped: only the nodes the extract would contain — which includes the halo,
-    // so a tagged node just outside the box that a kept way needs becomes a POI
-    // here exactly as it would in an `osmium extract` output (osmium writes those
-    // nodes whole, tags and all). Matching that is the point.
-    ElementReader::from_path(pbf_path)
-        .map_err(|e| format!("open {pbf_path}: {e}"))?
-        .for_each(|el| match el {
-            Element::Node(n) if keeps_node(n.id()) => {
-                nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
-                push_node_poi(n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut poi_cands);
-            }
-            Element::DenseNode(n) if keeps_node(n.id()) => {
-                nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
-                push_node_poi(n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut poi_cands);
-            }
-            // Relations are collected unfiltered even when cropping: the
-            // all-members-present rule below already drops exactly the ones
-            // osmium's crop would have left out (module docs).
-            Element::Relation(r) => collect_relation(&r, config, &mut pending, &mut needed_ways),
-            _ => {}
-        })
-        .map_err(|e| format!("pass 1 {pbf_path}: {e}"))?;
+    let scans = par_sources(paths, |_, path| read_nodes(path, config, crop.as_ref(), merging))?;
+    let NodeScan { nodes, pois: node_pois, rels } = fold_node_scans(scans, merging);
+    let pending = rels.into_items();
+    let needed_ways: HashSet<i64> = pending.iter().flat_map(|r| r.member_ways.iter().copied()).collect();
 
     // --- Pass 2: ways → features + coastlines, plus member-way geometry capture. ---
     println!("Pass 2: processing ways...");
-    let mut features = Vec::new();
-    let mut coastlines = Vec::new();
-    let mut member_geom: HashMap<i64, Vec<(f64, f64)>> = HashMap::with_capacity(needed_ways.len());
-    // Routable-way topology for the nav graph ([`crate::nav`]). We keep the OSM node
-    // ids here (which the render path drops) so shared nodes can be recovered as
-    // junctions after the pass; the graph is built from these once all ways are seen.
-    let mut routable_ways: Vec<RoutableWay> = Vec::new();
-    ElementReader::from_path(pbf_path)
-        .map_err(|e| format!("open {pbf_path}: {e}"))?
-        .for_each(|el| {
-            if let Element::Way(w) = el {
-                if !keeps_way(w.id()) {
-                    return;
-                }
-                let refs: Vec<i64> = w.refs().collect();
-                // A missing node aborts the whole way — osmium would raise
-                // `InvalidLocationError` here, and the way is dropped.
-                let Some(coords) = resolve_coords(&refs, &nodes) else { return };
-                push_routable_way(&w, &refs, &coords, &mut routable_ways);
-                process_way(&w, &refs, &coords, config, &mut features, &mut coastlines, &mut poi_cands);
-                if needed_ways.contains(&w.id()) {
-                    member_geom.insert(w.id(), coords);
-                }
-            }
-        })
-        .map_err(|e| format!("pass 2 {pbf_path}: {e}"))?;
+    let scans = par_sources(paths, |i, path| {
+        read_ways(path, ways_at[i], config, crop.as_ref(), &nodes, &needed_ways, merging)
+    })?;
+    let WayScan { features, coastlines, pois: way_pois, routable, member_geom, .. } = fold_way_scans(scans, merging);
+    let mut features = features.into_items();
+    let coastlines = coastlines.into_items();
+    let routable_ways = routable.into_items();
+    // POI candidates from both passes, deduped after assembly — node candidates
+    // first, then way centroids, the order a single sorted file produces them in.
+    // Classification is config-free (hardcoded table — locked decision on #115).
+    let mut poi_cands = node_pois.into_items();
+    poi_cands.extend(way_pois.into_items());
 
     // --- Assemble relation areas from captured member geometry. ---
     // Each outer ring (+ nested holes) becomes one polygon, styled by the relation.
@@ -429,13 +631,160 @@ pub fn ingest_osm(pbf_path: &str, config: &Config, bbox: Option<Bbox>) -> Result
     Ok(Ingested { features, coastlines, pois, nav_graph })
 }
 
+/// **Pass 1**, one source: node-location store + node POIs + area relations.
+///
+/// Cropped, this keeps only the nodes the extract would contain — which includes
+/// the halo, so a tagged node just outside the box that a kept way needs becomes
+/// a POI here exactly as it would in an `osmium extract` output (osmium writes
+/// those nodes whole, tags and all). Matching that is the point.
+///
+/// Relations are collected unfiltered even when cropping: the all-members-present
+/// rule in [`ingest_osm`] already drops exactly the ones osmium's crop would have
+/// left out (module docs).
+fn read_nodes(path: &str, config: &Config, crop: Option<&Crop>, tagged: bool) -> Result<NodeScan, String> {
+    let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
+    let mut pois = Keyed::new(tagged);
+    let mut rels = Keyed::new(tagged);
+    let keeps_node = |id: i64| crop.is_none_or(|c| c.keeps_node(id));
+    scan_blobs(path, None, |el| {
+        match el {
+            Element::Node(n) if keeps_node(n.id()) => {
+                nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut pois);
+            }
+            Element::DenseNode(n) if keeps_node(n.id()) => {
+                nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut pois);
+            }
+            Element::Relation(r) => collect_relation(&r, config, &mut rels),
+            _ => {}
+        }
+        Scan::Continue
+    })
+    .map_err(|e| format!("pass 1: {e}"))?;
+    Ok(NodeScan { nodes, pois, rels })
+}
+
+/// Combine the sources' pass-1 harvests, in command-line order.
+fn fold_node_scans(scans: Vec<NodeScan>, merging: bool) -> NodeScan {
+    let mut it = scans.into_iter();
+    let mut acc = it.next().expect("at least one source");
+    let mut seen_rels: HashSet<i64> = acc.rels.keys.iter().copied().collect();
+    for mut next in it {
+        // Ownership is tested BEFORE this source's nodes land in `acc`, so the
+        // question is "did an earlier source already have this node?" — and the
+        // whole object loses, tags and all, not just its coordinate.
+        next.pois.retain_keys(|id| !acc.nodes.contains_key(&id));
+        next.rels.retain_keys(|id| seen_rels.insert(id));
+        acc.pois.append(next.pois);
+        acc.rels.append(next.rels);
+        for (id, coord) in next.nodes {
+            acc.nodes.entry(id).or_insert(coord);
+        }
+    }
+    if merging {
+        acc.pois.sort();
+        acc.rels.sort();
+    }
+    acc
+}
+
+/// **Pass 2**, one source: ways → features + coastlines + POIs + routable
+/// topology, and the geometry of any way a relation needs.
+///
+/// `ways_at` is where pass 0 found this file's first way; starting there skips
+/// re-decoding the node section, which is the bulk of a `.pbf`'s bytes. Without a
+/// `--bbox` there is no pass 0 and hence no offset, and the scan starts at the
+/// beginning — which is also what keeps an uncropped ingest order-agnostic.
+#[allow(clippy::too_many_arguments)]
+fn read_ways(
+    path: &str,
+    ways_at: Option<ByteOffset>,
+    config: &Config,
+    crop: Option<&Crop>,
+    nodes: &HashMap<i64, (i32, i32)>,
+    needed_ways: &HashSet<i64>,
+    tagged: bool,
+) -> Result<WayScan, String> {
+    let mut features = Keyed::new(tagged);
+    let mut coastlines = Keyed::new(tagged);
+    let mut pois = Keyed::new(tagged);
+    // Routable-way topology for the nav graph ([`crate::nav`]). We keep the OSM node
+    // ids here (which the render path drops) so shared nodes can be recovered as
+    // junctions after the pass; the graph is built from these once all ways are seen.
+    let mut routable = Keyed::new(tagged);
+    let mut member_geom: HashMap<i64, Vec<(f64, f64)>> = HashMap::new();
+    let mut claimed: Vec<i64> = Vec::new();
+    let keeps_way = |id: i64| crop.is_none_or(|c| c.keeps_way(id));
+    scan_blobs(path, ways_at, |el| {
+        if let Element::Way(w) = el {
+            if keeps_way(w.id()) {
+                // Claimed on sight, before anything can go wrong with it: a way
+                // this source could not resolve still shadows a later copy.
+                if tagged {
+                    claimed.push(w.id());
+                }
+                let refs: Vec<i64> = w.refs().collect();
+                // A missing node aborts the whole way — osmium would raise
+                // `InvalidLocationError` here, and the way is dropped.
+                if let Some(coords) = resolve_coords(&refs, nodes) {
+                    push_routable_way(w.id(), &w, &refs, &coords, &mut routable);
+                    process_way(&w, &refs, &coords, config, &mut features, &mut coastlines, &mut pois);
+                    if needed_ways.contains(&w.id()) {
+                        member_geom.insert(w.id(), coords);
+                    }
+                }
+            }
+        }
+        Scan::Continue
+    })
+    .map_err(|e| format!("pass 2: {e}"))?;
+    Ok(WayScan { features, coastlines, pois, routable, member_geom, claimed })
+}
+
+/// Combine the sources' pass-2 harvests, in command-line order: a later source
+/// contributes only the ways no earlier source claimed, and the survivors are put
+/// back in way-id order.
+fn fold_way_scans(scans: Vec<WayScan>, merging: bool) -> WayScan {
+    let mut it = scans.into_iter();
+    let mut acc = it.next().expect("at least one source");
+    let mut claimed = IdSet::default();
+    claimed.absorb(std::mem::take(&mut acc.claimed));
+    claimed.freeze();
+    for mut next in it {
+        let owned = |id: i64| !claimed.contains(id);
+        next.features.retain_keys(owned);
+        next.coastlines.retain_keys(owned);
+        next.pois.retain_keys(owned);
+        next.routable.retain_keys(owned);
+        acc.features.append(next.features);
+        acc.coastlines.append(next.coastlines);
+        acc.pois.append(next.pois);
+        acc.routable.append(next.routable);
+        for (id, geom) in next.member_geom {
+            if owned(id) {
+                acc.member_geom.insert(id, geom);
+            }
+        }
+        claimed.absorb(next.claimed);
+        claimed.freeze();
+    }
+    if merging {
+        acc.features.sort();
+        acc.coastlines.sort();
+        acc.pois.sort();
+        acc.routable.sort();
+    }
+    acc
+}
+
 /// Capture a routable way's node-id sequence + µdeg coords for the nav graph.
 /// Routability is tag-based ([`nav::is_routable`]) and independent of styling — a
 /// way can be routable without a render style and vice-versa. Ways with fewer than
 /// two nodes carry no edge and are skipped. `coords` is the way's f64-degree
 /// geometry from [`resolve_coords`]; it is snapped to the µdeg grid here (the same
 /// grid POIs and the serializer use) so edge lengths and later serialization agree.
-fn push_routable_way(w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Vec<RoutableWay>) {
+fn push_routable_way(id: i64, w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Keyed<RoutableWay>) {
     if refs.len() < 2 {
         return;
     }
@@ -443,24 +792,27 @@ fn push_routable_way(w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: 
     // the only place tags exist, so the kind is captured here or never.
     let Some(kind) = nav::classify(w.tags()) else { return };
     let coords_udeg = coords.iter().map(|&(x, y)| (poi::to_udeg(x), poi::to_udeg(y))).collect();
-    out.push(RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg, kind });
+    out.push(id, RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg, kind });
 }
 
 /// Classify one node's tags against the POI table; push a candidate on match.
 /// The overwhelmingly common untagged-node case falls straight through.
-fn push_node_poi<'a, I>(tags: I, decimicro_lon: i32, decimicro_lat: i32, out: &mut Vec<Poi>)
+fn push_node_poi<'a, I>(id: i64, tags: I, decimicro_lon: i32, decimicro_lat: i32, out: &mut Keyed<Poi>)
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
     if let Some((subtype, name, raw_hours)) = poi::classify(tags) {
-        out.push(Poi {
-            subtype,
-            lon_udeg: poi::to_udeg(to_deg(decimicro_lon)),
-            lat_udeg: poi::to_udeg(to_deg(decimicro_lat)),
-            name,
-            from_node: true,
-            hours: raw_hours.and_then(hours::parse),
-        });
+        out.push(
+            id,
+            Poi {
+                subtype,
+                lon_udeg: poi::to_udeg(to_deg(decimicro_lon)),
+                lat_udeg: poi::to_udeg(to_deg(decimicro_lat)),
+                name,
+                from_node: true,
+                hours: raw_hours.and_then(hours::parse),
+            },
+        );
     }
 }
 
@@ -478,12 +830,7 @@ fn resolve_coords(refs: &[i64], nodes: &HashMap<i64, (i32, i32)>) -> Option<Vec<
 /// Collect a `type=multipolygon`/`type=boundary` relation (skipping `admin_level`)
 /// for area assembly: record its style + member way-ids. Roles are ignored;
 /// non-way members are skipped.
-fn collect_relation(
-    r: &osmpbf::Relation,
-    config: &Config,
-    pending: &mut Vec<PendingRelation>,
-    needed_ways: &mut HashSet<i64>,
-) {
+fn collect_relation(r: &osmpbf::Relation, config: &Config, pending: &mut Keyed<PendingRelation>) {
     let tags: HashMap<&str, &str> = r.tags().collect();
     match tags.get("type").copied() {
         Some("multipolygon") | Some("boundary") => {}
@@ -499,10 +846,7 @@ fn collect_relation(
     if member_ways.is_empty() {
         return;
     }
-    for &wid in &member_ways {
-        needed_ways.insert(wid);
-    }
-    pending.push(PendingRelation { style_id: style.id, min_lod: style.min_lod, member_ways });
+    pending.push(r.id(), PendingRelation { style_id: style.id, min_lod: style.min_lod, member_ways });
 }
 
 /// One way: capture coastline always, then style + classify into a single
@@ -512,9 +856,9 @@ fn process_way(
     refs: &[i64],
     coords: &[(f64, f64)],
     config: &Config,
-    features: &mut Vec<IngestFeature>,
-    coastlines: &mut Vec<Vec<(f64, f64)>>,
-    pois: &mut Vec<Poi>,
+    features: &mut Keyed<IngestFeature>,
+    coastlines: &mut Keyed<Vec<(f64, f64)>>,
+    pois: &mut Keyed<Poi>,
 ) {
     let tags: HashMap<&str, &str> = w.tags().collect();
     let is_closed = refs.len() >= 2 && refs.first() == refs.last();
@@ -522,7 +866,7 @@ fn process_way(
     // Coastlines are captured ALWAYS — even if the way is also closed/styled — and
     // as lines, never areas.
     if tags.get("natural") == Some(&"coastline") && coords.len() >= 2 {
-        coastlines.push(coords.to_vec());
+        coastlines.push(w.id(), coords.to_vec());
     }
 
     // A closed way matching the POI table yields a POI at the ring centroid —
@@ -532,14 +876,17 @@ fn process_way(
     if is_closed {
         if let Some((subtype, name, raw_hours)) = poi::classify(tags.iter().map(|(&k, &v)| (k, v))) {
             let (cx, cy) = poi::ring_centroid(coords);
-            pois.push(Poi {
-                subtype,
-                lon_udeg: poi::to_udeg(cx),
-                lat_udeg: poi::to_udeg(cy),
-                name,
-                from_node: false,
-                hours: raw_hours.and_then(hours::parse),
-            });
+            pois.push(
+                w.id(),
+                Poi {
+                    subtype,
+                    lon_udeg: poi::to_udeg(cx),
+                    lat_udeg: poi::to_udeg(cy),
+                    name,
+                    from_node: false,
+                    hours: raw_hours.and_then(hours::parse),
+                },
+            );
         }
     }
 
@@ -554,18 +901,24 @@ fn process_way(
         // Skip rings osmium's assembler would reject as invalid (e.g. a
         // self-intersecting building); no polygon and no line (line branch returned).
         if coords.len() >= 3 && polygon_is_valid(coords, &[]) {
-            features.push(IngestFeature {
-                style_id: style.id,
-                min_lod: style.min_lod,
-                geom: Geom::Polygon { exterior: coords.to_vec(), interiors: Vec::new() },
-            });
+            features.push(
+                w.id(),
+                IngestFeature {
+                    style_id: style.id,
+                    min_lod: style.min_lod,
+                    geom: Geom::Polygon { exterior: coords.to_vec(), interiors: Vec::new() },
+                },
+            );
         }
         return;
     }
 
     // Line: open ways, and closed-but-not-area circular roads.
     if coords.len() >= 2 {
-        features.push(IngestFeature { style_id: style.id, min_lod: style.min_lod, geom: Geom::Line(coords.to_vec()) });
+        features.push(
+            w.id(),
+            IngestFeature { style_id: style.id, min_lod: style.min_lod, geom: Geom::Line(coords.to_vec()) },
+        );
     }
 }
 
@@ -589,6 +942,23 @@ mod tests {
         matches!(g, Geom::Polygon { .. })
     }
 
+    /// `ingest_osm` takes the whole source list; most tests hand it exactly one.
+    fn sources(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| (*p).to_string()).collect()
+    }
+
+    /// Everything an ingest produced, flattened into one comparable value —
+    /// enough to say "these two runs are the same map", including *order*, which
+    /// decides the packed bytes downstream.
+    fn shape(ing: &Ingested) -> Vec<String> {
+        let mut out: Vec<String> =
+            ing.features.iter().map(|f| format!("F {} {} {:?}", f.style_id, f.min_lod, f.geom.bounds())).collect();
+        out.extend(ing.coastlines.iter().map(|c| format!("C {c:?}")));
+        out.extend(ing.pois.iter().map(|p| format!("P {} {} {} {:?}", p.subtype, p.lon_udeg, p.lat_udeg, p.name)));
+        out.push(format!("nav {} nodes, {} edges", ing.nav_graph.nodes.len(), ing.nav_graph.edges.len()));
+        out
+    }
+
     /// The `tiny.osm` truth table: relations assembled (R1's lake with a hole, R2's
     /// two forest outers) plus lines and closed-way polygons → 10 features.
     #[test]
@@ -602,7 +972,7 @@ mod tests {
         );
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let ing = ingest_osm(TINY_PBF, &cfg, None).expect("ingest");
+        let ing = ingest_osm(&sources(&[TINY_PBF]), &cfg, None).expect("ingest");
 
         // W8 (way 109) is the only coastline; nodes 29,30 ⇒ 2 points.
         assert_eq!(ing.coastlines.len(), 1, "exactly one coastline");
@@ -653,7 +1023,7 @@ mod tests {
         );
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let ing = ingest_osm(POI_PBF, &cfg, None).expect("ingest");
+        let ing = ingest_osm(&sources(&[POI_PBF]), &cfg, None).expect("ingest");
 
         // 7 candidates (5 nodes + 2 way-centroids), 2 dedup-dropped ⇒ 5 kept.
         assert_eq!(ing.pois.len(), 5, "expected 5 POIs, got: {:?}", ing.pois);
@@ -730,7 +1100,7 @@ mod tests {
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
         // lon 7.798..7.809, lat 47.979..47.995 — see tiny.osm's node grid.
         let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
-        let ing = ingest_osm(TINY_PBF, &cfg, Some(bbox)).expect("ingest");
+        let ing = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox)).expect("ingest");
 
         let mut counts: HashMap<(u8, bool), usize> = HashMap::new();
         for f in &ing.features {
@@ -771,8 +1141,9 @@ mod tests {
     fn bbox_covering_everything_is_a_no_op() {
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let plain = ingest_osm(TINY_PBF, &cfg, None).expect("ingest");
-        let boxed = ingest_osm(TINY_PBF, &cfg, Some(Bbox::parse("-180,-90,180,90").expect("world"))).expect("ingest");
+        let plain = ingest_osm(&sources(&[TINY_PBF]), &cfg, None).expect("ingest");
+        let boxed = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(Bbox::parse("-180,-90,180,90").expect("world")))
+            .expect("ingest");
         assert_eq!(plain.features.len(), boxed.features.len());
         assert_eq!(plain.coastlines, boxed.coastlines);
         assert_eq!(plain.pois.len(), boxed.pois.len());
@@ -787,7 +1158,7 @@ mod tests {
     fn bbox_missing_the_data_is_an_error() {
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let Err(err) = ingest_osm(TINY_PBF, &cfg, Some(Bbox::parse("10,10,11,11").expect("box"))) else {
+        let Err(err) = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(Bbox::parse("10,10,11,11").expect("box"))) else {
             panic!("a box off in the Mediterranean must not ingest");
         };
         assert!(err.contains("does not overlap"), "unexpected message: {err}");
@@ -809,14 +1180,123 @@ mod tests {
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
         // The box covers both nodes, so a sorted file would have kept the way.
         let bbox = Bbox::parse("7.79,47.98,7.81,48.0").expect("box");
-        let Err(err) = ingest_osm(UNSORTED_PBF, &cfg, Some(bbox)) else {
+        let Err(err) = ingest_osm(&sources(&[UNSORTED_PBF]), &cfg, Some(bbox)) else {
             panic!("an unsorted .pbf must not be cropped silently");
         };
         assert!(err.contains("not sorted"), "unexpected message: {err}");
         // Without a box the ingest is order-agnostic (passes 1 and 2 are separate
         // reads), so the same file still packs — the refusal is scoped to --bbox.
-        let ing = ingest_osm(UNSORTED_PBF, &cfg, None).expect("uncropped ingest is order-agnostic");
+        let ing = ingest_osm(&sources(&[UNSORTED_PBF]), &cfg, None).expect("uncropped ingest is order-agnostic");
         assert_eq!(ing.features.len(), 1, "the primary way survives without a box");
+    }
+
+    /// The same file listed twice is the sharpest duplicate case there is: every
+    /// single object is a duplicate. If the merge is right, the result is exactly
+    /// the one-source ingest — same features, same order, same POIs, same graph —
+    /// and if it is wrong, everything is doubled.
+    #[test]
+    fn merging_a_source_with_itself_changes_nothing() {
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
+        let once = ingest_osm(&sources(&[TINY_PBF]), &cfg, None).expect("ingest");
+        let twice = ingest_osm(&sources(&[TINY_PBF, TINY_PBF]), &cfg, None).expect("ingest");
+        assert_eq!(shape(&once), shape(&twice), "a source merged with itself must be that source");
+
+        // And the same with a box, which adds pass 0's id sets to the mix.
+        let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
+        let once = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox)).expect("ingest");
+        let twice = ingest_osm(&sources(&[TINY_PBF, TINY_PBF]), &cfg, Some(bbox)).expect("ingest");
+        assert_eq!(shape(&once), shape(&twice), "cropped, too");
+    }
+
+    /// Two halves of `tiny.osm` that overlap in the middle must ingest to exactly
+    /// what the whole file ingests to — the real merge, not the degenerate one.
+    /// The split is deliberately awkward: `tiny_west` holds R1 and the long ways,
+    /// `tiny_east` holds R2 and repeats three of the shared objects, so the merge
+    /// has to interleave two id runs *and* drop duplicates, not just concatenate.
+    #[test]
+    fn merging_two_overlapping_halves_rebuilds_the_whole() {
+        const WEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/tiny_west.osm.pbf");
+        const EAST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/tiny_east.osm.pbf");
+        for f in [WEST, EAST] {
+            assert!(
+                std::path::Path::new(f).exists(),
+                "corpus fixture missing: {f}. It is committed; rebuild via packer/tests/corpus/build_corpus.sh"
+            );
+        }
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
+        let whole = ingest_osm(&sources(&[TINY_PBF]), &cfg, None).expect("ingest");
+        let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, None).expect("ingest");
+        assert_eq!(shape(&whole), shape(&halves), "west + east must rebuild tiny.osm exactly");
+
+        // Cropped: pass 0's node phase has to finish across BOTH files before
+        // either one's ways can be judged. W7/W7b start west and run east, so a
+        // per-file selection would come out with a different set.
+        let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
+        let whole = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox)).expect("ingest");
+        let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, Some(bbox)).expect("ingest");
+        assert_eq!(shape(&whole), shape(&halves), "west + east must rebuild the cropped tiny.osm exactly");
+    }
+
+    /// The tie-break, pinned: the **first** source that carries an id wins the
+    /// whole object. `tiny_east` re-states way 107 as a `highway=track` (style 22,
+    /// dropped by the preset's LOD table? no — it simply differs from primary=5),
+    /// so listing it first changes the style and listing it second changes nothing.
+    #[test]
+    fn the_first_source_carrying_an_id_wins_it() {
+        const WEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/tiny_west.osm.pbf");
+        const EAST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/tests/corpus/data/tiny_east.osm.pbf");
+        let cfg =
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
+        let style_of_107 = |paths: &[&str]| {
+            let ing = ingest_osm(&sources(paths), &cfg, None).expect("ingest");
+            // Way 107 is the only feature spanning lon 7.800..7.812 at lat 47.988.
+            ing.features
+                .iter()
+                .find(|f| {
+                    let (minx, miny, maxx, _) = f.geom.bounds();
+                    (miny - 47.988).abs() < 1e-9 && (minx - 7.800).abs() < 1e-9 && (maxx - 7.812).abs() < 1e-9
+                })
+                .map(|f| f.style_id)
+        };
+        let west_first = style_of_107(&[WEST, EAST]).expect("way 107 kept");
+        let east_first = style_of_107(&[EAST, WEST]).expect("way 107 kept");
+        assert_ne!(west_first, east_first, "the two copies of way 107 must be distinguishable");
+        assert_eq!(west_first, style_of_107(&[WEST]).expect("way 107"), "west first ⇒ west's copy");
+        assert_eq!(east_first, style_of_107(&[EAST]).expect("way 107"), "east first ⇒ east's copy");
+
+        // And on a node, where the loser is the copy carrying the tags: east's
+        // node 25 is a drinking-water POI, west's is bare. Losing on the id means
+        // losing the tags too, so with west first that POI does not exist.
+        let pois = |paths: &[&str]| ingest_osm(&sources(paths), &cfg, None).expect("ingest").pois.len();
+        assert_eq!(pois(&[EAST]), pois(&[WEST]) + 1, "only east's node 25 is a POI");
+        assert_eq!(pois(&[WEST, EAST]), pois(&[WEST]), "west first ⇒ east's tagged copy contributes nothing");
+        assert_eq!(pois(&[EAST, WEST]), pois(&[EAST]), "east first ⇒ its POI survives");
+    }
+
+    /// [`Keyed`] is the merge's whole ordering and dedup mechanism, so its two
+    /// operations are pinned directly: `retain_keys` keeps order while dropping,
+    /// and `sort` restores ascending-id order over interleaved source runs.
+    #[test]
+    fn keyed_retains_in_order_and_sorts_by_id() {
+        let mut k = Keyed::new(true);
+        for (id, name) in [(9_i64, "a"), (3, "b"), (11, "c"), (3, "dup"), (1, "d")] {
+            k.push(id, name);
+        }
+        k.retain_keys(|id| id != 3);
+        assert_eq!(k.items, ["a", "c", "d"], "retain preserves the surviving order");
+        assert_eq!(k.keys, [9, 11, 1]);
+        k.sort();
+        assert_eq!(k.items, ["d", "a", "c"], "sort puts them in ascending id order");
+        assert_eq!(k.keys, [1, 9, 11]);
+
+        // Untagged (single source) is a plain Vec — nothing is recorded to sort by.
+        let mut plain = Keyed::new(false);
+        plain.push(9, "a");
+        plain.push(3, "b");
+        assert!(plain.keys.is_empty(), "a single source records no tags");
+        assert_eq!(plain.into_items(), ["a", "b"], "and keeps file order");
     }
 
     /// [`IdSet`] is only correct if `freeze` runs between filling and querying —
@@ -824,9 +1304,8 @@ mod tests {
     #[test]
     fn id_set_freezes_and_dedupes() {
         let mut s = IdSet::default();
-        for id in [9_i64, 3, 9, -1, 3] {
-            s.insert(id);
-        }
+        s.absorb(vec![9_i64, 3]);
+        s.absorb(vec![9, -1, 3]);
         s.freeze();
         s.freeze();
         assert_eq!(s.len(), 3, "duplicates collapse");
