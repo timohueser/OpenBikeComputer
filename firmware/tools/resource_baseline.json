@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "measurement": {
-    "source_commit": "7afc890dba19e8e94cd4fb6578a3a14e2c4cb12d",
+    "source_commit": "333e1fca3cb319fc39b293f177775ec1863d407e + the #934 VBUS gate",
     "rustc": "1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.2",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
@@ -13,10 +13,11 @@
   "board": {
     "default": {
       "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
-      "measured_resident": 421128,
-      "resident_ram_max": 421128,
+      "_resident_note": "421,128 → 421,192 B (+64) in #934: the USB plane's task future grew by the VBUS gate's poll loop (a `Timer` across an await, the guard's `poll_fn`, the pinned endpoint join). No new static; `usb_named` is unchanged at 2,644. Flash 1,192,640 → 1,192,936 (+288). Poll frame unchanged at 9,728.",
+      "measured_resident": 421192,
+      "resident_ram_max": 421192,
       "uninit_max": 1024,
-      "measured_flash": 1192640,
+      "measured_flash": 1192936,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -50,16 +51,17 @@
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE + USB device plane, constrained nrf-mem capacities)",
-      "measured_resident": 421128,
-      "resident_ram_max": 421128,
+      "_resident_note": "Same +64 B as `default`, from the same #934 VBUS gate — both profiles link an identical resident set. Flash 1,192,936 here too (this host measures the two profiles byte-identical; the old 1,192,632 predates that).",
+      "measured_resident": 421192,
+      "resident_ram_max": 421192,
       "uninit_max": 1024,
-      "measured_flash": 1192632,
+      "measured_flash": 1192936,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
       "poll_frame_limit": 12288,
       "floating_stable_observation": {
-        "_comment": "Hand-recorded snapshot of what CI's floating-stable toolchain links; nothing regenerates it, so it is only as current as source_commit. Both board profiles link an identical resident set, so this one observation covers them both.",
+        "_comment": "Hand-recorded snapshot of what CI's floating-stable toolchain links; nothing regenerates it, so it is only as current as source_commit. Both board profiles link an identical resident set, so this one observation covers them both. KNOWN STALE as of #934: it predates the VBUS gate, so expect resident 421,192 and flash +288 on the next re-measure; the point it makes — floating stable links the same resident set and poll frame as the pinned toolchain — is what still holds.",
         "source_commit": "5eb3e72efe9a687ee3d6decad1d1f4e058f25071",
         "source_run": "https://github.com/timohueser/OpenBikeComputer/actions/runs/30214757195",
         "host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest)",
