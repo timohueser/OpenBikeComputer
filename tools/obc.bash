@@ -28,7 +28,7 @@ _obc_tasks() {
   if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
     just --justfile "$t/justfile" --summary 2>/dev/null && return
   fi
-  echo "sim flash uart debug rtt pack web site desktop build test fmt bench check check-device doctor setup"
+  echo "sim flash flash-boot uart debug rtt pack web site desktop build test fmt bench check check-device doctor setup"
 }
 
 # .obcm maps across the repo root, maps/, and the web-builder cache.
@@ -98,6 +98,8 @@ _obc() {
       (( idx == 0 )) && _obc_reply < <(compgen -W "check write" -- "$cur") ;;
     desktop)
       _obc_reply < <(compgen -W "dev build" -- "$cur") ;;
+    flash-boot)
+      _obc_reply < <(compgen -W "rtt build" -- "$cur") ;;
     check)
       _obc_reply < <(compgen -W "fmt clippy test device docs board frontend deny wasm" -- "$cur") ;;
     doctor)
