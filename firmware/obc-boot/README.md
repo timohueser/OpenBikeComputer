@@ -70,7 +70,7 @@ cargo build --release --features rtt
 
 ```sh
 cd firmware/obc-boot
-cargo run --release        # probe-rs run --chip nRF54L15 --verify
+cargo run --release        # probe-rs run --chip nRF54LM20A --verify  (or: obc flash-boot)
 ```
 
 **The flash-twice DK quirk applies here too:** the first probe-rs flash after

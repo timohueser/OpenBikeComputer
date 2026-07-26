@@ -64,6 +64,34 @@ flash *args:
     # `obc flash`, now the common one since the USB plane stopped being a feature.
     _run cargo "$action" --release ${a[@]+"${a[@]}"}
 
+# Build & flash the 32 KB bootloader (obc-boot). Flash it ONCE: probe-rs writes ELFs at their
+# linked addresses, so the app (linked at 0x8000) never touches it afterwards. Opts: rtt (defmt
+# over RTT — a debug aid, NOT the shipping shape the 32 KB size guard is measured on), build
+# (compile only). Needs no RISC-V toolchain: the bootloader keeps the COM wave alive in software,
+# not on the FLPR.
+# Build & flash the bootloader — once. Opts: rtt (defmt logging) build (compile only)
+flash-boot *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    rtt=0 action=run
+    for o in "$@"; do case "$o" in
+      rtt)              rtt=1 ;;
+      build|build-only) action=build ;;
+      *) _err "unknown flash-boot option: '$o'  (want: rtt build)"; exit 1 ;;
+    esac; done
+    [[ "$action" == run ]] && { ensure_probe || exit 1; }
+    a=()
+    (( rtt )) && a+=(--features rtt)
+    cd "$OBC_ROOT/firmware/obc-boot"
+    # Empty-array expansion under bash 3.2 + `set -u` is an error — same guard as `flash`.
+    _run cargo "$action" --release ${a[@]+"${a[@]}"}
+    # `if`, not a trailing `[[ … ]] && …`: as the recipe's LAST statement, a false test would be the
+    # script's exit status, so `flash-boot build` would "fail" after building perfectly.
+    if [[ "$action" == run ]]; then
+      _say "power-cycle the DK: one short LED0 blink (bootloader), then the app"
+    fi
+
 # Feed a recorded ride to a debug-uart board over VCOM (obc-usb-host).
 # Args: [TRACK.gpx] [-- --port TTY | --baud N | --list].
 # Feed a GPX to a debug-uart board over VCOM. Args: [TRACK.gpx] [-- --port TTY | --list]
