@@ -23,10 +23,10 @@ interface BuiltChunks {
     output: Array<{ type: string; isEntry?: boolean; modules?: Record<string, unknown> }>;
 }
 
-/** Every emitted chunk of the web target, as `{ isEntry, modules }`. */
-async function webChunks(): Promise<Array<{ isEntry: boolean; modules: string[] }>> {
+/** Every emitted chunk of one target, as `{ isEntry, modules }`. */
+async function chunksOf(mode: string): Promise<Array<{ isEntry: boolean; modules: string[] }>> {
     const out = await build({
-        mode: "web",
+        mode,
         logLevel: "error",
         build: { write: false, outDir: "dist/.usb-bundle-test" },
     });
@@ -35,6 +35,8 @@ async function webChunks(): Promise<Array<{ isEntry: boolean; modules: string[] 
         .filter((chunk) => chunk.type === "chunk")
         .map((chunk) => ({ isEntry: chunk.isEntry === true, modules: Object.keys(chunk.modules ?? {}) }));
 }
+
+const webChunks = () => chunksOf("web");
 
 const IS_USB = /\/src\/lib\/usb\//;
 
@@ -53,10 +55,17 @@ describe("the USB stack's chunk", () => {
         expect(inEntry, "the USB stack leaked into the entry chunk").toEqual([]);
     }, 180_000);
 
-    it("does not ship the simulated device", async () => {
+    it.each(["web", "desktop"])("does not ship the simulated device (%s target)", async (mode) => {
         // `loopback.ts` is a whole device — an object store, a catalog, id assignment. It exists so
-        // the epic isn't blocked on #889's silicon, and it has no business in a visitor's tab.
-        const shipped = (await webChunks()).flatMap((c) =>
+        // the epic isn't blocked on #889's silicon, and it has no business in anything a person
+        // installs or visits.
+        //
+        // The **desktop** row is not symmetry for its own sake. That app is the one people take to
+        // a bench with a real board, and D4's (#909) on-glass recipe leans on "if the window says
+        // Connected, something enumerated" as its first tell that a transfer is real. A simulated
+        // device reachable from the shipped app would make that sentence false — quietly, and
+        // exactly when someone is trying to decide whether hardware works.
+        const shipped = (await chunksOf(mode)).flatMap((c) =>
             c.modules.filter((id) => /\/src\/lib\/usb\/loopback\.ts$/.test(id)),
         );
         expect(shipped).toEqual([]);

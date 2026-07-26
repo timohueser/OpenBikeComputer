@@ -11,8 +11,8 @@
 //! precisely so a second host could drop a transport underneath it instead of growing a parallel
 //! implementation that drifts from a byte-exact wire contract with a device in the field. So this
 //! module moves *bytes* and nothing else. There is no descriptor encoding in it, no status
-//! decoding, no idea what an object id is. Search it for `0x` and the only hits are a vendor id, an
-//! interface class and an endpoint address.
+//! decoding, no idea what an object id is. Search the non-test code for `0x` and every hit is USB's
+//! own vocabulary: a vendor id, a product id, an interface class, an endpoint-address direction bit.
 //!
 //! The single exception is [`sendfile::digest`], and it is not one: the transfer descriptor has to
 //! announce a CRC-32 before the first byte moves, and the alternative would be pulling 300 MB
