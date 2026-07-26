@@ -51,8 +51,10 @@
 <div class="advanced small">
     <Gated need="styleEditor">
         <a href={ADVANCED_ROUTE}>{FINE_TUNE} →</a>
-        {#snippet unavailable()}
-            <span>{FINE_TUNE}</span>
+        <!-- A plain span, not the <a>: there is nothing to follow, so the
+             stand-in must not be focusable. -->
+        {#snippet unavailable(reason)}
+            <span aria-describedby={reason}>{FINE_TUNE}</span>
         {/snippet}
     </Gated>
 </div>
