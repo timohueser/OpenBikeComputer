@@ -141,6 +141,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
 | Application | [`obc-app`](src:firmware/obc-app) | Camera, screen stack, input model, ride tracking — one per-frame entry point |
 | Simulator host | [`obc-sim`](src:firmware/obc-sim) | Desktop shell: window, control panel, colour policy, GPX replay, headless capture |
 | Web demo host | [`obc-web-demo`](src:firmware/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:firmware/obc-host-core)) |
+| Conversion bridge | [`obc-web-convert`](src:firmware/obc-web-convert) | The web builder's wasm shim over the same GPX ↔ OBCR routines — route conversion runs in the tab, no server |
 
 > **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then dive into the **[Rendering pipeline](software/rendering/)** — it's the most interesting machinery in the project. The **[data formats](software/formats/)** page is the reference the other two lean on.
 
