@@ -1,10 +1,23 @@
 // Hash routing keeps the SPA sub-path tolerant: it works served at "/" or
-// under any prefix without server rewrite rules. Two routes are all we need.
+// under any prefix without server rewrite rules. Three routes are all we need.
+//
+// The hashes themselves live in `lib/routes.ts`, which has no side effects —
+// this module reads `location` and subscribes to `hashchange` on import.
 
-export type Route = "home" | "advanced";
+import { ADVANCED_ROUTE, DESKTOP_ROUTE, HOME_ROUTE } from "./routes";
+
+export type Route = "home" | "advanced" | "desktop";
+
+const HASH: Record<Route, string> = {
+    home: HOME_ROUTE,
+    advanced: ADVANCED_ROUTE,
+    desktop: DESKTOP_ROUTE,
+};
 
 function parse(): Route {
-    return location.hash.startsWith("#/advanced") ? "advanced" : "home";
+    if (location.hash.startsWith(ADVANCED_ROUTE)) return "advanced";
+    if (location.hash.startsWith(DESKTOP_ROUTE)) return "desktop";
+    return "home";
 }
 
 class Router {
@@ -17,7 +30,7 @@ class Router {
     }
 
     go(route: Route) {
-        location.hash = route === "home" ? "" : "#/advanced";
+        location.hash = HASH[route];
     }
 }
 

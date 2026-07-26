@@ -1,6 +1,11 @@
 <script lang="ts">
     import type { BuildablePreset } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
+    import Gated from "./Gated.svelte";
+    import { ADVANCED_ROUTE } from "../lib/routes";
+
+    // Written once so the live link and its dead twin can't drift apart.
+    const FINE_TUNE = "Fine-tune colors, features and detail levels in the advanced editor";
 
     // Config-carrying presets only: picking one here *is* copying its config
     // into the working copy, so a catalog preset (which names a baked artifact
@@ -48,7 +53,14 @@
 {/if}
 
 <div class="advanced small">
-    <a href="#/advanced">Fine-tune colors, features and detail levels in the advanced editor →</a>
+    <Gated need="styleEditor">
+        <a href={ADVANCED_ROUTE}>{FINE_TUNE} →</a>
+        <!-- A plain span, not the <a>: there is nothing to follow, so the
+             stand-in must not be focusable. -->
+        {#snippet unavailable(reason)}
+            <span aria-describedby={reason}>{FINE_TUNE}</span>
+        {/snippet}
+    </Gated>
 </div>
 
 <style>

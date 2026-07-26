@@ -115,6 +115,12 @@ export const platform: Platform = {
         deviceDashboard: false,
     },
 
+    // Chromium-only, and this tier has no other way to reach a cable — so on
+    // Safari and Firefox the USB features gate on the *browser*, with their own
+    // reason and their own remedy. The download-and-copy-to-the-card path is
+    // unaffected and stays open (#901).
+    usbViaWebUsb: true,
+
     regions: regionsOnce,
     // The hosted tier's preset list is the manifest's own `presets[]` — there
     // is no packer here, so a preset names a baked artifact rather than a

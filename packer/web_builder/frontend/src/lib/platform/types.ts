@@ -149,6 +149,22 @@ export interface Platform {
     readonly name: PlatformName;
     readonly caps: Caps;
 
+    /**
+     * True when `device()` runs on the browser's WebUSB, false when the host
+     * drives USB itself. Deliberately *not* a `Caps` flag: every flag there
+     * reads "this tier can do more when true", and this one is the opposite —
+     * it says the tier borrows the browser's USB stack, and therefore inherits
+     * the browser's answer.
+     *
+     * It exists because "does this tier do USB?" and "can this browser reach a
+     * USB device?" are different questions with different remedies (#901).
+     * `caps.deviceUsb` is true on the hosted site because WebUSB is that tier's
+     * design — it is not a claim about Safari. The gating layer needs both
+     * facts to pick the right sentence, and neither is derivable from the
+     * other. Meaningless (and false) where `caps.deviceUsb` is false.
+     */
+    readonly usbViaWebUsb: boolean;
+
     /** Geofabrik's download-region tree, for the area picker. */
     regions(): Promise<RegionFeature[]>;
     /** The shipped style presets, default first. */

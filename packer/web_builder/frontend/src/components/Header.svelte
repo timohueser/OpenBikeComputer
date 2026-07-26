@@ -1,6 +1,7 @@
 <script lang="ts">
     import { LINKS } from "../lib/constants";
-    import { platform } from "../lib/platform";
+    import { available, DESKTOP_ADDS } from "../lib/platform/gating";
+    import { ADVANCED_ROUTE, DESKTOP_ROUTE } from "../lib/routes";
 </script>
 
 <header>
@@ -22,8 +23,16 @@
             <span class="crumb mono">map builder</span>
         </div>
         <nav>
-            {#if platform.caps.styleEditor}
-                <a href="#/advanced">Advanced editor</a>
+            <!-- Nav chrome is the one place a missing feature is better left
+                 out than shown dead: there is no intent behind a link, so a
+                 greyed one explains nothing anyone was asking. The style
+                 editor's reason lives where you reach for it, under the
+                 presets. -->
+            {#if available("styleEditor")}
+                <a href={ADVANCED_ROUTE}>Advanced editor</a>
+            {/if}
+            {#if DESKTOP_ADDS.length}
+                <a href={DESKTOP_ROUTE}>Desktop app</a>
             {/if}
             <a href={LINKS.docs}>Docs</a>
             <a href={LINKS.simulator}>Simulator</a>
