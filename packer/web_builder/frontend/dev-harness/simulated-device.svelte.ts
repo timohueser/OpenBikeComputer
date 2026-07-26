@@ -19,28 +19,49 @@
 import { ProtocolClient } from "../src/lib/usb/client";
 import { WatchedDeviceSession } from "../src/lib/usb/session.svelte";
 import { MockDevice, loopbackLink } from "../src/lib/usb/loopback";
+import { encodeRideObject, type RideObject, type RidePoint } from "../src/lib/usb/objects";
 import type { BytePipe, DeviceLink } from "../src/lib/usb/pipe";
 import type { DeviceSession, DeviceState, DeviceWatcher } from "../src/lib/usb/session";
 
 const IDLE: DeviceState = { status: "idle", client: null, identity: null, info: null, error: null };
 
 /**
- * The rate the simulated device drains its bulk endpoint at.
+ * The rate the simulated device moves bytes to and from its card.
  *
  * ~700 KB/s is the measured ceiling of the real thing: SPI to the SD card at the proven 8 MHz, not
  * anything about USB (#889, and `sd-read-speed-levers`). An unthrottled loopback finishes a 100 MB
  * "map" in seconds, which would make every progress bar, rate and remaining-time estimate in the
  * UI untestable — and those exist precisely because the real transfer takes minutes.
+ *
+ * **Both directions.** The card is the bottleneck whichever way the bytes are going, and the read
+ * side is if anything the tighter one. Pacing only what the device *receives* left a ride pull
+ * (C5 #904) running at memory speed, so its progress bar and Cancel button existed for about four
+ * milliseconds — a surface that could not be looked at, let alone driven.
  */
 const CARD_BYTES_PER_SECOND = 700 * 1024;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** The device end of a link, paced to {@link CARD_BYTES_PER_SECOND}. */
+/** The device end of a link, paced to {@link CARD_BYTES_PER_SECOND} in both directions. */
 function paced(link: DeviceLink): DeviceLink {
     const bulk = link.bulk;
-    let startedAt = 0;
-    let seen = 0;
+    /**
+     * A leaky bucket: the wall-clock instant the card will have finished everything charged to it
+     * so far. Charging forward from `max(budgetUntil, now)` rather than from a transfer's start
+     * makes the pacing correct across an idle gap — a start-anchored budget goes stale between
+     * transfers and lets the next one run unthrottled until it catches up.
+     */
+    let budgetUntil = 0;
+
+    function charge(bytes: number): Promise<unknown> | null {
+        const now = performance.now();
+        const start = Math.max(budgetUntil, now);
+        budgetUntil = start + (bytes / CARD_BYTES_PER_SECOND) * 1000;
+        // Pace in packet-sized debts but skip sub-timer waits: a 512-byte packet is 0.7 ms of card
+        // time, well under a `setTimeout`'s resolution, so it is left to accumulate.
+        return start - now > 5 ? sleep(start - now) : null;
+    }
+
     const throttledBulk: BytePipe = {
         transport: bulk.transport,
         get open() {
@@ -48,23 +69,85 @@ function paced(link: DeviceLink): DeviceLink {
         },
         async read(signal) {
             const slice = await bulk.read(signal);
-            if (!startedAt) startedAt = performance.now();
-            seen += slice.length;
-            // Pace against the whole transfer rather than sleeping per packet: a 512-byte packet
-            // is 0.7 ms of card time, well under a timer's resolution.
-            const wait = startedAt + (seen / CARD_BYTES_PER_SECOND) * 1000 - performance.now();
-            if (wait > 5) await sleep(wait);
+            await charge(slice.length);
             return slice;
         },
-        write: (bytes, signal) => bulk.write(bytes, signal),
+        async write(bytes, signal) {
+            await charge(bytes.length);
+            await bulk.write(bytes, signal);
+        },
         reset: () => {
-            startedAt = 0;
-            seen = 0;
+            budgetUntil = 0;
             return bulk.reset();
         },
         close: () => bulk.close(),
     };
     return { control: link.control, bulk: throttledBulk, close: () => link.close() };
+}
+
+/**
+ * Rides on the simulated card, so the export panel (C5 #904) has a catalog to render.
+ *
+ * A device with nothing on it renders one empty-state line, which is not the screen worth looking
+ * at. These three are shaped for the cases the panel has to get right rather than for plausibility:
+ * an 11-hour ride with sensors — long enough on the wire that the progress bar, the rate and the
+ * Cancel button are real rather than a flash — a short one without, and one recorded before any
+ * peer set the clock, which the device reports as `start_time = 0` and the panel must not render
+ * as 1970.
+ */
+function seedRides(device: MockDevice): void {
+    const rides: Array<{ id: number; ride: RideObject }> = [
+        { id: 3, ride: syntheticRide("Schauinsland & back", 1_783_598_400, 40_000, true) },
+        { id: 5, ride: syntheticRide("Kaiserstuhl loop", 1_783_339_200, 1_100, false) },
+        { id: 6, ride: syntheticRide("Shakedown", 0, 320, false) },
+    ];
+    for (const { id, ride } of rides) {
+        const bytes = encodeRideObject(ride);
+        device.seedRide(
+            {
+                objectId: id,
+                byteLen: bytes.length,
+                startTime: ride.startTime,
+                distanceM: ride.distanceM,
+                movingTimeS: ride.movingTimeS,
+                avgSpeedCms: ride.avgSpeedCms,
+                climbM: ride.climbM,
+                name: ride.name,
+            },
+            bytes,
+        );
+    }
+}
+
+/** One second-per-point ride climbing gently out of Freiburg. */
+function syntheticRide(name: string, startTime: number, points: number, sensors: boolean): RideObject {
+    const list: RidePoint[] = [];
+    for (let i = 0; i < points; i++) {
+        list.push({
+            tOffsetS: i,
+            lat1e7: 479_950_000 + i * 120,
+            lon1e7: 78_420_000 + i * 90,
+            eleM: 280 + Math.round(600 * Math.sin((i / points) * Math.PI)),
+            hrBpm: sensors ? 128 + (i % 22) : null,
+            cadenceRpm: sensors ? 74 + (i % 11) : null,
+            powerW: sensors ? 180 + (i % 60) : null,
+        });
+    }
+    return {
+        version: 2,
+        name,
+        startTime,
+        distanceM: points * 7,
+        movingTimeS: points,
+        avgSpeedCms: 700,
+        climbM: 600,
+        avgHr: sensors ? 139 : null,
+        maxHr: sensors ? 171 : null,
+        avgCadence: sensors ? 79 : null,
+        avgPower: sensors ? 209 : null,
+        maxPower: sensors ? 410 : null,
+        points: list,
+    };
 }
 
 /** A watcher whose "device" is an in-memory one. The same three methods the WebUSB watcher has. */
@@ -90,6 +173,7 @@ class LoopbackWatcher implements DeviceWatcher {
         this.publish({ ...IDLE, status: "connecting" });
         const link = loopbackLink();
         const device = new MockDevice(paced(link.device));
+        seedRides(device);
         void device.run();
         const client = new ProtocolClient(link.host);
         this.open = {

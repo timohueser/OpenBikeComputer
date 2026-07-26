@@ -16,6 +16,7 @@
         reading: "Reading the file",
         downloading: "Downloading",
         verifying: "Checking the file",
+        converting: "Converting to GPX",
         sending: "Writing to the device",
     };
 
