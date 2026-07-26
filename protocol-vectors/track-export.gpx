@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="OpenBikeComputer" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
+<trk><name>Schauinsland &amp; back</name>
+<trkseg>
+<trkpt lat="47.995000" lon="7.842000"><ele>300</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>132</gpxtpx:hr><gpxtpx:cad>78</gpxtpx:cad></gpxtpx:TrackPointExtension><power>185</power></extensions></trkpt>
+<trkpt lat="47.996000" lon="7.843500"><ele>305</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>138</gpxtpx:hr></gpxtpx:TrackPointExtension><power>190</power></extensions></trkpt>
+<trkpt lat="47.997200" lon="7.845000"><ele>318</ele></trkpt>
+</trkseg>
+<trkseg>
+<trkpt lat="-37.774900" lon="-122.419400"><ele>-12</ele><extensions><power>240</power></extensions></trkpt>
+<trkpt lat="0.000000" lon="0.000000"><ele>0</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>0</gpxtpx:hr><gpxtpx:cad>0</gpxtpx:cad></gpxtpx:TrackPointExtension><power>0</power></extensions></trkpt>
+</trkseg>
+</trk>
+</gpx>

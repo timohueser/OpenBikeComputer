@@ -20,6 +20,9 @@ name: CI
 #     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
 #   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
+#   * obc-web-convert (#896) is a normal workspace member (so fmt/clippy/test/deny already cover
+#     it) whose *shipping* artifact is a wasm32 build the web builder imports — hence the extra
+#     `wasm-convert` job, its bundle-size guard, and the artifact hand-off into `web`.
 #   * `--locked` everywhere so a stale Cargo.lock (any of the three) fails CI.
 
 on:
@@ -77,6 +80,13 @@ jobs:
               - '.github/workflows/ci.yml'
             web:
               - 'packer/web_builder/frontend/**'
+              # The frontend now embeds firmware code: obc-web-convert (#896) compiles the shared
+              # obc-route conversion path to wasm and the builder imports it, so any shared-crate
+              # change can move those bytes. Its byte-identity guard reads protocol-vectors/, and
+              # the toolchain file picks the compiler that produces the module.
+              - 'firmware/**'
+              - 'protocol-vectors/**'
+              - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
 
   # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
@@ -346,6 +356,47 @@ jobs:
       - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
 
+  # The hosted builder's conversion bridge (firmware/obc-web-convert, #896): the shared obc-route
+  # GPX↔OBCR path compiled to wasm so route conversion runs client-side and the hosted tier needs
+  # no backend at all. Two things happen here and the order matters:
+  #
+  #   1. wasm-pack builds the module (wasm-bindgen + wasm-opt in one step — the demo's Trunk is an
+  #      app bundler and has no place here; this is a library consumed by Vite).
+  #   2. The bundle-size budget gates it. This artifact is downloaded by every visitor who drops a
+  #      route, so a silent size regression must fail the build, not land quietly.
+  #
+  # The exact bytes that pass the budget are then handed to the `web` job, which type-checks
+  # against them and runs the byte-identity tests on them — the shipped module and the tested
+  # module are the same file, not two builds that happen to agree.
+  wasm-convert:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+          key: wasm-convert
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+      - name: wasm-pack build (obc-web-convert → wasm)
+        run: |
+          wasm-pack build firmware/obc-web-convert --release --target web \
+            --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg \
+            --out-name obc_web_convert
+      - name: bundle-size budget
+        run: python3 firmware/tools/wasm_size_guard.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: packer/web_builder/frontend/src/lib/convert/pkg
+          retention-days: 1
+
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
   # anchor audit CLAUDE.md otherwise asks for by hand: every internal ../page/#anchor must
   # resolve to a real heading id.
@@ -431,8 +482,15 @@ jobs:
   # are built here — a host that stops compiling is otherwise invisible until someone
   # tries to ship it. The *contents* of the web bundle (no job polling, no style
   # editor) are asserted by vitest, which builds and inspects the emitted chunks.
+  #
+  # The conversion bridge's wasm comes from `wasm-convert` rather than being rebuilt here, so the
+  # module the byte-identity tests run against is literally the one the size budget passed. It is
+  # a hard dependency, not an optimisation, and it is why the download lands before `npm ci`:
+  # every step below needs it — the TS wrapper imports the generated bindings, so `npm run check`
+  # type-checks against them, and both vitest suites and `build:all` fail without the artifact.
+  # The two jobs share one path filter so they are always skipped or run together.
   web:
-    needs: changes
+    needs: [changes, wasm-convert]
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
@@ -440,6 +498,10 @@ jobs:
         working-directory: packer/web_builder/frontend
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: packer/web_builder/frontend/src/lib/convert/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -455,7 +517,7 @@ jobs:
 
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, docs, ios-unit, ios-app, web]
+    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-convert, docs, ios-unit, ios-app, web]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)

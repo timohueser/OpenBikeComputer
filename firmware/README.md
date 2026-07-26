@@ -10,7 +10,8 @@ in the [repo README](../README.md#repository-layout).
 The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
 (`obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
 (`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
-both simulator hosts share in `obc-host-core`), the map packer (`obc-pack`),
+both simulator hosts share in `obc-host-core`), the web builder's wasm
+conversion bridge (`obc-web-convert`), the map packer (`obc-pack`),
 and the test/host helpers. The
 **board crate** — `obc-fw-nrf54l` — is **`exclude`d** from the workspace (it has
 its own MCU target + `.cargo/config.toml`) and is built on its own; see
@@ -144,6 +145,33 @@ trunk build --release --config docs/Trunk.toml # → docs/dist/
 
 The demo core is target-independent, so its unit tests run in the plain
 `cargo test` above — no browser needed for the logic.
+
+## Build the conversion bridge (`obc-web-convert`)
+
+The hosted web builder converts routes client-side: `obc-web-convert` is a thin
+wasm host over `obc-route`'s `gpx_to_obcr` / `track_to_gpx`, so a dropped GPX
+becomes the *same* `.obcr` the device and the CLI produce. It is a normal
+workspace member (its conversion core is target-independent and covered by the
+`cargo test` above); only the shipping artifact is wasm.
+
+Unlike the demo this is a **library** consumed by Vite, not an app Trunk
+bundles, so it builds with `wasm-pack` (`cargo install wasm-pack` once):
+
+```sh
+# From packer/web_builder/frontend — writes src/lib/convert/pkg/ (gitignored).
+npm run build:wasm
+```
+
+The frontend needs that output before `npm run check`, `npm test` or
+`npm run build` will work: the TypeScript wrapper imports the generated
+bindings, and the vitest suite converts the checked-in `protocol-vectors/`
+fixtures through the wasm module and compares them **byte-for-byte** against the
+native converter's checked-in output. CI does the same in its `wasm-convert`
+job, which also enforces the bundle-size budget:
+
+```sh
+python3 tools/wasm_size_guard.py --pkg ../packer/web_builder/frontend/src/lib/convert/pkg
+```
 
 ## Firmware update images (OBCU)
 
