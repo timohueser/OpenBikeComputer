@@ -98,7 +98,7 @@
           "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
         },
         "preset_version": {
-          "description": "The preset's `version` at build time. Equal to the matching `presets[].version` for a coherent tree; a mismatch means the preset moved without a re-bake.",
+          "description": "The preset's `version` **as recorded by the bake job that produced this artifact** — read from its sidecar, not from the preset config sitting in the tree when the manifest was generated. That distinction is the whole point of the field. A preset restyle invalidates only that preset's artifacts, so partial re-bakes are the normal operation (a full bake is ~20 CPU-hours). Copied from the current preset config it would equal `presets[].version` by construction and could never signal anything, while every not-yet-re-baked artifact silently claimed styling it does not have. Lower than the matching `presets[].version` means exactly one thing: this artifact carries older styling (`OBCC_Spec.md` §3).",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
