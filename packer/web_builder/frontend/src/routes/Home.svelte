@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import BuildCard from "../components/BuildCard.svelte";
+    import DeviceStep from "../components/device/DeviceStep.svelte";
     import Gated from "../components/Gated.svelte";
     import MapPanel from "../components/MapPanel.svelte";
     import PresetCards from "../components/PresetCards.svelte";
@@ -9,6 +10,7 @@
     import PresetStep from "../components/catalog/PresetStep.svelte";
     import RegionStep from "../components/catalog/RegionStep.svelte";
     import { regionState } from "../lib/catalog/availability";
+    import { artifactFilename } from "../lib/catalog/download";
     import { catalogStore } from "../lib/catalog/store.svelte";
     import { platform } from "../lib/platform";
     import { isBuildable, type Preset } from "../lib/config/model";
@@ -88,6 +90,20 @@
     const artifact = $derived(
         entry && presetId ? (entry.artifacts.find((a) => a.preset_id === presetId) ?? null) : null,
     );
+    // What step 4 sends. `null` where no baked artifact is selected — including
+    // on a tier with a packer, where step 3 builds one and there is no catalog
+    // at all; the device step then offers the file path alone.
+    const deviceArtifact = $derived(
+        artifact
+            ? {
+                  filename: artifactFilename(artifact),
+                  url: artifact.url,
+                  bytes: artifact.bytes,
+                  sha256: artifact.sha256,
+              }
+            : null,
+    );
+
     const hints = $derived.by<CatalogHints | null>(() => {
         const idx = index;
         if (!idx) return null;
@@ -245,6 +261,20 @@
             </Gated>
         </section>
 
+        <section class="card">
+            <div class="step-head">
+                <span class="num">4</span>
+                <h3>Device</h3>
+            </div>
+            <!-- The selected region's artifact, reduced to the four facts a
+                 device write turns on. `lib/device/` never imports the catalog:
+                 a `.obcm` the rider already has — a desktop build, an older
+                 download — has no manifest behind it and takes the same path. -->
+            <DeviceStep artifact={deviceArtifact} />
+        </section>
+
+        <!-- Unnumbered, and after the steps: this is not part of making a map,
+             it is what making maps has left on the disk. -->
         {#if storage}
             <StorageCard {storage} />
         {/if}

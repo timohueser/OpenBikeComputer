@@ -147,12 +147,12 @@ card that never returns.
 > at the install step, not a key. The [`OBCU`](src:OBCU_Spec.md) header reserves
 > bytes for a signature scheme if internet-sourced OTA ever lands.
 
-## Two ways an update arrives
+## Three ways an update arrives
 
 A staged update is one file, `/UPDATE.BIN`, in the card's root — an
 [`OBCU`](src:OBCU_Spec.md) container (a 64-byte header with the image length,
 CRC-32, and a `git describe` version string, then the raw application image).
-There are two ways it gets there, and **exactly one** way it gets installed.
+There are three ways it gets there, and **exactly one** way it gets installed.
 
 - **Card sideload.** Copy `UPDATE.BIN` onto the card from any computer, put the
   card back, and choose **Settings → System → Firmware → "Install update from card"**. The
@@ -164,14 +164,26 @@ There are two ways it gets there, and **exactly one** way it gets installed.
   same `UPDATE.BIN` over the link: it uploads a `fwImage` object (§7.6 of the BLE
   spec), the device writes it to the card verbatim, and then the app sends an
   `installFw` command (§4.4) to *ask* the device to install it.
+- **USB from the browser.** The map builder's device step does the same two
+  steps over the cable — the [object model is the transport's
+  guest](../companion-link/), so this is the identical `fwImage` upload followed
+  by the identical `installFw` request. It reads the running version from the
+  Device Information service, compares it against the published release, and
+  checks the container *before* spending the transfer on it: magic, header
+  version, header CRC-32, the image CRC-32 over the bytes that follow, and the
+  slot ceiling. That is the same decode rule the armer applies and it replaces
+  nothing — the device still verifies over what actually landed on the card. What
+  it buys is that "that isn't a firmware update" arrives in a second instead of
+  after an upload. A device running a development build reports a git hash rather
+  than a version, which does not parse, and no update is ever offered for it.
 
-The crucial rule is shared by both paths and stated plainly in the BLE spec's
-security posture: **installing always confirms on the glass.** The phone can
-*stage* an image — that is all a bonded, encrypted link authorises — but it can
-never arm or reboot the device on its own. `installFw` merely posts a request; the
+The crucial rule is shared by all three paths and stated plainly in the BLE spec's
+security posture: **installing always confirms on the glass.** A peer can
+*stage* an image — that is all a bonded link or a plugged-in cable authorises — but
+it can never arm or reboot the device on its own. `installFw` merely posts a request; the
 device runs its own scan and shows a **confirm card**, and the update proceeds only
 on a physical Select press by the rider, exactly like the pairing-passkey pattern.
-There are no silent installs, ever. The running firmware's version the phone
+There are no silent installs, ever. The running firmware's version a peer
 displays is read from the standard [DIS](../companion-link/) Firmware Revision
 characteristic, so after a confirmed update it simply reflects the new image on the
 next connect.
@@ -283,5 +295,5 @@ a frozen COM line would apply for the multi-ten-second install.
 - The shared `no_std` core: [`obc-dfu`](src:firmware/obc-dfu) — the container + state codecs ([`image.rs`](src:firmware/obc-dfu/src/image.rs) · [`state.rs`](src:firmware/obc-dfu/src/state.rs)), the bootloader's install engine ([`engine.rs`](src:firmware/obc-dfu/src/engine.rs)), and the app-side armer ([`armer.rs`](src:firmware/obc-dfu/src/armer.rs))
 - The bootloader itself, its LED codes and flash-once workflow: [`obc-boot`](src:firmware/obc-boot) ([README](src:firmware/obc-boot/README.md))
 - The host tool that builds and inspects `UPDATE.BIN`: [`obc-mkimage`](src:firmware/obc-mkimage) — the `objcopy → wrap` pipeline is in the [firmware README](src:firmware/README.md)
-- The BLE staging path — the `fwImage` object and `installFw` command: [the companion link](../companion-link/) (contract: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) §4.4, §7.6)
+- The BLE and USB staging paths — the `fwImage` object and `installFw` command: [the companion link](../companion-link/) (contract: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) §4.4, §7.6); the browser half in [`web_builder/frontend/src/lib/device/`](src:packer/web_builder/frontend/src/lib/device)
 - Copying a card image by hand and the release recipe: the [repo README](src:README.md)
