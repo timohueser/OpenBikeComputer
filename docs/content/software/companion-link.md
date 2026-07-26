@@ -94,12 +94,15 @@ ordered" — and a USB bulk endpoint is exactly that. So the object model above,
 the 12-byte descriptor, the status envelope and the whole-object CRC-32 all
 transplant onto a cable without a byte changing: USB is a second *transport*, not
 a second protocol, and it reads the same
-[`protocol-vectors/`](src:protocol-vectors) fixtures. The host half of that lives
-today in the web builder's
-[USB client](src:packer/web_builder/frontend/src/lib/usb), which drives the whole
-contract over an in-memory device; the device half — the LM20's USB peripheral,
-and the small matter of which control characteristic a frame belongs to when
-there is no GATT to say so — is still ahead.
+[`protocol-vectors/`](src:protocol-vectors) fixtures. The host half lives in the
+web builder's [USB client](src:packer/web_builder/frontend/src/lib/usb), which
+drives the whole contract over an in-memory device; the device half — the LM20's
+USB peripheral, and the small matter of which control characteristic a frame
+belongs to when there is no GATT to say so — is
+[`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb), and it ships in
+**every** firmware build rather than behind a flag. What it has not had yet is a
+cable: the peripheral bring-up is written and measured but unverified on
+hardware.
 
 The browser side already **writes** over it: a map, a dropped GPX and a firmware
 image, from the [map builder](https://timohueser.github.io/OpenBikeComputer/)'s
