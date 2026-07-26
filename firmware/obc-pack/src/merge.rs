@@ -40,6 +40,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use crate::geom::{merge_lines_geos, union_polygons, Geom};
+use crate::progress::Progress;
 use crate::serialize::Style;
 
 /// A fill's render-equivalence key: `(z_index, color, priority)`. Two `color2`-less
@@ -168,6 +169,22 @@ enum Slot {
 /// are walked in input order, and classes are keyed by canonical id — so packing the
 /// same input twice is byte-identical.
 pub fn merge_fills(features: Vec<(u8, Geom)>, classes: &HashMap<u8, (ClassKey, u8)>) -> (Vec<(u8, Geom)>, MergeStats) {
+    merge_fills_with(features, classes, &Progress::silent())
+}
+
+/// [`merge_fills`], abandonable.
+///
+/// The checkpoint is phase 2, per group, because that is where the time is: one
+/// GEOS union over a whole style class can run for seconds and cannot be
+/// interrupted from outside. A cancelled group returns `None`, which phase 3
+/// already handles — it is the same path a GEOS failure takes, so the output
+/// stays well-formed rather than becoming a special case nobody tests. The work
+/// is discarded anyway; the point is only to stop starting more of it.
+pub fn merge_fills_with(
+    features: Vec<(u8, Geom)>,
+    classes: &HashMap<u8, (ClassKey, u8)>,
+    progress: &Progress,
+) -> (Vec<(u8, Geom)>, MergeStats) {
     // --- Phase 1: walk input, laying out slots and accumulating group members
     // (both in input order). ---
     let mut slots: Vec<Slot> = Vec::with_capacity(features.len());
@@ -209,6 +226,9 @@ pub fn merge_fills(features: Vec<(u8, Geom)>, classes: &HashMap<u8, (ClassKey, u
         .par_iter()
         .filter(|(_, m)| m.len() >= 2)
         .map(|(&canonical, m)| {
+            if progress.is_cancelled() {
+                return (canonical, None);
+            }
             let refs: Vec<&Geom> = m.iter().map(|(_, g)| g).collect();
             (canonical, union_polygons(&refs))
         })
@@ -264,6 +284,16 @@ pub fn merge_lines(
     features: Vec<(u8, Geom)>,
     classes: &HashMap<u8, (LineClassKey, u8)>,
 ) -> (Vec<(u8, Geom)>, MergeStats) {
+    merge_lines_with(features, classes, &Progress::silent())
+}
+
+/// [`merge_lines`], abandonable — the line dual of [`merge_fills_with`], with the
+/// checkpoint in the same place and for the same reason.
+pub fn merge_lines_with(
+    features: Vec<(u8, Geom)>,
+    classes: &HashMap<u8, (LineClassKey, u8)>,
+    progress: &Progress,
+) -> (Vec<(u8, Geom)>, MergeStats) {
     // --- Phase 1: lay out slots, accumulate group members (both in input order). ---
     let mut slots: Vec<Slot> = Vec::with_capacity(features.len());
     let mut members: HashMap<u8, Vec<(u8, Geom)>> = HashMap::new();
@@ -299,6 +329,9 @@ pub fn merge_lines(
         .par_iter()
         .filter(|(_, m)| m.len() >= 2)
         .map(|(&canonical, m)| {
+            if progress.is_cancelled() {
+                return (canonical, None);
+            }
             let refs: Vec<&Geom> = m.iter().map(|(_, g)| g).collect();
             (canonical, merge_lines_geos(&refs))
         })

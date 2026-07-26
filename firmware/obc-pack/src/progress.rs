@@ -152,12 +152,24 @@ impl Progress {
     /// pipeline.
     ///
     /// **Granularity.** This is a relaxed atomic load, so it is cheap enough to sit
-    /// inside the per-blob and per-feature loops, and that is where it sits — the
-    /// checkpoints are one `.pbf` blob (a few thousand elements), one land polygon,
-    /// one feature's simplify, one LOD. What it cannot interrupt is a single call
-    /// *below* those: one GEOS operation on one very large geometry runs to
-    /// completion. In practice the observable latency is one blob or one feature,
-    /// not one phase.
+    /// inside the per-blob and per-feature loops, and that is where it sits:
+    ///
+    /// | checkpoint | unit |
+    /// |---|---|
+    /// | [`crate::ingest`] passes 0/1/2 | one `.pbf` blob (a few thousand elements) |
+    /// | [`crate::land`] | one shapefile record |
+    /// | [`crate::merge`] fill/line dissolve | one style class |
+    /// | per-LOD simplify + cull | one feature |
+    /// | [`crate::quadtree::build_lod_with`] | one feature |
+    /// | the per-LOD closure in [`crate::pipeline`] | one LOD, skipped whole |
+    ///
+    /// What it cannot interrupt is a single call *below* those: one GEOS operation
+    /// on one very large geometry runs to completion, and so does the teardown —
+    /// freeing a country's worth of ingested geometry is measured in seconds, and
+    /// that is the memory being handed back rather than work refusing to stop.
+    /// Measured on a 157 MB extract in release, a cancel lands in ~20 % of the work
+    /// it had left, most of that teardown
+    /// (`obc-desktop`'s `cancelling_actually_stops_the_work`).
     ///
     /// The message is a filler: [`crate::pipeline::pack`] consults the token, not
     /// the string, so nothing anywhere matches on it.

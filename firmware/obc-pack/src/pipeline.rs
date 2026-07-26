@@ -21,9 +21,9 @@ use crate::config::Config;
 use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
 use crate::ingest::{ingest_osm, Bbox, IngestFeature, Ingested};
 use crate::land;
-use crate::merge::{merge_classes, merge_fills, merge_line_classes, merge_lines, MergeStats};
+use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_lines_with, MergeStats};
 use crate::progress::{PackError, Phase, Progress};
-use crate::quadtree::build_lod;
+use crate::quadtree::build_lod_with;
 use crate::serialize::serialize_lods_streaming;
 
 // Meters → degrees divisor for simplify tolerance; shared so the packer's scale
@@ -166,6 +166,15 @@ fn run(
         |i| {
             let lod = &config.lods[i];
             progress.stage(Phase::Quadtree, format!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m));
+            // The cheapest and most valuable checkpoint in the whole pipeline: a
+            // cancelled build has one to three of these LODs still ahead of it,
+            // each a merge + a simplify + a tree, and skipping them outright is
+            // the difference between a cancel that lands in a moment and one that
+            // lands in a minute. The empty level still goes through the same
+            // build+serialize so the streaming serializer's contract is unchanged.
+            if progress.is_cancelled() {
+                return (build_lod_with(Vec::new(), global_bbox, chunk_size, progress), chunk_size, lod.max_mpp);
+            }
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
             // Coarse-LOD footprint cull: after simplify, drop features too small to
             // render at the finest scale this tier is ever shown at — the next-finer
@@ -216,12 +225,12 @@ fn run(
                 let mut feats: Vec<(u8, Geom)> =
                     ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
                 if config.merge_fills {
-                    let (merged, m) = merge_fills(feats, &fill_classes);
+                    let (merged, m) = merge_fills_with(feats, &fill_classes, progress);
                     report_merge(progress, m, "fill polygon", "into");
                     feats = merged;
                 }
                 if config.merge_lines {
-                    let (merged, m) = merge_lines(feats, &line_classes);
+                    let (merged, m) = merge_lines_with(feats, &line_classes, progress);
                     report_merge(progress, m, "line fragment", "into");
                     feats = merged;
                 }
@@ -242,7 +251,7 @@ fn run(
             if holes_stripped > 0 {
                 progress.log(format!("  stripped {holes_stripped} sub-pixel hole(s) from surviving polygons"));
             }
-            (build_lod(level, global_bbox, chunk_size), chunk_size, lod.max_mpp)
+            (build_lod_with(level, global_bbox, chunk_size, progress), chunk_size, lod.max_mpp)
         },
     )
     .map_err(|e| format!("write {out_name}: {e}"))?;
