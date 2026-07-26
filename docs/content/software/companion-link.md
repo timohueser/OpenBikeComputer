@@ -88,6 +88,19 @@ bytes, and the device sinks them straight to storage while updating a running
 checksum. There is **no reassembly buffer** — which is the whole point on a
 RAM-limited microcontroller.
 
+It also buys something the design didn't set out to get. A channel with no
+framing of its own makes **no demands on what carries it** beyond "reliable and
+ordered" — and a USB bulk endpoint is exactly that. So the object model above,
+the 12-byte descriptor, the status envelope and the whole-object CRC-32 all
+transplant onto a cable without a byte changing: USB is a second *transport*, not
+a second protocol, and it reads the same
+[`protocol-vectors/`](src:protocol-vectors) fixtures. The host half of that lives
+today in the web builder's
+[USB client](src:packer/web_builder/frontend/src/lib/usb), which drives the whole
+contract over an in-memory device; the device half — the LM20's USB peripheral,
+and the small matter of which control characteristic a frame belongs to when
+there is no GATT to say so — is still ahead.
+
 ## Objects are files the device already speaks
 
 Every bulk payload is a typed **object**. The set is small and closed:
@@ -775,5 +788,6 @@ of the data-formats page (normative bytes in the
 - The app-facing sensor mailboxes both the radio manager and the injection path feed — one instance-owned `SensorHub`, handed to each task at spawn: [`obc-platform/src/sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
-- Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter: [`protocol-vectors/`](src:protocol-vectors)
+- The browser side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:packer/web_builder/frontend/src/lib/usb)
+- Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`protocol-vectors/`](src:protocol-vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)

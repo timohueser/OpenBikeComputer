@@ -3,7 +3,7 @@
 Binary fixtures pinning the byte layouts of
 [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR v2
 waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), and the device's own
-recorded-track log, consumed by **three** implementations:
+recorded-track log, consumed by **four** implementations:
 
 - **Firmware**: `cargo test -p obc-vectors` (workspace `firmware/`) verifies every
   file byte-for-byte against builders written straight from the spec text, and
@@ -11,11 +11,17 @@ recorded-track log, consumed by **three** implementations:
 - **App**: the `OBCKit` Swift tests pin their codecs (`ProvisionalRideCodec`,
   `ProvisionalConfigCodec`, `TransferDescriptor`, the OBCR route encoder) to the
   same files.
-- **Browser**: the hosted builder's wasm conversion bridge
-  (`firmware/obc-web-convert`, #896) must reproduce the route and track fixtures
-  byte-for-byte from the same inputs — `packer/web_builder/frontend/src/lib/convert/
-  bridge.test.ts`. That is what keeps client-side conversion honest: the file a
-  visitor downloads is the file the device would have written.
+- **Browser**: two consumers, for two different reasons.
+  - The wasm conversion bridge (`firmware/obc-web-convert`, #896) must reproduce
+    the route and track fixtures byte-for-byte from the same inputs —
+    `packer/web_builder/frontend/src/lib/convert/bridge.test.ts`. That is what keeps
+    client-side conversion honest: the file a visitor downloads is the file the
+    device would have written.
+  - The **USB protocol client** (`packer/web_builder/frontend/src/lib/usb/`, #902)
+    pins every control-plane and object layout here, and round-trips the object
+    fixtures over a loopback transport —
+    `.../src/lib/usb/vectors.test.ts`. USB is a second *transport*, not a second
+    protocol, so it agrees with these bytes or it is wrong.
 
 A drift on any side fails that side's tests — the files are the contract.
 
@@ -31,6 +37,7 @@ A drift on any side fails that side's tests — the files are the contract.
 | `ride-v2.bin` | ride object v2 (spec §7.2, epic #707) | "Sensor Ride", 3 points, BLE-sensor summary + per-point hr/cad/pwr with mixed present/absent (0xFF/0xFFFF sentinels) — the app must accept v1 **and** v2 |
 | `config-v1.bin` | Config v1 (spec §7.3) | name "OBC Tourer", metric |
 | `version-read.bin` | `protocolVersion` read §1 | the widened identity read: `version u16` = 2 · `store_epoch u32` = `0xA1B2C3D4` |
+| `version-read-nostore.bin` | `protocolVersion` read §1 | the **short** read a device with no mounted card serves: `version u16` = 2 and nothing else. A reader must take it as "no epoch" — never epoch `0`, which is a legal era — and fail its ack closed |
 | `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); **12-byte v2 descriptor** (no `offset`); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
 | `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object (12 bytes) |
 | `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload (12 bytes) |
@@ -38,7 +45,11 @@ A drift on any side fails that side's tests — the files are the contract.
 | `status-transfer-result.bin` | `status` msg 1 §4.3 | `committed`, assigned id 7, all bytes durable |
 | `status-transfer-storage-full.bin` | `status` msg 1 §4.3 | `storageFull` (6) — new-route upload (id `0xFFFF`) rejected at descriptor-open time, catalog full, nothing committed |
 | `status-store-changed.bin` | `status` msg 2 §4.3 | route store changed, revision 42 |
-| `route-list.bin` | `routeList` object §7.4 | both stored route fixtures as catalog entries (ids 7 + 8, fields from their OBCR headers, each with its whole-object `crc32`); **6-byte v2 header** (`total` = `count` = 2) + **76-byte entries** |
+| `status-command-result-ack.bin` | `status` msg 3 §4.3 | the answer to an `ackRides`: `ok`, `detail` = 3 newly-flagged rides |
+| `command-ack-rides.bin` | `ackRides` §4.4 cmd 2 | `count` 3 · ride ids 3, 5, 9 |
+| `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
+| `command-set-route-retention.bin` | `setRouteRetention` §4.4 cmd 6 | route id 7 · retention `3` (2 weeks) |
+| `route-list.bin` | `routeList` object §7.4 | three catalog entries — the two stored route fixtures (ids 7 + 8, fields from their OBCR headers, each with its whole-object `crc32`) plus a synthetic id 9 with no file behind it; **6-byte v2 header** (`total` = `count` = 3) + **84-byte entries** (the 76-byte v2 core + the auto-expiry tail), covering all three retention states: a live countdown, a clock not yet started, and `Never` |
 | `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1) | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader` |
 | `trip-v1.bin` | trip object v1 (spec §7.7) | "Alpen Traverse", 3 stages referencing route ids 7 + 8 (the two `route-list.bin` entries) **plus one deliberately dangling id (99)** — pins read-tolerance; 56-byte header + 2 bytes/stage |
 | `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
@@ -58,4 +69,5 @@ cd firmware && cargo test -p obc-vectors regenerate -- --ignored
 ```
 
 …then update `manifest.json` to match and flag the app side **and** the web
-builder — both pin the same bytes.
+builder's two consumers — the conversion bridge and the USB protocol client. All
+of them pin the same bytes.
