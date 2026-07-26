@@ -12,15 +12,27 @@ import type { CatalogArtifact } from "./manifest";
 import type { RegionEntry } from "./regions";
 
 /**
- * What the catalog needs to know about a connected device. Deliberately one
- * fact: C3 (#902) owns the USB protocol client and the device session, and this
- * is the only thing the picker asks of it. Nothing here reaches for a device —
- * `catalogStore.device` stays null until something sets it.
+ * What the catalog needs to know about a connected device: the OBCM format
+ * version its firmware reads. One fact, because that is the whole of §6(c).
  *
  * The reader supports exactly one OBCM version at a time (OBCM_Spec.md: v10 is
  * the only supported version; earlier maps get repacked), so this is a single
  * number rather than a range, and `supports()` is the one place that assumption
  * lives if a future device ever reads two.
+ *
+ * **Nothing sets this yet, and that is not an oversight.** C3 (#902) landed the
+ * device session, and it does not carry this number: `identity.version` is the
+ * *protocol* version (`PROTOCOL_VERSION`, 2 — the wire contract, not the map
+ * format), and `info.firmwareRevision` is a release string like `0.4.0+abc1234`
+ * that only maps to an OBCM version through a table nothing here has. Deriving
+ * one would mean guessing what a firmware build can read, and guessing wrong
+ * means either refusing a map that works or offering one that doesn't — both
+ * worse than §6(c)'s stated fallback, which is exactly what this tier does with
+ * no device: offer the download and state the version.
+ *
+ * So the state is designed, tested and reachable through `setDevice()`; closing
+ * it needs the device to *say* which OBCM version it reads — a field in the
+ * identity read, or a firmware→format table published beside the catalog.
  */
 export interface DeviceMapSupport {
     /** The OBCM format version this device's firmware reads. */

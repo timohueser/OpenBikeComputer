@@ -17,23 +17,15 @@
 
 import { parseCatalog, type Catalog } from "../catalog/manifest";
 import { catalogPresets } from "../catalog/presets";
-import {
-    PlatformNotImplemented,
-    type LoadStyleEditor,
-    type Platform,
-    type RegionFeature,
-} from "./types";
+import type { LoadStyleEditor, Platform, RegionFeature } from "./types";
 
 const DATA_BASE: string = import.meta.env.VITE_DATA_BASE ?? "./data";
 const REGIONS_URL: string = `${DATA_BASE}/regions.json`;
 const CATALOG_URL: string = import.meta.env.VITE_CATALOG_URL ?? `${DATA_BASE}/catalog.json`;
 
-// `async` so an unimplemented seam *rejects* rather than throwing past the
-// caller's `.catch()` — every method here is declared to return a promise, and
-// a seam that isn't written yet must not also break that contract.
-async function pending(member: string, owner: string): Promise<never> {
-    throw new PlatformNotImplemented("web", member, owner);
-}
+// Every seam this host declares is implemented now — C1 (#900) filled in the
+// three data calls and C3 (#902) the device one — so the `pending()` helper the
+// other two hosts still use has nothing left to name here.
 
 /** Absolute URL of a static document, so a relative default resolves against
  *  the page rather than the module. */

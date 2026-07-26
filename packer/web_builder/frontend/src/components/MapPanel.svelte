@@ -244,8 +244,14 @@
                 </button>
             </div>
             {#snippet unavailable(reason)}
+                <!-- Regions is the only mode here, so it is permanently the
+                     active one; it keeps its handler rather than becoming a
+                     decorative span, so the pill reads and behaves the same
+                     either way. -->
                 <div class="seg">
-                    <button type="button" class="active">Regions</button>
+                    <button type="button" class="active" onclick={() => setMode("regions")}>
+                        Regions
+                    </button>
                     <button type="button" disabled aria-describedby={reason}>Draw box</button>
                 </div>
             {/snippet}
