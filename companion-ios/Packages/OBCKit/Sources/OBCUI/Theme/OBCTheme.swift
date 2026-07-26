@@ -73,6 +73,8 @@ public enum OBCTheme {
     public static let deviceAccent = Color(hex: 0x8BE3BC)
     /// The four device buttons: dark moulded rubber.
     public static let deviceButton = Color(hex: 0x2B2F36)
+    /// The deep black bezel the panel is recessed into.
+    public static let deviceBezel = Color(hex: 0x101317)
     /// `--dev-header` #AA5500 — the device UI's rust title bar.
     public static let deviceHeader = Color(hex: 0xAA5500)
     /// `--dev-header-text` #FFFFAA — cream text on the title bar.
