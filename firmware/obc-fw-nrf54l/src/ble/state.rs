@@ -1,16 +1,19 @@
-//! Shared BLE state: the link-status snapshot the UI reads, the BAS battery cell, and the
-//! one-transfer-at-a-time arming channel the control plane ([`super::control`]) and the CoC data
-//! plane ([`super::data_plane`]) coordinate through. Everything here is `pub(crate)` at most —
-//! it lives entirely within the `ble` module tree, read/written across the four planes but never
-//! wider.
+//! Shared **radio** state: the link-status snapshot the UI reads, the Bluetooth switch, the BAS
+//! battery cell, and the CoC arming channel the control plane ([`super::control`]) and the CoC data
+//! plane ([`super::data_plane`]) coordinate through. Everything here is `pub(crate)` at most — it
+//! lives entirely within the `ble` module tree, read/written across the four planes but never wider.
+//!
+//! Anything a *second transport* would also need — the command handler, descriptor classification,
+//! the cross-transport one-transfer gate, the identity blobs — lives in [`crate::link`] instead.
 
 use core::cell::Cell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
-use obc_ble::{Receiver, StatusMessage, TransferControl, TransferResult, TransferStatus};
+
+use crate::link::Armed;
 
 // ============================ Link status → the status UI ============================
 
@@ -191,24 +194,12 @@ pub fn request_forget_bond() {
     FORGET_BOND.signal(());
 }
 
-// ============================ Ride-recording → the installFw busy-gate (S6, #621) ============
-
-/// Whether a ride is recording, mirrored across the plane boundary: the ride loop owns the `App`
-/// and pushes `app.activity.is_tracking()` here each pass ([`set_recording`]); the `installFw`
-/// command handler reads it as the `busy` gate's "a ride is recording" input (spec §4.4) — the arm
-/// ends in a reboot, so an install must never be requested mid-ride. Defaults **false**; the ride
-/// loop seeds the real value on its first pass. `Relaxed`: both planes are cooperative futures on
-/// the one executor, and a stale read is at worst one pass late (the on-device guard still refuses).
-static RECORDING: AtomicBool = AtomicBool::new(false);
-
-/// Push the ride-recording state to the BLE plane (ride loop, once per pass — one atomic store).
-pub fn set_recording(recording: bool) {
-    RECORDING.store(recording, Ordering::Relaxed);
-}
-
-/// Whether a ride is recording (the `installFw` `busy` gate).
-pub(crate) fn recording() -> bool {
-    RECORDING.load(Ordering::Relaxed)
+/// The lifetime link counters + the last disconnect reason, for the §7.5 diagnostics blob
+/// ([`crate::link::diag_input`]). Kept here because they are the *radio* link's history; the
+/// diagnostics object is a device fact, so a USB reader gets the same three numbers.
+pub(crate) fn link_counters() -> (u32, u32, u8) {
+    let s = status();
+    (s.connects, s.disconnects, s.last_disconnect_reason)
 }
 
 /// The battery percent for the BAS characteristic, read by `battery_task` to seed + notify. A
@@ -221,67 +212,20 @@ pub(crate) fn battery() -> u8 {
     BATTERY.load(Ordering::Relaxed)
 }
 
-/// The deepest stack use seen so far (bytes), published by the status loop from its
-/// [`stackmeter`](crate::stackmeter) paint-scan and surfaced in the diagnostics blob (§7.5) so the
-/// A9 soak rig can post the stack high-water without RTT. 0 = not measured yet.
-static STACK_HIGH_WATER: AtomicU32 = AtomicU32::new(0);
+// ============================ CoC data-plane arming ============================
 
-/// Publish a new stack high-water peak (called by `run_status` when the mark grows).
-pub fn publish_stack_high_water(bytes: usize) {
-    STACK_HIGH_WATER.store(bytes as u32, Ordering::Relaxed);
-}
-
-/// The latest stack high-water mark (bytes) for the diagnostics blob.
-pub(crate) fn stack_high_water() -> u32 {
-    STACK_HIGH_WATER.load(Ordering::Relaxed)
-}
-
-// ============================ Data-plane arming ============================
-
-/// A transfer the control plane validated and handed to the data plane: the echo loopback, a route
-/// upload with its ready fresh [`Receiver`] (the store opened the temp), or a download (the data plane
-/// opens the source itself; opening may be slow — a CRC pre-pass — and belongs off the GATT reply
-/// path).
-#[derive(Clone, Copy)]
-pub(crate) enum Armed {
-    Echo(TransferControl),
-    Upload(TransferControl, Receiver),
-    Download(TransferControl),
-}
-
-/// The control plane → data plane hand-off: `serve_connection` decodes a `transfer_control` write,
-/// validates it against the `ObjectStore`, and signals the [`Armed`] transfer here; `serve_coc` wakes
-/// on it and drives the CoC. A `Signal` (latest-value) suffices because exactly one transfer is in
-/// flight at a time — [`TRANSFER_ACTIVE`] turns a second open into a typed `busy` instead of a silent
-/// overwrite.
+/// The GATT control plane → CoC data plane hand-off: `serve_connection` decodes a
+/// `transfer_control` write, [`classify_transfer`](crate::link::transfer::classify_transfer)
+/// validates it against the `ObjectStore`, and the [`Armed`] transfer is signalled here; `serve_coc`
+/// wakes on it and drives the CoC. A `Signal` (latest-value) suffices because exactly one transfer
+/// is in flight at a time — the *cross-transport* [`TRANSFER_ACTIVE`](crate::link::TRANSFER_ACTIVE)
+/// gate turns a second open into a typed `busy` instead of a silent overwrite. The signal itself is
+/// per-transport: each data plane waits on its own.
 pub(crate) static TRANSFER_ARM: Signal<CriticalSectionRawMutex, Armed> = Signal::new();
 
-/// One-transfer-at-a-time: set by the control plane when it arms, cleared by the data plane when the
-/// transfer concludes (answered, aborted, or the channel dropped). While set, another
-/// `transferControl` open is answered `busy`.
-pub(crate) static TRANSFER_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// An abort aimed at the in-flight transfer: the control plane signals, the data plane consumes it at
-/// its next step (between SDUs / chunks), discards, and answers `aborted` with the durable offset.
-/// Latched — an abort that races the transfer's own completion is drained at the same boundary that
-/// clears [`TRANSFER_ACTIVE`], before the terminal result is notified, so it can't leak into the next
-/// one.
+/// An abort aimed at the in-flight CoC transfer: the control plane signals, the data plane consumes
+/// it at its next step (between SDUs / chunks), discards, and answers `aborted` with the durable
+/// offset. Latched — an abort that races the transfer's own completion is drained at the same
+/// boundary that clears `TRANSFER_ACTIVE`, before the terminal result is notified, so it can't leak
+/// into the next one.
 pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-// ============================ Status-message vocabulary ============================
-
-/// A `status` notification's bytes, ready to hand to `server.notify` (`&buf[..len]`). The board keeps
-/// one small stack buffer per message rather than a heapless alloc — every status message fits.
-pub(crate) type StatusBytes = ([u8; StatusMessage::MAX_ENCODED_LEN], usize);
-
-/// A `transferResult` status message with a zero `committed_offset` — the shape for every result the
-/// control plane answers directly (nothing durable is being reported).
-pub(crate) fn transfer_result(object_id: u16, status: TransferStatus) -> StatusBytes {
-    transfer_result_at(object_id, status, 0)
-}
-
-/// A `transferResult` carrying a real durable byte count — a committed transfer reports its
-/// `total_len`.
-pub(crate) fn transfer_result_at(object_id: u16, status: TransferStatus, committed_offset: u32) -> StatusBytes {
-    StatusMessage::TransferResult(TransferResult::new(object_id, status, committed_offset)).encode()
-}

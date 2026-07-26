@@ -91,6 +91,44 @@ python3 ../tools/resource_guard.py boot \
 | BLE | 211,032 B | 4,504 B | 215,536 B | 1,024 B | 1,124,104 B | 1 × 76,800 B | 6,240 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
 
+The USB device plane (#889) introduces `src/link/` — the transport-free companion-link
+core (the §4.4 command handler, descriptor classification, the identity blobs, the
+cross-transport one-transfer gate) and, with it, the single `ObjectStore`. The store
+moved out of `ble::run` and is now built by `main` and handed to every plane, because
+one SD card must have one catalog, one id allocator and one upload temp no matter how
+many transports reach it. That lift is **+32 B resident on both shipping profiles**,
+itemized per symbol on pinned rustc 1.96.0 (`llvm-nm -S` diff against the merge base):
+`__embassy_main::POOL` **+24 B** (the `LinkStores` handle triple now crosses `main`'s
+awaits from the store-epoch mint to the spawns) and `spawn_ble_stack::POOL` **+8 B**
+(the same triple in the trampoline's argument pool, replacing two separate parameters).
+Everything else nets to zero: the 13,528 B store static is byte-identical, renamed
+`ble::STORE` → `link::STORE`, and the small `RECORDING` / `STACK_HIGH_WATER` /
+`TRANSFER_ACTIVE` cells moved module without changing size. Both `resident_ram_max`
+ceilings move **416,000 → 416,032 B** (the exact measurement — no toolchain margin was
+added on top, matching the last several re-baselines); flash observations move to
+1,146,736 B. Framebuffer count, `.uninit`, the guarded poll frames (9,664 B) and all 22
+allocation-report entries are unchanged — `ble_object_store` still reports 13,528 B, now
+sourced from `link::OBJECT_STORE_BYTES`.
+
+The `usb` feature itself is **not a pinned profile**. It is off by default until the
+peripheral is confirmed on glass, so the two shipping profiles above are still the
+authority. Measured on the same host for reference, `cargo build --release --features
+usb` links `.bss 415,992 + .data 5,136 = 421,128 B` resident (**+5,096 B** over the
+default profile) and 1,192,184 B of flash, with the guarded poll frame at 9,728 B
+(+64 B, against the unchanged 12,288 B limit). The resident cost is all named:
+`usb::run::POOL` 1,736 B (the task future — the three joined planes plus their control
+frame buffers), the driver's EP-OUT staging buffer 1,088 B (EP0-OUT 64 + two 512-byte
+bulk OUT endpoints), embassy-nrf's `USBHS` endpoint state 596 B, the control and bulk
+chunk scratch 512 B each, the MS OS 2.0 / BOS / config descriptor buffers 256 + 96 +
+96 B, the EP0 control buffer 64 B, and `spawn_usb_stack::POOL` 64 B. Statically,
+`usb::build_plane` carries a ~950 B transient boot frame (the `embassy_usb::Builder`,
+kept out of the task's poll frame by `#[inline(never)]` — the #677 rule) and no USB
+function enters the top of the stack histogram, whose head (`link::init_store` 27,648 B,
+`__embassy_main` 19,456 B, `ride::fill_ride_profile` 17,280 B, `NavPlanner::finish_emit`
+16,064 B) is byte-identical to the merge base. **On-glass stack high-water for the `usb`
+profile is unmeasured** — see the pending device-capture table below; static frame
+analysis is not a substitute for it.
+
 The routed detour (#882) replaces the pure skip: the `NavPlanner` gains the
 resident **corridor blacklist** (`Option<Corridor>` — a 128-point downsampled
 skipped-span polyline + inflated bbox + exemption coords), growing the

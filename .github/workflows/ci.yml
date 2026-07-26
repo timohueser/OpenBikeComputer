@@ -191,6 +191,13 @@ jobs:
           # status UI in. Needs --no-default-features (MPSL provides the critical-section impl).
           - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }
           - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble" }
+          # The USB device plane (#889): default + the LM20 USBHS vendor interface. Off by default
+          # until it is confirmed on glass, so without these legs the whole `src/usb/` tree — and the
+          # `src/link/` core it shares with the radio — would compile in nobody's CI and rot. Not
+          # resource-gated: `firmware/tools/resource_baseline.json` pins the two *shipping* profiles,
+          # and `usb` is not one of them yet.
+          - { name: "clippy (usb)", cmd: "cargo clippy --locked --features usb -- -D warnings" }
+          - { name: "build (usb, release)", cmd: "cargo build --release --locked --features usb" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1

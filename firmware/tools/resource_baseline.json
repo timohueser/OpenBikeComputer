@@ -13,10 +13,10 @@
   "board": {
     "default": {
       "features": "default (= all-features: map + router + BLE, LS021/FLPR, real sensors)",
-      "measured_resident": 416000,
-      "resident_ram_max": 416000,
+      "measured_resident": 416032,
+      "resident_ram_max": 416032,
       "uninit_max": 1024,
-      "measured_flash": 1144864,
+      "measured_flash": 1146736,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9664,
@@ -49,10 +49,10 @@
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE, constrained nrf-mem capacities)",
-      "measured_resident": 416000,
-      "resident_ram_max": 416000,
+      "measured_resident": 416032,
+      "resident_ram_max": 416032,
       "uninit_max": 1024,
-      "measured_flash": 1144864,
+      "measured_flash": 1146736,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9664,
