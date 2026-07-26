@@ -60,6 +60,7 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `companion-ios/` | The **iOS companion app** (SwiftUI + the `OBCKit` package): import GPX/TCX, encode OBCR, and sync routes/rides with the device over BLE. |
 | `protocol-vectors/` | Shared binary fixtures pinning the BLE wire contract, the OBCR route format and the recorded-track log + its GPX export — asserted byte-exact by `cargo test`, `swift test`, and the web builder's wasm conversion tests. |
 | `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route / firmware-update-image format specifications and the BLE wire contract. |
+| `OBCC_Spec.md` | The **map catalog manifest** — the JSON contract between a map bakery and the sites/apps that hand artifacts to a device, and the OBCM version law that keeps them honest. |
 | `firmware/docs/`, `packer/docs/` | Design notes and handover docs (UI spec, rendering pipeline, line-style plans, packer port stages…). |
 
 The crate dependency direction includes `obc-sim → obc-app → obc-render → obc-map-scene`,
@@ -141,6 +142,37 @@ single source of truth for *what* gets packed and *how it looks*
   (RGB565, chosen to land on the 64-color RGB222 grid), `z_index` (paint order),
   `weight` (line thickness), `min_lod` (the finest tier it first appears in), and
   `priority` (drop order when a chunk overflows).
+
+### The catalog manifest — describing a pile of baked maps
+
+A distribution that bakes maps centrally and serves them as static files needs one
+JSON document saying what exists. `obc-pack catalog` walks a bake output tree and
+writes it:
+
+```sh
+obc-pack catalog <bake-tree> --base-url https://maps.example.org/catalog/v1
+# → <bake-tree>/catalog.json           (written atomically: temp file, fsync, rename)
+
+obc-pack catalog <bake-tree> --base-url … --out -   # print instead, for inspection
+obc-pack schema --catalog                           # the manifest's JSON Schema
+```
+
+The tree is self-describing — `presets/<id>.json` (the preset's current definition) and
+`regions/<a>/<b>/<preset>.obcm` next to a small `<preset>.obcm.json` sidecar. The
+sidecar records what the *bake* knew and the bytes can't state: region name, the preset
+version it was packed with, build time, and the Geofabrik snapshot date. Everything
+else is read out of the artifact itself, including the **OBCM version**, which is what
+lets a consumer refuse a map a device can't read before downloading a few hundred
+megabytes.
+
+Nothing in the sidecar is re-derived at generation time, which is what lets the manifest
+stay honest across a *partial* re-bake: restyle one preset, re-bake half the regions,
+and the untouched artifacts keep reporting the version they were actually built with
+instead of being relabelled with the new one.
+
+The manifest layout, the sidecar, and the version law (an OBCM bump invalidates every
+baked artifact) are normative in [`OBCC_Spec.md`](OBCC_Spec.md); pass
+`--generated-at` in CI to make a re-run byte-reproducible.
 
 ### Web builder
 
