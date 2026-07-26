@@ -20,6 +20,9 @@ export const platform: Platform = {
         deviceDashboard: false,
     },
 
+    // Moot: no USB at all here, so there is no transport to name.
+    usbViaWebUsb: false,
+
     regions: () => api.regions(),
     presets: () => api.presets(),
     schema: () => api.schema(),
