@@ -59,13 +59,18 @@
       "poll_frame_measured": 9728,
       "poll_frame_limit": 12288,
       "floating_stable_observation": {
+        "_comment": "Hand-recorded snapshot of what CI's floating-stable toolchain links; nothing regenerates it, so it is only as current as source_commit. Both board profiles link an identical resident set, so this one observation covers them both.",
+        "source_commit": "5eb3e72efe9a687ee3d6decad1d1f4e058f25071",
+        "source_run": "https://github.com/timohueser/OpenBikeComputer/actions/runs/30214757195",
+        "host": "x86_64-unknown-linux-gnu (GitHub Actions ubuntu-latest)",
         "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
-        "bss": 210472,
-        "data": 4504,
-        "resident": 214976,
+        "llvm": "22.1.6",
+        "bss": 415992,
+        "data": 5136,
+        "resident": 421128,
         "uninit": 1024,
-        "flash": 1084052,
-        "poll_frame": 6240
+        "flash": 1166584,
+        "poll_frame": 9728
       },
       "compile_time_allocations": {
         "framebuffer": 76800,
