@@ -73,8 +73,8 @@ struct DeviceGlyphView: View {
         var bezelRadius: CGFloat { height * 26 / 470 }
         var screenRadius: CGFloat { height * 10 / 470 }
         var buttonWidth: CGFloat { max(4, height * 19 / 470) }
-        var buttonHeight: CGFloat { height * 54 / 470 }
-        var buttonGap: CGFloat { height * 26 / 470 }
+        var buttonHeight: CGFloat { height * 66 / 470 }
+        var buttonGap: CGFloat { height * 22 / 470 }
         /// How far a pad protrudes past the body edge.
         var buttonProtrude: CGFloat { height * 13 / 470 }
         /// The wordmark's baseline inset from the body's bottom edge, centring it in the chin.

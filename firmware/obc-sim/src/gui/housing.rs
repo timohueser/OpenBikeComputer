@@ -172,8 +172,8 @@ impl Default for HousingStyle {
             btn_protrude: 13.0,
             btn_radius: 7.0,
             btn_press: 3.0,
-            btn_h: 54.0,
-            btn_gap: 26.0,
+            btn_h: 66.0,
+            btn_gap: 22.0,
             btn_grid: 7.0,
             wordmark_size: 26.0,
         }
