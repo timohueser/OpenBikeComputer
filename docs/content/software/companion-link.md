@@ -115,6 +115,16 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `10` | `tripList` | device → app | the trip catalog — fixed-size **76 B** entries, mirroring `routeList`'s core (no auto-expiry tail) |
 | `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
 | `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
+| `16` | `map` | host → device (upload) | an [OBCM](../formats/) map — **the cable only**, see below |
+
+`map` is the one type Bluetooth could never have carried, and it is the clearest
+illustration of what a second transport buys: a map is hundreds of megabytes, so
+the type would have been dead weight until [a wire existed](#the-same-link-down-a-cable)
+that could move one. The device does not accept a map upload yet — the byte is
+agreed so both sides mean the same thing, but where an uploaded map *lands* on
+the card is an unsolved question rather than a small one, because the map the
+renderer streams from is chosen by filename at boot and held open for the whole
+session.
 
 The key move is that **a route on the wire is the same bytes as a route on the
 card.** The phone converts an imported GPX or TCX to an OBCR file and streams
