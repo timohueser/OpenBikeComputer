@@ -101,6 +101,21 @@ contract over an in-memory device; the device half — the LM20's USB peripheral
 and the small matter of which control characteristic a frame belongs to when
 there is no GATT to say so — is still ahead.
 
+The browser side already **writes** over it: a map, a dropped GPX and a firmware
+image, from the [map builder](https://timohueser.github.io/OpenBikeComputer/)'s
+device step. The cable changes exactly one thing about the object set, and it is
+the interesting one. A **map** was never an object, because a 200 MB file was
+never going over BLE — so USB adds a `map` type carrying an
+[OBCM](../formats/) file, uploaded and committed by the same six steps as
+everything else. Two consequences follow from the size rather than from the
+format: the browser cannot hold the artifact (it streams the download into a
+scratch file, checksums it against the [catalog
+manifest](src:OBCC_Spec.md) and only then opens the transfer, because the
+descriptor has to announce a whole-object CRC before the first byte moves), and
+the transfer takes *minutes* — the ceiling is the SD card at a few hundred KB/s,
+not the cable. The type's number and how maps are named and enumerated on the
+card are the device side's to settle.
+
 ## Objects are files the device already speaks
 
 Every bulk payload is a typed **object**. The set is small and closed:

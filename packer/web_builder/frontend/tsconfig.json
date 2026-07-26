@@ -20,5 +20,7 @@
             "$host": ["./src/lib/platform/dev.ts"]
         }
     },
-    "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"]
+    // `dev-harness/` is a second entry point that no tier's build has as an input (it mounts the
+    // app against the simulated device, #903) — not shipped, but checked to the same bar.
+    "include": ["src/**/*.ts", "src/**/*.svelte", "dev-harness/**/*.ts", "vite.config.ts"]
 }
