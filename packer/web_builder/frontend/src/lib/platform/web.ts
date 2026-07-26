@@ -2,19 +2,93 @@
 // which is the whole point of the hosted tier (#894). Everything it serves is
 // either a baked artifact or something wasm computes in the tab.
 //
-// The data calls below are seams, not implementations: the artifacts they read
-// are produced by the bakery (B1 #898) and their layout is settled when the
-// static tier is deployed (C6 #905). Until then they fail loudly rather than
-// fetching a URL nobody has decided on yet.
+// Two static documents back this host, both fetched once per session:
+//
+//   * `regions.json` — the Geofabrik download index, trimmed and simplified,
+//     byte-for-byte what the dev server's `/api/regions` returns. It is site
+//     data, so it sits next to the app (`packer/web_builder/static_data.py`
+//     writes it; C6 #905 wires that into the deploy).
+//   * `catalog.json` — the OBCC manifest the bakery publishes (B1 #898). It
+//     may live on the same origin or on the object storage the artifacts do,
+//     hence its own override: the artifact `url`s inside it are absolute.
+//
+// Both are relative to the document by default, so the site works mounted at
+// "/" or under a sub-path without a rebuild.
 
-import { PlatformNotImplemented, type LoadStyleEditor, type Platform } from "./types";
+import { parseCatalog, type Catalog } from "../catalog/manifest";
+import { catalogPresets } from "../catalog/presets";
+import type { LoadStyleEditor, Platform, RegionFeature } from "./types";
 
-// `async` so an unimplemented seam *rejects* rather than throwing past the
-// caller's `.catch()` — every method here is declared to return a promise, and
-// a seam that isn't written yet must not also break that contract.
-async function pending(member: string, owner: string): Promise<never> {
-    throw new PlatformNotImplemented("web", member, owner);
+const DATA_BASE: string = import.meta.env.VITE_DATA_BASE ?? "./data";
+const REGIONS_URL: string = `${DATA_BASE}/regions.json`;
+const CATALOG_URL: string = import.meta.env.VITE_CATALOG_URL ?? `${DATA_BASE}/catalog.json`;
+
+// Every seam this host declares is implemented now — C1 (#900) filled in the
+// three data calls and C3 (#902) the device one — so the `pending()` helper the
+// other two hosts still use has nothing left to name here.
+
+/** Absolute URL of a static document, so a relative default resolves against
+ *  the page rather than the module. */
+function resolve(url: string): string {
+    return new URL(url, document.baseURI).toString();
 }
+
+async function get(url: string): Promise<Response> {
+    const res = await fetch(resolve(url));
+    if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
+    return res;
+}
+
+/**
+ * Both documents are immutable for the life of a page load and have more than
+ * one caller (the picker draws the regions, the catalog store joins them), so
+ * the request is made once. Only a *fulfilled* promise is kept: a failed fetch
+ * that pinned itself would make the failure permanent until a reload.
+ */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+    let inflight: Promise<T> | null = null;
+    return () => {
+        inflight ??= load().catch((e: unknown) => {
+            inflight = null;
+            throw e;
+        });
+        return inflight;
+    };
+}
+
+async function fetchRegions(): Promise<RegionFeature[]> {
+    const body = (await (await get(REGIONS_URL)).json()) as { features?: RegionFeature[] };
+    if (!Array.isArray(body.features)) throw new Error(`${REGIONS_URL}: no features array`);
+    return body.features;
+}
+
+/**
+ * OBCC §7: read the entire body, then parse it as one document. `res.text()`
+ * before `parseCatalog` is that rule spelled out — a truncated manifest cannot
+ * survive a whole-document parse, and nothing here consumes the response
+ * incrementally.
+ *
+ * The one thing this does to the document it just validated is resolve each
+ * preview reference into an absolute URL. §2 says a preview resolves against
+ * the same base as an artifact's `url`, and the manifest's own location is that
+ * base — a fact only this module has. Doing it here means everything
+ * downstream, including the copy the store caches, holds one already-resolved
+ * document instead of a relative reference that means different things
+ * depending on where it is read.
+ */
+async function fetchCatalog(): Promise<Catalog> {
+    const base = resolve(CATALOG_URL);
+    const catalog = parseCatalog(await (await get(CATALOG_URL)).text());
+    return {
+        ...catalog,
+        presets: catalog.presets.map((p) =>
+            p.preview ? { ...p, preview: new URL(p.preview, base).toString() } : p,
+        ),
+    };
+}
+
+const regionsOnce = once(fetchRegions);
+const catalogOnce = once(fetchCatalog);
 
 export const platform: Platform = {
     name: "web",
@@ -39,13 +113,12 @@ export const platform: Platform = {
     // unaffected and stays open (#901).
     usbViaWebUsb: true,
 
-    regions: () => pending("regions", "C1 #900"),
-    // The hosted tier's preset list is the catalog manifest's own `presets[]`
-    // (id, name, blurb, preview reference) — A3 owns that format, C1 renders
-    // it. B2's demo maps and preview images hang off those entries; they are
-    // not what produces the list.
-    presets: () => pending("presets", "A3 #897 (first consumed by C1 #900)"),
-    catalog: () => pending("catalog", "A3 #897"),
+    regions: regionsOnce,
+    // The hosted tier's preset list is the manifest's own `presets[]` — there
+    // is no packer here, so a preset names a baked artifact rather than a
+    // recipe, and it arrives on the same fetch the catalog does.
+    presets: () => catalogOnce().then(catalogPresets),
+    catalog: catalogOnce,
 
     buildMap: null,
     // WebUSB, loaded on demand. The import is dynamic so the transport, the

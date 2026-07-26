@@ -14,7 +14,7 @@ The packer ([`obc-pack`](src:firmware/obc-pack)) lives in the same Rust workspac
 The pipeline is a straight line from an `.osm.pbf` extract to a finished `.obcm`. Two stages carry the weight — ingest and the per-LOD build — and the rest are quick.
 
 <figure class="fig">
-<svg viewBox="0 0 820 240" role="img" aria-label="The packer pipeline as a trail: starting from an OSM .pbf plus a config, the stages are merge, ingest, compute bounding box, generate land, build the per-LOD pyramid (simplify then quadtree), and serialize, ending at a .obcm file. Ingest and the per-LOD build are marked as the expensive stages.">
+<svg viewBox="0 0 820 240" role="img" aria-label="The packer pipeline as a trail: starting from one or more OSM .pbf files plus a config, the stages are ingest (which also merges and crops), compute bounding box, generate land, build the per-LOD pyramid (simplify then quadtree), and serialize, ending at a .obcm file. Ingest and the per-LOD build are marked as the expensive stages.">
   <text class="d-tag" x="20" y="24">From OpenStreetMap to a device map</text>
 
   <!-- trail -->
@@ -22,39 +22,36 @@ The pipeline is a straight line from an `.osm.pbf` extract to a finished `.obcm`
 
   <!-- start -->
   <circle cx="58" cy="120" r="7" class="d-forest" />
-  <text class="d-sub" x="58" y="150" text-anchor="middle">.pbf +</text>
+  <text class="d-sub" x="58" y="150" text-anchor="middle">.pbf(s) +</text>
   <text class="d-sub" x="58" y="162" text-anchor="middle">config</text>
 
-  <!-- 1 merge (above) -->
-  <circle cx="128" cy="120" r="15" class="d-forest" /><text class="d-num" x="128" y="124" text-anchor="middle">1</text>
-  <text class="d-label" x="128" y="74" text-anchor="middle">Merge</text>
-  <text class="d-sub" x="128" y="88" text-anchor="middle">if &gt; 1 input</text>
-  <!-- 2 ingest (below, HOT) -->
-  <circle cx="251" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="251" y="124" text-anchor="middle">2</text>
-  <text class="d-label" x="251" y="160" text-anchor="middle" style="fill:#a9501c">Ingest</text>
-  <text class="d-sub" x="251" y="174" text-anchor="middle">ways · relations</text>
-  <!-- 3 bbox (above) -->
-  <circle cx="374" cy="120" r="15" class="d-forest" /><text class="d-num" x="374" y="124" text-anchor="middle">3</text>
-  <text class="d-label" x="374" y="74" text-anchor="middle">BBox</text>
-  <text class="d-sub" x="374" y="88" text-anchor="middle">truncate µdeg</text>
-  <!-- 4 land (below) -->
-  <circle cx="497" cy="120" r="15" class="d-forest" /><text class="d-num" x="497" y="124" text-anchor="middle">4</text>
-  <text class="d-label" x="497" y="160" text-anchor="middle">Land</text>
-  <text class="d-sub" x="497" y="174" text-anchor="middle">clip to bbox</text>
-  <!-- 5 per-LOD (above, HOT) -->
-  <circle cx="620" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="620" y="124" text-anchor="middle">5</text>
-  <text class="d-label" x="620" y="74" text-anchor="middle" style="fill:#a9501c">Per-LOD</text>
-  <text class="d-sub" x="620" y="88" text-anchor="middle">simplify → quadtree</text>
-  <!-- 6 serialize (below) -->
-  <circle cx="720" cy="120" r="15" class="d-forest" /><text class="d-num" x="720" y="124" text-anchor="middle">6</text>
-  <text class="d-label" x="720" y="160" text-anchor="middle">Serialize</text>
-  <text class="d-sub" x="720" y="174" text-anchor="middle">stream out</text>
+  <!-- 1 ingest (below, HOT) — merge + crop happen inside it -->
+  <circle cx="150" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="150" y="124" text-anchor="middle">1</text>
+  <text class="d-label" x="150" y="160" text-anchor="middle" style="fill:#a9501c">Ingest</text>
+  <text class="d-sub" x="150" y="174" text-anchor="middle">ways · relations</text>
+  <text class="d-sub" x="150" y="188" text-anchor="middle">merge · crop</text>
+  <!-- 2 bbox (above) -->
+  <circle cx="280" cy="120" r="15" class="d-forest" /><text class="d-num" x="280" y="124" text-anchor="middle">2</text>
+  <text class="d-label" x="280" y="74" text-anchor="middle">BBox</text>
+  <text class="d-sub" x="280" y="88" text-anchor="middle">truncate µdeg</text>
+  <!-- 3 land (below) -->
+  <circle cx="410" cy="120" r="15" class="d-forest" /><text class="d-num" x="410" y="124" text-anchor="middle">3</text>
+  <text class="d-label" x="410" y="160" text-anchor="middle">Land</text>
+  <text class="d-sub" x="410" y="174" text-anchor="middle">clip to bbox</text>
+  <!-- 4 per-LOD (above, HOT) -->
+  <circle cx="540" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="540" y="124" text-anchor="middle">4</text>
+  <text class="d-label" x="540" y="74" text-anchor="middle" style="fill:#a9501c">Per-LOD</text>
+  <text class="d-sub" x="540" y="88" text-anchor="middle">simplify → quadtree</text>
+  <!-- 5 serialize (below) -->
+  <circle cx="670" cy="120" r="15" class="d-forest" /><text class="d-num" x="670" y="124" text-anchor="middle">5</text>
+  <text class="d-label" x="670" y="160" text-anchor="middle">Serialize</text>
+  <text class="d-sub" x="670" y="174" text-anchor="middle">stream out</text>
 
   <!-- end -->
   <rect class="d-panel" x="772" y="104" width="40" height="32" rx="5" style="fill:#e7ead8" />
   <text class="d-sub" x="792" y="124" text-anchor="middle" style="font-size:9px">.obcm</text>
 </svg>
-<figcaption>Inputs are merged (via <code>osmium</code>) only when there's more than one; a single input needs no external tool, even when it's <a href="#cropping-to-a-box">cropped to a box</a>. Each LOD tier is built and streamed to disk before the next begins, so peak memory is roughly <i>one</i> tier's quadtree rather than the whole pyramid plus the output — the same "never resident if it doesn't have to be" instinct the device's reader uses.</figcaption>
+<figcaption>There is no separate merge or crop stage: giving the packer several regions, or <a href="#cropping-to-a-box">a box</a> to cut them down to, changes what ingest reads rather than adding a step in front of it — which is why the whole pipeline needs no external tool at all. Each LOD tier is built and streamed to disk before the next begins, so peak memory is roughly <i>one</i> tier's quadtree rather than the whole pyramid plus the output — the same "never resident if it doesn't have to be" instinct the device's reader uses.</figcaption>
 </figure>
 
 ### Styling: first match wins
@@ -123,7 +120,7 @@ Within a `tag_key`, the value `"*"` is a **catch-all**: an exact value match sti
 
 ### Ingest: two passes, then assemble
 
-OSM is nodes, ways and relations, stored in that order. The ingester reads the `.pbf` twice. **Pass 1** builds a `node id → coordinate` store and notes which *area relations* exist (lakes-with-islands, multi-part forests). **Pass 2** turns ways into lines and polygons — and captures the geometry of any way a relation needs. Then each relation's member ways are assembled into a polygon-with-holes. (Cropping to a box adds a third pass in front of these — [below](#cropping-to-a-box).)
+OSM is nodes, ways and relations, stored in that order. The ingester reads the `.pbf` twice. **Pass 1** builds a `node id → coordinate` store and notes which *area relations* exist (lakes-with-islands, multi-part forests). **Pass 2** turns ways into lines and polygons — and captures the geometry of any way a relation needs. Then each relation's member ways are assembled into a polygon-with-holes. (Cropping to a box adds a third pass in front of these — [below](#cropping-to-a-box); several regions are read by these same passes — [below](#merging-several-regions).)
 
 <figure class="fig">
 <svg viewBox="0 0 720 280" role="img" aria-label="Ingest in two passes. Pass 1 reads the pbf into a node store and collects area relations. Pass 2 turns ways into lines and closed-way polygons and coastlines, capturing member geometry. Then relation member ways are assembled via build_area into a polygon with a hole — a lake with an island.">
@@ -181,7 +178,19 @@ So a way is kept **whole** or not at all. An edge ends where the *way* ends, a l
 
 Two consequences worth expecting. The finished map's header bounding box is always a little **wider** than the box you asked for, because it's measured from the packed content and complete ways stick out — which is why an extract box must never be re-derived from a packed map's header, or it ratchets outward on every re-pack. And peak memory tracks the *box*, not the source file: the id sets and the coordinate store only ever hold what the box selected, so cropping a 500 MB country costs about what packing the resulting small map costs.
 
-This is exactly the strategy [`osmium extract`](https://osmcode.org/osmium-tool/) calls `complete_ways`, and it's deliberately the same one — down to the integer grid the edge test runs on — so the packer needed to grow a crop rather than the toolchain needing to grow a second C++ dependency.
+This is exactly the strategy [`osmium extract`](https://osmcode.org/osmium-tool/) calls `complete_ways`, and it's deliberately the same one — down to the integer grid the edge test runs on — so the packer grew a crop rather than the toolchain growing a second C++ dependency.
+
+### Merging several regions
+
+A tour that crosses a border needs two extracts, and the two genuinely overlap. Geofabrik cuts its regions along administrative boundaries and completes the ways that cross them, so every bridge, river and border road exists in *both* files under the *same* OSM ids. Merging is therefore not concatenation: it is deciding, object by object, which copy is the real one.
+
+That decision used to belong to `osmium merge`, which is where the packer's second C++ dependency actually lived — the box crop above was only ever the smaller half of it. It now happens inside the passes already described: **every pass reads every file**, and the results are folded together afterwards, under two rules.
+
+**On a duplicate id, the first file listed wins — the whole object, not a blend.** The tie-break is decided on the `(type, id)` alone, before anything is read out of the copy: a way whose first copy carries no style still shuts out a later, tagged copy of itself. That sounds pedantic until you see what the alternative does. Two extracts downloaded a week apart can hold two *versions* of the same object, and `osmium merge` keeps both — its manual says so; it is built to handle history files. The packer then dutifully drew both. Merging two adjacent real regions, that is one building drawn twice where somebody had retagged it between the two downloads. Picking a winner by id makes that impossible.
+
+**The survivors come out in ascending id order**, per type — the order a single merged, sorted file would have produced them in. This is not cosmetic either. Feature order decides which [quadtree chunk](#the-quadtree-packing-geometry-into-chunks) a feature lands in and therefore the packed bytes, so "merge natively" only counts as done if it reproduces the byte-for-byte output the external chain produced. It does: on overlapping regions with no version skew, the two paths agree exactly.
+
+What this buys is what the crop bought. Nothing is re-written to disk, and nothing holds a whole merged region in memory: the external chain had to crop each region with `osmium extract` *first* — precisely so that its in-memory sort wasn't handed two countries — and that crop's node-location index is sized by the largest node id in all of OSM rather than by the box, so a two-region boxed build peaked around 2.3 GB where reading the regions in place peaks near 340 MB. Same bytes out, and about the same wall clock, because the files are read in parallel with each other.
 
 ### Land and sea
 
@@ -605,6 +614,16 @@ Everything above hides behind one command: `python -m packer.web_builder` serves
 - **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the web server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten.
 - **A stateless server.** The working config lives in the browser ("Custom — based on Bikepacking"), never on the server; builds run through a bounded queue into per-job directories and stream progress live. That shape runs locally today and would survive a shared deployment unchanged.
 - **Routes need no server at all.** The GPX→OBCR converter is `no_std` Rust, so it compiles to wasm and runs *in the tab* ([`obc-web-convert`](src:firmware/obc-web-convert)) — the same routine the device runs, producing the same bytes, held to the [shared fixtures](src:protocol-vectors). Dropping a route on the builder uploads nothing; the same shim also turns a recorded `.obct` ride log back into a GPX. Map building is the part that still needs real CPU.
+
+### The same app with no packer behind it
+
+Map building is also the part that cannot be *hosted* — it is memory-hungry, it runs one job at a time, and a country is minutes of CPU per user. So the same Svelte source builds a second way: a **static tier** with no back end at all, which serves maps that were baked once, centrally, and listed in a [catalog manifest](../formats/#the-catalog-a-third-format-for-finding-the-first-two). The region picker is the same map; what changes is where a region's contents come from.
+
+Three states, and the interesting one is the third. A region the bakery has built is shaded and clickable, and says what the download is: size, build date, and the date of the OSM extract it was packed from. A region nobody has baked is greyed with the reason and a way forward rather than a dead click. And a map whose `obcm_version` the *connected device* cannot read is shown as **unsupported with the reason** — not hidden, because hiding it would make a rider's out-of-date firmware look like a hole in the coverage, and not offered either, because the download would be a file the device refuses. That is [OBCC §6(c)](src:OBCC_Spec.md) as a UI state; with nothing plugged in there is no such judgement to make, so the map is offered and its version stated.
+
+Regions **nest** — a country and its states can be baked independently — and the manifest is explicit that neither substitutes for the other: they cover different areas at very different sizes. So the picker never quietly swaps one for the other. An unbaked region instead *names* the baked region that contains it and the baked regions inside it, each with its own size, and the rider chooses. What it cannot offer is a smaller piece of one: there is no packer here to crop with, so the download is the whole region, and the panel says so at the moment of selection rather than in a footnote.
+
+The last step is the one that protects the card. A downloaded artifact is checked against the manifest's byte count and SHA-256 **before** it is written anywhere, so a truncated response or a bad publish is an error message in the browser rather than a map that fails on a mountain. That is why the whole file is buffered first: a digest can only be checked over complete bytes.
 
 ## Following a route
 

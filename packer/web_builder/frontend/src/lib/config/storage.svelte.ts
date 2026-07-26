@@ -1,5 +1,5 @@
 import { migrateEnvelope, ENVELOPE_VERSION } from "./migrations";
-import { deepCopy, normalizeConfig, type PackConfig, type Preset } from "./model";
+import { deepCopy, normalizeConfig, type BuildablePreset, type PackConfig } from "./model";
 
 // The working config lives in the browser (localStorage), never on the server
 // — that keeps the backend stateless (no accounts needed) and survives
@@ -37,8 +37,10 @@ export class WorkingConfig {
         }
     }
 
-    /** Snapshot a preset into the working config (discards previous state). */
-    applyPreset(preset: Preset) {
+    /** Snapshot a preset into the working config (discards previous state).
+     *  Takes a preset that carries a config — a catalog preset (hosted tier)
+     *  names a baked artifact and has nothing to snapshot. */
+    applyPreset(preset: BuildablePreset) {
         const { config, disabled } = normalizeConfig(
             preset.config as unknown as Record<string, unknown>,
         );

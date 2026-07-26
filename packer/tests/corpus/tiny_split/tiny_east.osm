@@ -1,0 +1,88 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!--
+  Hand-authored OBCM packer corpus fixture (unit-level) — the EAST half of the
+  two-file split of tiny/tiny.osm. Read tiny_west.osm first: it carries the full
+  description of what the split is for.
+
+  This file: nodes 9-16, 25-26 (duplicates of west's), 27-30, 33-36; ways 103,
+  104, 105, 107 (the contested one), 109, 112; relation 201 (the lake with an
+  island). Sorted by type then id, as a merge input must be.
+
+  The deliberate differences from west's copies:
+    - **node 25** carries `amenity=drinking_water` here and nothing in west. It is
+      the "the whole object loses, tags and all" case: with west listed first, no
+      POI appears; with east first, one does.
+    - **way 107** is `highway=track` here and `highway=primary` in west.
+    - **ways 105 and 112** are here but their nodes (17-20 and 37-40) are only in
+      west, so this file is deliberately *not* complete_ways — the merge must not
+      depend on that. Nodes 27/28 go the other way: way 108 is in west and both of
+      its nodes are here.
+-->
+<osm version="0.6" generator="hand-authored-obcm-fixture">
+  <!-- R2 outer ring A (W3) -->
+  <node id="9" version="1" lat="47.990" lon="7.806"/>
+  <node id="10" version="1" lat="47.990" lon="7.808"/>
+  <node id="11" version="1" lat="47.992" lon="7.808"/>
+  <node id="12" version="1" lat="47.992" lon="7.806"/>
+  <!-- R2 outer ring B (W4) -->
+  <node id="13" version="1" lat="47.990" lon="7.810"/>
+  <node id="14" version="1" lat="47.990" lon="7.812"/>
+  <node id="15" version="1" lat="47.992" lon="7.812"/>
+  <node id="16" version="1" lat="47.992" lon="7.810"/>
+  <!-- W7's nodes again — 25 tagged here, untagged in west -->
+  <node id="25" version="1" lat="47.988" lon="7.800">
+    <tag k="amenity" v="drinking_water"/>
+  </node>
+  <node id="26" version="1" lat="47.988" lon="7.812"/>
+  <!-- W7b's nodes: way 108 itself lives in tiny_west. Node 27 is the ONLY
+       in-box node that way has, so a per-file box selection would drop it. -->
+  <node id="27" version="1" lat="47.980" lon="7.800"/>
+  <node id="28" version="1" lat="47.980" lon="7.855"/>
+  <!-- W8 open natural=coastline -->
+  <node id="29" version="1" lat="47.990" lon="7.815"/>
+  <node id="30" version="1" lat="47.994" lon="7.815"/>
+  <!-- W11 closed highway=pedestrian area=yes (force area) -->
+  <node id="33" version="1" lat="47.996" lon="7.810"/>
+  <node id="34" version="1" lat="47.996" lon="7.812"/>
+  <node id="35" version="1" lat="47.998" lon="7.812"/>
+  <node id="36" version="1" lat="47.998" lon="7.810"/>
+
+  <!-- W3: R2 outer A (untagged member) -->
+  <way id="103" version="1">
+    <nd ref="9"/><nd ref="10"/><nd ref="11"/><nd ref="12"/><nd ref="9"/>
+  </way>
+  <!-- W4: R2 outer B (untagged member) -->
+  <way id="104" version="1">
+    <nd ref="13"/><nd ref="14"/><nd ref="15"/><nd ref="16"/><nd ref="13"/>
+  </way>
+  <!-- W5: closed landuse=forest -> area via heuristic -->
+  <way id="105" version="1">
+    <nd ref="17"/><nd ref="18"/><nd ref="19"/><nd ref="20"/><nd ref="17"/>
+    <tag k="landuse" v="forest"/>
+  </way>
+  <!-- W7: THE CONTESTED WAY. tiny_west has way 107 as highway=primary. -->
+  <way id="107" version="1">
+    <nd ref="25"/><nd ref="26"/>
+    <tag k="highway" v="track"/>
+  </way>
+  <!-- W8: open natural=coastline -> coastlines[], not a styled feature -->
+  <way id="109" version="1">
+    <nd ref="29"/><nd ref="30"/>
+    <tag k="natural" v="coastline"/>
+  </way>
+  <!-- W12: closed natural=water area=no -> forced line. Its nodes are in
+       tiny_west, so only a node phase spanning every source resolves it. -->
+  <way id="112" version="1">
+    <nd ref="37"/><nd ref="38"/><nd ref="39"/><nd ref="40"/><nd ref="37"/>
+    <tag k="natural" v="water"/>
+    <tag k="area" v="no"/>
+  </way>
+
+  <!-- R1: multipolygon natural=water, outer + inner (lake with island) -->
+  <relation id="201" version="1">
+    <member type="way" ref="101" role="outer"/>
+    <member type="way" ref="102" role="inner"/>
+    <tag k="type" v="multipolygon"/>
+    <tag k="natural" v="water"/>
+  </relation>
+</osm>

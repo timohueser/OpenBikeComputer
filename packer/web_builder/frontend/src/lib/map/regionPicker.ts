@@ -23,6 +23,26 @@ export interface PickerCallbacks {
     onDrawStateChange(armed: boolean): void;
 }
 
+/**
+ * What the catalog knows about the regions on the map (C1 #900). Absent on a
+ * tier that builds its own maps: there every region is buildable, so there is
+ * nothing to shade. When present, the baked regions are painted as a coverage
+ * layer and every row of the click popup carries its own state — including the
+ * rows for regions that aren't baked, which stay clickable so the panel can say
+ * why and where to go instead.
+ */
+export interface CatalogHints {
+    /** Ids to paint as coverage: the regions with at least one artifact. */
+    coverageIds: readonly string[];
+    tone(id: string): "available" | "unsupported" | "not-baked";
+}
+
+export interface PickerOptions {
+    /** One region at a time: a catalog download is one artifact, and there is
+     *  no packer on that tier to merge two regions into one map. */
+    singleSelect?: boolean;
+}
+
 // Field-guide colors: selection reads forest (kept), preview/box read coral
 // (transient), matching the docs palette.
 const SELECT_STYLE = { color: "#3c6b39", weight: 2, fillColor: "#3c6b39", fillOpacity: 0.22 };
@@ -35,6 +55,31 @@ const PREVIEW_STYLE = {
     interactive: false,
 };
 const BBOX_STYLE = { color: "#cf6a2a", weight: 2, fillColor: "#cf6a2a", fillOpacity: 0.08 };
+
+// Coverage: what the catalog has baked, painted under everything else and never
+// interactive (the click hit-test below already knows about every region, baked
+// or not). Available reads forest like a selection but fainter; unsupported
+// reads amber — the maps are there, the firmware is what's behind.
+const COVERAGE_STYLE = {
+    available: { color: "#3c6b39", weight: 1, fillColor: "#3c6b39", fillOpacity: 0.14, interactive: false },
+    unsupported: {
+        color: "#e3ad33",
+        weight: 1,
+        dashArray: "4,3",
+        fillColor: "#e3ad33",
+        fillOpacity: 0.14,
+        interactive: false,
+    },
+} as const;
+
+// A selected region keeps the state's colour rather than always reading forest:
+// picking a region the catalog doesn't have must not paint it the same green as
+// one it does.
+const SELECT_TONE_STYLE = {
+    available: SELECT_STYLE,
+    unsupported: { color: "#b58a1b", weight: 2.5, fillColor: "#e3ad33", fillOpacity: 0.2 },
+    "not-baked": { color: "#6b7758", weight: 2, dashArray: "5,4", fillColor: "#6b7758", fillOpacity: 0.1 },
+} as const;
 
 const CORNERS = ["nw", "ne", "se", "sw"] as const;
 type Corner = (typeof CORNERS)[number];
@@ -56,8 +101,11 @@ export class RegionPicker {
 
     private map: L.Map;
     private cb: PickerCallbacks;
+    private opts: PickerOptions;
     private regionsById = new Map<string, IndexedRegion>();
     private highlightLayer: L.GeoJSON | null = null;
+    private hints: CatalogHints | null = null;
+    private coverageLayer: L.GeoJSON | null = null;
 
     private bboxMode = false;
     private bboxRect: L.Rectangle | null = null;
@@ -75,8 +123,9 @@ export class RegionPicker {
     private popupOpen = false;
     private resizeObs: ResizeObserver;
 
-    constructor(el: HTMLElement, cb: PickerCallbacks) {
+    constructor(el: HTMLElement, cb: PickerCallbacks, opts: PickerOptions = {}) {
         this.cb = cb;
+        this.opts = opts;
         // boxZoom off: shift+drag is our draw-a-bbox gesture instead.
         this.map = L.map(el, { worldCopyJump: true, boxZoom: false }).setView([30, 10], 2);
         L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -146,6 +195,7 @@ export class RegionPicker {
         this.regions = indexRegions(features);
         this.regionsById.clear();
         for (const f of this.regions) this.regionsById.set(f.properties.id, f);
+        this.renderCoverage(); // hints may have arrived before the polygons did
     }
 
     regionName(id: string): string {
@@ -165,18 +215,31 @@ export class RegionPicker {
         );
     }
 
+    /** Paint what the catalog covers, or clear it with `null`. */
+    setCatalogHints(hints: CatalogHints | null) {
+        this.hints = hints;
+        this.renderCoverage();
+        this.renderHighlights(); // a selection made before the manifest arrived
+    }
+
     toggleRegion(id: string) {
         if (this.selected.has(id)) this.selected.delete(id);
-        else this.selected.add(id);
+        else {
+            if (this.opts.singleSelect) this.selected.clear();
+            this.selected.add(id);
+        }
         this.renderHighlights();
         this.clearPreview(); // selection changed under the cursor; recompute on move
         this.cb.onSelectionChange([...this.selected]);
     }
 
-    /** Restore a persisted selection (ids unknown to the index are dropped). */
+    /** Restore a persisted selection (ids unknown to the index are dropped).
+     *  A stored multi-region selection collapses to its last entry on a
+     *  single-select tier rather than being refused. */
     setSelection(ids: string[]) {
         this.selected.clear();
-        for (const id of ids) {
+        const wanted = this.opts.singleSelect ? ids.slice(-1) : ids;
+        for (const id of wanted) {
             if (this.regionsById.has(id)) this.selected.add(id);
         }
         this.renderHighlights();
@@ -212,6 +275,20 @@ export class RegionPicker {
             const id = f.properties.id;
             const btn = document.createElement("button");
             btn.textContent = f.properties.name;
+            // Every region under the cursor is its own row with its own state:
+            // regions nest, and a parent's map is not a substitute for a
+            // child's (OBCC §3). An unbaked row stays clickable — selecting it
+            // is how the panel gets to say what to do instead.
+            if (this.hints) {
+                const tone = this.hints.tone(id);
+                btn.classList.add(`tone-${tone}`);
+                if (tone !== "available") {
+                    const tag = document.createElement("span");
+                    tag.className = "tag";
+                    tag.textContent = tone === "unsupported" ? "needs newer firmware" : "not baked";
+                    btn.appendChild(tag);
+                }
+            }
             if (this.selected.has(id)) btn.classList.add("selected");
             // Lock the preview to the hovered option, not the raw cursor.
             btn.addEventListener("mouseenter", () => this.setPreviewFeature(f));
@@ -230,7 +307,36 @@ export class RegionPicker {
         const feats = [...this.selected]
             .map((id) => this.regionsById.get(id))
             .filter((f): f is IndexedRegion => Boolean(f));
-        this.highlightLayer = L.geoJSON(feats as never, { style: SELECT_STYLE }).addTo(this.map);
+        this.highlightLayer = L.geoJSON(feats as never, {
+            style: (f) => {
+                if (!this.hints) return SELECT_STYLE;
+                return SELECT_TONE_STYLE[this.hints.tone((f as unknown as IndexedRegion).properties.id)];
+            },
+        }).addTo(this.map);
+    }
+
+    /** The coverage layer: one pass over the baked regions, drawn beneath the
+     *  selection so a picked region still reads as picked. */
+    private renderCoverage() {
+        if (this.coverageLayer) {
+            this.map.removeLayer(this.coverageLayer);
+            this.coverageLayer = null;
+        }
+        if (!this.hints) return;
+        const feats = this.hints.coverageIds
+            .map((id) => this.regionsById.get(id))
+            .filter((f): f is IndexedRegion => Boolean(f));
+        if (!feats.length) return;
+        this.coverageLayer = L.geoJSON(feats as never, {
+            style: (f) => {
+                const id = (f as unknown as IndexedRegion).properties.id;
+                return this.hints!.tone(id) === "unsupported"
+                    ? COVERAGE_STYLE.unsupported
+                    : COVERAGE_STYLE.available;
+            },
+        }).addTo(this.map);
+        this.coverageLayer.bringToBack();
+        if (this.highlightLayer) this.highlightLayer.bringToFront();
     }
 
     // --- hover preview ---
