@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import BuildCard from "../components/BuildCard.svelte";
+    import Gated from "../components/Gated.svelte";
     import MapPanel from "../components/MapPanel.svelte";
     import PresetCards from "../components/PresetCards.svelte";
     import DownloadStep from "../components/catalog/DownloadStep.svelte";
@@ -16,9 +17,9 @@
 
     let { active = true }: { active?: boolean } = $props();
 
-    // Narrowed once: non-null exactly on a host with `caps.build`, which is
-    // also the only gating input step 3 has. C2 (#901) replaces the bare
-    // `{#if}` below with an inline disabled affordance that says why.
+    // Non-null exactly on a host with `caps.build`. Handed to `<Gated>`, which
+    // makes the one check and passes the narrowed value to the card — so step 3
+    // is present either way, live or dead-with-a-reason.
     const buildMap = platform.buildMap;
 
     // No packer means the maps come pre-baked, which is the same fact from the
@@ -206,28 +207,36 @@
             {/if}
         </section>
 
-        {#if buildMap}
-            <section class="card">
-                <div class="step-head">
-                    <span class="num">3</span>
-                    <h3>Build</h3>
-                </div>
-                <BuildCard {selection} {buildMap} />
-            </section>
-        {:else}
-            <section class="card">
-                <div class="step-head">
-                    <span class="num">3</span>
-                    <h3>Download</h3>
-                </div>
+        <!-- One step, two ways to end up with a map. Where there is a packer,
+             step 3 builds one; where there isn't, the catalog hands one over —
+             and the build stays on screen underneath, dead and with its reason,
+             because "you can't cut your own map here" is the thing worth
+             discovering at exactly this moment (#901). Deliberately not a
+             fourth numbered step: C3 (#902) owns the next number. -->
+        <section class="card">
+            <div class="step-head">
+                <span class="num">3</span>
+                <h3>{catalogMode ? "Download" : "Build"}</h3>
+            </div>
+            {#if catalogMode}
                 <DownloadStep
                     {entry}
                     {artifact}
                     {device}
                     preset={presets.find((p) => p.id === presetId) ?? null}
                 />
-            </section>
-        {/if}
+            {/if}
+            <Gated need="build" value={buildMap}>
+                {#snippet children(start)}
+                    <BuildCard {selection} buildMap={start} />
+                {/snippet}
+                {#snippet unavailable(reason)}
+                    <button type="button" class="btn primary" disabled aria-describedby={reason}>
+                        Build map
+                    </button>
+                {/snippet}
+            </Gated>
+        </section>
     </div>
 </div>
 

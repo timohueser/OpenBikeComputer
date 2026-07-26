@@ -4,7 +4,8 @@
     import { bboxAreaKm2Raw } from "../lib/map/geo";
     import { RegionPicker, type Bbox, type CatalogHints } from "../lib/map/regionPicker";
     import { emptySelection, type AreaSelection } from "../lib/map/selection";
-    import { DESKTOP_ROUTE } from "../lib/routes";
+    import { available } from "../lib/platform/gating";
+    import Gated from "./Gated.svelte";
 
     let {
         active = true,
@@ -19,14 +20,12 @@
         singleSelect?: boolean;
     } = $props();
 
-    // Cropping needs a packer to crop with. Shown-but-disabled rather than
-    // removed: the missing feature is the pitch for the desktop app (#894).
-    // C2 (#901) owns the `<Gated>` primitive and the one place all "why is this
-    // disabled" copy lives (`GATES.bboxCrop`) — when that lands, this control
-    // and the line under it become a `<Gated need="bboxCrop">` and this sentence
-    // goes away. The control could not wait for it: left live on a tier with no
-    // packer, it draws a box nothing can honour.
-    const canCrop = platform.caps.bboxCrop;
+    // Cropping needs a packer to crop with, so on a tier without one the mode
+    // has to be shut off — left live it draws a box nothing can honour. The
+    // control itself is gated below with the rest of them; this is the same
+    // requirement asked in script, for the one thing markup can't do: refuse to
+    // restore a stored box into a mode that no longer exists.
+    const canCrop = available("bboxCrop");
 
     let mapEl: HTMLDivElement;
     let picker = $state<RegionPicker | null>(null);
@@ -226,25 +225,32 @@
         {/if}
     </div>
 
-    <div class="overlay top-right seg">
-        <button type="button" class:active={mode === "regions"} onclick={() => setMode("regions")}>
-            Regions
-        </button>
-        <button
-            type="button"
-            class:active={mode === "bbox"}
-            disabled={!canCrop}
-            title={canCrop ? undefined : "Cropping to a box needs the desktop app"}
-            onclick={() => setMode("bbox")}
-        >
-            Draw box
-        </button>
+    <!-- The mode toggle, and the one control on this panel that a tier can
+         lack. The pill is written twice rather than nested inside the gate,
+         because `<Gated>` puts its reason sentence next to the stand-in and a
+         paragraph inside the pill would break it. -->
+    <div class="overlay top-right modes">
+        <Gated need="bboxCrop">
+            <div class="seg">
+                <button
+                    type="button"
+                    class:active={mode === "regions"}
+                    onclick={() => setMode("regions")}
+                >
+                    Regions
+                </button>
+                <button type="button" class:active={mode === "bbox"} onclick={() => setMode("bbox")}>
+                    Draw box
+                </button>
+            </div>
+            {#snippet unavailable(reason)}
+                <div class="seg">
+                    <button type="button" class="active">Regions</button>
+                    <button type="button" disabled aria-describedby={reason}>Draw box</button>
+                </div>
+            {/snippet}
+        </Gated>
     </div>
-    {#if !canCrop}
-        <div class="overlay top-right seg-note small faint">
-            Whole regions only · <a href={DESKTOP_ROUTE}>the desktop app</a> crops to a box
-        </div>
-    {/if}
 
     {#if mode === "bbox" && !bbox && !drawArmed}
         <div class="overlay bottom-left chip">
@@ -290,13 +296,26 @@
         right: 12px;
     }
 
-    .seg-note {
-        top: 46px;
-        right: 12px;
+    /* The pill, and under it whatever the gate has to say — right-aligned so
+       both hang off the same corner. The reason belongs to `<Gated>`, so it is
+       reached with :global and given the same chip treatment as the pill;
+       without a background it would be text on map tiles. */
+    .modes {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
+    }
+
+    .modes :global(p.reason) {
+        margin: 0;
+        max-width: 260px;
+        justify-content: flex-end;
+        text-align: right;
         background: var(--panel);
         border: 1px solid var(--parchment-3);
-        border-radius: 999px;
-        padding: 3px 11px;
+        border-radius: 12px;
+        padding: 5px 11px;
         box-shadow: 0 2px 8px rgba(36, 51, 28, 0.14);
     }
 
