@@ -116,8 +116,10 @@
                 {#snippet children(start)}
                     <BuildCard {selection} buildMap={start} />
                 {/snippet}
-                {#snippet unavailable()}
-                    <button type="button" class="btn primary" disabled>Build map</button>
+                {#snippet unavailable(reason)}
+                    <button type="button" class="btn primary" disabled aria-describedby={reason}>
+                        Build map
+                    </button>
                 {/snippet}
             </Gated>
         </section>
