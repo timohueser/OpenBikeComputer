@@ -15,6 +15,14 @@
       "port": 5173
     },
     {
+      "name": "web-builder-device-harness",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5174"],
+      "cwd": "packer/web_builder/frontend",
+      "port": 5174,
+      "url": "http://localhost:5174"
+    },
+    {
       "name": "landing-page",
       "runtimeExecutable": "trunk",
       "runtimeArgs": ["serve", "--config", "docs/Trunk.toml"],
