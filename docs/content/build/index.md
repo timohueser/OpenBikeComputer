@@ -12,7 +12,7 @@ OpenBikeComputer is open hardware and open software, designed so you can build, 
 ## What this guide will cover
 
 ### Bill of materials
-A complete, orderable parts list — the display, the microcontroller board, the encoder and button, the battery and power components, and the enclosure — with links and quantities, so sourcing everything is straightforward.
+A complete, orderable parts list — the display, the microcontroller board, the four buttons, the battery and power components, and the enclosure — with links and quantities, so sourcing everything is straightforward.
 
 ### Tools
 What you'll need on the bench: a soldering iron, the basics for assembly, and the programmer/debugger for flashing.
