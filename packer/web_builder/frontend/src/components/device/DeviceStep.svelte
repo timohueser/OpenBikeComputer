@@ -67,7 +67,12 @@
             {#await loadSurfaces()}
                 <p class="small muted">Loading…</p>
             {:then { default: Surfaces }}
-                <Surfaces client={session.client} info={session.info} {artifact} />
+                <Surfaces
+                    client={session.client}
+                    info={session.info}
+                    identity={session.identity}
+                    {artifact}
+                />
             {:catch}
                 <p class="note error small" role="alert">
                     The device tools could not be loaded. Check your connection and reload the page.
