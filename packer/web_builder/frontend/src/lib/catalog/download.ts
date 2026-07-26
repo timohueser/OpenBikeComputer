@@ -136,9 +136,15 @@ export function artifactFilename(artifact: CatalogArtifact): string {
     return `${leaf}-${artifact.preset_id}.obcm`;
 }
 
-/** Hand verified bytes to the browser's downloader. */
-export function saveBytes(bytes: Uint8Array, filename: string): void {
-    const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: "application/octet-stream" }));
+/**
+ * Hand verified bytes to the browser's downloader.
+ *
+ * `type` defaults to the opaque one a map is; a ride export passes `application/gpx+xml` so the OS
+ * files it as what it is (C5 #904). One implementation rather than two, because the revoke timing
+ * below is the kind of detail a second copy gets subtly wrong.
+ */
+export function saveBytes(bytes: Uint8Array, filename: string, type = "application/octet-stream"): void {
+    const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type }));
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;

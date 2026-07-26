@@ -340,8 +340,17 @@ export class MockDevice {
     private readonly routeEntries = new Map<number, RouteListEntry>();
     private readonly rideEntries = new Map<number, RideListEntry>();
     private readonly tripEntries = new Map<number, TripListEntry>();
-    /** The monotonic per-ride "downloaded at least once" flag `ackRides` reconciles. */
-    private readonly syncedRides = new Set<number>();
+    /**
+     * The monotonic per-ride "a durable copy exists off the device" flag `ackRides` reconciles,
+     * with the `synced_at` stamp the real device persists beside it.
+     *
+     * The stamp is not decoration: it is the anchor auto-expiry (#638) counts from, which is why
+     * an ack is a *write* and why the hosted tier must never send one (#894, C5 #904). Modelled
+     * here so {@link MockDevice.syncedSidecar} can render the same bytes the firmware writes to
+     * `/tracks/SYNCED.SET` — a test that snapshots those bytes either side of a session is
+     * checking the thing that would actually change, not a flag it also happens to set.
+     */
+    private readonly syncedRides = new Map<number, number>();
 
     private staged: Uint8Array | null = null;
     private nextRouteId = 1;
@@ -417,7 +426,32 @@ export class MockDevice {
 
     /** Ride ids the device has flagged synced. Monotonic — nothing ever clears one. */
     get synced(): ReadonlySet<number> {
-        return this.syncedRides;
+        return new Set(this.syncedRides.keys());
+    }
+
+    /**
+     * The `/tracks/SYNCED.SET` sidecar as the firmware would have written it
+     * (`obc_app::encode_synced_rides`, v2): `"OBCS"`, version, count, `(id u16, synced_at u32)`
+     * entries in insertion order, then a CRC-16/CCITT-FALSE over everything before it.
+     *
+     * Modelled byte-for-byte so a peer that must not touch the device can be held to it with a
+     * byte comparison rather than a flag check — #904's regression pin. The stamp comes from the
+     * device's trusted clock, or `0` when no peer has set one, exactly as the firmware does.
+     */
+    syncedSidecar(): Uint8Array {
+        const entries = [...this.syncedRides.entries()];
+        const out = new Uint8Array(SYNCED_HEADER_LEN + entries.length * SYNCED_ENTRY_LEN + 2);
+        const view = new DataView(out.buffer);
+        out.set(SYNCED_MAGIC, 0);
+        out[4] = SYNCED_VERSION;
+        view.setUint16(6, entries.length, true);
+        entries.forEach(([id, syncedAt], i) => {
+            const at = SYNCED_HEADER_LEN + i * SYNCED_ENTRY_LEN;
+            view.setUint16(at, id, true);
+            view.setUint32(at + 2, syncedAt, true);
+        });
+        view.setUint16(out.length - 2, crc16(out.subarray(0, out.length - 2)), true);
+        return out;
     }
 
     // --- the control loop ------------------------------------------------------
@@ -768,9 +802,11 @@ export class MockDevice {
                 for (let i = 0; i < count; i++) {
                     const id = view.getUint16(2 + i * 2, true);
                     // Unknown ids are ignored, not an error: the peer may hold rides the device has
-                    // since deleted. Monotonic — a flag is never cleared.
+                    // since deleted. Monotonic — a flag is never cleared, and an already-synced ride
+                    // keeps its **original** stamp (sync time is first-sync, not last), because that
+                    // stamp is what the expiry countdown is anchored to.
                     if (this.rides.has(id) && !this.syncedRides.has(id)) {
-                        this.syncedRides.add(id);
+                        this.syncedRides.set(id, this.clock?.utc ?? 0);
                         flagged++;
                     }
                 }
@@ -839,6 +875,27 @@ export function loopbackDevice(
             await link.device.close();
         },
     };
+}
+
+// --- the synced-ride sidecar --------------------------------------------------
+//
+// `obc-app/src/ride.rs`'s v2 layout, restated here so {@link MockDevice.syncedSidecar} can produce
+// the bytes the firmware would. Not a wire format — it is a file on the card — but it is the file
+// an `ackRides` mutates, so it is the right thing for a "this peer changed nothing" test to compare.
+
+const SYNCED_MAGIC = new Uint8Array([0x4f, 0x42, 0x43, 0x53]); // "OBCS"
+const SYNCED_VERSION = 2;
+const SYNCED_HEADER_LEN = 8;
+const SYNCED_ENTRY_LEN = 6;
+
+/** CRC-16/CCITT-FALSE, the sidecar's tail check (`obc_app::store_meta::crc16`). */
+function crc16(data: Uint8Array): number {
+    let crc = 0xffff;
+    for (const byte of data) {
+        crc ^= byte << 8;
+        for (let bit = 0; bit < 8; bit++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+    }
+    return crc;
 }
 
 /** Build a list object from a catalog: the 6-byte header plus fixed entries in id order. */
