@@ -7,7 +7,14 @@
         "types": ["vite/client"],
         "strict": true,
         "noUnusedLocals": true,
-        "noUnusedParameters": true
+        "noUnusedParameters": true,
+        // The platform alias vite.config.ts rewrites per build target. Type
+        // checking pins it to the dev host — the one `npm run dev` and
+        // `npm run build` use; the other two hosts are still checked as files,
+        // each against the `Platform` interface they annotate themselves with.
+        "paths": {
+            "$host": ["./src/lib/platform/dev.ts"]
+        }
     },
     "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"]
 }
