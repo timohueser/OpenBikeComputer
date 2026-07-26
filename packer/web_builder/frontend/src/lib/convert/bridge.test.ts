@@ -4,15 +4,20 @@
  * These are not "does the wrapper work" tests. They exist so that a change to `obc-route` — the
  * decimator's tolerance, the OBCR header, the GPX exporter's element order — cannot ship a
  * browser build that quietly disagrees with the device and the CLI. The inputs and the expected
- * outputs are the **checked-in `protocol-vectors/` fixtures**, and those are pinned from the Rust
- * side by `firmware/obc-vectors/tests/vectors.rs` (`fixtures_match_the_spec_builders`) against
- * builders written from the spec. So the chain is:
+ * outputs are the checked-in `protocol-vectors/` fixtures, and `firmware/obc-vectors/tests/
+ * vectors.rs` holds the Rust side to those same bytes.
  *
- *     spec  ->  obc-vectors builders  ->  protocol-vectors/*  ->  (this file)  ->  wasm
- *              \____ pinned by cargo test ____/                  \__ pinned here __/
+ * **What that proves, precisely.** The route and track fixtures are produced by running the real
+ * `gpx_to_obcr` / `track_to_gpx` (the documented exception in `obc-vectors`' module header — a
+ * serialization with no spec to rebuild from). So fixture and wasm output share a source, and
+ * these tests prove the **wasm build agrees with the native build of the same code** — a drift
+ * and miscompilation guard across the bindgen/adapter seam. They are not an independent
+ * correctness check: a bug in `gpx_to_obcr` would move both together. That is the right scope
+ * here — this PR adds a second *implementation host*, not a second implementation — and the
+ * converter's own correctness is tested where it lives, in `obc-route`'s suite.
  *
- * Neither end can move without the other failing. Regenerate the fixtures with
- * `cd firmware && cargo test -p obc-vectors regenerate -- --ignored` after a *deliberate* change.
+ * Regenerate the fixtures with `cd firmware && cargo test -p obc-vectors regenerate -- --ignored`
+ * after a *deliberate* change, and expect the iOS suite to want the same look.
  */
 
 import { existsSync, readFileSync } from "node:fs";
