@@ -161,8 +161,8 @@ mod sensors;
 mod ble;
 // The USB device plane (#889): the LM20's USBHS behind a vendor interface, carrying the *same*
 // companion protocol as the radio — a browser or the desktop app plugs in and speaks the object
-// model directly. `usb` builds only; spawned beside the ride loop (see `spawn_usb_stack`).
-#[cfg(feature = "usb")]
+// model directly. **In every build** (there is no `usb` feature): the plane is part of the device,
+// not an option of it. Spawned beside the ride loop (see `spawn_usb_stack`).
 mod usb;
 // The transport-free companion-link core: the §4.4 command handler, descriptor classification, the
 // cross-transport one-transfer gate, the identity blobs, and the one shared `ObjectStore`. Both the
@@ -342,13 +342,10 @@ const BLE_RESIDENT: usize = ble::RESIDENT_BYTES;
 const BLE_RESIDENT: usize = 0;
 
 /// The USB device plane's residents (`usb::RESIDENT_BYTES`: the driver's EP-OUT staging buffer, the
-/// descriptor + control buffers, and the two planes' frame/chunk scratch); zero without the feature.
-/// Counted in the same sum as the map and BLE planes so "USB doesn't fit beside them" would be a
-/// *compile-time* fact rather than an on-glass overflow — the same arbitration `ble` gets.
-#[cfg(feature = "usb")]
+/// descriptor + control buffers, and the two planes' frame/chunk scratch). Unconditional — the plane
+/// ships in every build — and counted in the same sum as the map and BLE planes so "USB doesn't fit
+/// beside them" is a *compile-time* fact rather than an on-glass overflow.
 const USB_RESIDENT: usize = usb::RESIDENT_BYTES;
-#[cfg(not(feature = "usb"))]
-const USB_RESIDENT: usize = 0;
 
 /// The resident set that must coexist during a redraw (see the table above).
 const RESIDENT_BYTES: usize = FB_BYTES
@@ -421,7 +418,7 @@ mod resource_report {
         entry("ble_sensor_manager", 0),
     ];
 
-    const ENTRIES: usize = 23;
+    const ENTRIES: usize = 24;
 
     #[used]
     #[no_mangle]
@@ -450,6 +447,13 @@ mod resource_report {
         BLE_ENTRIES[7],
         BLE_ENTRIES[8],
         BLE_ENTRIES[9],
+        // The USB device plane's named statics (#889). Unconditional since USB stopped being a
+        // feature, so it is itemized here for the same reason the BLE arenas are: it is the newest
+        // resident block, and a growth in it should be legible in the report rather than only as a
+        // few thousand anonymous bytes of `.bss`. This is the *named* half — the driver's own
+        // endpoint bookkeeping and the task future are not nameable here and land in the linked
+        // `.bss + .data` gate, which is the authority for resident RAM.
+        entry("usb_named", usb::RESIDENT_BYTES),
     ];
 }
 
@@ -569,7 +573,6 @@ async fn spawn_ble_stack(
 /// it in `main` would charge `main` for the USB task's whole state machine from its first
 /// instruction, on every poll, forever. This tiny task's own pool static holds just the arguments
 /// until the inner spawn moves them into [`usb::run`]'s.
-#[cfg(feature = "usb")]
 #[embassy_executor::task]
 async fn spawn_usb_stack(
     spawner: Spawner,
@@ -1417,12 +1420,11 @@ async fn main(_spawner: Spawner) {
             )));
         }
 
-        // --- The USB device plane (#889), `usb` builds: the LM20's USBHS on its dedicated D+/D−/
-        // VBUS pins (zero GPIO cost — nothing above needs re-planning), speaking the same object
-        // model as the radio over a vendor bulk interface. Spawned through its own trampoline for
-        // the same #677 reason as the BLE stack: constructing the task's future in `main` would put
-        // its whole state machine in `main`'s poll frame. ---
-        #[cfg(feature = "usb")]
+        // --- The USB device plane (#889), in **every** build: the LM20's USBHS on its dedicated
+        // D+/D−/VBUS pins (zero GPIO cost — nothing above needs re-planning), speaking the same
+        // object model as the radio over a vendor bulk interface. Spawned through its own trampoline
+        // for the same #677 reason as the BLE stack: constructing the task's future in `main` would
+        // put its whole state machine in `main`'s poll frame. ---
         _spawner.spawn(defmt::unwrap!(spawn_usb_stack(_spawner, p.USBHS, link_stores)));
 
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
