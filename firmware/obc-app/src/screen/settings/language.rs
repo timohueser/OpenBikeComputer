@@ -1,7 +1,7 @@
 //! The Language screen — the UI language (epic #602). [`Language`](crate::settings::Language) will
 //! re-translate every user-facing string once the catalog lands; today it only persists the choice.
 //! A single value row cycling the four languages by their **endonyms**, so it reads to a speaker who
-//! can't yet read the current UI language — press (or a turn) walks it in place, no field sub-mode.
+//! can't yet read the current UI language — press (or a step) walks it in place, no field sub-mode.
 
 use obc_render::Surface;
 
@@ -22,12 +22,12 @@ impl LanguageScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             // A short ring, so — like Units — there's no separate edit mode: press cycles one
-            // forward, a turn walks the ring in place.
+            // forward, a step walks the ring in place.
             Gesture::Press => {
                 cx.settings.language = cx.settings.language.cycled();
                 Transition::None
             }
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 cx.settings.language = cx.settings.language.stepped(n);
                 Transition::None
             }
@@ -73,7 +73,7 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Press cycles one language forward and a turn walks the ring in place (no edit sub-mode);
+    /// Press cycles one language forward and a step walks the ring in place (no edit sub-mode);
     /// Back pops the screen.
     #[test]
     fn press_cycles_and_turn_walks() {
@@ -81,9 +81,9 @@ mod tests {
         let mut scr = LanguageScreen::new();
         run(&mut scr, &mut s, Gesture::Press);
         assert_eq!(s.language, Language::De, "press cycles English → Deutsch");
-        run(&mut scr, &mut s, Gesture::Turn(1));
-        assert_eq!(s.language, Language::Fr, "a turn walks Deutsch → Français");
-        run(&mut scr, &mut s, Gesture::Turn(-1));
+        run(&mut scr, &mut s, Gesture::Step(1));
+        assert_eq!(s.language, Language::Fr, "a step walks Deutsch → Français");
+        run(&mut scr, &mut s, Gesture::Step(-1));
         assert_eq!(s.language, Language::De, "and back");
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop));
     }

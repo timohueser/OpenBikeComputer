@@ -7,8 +7,8 @@
 //!
 //! Six rows overrun the ~4-row panel, so this is the one settings screen that **scrolls**: the row
 //! cursor drives the window ([`window_start`](crate::screen::list::window_start)) exactly like the
-//! nav lists, and a scrollbar tracks the position. The two-level encoder model is otherwise the
-//! shared one — a turn moves the cursor (or edits an open stepper), a press opens a page / flips a
+//! nav lists, and a scrollbar tracks the position. The two-level Select model is otherwise the
+//! shared one — a step moves the cursor (or edits an open stepper), a press opens a page / flips a
 //! cycle / toggles the Page-cycle stepper.
 
 use core::fmt::Write;
@@ -53,7 +53,7 @@ const WAYPOINTS: usize = 4;
 const AUTODELETE: usize = 5;
 const ROWS: usize = 6;
 
-/// Step the page-cycle period by `n` detents (1 s each), clamped to the configured bounds.
+/// Step the page-cycle period by `n` steps (1 s each), clamped to the configured bounds.
 fn step_cycle(v: u16, n: i32) -> u16 {
     (v as i32 + n).clamp(STAT_CYCLE_MIN as i32, STAT_CYCLE_MAX as i32) as u16
 }
@@ -83,7 +83,7 @@ impl RideScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 if self.editing_cycle {
                     cx.settings.stat_cycle_s = step_cycle(cx.settings.stat_cycle_s, n);
                 } else {
@@ -260,25 +260,25 @@ mod tests {
         let mut scr = RideScreen::new();
         assert_eq!(scr.selected, BIKE_TYPE, "cursor starts on Bike type");
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Push(Screen::BikeType(_))));
-        run(&mut scr, &mut s, Gesture::Turn(1)); // → Data fields
+        run(&mut scr, &mut s, Gesture::Step(1)); // → Data fields
         assert_eq!(scr.selected, DATA_FIELDS);
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Push(Screen::StatFields(_))));
     }
 
-    /// Press opens the page-cycle stepper; a turn edits the period live and clamps; press steps out.
+    /// Press opens the page-cycle stepper; a step edits the period live and clamps; press steps out.
     #[test]
     fn cycle_stepper_edits_live_and_clamps() {
         let mut s = Settings { stat_cycle_s: 5, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Turn(2)); // → Page cycle row
+        run(&mut scr, &mut s, Gesture::Step(2)); // → Page cycle row
         assert_eq!(scr.selected, PAGE_CYCLE);
         run(&mut scr, &mut s, Gesture::Press); // open stepper
         assert!(scr.editing_cycle);
-        run(&mut scr, &mut s, Gesture::Turn(2));
+        run(&mut scr, &mut s, Gesture::Step(2));
         assert_eq!(s.stat_cycle_s, 7);
-        run(&mut scr, &mut s, Gesture::Turn(100));
+        run(&mut scr, &mut s, Gesture::Step(100));
         assert_eq!(s.stat_cycle_s, STAT_CYCLE_MAX, "clamps to the max");
-        run(&mut scr, &mut s, Gesture::Turn(-100));
+        run(&mut scr, &mut s, Gesture::Step(-100));
         assert_eq!(s.stat_cycle_s, STAT_CYCLE_MIN, "and to the min");
         run(&mut scr, &mut s, Gesture::Press);
         assert!(!scr.editing_cycle, "press steps back out");
@@ -290,7 +290,7 @@ mod tests {
         use crate::settings::ClimbMode;
         let mut s = Settings { climb_mode: ClimbMode::Auto, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Turn(3)); // → Climb row
+        run(&mut scr, &mut s, Gesture::Step(3)); // → Climb row
         assert_eq!(scr.selected, CLIMB);
         for expect in [ClimbMode::Off, ClimbMode::Manual, ClimbMode::Auto] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
@@ -304,7 +304,7 @@ mod tests {
         use crate::settings::WaypointMode;
         let mut s = Settings { waypoint_mode: WaypointMode::Approach, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Turn(4)); // → Waypoints row
+        run(&mut scr, &mut s, Gesture::Step(4)); // → Waypoints row
         assert_eq!(scr.selected, WAYPOINTS);
         for expect in [WaypointMode::Always, WaypointMode::Off, WaypointMode::Approach] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
@@ -318,7 +318,7 @@ mod tests {
     fn autodelete_row_cycles_retention() {
         let mut s = Settings { ride_retention: RideRetention::Never, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Turn(5)); // → Auto-delete row (last)
+        run(&mut scr, &mut s, Gesture::Step(5)); // → Auto-delete row (last)
         assert_eq!(scr.selected, AUTODELETE);
         for expect in [RideRetention::Day1, RideRetention::Week1, RideRetention::Month1, RideRetention::Never] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
@@ -331,7 +331,7 @@ mod tests {
     fn back_closes_stepper_first() {
         let mut s = Settings::default();
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Turn(2)); // → Page cycle
+        run(&mut scr, &mut s, Gesture::Step(2)); // → Page cycle
         run(&mut scr, &mut s, Gesture::Press); // open the stepper
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));
         assert!(!scr.editing_cycle, "back closed the stepper, not the screen");

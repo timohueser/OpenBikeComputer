@@ -101,7 +101,7 @@ pub(crate) struct UiRuntime {
     /// event, or a timed repaint must not reset it. Seeded to `0` (the boot origin), so the idle
     /// clock runs from power-on until the first touch.
     pub(crate) last_input_ms: u32,
-    /// Host-supplied encoder hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
+    /// Host-supplied Select hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
     /// Reset bar; [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
     /// single-loop hosts (the render reads `App`'s own [`InputPlane`]); the **two-plane firmware**
     /// feeds live progress in each frame via [`set_hold_progress`](App::set_hold_progress), since
@@ -445,12 +445,12 @@ impl UiRuntime {
     }
 
     /// Whether a hold gesture is charging right now — either button down, its long-press not yet
-    /// fired. Reads the host-fed encoder progress ([`set_hold_progress`](App::set_hold_progress), the
+    /// fired. Reads the host-fed Select progress ([`set_hold_progress`](App::set_hold_progress), the
     /// two-plane firmware) and `App`'s own input plane (the single-loop hosts). Gates the host-pushed
     /// passkey card's open/close so it never lands mid-hold.
     pub(crate) fn hold_charging(&self) -> bool {
         self.hold_progress_override.is_some_and(|p| p > 0.0)
-            || self.input.encoder_hold_progress() > 0.0
+            || self.input.select_hold_progress() > 0.0
             || self.input.back_hold_progress() > 0.0
     }
 

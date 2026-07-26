@@ -99,9 +99,9 @@ fn a_link_change_repaints_the_menu_title_bar() {
 fn a_link_change_repaints_the_bluetooth_screen() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.apply_gesture(obc_app::Gesture::BackHold); // → Menu
-    app.apply_gesture(obc_app::Gesture::Turn(-1)); // compass: one ccw detent to Settings
+    app.apply_gesture(obc_app::Gesture::Step(-1)); // compass: one ccw step to Settings
     app.apply_gesture(obc_app::Gesture::Press); // → Settings list
-    app.apply_gesture(obc_app::Gesture::Turn(2)); // → Connections row (Ride, Display, Connections)
+    app.apply_gesture(obc_app::Gesture::Step(2)); // → Connections row (Ride, Display, Connections)
     app.apply_gesture(obc_app::Gesture::Press); // → Connections menu (Phone is the first row)
     app.apply_gesture(obc_app::Gesture::Press); // → Bluetooth screen (opened via the Phone row)
     assert!(matches!(app.top_screen(), obc_app::Screen::Bluetooth(_)), "navigated to the Bluetooth screen");
@@ -178,8 +178,8 @@ fn the_card_is_not_dismissible_by_input() {
     assert!(app.passkey_card_up(), "Back does not dismiss the card");
     app.apply_gesture(obc_app::Gesture::Press);
     assert!(app.passkey_card_up(), "press does not dismiss the card");
-    app.apply_gesture(obc_app::Gesture::Turn(1));
-    assert!(app.passkey_card_up(), "a turn does not dismiss the card");
+    app.apply_gesture(obc_app::Gesture::Step(1));
+    assert!(app.passkey_card_up(), "a step does not dismiss the card");
 
     // Only the seam clearing the passkey closes it.
     app.set_ble_status(BleStatus::DISCONNECTED);
@@ -189,7 +189,7 @@ fn the_card_is_not_dismissible_by_input() {
 #[test]
 fn a_hold_charging_defers_the_card_until_the_hold_settles() {
     // A host-pushed screen must never land mid-hold — it would yank the hold target out from under
-    // the rider. The board feeds the live encoder hold-progress via `set_hold_progress`.
+    // the rider. The board feeds the live Select hold-progress via `set_hold_progress`.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
 
     app.set_hold_progress(0.5); // a hold is charging

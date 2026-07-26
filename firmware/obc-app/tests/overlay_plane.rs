@@ -30,10 +30,10 @@ fn render_overlay_touches_only_overlay_pixels() {
     let (w, h) = (240i32, 320i32);
     let hud = rgb(palette::HUD); // the near-black bulge color
 
-    // Charge the encoder past the dead zone (300 ms of a 500 ms threshold) so the
+    // Charge Select past the dead zone (300 ms of a 500 ms threshold) so the
     // overlay has a bulge to draw on the right edge.
     let mut app = App::new(AppState::new(0, 0, 0.05));
-    app.handle_input(InputClock(0), &mut keys(&[down(Button::Encoder)]));
+    app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
     app.handle_input(InputClock(300), &mut keys(&[]));
 
     // Render the map, snapshot it, then composite the overlay over the *same* buffer.
@@ -74,7 +74,7 @@ fn render_frame_equals_map_then_overlay() {
     // dual-layer host calls. Draw order is preserved, so the results must be byte-identical.
     let make_app = || {
         let mut app = App::new(AppState::new(0, 0, 0.05));
-        app.handle_input(InputClock(0), &mut keys(&[down(Button::Encoder)]));
+        app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
         app.handle_input(InputClock(300), &mut keys(&[]));
         app
     };
@@ -99,7 +99,7 @@ fn overlay_active_is_true_exactly_across_a_completed_hold() {
     assert!(!app.overlay_active(), "no hold ⇒ the overlay is quiet");
 
     // A press still inside the dead zone (50 ms of a 500 ms hold) draws nothing.
-    app.handle_input(InputClock(0), &mut keys(&[down(Button::Encoder)]));
+    app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
     app.handle_input(InputClock(50), &mut keys(&[]));
     assert!(!app.overlay_active(), "inside the dead zone ⇒ still quiet");
 
@@ -121,11 +121,11 @@ fn overlay_active_spans_an_early_release_retract() {
     let mut app = App::new(AppState::new(0, 0, 0.05));
 
     // Charge past the dead zone, then release before the threshold ⇒ the bulge retracts.
-    app.handle_input(InputClock(0), &mut keys(&[down(Button::Encoder)]));
+    app.handle_input(InputClock(0), &mut keys(&[down(Button::Select)]));
     app.handle_input(InputClock(300), &mut keys(&[]));
     assert!(app.overlay_active(), "charging ⇒ overlay live");
 
-    app.handle_input(InputClock(310), &mut keys(&[up(Button::Encoder)]));
+    app.handle_input(InputClock(310), &mut keys(&[up(Button::Select)]));
     assert!(app.overlay_active(), "an early release retracts ⇒ still live");
 
     // Once the retract finishes (CANCEL_MS = 150) the overlay is quiet again.

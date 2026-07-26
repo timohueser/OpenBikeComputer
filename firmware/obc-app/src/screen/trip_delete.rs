@@ -45,7 +45,7 @@ pub struct TripDeleteScreen {
 impl TripDeleteScreen {
     /// A confirm for the trip with durable id `trip_id` and display `name`. Entry selects the guarded
     /// Delete row's *neighbour* — the cursor starts on Cancel so an accidental double-hold on the way
-    /// in can't delete; the rider turns onto Delete deliberately, then holds (mirrors the Route
+    /// in can't delete; the rider steps onto Delete deliberately, then holds (mirrors the Route
     /// overview / Pause-menu idiom, where entry never lands armed on the destructive row).
     pub fn new(trip_id: u16, name: &str) -> Self {
         let mut n = heapless::String::new();
@@ -62,7 +62,7 @@ impl TripDeleteScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, GUARDS.len()),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, GUARDS.len()),
             // Cancel answers a plain press *and* a hold (never dead air); Delete is guarded — a
             // press on it does nothing, it takes the completed hold.
             Gesture::Press | Gesture::Hold if self.selected == CANCEL => Transition::Pop,
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn hold_on_delete_records_the_trip_id_and_pops() {
         let mut scr = TripDeleteScreen::new(7, "Alpen Traverse");
-        run(&mut scr, &mut Activity::new(Mode::Idle), Gesture::Turn(1)); // Cancel → Delete
+        run(&mut scr, &mut Activity::new(Mode::Idle), Gesture::Step(1)); // Cancel → Delete
         assert!(scr.selection_is_guarded(), "the hold fill is live on the Delete row");
         let mut act = Activity::new(Mode::Idle);
         let t = run(&mut scr, &mut act, Gesture::Hold);

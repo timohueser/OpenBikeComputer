@@ -4,7 +4,7 @@
 //!
 //! Each option has a `guard` flag: non-guarded (Resume) fire on `press`; guarded, irreversible ones
 //! (Finish, Discard) fire only on a completed `hold`, their row filling with a warning bar as the
-//! encoder is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
+//! Select is held (release early → no `Hold` gesture → nothing happens). `back` resumes.
 
 use core::fmt::Write;
 
@@ -53,7 +53,7 @@ impl RideControl {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, GUARDS.len()),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, GUARDS.len()),
             Gesture::Press => {
                 // Instant (non-guarded) options only — i.e. Resume.
                 if GUARDS[self.selected.min(GUARDS.len() - 1)] {

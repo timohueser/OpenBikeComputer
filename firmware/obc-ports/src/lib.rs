@@ -322,12 +322,18 @@ pub struct Sensors<'a> {
     pub cadence: Option<&'a mut dyn CadenceSource>,
 }
 
-/// A physical control button.
+/// A physical control button whose press **edges** the gesture layer times.
+///
+/// The device has four buttons: **Up** / **Down** on the left flank, **Select** / **Back** on the
+/// right. Up and Down are step controls — they move the selection the instant they go down (and
+/// auto-repeat while held), so they arrive as [`InputEvent::Step`] rather than as timed edges. Only
+/// Select and Back carry both a short-press *and* a long-press meaning, so only those two need edge
+/// timing and appear here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
-    /// Rotary encoder push.
-    Encoder,
-    /// Dedicated Back button.
+    /// The right-flank **Select** button (upper): confirm / open.
+    Select,
+    /// The right-flank **Back** button (lower).
     Back,
 }
 
@@ -343,8 +349,10 @@ pub enum ButtonEvent {
 /// A raw control event before gesture recognition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    /// Signed encoder detents since the last event.
-    Turn(i32),
+    /// Signed selection steps from the Up/Down pair: **negative = Up** ("previous"), **positive =
+    /// Down** ("next"). One press is ±1; a source that batches — auto-repeat catch-up, or a host
+    /// injecting a jump — may send several at once.
+    Step(i32),
     /// One button edge.
     Button(ButtonEvent),
 }

@@ -154,7 +154,7 @@ pub enum HostCommand {
     ForgetBond,
     /// Persist the live [`settings`](crate::App::settings) at revision `revision` (#810). Emitted
     /// once when an edited settings value leaves the settings subtree (the save is debounced to
-    /// screen exit, not fired per detent) and **not re-emitted while its ack is outstanding**, so a
+    /// screen exit, not fired per step) and **not re-emitted while its ack is outstanding**, so a
     /// slow host is never spammed with RRAM writes. The command carries the app's current settings
     /// revision; under the **snapshot-at-drain rule** the host reads [`settings`](crate::App::settings)
     /// in the same pass it drains this command (no `Settings` copy ever rides in the queue) and later

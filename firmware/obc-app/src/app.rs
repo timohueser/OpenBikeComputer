@@ -33,7 +33,7 @@ pub enum CameraMode {
     Free,
 }
 
-/// The screen-space axis the encoder pans along in [pan mode](Pan).
+/// The screen-space axis Up/Down pans along in [pan mode](Pan).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanAxis {
     /// Up / down in screen space — the default on entering pan.
@@ -43,7 +43,7 @@ pub enum PanAxis {
 }
 
 impl PanAxis {
-    /// The other axis — encoder `press` toggles between the two.
+    /// The other axis — Select `press` toggles between the two.
     pub fn toggled(self) -> Self {
         match self {
             PanAxis::Vertical => PanAxis::Horizontal,
@@ -51,7 +51,7 @@ impl PanAxis {
         }
     }
 
-    /// Unit screen-space direction a **positive** detent pans the camera centre
+    /// Unit screen-space direction a **positive** step pans the camera centre
     /// toward: vertical → up (`-y`), horizontal → right (`+x`).
     fn unit(self) -> (f32, f32) {
         match self {
@@ -68,10 +68,10 @@ impl PanAxis {
 /// the map under the pan. `None` = the normal Follow map.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pan {
-    /// Which screen axis `turn` pans along.
+    /// Which screen axis Up/Down pans along.
     pub axis: PanAxis,
     /// `true` = north-up; `false` = heading-up at
-    /// [`frozen_course_rad`](Pan::frozen_course_rad). Encoder `hold` toggles it.
+    /// [`frozen_course_rad`](Pan::frozen_course_rad). Select `hold` toggles it.
     pub north_up: bool,
     /// The frozen heading-up rotation (radians CW from north), snapshotted on entry
     /// and re-snapshotted whenever `hold` flips back to heading-up — so the map never
@@ -108,7 +108,7 @@ pub struct AppState {
     /// first one. Drives the heading-up rotation and the user marker.
     pub user_fix: Option<Fix>,
     /// Pan mode, or `None` on the normal Follow map. `Some` detaches the camera and
-    /// freezes the rotation (see [`Pan`]); the Map screen binds the encoder/Back to
+    /// freezes the rotation (see [`Pan`]); the Map screen binds the Select/Back to
     /// panning while it's set and draws the pan HUD over the map.
     pub pan: Option<Pan>,
     /// Latest electronic-compass heading (degrees CW from north), or `None` until one
@@ -262,7 +262,7 @@ impl AppState {
         self.recenter_on_user();
     }
 
-    /// Recenter the camera on the last known fix — encoder `back` in pan mode (which
+    /// Recenter the camera on the last known fix — Select `back` in pan mode (which
     /// stays in pan). No-op before the first fix.
     pub fn recenter_on_user(&mut self) {
         if let Some(fix) = self.user_fix {
@@ -271,14 +271,14 @@ impl AppState {
         }
     }
 
-    /// Toggle the active pan axis (encoder `press`). No-op when not panning.
+    /// Toggle the active pan axis (Select `press`). No-op when not panning.
     pub fn toggle_pan_axis(&mut self) {
         if let Some(pan) = self.pan.as_mut() {
             pan.axis = pan.axis.toggled();
         }
     }
 
-    /// Toggle north-up ↔ heading-up while panning (encoder `hold`), re-freezing the
+    /// Toggle north-up ↔ heading-up while panning (Select `hold`), re-freezing the
     /// heading-up angle from the latest fix so it tracks the rider's current heading.
     /// No-op when not panning.
     pub fn toggle_pan_orientation(&mut self) {
@@ -291,12 +291,12 @@ impl AppState {
         }
     }
 
-    /// Pan the camera by `detents` encoder steps along the active axis
+    /// Pan the camera by `steps` Up/Down steps along the active axis
     /// ([`PAN_STEP_PX`] each). No-op when not panning.
-    pub fn pan_step(&mut self, detents: i32) {
+    pub fn pan_step(&mut self, steps: i32) {
         let Some(pan) = self.pan else { return };
         let (ux, uy) = pan.axis.unit();
-        let d = detents as f32 * PAN_STEP_PX;
+        let d = steps as f32 * PAN_STEP_PX;
         self.pan_by_pixels(ux * d, uy * d);
     }
 
@@ -316,7 +316,7 @@ impl AppState {
 /// turn-by-turn riding rather than the whole-route overview.
 const RIDING_MPP: f32 = 0.5;
 
-/// Camera travel **per encoder detent** in pan mode, in screen pixels — a *screen* amount (not
+/// Camera travel **per Up/Down step** in pan mode, in screen pixels — a *screen* amount (not
 /// ground metres), so panning is finer when zoomed in.
 pub const PAN_STEP_PX: f32 = 40.0;
 
@@ -355,7 +355,7 @@ const GESTURE_BUF: usize = 16;
 ///         cadence: None,
 ///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
-///     app.handle_input(InputClock(now_ms), &mut input_source); // encoder + Back → gestures
+///     app.handle_input(InputClock(now_ms), &mut input_source); // Select + Back → gestures
 ///     app.render_frame(&mut display, &reader, route.as_ref(), w, h, color_policy);
 /// }
 /// ```
@@ -1241,7 +1241,7 @@ impl App {
     /// (epic #615 S6, #621): push the "Checking card..." wait and post
     /// [`DfuAction::Scan`](crate::activity::DfuAction), exactly the System menu's press arriving
     /// over the air. **Never `Install`** — a remote request can only open the scan → confirm flow;
-    /// the encoder press on the confirm screen is what posts the arm (spec §4.4: the phone can
+    /// the Select press on the confirm screen is what posts the arm (spec §4.4: the phone can
     /// request, only the rider installs; the direct-Install path stays the physical debug link's).
     ///
     /// Returns `true` when the flow opened (the board consumes its pending request); `false`
@@ -1773,7 +1773,7 @@ impl App {
     /// a guarded confirm row (Ride control, Route swap), the armed factory-Reset bar, or the
     /// Fields hold-to-delete footer over a deletable row. A render-on-demand host combines this
     /// with the charging hold-progress to redraw only when the fill would actually animate;
-    /// holding the encoder on any other screen changes no pixels, so no repaint is owed.
+    /// holding Select on any other screen changes no pixels, so no repaint is owed.
     pub fn top_wants_hold_fill(&self) -> bool {
         self.ui.stack.last().is_some_and(|s| {
             s.wants_hold_fill(
@@ -1787,8 +1787,8 @@ impl App {
     }
 
     /// **Debug/benchmark hook** (the USB-CDC `Z` command): set the map camera to exactly `mpp`
-    /// meters-per-pixel and force one map redraw. Drives the zoom directly (bypassing the encoder's
-    /// fixed detents) so a render sweep can pin an exact scale per sample. Part of the strippable
+    /// meters-per-pixel and force one map redraw. Drives the zoom directly (bypassing Select's
+    /// fixed steps) so a render sweep can pin an exact scale per sample. Part of the strippable
     /// render-instrumentation seam.
     pub fn set_map_mpp(&mut self, mpp: f32) {
         self.state.zoom = zoom_for_mpp(mpp);
@@ -1851,7 +1851,7 @@ impl App {
         // exact: with no gesture recognized, `apply_gesture` never runs and the map stays clean.
         self.ui.map_dirty = true;
         // Any recognised gesture is user activity: reset the idle-return clock (see
-        // `apply_idle_return`). A gesture the screen ignores still counts — a turn on Home, say.
+        // `apply_idle_return`). A gesture the screen ignores still counts — a step on Home, say.
         self.ui.last_input_ms = self.ui.now_ms;
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
@@ -1881,7 +1881,7 @@ impl App {
         screen::apply(&mut self.ui.stack, t);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
         // fix — the "re-enter to refresh" contract (issue #425). Gated on this being a fresh open
-        // (the stack grew), so a turn *within* the list doesn't wipe the frozen snapshot.
+        // (the stack grew), so a step *within* the list doesn't wipe the frozen snapshot.
         if self.ui.stack.len() > depth_before && matches!(self.ui.stack.last(), Some(Screen::PoiList(_))) {
             self.ui.poi_scratch.invalidate();
         }
@@ -1906,7 +1906,7 @@ impl App {
             // backing-off older revision (#810); see `HostPending::note_settings_edited`.
             self.host.note_settings_edited();
             // A change to the *local* set-point re-stamps the wall clock so Home shows the new local
-            // time: the only settings-screen edit that shifts it now is a UTC-offset turn (manual
+            // time: the only settings-screen edit that shifts it now is a UTC-offset step (manual
             // date/time editing was removed in #641). It does **not** touch `clock_trust` — nudging
             // the offset isn't a real time source. Flipping units or the GPS interval leaves the
             // local clock alone.
@@ -2081,7 +2081,7 @@ impl App {
         let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
-        let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.encoder_hold_progress());
+        let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let App {
             state,
@@ -2207,12 +2207,12 @@ impl App {
         self.ui.input.last_gesture()
     }
 
-    /// In-flight encoder hold-progress (0.0–1.0) for the confirm-ring readout.
-    pub fn encoder_hold_progress(&self) -> f32 {
-        self.ui.input.encoder_hold_progress()
+    /// In-flight Select hold-progress (0.0–1.0) for the confirm-ring readout.
+    pub fn select_hold_progress(&self) -> f32 {
+        self.ui.input.select_hold_progress()
     }
 
-    /// Feed the live encoder hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
+    /// Feed the live Select hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
     /// Reset bar). The **two-plane firmware** calls this each frame from its high-priority
     /// [`InputPlane`], whose hold state `App`'s own plane doesn't see — without it the Reset bar
     /// never fills. The single-loop hosts never call it (the render reads `App`'s own input). Pairs
@@ -2654,7 +2654,7 @@ mod tests {
 
         // A gesture Home ignores leaves the stack — and so the pattern — untouched.
         app.ui.now_ms = 9999;
-        app.apply_gesture(Gesture::Turn(1));
+        app.apply_gesture(Gesture::Step(1));
         assert_eq!(home_seed(&app), 4242, "a no-op gesture on Home keeps the same pattern");
     }
 
@@ -3457,7 +3457,7 @@ mod tests {
     // --- settings persistence signal (the host's save trigger) ---
 
     /// A settings edit flags a save, but **debounced to leaving the settings subtree**: while still
-    /// on a settings screen the pending edit is held (coalescing a multi-detent edit into one
+    /// on a settings screen the pending edit is held (coalescing a multi-step edit into one
     /// write), surfacing once on the frame after navigating out.
     #[test]
     fn a_settings_edit_flags_dirty_on_leaving_the_settings_subtree() {
@@ -3465,9 +3465,9 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         // Walk to the Units screen: Settings list → System (the last group) → Units (its first row).
         app.apply_gesture(Gesture::BackHold); // Home → Menu
-        app.apply_gesture(Gesture::Turn(-1)); // → Settings entry (wraps back from Routes)
+        app.apply_gesture(Gesture::Step(-1)); // → Settings entry (wraps back from Routes)
         app.apply_gesture(Gesture::Press); // → Settings list
-        app.apply_gesture(Gesture::Turn(-1)); // → System row (last, wraps up from Ride)
+        app.apply_gesture(Gesture::Step(-1)); // → System row (last, wraps up from Ride)
         app.apply_gesture(Gesture::Press); // → System menu (Units is the first row)
         app.apply_gesture(Gesture::Press); // → Units screen
         assert!(!settings_dirty(&mut app), "navigation changed no setting, so nothing to save");
@@ -3476,7 +3476,7 @@ mod tests {
         app.apply_gesture(Gesture::Press); // flip units (live immediately, but persistence is debounced)
         assert_ne!(app.settings().units, before, "the Units screen flipped the system");
         assert_eq!(app.settings().units, Units::Imperial, "default Metric → Imperial");
-        assert!(!settings_dirty(&mut app), "still on a settings screen → the save is held, not fired per detent");
+        assert!(!settings_dirty(&mut app), "still on a settings screen → the save is held, not fired per step");
 
         app.apply_gesture(Gesture::Back); // Units → System menu (still inside the settings subtree)
         assert!(!settings_dirty(&mut app), "the System menu is itself a settings screen — save stays held");
@@ -3516,12 +3516,12 @@ mod tests {
             ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
             // Open the UTC-offset stepper (#641: the one editable row), +one step — and leave the
             // field open, so Back must still close it then exit.
-            ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Turn(1)]),
+            ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Step(1)]),
             // Press flips metric ↔ imperial.
             ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
             // → the Page-cycle row (index 2), open its stepper, +1 s (and leave it open — Back must
             // still close it then exit).
-            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Turn(2), Gesture::Press, Gesture::Turn(1)]),
+            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(2), Gesture::Press, Gesture::Step(1)]),
             // A completed hold deletes the highlighted field.
             ("Fields", || one(Screen::StatFields(StatFieldsScreen::new())), &[Gesture::Hold]),
             // Press adds the highlighted field and pops back onto its Fields parent — still settings.
@@ -3537,7 +3537,7 @@ mod tests {
             // Pure navigation — the Connections menu only opens its pages.
             ("Connections", || one(Screen::Connections(ConnectionsScreen::new())), &[]),
             // → the Power Saver row, flip it.
-            ("Power", || one(Screen::Power(PowerScreen::new())), &[Gesture::Turn(1), Gesture::Press]),
+            ("Power", || one(Screen::Power(PowerScreen::new())), &[Gesture::Step(1), Gesture::Press]),
             // Pure navigation — the System menu only opens its pages.
             ("System", || one(Screen::System(SystemScreen::new())), &[]),
             // Pure navigation — the Firmware page's install action leaves the settings subtree.
@@ -3602,15 +3602,15 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Map(_)));
 
         app.apply_gesture(Gesture::BackHold); // Map → Ride menu
-        app.apply_gesture(Gesture::Turn(-1)); // Waypoints → Main menu
+        app.apply_gesture(Gesture::Step(-1)); // Waypoints → Main menu
         app.apply_gesture(Gesture::Press); // Ride menu → Menu (Push, preserving ride caller)
-        app.apply_gesture(Gesture::Turn(-1)); // Routes → Settings
+        app.apply_gesture(Gesture::Step(-1)); // Routes → Settings
         app.apply_gesture(Gesture::Press); // Menu → Settings
         app.apply_gesture(Gesture::Press); // Settings → Ride
-        app.apply_gesture(Gesture::Turn(1)); // Bike type → Data fields
+        app.apply_gesture(Gesture::Step(1)); // Bike type → Data fields
         app.apply_gesture(Gesture::Press); // Ride → Fields
         let field_count = app.settings().stat_fields.len();
-        app.apply_gesture(Gesture::Turn(field_count as i32)); // first field → trailing Add tile
+        app.apply_gesture(Gesture::Step(field_count as i32)); // first field → trailing Add tile
         app.apply_gesture(Gesture::Press); // Fields → Add field
 
         assert!(matches!(app.top_screen(), Screen::AddField(_)), "the deepest normal path is open");
@@ -3715,15 +3715,15 @@ mod tests {
             ..Settings::default()
         });
         app.apply_gesture(Gesture::BackHold); // Home → Menu
-        app.apply_gesture(Gesture::Turn(-1)); // → Settings entry (wraps back from Routes)
+        app.apply_gesture(Gesture::Step(-1)); // → Settings entry (wraps back from Routes)
         app.apply_gesture(Gesture::Press); // → Settings list
-        app.apply_gesture(Gesture::Turn(-1)); // → System row (last, wraps up)
+        app.apply_gesture(Gesture::Step(-1)); // → System row (last, wraps up)
         app.apply_gesture(Gesture::Press); // → System menu (Units is row 0)
-        app.apply_gesture(Gesture::Turn(1)); // → Date & Time row (1)
+        app.apply_gesture(Gesture::Step(1)); // → Date & Time row (1)
         app.apply_gesture(Gesture::Press); // → Date & Time (cursor parked on the offset row)
         app.apply_gesture(Gesture::Press); // open the offset field
-        app.apply_gesture(Gesture::Turn(1)); // +one step (+15 min)
-        assert_eq!(app.settings().utc_offset_min, crate::settings::UTC_OFFSET_STEP, "the offset stepped one detent");
+        app.apply_gesture(Gesture::Step(1)); // +one step (+15 min)
+        assert_eq!(app.settings().utc_offset_min, crate::settings::UTC_OFFSET_STEP, "the offset stepped one step");
         let now = app.wall_clock_now();
         assert_eq!((now.hour, now.minute), (12, 15), "the offset re-stamped the wall clock to local = UTC + offset");
     }
@@ -4116,7 +4116,7 @@ mod tests {
         app.activity.start_session();
         let chooser = DetourScreen::new(&app.activity);
         *app.ui.stack.last_mut().unwrap() = Screen::Detour(chooser);
-        app.apply_gesture(Gesture::Turn(2)); // selected distance = the 600 m minimum + 200 m
+        app.apply_gesture(Gesture::Step(2)); // selected distance = the 600 m minimum + 200 m
 
         enter_first_climb(&mut app, &idx); // live anchor advances to 5 km on climb entry
         assert!(matches!(app.top_screen(), Screen::Detour(_)), "climb entry preserves the open chooser");
@@ -4169,7 +4169,7 @@ mod tests {
         app.activity.start_session();
 
         app.apply_gesture(Gesture::BackHold); // [Home, Climb, RideMenu]
-        app.apply_gesture(Gesture::Turn(1));
+        app.apply_gesture(Gesture::Step(1));
         app.apply_gesture(Gesture::Press); // RideMenu Replace → [Home, Climb, Detour]
         assert!(matches!(app.top_screen(), Screen::Detour(_)));
 
@@ -4397,7 +4397,7 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Home(_)), "a menu still returns to Home on the timeout");
     }
 
-    /// Any gesture resets the idle deadline — a turn 1 ms before it would fire buys another full window.
+    /// Any gesture resets the idle deadline — a step 1 ms before it would fire buys another full window.
     #[test]
     fn a_gesture_resets_the_idle_deadline() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -4407,7 +4407,7 @@ mod tests {
 
         // A gesture at 29 s (just shy of the deadline) resets the clock.
         app.ui.now_ms = 29_000;
-        app.apply_gesture(Gesture::Turn(1));
+        app.apply_gesture(Gesture::Step(1));
         assert_eq!(app.ui.last_input_ms, 29_000, "the gesture reset the idle clock");
 
         idle_tick(&mut app, 30_000); // 1 s after the gesture — well inside the fresh window
@@ -4893,7 +4893,7 @@ mod tests {
     }
 
     /// `PersistSettings` stays gated on leaving the settings subtree — a dirty value under an open
-    /// settings screen is not yet a command (the per-detent debounce), through both the typed
+    /// settings screen is not yet a command (the per-step debounce), through both the typed
     /// drain and the compat adapter, which consume the same single flag.
     #[test]
     fn persist_settings_waits_for_subtree_exit_and_is_single_sourced() {
@@ -4918,7 +4918,7 @@ mod tests {
     // emits, `apply_event` acks) — the board and sim wire the same two calls to their stores.
 
     /// A settings save on a settings-screen edit stays held until the rider leaves the subtree, then
-    /// emits exactly once per sweep regardless of how many detents changed the value — no per-detent
+    /// emits exactly once per sweep regardless of how many steps changed the value — no per-step
     /// RRAM write, and none while any settings screen is on top (the mandatory "no writes during a
     /// stepper sweep / inside the subtree" case).
     #[test]

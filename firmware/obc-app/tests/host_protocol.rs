@@ -45,7 +45,7 @@ fn a_host_defers_the_answer_without_borrowing_the_app() {
     assert_eq!(req.name(), "Fountain North");
 
     // The "async plan" runs across further app activity (input keeps flowing).
-    app.apply_gesture(Gesture::Turn(1));
+    app.apply_gesture(Gesture::Step(1));
     assert!(drain(&mut app).is_empty(), "no re-emission while the host holds the request");
 
     // Answer whole passes later: rescan first, then the owned event — the same ordering contract.

@@ -25,7 +25,7 @@ impl ConnectionsScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::Bluetooth(BluetoothScreen::new())),
                 _ => Transition::Push(Screen::Sensors(SensorsScreen::new())),
@@ -72,7 +72,7 @@ mod tests {
     fn rows_open_their_pages() {
         let mut scr = ConnectionsScreen::new();
         assert!(matches!(run(&mut scr, Gesture::Press), Transition::Push(Screen::Bluetooth(_))));
-        run(&mut scr, Gesture::Turn(1)); // → Sensors
+        run(&mut scr, Gesture::Step(1)); // → Sensors
         assert_eq!(scr.selected, 1);
         assert!(matches!(run(&mut scr, Gesture::Press), Transition::Push(Screen::Sensors(_))));
         assert!(matches!(run(&mut scr, Gesture::Back), Transition::Pop));

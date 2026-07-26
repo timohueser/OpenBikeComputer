@@ -125,7 +125,7 @@ pub(crate) fn width_scale(mpp: f32) -> f32 {
 
 /// A style's nominal `weight` scaled to on-screen px at the frame's [`width_scale`], rounded to a
 /// whole pixel and clamped to `1..=MAX_LINE_PX`. Rounding to an integer px + the map's ×1.2 zoom
-/// detents keep the width stepping cleanly frame to frame (no sub-pixel shimmer while zooming).
+/// steps keep the width stepping cleanly frame to frame (no sub-pixel shimmer while zooming).
 #[inline]
 pub(crate) fn scale_weight(weight: u8, scale: f32) -> u32 {
     (libm::roundf(weight as f32 * scale) as i32).clamp(1, MAX_LINE_PX as i32) as u32
