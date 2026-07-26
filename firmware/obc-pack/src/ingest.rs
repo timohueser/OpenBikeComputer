@@ -93,6 +93,7 @@ use crate::geom::{assemble_multipolygon, polygon_is_valid, Geom};
 use crate::hours;
 use crate::nav::{self, NavGraph, RoutableWay};
 use crate::poi::{self, Poi};
+use crate::progress::{Phase, Progress};
 
 pub struct IngestFeature {
     pub style_id: u8,
@@ -225,7 +226,17 @@ enum Scan {
 /// straight to them instead of inflating and discarding every node blob. Blob
 /// offsets come from the seekable reader; `start` is always an offset this
 /// function returned earlier for the same file.
-fn scan_blobs<F>(path: &str, start: Option<ByteOffset>, mut f: F) -> Result<Option<ByteOffset>, String>
+///
+/// The blob boundary is also the ingest's cancellation checkpoint: it is the
+/// coarsest unit that is still small (a few thousand elements, low single-digit
+/// milliseconds), and every reading pass goes through here, so one check covers
+/// passes 0, 1 and 2 on every source at once.
+fn scan_blobs<F>(
+    path: &str,
+    start: Option<ByteOffset>,
+    progress: &Progress,
+    mut f: F,
+) -> Result<Option<ByteOffset>, String>
 where
     F: FnMut(Element) -> Scan,
 {
@@ -234,6 +245,7 @@ where
         reader.seek(pos).map_err(|e| format!("seek {path}: {e}"))?;
     }
     for blob in reader {
+        progress.check()?;
         let blob = blob.map_err(|e| format!("read {path}: {e}"))?;
         // The header blob carries no elements; only OSMData blocks do.
         if !matches!(blob.get_type(), BlobType::OsmData) {
@@ -437,8 +449,8 @@ impl Crop {
 /// at the first way, so a node *after* a way would be silently skipped. Phase B
 /// sees the whole tail and turns that into an error rather than a quietly wrong
 /// crop.
-fn select_crop(paths: &[String], bbox: Bbox) -> Result<(Crop, Vec<Option<ByteOffset>>), String> {
-    println!("Pass 0: selecting bbox...");
+fn select_crop(paths: &[String], bbox: Bbox, progress: &Progress) -> Result<(Crop, Vec<Option<ByteOffset>>), String> {
+    progress.stage(Phase::Ingest, "Pass 0: selecting bbox...");
     // --- Phase A: the in-box node ids, from every source. ---
     let scans = par_sources(paths, |_, path| {
         let mut ids: Vec<i64> = Vec::new();
@@ -447,7 +459,7 @@ fn select_crop(paths: &[String], bbox: Bbox) -> Result<(Crop, Vec<Option<ByteOff
                 ids.push(id);
             }
         };
-        let ways_at = scan_blobs(path, None, |el| match el {
+        let ways_at = scan_blobs(path, None, progress, |el| match el {
             Element::Node(n) => {
                 in_box(n.decimicro_lon(), n.decimicro_lat(), n.id());
                 Scan::Continue
@@ -475,7 +487,7 @@ fn select_crop(paths: &[String], bbox: Bbox) -> Result<(Crop, Vec<Option<ByteOff
     let scans = par_sources(paths, |i, path| {
         let (mut ways, mut halo) = (Vec::new(), Vec::new());
         let (mut saw_way, mut out_of_order) = (false, false);
-        scan_blobs(path, ways_at[i], |el| {
+        scan_blobs(path, ways_at[i], progress, |el| {
             match el {
                 Element::Way(w) => {
                     saw_way = true;
@@ -513,7 +525,12 @@ fn select_crop(paths: &[String], bbox: Bbox) -> Result<(Crop, Vec<Option<ByteOff
     }
     ways.freeze();
     halo.freeze();
-    println!("  {} node(s) in box, {} way(s) kept (+{} boundary node(s))", inside.len(), ways.len(), halo.len());
+    progress.log(format!(
+        "  {} node(s) in box, {} way(s) kept (+{} boundary node(s))",
+        inside.len(),
+        ways.len(),
+        halo.len()
+    ));
     Ok((Crop { inside, halo, ways }, ways_at))
 }
 
@@ -542,7 +559,12 @@ struct WayScan {
 /// Two-pass ingest of one or more `.osm.pbf`s (lines + closed-way polygons +
 /// relation-assembled area polygons), merged as described in the module docs.
 /// `bbox` crops the inputs to a box first (a third, id-only pass).
-pub fn ingest_osm(paths: &[String], config: &Config, bbox: Option<Bbox>) -> Result<Ingested, String> {
+pub fn ingest_osm(
+    paths: &[String],
+    config: &Config,
+    bbox: Option<Bbox>,
+    progress: &Progress,
+) -> Result<Ingested, String> {
     if paths.is_empty() {
         return Err("no .osm.pbf input given".into());
     }
@@ -551,14 +573,17 @@ pub fn ingest_osm(paths: &[String], config: &Config, bbox: Option<Bbox>) -> Resu
     // single merged file would have had.
     let merging = paths.len() > 1;
     if merging {
-        println!("Merging {} sources (on a duplicate id, the first source wins)...", paths.len());
+        progress.stage(
+            Phase::Merging,
+            format!("Merging {} sources (on a duplicate id, the first source wins)...", paths.len()),
+        );
     }
 
     // --- Pass 0 (only with --bbox): the `complete_ways` id selection, plus the
     // per-source offset where the ways begin (pass 2 resumes there). ---
     let (crop, ways_at) = match bbox {
         Some(bb) => {
-            let (crop, ways_at) = select_crop(paths, bb)?;
+            let (crop, ways_at) = select_crop(paths, bb, progress)?;
             if crop.is_empty() {
                 let (w, s, e, n) = bb.to_degrees();
                 return Err(format!("--bbox {w},{s},{e},{n} does not overlap any data in {}", paths.join(", ")));
@@ -569,18 +594,19 @@ pub fn ingest_osm(paths: &[String], config: &Config, bbox: Option<Bbox>) -> Resu
     };
 
     // --- Pass 1: node-location store + relation collection, per source. ---
-    // The stage strings are matched by the web builder's progress UI — print each
-    // when its pass actually starts, not both up front.
-    println!("Pass 1: reading nodes...");
-    let scans = par_sources(paths, |_, path| read_nodes(path, config, crop.as_ref(), merging))?;
+    // The stage strings reach the build UI (scraped from stdout by the dev server,
+    // delivered as events by the desktop app) — report each when its pass actually
+    // starts, not both up front.
+    progress.stage(Phase::Ingest, "Pass 1: reading nodes...");
+    let scans = par_sources(paths, |_, path| read_nodes(path, config, crop.as_ref(), merging, progress))?;
     let NodeScan { nodes, pois: node_pois, rels } = fold_node_scans(scans, merging);
     let pending = rels.into_items();
     let needed_ways: HashSet<i64> = pending.iter().flat_map(|r| r.member_ways.iter().copied()).collect();
 
     // --- Pass 2: ways → features + coastlines, plus member-way geometry capture. ---
-    println!("Pass 2: processing ways...");
+    progress.stage(Phase::Ingest, "Pass 2: processing ways...");
     let scans = par_sources(paths, |i, path| {
-        read_ways(path, ways_at[i], config, crop.as_ref(), &nodes, &needed_ways, merging)
+        read_ways(path, ways_at[i], config, crop.as_ref(), &nodes, &needed_ways, merging, progress)
     })?;
     let WayScan { features, coastlines, pois: way_pois, routable, member_geom, .. } = fold_way_scans(scans, merging);
     let mut features = features.into_items();
@@ -619,14 +645,14 @@ pub fn ingest_osm(paths: &[String], config: &Config, bbox: Option<Bbox>) -> Resu
 
     // --- POIs: collapse OSM double-mapping, then log per-category counts. ---
     let (pois, poi_dropped) = poi::dedupe(poi_cands);
-    println!("{}", poi::format_counts(&pois, poi_dropped));
+    progress.log(poi::format_counts(&pois, poi_dropped));
 
     // --- Nav graph: junctions + deduped edges from the routable ways, then
     // island pruning (`routing.min_component_edges`) + v9-guarantee edge splits
     // ([`nav::build_graph_with`]). Serialized into the §8 nav section. Logged (with
     // component + kinds stats) alongside POIs.
     let (nav_graph, nav_stats) = nav::build_graph_with(&routable_ways, config.routing.min_component_edges);
-    println!("{}", nav::format_summary(&nav_graph, &nav_stats));
+    progress.log(nav::format_summary(&nav_graph, &nav_stats));
 
     Ok(Ingested { features, coastlines, pois, nav_graph })
 }
@@ -641,12 +667,18 @@ pub fn ingest_osm(paths: &[String], config: &Config, bbox: Option<Bbox>) -> Resu
 /// Relations are collected unfiltered even when cropping: the all-members-present
 /// rule in [`ingest_osm`] already drops exactly the ones osmium's crop would have
 /// left out (module docs).
-fn read_nodes(path: &str, config: &Config, crop: Option<&Crop>, tagged: bool) -> Result<NodeScan, String> {
+fn read_nodes(
+    path: &str,
+    config: &Config,
+    crop: Option<&Crop>,
+    tagged: bool,
+    progress: &Progress,
+) -> Result<NodeScan, String> {
     let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
     let mut pois = Keyed::new(tagged);
     let mut rels = Keyed::new(tagged);
     let keeps_node = |id: i64| crop.is_none_or(|c| c.keeps_node(id));
-    scan_blobs(path, None, |el| {
+    scan_blobs(path, None, progress, |el| {
         match el {
             Element::Node(n) if keeps_node(n.id()) => {
                 nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
@@ -705,6 +737,7 @@ fn read_ways(
     nodes: &HashMap<i64, (i32, i32)>,
     needed_ways: &HashSet<i64>,
     tagged: bool,
+    progress: &Progress,
 ) -> Result<WayScan, String> {
     let mut features = Keyed::new(tagged);
     let mut coastlines = Keyed::new(tagged);
@@ -716,7 +749,7 @@ fn read_ways(
     let mut member_geom: HashMap<i64, Vec<(f64, f64)>> = HashMap::new();
     let mut claimed: Vec<i64> = Vec::new();
     let keeps_way = |id: i64| crop.is_none_or(|c| c.keeps_way(id));
-    scan_blobs(path, ways_at, |el| {
+    scan_blobs(path, ways_at, progress, |el| {
         if let Element::Way(w) = el {
             if keeps_way(w.id()) {
                 // Claimed on sight, before anything can go wrong with it: a way
@@ -947,6 +980,12 @@ mod tests {
         paths.iter().map(|p| (*p).to_string()).collect()
     }
 
+    /// No test here watches the narration or cancels a run; cancellation has its
+    /// own tests in [`crate::pipeline`], where a whole pack can be stopped.
+    fn quiet() -> Progress {
+        Progress::silent()
+    }
+
     /// Everything an ingest produced, flattened into one comparable value —
     /// enough to say "these two runs are the same map", including *order*, which
     /// decides the packed bytes downstream.
@@ -972,7 +1011,7 @@ mod tests {
         );
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let ing = ingest_osm(&sources(&[TINY_PBF]), &cfg, None).expect("ingest");
+        let ing = ingest_osm(&sources(&[TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
 
         // W8 (way 109) is the only coastline; nodes 29,30 ⇒ 2 points.
         assert_eq!(ing.coastlines.len(), 1, "exactly one coastline");
@@ -1023,7 +1062,7 @@ mod tests {
         );
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let ing = ingest_osm(&sources(&[POI_PBF]), &cfg, None).expect("ingest");
+        let ing = ingest_osm(&sources(&[POI_PBF]), &cfg, None, &quiet()).expect("ingest");
 
         // 7 candidates (5 nodes + 2 way-centroids), 2 dedup-dropped ⇒ 5 kept.
         assert_eq!(ing.pois.len(), 5, "expected 5 POIs, got: {:?}", ing.pois);
@@ -1100,7 +1139,7 @@ mod tests {
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
         // lon 7.798..7.809, lat 47.979..47.995 — see tiny.osm's node grid.
         let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
-        let ing = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox)).expect("ingest");
+        let ing = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox), &quiet()).expect("ingest");
 
         let mut counts: HashMap<(u8, bool), usize> = HashMap::new();
         for f in &ing.features {
@@ -1141,9 +1180,10 @@ mod tests {
     fn bbox_covering_everything_is_a_no_op() {
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let plain = ingest_osm(&sources(&[TINY_PBF]), &cfg, None).expect("ingest");
-        let boxed = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(Bbox::parse("-180,-90,180,90").expect("world")))
-            .expect("ingest");
+        let plain = ingest_osm(&sources(&[TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
+        let boxed =
+            ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(Bbox::parse("-180,-90,180,90").expect("world")), &quiet())
+                .expect("ingest");
         assert_eq!(plain.features.len(), boxed.features.len());
         assert_eq!(plain.coastlines, boxed.coastlines);
         assert_eq!(plain.pois.len(), boxed.pois.len());
@@ -1158,7 +1198,9 @@ mod tests {
     fn bbox_missing_the_data_is_an_error() {
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let Err(err) = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(Bbox::parse("10,10,11,11").expect("box"))) else {
+        let Err(err) =
+            ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(Bbox::parse("10,10,11,11").expect("box")), &quiet())
+        else {
             panic!("a box off in the Mediterranean must not ingest");
         };
         assert!(err.contains("does not overlap"), "unexpected message: {err}");
@@ -1180,13 +1222,14 @@ mod tests {
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
         // The box covers both nodes, so a sorted file would have kept the way.
         let bbox = Bbox::parse("7.79,47.98,7.81,48.0").expect("box");
-        let Err(err) = ingest_osm(&sources(&[UNSORTED_PBF]), &cfg, Some(bbox)) else {
+        let Err(err) = ingest_osm(&sources(&[UNSORTED_PBF]), &cfg, Some(bbox), &quiet()) else {
             panic!("an unsorted .pbf must not be cropped silently");
         };
         assert!(err.contains("not sorted"), "unexpected message: {err}");
         // Without a box the ingest is order-agnostic (passes 1 and 2 are separate
         // reads), so the same file still packs — the refusal is scoped to --bbox.
-        let ing = ingest_osm(&sources(&[UNSORTED_PBF]), &cfg, None).expect("uncropped ingest is order-agnostic");
+        let ing =
+            ingest_osm(&sources(&[UNSORTED_PBF]), &cfg, None, &quiet()).expect("uncropped ingest is order-agnostic");
         assert_eq!(ing.features.len(), 1, "the primary way survives without a box");
     }
 
@@ -1198,14 +1241,14 @@ mod tests {
     fn merging_a_source_with_itself_changes_nothing() {
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let once = ingest_osm(&sources(&[TINY_PBF]), &cfg, None).expect("ingest");
-        let twice = ingest_osm(&sources(&[TINY_PBF, TINY_PBF]), &cfg, None).expect("ingest");
+        let once = ingest_osm(&sources(&[TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
+        let twice = ingest_osm(&sources(&[TINY_PBF, TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
         assert_eq!(shape(&once), shape(&twice), "a source merged with itself must be that source");
 
         // And the same with a box, which adds pass 0's id sets to the mix.
         let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
-        let once = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox)).expect("ingest");
-        let twice = ingest_osm(&sources(&[TINY_PBF, TINY_PBF]), &cfg, Some(bbox)).expect("ingest");
+        let once = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox), &quiet()).expect("ingest");
+        let twice = ingest_osm(&sources(&[TINY_PBF, TINY_PBF]), &cfg, Some(bbox), &quiet()).expect("ingest");
         assert_eq!(shape(&once), shape(&twice), "cropped, too");
     }
 
@@ -1226,16 +1269,16 @@ mod tests {
         }
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
-        let whole = ingest_osm(&sources(&[TINY_PBF]), &cfg, None).expect("ingest");
-        let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, None).expect("ingest");
+        let whole = ingest_osm(&sources(&[TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
+        let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, None, &quiet()).expect("ingest");
         assert_eq!(shape(&whole), shape(&halves), "west + east must rebuild tiny.osm exactly");
 
         // Cropped: pass 0's node phase has to finish across BOTH files before
         // either one's ways can be judged. W7/W7b start west and run east, so a
         // per-file selection would come out with a different set.
         let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
-        let whole = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox)).expect("ingest");
-        let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, Some(bbox)).expect("ingest");
+        let whole = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox), &quiet()).expect("ingest");
+        let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, Some(bbox), &quiet()).expect("ingest");
         assert_eq!(shape(&whole), shape(&halves), "west + east must rebuild the cropped tiny.osm exactly");
     }
 
@@ -1250,7 +1293,7 @@ mod tests {
         let cfg =
             Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json")).expect("config");
         let style_of_107 = |paths: &[&str]| {
-            let ing = ingest_osm(&sources(paths), &cfg, None).expect("ingest");
+            let ing = ingest_osm(&sources(paths), &cfg, None, &quiet()).expect("ingest");
             // Way 107 is the only feature spanning lon 7.800..7.812 at lat 47.988.
             ing.features
                 .iter()
@@ -1269,7 +1312,7 @@ mod tests {
         // And on a node, where the loser is the copy carrying the tags: east's
         // node 25 is a drinking-water POI, west's is bare. Losing on the id means
         // losing the tags too, so with west first that POI does not exist.
-        let pois = |paths: &[&str]| ingest_osm(&sources(paths), &cfg, None).expect("ingest").pois.len();
+        let pois = |paths: &[&str]| ingest_osm(&sources(paths), &cfg, None, &quiet()).expect("ingest").pois.len();
         assert_eq!(pois(&[EAST]), pois(&[WEST]) + 1, "only east's node 25 is a POI");
         assert_eq!(pois(&[WEST, EAST]), pois(&[WEST]), "west first ⇒ east's tagged copy contributes nothing");
         assert_eq!(pois(&[EAST, WEST]), pois(&[EAST]), "east first ⇒ its POI survives");

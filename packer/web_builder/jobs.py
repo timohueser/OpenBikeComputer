@@ -33,6 +33,12 @@ class QueueFull(Exception):
 # merge happens *inside* the ingest passes rather than as an osmium step before
 # them, so it prints once and "Pass 0/1/2" follow immediately. (The old
 # "Cropping" marker is gone with the `osmium extract` call that printed it.)
+#
+# This table is the *scraped* half of one vocabulary. The packer now names its
+# phases in Rust (obc_pack::progress::Phase) so the desktop app (#906) can be
+# handed them directly instead of parsing stdout; the two halves are pinned
+# together by `obc-pack`'s pipeline::stage_lines_still_match_the_web_builders_markers,
+# which fails if a stage line here has no counterpart there.
 _STAGE_MARKERS = {
     "Merging": "merging",
     "Pass 0": "ingest",

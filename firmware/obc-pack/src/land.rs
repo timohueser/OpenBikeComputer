@@ -14,7 +14,7 @@
 //!     done in 3857 *before* reprojecting the result.
 //!
 //! Output is one [`Geom::Polygon`] per land face (flattened to simple polygons,
-//! like the relation path, then styled `natural.land` in `main.rs`).
+//! like the relation path, then styled `natural.land` by [`crate::pipeline`]).
 
 use std::fs::File;
 use std::io::{BufReader, ErrorKind, Read};
@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use geos::{Geom as _, Geometry};
 
 use crate::geom::{box_polygon, collect_polygons, geom_from_geos, ring_to_coordseq, Geom};
+use crate::progress::Progress;
 
 /// EPSG:3857 auxiliary-sphere radius = WGS84 semi-major axis (see the `.prj`).
 const R: f64 = 6_378_137.0;
@@ -78,8 +79,8 @@ fn reproject_geom(g: &mut Geom) {
 
 /// Land polygons for `bbox_deg = (min_lon, min_lat, max_lon, max_lat)`, clipped and
 /// reprojected to degrees. One [`Geom::Polygon`] per face.
-pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64)) -> Result<Vec<Geom>, String> {
-    let shp = ensure_dataset()?;
+pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) -> Result<Vec<Geom>, String> {
+    let shp = ensure_dataset(progress)?;
     let (min_lon, min_lat, max_lon, max_lat) = bbox_deg;
     // Project the bbox corners to 3857 for the filter + clip box. Mercator is
     // monotone in both axes, so corners stay corners (min→min, max→max).
@@ -89,7 +90,7 @@ pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64)) -> Result<Vec<Geom>, St
     let box_geom = box_polygon(qbox).map_err(|e| format!("clip box: {e}"))?;
 
     let mut out = Vec::new();
-    read_shapefile(&shp, qbox, &box_geom, &mut out)?;
+    read_shapefile(&shp, qbox, &box_geom, &mut out, progress)?;
     Ok(out)
 }
 
@@ -119,6 +120,7 @@ fn read_shapefile(
     qbox: (f64, f64, f64, f64),
     box_geom: &Geometry,
     out: &mut Vec<Geom>,
+    progress: &Progress,
 ) -> Result<(), String> {
     let file = File::open(shp).map_err(|e| format!("open {}: {e}", shp.display()))?;
     // Large buffer so the scan is ~one sequential pass over the (~1.3 GB) file.
@@ -132,6 +134,10 @@ fn read_shapefile(
     let (qminx, qminy, qmaxx, qmaxy) = qbox;
 
     loop {
+        // One shapefile record is this phase's cancellation checkpoint: the scan is
+        // a single sequential pass over ~1.3 GB, so there is no coarser unit, and a
+        // record is small enough that a cancel is felt immediately.
+        progress.check()?;
         // Record header: 8 bytes big-endian (record number, content length in
         // 16-bit words). A clean EOF here ends the file.
         let mut rh = [0u8; 8];
@@ -283,7 +289,7 @@ fn cache_dir() -> Result<PathBuf, String> {
 /// extracted directory is renamed into place. Two cold-cache packers racing each
 /// other both succeed — the loser's rename fails against the winner's directory
 /// and its temp files are cleaned up.
-fn ensure_dataset() -> Result<PathBuf, String> {
+fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
     let dir = cache_dir()?;
     let dataset = dir.join("land-polygons-split-3857");
     let shp = dataset.join("land_polygons.shp");
@@ -296,9 +302,12 @@ fn ensure_dataset() -> Result<PathBuf, String> {
     let extract_dir = dir.join(format!("extract-{pid}"));
     let zip_s = zip.to_string_lossy();
     let extract_s = extract_dir.to_string_lossy();
-    eprintln!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ...");
+    // Reported rather than printed: on the desktop app this is the one step that
+    // can stall a first build for minutes, and a silent app is indistinguishable
+    // from a hung one. (Still stderr on the CLI — `Progress::stdout`'s `warn`.)
+    progress.warn(format!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ..."));
     run_tool("curl", &["-fL", "--retry", "3", "-o", &zip_s, LAND_URL])?;
-    eprintln!("Extracting land polygons ...");
+    progress.warn("Extracting land polygons ...");
     run_tool("unzip", &["-o", "-q", &zip_s, "-d", &extract_s])?;
     // Move the extracted dataset into place; a rename failure is fine iff a
     // concurrent run installed the dataset first.
