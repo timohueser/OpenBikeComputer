@@ -22,6 +22,7 @@
 
 import type { Component } from "svelte";
 import type { Preset, SchemaEnvelope } from "../config/model";
+import type { DeviceSession } from "../usb/session";
 
 export type PlatformName = "web" | "desktop" | "dev";
 
@@ -103,10 +104,11 @@ export type StartBuild = () => BuildSession;
 
 // --- seams whose payloads are not designed yet -------------------------------
 //
-// These three are real seams with no backing implementation anywhere yet. The
-// honest thing is to name them and leave the payload opaque: guessing a shape
-// now buys nothing and costs a breaking change when the issue that owns it
-// lands. Each alias is one line to fill in.
+// These are real seams with no backing implementation anywhere yet. The honest
+// thing is to name them and leave the payload opaque: guessing a shape now buys
+// nothing and costs a breaking change when the issue that owns it lands. Each
+// alias is one line to fill in — `DeviceSession` below was one of them until
+// C3 (#902) defined it.
 
 /**
  * The catalog of pre-baked maps. A3 (#897) owns the manifest format and the
@@ -117,9 +119,16 @@ export type StartBuild = () => BuildSession;
  */
 export type MapCatalog = unknown;
 
-/** A connected device. C3 (#902) defines the protocol client and the WebUSB
- *  byte pipe; D4 (#909) the native `nusb` one. */
-export type DeviceSession = unknown;
+/**
+ * A device connection, followed over its lifetime — C3 (#902) defines it, over
+ * the protocol client and the WebUSB byte pipe; D4 (#909) swaps in native
+ * `nusb` underneath without changing this type.
+ *
+ * A *session*, not a device, because the browser forces it: WebUSB's chooser
+ * only opens from a user gesture, so something observable has to exist before
+ * any device is known — see `lib/usb/session.ts` for what that means for the UI.
+ */
+export type { DeviceSession };
 
 /** The managed ride library. E2 (#912) owns it. */
 export type RideLibrary = unknown;
