@@ -6,6 +6,9 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build",
+        "build:web": "vite build --mode web",
+        "build:desktop": "vite build --mode desktop",
+        "build:all": "npm run build && npm run build:web && npm run build:desktop",
         "preview": "vite preview",
         "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
         "test": "vitest run"

@@ -22,7 +22,7 @@ its own MCU target + `.cargo/config.toml`) and is built on its own; see
 | :-- | :-- |
 | Anything Rust | A stable toolchain (`rustup`). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew**. |
-| The packer (`obc-pack`) | System **GEOS** (`brew install geos`); optionally `osmium` on `PATH` for multi-`.pbf` input. |
+| The packer (`obc-pack`) | System **GEOS** (`brew install geos`); optionally `osmium` on `PATH` for multi-`.pbf` input only (`--bbox` crops in-process). |
 | Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ## Build

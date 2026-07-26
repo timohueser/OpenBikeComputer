@@ -9,6 +9,10 @@ whose ingest outcome is known by construction.
 - [`poi/poi.osm`](poi/poi.osm) — exercises POI extraction (#422): node + closed-way
   classification, name folding, and the dedup pair
   (`ingest::tests::poi_fixture_end_to_end`).
+- [`unsorted/unsorted.osm`](unsorted/unsorted.osm) — a way written *before* its
+  nodes. `--bbox` selects ways in a single pass and so needs the file type-sorted;
+  this pins the refusal rather than a silently empty crop (#910,
+  `ingest::tests::bbox_refuses_an_unsorted_pbf`).
 - [`build_corpus.sh`](build_corpus.sh) — converts each to `data/*.osm.pbf` with
   `osmium cat`. The derived `.pbf`s are **also committed** (the tests hard-fail
   without them), so re-run the script and commit the regenerated `.pbf` whenever

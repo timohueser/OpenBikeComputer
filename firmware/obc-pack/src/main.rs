@@ -1,12 +1,14 @@
 //! `obc-pack` CLI — the full end-to-end pipeline (`.osm.pbf` → `.obcm`): multi-PBF
 //! **merge** → ingest (lines + closed ways + multipolygon relations) → bbox →
 //! **land generation** → per-LOD simplify + quadtree → serialize. Positional CLI:
-//! `<pbf...> <config.json> <out.obcm>`, plus `--chunk-size`, `--no-land`,
+//! `<pbf...> <config.json> <out.obcm>`, plus `--bbox W,S,E,N` (crop the source to
+//! a box during ingest — see [`obc_pack::ingest`]), `--chunk-size`, `--no-land`,
 //! `--dump-pois` (print the classified POI list for eyeballing), and
 //! `--dump-hours` (print each POI's parsed weekly schedule). It
-//! prints one stage string per phase ("Merging", "Pass 1/2", "Calculating BBox",
-//! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
-//! builder UI can show progress. `obc-pack schema` prints the config's JSON
+//! prints one stage string per phase ("Cropping", "Merging", "Pass 0/1/2",
+//! "Calculating BBox", "Generating land", "Building Quadtree", "Serializing",
+//! "Writing") so the web builder UI can show progress — it matches these
+//! prefixes, and their order here is the order it expects. `obc-pack schema` prints the config's JSON
 //! Schema envelope — the web builder serves it so the editor's capability always
 //! matches the binary that packs (`schema --catalog` prints the catalog manifest's
 //! schema instead). `obc-pack catalog <bake-tree>` walks a bakery's output tree and
@@ -20,7 +22,7 @@ use rayon::prelude::*;
 
 use obc_pack::config::Config;
 use obc_pack::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
-use obc_pack::ingest::{ingest_osm, IngestFeature};
+use obc_pack::ingest::{ingest_osm, Bbox, IngestFeature};
 use obc_pack::land;
 use obc_pack::merge::{merge_classes, merge_fills, merge_line_classes, merge_lines, MergeStats};
 use obc_pack::quadtree::build_lod;
@@ -34,6 +36,7 @@ struct Args {
     pbfs: Vec<String>,
     config: String,
     output: String,
+    bbox: Option<Bbox>,
     chunk_size: Option<usize>,
     no_land: bool,
     dump_pois: bool,
@@ -42,6 +45,7 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut positional = Vec::new();
+    let mut bbox = None;
     let mut chunk_size = None;
     let mut no_land = false;
     let mut dump_pois = false;
@@ -49,6 +53,9 @@ fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
+            // Validated here, before any file is opened: a malformed or inside-out
+            // box must fail with a sentence, not with an empty map an hour later.
+            "--bbox" => bbox = Some(Bbox::parse(&it.next().ok_or("--bbox needs W,S,E,N in degrees")?)?),
             "--chunk-size" => {
                 chunk_size = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?);
             }
@@ -60,14 +67,14 @@ fn parse_args() -> Result<Args, String> {
     }
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
-        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--chunk-size N] [--no-land] [--dump-pois] \
-                    [--dump-hours]\n       \
+        return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land] \
+                    [--dump-pois] [--dump-hours]\n       \
                     obc-pack schema   (print the config JSON Schema envelope)"
             .into());
     }
     let output = positional.pop().unwrap();
     let config = positional.pop().unwrap();
-    Ok(Args { pbfs: positional, config, output, chunk_size, no_land, dump_pois, dump_hours })
+    Ok(Args { pbfs: positional, config, output, bbox, chunk_size, no_land, dump_pois, dump_hours })
 }
 
 fn run() -> Result<(), String> {
@@ -81,11 +88,36 @@ fn run() -> Result<(), String> {
     // `_temps` keeps the intermediates alive until run() returns. ---
     let mut _temps: Vec<TempPath> = Vec::new();
     let pbf_to_ingest: String = if args.pbfs.len() > 1 {
-        println!("Merging {} files...", args.pbfs.len());
+        // Cropping each source FIRST when `--bbox` is set is a size decision, not a
+        // semantic one. Merging whole countries and cropping afterwards would hand
+        // `osmium sort` gigabytes it holds in memory; osmium is already mandatory
+        // on this branch (id-wise dedupe + re-sorting are not things ingest can
+        // do), so spending it on the crop too costs nothing new. The in-ingest
+        // filter still runs over the merged crop and is a no-op there:
+        // `complete_ways` is idempotent, because an extract's nodes are exactly
+        // "inside the box" plus the halo its own kept ways need. So the result
+        // does not depend on which side did the cropping.
+        let sources: Vec<String> = match args.bbox {
+            Some(bb) => {
+                println!("Cropping {} files to bbox...", args.pbfs.len());
+                let (w, s, e, n) = bb.to_degrees();
+                let spec = format!("{w},{s},{e},{n}");
+                let mut cropped = Vec::with_capacity(args.pbfs.len());
+                for (i, src) in args.pbfs.iter().enumerate() {
+                    let out = TempPath::new(&format!("crop{i}"))?;
+                    run_osmium(&["extract", "--overwrite", "--bbox", &spec, src, "-o", out.as_str()])?;
+                    cropped.push(out.as_str().to_string());
+                    _temps.push(out);
+                }
+                cropped
+            }
+            None => args.pbfs.clone(),
+        };
+        println!("Merging {} files...", sources.len());
         let merged = TempPath::new("merged")?;
         let sorted = TempPath::new("sorted")?;
         let mut merge_args: Vec<&str> = vec!["merge", "--overwrite"];
-        for p in &args.pbfs {
+        for p in &sources {
             merge_args.push(p);
         }
         merge_args.push("-o");
@@ -100,9 +132,10 @@ fn run() -> Result<(), String> {
         args.pbfs[0].clone()
     };
 
-    // --- Ingest (two passes: nodes, then ways; prints its own Pass 1/2 stages
-    // and the per-category POI counts line). ---
-    let mut ingested = ingest_osm(&pbf_to_ingest, &config)?;
+    // --- Ingest (two passes: nodes, then ways — three with `--bbox`, which adds
+    // the id-only crop selection; prints its own Pass 0/1/2 stages and the
+    // per-category POI counts line). ---
+    let mut ingested = ingest_osm(&pbf_to_ingest, &config, args.bbox)?;
     if ingested.features.is_empty() && ingested.coastlines.is_empty() {
         return Err("no features found matching config".into());
     }

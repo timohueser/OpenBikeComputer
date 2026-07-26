@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onDestroy, onMount } from "svelte";
-    import { api } from "../lib/api/client";
+    import { platform } from "../lib/platform";
     import { bboxAreaKm2Raw } from "../lib/map/geo";
     import { RegionPicker, type Bbox } from "../lib/map/regionPicker";
     import { emptySelection, type AreaSelection } from "../lib/map/selection";
@@ -94,7 +94,7 @@
             },
         });
         try {
-            picker.setRegions(await api.regions());
+            picker.setRegions(await platform.regions());
             restoreLastArea();
         } catch (e) {
             loadError = e instanceof Error ? e.message : String(e);
