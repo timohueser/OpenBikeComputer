@@ -4,7 +4,11 @@
 //! Geometry work (simplify, clip, multipolygon assembly) runs through system GEOS;
 //! the quadtree build and serializer are deterministic integer/byte work. Feature
 //! selection is config-driven ([`config`]).
+//!
+//! It also owns the two JSON contracts that hang off the packer: the config's schema
+//! ([`config`]) and the map-catalog manifest a bakery publishes ([`catalog`]).
 
+pub mod catalog;
 pub mod config;
 pub mod geom;
 pub mod hours;

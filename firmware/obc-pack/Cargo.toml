@@ -33,3 +33,13 @@ osmpbf = "0.3.8"
 # (never crosses threads); rayon's `collect` preserves order, so output stays
 # deterministic.
 rayon = "1"
+# Catalog manifest digests. Consumers verify a downloaded artifact against the
+# `sha256` this crate publishes, so the digest is a contract, not a convenience —
+# use the reviewed implementation rather than hand-rolling one.
+sha2 = "0.11"
+
+[dev-dependencies]
+# Validate generated manifests against the checked-in JSON Schema the hosted site
+# will use, so "it validates" is a test result and not an assumption. Draft 2020-12,
+# offline (no remote `$ref` resolution), test-only.
+boon = "0.6"
