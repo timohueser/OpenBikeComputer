@@ -1,7 +1,9 @@
 <script lang="ts">
     import Header from "./components/Header.svelte";
+    import Desktop from "./routes/Desktop.svelte";
     import Home from "./routes/Home.svelte";
     import { loadStyleEditor, type StyleEditorModule } from "./lib/platform";
+    import { available, DESKTOP_ADDS } from "./lib/platform/gating";
     import { router } from "./lib/router.svelte";
 
     // The advanced editor is desktop-only (the locked decision in #894), so it
@@ -16,6 +18,11 @@
     const openEditor = load ? () => (editor ??= load()) : null;
 
     const showEditor = $derived(router.route === "advanced" && openEditor !== null);
+    // Same shape as the editor's gate: a host that is missing nothing has
+    // nothing to read there, so #/desktop falls back to home rather than
+    // rendering a page that pitches the app you are already running.
+    const showDesktop = $derived(router.route === "desktop" && DESKTOP_ADDS.length > 0);
+    const showHome = $derived(!showEditor && !showDesktop);
 </script>
 
 <!-- Contour-line backdrop, the field-guide signature (see docs/index.html). -->
@@ -30,20 +37,22 @@
 
 <!-- Home stays mounted (display toggle) so the Leaflet map survives navigation. -->
 <main>
-    <div class="route" hidden={showEditor}>
-        <Home active={!showEditor} />
+    <div class="route" hidden={!showHome}>
+        <Home active={showHome} />
     </div>
     {#if showEditor && openEditor}
         {#await openEditor() then { default: StyleEditor }}
             <StyleEditor />
         {/await}
     {/if}
+    {#if showDesktop}
+        <Desktop />
+    {/if}
 </main>
 
 <footer class="faint small">
     Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ·
-    extracts by <a href="https://download.geofabrik.de/">Geofabrik</a> · builds run locally on this
-    machine
+    extracts by <a href="https://download.geofabrik.de/">Geofabrik</a>{#if available("build")}{" · builds run locally on this machine"}{/if}
 </footer>
 
 <style>

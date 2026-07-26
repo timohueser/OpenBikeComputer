@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import BuildCard from "../components/BuildCard.svelte";
+    import Gated from "../components/Gated.svelte";
     import MapPanel from "../components/MapPanel.svelte";
     import PresetCards from "../components/PresetCards.svelte";
     import { platform } from "../lib/platform";
@@ -10,9 +11,9 @@
 
     let { active = true }: { active?: boolean } = $props();
 
-    // Narrowed once: non-null exactly on a host with `caps.build`, which is
-    // also the only gating input step 3 has. C2 (#901) replaces the bare
-    // `{#if}` below with an inline disabled affordance that says why.
+    // Non-null exactly on a host with `caps.build`. Handed to `<Gated>`, which
+    // makes the one check and passes the narrowed value to the card — so step 3
+    // is present either way, live or dead-with-a-reason.
     const buildMap = platform.buildMap;
 
     let presets = $state<Preset[]>([]);
@@ -106,15 +107,22 @@
             {/if}
         </section>
 
-        {#if buildMap}
-            <section class="card">
-                <div class="step-head">
-                    <span class="num">3</span>
-                    <h3>Build</h3>
-                </div>
-                <BuildCard {selection} {buildMap} />
-            </section>
-        {/if}
+        <section class="card">
+            <div class="step-head">
+                <span class="num">3</span>
+                <h3>Build</h3>
+            </div>
+            <Gated need="build" value={buildMap}>
+                {#snippet children(start)}
+                    <BuildCard {selection} buildMap={start} />
+                {/snippet}
+                {#snippet unavailable(reason)}
+                    <button type="button" class="btn primary" disabled aria-describedby={reason}>
+                        Build map
+                    </button>
+                {/snippet}
+            </Gated>
+        </section>
     </div>
 </div>
 
