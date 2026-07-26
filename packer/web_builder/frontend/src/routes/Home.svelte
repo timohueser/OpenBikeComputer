@@ -5,6 +5,7 @@
     import Gated from "../components/Gated.svelte";
     import MapPanel from "../components/MapPanel.svelte";
     import PresetCards from "../components/PresetCards.svelte";
+    import StorageCard from "../components/StorageCard.svelte";
     import DownloadStep from "../components/catalog/DownloadStep.svelte";
     import PresetStep from "../components/catalog/PresetStep.svelte";
     import RegionStep from "../components/catalog/RegionStep.svelte";
@@ -28,6 +29,12 @@
     // other side: the catalog is the only place a map can come from, one baked
     // artifact at a time. That is the gate — a capability, never a host name.
     const catalogMode = buildMap === null;
+
+    // Present only on a host that puts gigabytes on someone's disk. Not gated
+    // and not numbered: there is nothing to tell a web visitor about caches they
+    // do not have, so the card is simply absent rather than disabled (#901's own
+    // rule — show nothing where there is no moment of intent to gate).
+    const storage = platform.storage;
 
     let presets = $state<Preset[]>([]);
     let presetError = $state<string | null>(null);
@@ -265,6 +272,12 @@
                  download — has no manifest behind it and takes the same path. -->
             <DeviceStep artifact={deviceArtifact} />
         </section>
+
+        <!-- Unnumbered, and after the steps: this is not part of making a map,
+             it is what making maps has left on the disk. -->
+        {#if storage}
+            <StorageCard {storage} />
+        {/if}
     </div>
 </div>
 

@@ -77,15 +77,28 @@ export interface BuildResult {
     downloadUrl: string;
     filename: string;
     size: number;
+    /**
+     * Where the map landed, when it landed somewhere real. Present only on a
+     * host with a filesystem: the dev server keeps its output behind a download
+     * URL, while the desktop app writes into a folder the user chose to have
+     * and `revealFile` can open. Absent, not empty — "no path" and "the empty
+     * path" must not be the same value.
+     */
+    path?: string;
 }
 
-export type BuildState = "idle" | "starting" | "running" | "done" | "error";
+/**
+ * `cancelled` is its own state, not an error. A build the user stopped is the
+ * thing they just asked for, and reporting it in red next to a stack of real
+ * failures would be a lie about what happened.
+ */
+export type BuildState = "idle" | "starting" | "running" | "done" | "error" | "cancelled";
 
 /**
  * One build, followed to completion. The fields are read reactively by the UI,
  * so an implementation makes them `$state` — the interface only promises they
- * are observable, not how (the dev host polls an SSE log; D1's desktop host
- * will bridge Tauri events into the same shape).
+ * are observable, not how (the dev host follows an SSE log; the desktop host
+ * bridges a Tauri channel into the same shape).
  */
 export interface BuildSession {
     readonly state: BuildState;
@@ -98,6 +111,16 @@ export interface BuildSession {
     start(req: BuildRequest): Promise<void>;
     /** Re-attach to a build started before a page reload; false if none. */
     reattach(): Promise<boolean>;
+    /**
+     * Stop the running build, or `null` where a build cannot be stopped.
+     *
+     * Null on the dev host, and that is a statement about it rather than a gap:
+     * it runs the packer as a subprocess behind an HTTP job queue with no
+     * cancel endpoint, so there is nothing to call. The desktop host runs the
+     * pack in-process against a cancel token that reaches inside the ingest and
+     * simplify loops, so there it is a real button.
+     */
+    readonly cancel: (() => Promise<void>) | null;
 }
 
 /** Opens a build session. Present only on a host with `caps.build`. */
@@ -135,6 +158,36 @@ export type { DeviceSession };
 
 /** The managed ride library. E2 (#912) owns it. */
 export type RideLibrary = unknown;
+
+// --- what the app has put on this disk ---------------------------------------
+
+/**
+ * One directory the app writes to, as the UI shows it. `note` says what deleting
+ * it costs, because the answer differs per place — re-downloading one region is
+ * not the same sentence as re-downloading a 950 MB global dataset.
+ */
+export interface StoragePlace {
+    readonly id: string;
+    readonly label: string;
+    readonly note: string;
+    readonly path: string;
+    readonly bytes: number;
+    readonly files: number;
+    readonly clearable: boolean;
+}
+
+/**
+ * The caches, visible and clearable. Optional rather than a capability, for the
+ * same reason `legacyConfig` is: a tier without a filesystem has nothing to
+ * report and nothing to delete, so there is no gate to write and no issue that
+ * owes it. The desktop app has it because its caches reach gigabytes and a user
+ * is entitled to know where they are.
+ */
+export interface DiskStorage {
+    places(): Promise<StoragePlace[]>;
+    /** Delete one named place. Resolves to the bytes freed. */
+    clear(id: string): Promise<number>;
+}
 
 // --- the style editor, as a lazily loaded module -----------------------------
 
@@ -212,6 +265,18 @@ export interface Platform {
      * other two tiers to implement, now or later.
      */
     readonly legacyConfig?: () => Promise<Record<string, unknown> | null>;
+
+    /** The app's own caches, where they are and how to get the space back.
+     *  Optional for the same reason as `legacyConfig` — see [`DiskStorage`]. */
+    readonly storage?: DiskStorage;
+
+    /**
+     * Show a produced file in the OS file manager. Present only where a build
+     * result has a `path` at all: this is the desktop app's answer to the
+     * hosted tier's download link, and a browser has no file manager to point
+     * at.
+     */
+    readonly revealFile?: (path: string) => Promise<void>;
 }
 
 /**

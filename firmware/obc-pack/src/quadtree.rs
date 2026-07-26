@@ -17,6 +17,7 @@
 //! leaf membership matches the node bounds the reader recomputes at render time.
 
 use crate::geom::{clip_to_box, packed_size_budget, to_feature, Bounds, Geom};
+use crate::progress::Progress;
 use crate::serialize::Node;
 
 /// Degree bounds `(min_lon, min_lat, max_lon, max_lat)` of an integer-µdeg box.
@@ -168,11 +169,32 @@ pub fn build_lod(
     global_bbox: (i64, i64, i64, i64),
     chunk_size: usize,
 ) -> Node {
+    build_lod_with(features, global_bbox, chunk_size, &Progress::silent())
+}
+
+/// [`build_lod`], abandonable.
+///
+/// The root placement loop is the only interruptible part — `build_node`'s
+/// recursion is a single divide-and-conquer over whatever it is given — so a
+/// cancelled build stops feeding it and hands it nothing. That is deliberate
+/// rather than lazy: the result is discarded either way, and returning an empty
+/// tree in microseconds is what keeps the tail after a cancel short instead of
+/// paying for a split of a country's worth of features nobody will read.
+pub fn build_lod_with(
+    features: impl IntoIterator<Item = (u8, Geom)>,
+    global_bbox: (i64, i64, i64, i64),
+    chunk_size: usize,
+    progress: &Progress,
+) -> Node {
     // Root: clip every feature to the global bbox (features at the truncated edge
     // can poke just outside it) and flatten Multis to simple parts, in input order.
     let dbox = deg(global_bbox);
     let mut root = Vec::new();
     for (style_id, geom) in features {
+        if progress.is_cancelled() {
+            root.clear();
+            break;
+        }
         if !geom.is_empty() {
             place_any(global_bbox, dbox, style_id, geom, &mut root);
         }

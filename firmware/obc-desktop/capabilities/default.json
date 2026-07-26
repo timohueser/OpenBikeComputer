@@ -1,0 +1,7 @@
+{
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "default",
+    "description": "The app's own commands need no permission; this grants the core set the webview itself uses (window, event, IPC channels). Nothing here opens a filesystem, shell or HTTP capability to JavaScript — every one of those is a Rust command with the policy written in Rust, which is the reason the backend exists.",
+    "windows": ["main"],
+    "permissions": ["core:default"]
+}
