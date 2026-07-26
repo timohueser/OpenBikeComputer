@@ -165,11 +165,22 @@ fn clean_name(name: &str) -> String {
 /// GeoJSON → [`Geom`] → simplify → GeoJSON. A geometry that doesn't survive the
 /// round trip is passed through untouched: a slightly heavy outline is a much
 /// better outcome than a region the picker cannot draw.
+///
+/// **Part by part**, because `topology_preserve_simplify` takes a *simple* geom —
+/// hand it a `Geom::Multi` and it panics. Most of the interesting regions are
+/// multipolygons (any country with an island), so this is the common path, not the
+/// edge case. Simplifying each part separately is also what shapely does with a
+/// MultiPolygon, which is what keeps this in step with `geofabrik.py`.
 fn simplify_geometry(geometry: &Value) -> Value {
     let Some(parsed) = geom_from_geojson(geometry) else {
         return geometry.clone();
     };
-    let simplified = topology_preserve_simplify(&parsed, SIMPLIFY_TOLERANCE);
+    let simplified = match parsed {
+        Geom::Multi(parts) => {
+            Geom::Multi(parts.iter().map(|p| topology_preserve_simplify(p, SIMPLIFY_TOLERANCE)).collect())
+        }
+        simple => topology_preserve_simplify(&simple, SIMPLIFY_TOLERANCE),
+    };
     geojson_from_geom(&simplified).unwrap_or_else(|| geometry.clone())
 }
 
@@ -258,7 +269,12 @@ mod tests {
                             "urls": {"pbf": "https://example.invalid/monaco.osm.pbf"}},
              "geometry": {"type": "Polygon", "coordinates": [[[1,1],[2,1],[2,2],[1,2],[1,1]]]}},
             {"properties": {"id": "no-download", "name": "Container", "parent": null, "urls": {}},
-             "geometry": {"type": "Polygon", "coordinates": [[[0,0],[1,0],[1,1],[0,0]]]}}
+             "geometry": {"type": "Polygon", "coordinates": [[[0,0],[1,0],[1,1],[0,0]]]}},
+            {"properties": {"id": "islands", "name": "Islands", "parent": "europe",
+                            "urls": {"pbf": "https://example.invalid/islands.osm.pbf"}},
+             "geometry": {"type": "MultiPolygon", "coordinates": [
+                [[[20,20],[21,20],[21,21],[20,21],[20,20]]],
+                [[[30,30],[31,30],[31,30.0001],[31,31],[30,31],[30,30]]]]}}
         ]
     }"#;
 
@@ -266,8 +282,9 @@ mod tests {
     fn trims_to_the_five_properties_the_picker_reads() {
         let fc = build_simplified(RAW).expect("build");
         let feats = fc["features"].as_array().expect("features");
-        // The entry with no `.pbf` URL is not a region anyone can build.
-        assert_eq!(feats.len(), 2);
+        // Three downloadable regions; the entry with no `.pbf` URL is not one
+        // anyone can build.
+        assert_eq!(feats.len(), 3);
         for f in feats {
             assert!(assert_shape(f["properties"].as_object().expect("properties")));
         }
@@ -294,5 +311,63 @@ mod tests {
     fn a_geometry_type_the_picker_cannot_use_is_passed_through_untouched() {
         let point = json!({"type": "Point", "coordinates": [1.0, 2.0]});
         assert_eq!(simplify_geometry(&point), point);
+    }
+
+    /// A multipolygon survives, part by part. This is the *common* case — every
+    /// country with an island — and the first version of `simplify_geometry`
+    /// panicked on it (`to_geos on non-simple geom`), which nothing noticed
+    /// because a warm cache never calls this code.
+    #[test]
+    fn a_multipolygon_region_keeps_its_parts_and_still_gets_simplified() {
+        let fc = build_simplified(RAW).expect("build");
+        let islands = fc["features"]
+            .as_array()
+            .expect("features")
+            .iter()
+            .find(|f| f["properties"]["id"] == "islands")
+            .expect("the multipolygon region");
+        assert_eq!(islands["geometry"]["type"], "MultiPolygon");
+        let parts = islands["geometry"]["coordinates"].as_array().expect("parts");
+        assert_eq!(parts.len(), 2, "a part went missing");
+        // The second part carries a 0.0001° detour, under the 0.01° tolerance.
+        assert_eq!(parts[0][0].as_array().unwrap().len(), 5);
+        assert_eq!(parts[1][0].as_array().unwrap().len(), 5, "the sub-tolerance vertex survived");
+    }
+
+    /// The claim that lets this module and `geofabrik.py` share cache files:
+    /// they produce the *same document* from the same raw index. Field-for-field
+    /// on the properties, and geometry compared by vertex count rather than by
+    /// coordinate — shapely's `.simplify` and
+    /// [`topology_preserve_simplify`] are the same GEOS routine at the same
+    /// tolerance, but the two get there through different bindings and a
+    /// coordinate-exact claim would be asserting more than is needed. What
+    /// matters is that neither writes an outline the other's reader would find
+    /// surprising.
+    ///
+    /// Ignored: it reads whatever the dev server last wrote, so it only means
+    /// something on a machine where both have run.
+    #[test]
+    #[ignore = "needs ~/.cache/obcm/geofabrik written by `python -m packer.web_builder`"]
+    fn agrees_with_the_python_implementation_it_shares_a_cache_with() {
+        let dir = crate::paths::geofabrik_cache();
+        let raw = std::fs::read_to_string(dir.join("index-v1.json")).expect("raw index");
+        let theirs: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("regions-simplified.json")).expect("python's"))
+                .expect("python's json");
+        let ours = build_simplified(&raw).expect("build");
+
+        let (a, b) = (ours["features"].as_array().unwrap(), theirs["features"].as_array().unwrap());
+        assert_eq!(a.len(), b.len(), "different region counts");
+        let mut worst = 0.0f64;
+        for (ours, theirs) in a.iter().zip(b) {
+            assert_eq!(ours["properties"], theirs["properties"], "properties differ");
+            let count = |f: &Value| f["geometry"].to_string().matches('[').count();
+            let (x, y) = (count(ours) as f64, count(theirs) as f64);
+            if x.max(y) > 0.0 {
+                worst = worst.max((x - y).abs() / x.max(y));
+            }
+        }
+        println!("worst per-region vertex-count divergence: {:.3}%", worst * 100.0);
+        assert!(worst < 0.05, "one region's outline differs by {:.1}% of its vertices", worst * 100.0);
     }
 }
