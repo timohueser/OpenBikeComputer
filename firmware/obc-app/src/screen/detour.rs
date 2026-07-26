@@ -4,15 +4,15 @@
 //! full-splice derived route.
 //!
 //! Two screens live here:
-//! - [`DetourScreen`] — the encoder-stepped rejoin chooser (unchanged mechanics from #788: the
+//! - [`DetourScreen`] — the Up/Down-stepped rejoin chooser (unchanged mechanics from #788: the
 //!   screen streams only the highlighted interval, fits a local north-up camera, Hold toggles a
 //!   rejoin-inspection camera). **Press now posts a plan request** and pushes the shared planning
 //!   spinner; there is no pure skip.
 //! - [`DetourPreviewScreen`] — the planned detour drawn over the map (skipped span in warning
 //!   ink, the detour in blue) with a signed "±X km" cost line. Press commits the splice;
-//!   Back cancels back to the chooser with detents intact.
+//!   Back cancels back to the chooser with steps intact.
 //!
-//! The chooser holds **no route geometry** — only the entry anchor, encoder step count, compact
+//! The chooser holds **no route geometry** — only the entry anchor, Up/Down step count, compact
 //! inspection zoom state, and one prepared coordinate/bounds record; the preview additionally
 //! reads the host-fed decimated detour polyline through [`Render::detour_preview`].
 
@@ -33,7 +33,7 @@ use super::map::{draw_map_scene, DetourMapOverlay};
 use super::nav_route::NavPlanningScreen;
 use super::{Ctx, Prepare, Render, Screen, Transition};
 
-/// One encoder detent changes the requested along-route rejoin distance by 100 m. A detour is for
+/// One Up/Down step changes the requested along-route rejoin distance by 100 m. A detour is for
 /// nearby closures and trail problems, so finer control matters more than spanning many
 /// kilometres; the route-end clamp still displays/commits the exact non-multiple remainder.
 pub(crate) const DETOUR_STEP_M: u32 = 100;
@@ -41,7 +41,7 @@ pub(crate) const DETOUR_STEP_M: u32 = 100;
 /// endpoint-exemption discs swallow the whole span and a "detour" would just re-follow the route,
 /// so the chooser refuses to select shorter spans (and a shorter remainder is "Route ends here").
 pub(crate) const MIN_DETOUR_M: u32 = obc_route::MIN_DETOUR_SPAN_M;
-/// The chooser's lower detent bound (`MIN_DETOUR_M` expressed in detents).
+/// The chooser's lower step bound (`MIN_DETOUR_M` expressed in steps).
 const MIN_STEPS: u16 = MIN_DETOUR_M.div_ceil(DETOUR_STEP_M) as u16;
 /// Enter inspection at roughly 2.5× the overview scale: enough to resolve the candidate's local
 /// junction without making the Hold transition visually disorienting.
@@ -62,7 +62,7 @@ struct PreparedDetour {
     bounds: BBox,
 }
 
-/// Screen-local chooser state. No route geometry is retained: only the entry anchor, encoder step
+/// Screen-local chooser state. No route geometry is retained: only the entry anchor, Up/Down step
 /// count, compact inspection zoom state, and one prepared coordinate/bounds record live in the
 /// screen stack. `Copy`, so the planned-answer router can lift the request context into the
 /// preview screen without a back-channel.
@@ -73,7 +73,7 @@ pub struct DetourScreen {
     total_m: u32,
     steps: u16,
     /// `0` = overview/distance adjustment; `1..=INSPECT_MAX_LEVEL` = rejoin inspection. Level one
-    /// starts two zoom detents wider than the fitted overview; higher levels move progressively in.
+    /// starts two zoom steps wider than the fitted overview; higher levels move progressively in.
     inspect_level: u8,
     prepared: Option<PreparedDetour>,
 }
@@ -151,12 +151,12 @@ impl DetourScreen {
         self.refresh_anchor(cx.activity);
         let available = self.available(cx.activity, cx.state.has_nav_graph);
         match g {
-            Gesture::Turn(n) if available && self.inspecting() => {
+            Gesture::Step(n) if available && self.inspecting() => {
                 let next = (self.inspect_level as i32).saturating_add(n).clamp(1, INSPECT_MAX_LEVEL as i32);
                 self.inspect_level = next as u8;
                 Transition::None
             }
-            Gesture::Turn(n) if available => {
+            Gesture::Step(n) if available => {
                 let remaining = self.total_m.saturating_sub(self.start_m);
                 let max_steps = remaining.saturating_add(DETOUR_STEP_M - 1) / DETOUR_STEP_M;
                 let max_steps = max_steps.clamp(MIN_STEPS as u32, u16::MAX as u32) as i32;
@@ -167,7 +167,7 @@ impl DetourScreen {
             }
             Gesture::Press if available => {
                 // Derive from the current step count here — never from `prepared`, which can still
-                // describe the previous frame when Turn and Press arrive in one input drain. The
+                // describe the previous frame when Step and Press arrive in one input drain. The
                 // request freezes the corridor/prefix anchor at this instant; the host resolves
                 // the rejoin coordinate itself (it owns the RouteReader).
                 if let (Some(route), Some(target), Some(fix)) = (self.route, self.target_m(), cx.state.user_fix) {
@@ -178,13 +178,13 @@ impl DetourScreen {
                         target_m: target,
                     });
                     // Push (not Replace): Back from the planning spinner or the preview returns
-                    // here with detents intact.
+                    // here with steps intact.
                     Transition::Push(Screen::NavPlanning(NavPlanningScreen::detour()))
                 } else {
                     Transition::None
                 }
             }
-            // The encoder hold is unused by the chooser otherwise. Toggle between the spatial
+            // The Select hold is unused by the chooser otherwise. Toggle between the spatial
             // overview and a candidate-centred inspection camera without changing the selection.
             Gesture::Hold if available => {
                 self.inspect_level = if self.inspecting() { 0 } else { INSPECT_ENTRY_LEVEL };
@@ -193,7 +193,7 @@ impl DetourScreen {
             // Cancel consumes both chooser and ride-menu caller, restoring the riding view without
             // planning anything or changing progress/session/mode.
             Gesture::Back => Transition::Pop,
-            Gesture::Turn(_) | Gesture::Press | Gesture::Hold | Gesture::BackHold => Transition::None,
+            Gesture::Step(_) | Gesture::Press | Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
 
@@ -558,14 +558,14 @@ mod tests {
         let session = a.session();
         let mode = a.mode;
         let mut s = DetourScreen::new(&a);
-        with_state_ctx(&mut a, nav_state(), |cx| assert!(matches!(s.handle(Gesture::Turn(2), cx), Transition::None)));
+        with_state_ctx(&mut a, nav_state(), |cx| assert!(matches!(s.handle(Gesture::Step(2), cx), Transition::None)));
         let t = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Push(Screen::NavPlanning(_))), "Press starts the plan flow");
         let req = a.take_detour_request().expect("plan request queued");
         assert_eq!(
             (req.route, req.progress_m, req.target_m),
             (2, 1_000, 1_800),
-            "minimum six detents plus two, from the live anchor"
+            "minimum six steps plus two, from the live anchor"
         );
         assert_eq!(req.from, (7_800_000, 48_000_000), "the rider's fix rides the request");
         assert!(a.pending_seam().is_none(), "no floor/seam is installed at Press — only at commit");
@@ -594,7 +594,7 @@ mod tests {
         let before = a;
         let mut s = DetourScreen::new(&a);
         with_state_ctx(&mut a, nav_state(), |cx| {
-            let _ = s.handle(Gesture::Turn(3), cx);
+            let _ = s.handle(Gesture::Step(3), cx);
         });
         let t = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
@@ -633,10 +633,10 @@ mod tests {
     fn moving_while_open_advances_highlight_and_plan_anchor() {
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = DetourScreen::new(&a);
-        // Rider advances before a Turn; that input refreshes the live anchor and adds 100 m.
+        // Rider advances before a Step; that input refreshes the live anchor and adds 100 m.
         a.progress_m = 1_200;
         with_state_ctx(&mut a, nav_state(), |cx| {
-            let _ = s.handle(Gesture::Turn(1), cx);
+            let _ = s.handle(Gesture::Step(1), cx);
         });
         assert_eq!((s.start_m, s.target_m()), (1_200, Some(1_900)));
         // Another 100 m before Press: the request is still a 700 m span, now from 1.3 km.
@@ -658,12 +658,12 @@ mod tests {
         assert_eq!(s.inspect_level, INSPECT_ENTRY_LEVEL);
         let entry_zoom = s.inspect_zoom();
 
-        let _ = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Turn(-20), cx));
+        let _ = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Step(-20), cx));
         assert!(s.inspect_zoom() < 1.0, "inspection can zoom a little wider than the fitted overview");
         assert_eq!(s.target_m(), target, "inspection never changes the selected rejoin point");
 
-        let _ = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Turn(20), cx));
-        assert!(s.inspect_zoom() > entry_zoom, "Turn zooms back in while inspecting");
+        let _ = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Step(20), cx));
+        assert!(s.inspect_zoom() > entry_zoom, "a Step zooms back in while inspecting");
 
         let _ = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Hold, cx));
         assert!(!s.inspecting(), "a second Hold returns to the overview");
@@ -675,7 +675,7 @@ mod tests {
         let mut s = DetourScreen::new(&a);
         let target = s.target_m().unwrap();
         let _ = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Hold, cx));
-        let _ = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Turn(3), cx));
+        let _ = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Step(3), cx));
 
         let t = with_state_ctx(&mut a, nav_state(), |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Push(Screen::NavPlanning(_))));
@@ -733,7 +733,7 @@ mod tests {
         let mut b = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&b);
         p.remap_routes(&|_| None); // the planned route vanished in a rescan
-        let t = with_state_ctx(&mut b, nav_state(), |cx| p.handle(Gesture::Turn(1), cx));
+        let t = with_state_ctx(&mut b, nav_state(), |cx| p.handle(Gesture::Step(1), cx));
         assert!(matches!(t, Transition::Pop));
         assert!(b.take_detour_cancel());
     }

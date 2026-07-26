@@ -94,8 +94,8 @@ impl ClimbScreen {
             Gesture::Back => Transition::Replace(Screen::Map(MapScreen::new())),
             // The riding views' shared bindings (press → Ride control, back-hold → Ride menu).
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
-            // No turn/hold behaviour — the climb view is a fixed readout, nothing to scrub.
-            Gesture::Turn(_) | Gesture::Hold => Transition::None,
+            // No step/hold behaviour — the climb view is a fixed readout, nothing to scrub.
+            Gesture::Step(_) | Gesture::Hold => Transition::None,
         }
     }
 

@@ -79,7 +79,7 @@ impl DateTimeScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let kind = ROWS[self.selected.min(ROWS.len() - 1)];
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 match self.editing {
                     Some(_) => step_offset(cx.settings, n),
                     None => self.move_selection(n),
@@ -112,7 +112,7 @@ impl DateTimeScreen {
         }
     }
 
-    /// Move the row cursor by `n` detents, skipping the non-selectable info rows. With a single
+    /// Move the row cursor by `n` steps, skipping the non-selectable info rows. With a single
     /// selectable row this keeps the cursor parked on it — kept general so adding a second stepper
     /// later just works.
     fn move_selection(&mut self, n: i32) {
@@ -196,7 +196,7 @@ impl DateTimeScreen {
     }
 }
 
-/// Apply a stepper turn to the UTC offset (live into [`Settings`], clamped to its range).
+/// Apply a stepper step to the UTC offset (live into [`Settings`], clamped to its range).
 fn step_offset(s: &mut Settings, n: i32) {
     let v = s.utc_offset_min as i32 + n * UTC_OFFSET_STEP as i32;
     s.utc_offset_min = v.clamp(UTC_OFFSET_MIN as i32, UTC_OFFSET_MAX as i32) as i16;
@@ -251,21 +251,21 @@ mod tests {
         let mut s = Settings::default();
         let mut scr = DateTimeScreen::new();
         assert_eq!(ROWS[scr.selected], RowKind::Offset, "starts on the offset row");
-        run(&mut scr, &mut s, Gesture::Turn(1));
-        assert_eq!(ROWS[scr.selected], RowKind::Offset, "a detent finds no other selectable row");
-        run(&mut scr, &mut s, Gesture::Turn(-3));
-        assert_eq!(ROWS[scr.selected], RowKind::Offset, "still parked after several detents");
+        run(&mut scr, &mut s, Gesture::Step(1));
+        assert_eq!(ROWS[scr.selected], RowKind::Offset, "a step finds no other selectable row");
+        run(&mut scr, &mut s, Gesture::Step(-3));
+        assert_eq!(ROWS[scr.selected], RowKind::Offset, "still parked after several steps");
     }
 
     /// Offset edit flow: press to open the single field, rotate to change it (live, `UTC_OFFSET_STEP`
-    /// per detent), press again to step out.
+    /// per step), press again to step out.
     #[test]
     fn offset_field_edits_and_steps_out() {
         let mut s = Settings { utc_offset_min: 0, ..Settings::default() };
         let mut scr = DateTimeScreen::new();
         run(&mut scr, &mut s, Gesture::Press); // open the offset field
         assert_eq!(scr.editing, Some(0));
-        run(&mut scr, &mut s, Gesture::Turn(2)); // +2 steps
+        run(&mut scr, &mut s, Gesture::Step(2)); // +2 steps
         assert_eq!(s.utc_offset_min, 2 * UTC_OFFSET_STEP, "rotating the open field edits it live");
         run(&mut scr, &mut s, Gesture::Press); // step out (one field)
         assert_eq!(scr.editing, None);
@@ -277,7 +277,7 @@ mod tests {
         let mut s = Settings { utc_offset_min: UTC_OFFSET_MAX - UTC_OFFSET_STEP, ..Settings::default() };
         let mut scr = DateTimeScreen::new();
         run(&mut scr, &mut s, Gesture::Press);
-        run(&mut scr, &mut s, Gesture::Turn(5)); // past the top
+        run(&mut scr, &mut s, Gesture::Step(5)); // past the top
         assert_eq!(s.utc_offset_min, UTC_OFFSET_MAX, "clamps at the maximum offset");
     }
 

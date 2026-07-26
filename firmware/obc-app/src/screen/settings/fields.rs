@@ -4,10 +4,10 @@
 //! renderer, live values), so what you arrange here is exactly what the ride shows. The cursor is
 //! the amber tile; walking past a page's last tile flips to the next page (`page / pages` in the
 //! title bar). Reached from the [`Ride`](super::RideScreen) screen's *Data fields* row. Two idioms on
-//! top of the shared two-level encoder model:
+//! top of the shared two-level Select model:
 //!
 //! - **Reordering.** *Press* grabs the highlighted tile (move arrows appear); rotating moves it,
-//!   *press*/*back* drops it. The grid reflows live per detent, so a two-span field's row-aligned
+//!   *press*/*back* drops it. The grid reflows live per step, so a two-span field's row-aligned
 //!   hops ([`StatFieldList::move_item`](crate::stat_fields::StatFieldList::move_item)) are visible
 //!   rather than inferred.
 //! - **Removing.** A hold-to-delete footer (trash can + progress bar) erases the highlighted field —
@@ -69,16 +69,16 @@ impl StatFieldsScreen {
         let add_row = len; // rows: 0..len are the fields, `len` is the Add row
         let rows = len + 1;
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 if self.grabbed && self.selected < len {
-                    // Move the grabbed field one valid step per detent, following it with the cursor.
+                    // Move the grabbed field one valid step per step, following it with the cursor.
                     let mut idx = self.selected;
                     for _ in 0..n.unsigned_abs() {
                         idx = cx.settings.stat_fields.move_item(idx, n.signum());
                     }
                     self.selected = idx;
                 } else {
-                    return list::on_turn(&mut self.selected, n, rows);
+                    return list::on_step(&mut self.selected, n, rows);
                 }
                 Transition::None
             }
@@ -213,7 +213,7 @@ impl StatFieldsScreen {
 }
 
 /// Draw the hold-to-delete footer: a trash can + a warning-red progress bar filled by the live
-/// encoder hold. Drawn only when a field row is highlighted (`on_field`); the Add row leaves it
+/// Select hold. Drawn only when a field row is highlighted (`on_field`); the Add row leaves it
 /// blank. The delete itself fires from `handle`'s `Hold` arm.
 fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, on_field: bool, hold: f32) {
     use crate::screen::palette::*;
@@ -334,7 +334,7 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Grab the first field, move it down with a turn, and drop it — the order changes and the cursor
+    /// Grab the first field, move it down with a step, and drop it — the order changes and the cursor
     /// follows the grabbed field.
     #[test]
     fn grab_move_drop_reorders() {
@@ -343,7 +343,7 @@ mod tests {
         run(&mut scr, &mut s, Gesture::Press); // grab field 0
         assert!(scr.grabbed);
         let first_before = s.stat_fields.as_slice()[0];
-        run(&mut scr, &mut s, Gesture::Turn(1)); // move it down one
+        run(&mut scr, &mut s, Gesture::Step(1)); // move it down one
         assert_eq!(scr.selected, 1, "the cursor follows the grabbed field");
         assert_eq!(s.stat_fields.as_slice()[1], first_before, "the field moved down a slot");
         run(&mut scr, &mut s, Gesture::Press); // drop
@@ -371,7 +371,7 @@ mod tests {
         let len = s.stat_fields.len();
         // Walk to the last field (index len-1).
         for _ in 0..len - 1 {
-            run(&mut scr, &mut s, Gesture::Turn(1));
+            run(&mut scr, &mut s, Gesture::Step(1));
         }
         assert_eq!(scr.selected, len - 1);
         run(&mut scr, &mut s, Gesture::Hold); // delete it
@@ -384,7 +384,7 @@ mod tests {
         let mut s = Settings::default();
         let len = s.stat_fields.len();
         let mut scr = StatFieldsScreen::new();
-        run(&mut scr, &mut s, Gesture::Turn(len as i32)); // cursor → Add row (index len)
+        run(&mut scr, &mut s, Gesture::Step(len as i32)); // cursor → Add row (index len)
         assert_eq!(scr.selected, len);
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Push(Screen::AddField(_))));
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop));
@@ -401,7 +401,7 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "a second back pops");
     }
 
-    /// Grabbing the page-sized waypoint panel and turning moves it a whole page per detent, the
+    /// Grabbing the page-sized waypoint panel and turning moves it a whole page per step, the
     /// cursor following it across pages — the editor path over the new multi-row machinery.
     #[test]
     fn grabbing_the_panel_moves_it_page_to_page() {
@@ -412,19 +412,19 @@ mod tests {
         let mut scr = StatFieldsScreen::new();
         // Walk the cursor onto the panel, confirm it starts on page 1, then grab it.
         for _ in 0..panel_idx {
-            run(&mut scr, &mut s, Gesture::Turn(1));
+            run(&mut scr, &mut s, Gesture::Step(1));
         }
         assert_eq!(scr.selected, panel_idx);
         assert_eq!(stat_fields::slot_of(&s.stat_fields, panel_idx).unwrap() / SLOTS_PER_PAGE, 1, "panel on page 1");
         run(&mut scr, &mut s, Gesture::Press); // grab
         assert!(scr.grabbed);
         // Up: hops the whole page to the front; the cursor follows.
-        run(&mut scr, &mut s, Gesture::Turn(-1));
+        run(&mut scr, &mut s, Gesture::Step(-1));
         assert_eq!(scr.selected, 0, "the cursor follows the panel to page 0");
         assert_eq!(s.stat_fields.as_slice()[0], StatField::WaypointList);
         assert_eq!(stat_fields::slot_of(&s.stat_fields, 0).unwrap() / SLOTS_PER_PAGE, 0, "now on page 0");
         // Down: hops a whole page back, cursor still following.
-        run(&mut scr, &mut s, Gesture::Turn(1));
+        run(&mut scr, &mut s, Gesture::Step(1));
         assert_eq!(scr.selected, panel_idx, "and back down a page");
         assert_eq!(s.stat_fields.as_slice()[panel_idx], StatField::WaypointList);
     }

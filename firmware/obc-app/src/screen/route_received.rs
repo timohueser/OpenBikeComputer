@@ -119,7 +119,7 @@ impl RouteReceivedScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
             // View route — open the Route overview exactly as pressing the route in the Routes list
             // does (same screen, same `active_route` data path, so the host streams it open behind
             // the page), validated against the current catalog: a route deleted while the popup was
@@ -258,7 +258,7 @@ impl RouteUpdatedScreen {
     }
 
     /// Info-only: any press or Back dismisses (nothing here to confirm — the swap already
-    /// happened); turns are ignored.
+    /// happened); steps are ignored.
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Press | Gesture::Back => Transition::Pop,

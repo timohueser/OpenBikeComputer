@@ -12,7 +12,7 @@ use obc_app::{
 use obc_reader::BBox;
 
 mod common;
-use common::{down, keys, tap, turn, NoFix, OnceFix};
+use common::{down, keys, step, tap, NoFix, OnceFix};
 
 const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
 
@@ -66,8 +66,8 @@ fn a_recognized_gesture_dirties_the_map() {
     let mut app = App::new(AppState::new(BERLIN.1, BERLIN.0, 0.05));
     let _ = app.take_dirty(); // drain the first frame
 
-    // A turn detent is recognized immediately as a Turn gesture (Map zoom) → map dirty.
-    assert!(frame(&mut app, &mut NoFix, 0, &[turn(1)]).map, "a turn (zoom) dirties the map");
+    // An Up/Down step is recognized immediately as a Step gesture (Map zoom) → map dirty.
+    assert!(frame(&mut app, &mut NoFix, 0, &[step(1)]).map, "a step (zoom) dirties the map");
 
     // The very next idle frame is clean again — the flag is one-shot, not sticky.
     assert_eq!(idle_frame(&mut app, 8), Dirty::CLEAN, "dirty is drained, not latched");
@@ -79,7 +79,7 @@ fn charging_a_hold_dirties_only_the_overlay_then_fires_the_map() {
     let _ = app.take_dirty();
 
     // The press down alone recognizes no gesture, so the map stays clean.
-    let d = frame(&mut app, &mut NoFix, 0, &[down(Button::Encoder)]);
+    let d = frame(&mut app, &mut NoFix, 0, &[down(Button::Select)]);
     assert!(!d.map, "a bare button-down changes no screen — the map stays clean");
 
     // Past the dead zone the hold ring is live — overlay only, the map underneath unchanged.
@@ -139,14 +139,14 @@ fn statistics_spring_back_is_wired_into_the_dirty_signal() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.set_routes(&[one_route()]);
 
-    let _ = frame(&mut app, &mut NoFix, 0, &tap(Button::Encoder)); // Home press → Menu (Routes selected)
-    let _ = frame(&mut app, &mut NoFix, 5, &tap(Button::Encoder)); // press Routes → Route menu
-    let _ = frame(&mut app, &mut NoFix, 10, &tap(Button::Encoder)); // pick route → Route overview
-    let _ = frame(&mut app, &mut NoFix, 15, &tap(Button::Encoder)); // START RIDE → Map
+    let _ = frame(&mut app, &mut NoFix, 0, &tap(Button::Select)); // Home press → Menu (Routes selected)
+    let _ = frame(&mut app, &mut NoFix, 5, &tap(Button::Select)); // press Routes → Route menu
+    let _ = frame(&mut app, &mut NoFix, 10, &tap(Button::Select)); // pick route → Route overview
+    let _ = frame(&mut app, &mut NoFix, 15, &tap(Button::Select)); // START RIDE → Map
     let _ = frame(&mut app, &mut NoFix, 20, &tap(Button::Back)); // Map `back` → Statistics
 
-    // Scrub the cursor (a Turn on Statistics) → that frame is dirty (the scrub moved it)…
-    assert!(frame(&mut app, &mut NoFix, 30, &[turn(1)]).map, "the scrub itself dirties the map");
+    // Scrub the cursor (a Step on Statistics) → that frame is dirty (the scrub moved it)…
+    assert!(frame(&mut app, &mut NoFix, 30, &[step(1)]).map, "the scrub itself dirties the map");
     // …then idle frames inside the spring-back window are quiet — the frozen cursor draws the
     // same thing, so the map must not re-render.
     assert_eq!(idle_frame(&mut app, 100), Dirty::CLEAN, "frozen cursor → no idle redraw");

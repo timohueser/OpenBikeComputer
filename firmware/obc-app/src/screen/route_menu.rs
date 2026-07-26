@@ -216,8 +216,8 @@ impl RouteMenuScreen {
         }
         self.pin(&rows, cx.trips);
         match g {
-            Gesture::Turn(n) => {
-                let t = list::on_turn(&mut self.selected, n, len);
+            Gesture::Step(n) => {
+                let t = list::on_step(&mut self.selected, n, len);
                 self.pin(&rows, cx.trips);
                 t
             }
@@ -480,7 +480,7 @@ mod tests {
         );
         // Row 1 = the one unfiled route (index 2) → its overview, active_route = 2.
         let mut scr = RouteMenuScreen::new();
-        run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &trips, Gesture::Turn(1)); // → row 1
+        run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &trips, Gesture::Step(1)); // → row 1
         let mut act = Activity::new(Mode::Idle);
         let t = run(&mut scr, &mut act, &routes, &trips, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))), "the loose route opens its overview");

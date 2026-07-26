@@ -67,10 +67,14 @@ public enum OBCTheme {
     // The little hardware drawing on the launch/pairing screens. Pinned by the
     // design: `--dev-header` / `--dev-header-text` (tokens/colors.css) plus the
     // literals of the §4 frames — these draw the *device*, not app chrome.
-    /// Device shell, warm near-black (#2a2723 in the §4 frames).
-    public static let deviceBody = Color(hex: 0x2A2723)
-    /// Device side buttons (#555).
-    public static let deviceButton = Color(hex: 0x555555)
+    /// Device upper shell — the "Forest" colorway of the current industrial design.
+    public static let deviceBody = Color(hex: 0x2F6350)
+    /// Device lower shell — the "Celadon" base the body is seated on, showing as a lip.
+    public static let deviceAccent = Color(hex: 0x8BE3BC)
+    /// The four device buttons: dark moulded rubber.
+    public static let deviceButton = Color(hex: 0x2B2F36)
+    /// The deep black bezel the panel is recessed into.
+    public static let deviceBezel = Color(hex: 0x101317)
     /// `--dev-header` #AA5500 — the device UI's rust title bar.
     public static let deviceHeader = Color(hex: 0xAA5500)
     /// `--dev-header-text` #FFFFAA — cream text on the title bar.

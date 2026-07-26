@@ -150,7 +150,7 @@ impl RideRetention {
         self as u8
     }
 
-    /// Walk the picker `n` detents through [`ORDER`](RideRetention::ORDER), wrapping at both ends —
+    /// Walk the picker `n` steps through [`ORDER`](RideRetention::ORDER), wrapping at both ends —
     /// the Auto-delete settings row's left/right value step (S5). Falls back to the default
     /// [`Week1`](RideRetention::Week1) index.
     pub fn stepped(self, n: i32) -> Self {

@@ -35,7 +35,7 @@ impl SystemScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
                 UNITS => Transition::Push(Screen::Units(UnitsScreen::new())),
                 DATETIME => Transition::Push(Screen::DateTime(DateTimeScreen::new())),
@@ -98,15 +98,15 @@ mod tests {
         let mut act = Activity::new(Mode::Idle);
         let mut scr = SystemScreen::new();
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::Units(_))));
-        run(&mut scr, &mut act, Gesture::Turn(1));
+        run(&mut scr, &mut act, Gesture::Step(1));
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::DateTime(_))));
-        run(&mut scr, &mut act, Gesture::Turn(1));
+        run(&mut scr, &mut act, Gesture::Step(1));
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::Language(_))));
-        run(&mut scr, &mut act, Gesture::Turn(1)); // → Firmware update
+        run(&mut scr, &mut act, Gesture::Step(1)); // → Firmware update
         assert_eq!(scr.selected, FIRMWARE);
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::Firmware(_))));
         assert!(act.take_card_scan_request(), "opening Firmware arms the free-cluster scan");
-        run(&mut scr, &mut act, Gesture::Turn(1)); // → Reset
+        run(&mut scr, &mut act, Gesture::Step(1)); // → Reset
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::Reset(_))));
         assert!(matches!(run(&mut scr, &mut act, Gesture::Back), Transition::Pop));
     }

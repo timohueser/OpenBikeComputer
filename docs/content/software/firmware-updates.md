@@ -157,7 +157,7 @@ There are two ways it gets there, and **exactly one** way it gets installed.
 - **Card sideload.** Copy `UPDATE.BIN` onto the card from any computer, put the
   card back, and choose **Settings → System → Firmware → "Install update from card"**. The
   device scans and validates the file, shows what it found (the installed version
-  → the staged version, plus a no-undo warning), and installs on an encoder press.
+  → the staged version, plus a no-undo warning), and installs on a Select press.
   This is the primitive contract: a file on a card, nothing more. The row is
   disabled while a ride is recording, because arming reboots the device.
 - **BLE from the companion.** The [companion app](../companion-link/) can stage the
@@ -170,7 +170,7 @@ security posture: **installing always confirms on the glass.** The phone can
 *stage* an image — that is all a bonded, encrypted link authorises — but it can
 never arm or reboot the device on its own. `installFw` merely posts a request; the
 device runs its own scan and shows a **confirm card**, and the update proceeds only
-on a physical encoder press by the rider, exactly like the pairing-passkey pattern.
+on a physical Select press by the rider, exactly like the pairing-passkey pattern.
 There are no silent installs, ever. The running firmware's version the phone
 displays is read from the standard [DIS](../companion-link/) Firmware Revision
 characteristic, so after a confirmed update it simply reflects the new image on the

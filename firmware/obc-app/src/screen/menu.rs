@@ -60,19 +60,19 @@ impl MenuText {
 const COMPASS: bool = true;
 
 /// The station's unit direction for item `i` of `n`, starting at N (0°) and stepping clockwise, so a
-/// clockwise encoder turn walks the ring clockwise. Replaces the old fixed N/E/S/W table now that the
+/// clockwise a Down step walks the ring clockwise. Replaces the old fixed N/E/S/W table now that the
 /// menu holds five entries (`Rides` joined Routes/POIs/Map/Settings).
 fn station_dir(i: usize, n: usize) -> (f32, f32) {
     let a = (i as f32 / n as f32) * core::f32::consts::TAU;
     (libm::sinf(a), -libm::cosf(a)) // screen coords: 0° = up, clockwise positive
 }
 
-/// Degrees the needle sweeps per encoder detent — one station step around the ring of [`ITEMS`]
+/// Degrees the needle sweeps per Up/Down step — one station step around the ring of [`ITEMS`]
 /// (360° ÷ five entries = 72°).
-const DETENT_DEG: f32 = 360.0 / N_ITEMS as f32;
+const STEP_DEG: f32 = 360.0 / N_ITEMS as f32;
 
 /// Needle sweep tuning: an ease-out — the needle moves at `SWEEP_RATE` of the remaining arc per
-/// second, floored at `SWEEP_MIN_DEG_S` so the tail doesn't crawl. A one-detent step lands in ≈200 ms.
+/// second, floored at `SWEEP_MIN_DEG_S` so the tail doesn't crawl. A single step lands in ≈200 ms.
 const SWEEP_RATE: f32 = 8.0;
 const SWEEP_MIN_DEG_S: f32 = 180.0;
 /// The frame cadence the sweep asks the host for while in flight.
@@ -95,9 +95,9 @@ impl CompassDial {
         self.selected
     }
 
-    pub(super) fn turn(&mut self, n: i32) -> Transition {
-        self.target_deg += n as f32 * DETENT_DEG;
-        list::on_turn(&mut self.selected, n, N_ITEMS)
+    pub(super) fn step(&mut self, n: i32) -> Transition {
+        self.target_deg += n as f32 * STEP_DEG;
+        list::on_step(&mut self.selected, n, N_ITEMS)
     }
 
     /// [`Screen::tick_timers`] arm: advance the needle toward the target by the eased step for the
@@ -161,7 +161,7 @@ impl MenuScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => self.dial.turn(n),
+            Gesture::Step(n) => self.dial.step(n),
             Gesture::Press => match self.dial.selected() {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
                 1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
@@ -277,7 +277,7 @@ fn draw_compass(
     draw_needle(cv, c, needle_deg, 42.0, 10.0);
 
     // Stations: amber-filled when selected, a thin tan ring otherwise. Evenly spaced around the ring
-    // by `station_dir`, so the five entries sit at 72° detents starting from N.
+    // by `station_dir`, so the five entries sit at 72° steps starting from N.
     let n = items.len();
     for i in 0..n {
         let (dx, dy) = station_dir(i, n);

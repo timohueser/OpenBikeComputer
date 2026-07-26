@@ -4,9 +4,13 @@
 //! through the device framebuffer or the 64-color quantization (so its colors are
 //! independent of the map palette). Nothing here touches `obc-render` / `obc-app`.
 //!
-//! **Placeholder industrial design, meant to be retuned.** The look lives entirely in
-//! the geometry ([`HousingStyle`], in *screen-pixel units* so it scales with the display
-//! scale) and colors ([`Colorway`] / [`HousingPalette`]); the drawing code derives
+//! It traces the current industrial design: a two-tone shell (a colored upper body seated on a
+//! lighter accent base that shows as a lip around the bottom and sides), a deep black bezel, the
+//! embossed `OBC` wordmark on the chin, and **four rubber buttons** — UP / DOWN on the left flank,
+//! SELECT / BACK on the right — each a textured pad that sinks in when pressed.
+//!
+//! The look lives entirely in the geometry ([`HousingStyle`], in *screen-pixel units* so it scales
+//! with the display scale) and colors ([`Colorway`] / [`HousingPalette`]); the drawing code derives
 //! everything from them, so a reskin only touches those.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Rounding, Stroke, Vec2};
@@ -20,10 +24,10 @@ pub fn background() -> Color32 {
 /// window, so it floats in a little charcoal instead of touching the edges.
 pub const WINDOW_MARGIN: f32 = 18.0;
 
-/// The four body colors the device ships in. Selectable in the control panel (and via
-/// `--colorway`).
+/// The body colors the device ships in. Selectable in the control panel (and via `--colorway`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Colorway {
+    Forest,
     Coral,
     Mint,
     Mustard,
@@ -31,11 +35,13 @@ pub enum Colorway {
 }
 
 impl Colorway {
-    /// Drives the dropdown, in the reference render's order.
-    pub const ALL: [Colorway; 4] = [Colorway::Coral, Colorway::Mint, Colorway::Mustard, Colorway::Slate];
+    /// Drives the dropdown, in the reference render's order (Forest first — the default).
+    pub const ALL: [Colorway; 5] =
+        [Colorway::Forest, Colorway::Coral, Colorway::Mint, Colorway::Mustard, Colorway::Slate];
 
     pub fn label(self) -> &'static str {
         match self {
+            Colorway::Forest => "forest",
             Colorway::Coral => "coral",
             Colorway::Mint => "mint",
             Colorway::Mustard => "mustard",
@@ -48,13 +54,25 @@ impl Colorway {
         Self::ALL.into_iter().find(|c| c.label().eq_ignore_ascii_case(s.trim()))
     }
 
-    /// The body color; the rest of the palette is derived from it + shared dark tones.
+    /// The upper-shell color; the rest of the palette is derived from it + shared dark tones.
     fn body(self) -> Color32 {
         match self {
+            Colorway::Forest => hex("#2f6350"),
             Colorway::Coral => hex("#cb6750"),
             Colorway::Mint => hex("#62be9c"),
             Colorway::Mustard => hex("#e0b348"),
             Colorway::Slate => hex("#6c7891"),
+        }
+    }
+
+    /// The accent base the upper shell is seated on — the lighter half of the two-tone body.
+    fn accent(self) -> Color32 {
+        match self {
+            Colorway::Forest => hex("#8be3bc"),
+            Colorway::Coral => hex("#f3a882"),
+            Colorway::Mint => hex("#b6ecd7"),
+            Colorway::Mustard => hex("#f5db9c"),
+            Colorway::Slate => hex("#b3bccf"),
         }
     }
 
@@ -63,12 +81,13 @@ impl Colorway {
         HousingPalette {
             body,
             body_edge: darken(body, 0.72),
-            wordmark: darken(body, 0.5),
-            // Shared dark tones across all colorways (the bezel + side controls).
+            accent: self.accent(),
+            wordmark: darken(body, 0.62),
+            // Shared dark tones across all colorways (the bezel + the four rubber buttons).
             bezel: hex("#141518"),
             button: hex("#36393f"),
             button_pressed: hex("#26282d"),
-            knurl: hex("#50545c"),
+            button_texture: hex("#22242a"),
         }
     }
 }
@@ -77,85 +96,101 @@ impl Colorway {
 pub struct HousingPalette {
     pub body: Color32,
     pub body_edge: Color32,
+    /// The lighter base shell the body sits on (the two-tone lip).
+    pub accent: Color32,
     pub wordmark: Color32,
     pub bezel: Color32,
     pub button: Color32,
     pub button_pressed: Color32,
-    pub knurl: Color32,
+    /// The fine grid moulded into each rubber button pad.
+    pub button_texture: Color32,
 }
 
 /// Live state of the on-device controls, so the housing animates with the user's input.
 #[derive(Clone, Copy, Default)]
 pub struct ControlVisual {
-    /// Encoder rotation (radians) — scrolls the scroll-wheel's knurling.
-    pub knob_angle: f32,
-    pub encoder_down: bool,
+    pub up_down: bool,
+    pub down_down: bool,
+    pub select_down: bool,
     pub back_down: bool,
+}
+
+/// Which of the four buttons a rect belongs to — picks the flank a press sinks toward.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flank {
+    Left,
+    Right,
 }
 
 /// All housing geometry, in **screen-pixel units**, so a single display `scale` scales the
 /// whole device while the screen stays an exact multiple. The draw code derives every rect
 /// from these.
 pub struct HousingStyle {
-    /// Colored body padding around the screen (left/right, above, below). The bottom
-    /// is roomier to seat the `OBC` wordmark.
+    /// Colored body padding around the screen (left/right, above, below). The bottom is much
+    /// roomier — the real device wears a tall chin under the bezel, embossed with the wordmark.
     pub pad_x: f32,
     pub pad_top: f32,
     pub pad_bottom: f32,
     /// Outer body corner radius.
     pub body_radius: f32,
+    /// How far the lighter accent base peeks out past the upper shell — an even lip on all four
+    /// sides, so the two-tone edge reads as one concentric rim rather than a dropped shadow.
+    pub accent_lip: f32,
     /// Black bezel thickness around the screen, and its corner radius.
     pub bezel_gap: f32,
     pub bezel_radius: f32,
-    /// Side controls: how far a pill sits inside the body, how far it protrudes past
-    /// the body edge, the pill corner radius, and how far a pressed pill sinks in.
+    /// The four buttons: how far a pad sits inside the body, how far it protrudes past
+    /// the body edge, its corner radius, and how far a pressed pad sinks in.
     pub btn_inset: f32,
     pub btn_protrude: f32,
     pub btn_radius: f32,
     pub btn_press: f32,
-    /// Encoder + Back pill heights and their vertical centers (fraction of body height).
-    pub enc_h: f32,
-    pub enc_cy: f32,
-    pub back_h: f32,
-    pub back_cy: f32,
-    /// Scroll-wheel knurl ridge spacing and how fast it scrolls per radian of turn.
-    pub knurl_spacing: f32,
-    pub knurl_gain: f32,
+    /// Button pad height and the gap between the two pads of a flank. The pair is centred on the
+    /// body's vertical midpoint — as on the real device — and both flanks share it, so UP/SELECT
+    /// sit level with each other and DOWN/BACK likewise.
+    pub btn_h: f32,
+    pub btn_gap: f32,
+    /// Spacing of the grid moulded into each rubber pad.
+    pub btn_grid: f32,
     /// `OBC` wordmark font size.
     pub wordmark_size: f32,
 }
 
 impl Default for HousingStyle {
     fn default() -> Self {
+        // Proportioned off the reference render: a 308×470 body (≈0.65 w:h) around the 240×320
+        // panel, the bezel reaching to within ~6% of each side, and a chin ≈22% of the height.
         HousingStyle {
-            pad_x: 30.0,
-            pad_top: 30.0,
-            pad_bottom: 74.0,
-            body_radius: 40.0,
+            pad_x: 34.0,
+            pad_top: 32.0,
+            pad_bottom: 118.0,
+            body_radius: 42.0,
+            accent_lip: 6.0,
             bezel_gap: 16.0,
             bezel_radius: 26.0,
             btn_inset: 6.0,
             btn_protrude: 13.0,
-            btn_radius: 8.0,
+            btn_radius: 7.0,
             btn_press: 3.0,
-            enc_h: 78.0,
-            enc_cy: 0.34,
-            back_h: 46.0,
-            back_cy: 0.58,
-            knurl_spacing: 7.0,
-            knurl_gain: 18.0,
-            wordmark_size: 24.0,
+            btn_h: 66.0,
+            btn_gap: 22.0,
+            btn_grid: 7.0,
+            wordmark_size: 26.0,
         }
     }
 }
 
-/// The resolved on-screen rects for a placed device. The caller hit-tests `encoder`
-/// / `back` for the clickable controls and blits the framebuffer into `screen`.
+/// The resolved on-screen rects for a placed device. The caller hit-tests the four button
+/// rects for the clickable controls and blits the framebuffer into `screen`.
 pub struct Layout {
     pub body: Rect,
+    /// The accent base peeking out behind `body`.
+    pub base: Rect,
     pub bezel: Rect,
     pub screen: Rect,
-    pub encoder: Rect,
+    pub up: Rect,
+    pub down: Rect,
+    pub select: Rect,
     pub back: Rect,
     pub wordmark_center: Pos2,
     pub wordmark_size: f32,
@@ -164,12 +199,13 @@ pub struct Layout {
 }
 
 impl HousingStyle {
-    /// Full device footprint (incl. the protruding side buttons) in screen-pixel
-    /// units, given the screen's pixel size.
+    /// Full device footprint (incl. the protruding side buttons, on *both* flanks now) in
+    /// screen-pixel units, given the screen's pixel size.
     pub fn device_size_px(&self, screen: Vec2) -> Vec2 {
         let body_w = screen.x + 2.0 * self.pad_x;
         let body_h = screen.y + self.pad_top + self.pad_bottom;
-        Vec2::new(body_w + self.btn_protrude, body_h)
+        // The pads hang off both flanks; the accent lip rings the whole body.
+        Vec2::new(body_w + 2.0 * (self.btn_protrude + self.accent_lip), body_h + 2.0 * self.accent_lip)
     }
 
     /// Window footprint: the device plus the backdrop [`WINDOW_MARGIN`] on every side,
@@ -193,32 +229,42 @@ impl HousingStyle {
         let origin = (available.center() - self.device_size_px(screen) * s / 2.0).round();
         let body_w = (screen.x + 2.0 * self.pad_x) * s;
         let body_h = (screen.y + self.pad_top + self.pad_bottom) * s;
-        let body = Rect::from_min_size(origin, Vec2::new(body_w, body_h));
+        // The body is inset by the button protrusion + the lip, so both have room on both flanks.
+        let inset = (self.btn_protrude + self.accent_lip) * s;
+        let body = Rect::from_min_size(origin + Vec2::new(inset, self.accent_lip * s), Vec2::new(body_w, body_h));
+        // The accent base is the same slab grown evenly on all four sides — a concentric rim, so
+        // the two-tone edge is symmetric rather than reading as a dropped shadow.
+        let base = body.expand(self.accent_lip * s);
 
         let screen_rect = Rect::from_min_size(
-            origin + Vec2::new(self.pad_x * s, self.pad_top * s),
+            body.min + Vec2::new(self.pad_x * s, self.pad_top * s),
             Vec2::new(screen.x * s, screen.y * s),
         );
         let bezel = screen_rect.expand(self.bezel_gap * s);
 
-        // Side pills, hung on the body's right edge.
-        let bx0 = body.right() - self.btn_inset * s;
-        let bx1 = body.right() + self.btn_protrude * s;
-        let pill = |cy_frac: f32, h: f32| {
-            let cy = body.top() + cy_frac * body_h;
-            Rect::from_min_max(Pos2::new(bx0, cy - h * s / 2.0), Pos2::new(bx1, cy + h * s / 2.0))
+        // Button pads, hung on both body edges. The pair straddles the body's vertical midpoint,
+        // so the two pads sit `btn_gap` apart around the centre line.
+        let half_pitch = (self.btn_h + self.btn_gap) / 2.0 * s;
+        let pad = |flank: Flank, upper: bool| {
+            let cy = body.center().y + if upper { -half_pitch } else { half_pitch };
+            let (x0, x1) = match flank {
+                Flank::Left => (body.left() - self.btn_protrude * s, body.left() + self.btn_inset * s),
+                Flank::Right => (body.right() - self.btn_inset * s, body.right() + self.btn_protrude * s),
+            };
+            Rect::from_min_max(Pos2::new(x0, cy - self.btn_h * s / 2.0), Pos2::new(x1, cy + self.btn_h * s / 2.0))
         };
-        let encoder = pill(self.enc_cy, self.enc_h);
-        let back = pill(self.back_cy, self.back_h);
 
         let wordmark_center = Pos2::new(body.center().x, screen_rect.bottom() + self.pad_bottom * s / 2.0);
 
         Layout {
             body,
+            base,
             bezel,
             screen: screen_rect,
-            encoder,
-            back,
+            up: pad(Flank::Left, true),
+            down: pad(Flank::Left, false),
+            select: pad(Flank::Right, true),
+            back: pad(Flank::Right, false),
             wordmark_center,
             wordmark_size: self.wordmark_size * s,
             scale: s,
@@ -237,15 +283,24 @@ pub fn draw(
 ) {
     let scale = lo.scale;
 
+    // The lighter base shell, first — the upper body covers all but its lip.
+    painter.rect_filled(lo.base, Rounding::same((style.body_radius + style.accent_lip) * scale), palette.accent);
+
     // Body — colored rounded slab with a subtle darker rim against the backdrop.
     let body_round = Rounding::same(style.body_radius * scale);
     painter.rect_filled(lo.body, body_round, palette.body);
     painter.rect_stroke(lo.body, body_round, Stroke::new((1.5 * scale).max(1.0), palette.body_edge));
 
-    // Side controls (drawn before the bezel; they don't overlap it). The encoder
-    // carries knurling (`Some(angle)`); Back is a plain button (`None`).
-    draw_pill(painter, lo.encoder, scale, style, palette, ctrl.encoder_down, Some(ctrl.knob_angle));
-    draw_pill(painter, lo.back, scale, style, palette, ctrl.back_down, None);
+    // The four buttons (drawn before the bezel; they don't overlap it): UP / DOWN on the left
+    // flank, SELECT / BACK on the right.
+    for (rect, flank, pressed) in [
+        (lo.up, Flank::Left, ctrl.up_down),
+        (lo.down, Flank::Left, ctrl.down_down),
+        (lo.select, Flank::Right, ctrl.select_down),
+        (lo.back, Flank::Right, ctrl.back_down),
+    ] {
+        draw_pad(painter, rect, flank, scale, style, palette, pressed);
+    }
 
     // Bezel — the dark frame the (corner-rounded) screen texture is blitted over.
     painter.rect_filled(lo.bezel, Rounding::same(style.bezel_radius * scale), palette.bezel);
@@ -259,40 +314,48 @@ pub fn draw(
     );
 }
 
-/// A side pill (encoder or Back): sinks in and darkens when pressed. `knurl` is the
-/// encoder's rotation (radians) — `Some` draws knurl ridges that scroll with the turn
-/// (a side thumb-wheel look); `None` is a plain button.
-fn draw_pill(
+/// One rubber button pad: a rounded slab with a fine moulded grid, which sinks toward its flank
+/// and darkens when pressed.
+fn draw_pad(
     painter: &egui::Painter,
     rect: Rect,
+    flank: Flank,
     scale: f32,
     style: &HousingStyle,
     palette: &HousingPalette,
     pressed: bool,
-    knurl: Option<f32>,
 ) {
-    let r = if pressed { rect.translate(Vec2::new(-style.btn_press * scale, 0.0)) } else { rect };
+    // A press sinks the pad *into* the body, so the direction flips with the flank.
+    let sink = if pressed { style.btn_press * scale } else { 0.0 };
+    let dx = match flank {
+        Flank::Left => sink,
+        Flank::Right => -sink,
+    };
+    let r = rect.translate(Vec2::new(dx, 0.0));
     let fill = if pressed { palette.button_pressed } else { palette.button };
     painter.rect_filled(r, Rounding::same(style.btn_radius * scale), fill);
 
-    let Some(knob_angle) = knurl else {
+    // Moulded grid: a fine cross-hatch inset from the rounded corners, like the render's
+    // textured rubber.
+    let spacing = style.btn_grid * scale;
+    let inset = style.btn_radius * scale;
+    let inner = Rect::from_min_max(
+        Pos2::new(r.left() + inset * 0.5, r.top() + inset),
+        Pos2::new(r.right() - inset * 0.5, r.bottom() - inset),
+    );
+    if spacing < 0.5 || inner.width() <= 0.0 || inner.height() <= 0.0 {
         return;
-    };
-    // Knurl: horizontal ridges that scroll with rotation.
-    let spacing = style.knurl_spacing * scale;
-    let inset = style.btn_radius * scale; // keep ridges clear of the rounded ends
-    let (top, bot) = (r.top() + inset, r.bottom() - inset);
-    if bot > top && spacing > 0.5 {
-        let offset = (knob_angle * style.knurl_gain * scale).rem_euclid(spacing);
-        let stroke = Stroke::new((1.0 * scale).max(1.0), palette.knurl);
-        let (x0, x1) = (r.left() + 2.0 * scale, r.right() - 2.0 * scale);
-        let mut y = top + offset - spacing; // start one above so the scroll wraps smoothly
-        while y <= bot {
-            if y >= top {
-                painter.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], stroke);
-            }
-            y += spacing;
-        }
+    }
+    let stroke = Stroke::new((1.0 * scale).max(1.0), palette.button_texture);
+    let mut y = inner.top();
+    while y <= inner.bottom() {
+        painter.line_segment([Pos2::new(inner.left(), y), Pos2::new(inner.right(), y)], stroke);
+        y += spacing;
+    }
+    let mut x = inner.left();
+    while x <= inner.right() {
+        painter.line_segment([Pos2::new(x, inner.top()), Pos2::new(x, inner.bottom())], stroke);
+        x += spacing;
     }
 }
 

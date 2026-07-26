@@ -11,7 +11,7 @@
 //! outline read as one-off chrome): unselected rows are plain labels, the selected row wears the
 //! standard amber fill, and the guarded Delete row shows its shaded base + warning hold-fill
 //! only **while selected**. The cursor semantics are round 2's, unchanged: entry selects START
-//! RIDE; *turn* toggles between the two rows; *press* starts the session only from the START row
+//! RIDE; *up/down* toggles between the two rows; *press* starts the session only from the START row
 //! and drops into the riding Map — exactly what picking a route used to do directly; *hold*
 //! charges the delete only while the Delete row is selected; *back* cancels and returns to the
 //! Route menu. With the Delete row hidden (in use / computed) there is nothing to toggle: press
@@ -170,11 +170,11 @@ impl RouteOverviewScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // The action-row cursor (owner review round 2): a detent toggles START ↔ Delete. With
+            // The action-row cursor (owner review round 2): a step toggles START ↔ Delete. With
             // the Delete row hidden (in use / computed) there is one row and the step is a no-op —
             // the cursor also clamps back to START first, in case the row vanished under it (the
             // route became the active ride's via the swap flow).
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 let len = if self.delete_enabled(cx.activity, cx.routes) { 2 } else { 1 };
                 self.selected = self.selected.min(len - 1);
                 self.selected = super::list::step_selection(self.selected, n, len);
@@ -599,7 +599,7 @@ mod tests {
     }
 
     /// The action cursor (owner review round 2): entry selects START and a hold there does
-    /// **nothing** — deleting takes a turn onto the Delete row first, then the completed hold
+    /// **nothing** — deleting takes a step onto the Delete row first, then the completed hold
     /// records the route's index, restores the pre-preview active route, and pops back to the
     /// Routes list.
     #[test]
@@ -614,7 +614,7 @@ mod tests {
         assert!(matches!(t, Transition::None), "a hold with START selected does not delete");
         assert_eq!(act.take_route_delete(), None);
 
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // → the Delete row
+        run(&mut scr, &mut act, &routes, Gesture::Step(1)); // → the Delete row
         assert!(scr.selection_is_guarded(&act, &routes), "the hold fill is live on the Delete row");
         let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::Pop), "the delete pops back to the Routes list");
@@ -623,22 +623,22 @@ mod tests {
     }
 
     /// A press fires the START action only from the START row — with the cursor on Delete a press
-    /// does nothing (the row is hold-guarded), and a turn brings the cursor back.
+    /// does nothing (the row is hold-guarded), and a step brings the cursor back.
     #[test]
     fn press_on_the_delete_row_is_a_no_op() {
         let routes = [summary()];
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RouteOverviewScreen::new(0, None);
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // → Delete
+        run(&mut scr, &mut act, &routes, Gesture::Step(1)); // → Delete
         let t = run(&mut scr, &mut act, &routes, Gesture::Press);
         assert!(matches!(t, Transition::None), "press on the Delete row starts nothing");
         assert!(!act.is_tracking(), "no session began");
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1)); // wrap back → START
+        run(&mut scr, &mut act, &routes, Gesture::Step(1)); // wrap back → START
         let t = run(&mut scr, &mut act, &routes, Gesture::Press);
         assert!(!matches!(t, Transition::None), "press on START starts the ride");
     }
 
-    /// The Delete row is hidden — a turn has nothing to select and a hold does nothing — while
+    /// The Delete row is hidden — a step has nothing to select and a hold does nothing — while
     /// this route is the active route of a running tracking session (the greying predicate moved
     /// off the old Route-menu footer).
     #[test]
@@ -649,14 +649,14 @@ mod tests {
         act.active_route = Some(0); // …route 0
         let mut scr = RouteOverviewScreen::new(0, None);
         assert!(!scr.delete_enabled(&act, &routes), "the active ride's route can't be deleted");
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1));
+        run(&mut scr, &mut act, &routes, Gesture::Step(1));
         assert_eq!(scr.selected, START, "with the Delete row hidden there is nothing to toggle");
         let t = run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::None), "a hold over the in-use route does nothing");
         assert_eq!(act.take_route_delete(), None);
     }
 
-    /// A computed (length-only) overview has no Delete row, so a turn stays on START and a hold is
+    /// A computed (length-only) overview has no Delete row, so a step stays on START and a hold is
     /// a no-op — the locked length-only page stays exactly as-is.
     #[test]
     fn computed_overview_has_no_delete() {
@@ -664,8 +664,8 @@ mod tests {
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RouteOverviewScreen::computed(0, None);
         assert!(!scr.delete_enabled(&act, &routes));
-        run(&mut scr, &mut act, &routes, Gesture::Turn(1));
-        assert_eq!(scr.selected, START, "no Delete row — the turn is a no-op");
+        run(&mut scr, &mut act, &routes, Gesture::Step(1));
+        assert_eq!(scr.selected, START, "no Delete row — the step is a no-op");
         run(&mut scr, &mut act, &routes, Gesture::Hold);
         assert_eq!(act.take_route_delete(), None);
     }

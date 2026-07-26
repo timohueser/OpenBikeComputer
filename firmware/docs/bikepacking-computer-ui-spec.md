@@ -13,8 +13,9 @@ visual design language.
   matte/muted; no smooth gradients — design with flat fills, dithering for shading,
   and crisp 1px linework.
 - **MCU:** Nordic nRF54L (Cortex-M33, BLE).
-- **Input:** **one rotary encoder with push** + **one back button**. No touchscreen.
-- **Housing:** 3D-printed; encoder + button are the only moving controls.
+- **Input:** **four buttons** — **Up** / **Down** on the left flank, **Select** /
+  **Back** on the right. No touchscreen.
+- **Housing:** 3D-printed; the four buttons are the only moving controls.
 - **Connectivity:** companion phone app over BLE for uploading routes/tiles and
   downloading recorded tracks.
 
@@ -26,9 +27,9 @@ Five distinct gestures total:
 
 | Gesture | Notation used below |
 |---|---|
-| Rotate encoder | `turn` |
-| Encoder short press | `press` |
-| Encoder long press | `hold` |
+| Up / Down press (auto-repeats while held) | `step` |
+| Select short press | `press` |
+| Select long press | `hold` |
 | Back short press | `back` |
 | Back long press | `back-hold` |
 
@@ -114,7 +115,7 @@ stateDiagram-v2
 
 Authoritative bindings. `–` = unbound (no-op, reserved).
 
-| Screen | `turn` | `press` | `hold` | `back` | `back-hold` |
+| Screen | `step` | `press` | `hold` | `back` | `back-hold` |
 |---|---|---|---|---|---|
 | **Home** | – | → Route menu | – | – | → Menu |
 | **Route menu** | scroll routes | load route → Map (tracking ON) | – | → caller (Home/Menu) | – |
@@ -132,7 +133,7 @@ Authoritative bindings. `–` = unbound (no-op, reserved).
 ## 6. Ride & tracking semantics
 
 - **Tracking starts** the moment a route is loaded (Route menu `press`).
-- **Pause** = encoder `press` on Map or Elevation. Tracking pauses **immediately**
+- **Pause** = Select `press` on Map or Elevation. Tracking pauses **immediately**
   and Ride control opens. Movement while paused is **not recorded** → resuming
   leaves a gap in the recorded track. (This is intended behavior.)
 - **Resume** — continue recording on the same track (gap preserved).
@@ -185,9 +186,9 @@ numeric/glanceable data in the most legible face.
 - **Map:** use what we have right now obv, will be styled later (using stylesheets)
 - **Elevation:** elevation profile with traveled-portion shading + a movable **cursor** (carries a current-elevation
   readout), a thin amber progress bar, and a 2×3 (wxh) stat grid: **Speed**, **Avg. Speed**, **done (km)**,
-  **to go (km)**, **climbed (m)**, **to climb (m)**. **Cursor mode (default):** `turn` scrubs the cursor along the
+  **to go (km)**, **climbed (m)**, **to climb (m)**. **Cursor mode (default):** `step` scrubs the cursor along the
   full profile to read elevation/grade anywhere; it springs back to your live position after a few seconds idle.
-  `hold` enters **Zoom mode** (a small magnifying-glass icon marks it — no zoom numbers/labels): `turn` zooms the
+  `hold` enters **Zoom mode** (a small magnifying-glass icon marks it — no zoom numbers/labels): `step` zooms the
   profile centred on the frozen cursor, and `hold` or `back` exits, springing back to the full route + live cursor.
   Backed by a load-time LOD pyramid, so zoom never re-reads the route.
 - **Ride control:** vertical list — Resume / Finish / Discard -

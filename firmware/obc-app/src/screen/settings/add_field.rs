@@ -32,7 +32,7 @@ impl AddFieldScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let avail = hidden(&cx.settings.stat_fields);
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, avail.len()),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, avail.len()),
             // Add the highlighted field to the end of the grid and return to the manage screen.
             Gesture::Press if !avail.is_empty() => {
                 let f = avail[self.selected.min(avail.len() - 1)];

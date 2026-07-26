@@ -203,7 +203,7 @@ firmware/target/release/obc-sim region.obcm --true-color
 **Interactive controls:** drag to pan, scroll to zoom, Esc/Q to quit. The
 simulator boots to the device's Home screen and drives the full on-device UI —
 a screen stack (Home, Map with a pan mode, Menu, Route menu, Ride control,
-Statistics) driven by an encoder + Back input model, plus a control panel for
+Statistics) driven by the four-button input model, plus a control panel for
 feeding it a simulated GPS.
 
 Useful flags:
@@ -326,7 +326,7 @@ over SPI.
 
 **Working now:** OBCM v5 packing (CLI + web builder); the shared LOD-pyramid
 renderer (quadtree query, polygon fill with holes, weighted lines, z-ordering,
-RGB565 → RGB222 quantization); the on-device UI (screen stack + encoder/Back
+RGB565 → RGB222 quantization); the on-device UI (screen stack + the four-button
 input); route loading with live map-matching, ride logging, and ride saving; the
 nRF54L firmware booting into the full load → ride → save loop on the DK (see
 [`firmware/obc-fw-nrf54l`](firmware/obc-fw-nrf54l)); and the reflective
