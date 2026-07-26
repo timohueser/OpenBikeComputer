@@ -187,11 +187,16 @@ fn opens_like_xml(bytes: &[u8]) -> bool {
 /// Does `bytes` *say* it is XML — does the document start with `<?xml` or `<gpx`?
 ///
 /// The **strict** test, for the ride-log direction, where the mistake runs the other way. A
-/// recorded `.obct` is a headerless record array whose first byte is a longitude's low byte, so
+/// recorded `.obct` is a headerless record array whose first four bytes are a longitude, so
 /// roughly one real ride log in 256 opens with `0x3C` — `<`. The lenient test above would refuse
-/// those outright, with a message insisting they are XML. Requiring an actual XML or GPX opening
-/// tag makes that collision need five specific bytes in a row, which no coordinate produces,
-/// while still catching the case this guard exists for: a GPX dropped on the wrong target.
+/// those outright, with a message insisting they are XML.
+///
+/// Demanding a whole opening tag rules the collision out rather than making it unlikely. Those
+/// tags are printable ASCII, so matching one forces a coordinate word to be built from bytes in
+/// the `0x09..0x78` range — a longitude of 1 836 597 052 µdeg for `<?xm`, 2 020 632 380 for
+/// `<gpx`, and no less than ~5×10⁸ for any whitespace-padded placement. That is 500°–2000°, off a
+/// planet that stops at 180. The guard still catches what it exists for: a GPX dropped on the
+/// wrong target.
 fn announces_itself_as_xml(bytes: &[u8]) -> bool {
     let start = document_start(bytes);
     start.starts_with(b"<?xml") || start.starts_with(b"<gpx")
