@@ -419,11 +419,11 @@ for the old object (next section).
 ### Synced rides — reconciled state, not event inference
 
 A tracked ride is precious (unlike a route, the phone can't re-upload it), so the
-device keeps a **"synced" flag** per ride — has the phone downloaded this one at
-least once? It drives the small check mark on a synced Rides-list row (an
-unsynced ride shows nothing there) and the *"synced" / "not synced"* slot in the
-Ride detail's title bar, so a rider deleting an un-downloaded ride is told what
-they're about to lose.
+device keeps a **"synced" flag** per ride — does a durable copy of this one exist
+somewhere off the device? It drives the small check mark on a synced Rides-list
+row (an unsynced ride shows nothing there) and the *"synced" / "not synced"* slot
+in the Ride detail's title bar, so a rider deleting an un-downloaded ride is told
+what they're about to lose.
 
 The naïve way to set that flag is to flip it when a ride download completes. But
 that makes it an *event inference* — and events are lossy. A ride synced before
@@ -434,9 +434,37 @@ correct it. So the flag is instead **reconciled state**. The phone's library is
 the ground truth for "I have this ride", and on every connect it sends the device
 the list of ride ids it holds — a small `ackRides` command. The device sets
 (never clears) the synced flag for each; a change bumps the ride revision so the
-Rides screen's cue updates live. The flag becomes *"the phone has confirmed it
-holds this"*, self-healing on every reconnect rather than riding on a single
-download event landing.
+Rides screen's cue updates live. The flag becomes *"a peer has confirmed it holds
+this"*, self-healing on every reconnect rather than riding on a single download
+event landing.
+
+**Who is allowed to say it.** Read the flag by what it *does* — guard a delete,
+colour a cue, and anchor the auto-expiry countdown
+([#638](https://github.com/timohueser/OpenBikeComputer/issues/638), whose
+`synced_at` stamp is written beside it) — and it is a **durability predicate**,
+not a statement about iPhones. Which makes "who may set it" a real question,
+because the answer decides whether a ride can be auto-deleted while it exists
+nowhere else. Three peers can pull a ride; only two of them may say anything
+about it:
+
+| Peer | Acks? | Why |
+| :-- | :-- | :-- |
+| The phone, over BLE | yes — and re-sends its whole set on every connect | it keeps a library, so it can heal the flag as well as set it |
+| The desktop app, over USB | yes, **after `fsync`** | it writes into a folder the rider chose and can back up |
+| The hosted site, over WebUSB | **never** | a browser download is a file the rider may cancel at the save dialog, and the site keeps no record of what it handed over |
+
+The desktop app acking is what keeps auto-expiry alive for a rider with no
+iPhone; it costs no protocol change, because `ackRides` lives in the object store
+rather than the BLE plane and is monotonic, so a phone's heal and a desktop ack
+merge in either order. The browser deliberately gives that up: its ride export
+([#904](https://github.com/timohueser/OpenBikeComputer/issues/904)) is a pure
+read that leaves the flag, the sidecar and the countdown exactly as it found
+them, and says so on screen — an export is not a backup.
+
+The invariant underneath all three is **ack after the copy is durable, never on
+transfer completion**. Acking when the last byte arrives starts a countdown
+against a ride that is not yet on anyone's disk, which is the single way this
+feature can lose data.
 
 ### The trusted clock and route retention
 
@@ -874,5 +902,6 @@ holding it.
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
 - The browser side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:packer/web_builder/frontend/src/lib/usb)
+- The browser's flows over that client — sending a map, a route or a firmware image, and the read-only ride export whose device handle has no way to ack: [`web_builder/frontend/src/lib/device/`](src:packer/web_builder/frontend/src/lib/device)
 - Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`protocol-vectors/`](src:protocol-vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)

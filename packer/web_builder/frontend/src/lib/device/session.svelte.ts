@@ -34,11 +34,18 @@ class DeviceHolder {
      */
     interrupted = $state<string | null>(null);
 
-    /** Record that a write stopped because the link went away. One sentence, written once. */
+    /**
+     * Record that a transfer stopped because the link went away. One sentence, written once.
+     *
+     * Direction-neutral, because both directions end up here: a write that stopped leaves nothing
+     * half-written on the card, and a ride pull that stopped leaves nothing partial in the browser
+     * (C5 #904 — the object's CRC is only checked once every byte has arrived, so an interrupted
+     * pull produces no file at all).
+     */
     noteInterrupted(): void {
         this.interrupted =
-            "The transfer stopped when the device disconnected. Nothing half-written is kept — " +
-            "plug it back in and send it again.";
+            "The transfer stopped when the device disconnected. Nothing partial is kept at either " +
+            "end — plug it back in and try again.";
     }
 
     private opening: Promise<DeviceSession | null> | null = null;
