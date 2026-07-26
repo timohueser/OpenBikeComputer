@@ -33,8 +33,9 @@ struct BluetoothRune: Shape {
     }
 }
 
-/// The hardware drawing: dark shell, white memory-LCD screen with the rust
-/// title bar, side buttons. Two variants straight from the §4 frames.
+/// The hardware drawing: the two-tone shell (forest body seated on a celadon base that shows as a
+/// lip), a white memory-LCD screen with the rust title bar, and the four side buttons — UP / DOWN
+/// on the left flank, SELECT / BACK on the right. Two variants straight from the §4 frames.
 struct DeviceGlyphView: View {
     enum Variant {
         /// A (104×128): named title bar + the amber track squiggle.
@@ -53,9 +54,18 @@ struct DeviceGlyphView: View {
     var body: some View {
         let shell: CGSize = isHome ? CGSize(width: 104, height: 128) : CGSize(width: 88, height: 108)
         let screen: CGSize = isHome ? CGSize(width: 80, height: 98) : CGSize(width: 66, height: 82)
+        let radius: CGFloat = isHome ? 20 : 18
+        let lip: CGFloat = isHome ? 3 : 2.5
 
         ZStack {
-            RoundedRectangle(cornerRadius: isHome ? 20 : 18)
+            // The celadon base peeking out below and to the sides of the body.
+            RoundedRectangle(cornerRadius: radius + lip)
+                .fill(OBCTheme.deviceAccent)
+                .padding(.top, lip * 2)
+                .padding(.horizontal, -lip)
+                .padding(.bottom, -lip)
+
+            RoundedRectangle(cornerRadius: radius)
                 .fill(OBCTheme.deviceBody)
                 .shadow(color: OBCTheme.deviceBody.opacity(0.3), radius: 13, y: isHome ? 14 : 0)
 
@@ -65,9 +75,8 @@ struct DeviceGlyphView: View {
                 .clipShape(RoundedRectangle(cornerRadius: isHome ? 8 : 7))
         }
         .frame(width: shell.width, height: shell.height)
-        .overlay(alignment: .topTrailing) {
-            sideButtons.offset(x: 4, y: isHome ? 38 : 32)
-        }
+        .overlay(alignment: .topLeading) { sideButtons.offset(x: -3, y: isHome ? 34 : 28) }
+        .overlay(alignment: .topTrailing) { sideButtons.offset(x: 3, y: isHome ? 34 : 28) }
     }
 
     @ViewBuilder
@@ -100,14 +109,16 @@ struct DeviceGlyphView: View {
         }
     }
 
+    /// One flank's pair of buttons — the same shape on both sides, so the device reads symmetric
+    /// (UP / DOWN on the left, SELECT / BACK on the right).
     private var sideButtons: some View {
-        VStack(spacing: 12) {
-            Capsule().fill(OBCTheme.deviceButton).frame(width: 5, height: isHome ? 16 : 14)
-            if isHome {
-                Capsule().fill(OBCTheme.deviceButton).frame(width: 5, height: 16)
+        VStack(spacing: isHome ? 9 : 8) {
+            ForEach(0..<2, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(OBCTheme.deviceButton)
+                    .frame(width: 5, height: isHome ? 15 : 13)
             }
         }
-        .offset(x: 4)
     }
 
     /// The little route line on the home screen (the §4 SVG path, normalized).

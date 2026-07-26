@@ -197,7 +197,7 @@ public protocol DeviceTransport: Sendable {
     func uploadFirmware(_ container: Data) -> TransferHandle
     /// Ask the device to install the staged `/UPDATE.BIN` (`installFw`, spec §4.4
     /// cmd 3). The command only *requests*: the device runs its on-glass check →
-    /// confirm flow and installs only on a physical encoder press. Returns the
+    /// confirm flow and installs only on a physical Select press. Returns the
     /// mapped request outcome (`accepted` opens that flow); throws only on a link
     /// failure (`notConnected` / `writeFailed`), never on a device reply.
     func installFirmware() async throws -> FirmwareInstallResult
