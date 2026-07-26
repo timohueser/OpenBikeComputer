@@ -1,15 +1,12 @@
-import { api } from "./client";
+import { platform, type Palette } from "./platform";
 
-export interface Palette {
-    columns: number;
-    colors: string[];
-}
+export type { Palette };
 
 let cached: Promise<Palette> | null = null;
 
 /** The device's 64-color gamut for the picker grid (fetched once, shared). */
 export function getPalette(): Promise<Palette> {
-    cached ??= api
+    cached ??= platform
         .palette()
         .then((p) => ({ columns: p.columns > 0 ? p.columns : 8, colors: p.colors ?? [] }))
         .catch(() => ({ columns: 8, colors: [] })); // popover falls back to the OS picker

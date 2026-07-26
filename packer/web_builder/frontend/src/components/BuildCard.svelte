@@ -1,24 +1,32 @@
 <script lang="ts">
-    import { onMount } from "svelte";
-    import { api } from "../lib/api/client";
-    import { formatBytes, JobTracker } from "../lib/api/jobs.svelte";
+    import { onMount, untrack } from "svelte";
+    import { formatBytes } from "../lib/format";
+    import { platform, type StartBuild } from "../lib/platform";
     import { buildConfigForSubmit, type SchemaEnvelope } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
     import { buildRegionIds, selectionReady, type AreaSelection } from "../lib/map/selection";
 
-    let { selection }: { selection: AreaSelection | null } = $props();
+    // The build session comes in as a prop rather than off `platform` so this
+    // card can only be mounted where `caps.build` holds: the host that can't
+    // build has `buildMap === null` and there is nothing to pass.
+    let {
+        selection,
+        buildMap,
+    }: { selection: AreaSelection | null; buildMap: StartBuild } = $props();
 
     let filename = $state("mymap.obcm");
     let schema = $state<SchemaEnvelope | null>(null);
     let schemaNote = $state<string | null>(null);
     let strippedNote = $state<string | null>(null);
     let validation = $state<string | null>(null);
-    const tracker = new JobTracker();
+    // One session per mount, deliberately: a build in flight must not be
+    // replaced because a prop identity changed underneath it.
+    const tracker = untrack(() => buildMap());
 
     onMount(async () => {
         tracker.reattach();
         try {
-            schema = await api.schema();
+            schema = await platform.schema();
         } catch (e) {
             // A 503 means obc-pack isn't built — builds will fail, so surface
             // the server's build instructions up front.
@@ -53,10 +61,10 @@
             strippedNote = `Skipped settings this obc-pack build doesn't know yet: ${strippedKeys.join(", ")}.`;
         }
         await tracker.start({
-            region_ids: buildRegionIds(selection),
+            regionIds: buildRegionIds(selection),
             config,
-            chunk_size: config.chunk_size ?? 4096,
-            output_name: filename.trim() || "mymap.obcm",
+            chunkSize: config.chunk_size ?? 4096,
+            outputName: filename.trim() || "mymap.obcm",
             ...(selection.mode === "bbox" && selection.bbox ? { bbox: selection.bbox } : {}),
         });
     }
