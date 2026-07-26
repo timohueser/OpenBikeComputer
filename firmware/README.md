@@ -12,10 +12,19 @@ The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
 (`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
 both simulator hosts share in `obc-host-core`), the web builder's wasm
 conversion bridge (`obc-web-convert`), the map packer (`obc-pack`),
-and the test/host helpers. The
-**board crate** — `obc-fw-nrf54l` — is **`exclude`d** from the workspace (it has
-its own MCU target + `.cargo/config.toml`) and is built on its own; see
-[`obc-fw-nrf54l/README.md`](obc-fw-nrf54l/README.md) for the real-hardware target.
+and the test/host helpers.
+
+Three crates are **`exclude`d** from that workspace and built on their own, each
+because it drags a toolchain the rest has no use for:
+
+| Crate | Why it stands alone |
+| :-- | :-- |
+| [`obc-fw-nrf54l`](obc-fw-nrf54l/README.md) | the real board: its own MCU target + `.cargo/config.toml` |
+| [`obc-boot`](obc-boot/README.md) | the 32 KB bootloader, same target, its own link script |
+| [`obc-desktop`](obc-desktop/README.md) | the Tauri app: a platform webview (WebKitGTK on Linux) |
+
+Each has its own `Cargo.lock` and needs its own `fmt` / `clippy` / `test`
+invocation — and its own CI job.
 
 ## Prerequisites
 
@@ -24,6 +33,7 @@ its own MCU target + `.cargo/config.toml`) and is built on its own; see
 | Anything Rust | A stable toolchain (`rustup`). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew**. |
 | The packer (`obc-pack`) | System **GEOS** (`brew install geos`) — its only native dependency. Multi-`.pbf` merge and `--bbox` both run in-process. |
+| The desktop app (`obc-desktop`) | GEOS as above (it links the packer), plus Node to build the frontend it embeds. Linux also wants WebKitGTK — see [its README](obc-desktop/README.md). |
 | Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ## Build
@@ -96,15 +106,16 @@ and must never be flashed as the shipping artifact.
 ## Format
 
 `rustfmt.toml` is committed (`max_width = 120`, `use_small_heuristics = "Max"`),
-so let rustfmt own style — don't hand-format. Formatting takes **three
+so let rustfmt own style — don't hand-format. Formatting takes **four
 invocations**, and CI checks all of them (the workspace is a *virtual* manifest,
-so `--all` is required or it formats nothing; the board crate and the bootloader
-are excluded, so `--all` skips them):
+so `--all` is required or it formats nothing; the three excluded crates above are
+skipped by `--all` and each needs its own):
 
 ```sh
 cargo fmt --all                                    # the workspace
 cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml # the board crate, separately
 cargo fmt --manifest-path obc-boot/Cargo.toml      # the bootloader, separately
+cargo fmt --manifest-path obc-desktop/Cargo.toml   # the desktop app, separately
 ```
 
 ## Run the simulator

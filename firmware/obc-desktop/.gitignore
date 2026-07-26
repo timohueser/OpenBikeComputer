@@ -1,0 +1,5 @@
+# `tauri-build` regenerates these from tauri.conf.json + capabilities/ on every
+# build. They are IDE aids (the `$schema` in capabilities/default.json points at
+# one), derived from committed inputs, and platform-specific — so committing them
+# would mean a diff every time someone builds on a different OS.
+/gen/

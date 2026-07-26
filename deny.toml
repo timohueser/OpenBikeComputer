@@ -55,6 +55,12 @@ private = { ignore = true }
 # to just this crate rather than allowing OFL globally.
 exceptions = [
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "LicenseRef-UFL-1.0"] },
+    # Mozilla's CA root store, as data, under the Community Data License Agreement
+    # (permissive — attribution only, no copyleft on anything that uses it). Reached
+    # through ureq's rustls in the desktop app (#906), which needs a trust store to
+    # fetch Geofabrik over TLS. Scoped to the crate rather than allowing CDLA
+    # globally: this is the only place a *data* licence is appropriate.
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [bans]
