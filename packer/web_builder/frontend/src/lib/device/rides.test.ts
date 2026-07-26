@@ -552,6 +552,26 @@ describe("when the export cannot finish", () => {
         }
     });
 
+    it("tells 'this page is behind the device' from 'the transfer broke'", async () => {
+        // A ride object version this build does not decode arrives with a *matching* CRC — the
+        // bytes are fine, the two ends disagree about the layout. Reporting that as a transfer
+        // failure would send the rider to re-plug a cable that is working.
+        const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
+        const { device, source, close } = deviceWith([{ id: 4, ride }]);
+        try {
+            const future = encodeRideObject(ride);
+            future[0] = 3;
+            device.seedRide(entryFor(4, ride, future), future);
+            const failure = await exportRide(source, (await source.listRides()).entries[0], context()).catch(
+                (e: unknown) => e,
+            );
+            expect(failure).toMatchObject({ name: "RideExportError", code: "unreadable-ride" });
+            expect((failure as Error).message).toMatch(/newer firmware/);
+        } finally {
+            await close();
+        }
+    });
+
     it("explains an empty ride rather than failing inside the converter", async () => {
         const { source, close } = deviceWith([{ id: 4, ride: { ...longRide(1), points: [] } }]);
         try {
