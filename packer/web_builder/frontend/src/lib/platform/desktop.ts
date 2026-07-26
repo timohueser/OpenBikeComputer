@@ -28,6 +28,10 @@ export const platform: Platform = {
         deviceDashboard: true,
     },
 
+    // A native driver (`nusb`, D4 #909), which is the point: the desktop app is
+    // the universal USB path, including for the browsers WebUSB never reaches.
+    usbViaWebUsb: false,
+
     regions: () => pending("regions", "D1 #906"),
     presets: () => pending("presets", "D1 #906"),
     catalog: () => pending("catalog", "A3 #897"),
