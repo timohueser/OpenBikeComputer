@@ -134,18 +134,29 @@ export function rideKey(scope: RideScope, objectId: number): string {
 
 // --- the export ----------------------------------------------------------------
 
-/** Why an export failed on this side of the wire. Transport and conversion failures keep their own
- *  codes (`DeviceError.code`, `ConvertError.code`); this covers what only a ride can be. */
-export type RideExportErrorCode = "empty-ride";
+/**
+ * Why an export failed on this side of the wire. Transport and conversion failures keep their own
+ * codes (`DeviceError.code`, `ConvertError.code`); this covers what only a ride can be.
+ *
+ * - `empty-ride` — a recording with no points, usually stopped before the first fix.
+ * - `unreadable-ride` — the object arrived intact (its CRC matched) and this build cannot decode
+ *   it. In practice that means firmware newer than the page, which is a different sentence from
+ *   "the transfer broke" and must not be reported as one.
+ */
+export type RideExportErrorCode = "empty-ride" | "unreadable-ride";
 
 export class RideExportError extends Error {
     readonly code: RideExportErrorCode;
 
-    constructor(code: RideExportErrorCode, message: string) {
-        super(message);
+    constructor(code: RideExportErrorCode, message: string, options?: { cause?: unknown }) {
+        super(message, options);
         this.name = "RideExportError";
         this.code = code;
     }
+}
+
+function describe(cause: unknown): string {
+    return cause instanceof Error ? cause.message : String(cause);
 }
 
 /** A ride, converted and ready to hand to the browser. Nothing here is written anywhere by this
@@ -176,7 +187,20 @@ export async function exportRide(source: RideSource, entry: RideListEntry, ctx: 
     });
 
     ctx.phase("converting", bytes.length);
-    const ride = decodeRideObject(bytes);
+    // The bytes are known good — `download` verified the whole-object CRC before returning — so a
+    // decode failure here is a *format* disagreement, not a broken transfer, and the rider needs
+    // the other sentence: this page is behind the device.
+    let ride: RideObject;
+    try {
+        ride = decodeRideObject(bytes);
+    } catch (cause) {
+        throw new RideExportError(
+            "unreadable-ride",
+            `The ride arrived intact but this page cannot read it (${describe(cause)}). That usually ` +
+                "means the device is running newer firmware than this page — reload and try again.",
+            { cause },
+        );
+    }
     if (ride.points.length === 0) {
         throw new RideExportError(
             "empty-ride",
