@@ -116,6 +116,35 @@ pub(crate) fn classify_transfer(
                 TransferDisposition::Answer(transfer_result(desc.object_id, status))
             }
         },
+        // A map upload (#889): the *type* is settled — the host and the device now agree that 16 is
+        // `map` — but the device deliberately does **not** accept one yet, and answers a typed,
+        // logged reject rather than falling through the catch-all below, so a host that tries gets a
+        // diagnosable "no" instead of a bare `error` on an unknown byte.
+        //
+        // What is missing is storage, not transport. Three problems, none of them small, and all of
+        // them on-glass:
+        //
+        //  1. **The device could not find what it wrote.** `sd::Storage::open_map` matches on the
+        //     **long** filename (`*.obcm`), because the 8.3 short name truncates both `.obcm` and
+        //     `.obcr` to `OBC` — and embedded-sdmmc 0.9 cannot *create* long filenames. A map the
+        //     firmware wrote would be an invisible `SOMETHING.OBC`.
+        //  2. **There is no map catalog.** The renderer streams from "the first `*.obcm` in the card
+        //     root", chosen by directory order and held open for the whole session. An upload needs
+        //     a naming/collision policy and a way to become the *selected* map — which is a UI
+        //     question, not just a storage one.
+        //  3. **Scale.** Hundreds of megabytes at the card's proven throughput is minutes of
+        //     sustained writing, against an open map handle, a cached FAT extent list and a running
+        //     watchdog. A free-space guard at announce is the least of it.
+        //
+        // Tracked separately (see the #889 PR); until then this arm is the honest answer.
+        (Op::Upload, ObjectType::Map) => {
+            warn!(
+                "link: [ctl] map upload rejected: the type is agreed but device-side map storage is not implemented \
+                 (id {} len {})",
+                desc.object_id, desc.total_len
+            );
+            TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error))
+        }
         (
             Op::Download,
             ObjectType::Route

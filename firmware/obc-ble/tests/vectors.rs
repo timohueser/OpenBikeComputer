@@ -485,6 +485,29 @@ fn trip_object_types_and_descriptor() {
     assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
 }
 
+/// The `map` object type (#889): the USB transport introduces it, because a map is far too large to
+/// have ever crossed BLE. Pins **16**, pins that the `11`–`15` sensor-reserved band still rejects —
+/// the reason 16 was chosen over the next free number — and that an upload descriptor for it
+/// round-trips through the production codec, so host and device agree on the byte before the device
+/// side can accept one.
+#[test]
+fn map_object_type_and_reserved_band() {
+    assert_eq!(ObjectType::from_u8(16).unwrap(), ObjectType::Map);
+    assert_eq!(ObjectType::Map.as_u8(), 16);
+    for reserved in 11..=15 {
+        assert!(ObjectType::from_u8(reserved).is_err(), "type {reserved} is reserved (sensors, M4)");
+    }
+
+    let desc = TransferControl {
+        op: Op::Upload,
+        ty: ObjectType::Map,
+        object_id: 0,
+        total_len: 300_000_000,
+        crc32: 0x1234_5678,
+    };
+    assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
+}
+
 /// The `routeList` fixture decodes through the production list codec, its first two entries agree
 /// with the stored route fixtures they describe, its auto-expiry tail spans the epic #638 S4 spread
 /// (a live countdown, a not-yet-started clock, a Never route), and re-encoding reproduces the file
