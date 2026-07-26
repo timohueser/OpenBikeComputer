@@ -37,7 +37,24 @@ tauri-build = { version = "2", features = [] }
 # The whole point of this crate: obc-pack is a library dependency, not a
 # subprocess. `pipeline::pack` is the same function the CLI calls.
 obc-pack = { path = "../obc-pack" }
+# The device's own CRC-32/IEEE, linked rather than re-typed. A file streamed to a
+# device needs its whole-object checksum before the descriptor is written (spec
+# §4.2), and this is the implementation `lib/usb/crc32.ts` was ported from — so
+# the host, the app and the firmware cannot drift. No radio types come with it:
+# obc-ble is deliberately no_std and transport-free.
+obc-ble = { path = "../obc-ble" }
 tauri = { version = "2", features = [] }
+# Native USB (#909). Pure Rust — no libusb system dependency to vendor, which
+# matters for D2 (#907): usbfs on Linux, IOKit on macOS, WinUSB on Windows.
+nusb = "0.2"
+# `HotplugWatch` is a `futures_core::Stream`; this is the trait, and nothing else
+# (futures-core has no dependencies of its own).
+futures-core = "0.3"
+# Tauri's async runtime is tokio, and these are the pieces the USB plane needs:
+# `sync` for the per-endpoint mutexes and the cancel epochs, `macros` for the
+# select! that makes a parked transfer cancellable, `fs` to read a map off the
+# disk without blocking a runtime worker.
+tokio = { version = "1", features = ["sync", "macros", "fs", "io-util"] }
 # Used from Rust only (no JS permission needed): "show the file I just built" in
 # the platform's own file manager.
 tauri-plugin-opener = "2"

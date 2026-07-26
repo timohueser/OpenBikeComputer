@@ -7,7 +7,7 @@
  *   session.svelte.ts   reactive shell — what a Svelte component holds
  *   client.ts           the object model: identity, lists, transfers, commands
  *   transport.ts        the one byte USB adds: which control characteristic a frame is
- *   pipe.ts             two byte pipes — WebUSB today, nusb (D4 #909) or loopback underneath
+ *   pipe.ts             two byte pipes — WebUSB, nusb (`../desktop/usb.ts`) or loopback underneath
  * ```
  *
  * The bottom layer really is swappable in isolation — that is what `BytePipe` is for, and the
@@ -31,6 +31,7 @@ export {
     type ClientOptions,
     type DeviceErrorCode,
     type ObjectSource,
+    type SendHooks,
     type TransferOptions,
     type UploadResult,
 } from "./client";

@@ -12,7 +12,9 @@
  * - `webusb.ts` — a Chromium `navigator.usb` bulk endpoint pair (this issue).
  * - `loopback.ts` — an in-memory pipe wired to a simulated device, so C4 (#903), C5 (#904) and the
  *   whole desktop path can be built and tested before LM20 USB silicon exists (this issue).
- * - D4 (#909) — Rust `nusb` behind Tauri commands, for the desktop app.
+ * - `../desktop/usb.ts` — Rust `nusb` behind Tauri commands, for the desktop app (D4 #909). It
+ *   lives under `lib/desktop/` rather than here because it imports `@tauri-apps/api`, which the
+ *   hosted bundle must never contain.
  *
  * ## The two properties that are easy to get wrong
  *
