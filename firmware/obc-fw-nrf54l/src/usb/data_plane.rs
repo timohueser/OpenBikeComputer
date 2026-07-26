@@ -26,7 +26,7 @@ use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::Instant;
+use embassy_time::{Instant, Timer};
 use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
 use obc_ble::{ObjectType, Receiver, StatusMessage, TransferControl, TransferStatus};
 
@@ -119,6 +119,10 @@ pub(crate) async fn run(
         TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
         TRANSFER_ARM.reset();
         TRANSFER_ABORT.reset();
+        // `wait_enabled` returns immediately while the endpoint is still up, so a *persistent*
+        // driver-level error would hot-spin this loop — and on a cooperative executor that starves
+        // the ride loop, freezing the map. Back off a beat, like the BLE CoC accept loop.
+        Timer::after_millis(200).await;
     }
 }
 
