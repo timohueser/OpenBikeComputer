@@ -5,9 +5,10 @@
 //! a box during ingest — see [`obc_pack::ingest`]), `--chunk-size`, `--no-land`,
 //! `--dump-pois` (print the classified POI list for eyeballing), and
 //! `--dump-hours` (print each POI's parsed weekly schedule). It
-//! prints one stage string per phase ("Merging", "Pass 1/2", "Calculating BBox",
-//! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
-//! builder UI can show progress. `obc-pack schema` prints the config's JSON
+//! prints one stage string per phase ("Cropping", "Merging", "Pass 0/1/2",
+//! "Calculating BBox", "Generating land", "Building Quadtree", "Serializing",
+//! "Writing") so the web builder UI can show progress — it matches these
+//! prefixes, and their order here is the order it expects. `obc-pack schema` prints the config's JSON
 //! Schema envelope — the web builder serves it so the editor's capability always
 //! matches the binary that packs.
 

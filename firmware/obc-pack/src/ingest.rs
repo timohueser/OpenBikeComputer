@@ -1,5 +1,7 @@
 //! `ingest.rs` — read an `.osm.pbf` into styled features (lines, closed-way
-//! polygons, and multipolygon/`boundary` relation areas). Two `osmpbf` passes:
+//! polygons, and multipolygon/`boundary` relation areas). Two `osmpbf` passes —
+//! three with a `--bbox`, which prepends a **pass 0** (see the cropping section
+//! at the end of this doc):
 //!
 //!   - **Pass 1** builds the `node_id → coord` store and collects qualifying area
 //!     relations. Relations sit last in a sorted PBF, so one whole-file read sees
