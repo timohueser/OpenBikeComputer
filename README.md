@@ -258,8 +258,9 @@ The desktop host has no back end yet (D1, #906).
 
 ### Driving the device step without a device
 
-The USB writes (map, route, firmware) need an OBC on the other end of a cable,
-and the LM20's USB peripheral is still ahead (#889). `dev-harness/` is a second
+The USB writes (map, route, firmware) need an OBC on the other end of a cable.
+The device half now ships in every firmware build (#889, `obc-fw-nrf54l/src/usb/`)
+but has not been verified on hardware yet. `dev-harness/` is a second
 entry point that mounts the whole app against the **simulated device** —
 `lib/usb/loopback.ts`, the real protocol over an in-memory pipe, paced to the SD
 card's ~700 KB/s so progress, throughput and the remaining-time estimate behave
