@@ -256,6 +256,24 @@ Every bulk payload is a typed **object**:
 | `9` | `trip` | app → device (upload), device → app (detail read) | trip object v1, §7.7 |
 | `10` | `tripList` | device → app | list object, §7.4 |
 | `11`–`15` | — | — | reserved (sensors, M4) |
+| `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** (§10), see below |
+
+`map` is the one type BLE could never have carried: a map is hundreds of
+megabytes, so the type would have been dead weight until a USB bulk endpoint
+existed (#889). It sits at `16` rather than at the next free number because
+`11`–`15` are already spoken for; the byte is a `u8` and there is no reason to
+crowd a reserved band. Like `fwImage`, the transfer layer is **format-blind** —
+the payload is opaque bytes.
+
+**The device does not yet accept a map upload**: it answers a typed `error`. The
+protocol side is settled so host and device agree on the byte, but the storage
+side is not, and it is not a small piece of work — the firmware's map loader
+matches on the *long* filename (`*.obcm`, because the 8.3 short name truncates
+both `.obcm` and `.obcr` to `OBC`) while its FAT layer cannot create long
+filenames; there is no map catalog (the renderer streams from the first `.obcm`
+in the card root, held open for the session); and a several-hundred-megabyte
+write runs for minutes against that open handle. Naming, collision policy,
+selection and the free-space guard are tracked separately.
 
 **Object ids** are `u16`, assigned by the device, **stable for the life of the
 stored object — including across device reboots** — and enumerated by the list
@@ -1073,6 +1091,70 @@ times, the 84-byte `routeList` entry decoded by `entry_len`, and the
 transport sub-issue. The iOS `routeList` decoder is `entry_len`-driven (it reads
 the 76-byte core it knows and fills the expiry tail when the entry carries it), so
 a pre-expiry 76-byte device and an 84-byte device both decode.
+
+## 10. Transport binding — USB (issue #889)
+
+Everything above is written against BLE because BLE came first, but only §2
+(advertising), §3 (the GATT table), §5 (the CoC) and §8 (pairing) are actually
+*about* the radio. The object model, the descriptors (§4.2), the status envelope
+(§4.3), the commands (§4.4), the object layouts (§7) and the CRC (§6) are
+transport-free, and `protocol-vectors/` pins them for **every** transport.
+
+The nRF54LM20 exposes the same contract over USB, as a **second transport, not a
+second protocol**. One vendor-specific interface (class `0xFF`), four bulk
+endpoints, all at the high-speed-mandated 512 bytes:
+
+| Endpoint | Replaces | Carries |
+| :-- | :-- | :-- |
+| `0x81` / `0x01` | the GATT control plane (§3.3) | one control frame per transfer |
+| `0x82` / `0x02` | the L2CAP CoC (§5) | the unframed object stream, byte for byte |
+
+**The bulk plane needs no translation at all.** Principle #2 holds for a USB bulk
+endpoint exactly as it holds for a CoC — reliable, ordered, unframed — so §4.2's
+"the channel carries exactly the object's payload bytes, one whole-object CRC-32
+at commit" is unchanged, as are §4.1's one-transfer-at-a-time rule and principle
+#4's restart-don't-resume.
+
+**The control plane needs exactly one byte.** GATT carries "which
+characteristic" in the transport; USB has one endpoint pair, so that routing
+becomes a leading **`selector u8`**, and the rest of the frame is *the exact
+bytes the corresponding characteristic carries*. One frame is one USB transfer,
+and a frame must be strictly shorter than the endpoint's max packet (a frame
+exactly filling a packet would need a ZLP to be delimited).
+
+| Selector | Direction | Payload |
+| --: | :-- | :-- |
+| 1 | host → device | `command` (§4.4) |
+| 2 | host → device | `transferControl` (§4.2), the 12-byte descriptor |
+| 3 | host → device | `config` write (§7.3) |
+| 4 | host → device | identity read (§1) — no payload |
+| 5 | host → device | device-information read (§3.1) — no payload |
+| 6 | host → device | `config` read (§7.3) — no payload |
+| 1 | device → host | `status` (§4.3), verbatim, discriminator included |
+| 2 | device → host | the §1 identity bytes (6 with a store, 2 without) |
+| 3 | device → host | device information: `len u8 · UTF-8` ×3, firmware · hardware · serial |
+| 4 | device → host | the §7.3 config blob |
+
+Device → host selector 1 is the **sole unsolicited channel**, exactly as the
+`status` CCCD is on BLE: one ordering domain for every device → host edge,
+including a download's `downloadAnnounce`.
+
+Two device-side rules the host may rely on:
+
+- A download whose `total_len` is an exact multiple of the endpoint's max packet
+  is followed by a **zero-length packet**, so an object's end is always marked by
+  a short packet or a ZLP. A host reading one max packet per transfer never needs
+  this; one reading several does.
+- The one-transfer gate (§4.1) is **shared across transports**, because the
+  resource it arbitrates is the device's single upload temp and open download
+  source, not the wire. A transfer in flight on BLE answers a USB
+  `transferControl` with `busy`, and vice versa.
+
+Security differs, and deliberately: §8's pairing/encryption gate is a BLE
+mechanism with no USB analogue. Physical possession of the cable is the USB
+plane's authentication, which is the same posture every other wired peripheral
+takes. `forgetBond` over USB still clears the *radio's* bond — it is a device
+command, not a transport one.
 
 ## Reference implementation
 

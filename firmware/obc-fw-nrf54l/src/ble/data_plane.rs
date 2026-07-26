@@ -34,15 +34,14 @@ use nrf_sdc::{self as sdc};
 use obc_ble::{ObjectType, Receiver, StatusMessage, StoreChanged, TransferControl, TransferStatus};
 use trouble_host::prelude::*;
 
-use crate::object_store::{DiagInput, ObjectStore};
+use crate::link::identity;
+use crate::link::{transfer_result, transfer_result_at, Armed, StatusBytes, TRANSFER_ACTIVE};
+use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
 
-use super::gatt::{firmware_revision, serial_string, Server, HARDWARE_REVISION};
+use super::gatt::Server;
 use super::lifecycle::{conn_params, HOST_OP_TIMEOUT};
-use super::state::{
-    battery, stack_high_water, status, transfer_result, transfer_result_at, Armed, StatusBytes, TRANSFER_ABORT,
-    TRANSFER_ACTIVE, TRANSFER_ARM,
-};
+use super::state::{battery, TRANSFER_ABORT, TRANSFER_ARM};
 
 /// The L2CAP CoC data plane: accept the app's channel on the OBC SPSM and serve the transfers
 /// [`super::control::serve_connection`] arms through [`TRANSFER_ARM`] — the echo loopback, route
@@ -286,19 +285,9 @@ async fn run_download(
     // runner has one open path. Bind the open's result before matching — a
     // `match store.borrow_mut().…` scrutinee temporary would keep the borrow alive through the
     // error arm's await.
-    let fw = firmware_revision();
-    let serial = serial_string();
-    let s = status();
-    let diag = DiagInput {
-        firmware: fw.as_str(),
-        hardware: HARDWARE_REVISION,
-        serial: serial.as_str(),
-        uptime_s: Instant::now().as_secs() as u32,
-        connects: s.connects,
-        disconnects: s.disconnects,
-        last_disconnect_reason: s.last_disconnect_reason,
-        stack_hw: stack_high_water(),
-    };
+    let fw = identity::firmware_revision();
+    let serial = identity::serial_string();
+    let diag = crate::link::diag_input(fw.as_str(), serial.as_str(), Instant::now().as_secs() as u32);
     let opened = {
         let mut guard = shared.lock().await;
         store.borrow_mut().download_open(&mut guard, desc, &diag)

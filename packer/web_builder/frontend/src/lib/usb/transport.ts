@@ -16,20 +16,18 @@
  * the descriptors, the status envelope or the CRC changes. USB is a second transport, not a second
  * protocol.
  *
- * ## Status: provisional, and owned jointly with #889
+ * ## Status: ratified by #889
  *
- * #889 owns the device side — the embassy-nrf USBHS driver question, the VID/PID allocation, and
- * the endpoint layout — and it has not landed. This envelope is therefore the host's *proposal*,
- * and if #889 ratifies a different one, here is honestly what moves.
+ * This envelope started as the host's *proposal*, built against a loopback pipe before the device
+ * side existed. #889 owned the decision and **adopted it unchanged** — selectors, payloads and all
+ * — so this file is now the host half of a settled contract rather than a guess. It is normative in
+ * [`obc-ble-interface-spec.md`](../../../../../obc-ble-interface-spec.md) §10, and the device side
+ * is `firmware/obc-fw-nrf54l/src/usb/control.rs`.
  *
- * **The wire encoding is confined to this file**: the selector values, {@link encodeFrame} /
- * {@link decodeFrame}, and the device-info string packing. Nothing else builds or parses a frame.
- *
- * **The *assumption* that control messages are routed by a leading selector is not** — it is shared
- * with `client.ts`, whose `dispatch` switches on `frame.selector`, and `loopback.ts`, which switches
- * on it and encodes replies. A scheme that routed some other way (separate endpoints per
- * characteristic, a CDC line protocol) would touch those two as well. Small, mechanical edits, but
- * three files rather than one — worth knowing before you start.
+ * The rejected alternatives are recorded there: a separate endpoint pair per characteristic (14
+ * endpoints for one saved byte per control message) and CDC-ACM + Web Serial (binds with no driver
+ * work anywhere, but CDC is a *stream* — the unframed bulk plane would need framing invented for
+ * it, which is precisely the property that makes USB a transport rather than a protocol here).
  *
  * **What does not move at all, under any envelope**: the object model, the transfer descriptors, the
  * status envelope, the commands, the object layouts, the CRC-32, and every `protocol-vectors/`

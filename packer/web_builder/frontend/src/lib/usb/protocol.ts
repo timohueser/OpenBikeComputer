@@ -50,6 +50,24 @@ export const ObjectType = {
     Echo: 8,
     Trip: 9,
     TripList: 10,
+    /**
+     * An OBCM map file, written to the card verbatim.
+     *
+     * **Provisional — #889 ratifies this number.** The interface spec's object table stops at `10`
+     * and reserves `11`–`15` for sensors (M4), so this takes the first value past that band rather
+     * than the first free one: a map arriving where an M4 sensor object was expected is a worse
+     * failure than a gap in the numbering.
+     *
+     * It has to exist for C4 (#903) at all — a map is the one thing the object model never carried,
+     * because a 200 MB file over BLE was never on the table and USB is what changes that. The
+     * transfer semantics are the ones every other object already has (announce, stream, whole-object
+     * CRC, commit), and a map is uploaded as {@link NEW_OBJECT_ID} like a route; a re-upload of an
+     * artifact the device already holds dedups on (length, CRC) exactly as §4.1 specifies. What is
+     * *not* settled here, because C4 does not need it, is how maps are enumerated and named on the
+     * card — there is no `mapList` and no naming field, and #889 (or the device dashboard, D-phase)
+     * owns both.
+     */
+    Map: 16,
 } as const;
 export type ObjectType = (typeof ObjectType)[keyof typeof ObjectType];
 

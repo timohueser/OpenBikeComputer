@@ -43,9 +43,9 @@ mod sensors;
 mod state;
 
 // The ride loop publishes its stack high-water mark here (#277/A9) so the diagnostics blob can post it
-// over the link; the map plane owns the stackmeter, this is the one value that crosses into the BLE
-// module tree.
-pub use state::publish_stack_high_water;
+// over the link; the map plane owns the stackmeter. The cell itself is transport-free (`crate::link`)
+// — re-exported under the historical `ble::` path so the ride loop's call sites are unchanged.
+pub use crate::link::publish_stack_high_water;
 
 // The app-facing link snapshot (epic #447): the ride loop feeds it into `App::set_ble_status` each
 // pass. The only BLE state that crosses into the app seam, already distilled to `obc_app` vocabulary.
@@ -61,8 +61,12 @@ pub use state::wait_status_change;
 pub use state::{request_forget_bond, set_radio_enabled};
 
 // The ride-recording mirror (S6, #621): the ride loop pushes `is_tracking()` each pass; the
-// `installFw` command handler reads it as the `busy` gate's "a ride is recording" input.
-pub use state::set_recording;
+// `installFw` command handler reads it as the `busy` gate's "a ride is recording" input. Also
+// transport-free — re-exported here so the ride loop's call site is unchanged.
+pub use crate::link::set_recording;
+
+// The radio link's lifetime counters, for the §7.5 diagnostics blob any transport can serve.
+pub(crate) use state::link_counters;
 
 // The BLE sensor manager's app-facing seam (SE6, epic #707): the per-quantity status snapshot the
 // ride loop feeds the Sensors screen, and the scan/save/forget one-shot requests flowing back — the
@@ -91,17 +95,18 @@ use nrf_sdc::{self as sdc, mpsl};
 use trouble_host::prelude::*;
 
 use crate::init_static;
+use crate::link::{identity, TRANSFER_ACTIVE};
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
 
 use control::serve_connection;
 use data_plane::{battery_task, serve_coc};
 use gatt::{
-    advertised_name, config_blob, device_address, firmware_revision, gatt_str, serial_string, Server,
-    HARDWARE_REVISION, OBC_PSM,
+    advertised_name, config_blob, device_address, dis_firmware_revision, dis_hardware_revision, dis_serial_number,
+    Server, OBC_PSM,
 };
 use lifecycle::{advertise_lifecycle, negotiate_link};
-use state::{publish, LinkState, FORGET_BOND, TRANSFER_ABORT, TRANSFER_ACTIVE, TRANSFER_ARM};
+use state::{publish, LinkState, FORGET_BOND, TRANSFER_ABORT, TRANSFER_ARM};
 
 bind_interrupts!(struct Irqs {
     SWI00 => nrf_sdc::mpsl::LowPrioInterruptHandler;
@@ -178,7 +183,10 @@ pub(crate) const MPSL_BYTES: usize = core::mem::size_of::<MultiprotocolServiceLa
 pub(crate) const HOST_RESOURCES_BYTES: usize = core::mem::size_of::<Resources>();
 pub(crate) const PACKET_POOL_BYTES: usize = core::mem::size_of::<DefaultPacketPool>();
 pub(crate) const CRACEN_BYTES: usize = core::mem::size_of::<cracen::Cracen<'static, Blocking>>();
-pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<core::cell::RefCell<ObjectStore>>();
+/// The one shared [`ObjectStore`] now lives in [`crate::link`] (every transport drives the same
+/// card), but it is still reported under the historical `ble_object_store` name so the pinned
+/// resource baseline keeps its meaning.
+pub(crate) const OBJECT_STORE_BYTES: usize = crate::link::OBJECT_STORE_BYTES;
 pub(crate) const SERVER_BYTES: usize = core::mem::size_of::<Server<'static>>();
 pub(crate) const GAP_NAME_BYTES: usize = core::mem::size_of::<heapless::String<48>>();
 pub(crate) const SENSOR_MANAGER_BYTES: usize = sensors::RESIDENT_BYTES;
@@ -198,34 +206,27 @@ static mut MPSL: MaybeUninit<MultiprotocolServiceLayer<'static>> = MaybeUninit::
 static mut RNG: MaybeUninit<cracen::Cracen<'static, Blocking>> = MaybeUninit::uninit();
 static mut SDC_MEM: MaybeUninit<sdc::Mem<SDC_MEM_SIZE>> = MaybeUninit::uninit();
 static mut RESOURCES: MaybeUninit<Resources> = MaybeUninit::uninit();
-// The #677 evictions (see [`run`]'s doc): the object store, the GATT server, and the GAP name the
-// server's attribute table borrows for its (now `'static`) life. Formerly `run` locals — their
-// construction temporaries lived in the task's steady-state poll frame.
-static mut STORE: MaybeUninit<core::cell::RefCell<ObjectStore>> = MaybeUninit::uninit();
+// The #677 evictions (see [`run`]'s doc): the GATT server and the GAP name the server's attribute
+// table borrows for its (now `'static`) life. Formerly `run` locals — their construction temporaries
+// lived in the task's steady-state poll frame. (The object store was the third; it now lives in
+// `crate::link` because every transport shares one.)
 static mut GAP_NAME: MaybeUninit<heapless::String<48>> = MaybeUninit::uninit();
 static mut SERVER: MaybeUninit<Server<'static>> = MaybeUninit::uninit();
 static mut STACK: MaybeUninit<Stack<'static, nrf_sdc::SoftdeviceController<'static>, DefaultPacketPool>> =
     MaybeUninit::uninit();
 
-/// Build the object store into its `.bss` slot ([`STORE`]). `#[inline(never)]` is load-bearing on
-/// this and the three init fns below: the ~12.8 KB construction temporary must land in **this**
-/// transient frame (popped before steady state, at boot's shallow depth), not in `run`'s poll
-/// frame — inlined (or via the `#[inline(always)]` `init_static` directly), LLVM reserves the
-/// temporary's slot in the poll frame **at entry, on every poll**, which is exactly the #677
-/// overflow. SAFETY: sole writer of `STORE`, called once from [`run`].
-#[inline(never)]
-fn init_store(shared: &mut crate::SharedStore) -> &'static core::cell::RefCell<ObjectStore> {
-    unsafe { init_static(core::ptr::addr_of_mut!(STORE), core::cell::RefCell::new(ObjectStore::new(shared))) }
-}
-
-/// Build the SDC memory block into `.bss` ([`SDC_MEM`]) off the poll frame (see [`init_store`]).
+/// Build the SDC memory block into `.bss` ([`SDC_MEM`]) off the poll frame — `#[inline(never)]` is
+/// load-bearing on this and the two init fns below: the construction temporary must land in **this**
+/// transient frame (popped before steady state, at boot's shallow depth), not in `run`'s poll frame.
+/// Inlined (or via the `#[inline(always)]` `init_static` directly), LLVM reserves the temporary's
+/// slot in the poll frame **at entry, on every poll**, which is exactly the #677 overflow.
 /// SAFETY: sole writer of `SDC_MEM`, called once from [`run`].
 #[inline(never)]
 fn init_sdc_mem() -> &'static mut sdc::Mem<SDC_MEM_SIZE> {
     unsafe { init_static(core::ptr::addr_of_mut!(SDC_MEM), sdc::Mem::new()) }
 }
 
-/// Build TrouBLE's host arena into `.bss` ([`RESOURCES`]) off the poll frame (see [`init_store`]).
+/// Build TrouBLE's host arena into `.bss` ([`RESOURCES`]) off the poll frame (see [`init_sdc_mem`]).
 /// SAFETY: sole writer of `RESOURCES`, called once from [`run`].
 #[inline(never)]
 fn init_resources() -> &'static mut Resources {
@@ -233,7 +234,7 @@ fn init_resources() -> &'static mut Resources {
 }
 
 /// Pin the boot-time GAP name ([`GAP_NAME`]) and build the GATT server into `.bss` ([`SERVER`]) off
-/// the poll frame (see [`init_store`]). The server's attribute table borrows the name for its
+/// the poll frame (see [`init_sdc_mem`]). The server's attribute table borrows the name for its
 /// `'static` life; the *advertised* name is still re-read each advertise cycle, so a rename lands
 /// without a reboot (the GAP characteristic keeps the boot value — Config, not GAP, is
 /// authoritative). SAFETY: sole writer of `GAP_NAME`/`SERVER`, called once from [`run`].
@@ -326,25 +327,18 @@ pub async fn run(
     mpsl_p: mpsl::Peripherals<'static>,
     sdc_p: sdc::Peripherals<'static>,
     cracen_p: Peri<'static, peripherals::CRACEN>,
-    shared: &'static SharedStoreMutex,
-    store_epoch: Option<u32>,
+    // The SD/settings mutex, the one shared object store, and the boot store-epoch. The store used
+    // to be built here; with USB as a second transport (#889) two independently-constructed stores
+    // would each keep their own catalog and upload temp over the *same* SD card, so `main` builds
+    // it once and every plane is composed with the same handle.
+    stores: crate::link::LinkStores,
     // The sensor hub's HR/power/cadence injector (#808), threaded from `main`'s `static SensorHub`
     // through `spawn_ble_stack`: the central manager (SE6) decodes notifications and publishes
     // through it into the same mailboxes the debug-uart path feeds (last-writer-wins). Ownership is
     // visible at composition rather than reached through a global.
     sensor_injector: obc_platform::sensor_hub::SampleInjector<'static>,
 ) -> ! {
-    // The object store: the catalog/upload/revision semantics behind a RefCell — both BLE planes (GATT
-    // control + CoC data) borrow it synchronously, never across an `await`. The SD card + RRAM
-    // settings it operates on live in `shared` (the async mutex the ride loop shares), which each
-    // plane locks per call and passes into the store method (#270). Built in `.bss` by
-    // `init_store`, not inline here: the ~12.8 KB construction temporary must not become a
-    // permanent slot in this poll frame (#677 — see the fn doc), and not in `main`'s either
-    // (see `spawn_ble_stack`).
-    let store: &'static core::cell::RefCell<ObjectStore> = {
-        let mut guard = shared.lock().await;
-        init_store(&mut guard)
-    };
+    let crate::link::LinkStores { shared, objects: store, epoch: store_epoch } = stores;
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
     // field claims. NOT the 32 k crystal — see the module doc (unprogrammed XO INTCAPs → HCI 0x3E).
@@ -448,9 +442,9 @@ pub async fn run(
     // Seed the runtime attribute values the macro `value =` can't hold (DIS strings, the Config
     // blob from the persisted settings, the widened `protocolVersion` read). `server.set` writes the
     // shared attribute table once — no connection needed.
-    let _ = server.set(&server.dis.firmware_revision, &firmware_revision());
-    let _ = server.set(&server.dis.hardware_revision, &gatt_str::<16>(format_args!("{HARDWARE_REVISION}")));
-    let _ = server.set(&server.dis.serial_number, &serial_string());
+    let _ = server.set(&server.dis.firmware_revision, &dis_firmware_revision());
+    let _ = server.set(&server.dis.hardware_revision, &dis_hardware_revision());
+    let _ = server.set(&server.dis.serial_number, &dis_serial_number());
     let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
     // `protocolVersion` (V2 / #632; card-resident epoch #776): the pre-pairing read. `store_epoch` is
     // the boot mint pass's outcome, threaded in (never re-read here) — the epoch lives on the card
@@ -463,9 +457,9 @@ pub async fn run(
     let _ = server.set(&server.obc.protocol_version, &gatt::version_read_blob(store_epoch));
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",
-        firmware_revision().as_str(),
-        HARDWARE_REVISION,
-        serial_string().as_str()
+        identity::firmware_revision().as_str(),
+        identity::HARDWARE_REVISION,
+        identity::serial_string().as_str()
     );
 
     // The lifecycle loop: advertise → serve → re-advertise, forever, with no terminal state — and,

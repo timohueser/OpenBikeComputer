@@ -26,10 +26,17 @@
  * {@link PipeError} `unsupported`, and the honest answer for them is the desktop app (#894) — the
  * fallback is not a degraded USB path, it is the existing download-and-copy flow.
  *
- * ## What is provisional
+ * ## What #889 settled
  *
- * The VID/PID and the endpoint layout are #889's to settle. Both are options here with documented
- * defaults, so adopting the real values is a constant change.
+ * The endpoint layout below — a vendor-specific interface, lowest IN/OUT pair control, next pair
+ * bulk — is what the firmware descriptors now declare, so {@link discoverLayout}'s rule is a
+ * contract rather than a guess (`firmware/obc-fw-nrf54l/src/usb/mod.rs` allocates them in that
+ * order and says so). All four endpoints are 512 bytes: the LM20's USBHS is a high-speed core, and
+ * high-speed bulk endpoints are 512 bytes by USB rule.
+ *
+ * The **VID/PID is still provisional on purpose** — see {@link OBC_USB_FILTERS}. Allocating a real
+ * product id is an owner action, not a code change; when it happens, this constant and the
+ * firmware's `PRODUCT_ID` move together.
  */
 
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "./pipe";
@@ -93,8 +100,9 @@ export interface UsbLike {
  * The device filter.
  *
  * `1209:0001` is pid.codes' **prototype / testing** pair, chosen deliberately: it is the id that
- * says "not allocated yet". #889 owns the real allocation, and until it lands a filter that
- * pretended to be final would be worse than one that admits it isn't.
+ * says "not allocated yet". The firmware declares the same pair, so the two agree today; the real
+ * allocation is an owner action (a PID request against the pid.codes repository), and when it lands
+ * this constant and the firmware's `PRODUCT_ID` change together.
  */
 export const OBC_USB_FILTERS: ReadonlyArray<{ vendorId: number; productId?: number }> = [
     { vendorId: 0x1209, productId: 0x0001 },
