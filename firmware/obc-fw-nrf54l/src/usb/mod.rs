@@ -31,7 +31,7 @@
 //! The USBHS is a **high-speed** core (`PhyType::InternalHighSpeed`), so every bulk endpoint is
 //! 512 bytes by USB rule; there is no full-speed fallback to size for.
 //!
-//! ## VBUS is a hard gate, not a convenience (#934)
+//! ## VBUS is a hard gate, not a convenience (#936)
 //!
 //! **The device must boot and ride with nothing plugged into J3** — that is the overwhelmingly
 //! common case, and USB is the exception. Nothing in this module may touch the USBHS core, or any
@@ -175,7 +175,7 @@ pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
     // cost is a named term instead of an unexplained step in the linked `.bss` gate.
     + core::mem::size_of::<AtomicWaker>();
 
-// ============================ The VBUS gate (#934) ============================
+// ============================ The VBUS gate (#936) ============================
 //
 // On glass, with J3 empty, the board faulted its way out of a boot — probe-rs reported
 // `DAP FAULT (sticky_err, sticky_orun)` and lost the target, not a panic — and booted perfectly the
@@ -204,7 +204,7 @@ pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
 //
 // Parking is **event-driven** (#937): the wait is on a VREGUSB interrupt ([`VbusEdge`]), so the
 // cable-less case — the common one — costs no wake-ups at all. That is a power decision on a
-// battery-powered device, and the reason it is even available is that #934 already made
+// battery-powered device, and the reason it is even available is that #936 already made
 // [`vbus_present`] the single level source: the driver reads VBUS through [`BoardVbusDetect`], so
 // nothing of ours depends on embassy's private VBUS state and the vector is free to share.
 
@@ -432,7 +432,7 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
 /// the bulk object stream, all three joined on the thread-mode executor beside the ride loop and
 /// the BLE stack.
 ///
-/// **Cable-driven** (#934): nothing but VBUS detection is armed until a cable is in J3, and the
+/// **Cable-driven** (#936): nothing but VBUS detection is armed until a cable is in J3, and the
 /// endpoint futures are polled only while one is — see the gate above. A boot with J3 empty must
 /// reach the ride loop exactly as it did before this plane existed, and it says so in the log
 /// rather than going quiet: a device that silently has no USB is indistinguishable from one whose

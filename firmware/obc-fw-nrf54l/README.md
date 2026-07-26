@@ -333,7 +333,7 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
   device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
   contact pairs with a fresh passkey.
 
-## The USB device plane (issue #889) — **in every build; cable-gated since #934**
+## The USB device plane (issue #889) — **in every build; cable-gated since #936**
 
 Every build ships a second transport for the *same* companion protocol: the LM20's USBHS
 behind one vendor-specific interface, so the web builder (WebUSB, Chromium) or the desktop app can
@@ -341,7 +341,7 @@ push a map / route / firmware image to a plugged-in device. It was briefly behin
 feature; **that feature is gone** — the plane is part of the device, not an option of it, and the
 resource baseline in [`firmware/tools/resource_baseline.json`](../tools/resource_baseline.json) pins
 the shape that includes it (+5,096 B resident and +45,688 B flash for the plane, +64 B and +288 B
-more for #934's VBUS gate, then +8 B resident and **−80 B** flash for #937's event-driven park;
+more for #936's VBUS gate, then +8 B resident and **−80 B** flash for #937's event-driven park;
 guarded poll frame 9,664 → 9,728 B against the unchanged 12,288 B limit, and unmoved since). The
 wire protocol is canonical in
 [`obc-ble-interface-spec.md`](../../obc-ble-interface-spec.md) — USB is a transport under it, not a
@@ -355,7 +355,7 @@ second protocol. What is **board-specific** and worth knowing:
   RTT use); **J3 is the USB connector wired to the SoC**. You want both cables: J4 to flash and
   watch RTT, J3 to the host that talks to the device. A production board with a routed USB port is
   *not* a prerequisite for bring-up.
-- **VBUS gates everything, and J3 may be empty (#934).** Riding with no cable is the common case, so
+- **VBUS gates everything, and J3 may be empty (#936).** Riding with no cable is the common case, so
   the plane arms VBUS detection (VREGUSB only), parks, and builds the driver **when a cable
   arrives** — then parks again on unplug and comes back on re-plug, any number of times. It is not
   silent about it: `usb: no VBUS on J3 — device plane parked …` at boot, `usb: VBUS present …` +
@@ -366,7 +366,7 @@ second protocol. What is **board-specific** and worth knowing:
   `DAP FAULT (sticky_err, sticky_orun)`, never a panic. If you ever see that signature again,
   suspect a *new* USBHS access that escaped the gate, not a stack or a panic handler.
 - **The parked plane costs nothing (#937).** It waits on the VREGUSB interrupt, not a timer, so a
-  ride with J3 empty produces **zero** USB wake-ups — the 500 ms poll #934 shipped is gone. The
+  ride with J3 empty produces **zero** USB wake-ups — the 500 ms poll #936 shipped is gone. The
   30 s `VBUS_RESYNC` still in `src/usb/mod.rs` is a self-healing net for a hypothetically missed
   edge, not the mechanism; if plug-in ever feels like it takes *seconds*, that net is what carried
   it and the interrupt path is broken.
@@ -388,7 +388,7 @@ second protocol. What is **board-specific** and worth knowing:
 ### Bring-up recipe
 
 Steps 1–2 are the **cable-less boot**, and they are the ones that matter most: that is how the
-device is used. Steps 3–6 are the transfer path. Steps 1–3 were confirmed on glass under #934;
+device is used. Steps 3–6 are the transfer path. Steps 1–3 were confirmed on glass under #936;
 step 4 on is still **unverified**.
 
 1. With **J3 empty**, flash `cargo run --release` over **J4** — the plain default build; no feature
@@ -396,7 +396,7 @@ step 4 on is still **unverified**.
    if probe-rs errors).
 2. **The board must reach the ride loop and stay there.** RTT shows
    `usb: no VBUS on J3 — device plane parked; it comes up when a cable is plugged in`, then the map
-   renders and the session keeps logging. No `DAP FAULT`, no reset loop. This is the #934
+   renders and the session keeps logging. No `DAP FAULT`, no reset loop. This is the #936
    regression test: before the VBUS gate, this exact step killed the boot.
 3. Now plug **J3** into the host. RTT: `usb: VBUS present — bringing the device plane up` followed by
    `usb: device plane up — 1209:0001, serial '…', HS bulk 512 B`. **Watch the clock here** — that is
@@ -424,7 +424,7 @@ unconditionally, so this is a real bring-up failure, not a missing build flag �
 before the spawn). `usb: no VBUS …` while a cable *is* in J3 → VBUS detection, not the plane: check
 J3 really is the SoC connector on your DK revision and that `VREGUSB.TASKS_START` ran (that log
 line is printed after it). A `DAP FAULT (sticky_err, sticky_orun)` that loses the target is the
-#934 signature — a USBHS core access that escaped the VBUS gate; it is not a panic and not a stack
+#936 signature — a USBHS core access that escaped the VBUS gate; it is not a panic and not a stack
 overflow, so look for a new register read, not a new buffer. A plug or re-plug that takes **up to
 30 s** to be noticed is the #937 signature: the park's VREGUSB wake is not arriving and only
 `VBUS_RESYNC` is getting through — check that both handlers are still on the `VREGUSB` arm of
