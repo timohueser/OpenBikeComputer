@@ -10,7 +10,7 @@
 //! panel's true 64-colour gamut; `--true-color` (the un-quantized reference) stays on the headless
 //! `--png` path.
 //!
-//! The second "Controls" viewport (the simulated GPS fix + emulated encoder) lives
+//! The second "Controls" viewport (the simulated GPS fix + emulated buttons) lives
 //! in [`panel`]; its zoom / formatting helpers live in [`units`].
 
 use std::path::Path;
@@ -137,11 +137,17 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
 /// ([`SimGui::show_device_image`]) and consumed by [`SimGui::apply_device_input`]. Keeps the draw
 /// free of input side effects: it only reports geometry, the caller drives the recognizer.
 struct DeviceHit {
-    /// Encoder pressed this frame (housing hit-test OR the Enter key).
-    enc_down: bool,
-    /// Back pressed this frame (housing hit-test OR the Backspace key).
+    /// UP pressed this frame (housing hit-test OR the ↑ key).
+    up_down: bool,
+    /// DOWN pressed this frame (housing hit-test OR the ↓ key).
+    down_down: bool,
+    /// SELECT pressed this frame (housing hit-test OR the Enter key).
+    select_down: bool,
+    /// BACK pressed this frame (housing hit-test OR the Backspace key).
     back_down: bool,
-    /// Encoder-wheel scroll delta — non-zero only while the wheel was hovered (zero otherwise).
+    /// Selection steps queued this frame by the UP/DOWN pads and the keyboard.
+    steps: i32,
+    /// Mouse-wheel delta over the screen — the host's stand-in for tapping UP/DOWN.
     scroll_dy: f32,
 }
 
@@ -194,7 +200,7 @@ struct SimGui {
     calib_error: Option<String>,
     /// Editable mirrors for the control-panel widgets.
     panel: PanelState,
-    /// Emulated device controls (encoder knob + Back) → shared gesture recognizer.
+    /// Emulated device controls (four device buttons) → shared gesture recognizer.
     input: DeviceInput,
     /// The loaded GPX replay, if any. When `Some`, it drives the fix instead of the manual
     /// [`SimLocationSource`] (as the device's GPS would). `None` = manual panel control.
@@ -233,10 +239,12 @@ struct SimGui {
     /// The device body color drawn by the housing chrome. Switchable in the control panel.
     colorway: Colorway,
     /// This frame's device-control keyboard state, read at the top of `update` (before a widget
-    /// can take focus and swallow the keys), then folded into the on-housing controls. Turn is
-    /// edge (detents this frame); the buttons are held state.
-    kbd_turn: i32,
-    kbd_enc: bool,
+    /// can take focus and swallow the keys), then folded into the on-housing controls. Steps are
+    /// edge-counted (how many this frame); the four buttons carry held state.
+    kbd_steps: i32,
+    kbd_up: bool,
+    kbd_down: bool,
+    kbd_select: bool,
     kbd_back: bool,
 }
 
@@ -319,7 +327,7 @@ impl SimGui {
         // `--physical` only takes effect with a saved calibration; `--calibrate` opens the screen.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
-        let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Coral);
+        let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Forest);
         let mut gui = SimGui {
             app,
             store,
@@ -357,8 +365,10 @@ impl SimGui {
             last_dirty: Dirty::CLEAN,
             host: HostLoop::new(),
             colorway,
-            kbd_turn: 0,
-            kbd_enc: false,
+            kbd_steps: 0,
+            kbd_up: false,
+            kbd_down: false,
+            kbd_select: false,
             kbd_back: false,
         };
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
@@ -656,24 +666,33 @@ impl SimGui {
                 };
                 let lo = style.layout(ui.available_rect_before_wrap(), disp_scale, screen);
 
-                // The device controls live on the housing: click the encoder / Back, or scroll over
-                // the wheel to turn it. Hit-test their rects here (drawing only); the keyboard fold-in
-                // and shared recognizer run in `apply_device_input` from the returned `DeviceHit`.
-                let enc = ui.interact(lo.encoder, egui::Id::new("dev_encoder"), egui::Sense::click());
-                let back = ui.interact(lo.back, egui::Id::new("dev_back"), egui::Sense::click());
-                let enc = enc.on_hover_cursor(egui::CursorIcon::PointingHand);
-                let back = back.on_hover_cursor(egui::CursorIcon::PointingHand);
-                // Wheel scroll is only picked up while hovering the encoder (zero otherwise), matching
-                // the inline behaviour; the delta is applied in `apply_device_input`.
-                let scroll_dy = if enc.hovered() { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
-                let enc_down = enc.is_pointer_button_down_on() || self.kbd_enc;
+                // The device controls live on the housing: click any of the four pads — UP / DOWN
+                // on the left flank, SELECT / BACK on the right. Hit-test their rects here (drawing
+                // only); the keyboard fold-in and shared recognizer run in `apply_device_input` from
+                // the returned `DeviceHit`.
+                let pad = |ui: &mut egui::Ui, rect, id| {
+                    ui.interact(rect, egui::Id::new(id), egui::Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                };
+                let up = pad(ui, lo.up, "dev_up");
+                let down = pad(ui, lo.down, "dev_down");
+                let select = pad(ui, lo.select, "dev_select");
+                let back = pad(ui, lo.back, "dev_back");
+                // Wheel scroll over the pads stands in for tapping UP/DOWN (zero when not hovered);
+                // the delta is applied in `apply_device_input`.
+                let scroll_dy =
+                    if up.hovered() || down.hovered() { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
+                // UP/DOWN are momentary: a *click* is one step (auto-repeat, which the firmware's
+                // `ButtonInput` synthesizes from a held GPIO, isn't emulated — hold the arrow key
+                // instead, which repeats through the OS).
+                let steps = self.kbd_steps + i32::from(down.clicked()) - i32::from(up.clicked());
+                let up_down = up.is_pointer_button_down_on() || self.kbd_up;
+                let down_down = down.is_pointer_button_down_on() || self.kbd_down;
+                let select_down = select.is_pointer_button_down_on() || self.kbd_select;
                 let back_down = back.is_pointer_button_down_on() || self.kbd_back;
 
-                // Mirror the live control state onto the housing. The knurl eases toward the current
-                // angle so each detent reads as a little turn.
-                let knob_angle =
-                    ui.ctx().animate_value_with_time(egui::Id::new("knurl_phase"), self.input.knob_angle(), 0.12);
-                let ctrl = housing::ControlVisual { knob_angle, encoder_down: enc_down, back_down };
+                // Mirror the live control state onto the housing.
+                let ctrl = housing::ControlVisual { up_down, down_down, select_down, back_down };
                 let palette = self.colorway.palette();
 
                 // Paint the housing, then blit the framebuffer into its screen rect, corners rounded
@@ -691,7 +710,7 @@ impl SimGui {
                 // Mouse drag pans / scroll zooms over the screen.
                 self.handle_camera_input(ui, &resp, resp.rect, disp_scale);
 
-                DeviceHit { enc_down, back_down, scroll_dy }
+                DeviceHit { up_down, down_down, select_down, back_down, steps, scroll_dy }
             })
             .inner
     }
@@ -702,13 +721,15 @@ impl SimGui {
     /// events reach [`handle_input`](obc_app::App::handle_input) in the same order, with the same
     /// coordinates, they did inline.
     fn apply_device_input(&mut self, hit: DeviceHit) {
-        // Encoder-wheel scroll → detents (non-zero only when the wheel was hovered this frame).
+        // Mouse-wheel scroll → steps (non-zero only when a UP/DOWN pad was hovered this frame).
         if hit.scroll_dy != 0.0 {
             self.input.scroll(hit.scroll_dy);
         }
-        self.input.turn(self.kbd_turn);
-        self.input.set_button(Button::Encoder, hit.enc_down);
+        self.input.step(hit.steps);
+        self.input.set_button(Button::Select, hit.select_down);
         self.input.set_button(Button::Back, hit.back_down);
+        // UP/DOWN held state is visual only (the housing pads sink) — the app already got the step.
+        let _ = (hit.up_down, hit.down_down);
         let now = self.input.now_ms();
         self.app.handle_input(InputClock(now), &mut self.input);
         // Settings persistence rides the shared dispatcher now (the `PersistSettings` command, gated
@@ -814,27 +835,32 @@ impl SimGui {
 impl eframe::App for SimGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Read the device-control keyboard shortcuts *first*, before a widget can take focus and
-        // swallow the keys. Turn keys are consumed (one detent per press); Enter/Backspace is the
+        // swallow the keys. ↑/↓ are consumed (one step per press, repeating while held through the
+        // OS key-repeat — the stand-in for the firmware's auto-repeat); Enter/Backspace carry the
         // live held state. Applied in `show_device_image`.
-        let (kt, ke, kb) = ctx.input_mut(|i| {
-            let mut t = 0;
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+        let keys = ctx.input_mut(|i| {
+            let mut steps = 0;
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::Period)
             {
-                t += 1;
+                steps += 1;
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::Comma)
             {
-                t -= 1;
+                steps -= 1;
             }
-            (t, i.key_down(egui::Key::Enter), i.key_down(egui::Key::Backspace))
+            (
+                steps,
+                i.key_down(egui::Key::ArrowUp),
+                i.key_down(egui::Key::ArrowDown),
+                i.key_down(egui::Key::Enter),
+                i.key_down(egui::Key::Backspace),
+            )
         });
-        self.kbd_turn = kt;
-        self.kbd_enc = ke;
-        self.kbd_back = kb;
+        (self.kbd_steps, self.kbd_up, self.kbd_down, self.kbd_select, self.kbd_back) = keys;
 
         // Drag-and-drop a `.gpx` onto the window to import it (the device's USB-drop path).
         let dropped: Vec<std::path::PathBuf> =
