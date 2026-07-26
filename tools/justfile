@@ -223,7 +223,9 @@ site *args:
     # a site with no backend needs it as a file (C6 #905 wires this into the deploy).
     _run .venv/bin/python -m packer.web_builder.static_data --out "$fe/dist/web/data"
     _say "serving http://localhost:$port  (Ctrl-C to stop)"
-    cd "$fe/dist/web"; _run .venv/bin/python -m http.server "$port"
+    # Absolute interpreter + `--directory`, not `cd` + a relative `.venv/bin/python`: the relative
+    # form resolved against the *serving* directory and vanished the moment we left the repo root.
+    _run "$OBC_ROOT/.venv/bin/python" -m http.server "$port" --directory "$fe/dist/web"
 
 # ── Host workspace chores ────────────────────────────────────────────────────
 
