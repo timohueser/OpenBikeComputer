@@ -16,15 +16,21 @@ way to regenerate them.
 | `TP1.OBT` | Fixture **trip** object (epic #526, TR2): "Alpen Traverse", stage ids `[0, 1, 99]` — the first two are the sorted-scan session ids of any two routes in the same folder, 99 a deliberate dangling ref (read-tolerance, spec §7.7). **Copy it into your `--routes-dir` beside two or more routes and rescan** to get a groupable menu: one folder (the first two routes filed) + the rest loose. TR3's snapshot harness stages exactly this file. Pinned byte-for-byte against `obc_route::write_trip` by `trips.rs`'s `committed_trip_asset_matches_the_production_writer`; regenerate with `write_trip("Alpen Traverse", &[0, 1, 99], …)` (not an `.obcm`, so the repack-provenance rules don't apply) | authored via `obc_route::write_trip` | — |
 
 All three maps are packed with `packer/presets/default.json` via
-`cargo run --release --bin obc-pack -- <extract> <preset> <out>` — `repack.sh`
-runs the whole chain (download → `osmium extract` → pack). `grimsel-demo.obcm`
-shares the Switzerland snapshot with `grimsel.obcm` (`./repack.sh grimsel-demo`).
+`cargo run --release --bin obc-pack -- <source> <preset> <out> --bbox <bbox>` —
+`repack.sh` runs the whole chain (download → pack). `grimsel-demo.obcm` shares
+the Switzerland snapshot with `grimsel.obcm` (`./repack.sh grimsel-demo`).
+
+The crop used to be a separate `osmium extract` step; since #910 the packer does
+it during ingest, reproducing osmium's default *complete_ways* strategy, so
+regenerating a fixture needs no `osmium-tool`. All three pinned bboxes were
+checked byte-for-byte across the two paths before the switch — **the fixtures
+were not re-packed for it**, and none of the pinned bboxes changed.
 
 ## The bbox-ratchet trap (read before re-packing)
 
 **Never derive an extract bbox from an existing fixture's header.** The header
 bbox is computed from the *packed content* and is always somewhat wider than
-the extract bbox (osmium keeps complete ways crossing the boundary, and stray
+the extract bbox (a way crossing the boundary is kept whole, and stray
 coastline/boundary features can stretch it far offshore). Extracting from a
 header bbox therefore widens the fixture on every re-pack — that ratchet is
 how monaco once ballooned to 14.5 MB and grimsel silently grew ~77 % in area
