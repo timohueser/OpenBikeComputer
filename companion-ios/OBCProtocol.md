@@ -161,7 +161,7 @@ transfer carries **no per-chunk framing**. Instead (spec §4.2/§4.3, mirrored i
      op         u8    1 = upload (app → device) · 2 = download · 3 = abort
      type       u8    { route 1, ride 2, config(reserved) 3, diagnostics 4,
                         fwImage 5, routeList 6, rideList 7, echo 8,
-                        trip 9, tripList 10 }
+                        trip 9, tripList 10, map 16 (USB only — never on BLE) }
      object_id  u16   0xFFFF on upload = "new" (device assigns the id)
      total_len  u32   upload: full object size · download request / abort: 0
      crc32      u32   upload: whole-object CRC-32/IEEE · download request / abort: 0
