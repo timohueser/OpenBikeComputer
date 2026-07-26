@@ -1,7 +1,7 @@
 /**
  * The USB stack, in one import (C3, issue #902).
  *
- * Four layers, each replaceable without the others noticing:
+ * Four layers:
  *
  * ```text
  *   session.svelte.ts   reactive shell — what a Svelte component holds
@@ -9,6 +9,11 @@
  *   transport.ts        the one byte USB adds: which control characteristic a frame is
  *   pipe.ts             two byte pipes — WebUSB today, nusb (D4 #909) or loopback underneath
  * ```
+ *
+ * The bottom layer really is swappable in isolation — that is what `BytePipe` is for, and the
+ * loopback and WebUSB implementations prove it. `transport.ts` is a weaker seam: it owns the frame
+ * *encoding* alone, but the assumption that control messages carry a leading selector is shared with
+ * `client.ts`'s dispatch. Its header says exactly what moves if #889 ratifies something else.
  *
  * `loopback.ts` is deliberately **not** re-exported here: it is a full simulated device, and the
  * hosted bundle has no business carrying one. Tests and dev harnesses import it by path, which also

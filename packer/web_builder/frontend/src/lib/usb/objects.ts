@@ -3,7 +3,7 @@
  * (§7.2) and the trip object (§7.7).
  *
  * A port of `firmware/obc-ble/src/list.rs` and the ride/trip layouts, pinned to the same
- * `protocol-vectors/` fixtures (see `objects.test.ts`). Routes and firmware images are absent on
+ * `protocol-vectors/` fixtures (see `vectors.test.ts`). Routes and firmware images are absent on
  * purpose: an `.obcr` route and an `UPDATE.BIN` cross the wire as *opaque bytes* the device writes
  * verbatim (§7.1, §7.6), so the transfer layer stays format-blind and there is nothing here to
  * decode. The browser's OBCR encoding is the wasm bridge's job (A2 #896).
