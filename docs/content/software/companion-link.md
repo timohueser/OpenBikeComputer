@@ -775,5 +775,5 @@ of the data-formats page (normative bytes in the
 - The app-facing sensor mailboxes both the radio manager and the injection path feed — one instance-owned `SensorHub`, handed to each task at spawn: [`obc-platform/src/sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
-- Shared fixtures pinning the byte layouts on both sides: [`protocol-vectors/`](src:protocol-vectors)
+- Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter: [`protocol-vectors/`](src:protocol-vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)

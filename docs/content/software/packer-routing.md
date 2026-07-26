@@ -599,15 +599,16 @@ That this is the *same* quadtree the device walks closes the loop with the other
 
 ### The web builder
 
-Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a [drawn box](#cropping-to-a-box) the sources are cropped to), pick a style, build, download. Three ideas shape it:
+Everything above hides behind one command: `python -m packer.web_builder` serves a small local web app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a [drawn box](#cropping-to-a-box) the sources are cropped to), pick a style, build, download. Four ideas shape it:
 
 - **Presets over knobs.** The main page offers complete style presets — Bikepacking, Minimal, High detail — each a full packer config shipped in [`packer/presets/`](src:packer/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
 - **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the web server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten.
 - **A stateless server.** The working config lives in the browser ("Custom — based on Bikepacking"), never on the server; builds run through a bounded queue into per-job directories and stream progress live. That shape runs locally today and would survive a shared deployment unchanged.
+- **Routes need no server at all.** The GPX→OBCR converter is `no_std` Rust, so it compiles to wasm and runs *in the tab* ([`obc-web-convert`](src:firmware/obc-web-convert)) — the same routine the device runs, producing the same bytes, held to the [shared fixtures](src:protocol-vectors). Dropping a route on the builder uploads nothing; the same shim also turns a recorded `.obct` ride log back into a GPX. Map building is the part that still needs real CPU.
 
 ## Following a route
 
-You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — decimating the geometry for drawing while keeping the stats exact, then chunking it with shared seams — is covered on the [data formats](../formats/#obcr-the-route) page. The converter is one portable `no_std` routine, so it runs on the device or in the simulator.
+You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — decimating the geometry for drawing while keeping the stats exact, then chunking it with shared seams — is covered on the [data formats](../formats/#obcr-the-route) page. The converter is one portable `no_std` routine, so it runs on the device, in the simulator, or in a browser tab.
 
 <figure class="fig">
 <svg viewBox="0 0 760 322" role="img" aria-label="Converting a GPX track to an OBCR route in one streaming pass. Left panel, the shape: the stored line keeps only the corners (and one vertex at least every 1.2 km) — vertices within 1 metre of the line between their neighbours are dropped — yet distance and climb are summed over every original point, so the stats stay exact even though the stored geometry is sparse. Right panel, the climb: a raw elevation trace is integrated through a 3-metre dead-band; small wiggles inside the band book no ascent, and only once the trace leaves the band is the climb booked and the reference re-anchored. The same dead-band is shared by the elevation profile and the live barometric climb on the device.">
@@ -723,7 +724,7 @@ let (back, fwd) = if !self.started {
 - The packer pipeline driver: [`obc-pack/src/main.rs`](src:firmware/obc-pack/src/main.rs)
 - Config + first-match styling: [`obc-pack/src/config.rs`](src:firmware/obc-pack/src/config.rs)
 - The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:firmware/obc-pack/schema/config.schema.json)
-- The web builder — FastAPI server + Svelte app: [`packer/web_builder/`](src:packer/web_builder)
+- The web builder — FastAPI server + Svelte app: [`packer/web_builder/`](src:packer/web_builder); its browser-side GPX↔OBCR conversion (wasm over `obc-route`): [`obc-web-convert`](src:firmware/obc-web-convert)
 - OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:firmware/obc-pack/src/ingest.rs)
 - The quadtree build: [`obc-pack/src/quadtree.rs`](src:firmware/obc-pack/src/quadtree.rs)
 - Land generation: [`obc-pack/src/land.rs`](src:firmware/obc-pack/src/land.rs)
@@ -731,6 +732,6 @@ let (back, fwd) = if !self.started {
 - The navigation-graph build (routable filter, junction detection, edge split + dedup): [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs)
 - The on-device router (snap + profile-weighted A\* + OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - The route map-matcher: [`obc-route/src/matcher.rs`](src:firmware/obc-route/src/matcher.rs)
-- GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs)
+- GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs) — one routine, three hosts (device, simulator, browser)
 
 This is the offline bookend to the on-device story: the packer produces the [map format](../formats/) the [renderer](../rendering/) draws, and the matcher drives the navigation the [UI](../ui/) shows.
