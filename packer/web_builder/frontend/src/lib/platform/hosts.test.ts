@@ -76,6 +76,19 @@ describe("the hosts as a set", () => {
         });
     });
 
+    it("borrows the browser's USB stack only where there is nothing else", () => {
+        // Which transport `device()` uses, not whether it has one. The hosted
+        // tier's Chromium-only reach is exactly why the desktop app exists
+        // (#894), and #901 turns it into its own gate with its own sentence.
+        expect(web.platform.usbViaWebUsb).toBe(true);
+        expect(desktop.platform.usbViaWebUsb).toBe(false);
+        // Never true where there is no USB at all, or the gate would blame a
+        // browser for a tier that was never going to connect.
+        for (const host of Object.values(HOSTS)) {
+            if (!host.platform.caps.deviceUsb) expect(host.platform.usbViaWebUsb).toBe(false);
+        }
+    });
+
     it("offers a legacy-config import only on the host that could have one", () => {
         // user_config.json was the retired editor's server-side persistence;
         // only the FastAPI host ever wrote one.
