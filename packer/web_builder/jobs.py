@@ -178,8 +178,12 @@ def create_job(region_ids, config, chunk_size, output_name, bbox=None):
 
 
 def _download_pbf(job, region_id, url):
-    os.makedirs(paths.PBF_CACHE, exist_ok=True)
     dest = os.path.join(paths.PBF_CACHE, f"{region_id}.osm.pbf")
+    # 53 of Geofabrik's 555 ids carry a `/` ("us/california"), so the cache path
+    # can be a directory deep — makedirs on PBF_CACHE alone left those failing
+    # with ENOENT on the temp file. The desktop app (#906) shares this exact
+    # layout, so a fix here is a cache hit there.
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         job.emit({"type": "log", "line": f"Using cached PBF for {region_id}", "transient": False})
         return dest

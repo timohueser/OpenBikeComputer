@@ -23,7 +23,11 @@ name: CI
 #   * obc-web-convert (#896) is a normal workspace member (so fmt/clippy/test/deny already cover
 #     it) whose *shipping* artifact is a wasm32 build the web builder imports — hence the extra
 #     `wasm-convert` job, its bundle-size guard, and the artifact hand-off into `web`.
-#   * `--locked` everywhere so a stale Cargo.lock (any of the three) fails CI.
+#   * obc-desktop (#906) is the third excluded + standalone crate: a Tauri app, so it brings a
+#     platform webview with it (WebKitGTK on Linux) and would otherwise put those headers in
+#     every renderer test's way. Its job is also the only Rust one that needs Node — the shell
+#     *embeds* the built frontend, so it breaks from either side and both halves are built there.
+#   * `--locked` everywhere so a stale Cargo.lock (any of the four) fails CI.
 
 on:
   pull_request:
@@ -50,6 +54,7 @@ jobs:
       wasm: ${{ steps.filter.outputs.wasm }}
       ios: ${{ steps.filter.outputs.ios }}
       web: ${{ steps.filter.outputs.web }}
+      desktop: ${{ steps.filter.outputs.desktop }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -78,6 +83,16 @@ jobs:
             ios:
               - 'companion-ios/**'
               - '.github/workflows/ci.yml'
+            desktop:
+              # The Tauri shell embeds the built frontend and links obc-pack, so it
+              # breaks from either side.
+              - 'firmware/obc-desktop/**'
+              - 'firmware/obc-pack/**'
+              - 'packer/web_builder/frontend/**'
+              - 'packer/presets/**'
+              - 'packer/palette.json'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
             web:
               - 'packer/web_builder/frontend/**'
               # The frontend now embeds firmware code: obc-web-convert (#896) compiles the shared
@@ -101,7 +116,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      - name: cargo fmt --check (host workspace + standalone board crate + obc-boot)
+      - name: cargo fmt --check (host workspace + the three standalone crates)
         run: |
           rc=0
           echo "::group::firmware workspace"
@@ -112,6 +127,9 @@ jobs:
           echo "::endgroup::"
           echo "::group::obc-boot (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
+          echo "::endgroup::"
+          echo "::group::obc-desktop (workspace-excluded)"
+          cargo fmt --check --manifest-path firmware/obc-desktop/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -332,6 +350,10 @@ jobs:
         run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
       - name: cargo-deny (obc-boot bootloader)
         run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config deny.toml check
+      # The desktop shell is the one artifact a *user* installs, so its tree is the
+      # one where a bad licence or a live advisory matters most.
+      - name: cargo-deny (obc-desktop app)
+        run: cargo deny --manifest-path firmware/obc-desktop/Cargo.toml --all-features --config deny.toml check
 
   # The web demo (firmware/obc-web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
@@ -515,9 +537,69 @@ jobs:
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
 
+  # The Tauri desktop shell (firmware/obc-desktop, #906). Workspace-excluded like the
+  # board crate and the bootloader, and for the same kind of reason: Tauri drags in
+  # wry and a platform webview, and putting WebKitGTK's headers in the way of
+  # `cargo test` for the renderer helps nobody.
+  #
+  # It is also the one Rust job that needs Node, because `tauri::generate_context!`
+  # *embeds* the built frontend — so a desktop build genuinely fails when either half
+  # breaks, which is the point of building it here rather than trusting that two
+  # green halves make a green whole. The wasm bridge comes from `wasm-convert` for the
+  # same reason the `web` job takes it: the frontend imports it, so `build:desktop`
+  # cannot run without it.
+  #
+  # Build-only plus tests: the `#[ignore]`d ones pack a real region off the network
+  # and belong on a developer's machine, not in CI.
+  desktop:
+    needs: [changes, wasm-convert]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/obc-desktop
+          key: desktop
+      # obc-pack links the system libGEOS; the packer is a library dependency here.
+      - uses: ./.github/actions/setup-host-deps
+      # wry's Linux backend. macOS and Windows need nothing extra — which is most of
+      # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
+      - name: Install the Linux webview deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: packer/web_builder/frontend/src/lib/convert/pkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+      - name: Build the frontend the shell embeds
+        working-directory: packer/web_builder/frontend
+        run: |
+          npm ci
+          npm run build:desktop
+      - name: "obc-desktop: clippy"
+        working-directory: firmware/obc-desktop
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: "obc-desktop: test"
+        working-directory: firmware/obc-desktop
+        run: cargo test --locked
+      - name: "obc-desktop: build (release)"
+        working-directory: firmware/obc-desktop
+        run: cargo build --release --locked
+
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-convert, docs, ios-unit, ios-app, web]
+    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-convert, docs, ios-unit, ios-app, web, desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)
