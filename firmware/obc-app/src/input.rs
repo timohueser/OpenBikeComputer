@@ -1,12 +1,12 @@
 //! Gesture recognition — the shared input layer.
 //!
-//! Turns raw [`InputEvent`]s (encoder detents + encoder/Back button edges) plus a millis clock into
+//! Turns raw [`InputEvent`]s (Up/Down steps + Select/Back button edges) plus a millis clock into
 //! the five UI [`Gesture`]s, identically across host and MCU. `no_std`, zero-alloc, and
 //! clock-agnostic — the caller passes the current time in, so no platform timer is baked in.
 
 use obc_ports::{Button, ButtonEvent, InputEvent};
 
-/// Default long-press threshold (ms): how long the encoder or Back must be held to read as
+/// Default long-press threshold (ms): how long Select or Back must be held to read as
 /// `Hold`/`BackHold` rather than `Press`/`Back`.
 pub const DEFAULT_HOLD_MS: u32 = 500;
 
@@ -21,11 +21,11 @@ pub const DEFAULT_TAP_MS: u32 = 200;
 /// screen's `handle` reacts to exactly these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gesture {
-    /// Encoder rotated; `n` signed detents (positive = clockwise / "next").
-    Turn(i32),
-    /// Encoder short press (released within the tap window).
+    /// Up/Down pressed; `n` signed steps (negative = Up / "previous", positive = Down / "next").
+    Step(i32),
+    /// Select short press (released within the tap window).
     Press,
-    /// Encoder long press (held past the threshold).
+    /// Select long press (held past the threshold).
     Hold,
     /// Back short press.
     Back,
@@ -66,14 +66,14 @@ pub struct Gestures {
     /// and `hold_ms` is a cancelled long-press and fires nothing. Clamped to `hold_ms` so a tiny
     /// custom hold threshold can't invert the window.
     tap_ms: u32,
-    encoder: Held,
+    select: Held,
     back: Held,
 }
 
 impl Gestures {
     /// A recognizer with a custom long-press threshold (ms) and the [`DEFAULT_TAP_MS`] tap window.
     pub fn new(hold_ms: u32) -> Self {
-        Gestures { hold_ms, tap_ms: DEFAULT_TAP_MS.min(hold_ms), encoder: Held::default(), back: Held::default() }
+        Gestures { hold_ms, tap_ms: DEFAULT_TAP_MS.min(hold_ms), select: Held::default(), back: Held::default() }
     }
 
     /// A recognizer with the [`DEFAULT_HOLD_MS`] threshold.
@@ -82,13 +82,13 @@ impl Gestures {
     }
 
     /// Feed one raw event captured at time `now` (ms). Returns the gesture it completes, if any:
-    /// `Turn` fires immediately; `Press`/`Back` fire on a release **within the tap window**
+    /// `Step` fires immediately; `Press`/`Back` fire on a release **within the tap window**
     /// ([`tap_ms`](Self::tap_ms)). A release after the tap window (cancelled long-press) or after
     /// the long-press already fired yields nothing.
     pub fn on_event(&mut self, ev: InputEvent, now: u32) -> Option<Gesture> {
         match ev {
-            InputEvent::Turn(0) => None,
-            InputEvent::Turn(n) => Some(Gesture::Turn(n)),
+            InputEvent::Step(0) => None,
+            InputEvent::Step(n) => Some(Gesture::Step(n)),
             InputEvent::Button(ButtonEvent::Down(b)) => {
                 let h = self.btn(b);
                 h.since = Some(now);
@@ -105,7 +105,7 @@ impl Gestures {
                 // release is a cancelled long-press → nothing (neither tap nor hold).
                 let is_tap = !fired && matches!(since, Some(t0) if now.wrapping_sub(t0) <= tap_ms);
                 is_tap.then_some(match b {
-                    Button::Encoder => Gesture::Press,
+                    Button::Select => Gesture::Press,
                     Button::Back => Gesture::Back,
                 })
             }
@@ -117,7 +117,7 @@ impl Gestures {
     /// if both buttons cross in the same frame, the other fires next frame.
     pub fn tick(&mut self, now: u32) -> Option<Gesture> {
         let hold_ms = self.hold_ms;
-        for (b, long) in [(Button::Encoder, Gesture::Hold), (Button::Back, Gesture::BackHold)] {
+        for (b, long) in [(Button::Select, Gesture::Hold), (Button::Back, Gesture::BackHold)] {
             let h = self.btn(b);
             if let Some(t0) = h.since {
                 if !h.fired_long && now.wrapping_sub(t0) >= hold_ms {
@@ -138,20 +138,20 @@ impl Gestures {
     /// whatever replaced it — e.g. a hold aimed at a popup's "Save & new" landing on the Route
     /// menu's hold-to-**delete** footer after a Back tap dismissed the popup (issue #480).
     pub fn cancel_holds(&mut self) {
-        for h in [&mut self.encoder, &mut self.back] {
+        for h in [&mut self.select, &mut self.back] {
             if h.since.is_some() {
                 h.fired_long = true;
             }
         }
     }
 
-    /// Hold-progress (0.0–1.0) of an in-flight encoder long-press, for the confirm
+    /// Hold-progress (0.0–1.0) of an in-flight Select long-press, for the confirm
     /// ring. 0 when not held or once the `Hold` has already fired.
-    pub fn encoder_progress(&self, now: u32) -> f32 {
-        if self.encoder.fired_long {
+    pub fn select_progress(&self, now: u32) -> f32 {
+        if self.select.fired_long {
             0.0
         } else {
-            self.encoder.progress(now, self.hold_ms)
+            self.select.progress(now, self.hold_ms)
         }
     }
 
@@ -166,7 +166,7 @@ impl Gestures {
 
     fn btn(&mut self, b: Button) -> &mut Held {
         match b {
-            Button::Encoder => &mut self.encoder,
+            Button::Select => &mut self.select,
             Button::Back => &mut self.back,
         }
     }
@@ -185,31 +185,31 @@ mod tests {
     }
 
     #[test]
-    fn turn_emits_immediately_and_ignores_zero() {
+    fn step_emits_immediately_and_ignores_zero() {
         let mut g = Gestures::with_defaults();
-        assert_eq!(g.on_event(InputEvent::Turn(2), 0), Some(Gesture::Turn(2)));
-        assert_eq!(g.on_event(InputEvent::Turn(-1), 0), Some(Gesture::Turn(-1)));
-        assert_eq!(g.on_event(InputEvent::Turn(0), 0), None);
+        assert_eq!(g.on_event(InputEvent::Step(2), 0), Some(Gesture::Step(2)));
+        assert_eq!(g.on_event(InputEvent::Step(-1), 0), Some(Gesture::Step(-1)));
+        assert_eq!(g.on_event(InputEvent::Step(0), 0), None);
     }
 
     #[test]
     fn short_press_fires_on_release() {
         let mut g = Gestures::new(500);
-        assert_eq!(g.on_event(down(Button::Encoder), 0), None);
+        assert_eq!(g.on_event(down(Button::Select), 0), None);
         assert_eq!(g.tick(100), None, "no long-press before the threshold");
-        assert_eq!(g.on_event(up(Button::Encoder), 150), Some(Gesture::Press), "a quick release taps");
+        assert_eq!(g.on_event(up(Button::Select), 150), Some(Gesture::Press), "a quick release taps");
     }
 
     /// A press released *after* the tap window but *before* the hold threshold is a cancelled
     /// long-press — the rider started to hold and let go early — and must fire **nothing** (not a
-    /// surprise tap). Covers both the encoder and Back.
+    /// surprise tap). Covers both Select and Back.
     #[test]
     fn cancelled_long_press_fires_nothing() {
         let mut g = Gestures::new(500);
-        g.on_event(down(Button::Encoder), 0);
-        assert!(g.encoder_progress(300) > 0.0, "the hold was visibly in progress");
+        g.on_event(down(Button::Select), 0);
+        assert!(g.select_progress(300) > 0.0, "the hold was visibly in progress");
         assert_eq!(g.tick(300), None, "no long-press yet");
-        assert_eq!(g.on_event(up(Button::Encoder), 300), None, "a release in the dead zone fires nothing");
+        assert_eq!(g.on_event(up(Button::Select), 300), None, "a release in the dead zone fires nothing");
 
         // Same for Back: started to BackHold, let go at 350 ms → nothing.
         g.on_event(down(Button::Back), 1000);
@@ -221,20 +221,20 @@ mod tests {
     #[test]
     fn tap_window_boundary() {
         let mut g = Gestures::new(500);
-        g.on_event(down(Button::Encoder), 0);
-        assert_eq!(g.on_event(up(Button::Encoder), DEFAULT_TAP_MS), Some(Gesture::Press), "exactly at the window taps");
-        g.on_event(down(Button::Encoder), 1000);
-        assert_eq!(g.on_event(up(Button::Encoder), 1000 + DEFAULT_TAP_MS + 1), None, "one ms past is cancelled");
+        g.on_event(down(Button::Select), 0);
+        assert_eq!(g.on_event(up(Button::Select), DEFAULT_TAP_MS), Some(Gesture::Press), "exactly at the window taps");
+        g.on_event(down(Button::Select), 1000);
+        assert_eq!(g.on_event(up(Button::Select), 1000 + DEFAULT_TAP_MS + 1), None, "one ms past is cancelled");
     }
 
     #[test]
     fn long_press_fires_at_threshold_then_release_is_silent() {
         let mut g = Gestures::new(500);
-        g.on_event(down(Button::Encoder), 0);
+        g.on_event(down(Button::Select), 0);
         assert_eq!(g.tick(499), None);
         assert_eq!(g.tick(500), Some(Gesture::Hold), "fires the instant it crosses");
         assert_eq!(g.tick(700), None, "only fires once");
-        assert_eq!(g.on_event(up(Button::Encoder), 900), None, "release after a hold is silent");
+        assert_eq!(g.on_event(up(Button::Select), 900), None, "release after a hold is silent");
     }
 
     #[test]
@@ -249,20 +249,20 @@ mod tests {
     #[test]
     fn hold_progress_ramps_then_clears() {
         let mut g = Gestures::new(500);
-        assert_eq!(g.encoder_progress(0), 0.0, "0 while up");
-        g.on_event(down(Button::Encoder), 0);
-        assert!((g.encoder_progress(250) - 0.5).abs() < 1e-6);
-        assert_eq!(g.encoder_progress(600), 1.0, "clamps at the threshold");
+        assert_eq!(g.select_progress(0), 0.0, "0 while up");
+        g.on_event(down(Button::Select), 0);
+        assert!((g.select_progress(250) - 0.5).abs() < 1e-6);
+        assert_eq!(g.select_progress(600), 1.0, "clamps at the threshold");
         g.tick(600); // fires Hold
-        assert_eq!(g.encoder_progress(700), 0.0, "clears once fired");
+        assert_eq!(g.select_progress(700), 0.0, "clears once fired");
     }
 
     #[test]
     fn the_two_buttons_are_independent() {
         let mut g = Gestures::new(500);
-        g.on_event(down(Button::Encoder), 0);
+        g.on_event(down(Button::Select), 0);
         g.on_event(down(Button::Back), 100);
-        // Encoder crosses first; Back is still mid-hold.
+        // Select crosses first; Back is still mid-hold.
         assert_eq!(g.tick(500), Some(Gesture::Hold));
         assert!(g.back_progress(500) > 0.0 && g.back_progress(500) < 1.0);
         // Back crosses next.
@@ -274,14 +274,14 @@ mod tests {
     #[test]
     fn cancel_holds_suppresses_the_pending_long_press_and_the_release() {
         let mut g = Gestures::new(500);
-        g.on_event(down(Button::Encoder), 0);
-        assert!(g.encoder_progress(300) > 0.0, "charging before the cancel");
+        g.on_event(down(Button::Select), 0);
+        assert!(g.select_progress(300) > 0.0, "charging before the cancel");
         g.cancel_holds();
-        assert_eq!(g.encoder_progress(300), 0.0, "a cancelled hold reads no progress");
+        assert_eq!(g.select_progress(300), 0.0, "a cancelled hold reads no progress");
         assert_eq!(g.tick(600), None, "the long-press never fires");
-        assert_eq!(g.on_event(up(Button::Encoder), 650), None, "the release is silent, not a tap");
+        assert_eq!(g.on_event(up(Button::Select), 650), None, "the release is silent, not a tap");
         // A fresh press afterwards is a clean slate.
-        g.on_event(down(Button::Encoder), 1_000);
+        g.on_event(down(Button::Select), 1_000);
         assert_eq!(g.tick(1_500), Some(Gesture::Hold), "the next hold recognises normally");
         // Cancelling with nothing in flight is a no-op.
         g.cancel_holds();
@@ -290,15 +290,15 @@ mod tests {
     }
 
     /// `tick` emits **at most one** gesture per call, so when both buttons cross the threshold in
-    /// the same frame the encoder's `Hold` fires now and the `BackHold` on the next `tick` — the
+    /// the same frame Select's `Hold` fires now and the `BackHold` on the next `tick` — the
     /// second long-press is deferred, not dropped.
     #[test]
     fn both_holds_crossing_one_frame_fire_one_then_the_other() {
         let mut g = Gestures::new(500);
-        g.on_event(down(Button::Encoder), 0);
+        g.on_event(down(Button::Select), 0);
         g.on_event(down(Button::Back), 0); // pressed in the very same frame
-                                           // Both are past 500 ms at t=500: only the encoder's Hold comes out this call.
-        assert_eq!(g.tick(500), Some(Gesture::Hold), "the encoder long-press wins the shared frame");
+                                           // Both are past 500 ms at t=500: only Select's Hold comes out this call.
+        assert_eq!(g.tick(500), Some(Gesture::Hold), "the Select long-press wins the shared frame");
         // The Back long-press wasn't lost — it fires on the next tick, even with no new input.
         assert_eq!(g.tick(500), Some(Gesture::BackHold), "the other hold fires next frame, not dropped");
         assert_eq!(g.tick(500), None, "and each long-press fires exactly once");

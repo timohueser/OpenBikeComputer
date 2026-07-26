@@ -298,7 +298,7 @@ impl ClimbMode {
         !matches!(self, ClimbMode::Off)
     }
 
-    /// The next mode in the Off → Manual → Auto → Off ring — the Stats row's one action (a turn or
+    /// The next mode in the Off → Manual → Auto → Off ring — the Stats row's one action (a step or
     /// press steps it).
     #[inline]
     pub const fn cycled(self) -> Self {
@@ -366,7 +366,7 @@ impl WaypointMode {
         }
     }
 
-    /// The next mode in the Off → Approach → Always → Off ring — the Stats row's one action (a turn
+    /// The next mode in the Off → Approach → Always → Off ring — the Stats row's one action (a step
     /// or press steps it).
     #[inline]
     pub const fn cycled(self) -> Self {
@@ -424,7 +424,7 @@ impl Default for IdleReturn {
     }
 }
 
-/// Walk `order` `n` detents from `cur`, wrapping at both ends — the shared value-picker step behind
+/// Walk `order` `n` steps from `cur`, wrapping at both ends — the shared value-picker step behind
 /// every ordered enum row (Language, IdleReturn, …). Mirrors the list cursor's
 /// [`step_selection`](crate::screen::list::step_selection) `rem_euclid` wrap, but on the value array
 /// rather than a bare index. `cur` missing from `order` falls back to `fallback` (each caller's
@@ -466,7 +466,7 @@ impl IdleReturn {
         }
     }
 
-    /// Walk the picker `n` detents through [`ORDER`](IdleReturn::ORDER), wrapping at both ends — the
+    /// Walk the picker `n` steps through [`ORDER`](IdleReturn::ORDER), wrapping at both ends — the
     /// Power row's left/right value step. Falls back to the default [`S30`](IdleReturn::S30) index.
     #[inline]
     pub fn stepped(self, n: i32) -> Self {
@@ -545,14 +545,14 @@ impl Language {
         }
     }
 
-    /// Walk the picker `n` detents through [`ORDER`](Language::ORDER), wrapping at both ends — the
+    /// Walk the picker `n` steps through [`ORDER`](Language::ORDER), wrapping at both ends — the
     /// Language row's left/right value step. Falls back to the default [`En`](Language::En) index.
     #[inline]
     pub fn stepped(self, n: i32) -> Self {
         step_order(&Self::ORDER, self, n, 0)
     }
 
-    /// The next language in the ring — the Language row's press action (one detent forward, like a
+    /// The next language in the ring — the Language row's press action (one step forward, like a
     /// [`stepped(1)`](Language::stepped)).
     #[inline]
     pub fn cycled(self) -> Self {
@@ -580,12 +580,12 @@ pub const UTC_OFFSET_MAX: i16 = 14 * 60;
 pub const UTC_OFFSET_STEP: i16 = 15;
 
 /// GPS-fix-interval stepper bounds (seconds). The step itself *adapts* (1 s up to 10 s, then
-/// 5 s) — see [`PowerScreen`](crate::screen) — so a long interval is a few detents, not dozens.
+/// 5 s) — see [`PowerScreen`](crate::screen) — so a long interval is a few steps, not dozens.
 pub const FIX_INTERVAL_MIN: u16 = 1;
 pub const FIX_INTERVAL_MAX: u16 = 120;
 
-/// Stats-grid page auto-cycle period stepper bounds (seconds). With the elevation chart keeping the
-/// encoder's `turn`/`hold`, a second page is only reachable by the auto-cycle — so there's no "off",
+/// Stats-grid page auto-cycle period stepper bounds (seconds). With the elevation chart keeping
+/// Up/Down and Select-`hold` for itself, a second page is only reachable by the auto-cycle — so there's no "off",
 /// the minimum is a brisk-but-readable 2 s.
 pub const STAT_CYCLE_MIN: u16 = 2;
 pub const STAT_CYCLE_MAX: u16 = 20;
@@ -1326,8 +1326,8 @@ mod tests {
         assert_eq!(Language::En.stepped(1), Language::De);
         assert_eq!(Language::Es.stepped(1), Language::En, "wraps past the last language");
         assert_eq!(Language::En.stepped(-1), Language::Es, "wraps past the start");
-        assert_eq!(Language::En.stepped(2), Language::Fr, "multi-detent flicks compound");
-        // Press cycles one forward, exactly like a single right detent.
+        assert_eq!(Language::En.stepped(2), Language::Fr, "multi-step flicks compound");
+        // Press cycles one forward, exactly like a single right step.
         assert_eq!(Language::Fr.cycled(), Language::Es);
         assert_eq!(Language::Es.cycled(), Language::En, "the press ring wraps");
         // The endonyms, in order.

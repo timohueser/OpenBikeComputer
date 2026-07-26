@@ -12,7 +12,7 @@
 //! [`AppState::ble_forget_pending`](crate::AppState) for the host to drain — no extra
 //! confirmation popup, the guarded hold *is* the confirmation. With **no bond stored the row
 //! isn't drawn at all** (the round-1 grammar: delete-class actions appear only when possible),
-//! and Turn has nothing to select below the toggle.
+//! and Up/Down has nothing to select below the toggle.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -68,9 +68,9 @@ impl BluetoothScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 // The bond vanishing from under the cursor (a completed forget) clamps it back
-                // onto the toggle before the step, so a detent never walks a hidden row.
+                // onto the toggle before the step, so a step never walks a hidden row.
                 let len = rows(cx.state.ble_paired);
                 self.selected = self.selected.min(len - 1);
                 self.selected = crate::screen::list::step_selection(self.selected, n, len);
@@ -199,7 +199,7 @@ mod tests {
     }
 
     /// Forget phone: the guarded hold records the one-shot request — but only while a bond is
-    /// stored, and only on the Forget row. Without a bond the row is hidden and Turn can't even
+    /// stored, and only on the Forget row. Without a bond the row is hidden and Up/Down can't even
     /// reach it (the round-1 only-when-possible grammar); a press there does nothing (hold is
     /// the action).
     #[test]
@@ -208,15 +208,15 @@ mod tests {
         let mut s = Settings::default();
         let mut scr = BluetoothScreen::new();
 
-        // Unpaired: the Forget row doesn't exist — a detent wraps within the one-row list.
-        run(&mut scr, &mut st, &mut s, Gesture::Turn(1));
+        // Unpaired: the Forget row doesn't exist — a step wraps within the one-row list.
+        run(&mut scr, &mut st, &mut s, Gesture::Step(1));
         assert_eq!(scr.selected, TOGGLE, "unpaired: the cursor can't leave the toggle");
         assert!(!scr.selection_is_guarded(false), "unpaired: nothing armed");
         run(&mut scr, &mut st, &mut s, Gesture::Hold);
         assert!(!st.ble_forget_pending, "unpaired: a hold does nothing (nothing to forget)");
 
         st.ble_paired = true;
-        run(&mut scr, &mut st, &mut s, Gesture::Turn(1)); // → the (now present) Forget row
+        run(&mut scr, &mut st, &mut s, Gesture::Step(1)); // → the (now present) Forget row
         assert_eq!(scr.selected, FORGET);
         assert!(scr.selection_is_guarded(true), "paired + selected: the hold fill is live");
         run(&mut scr, &mut st, &mut s, Gesture::Press);
@@ -226,25 +226,25 @@ mod tests {
 
         // A hold on the toggle row must not forget.
         st.ble_forget_pending = false;
-        run(&mut scr, &mut st, &mut s, Gesture::Turn(-1)); // back to the toggle
+        run(&mut scr, &mut st, &mut s, Gesture::Step(-1)); // back to the toggle
         run(&mut scr, &mut st, &mut s, Gesture::Hold);
         assert!(!st.ble_forget_pending, "a hold elsewhere doesn't forget");
     }
 
     /// The bond vanishing from under the cursor (the forget completing) clamps the stale Forget
-    /// selection back onto the toggle on the next detent — a hidden row is never walked.
+    /// selection back onto the toggle on the next step — a hidden row is never walked.
     #[test]
     fn forget_completing_clamps_the_cursor() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut scr = BluetoothScreen::new();
         st.ble_paired = true;
-        run(&mut scr, &mut st, &mut s, Gesture::Turn(1));
+        run(&mut scr, &mut st, &mut s, Gesture::Step(1));
         assert_eq!(scr.selected, FORGET);
         st.ble_paired = false; // the host drained the forget; the bond is gone
         assert!(!scr.selection_is_guarded(false), "no fill on a hidden row");
-        run(&mut scr, &mut st, &mut s, Gesture::Turn(1));
-        assert_eq!(scr.selected, TOGGLE, "the detent lands on the one remaining row");
+        run(&mut scr, &mut st, &mut s, Gesture::Step(1));
+        assert_eq!(scr.selected, TOGGLE, "the step lands on the one remaining row");
     }
 
     /// The status line: the rider's switch wins (Off the moment the toggle flips), else the live

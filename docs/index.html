@@ -65,6 +65,9 @@
       --amber: #e3ad33;
       --forest: #3c6b39;
       --coral: #cf6a2a;
+      /* The device's own two-tone shell ("Forest / Celadon"), used only by the housing. */
+      --device-body: #2f6350;
+      --device-accent: #8be3bc;
       --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
       --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -237,46 +240,70 @@
     .dot[aria-selected="true"] .pip { background: var(--coral); color: var(--parchment); }
 
     /* ---------- the device ----------
-       The housing is real DOM (the wasm draws only the 240×320 screen): a coral body,
-       side buttons, and the OBC wordmark — responsive (percentage paddings + aspect-ratio
-       keep the 3:4 screen registered at any width) and crisp on any DPI. The canvas
-       backing store stays 240×320; CSS scales it with hard pixel edges. */
+       The housing is real DOM (the wasm draws only the 240×320 screen), tracing the current
+       industrial design: a two-tone shell (deep forest upper body seated on a celadon base
+       that shows as a lip round the bottom and sides), four rubber buttons — UP / DOWN on
+       the left flank, SELECT / BACK on the right — a deep black bezel, and the embossed OBC
+       wordmark. Responsive (percentage paddings + aspect-ratio keep the 3:4 screen registered
+       at any width) and crisp on any DPI. The canvas backing store stays 240×320; CSS scales
+       it with hard pixel edges. */
     .device-col { display: flex; flex-direction: column; align-items: center; }
     .device-stage { position: relative; outline: none; }
     .device-stage:focus-visible .device { outline: 3px solid var(--amber); outline-offset: 4px; }
+    /* The celadon base the body is seated on: a slightly larger slab behind it, offset down,
+       so it reads as the lighter lower shell peeking out. */
+    /* Proportioned off the reference render: a ≈0.65 w:h body around the 3:4 panel, the bezel
+       reaching to within ~6% of each side, and a chin ≈22% of the height under it. */
     .device {
       position: relative;
-      width: min(330px, 88vw);
-      padding: 5.5% 7.5% 0;
-      background: linear-gradient(163deg, #dd8244 0%, var(--coral) 52%, #b85a1e 100%);
-      border-radius: clamp(20px, 8.5%, 30px);
+      /* 82vw leaves room for the pads + rim hanging off both flanks on a narrow phone. */
+      width: min(330px, 82vw);
+      padding: 5.2% 5.85% 0;
+      background: linear-gradient(163deg, #3d7a63 0%, var(--device-body) 48%, #1f4739 100%);
+      border-radius: clamp(28px, 13.6%, 46px);
       box-shadow:
-        inset 0 2px 2px rgba(255, 235, 210, 0.4),
-        inset 0 -4px 8px rgba(60, 25, 5, 0.32),
+        inset 0 2px 2px rgba(206, 255, 232, 0.28),
+        inset 0 -4px 8px rgba(6, 32, 22, 0.36),
         0 22px 30px rgba(44, 33, 20, 0.30);
     }
-    /* side buttons: the encoder knob (ridged, long) and the Back key below it. Decorative
-       twins of the real controls underneath — they depress when the matching control does. */
+    /* The celadon base: an even rim on all four sides, concentric with the body. */
+    .device::before {
+      content: ""; position: absolute; z-index: -1;
+      inset: -1.95%;
+      background: linear-gradient(163deg, var(--device-accent) 0%, #6fd3a7 100%);
+      border-radius: clamp(30px, 15.5%, 50px);
+      box-shadow: 0 10px 18px rgba(31, 71, 57, 0.28);
+    }
+    /* The four side buttons: dark textured rubber pads that protrude from each flank.
+       Decorative twins of the real controls underneath — they sink in when the matching
+       control does. UP/DOWN sit on the left, SELECT/BACK on the right, at matching heights. */
     .side {
-      position: absolute; right: -7px; width: 7px;
-      background: #b3561d; border-radius: 0 4px 4px 0;
-      box-shadow: inset -2px 0 3px rgba(60, 25, 5, 0.35), 1px 1px 2px rgba(44, 33, 20, 0.25);
-      transition: transform .08s ease, background .08s ease;
+      position: absolute; width: 12px; height: 14%;
+      background: #2b2f36;
+      background-image:
+        repeating-linear-gradient(180deg, rgba(0,0,0,0.30) 0 1px, transparent 1px 4px),
+        repeating-linear-gradient(90deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 4px);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(6, 32, 22, 0.4);
+      transition: transform .08s ease, background-color .08s ease;
     }
-    .side-knob {
-      top: 15%; height: 18%;
-      background-image: repeating-linear-gradient(180deg, rgba(60,25,5,0.28) 0 2px, transparent 2px 6px);
-    }
-    .side-back { top: 38%; height: 8%; }
-    .side.pressed { transform: translateX(-3px); background: #a04c16; }
-    .side.held { transform: translateX(-4px); background: #8f420f; }
+    .side-l { left: -12px; border-radius: 6px 0 0 6px; }
+    .side-r { right: -12px; border-radius: 0 6px 6px 0; }
+    /* The pair straddles the body's vertical midpoint, as on the real device:
+       50% − (pad + gap/2) and 50% + gap/2, with pad 14% and gap 4.7%. */
+    .side-up, .side-select { top: 33.65%; }
+    .side-down, .side-back { top: 52.35%; }
+    /* A press sinks the pad into the body — so the direction flips with the flank. */
+    .side-l.pressed { transform: translateX(3px); background-color: #1f2229; }
+    .side-l.held { transform: translateX(4px); background-color: #171a20; }
+    .side-r.pressed { transform: translateX(-3px); background-color: #1f2229; }
+    .side-r.held { transform: translateX(-4px); background-color: #171a20; }
     /* screen: a dark bezel recess holding the 3:4 panel */
     .bezel {
       position: relative;
-      background: #241c12;
-      border-radius: 10px;
-      padding: 4%;
-      box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.55), 0 1px 0 rgba(255, 235, 210, 0.28);
+      background: #101317;
+      border-radius: 14px;
+      padding: 5.9%;
+      box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.65), 0 1px 0 rgba(206, 255, 232, 0.16);
     }
     .panel { position: relative; aspect-ratio: 3 / 4; }
     canvas#device_canvas {
@@ -317,12 +344,12 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     /* chin: the wordmark, softly embossed into the body */
-    .chin { display: flex; align-items: center; justify-content: center; padding: 4.5% 0 6.5%; }
+    .chin { display: flex; align-items: center; justify-content: center; padding: 12% 0 15.3%; }
     .wordmark {
-      font-family: var(--mono); font-size: clamp(13px, 5%, 16px); font-weight: 700;
+      font-family: var(--mono); font-size: clamp(14px, 6%, 19px); font-weight: 700;
       letter-spacing: 0.34em; text-indent: 0.34em; /* re-centre the tracked glyphs */
-      color: rgba(60, 25, 5, 0.55);
-      text-shadow: 0 1px 0 rgba(255, 225, 195, 0.28);
+      color: rgba(9, 42, 31, 0.7);
+      text-shadow: 0 1px 0 rgba(206, 255, 232, 0.3);
     }
 
     /* the one caption line — the only place the page makes the real-firmware claim */
@@ -346,7 +373,10 @@
     .ctl.pressed, .ctl:active { background: var(--wood); color: var(--parchment); transform: translateY(1px); }
     /* held past the 500 ms threshold — the gesture has become a long-press */
     .ctl.held { background: var(--coral); color: var(--parchment); }
-    .ctl-arrow { font-size: 17px; line-height: 1; }
+    .ctl-arrow { font-size: 15px; line-height: 1; }
+    /* Splits the row into the device's two flanks: Up/Down on the left, Select/Back on the right. */
+    .ctl-gap { width: 14px; }
+    @media (max-width: 380px) { .ctl-gap { display: none; } }
     /* While a guided demo drives, the manual controls dim but stay clickable — a tap on any of
        them takes control (see the demo engine). */
     .controls.paused .ctl { opacity: 0.45; }
@@ -568,14 +598,17 @@
           </div>
         </div>
 
-        <!-- The live device: DOM housing (coral body, side buttons, wordmark) around the
-             240×320 wasm canvas, the real controls, and the take-control seam. -->
+        <!-- The live device: DOM housing (two-tone forest/celadon shell, four side buttons,
+             wordmark) around the 240×320 wasm canvas, the real controls, and the take-control
+             seam. -->
         <div class="device-col">
           <div class="device-stage" id="device_stage" tabindex="0" role="application"
-            aria-label="Live device demo — arrow keys scroll, Enter selects, Backspace goes back">
+            aria-label="Live device demo — up and down arrow keys scroll, Enter selects, Backspace goes back">
             <div class="device" id="device_housing">
-              <span class="side side-knob" id="side_knob" aria-hidden="true"></span>
-              <span class="side side-back" id="side_back" aria-hidden="true"></span>
+              <span class="side side-l side-up" id="side_up" aria-hidden="true"></span>
+              <span class="side side-l side-down" id="side_down" aria-hidden="true"></span>
+              <span class="side side-r side-select" id="side_select" aria-hidden="true"></span>
+              <span class="side side-r side-back" id="side_back" aria-hidden="true"></span>
               <div class="bezel">
                 <div class="panel">
                   <canvas id="device_canvas" width="240" height="320"></canvas>
@@ -598,11 +631,14 @@
           </noscript>
           <!-- the one caption line: the page's only real-firmware claim -->
           <p class="device-caption"><b>The real firmware, compiled to your browser</b> — not a video. Drive it with the controls.</p>
+          <!-- Laid out like the device itself: the Up/Down pair on the left, Select/Back on
+               the right, so the on-screen row maps onto the four physical buttons. -->
           <div class="controls" role="group" aria-label="Device controls">
-            <button class="ctl ctl-arrow" data-turn="-1" aria-label="Scroll back" title="Scroll back" disabled>◂</button>
+            <button class="ctl ctl-arrow" data-step="-1" aria-label="Up" title="Up" disabled>▲</button>
+            <button class="ctl ctl-arrow" data-step="1" aria-label="Down" title="Down" disabled>▼</button>
+            <span class="ctl-gap" aria-hidden="true"></span>
             <button class="ctl" data-btn="press" disabled>Select</button>
             <button class="ctl" data-btn="back" disabled>Back</button>
-            <button class="ctl ctl-arrow" data-turn="1" aria-label="Scroll forward" title="Scroll forward" disabled>▸</button>
           </div>
           <!-- Play / take-control toggle + live-vs-guided mode line. Tapping the toggle (or any
                device control) while a demo plays "takes control": the scripted step engine cancels
@@ -616,7 +652,7 @@
               <span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls
             </p>
           </div>
-          <p class="ctl-hint">Or on a keyboard: <kbd>←</kbd> <kbd>→</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back — hold for a long-press.</p>
+          <p class="ctl-hint">Or on a keyboard: <kbd>↑</kbd> <kbd>↓</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back — hold for a long-press.</p>
         </div>
       </div>
     </section>
@@ -759,7 +795,9 @@
       var stepLabel = document.getElementById('step_label');
       var ticksEl = document.getElementById('demo_ticks');
       var scnButtons = Array.prototype.slice.call(document.querySelectorAll('.dot'));
-      var sideKnob = document.getElementById('side_knob');
+      var sideUp = document.getElementById('side_up');
+      var sideDown = document.getElementById('side_down');
+      var sideSelect = document.getElementById('side_select');
       var sideBack = document.getElementById('side_back');
 
       // Read live (not cached) so it reflects the OS setting even if the visitor flips it after
@@ -818,8 +856,8 @@
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
             { cmds: ['backhold'], until: ["Menu"], label: 'Hold Back to open the menu' },
-            { cmds: ['turn:2', 'press'], until: ["PoiMenu"], label: 'Open Points of Interest' },
-            { cmds: ['turn:2', 'press'], until: ["PoiList"], label: 'Browse to a category' },
+            { cmds: ['step:2', 'press'], until: ["PoiMenu"], label: 'Open Points of Interest' },
+            { cmds: ['step:2', 'press'], until: ["PoiList"], label: 'Browse to a category' },
             { cmds: ['press'], until: ["PoiDetail"], label: 'Open the nearest place' },
             { cmds: ['press'], until: ["NavConfirm"], label: 'Create a route to it' },
             // NavPlanning is TRANSIENT — on the small demo map the planner can finish between two
@@ -846,7 +884,7 @@
             // dismisses the card instead; the demo map is fully connected so a plan never fails
             // there, and a timeout just re-syncs.)
             { cmds: ['press', 'press'], until: ["Map"], label: 'Start riding it' },
-            { cmds: ['turn:-4'], until: ["Map"], label: 'Your new route, on the map' }
+            { cmds: ['step:-4'], until: ["Map"], label: 'Your new route, on the map' }
           ]
         }
       ];
@@ -977,19 +1015,19 @@
       }
 
       // The beat between scripted physical inputs — long enough to read as a human interaction,
-      // short enough not to drag a step out (a 2-detent + press menu hop takes ~1 s).
+      // short enough not to drag a step out (a 2-step + press menu hop takes ~1 s).
       var CLICK_MS = 420;
 
-      // Unroll a step's cmds into individually-dispatchable inputs: `turn:<n>` becomes |n| single
-      // detents (so the reader sees the selection walk item by item), gestures are marked for
+      // Unroll a step's cmds into individually-dispatchable inputs: `step:<n>` becomes |n| single
+      // steps (so the reader sees the selection walk item by item), gestures are marked for
       // pacing, and reset/playback commands stay instant.
       function expandInputs(cmds) {
         var out = [];
         cmds.forEach(function (c) {
-          var m = /^turn:(-?\d+)$/.exec(c);
+          var m = /^step:(-?\d+)$/.exec(c);
           if (m) {
             var n = parseInt(m[1], 10);
-            for (var j = 0; j < Math.abs(n); j++) out.push({ cmd: 'turn:' + (n < 0 ? -1 : 1), paced: true });
+            for (var j = 0; j < Math.abs(n); j++) out.push({ cmd: 'step:' + (n < 0 ? -1 : 1), paced: true });
           } else {
             out.push({ cmd: c, paced: c === 'press' || c === 'back' || c === 'hold' || c === 'backhold' });
           }
@@ -1032,7 +1070,7 @@
           if (i > 0 && demoRunning) setStep('Getting there…', i - 1);
           // Send the step's inputs like a person would: one physical input at a time, a beat
           // apart, so the reader watches the selection walk and each click land instead of the
-          // screen teleporting. `turn:<n>` unrolls into single detents. Reset/playback commands
+          // screen teleporting. `step:<n>` unrolls into single steps. Reset/playback commands
           // (enter, ambient, play, pause, seek) stay instant — only gestures get the beat.
           var inputs = expandInputs(step.cmds);
           for (var k = 0; k < inputs.length; k++) {
@@ -1289,19 +1327,20 @@
       // ---- on-screen buttons (touch + mouse) ---------------------------------------------------
       document.querySelectorAll('.ctl[data-btn]').forEach(function (btn) {
         var g = btn.getAttribute('data-btn'); // 'press' | 'back'
-        var h = holdable(g, g === 'press' ? 'hold' : 'backhold', [btn, g === 'press' ? sideKnob : sideBack]);
+        var h = holdable(g, g === 'press' ? 'hold' : 'backhold', [btn, g === 'press' ? sideSelect : sideBack]);
         btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!ready()) return; stage.focus(); grabIfDemo(); h.down(); });
         btn.addEventListener('pointerup', function (e) { e.preventDefault(); if (!ready()) return; h.up(false); });
         btn.addEventListener('pointerleave', function () { if (ready()) h.up(true); });
         btn.addEventListener('pointercancel', function () { if (ready()) h.up(true); });
         btn.addEventListener('click', function (e) { e.preventDefault(); });
       });
-      document.querySelectorAll('.ctl[data-turn]').forEach(function (btn) {
-        var dir = btn.getAttribute('data-turn'), repeat = null;
+      document.querySelectorAll('.ctl[data-step]').forEach(function (btn) {
+        var dir = btn.getAttribute('data-step'), repeat = null;
+        var pad = dir === '-1' ? sideUp : sideDown; // the physical twin on the left flank
         function stop() {
           if (repeat) { clearInterval(repeat); repeat = null; }
           btn.classList.remove('pressed');
-          if (sideKnob) sideKnob.classList.remove('pressed');
+          if (pad) pad.classList.remove('pressed');
         }
         btn.addEventListener('pointerdown', function (e) {
           e.preventDefault();
@@ -1309,9 +1348,10 @@
           stage.focus();
           grabIfDemo();
           btn.classList.add('pressed');
-          if (sideKnob) sideKnob.classList.add('pressed'); // the encoder is the turning part
-          cmd('turn:' + dir);
-          repeat = setInterval(function () { cmd('turn:' + dir); }, 160); // detents while held
+          if (pad) pad.classList.add('pressed');
+          cmd('step:' + dir);
+          // Auto-repeat while held, matching the firmware's own held-button repeat.
+          repeat = setInterval(function () { cmd('step:' + dir); }, 160);
         });
         ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { btn.addEventListener(ev, stop); });
         btn.addEventListener('click', function (e) { e.preventDefault(); });
@@ -1319,15 +1359,21 @@
 
       // ---- keyboard, scoped to the focused device stage ----------------------------------------
       var keys = {
-        Enter: holdable('press', 'hold', [sideKnob]),
+        Enter: holdable('press', 'hold', [sideSelect]),
         Backspace: holdable('back', 'backhold', [sideBack])
       };
       stage.addEventListener('keydown', function (e) {
         if (!ready()) return;
-        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           e.preventDefault();
           grabIfDemo();
-          cmd('turn:' + (e.key === 'ArrowRight' ? 1 : -1)); // key autorepeat = detents
+          var down = e.key === 'ArrowDown';
+          cmd('step:' + (down ? 1 : -1)); // key autorepeat = repeated steps
+          var pad = down ? sideDown : sideUp; // flash the matching flank pad
+          if (pad) {
+            pad.classList.add('pressed');
+            setTimeout(function () { pad.classList.remove('pressed'); }, 110);
+          }
         } else if (keys[e.key]) {
           e.preventDefault();
           if (!e.repeat) { grabIfDemo(); keys[e.key].down(); }

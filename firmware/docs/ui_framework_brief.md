@@ -27,16 +27,17 @@ implements them):
   no smooth gradients. Design for it: flat fills, **dither** for shading, crisp
   **1px** linework, maximize contrast, **redraw only on change** (the panel holds
   its image — this is the main power lever).
-- **Input:** one **rotary encoder with push** + one **Back** button. No touch.
+- **Input:** **four buttons** — **Up** / **Down** on the left flank, **Select** /
+  **Back** on the right. No touch.
 - **Connectivity:** BLE companion app — routes/tiles in, recorded tracks out.
 
 ## Input model — five gestures
 
 | Gesture | Notation |
 |---|---|
-| rotate encoder | `turn` |
-| encoder short press | `press` |
-| encoder long press | `hold` |
+| Up / Down press (auto-repeats while held) | `step` |
+| Select short press | `press` |
+| Select long press | `hold` |
 | Back short press | `back` |
 | Back long press | `back-hold` |
 
@@ -66,7 +67,7 @@ distance / time / climb from `Fix`es; carries the mode). It belongs in
 ~9 screens. Authoritative bindings (from the spec §5, **with the Ride-control
 correction we agreed**: Resume = `press`, Finish/Discard = `hold`):
 
-| Screen | `turn` | `press` | `hold` | `back` | `back-hold` |
+| Screen | `step` | `press` | `hold` | `back` | `back-hold` |
 |---|---|---|---|---|---|
 | Home | – | → Route menu | – | – | → Menu |
 | Route menu | scroll routes | load route → Map (tracking on) | – | → caller | – |
@@ -150,8 +151,8 @@ removing screens touches only the variant and its push sites.
 ### HAL changes (`obc-app/src/hal.rs`)
 
 Today: `LocationSource`/`Fix` plus `Button`/`ButtonEvent`/`InputSource` *defined
-but unused* (`App::tick` only takes `LocationSource`). Needed: encoder detents +
-encoder/Back button edges + a **millis clock**; a shared layer turning those into
+but unused* (`App::tick` only takes `LocationSource`). Needed: Up/Down steps +
+Select/Back button edges + a **millis clock**; a shared layer turning those into
 the five `Gesture`s + hold-progress; and consuming `InputSource` in `App::tick`
 (its doc comment already anticipates this).
 
@@ -165,7 +166,7 @@ they render correctly through the quantizing `color_fn` on a 64-color target.
 ## First vertical slice (host-only, no DK/display)
 
 1. **Text rendering** in the shared crate, verified via headless `--png`.
-2. **Gesture plumbing:** HAL encoder/Back + millis clock → shared
+2. **Gesture plumbing:** HAL four-button edges + millis clock → shared
    short/long/hold-progress layer → `Gesture`; consume in `App::tick`. Keyboard /
    scroll-wheel → raw input in `obc-sim` (a real device-input emulation path; the
    existing egui debug panel stays as a separate dev tool).
@@ -188,6 +189,7 @@ Routes/Settings; map `back` → Elevation). Remaining, from spec §10 + ours:
 2. Final Elevation stat set, or allow swapping a tile for live grade / ETA?
 3. Settings contents (placeholder for v1).
 4. Power-on resume of an in-progress route (assumed yes).
-5. Hold-threshold ms and whether fast encoder spins accelerate zoom/scroll.
+5. Hold-threshold ms and whether a held Up/Down accelerates zoom/scroll past the
+   flat auto-repeat rate.
 6. On-device pixel font choice (start with a built-in mono font, swap to a pixel
    font once the look is dialed in).

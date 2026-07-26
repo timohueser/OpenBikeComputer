@@ -2,7 +2,7 @@
 //! screen ([`SettingsScreen`]) and the reusable drawing kit every settings screen shares (the slider
 //! toggle, the value/stepper field, the row cursor); the individual screens live one file each.
 //!
-//! The two-level encoder model:
+//! The two-level Select model:
 //! - **Rotate** moves the amber row cursor; while a field is open it changes that field's value.
 //! - **Press** flips a toggle, or enters a value row's stepper (a `▲▼` box marks the live field);
 //!   pressing again steps field→field and off the end steps back out.
@@ -85,7 +85,7 @@ impl SettingsScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::Ride(RideScreen::new())),
                 1 => Transition::Push(Screen::Display(DisplayScreen::new())),

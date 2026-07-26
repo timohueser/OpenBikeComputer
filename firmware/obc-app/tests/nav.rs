@@ -58,7 +58,7 @@ fn render(app: &mut App, bytes: &[u8]) {
 fn open_detail(app: &mut App, bytes: &[u8]) {
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
     app.apply_gesture(Gesture::BackHold); // Home → Menu
-    app.apply_gesture(Gesture::Turn(2)); // Routes → Rides → POIs
+    app.apply_gesture(Gesture::Step(2)); // Routes → Rides → POIs
     app.apply_gesture(Gesture::Press); // → category list (Water first)
     app.apply_gesture(Gesture::Press); // → POI list
     render(app, bytes); // lazy snapshot fills
@@ -128,9 +128,9 @@ fn unnamed_poi_falls_back_to_the_subtype_label() {
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(2));
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Turn(1)); // Water → Campsite
+    app.apply_gesture(Gesture::Step(1)); // Water → Campsite
     app.apply_gesture(Gesture::Press);
     render(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → detail (the unnamed campsite)
@@ -144,7 +144,7 @@ fn confirm_cancel_and_back_return_to_the_detail() {
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     open_detail(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → confirm
-    app.apply_gesture(Gesture::Turn(1)); // → Cancel
+    app.apply_gesture(Gesture::Step(1)); // → Cancel
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "Cancel returns to the detail");
     assert!(plan_req(&mut app).is_none(), "cancel records nothing");
@@ -211,7 +211,7 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
 
     // Mid-ride: Ride menu → POIs → detail → confirm → create → (host answers).
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(2));
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Press);
     render(&mut app, &bytes);

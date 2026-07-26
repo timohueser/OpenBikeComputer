@@ -1,6 +1,6 @@
 //! The shared scrolling-list widget. Three screens (Settings, Route menu, Add field) are "a
 //! title bar over a windowed row list"; this module owns everything they have in common — the
-//! wrapping cursor ([`on_turn`], which the compass Menu and the Fields grid editor also step
+//! wrapping cursor ([`on_step`], which the compass Menu and the Fields grid editor also step
 //! their selections with), the window math ([`window_start`]), and [`draw_rows`], which walks
 //! the visible slots, paints the amber row cursor and the separators, and finishes with the
 //! scrollbar. Each screen keeps only its per-row body (bullet + label, two-line route pane,
@@ -17,7 +17,7 @@ use obc_render::{
 
 use super::{palette, title_frame, Transition, LIST_TOP};
 
-/// Advance a wrapping list selection by `n` detents over `len` items. Wraps at both ends; a no-op
+/// Advance a wrapping list selection by `n` steps over `len` items. Wraps at both ends; a no-op
 /// on an empty list.
 pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
     if len == 0 {
@@ -26,9 +26,9 @@ pub(crate) fn step_selection(selected: usize, n: i32, len: usize) -> usize {
     (selected as i32 + n).rem_euclid(len as i32) as usize
 }
 
-/// The shared `Gesture::Turn` arm: step a wrapping cursor by `n` detents over `len` rows.
+/// The shared `Gesture::Step` arm: step a wrapping cursor by `n` steps over `len` rows.
 /// Always [`Transition::None`] — turning never navigates.
-pub(crate) fn on_turn(selected: &mut usize, n: i32, len: usize) -> Transition {
+pub(crate) fn on_step(selected: &mut usize, n: i32, len: usize) -> Transition {
     *selected = step_selection(*selected, n, len);
     Transition::None
 }
@@ -212,36 +212,36 @@ pub(crate) fn scrollbar(
 mod tests {
     use super::*;
 
-    // `step_selection` wrapping: a `%` regression is negative for a backward turn at the top, which
+    // `step_selection` wrapping: a `%` regression is negative for a backward step at the top, which
     // would hand back a garbage index and highlight nothing or panic on the row lookup.
 
-    /// Backward off the top: `Turn(-1)` from index 0 wraps to the last item, not a negative index.
+    /// Backward off the top: `Step(-1)` from index 0 wraps to the last item, not a negative index.
     #[test]
     fn step_selection_wraps_backward_past_the_top() {
         assert_eq!(step_selection(0, -1, 4), 3, "up from the first item lands on the last");
         assert_eq!(step_selection(0, -1, 1), 0, "a single-item list stays put");
     }
 
-    /// Forward off the bottom: `Turn(1)` from the last item wraps to the first.
+    /// Forward off the bottom: `Step(1)` from the last item wraps to the first.
     #[test]
     fn step_selection_wraps_forward_past_the_bottom() {
         assert_eq!(step_selection(3, 1, 4), 0, "down from the last item lands on the first");
     }
 
-    /// A multi-detent turn larger than the list wraps cleanly, not off the end.
+    /// A multi-step move larger than the list wraps cleanly, not off the end.
     #[test]
-    fn step_selection_wraps_multiple_turns() {
+    fn step_selection_wraps_multiple_steps() {
         assert_eq!(step_selection(0, 5, 3), 2, "a long forward flick wraps modulo the length");
         assert_eq!(step_selection(0, -5, 3), 1, "a long backward flick wraps without going negative");
         assert_eq!(step_selection(2, 3, 3), 2, "exactly one lap is a no-op");
     }
 
-    /// An empty list is a no-op for any turn — the `len == 0` guard must short-circuit before the
+    /// An empty list is a no-op for any step — the `len == 0` guard must short-circuit before the
     /// `% 0` that would panic.
     #[test]
     fn step_selection_on_empty_list_is_a_noop() {
-        assert_eq!(step_selection(0, 1, 0), 0, "a forward turn on an empty list stays at 0");
-        assert_eq!(step_selection(0, -1, 0), 0, "a backward turn on an empty list stays at 0");
+        assert_eq!(step_selection(0, 1, 0), 0, "a forward step on an empty list stays at 0");
+        assert_eq!(step_selection(0, -1, 0), 0, "a backward step on an empty list stays at 0");
         assert_eq!(step_selection(7, 3, 0), 7, "the selection is returned unchanged, not modulo'd");
     }
 

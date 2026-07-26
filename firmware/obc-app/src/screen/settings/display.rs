@@ -34,7 +34,7 @@ impl DisplayScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 if self.editing {
                     // Only the idle-return row has an editable value; a turn walks it in place.
                     if self.selected == IDLE_RETURN {
@@ -132,7 +132,7 @@ mod tests {
         assert!(s.map_clock && s.map_scale_bar, "both default on");
         run(&mut scr, &mut s, Gesture::Press); // flip Clock
         assert!(!s.map_clock, "press flips the clock toggle");
-        run(&mut scr, &mut s, Gesture::Turn(1)); // → Scale bar row
+        run(&mut scr, &mut s, Gesture::Step(1)); // → Scale bar row
         assert_eq!(scr.selected, SCALE_BAR);
         run(&mut scr, &mut s, Gesture::Press);
         assert!(!s.map_scale_bar, "press flips the scale-bar toggle");
@@ -144,13 +144,13 @@ mod tests {
     fn idle_return_picker() {
         let mut s = Settings { idle_return: IdleReturn::S30, ..Settings::default() };
         let mut scr = DisplayScreen::new();
-        run(&mut scr, &mut s, Gesture::Turn(2)); // Clock → Scale bar → Idle
+        run(&mut scr, &mut s, Gesture::Step(2)); // Clock → Scale bar → Idle
         assert_eq!(scr.selected, IDLE_RETURN);
         run(&mut scr, &mut s, Gesture::Press); // open the picker
         assert!(scr.editing);
-        run(&mut scr, &mut s, Gesture::Turn(1));
-        assert_eq!(s.idle_return, IdleReturn::M1, "a turn walks 30 s → 1 min");
-        run(&mut scr, &mut s, Gesture::Turn(-1));
+        run(&mut scr, &mut s, Gesture::Step(1));
+        assert_eq!(s.idle_return, IdleReturn::M1, "a step walks 30 s → 1 min");
+        run(&mut scr, &mut s, Gesture::Step(-1));
         assert_eq!(s.idle_return, IdleReturn::S30, "and back");
         // Back closes the open picker first (no pop), then a second Back pops the screen.
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));

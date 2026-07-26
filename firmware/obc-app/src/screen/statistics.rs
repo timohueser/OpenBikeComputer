@@ -3,9 +3,9 @@
 //! (carrying a current-elevation readout), an amber progress bar, and a grid of ride stats.
 //!
 //! Bindings:
-//! - **Cursor mode (default):** `turn` scrubs the cursor along the full profile; it springs back to
+//! - **Cursor mode (default):** up/down scrubs the cursor along the full profile; it springs back to
 //!   the live position after a few seconds idle. `hold` enters Zoom mode.
-//! - **Zoom mode:** `turn` zooms centred on the frozen cursor (a magnifying-glass icon marks the
+//! - **Zoom mode:** up/down zooms centred on the frozen cursor (a magnifying-glass icon marks the
 //!   mode). It does not spring back while zooming. `hold` or `back` exits, springing back.
 //! - Shared: `press` = pause → Ride control, `back` (cursor mode) = the sibling Map, `back-hold` = Ride menu.
 //!
@@ -29,9 +29,9 @@ use crate::Msg;
 
 use super::{palette, title_frame, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
-/// Cursor scrub per encoder detent, as a fraction of the whole route — ~42 detents end to end.
+/// Cursor scrub per Up/Down step, as a fraction of the whole route — ~42 steps end to end.
 const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
-/// Zoom multiplier per encoder detent (matches the Map's zoom feel).
+/// Zoom multiplier per Up/Down step (matches the Map's zoom feel).
 const ZOOM_STEP: f32 = 1.2;
 /// Zoom clamps: `1.0` = whole route; the max is a touch under where the base stops adding detail.
 const MIN_ZOOM: f32 = 1.0;
@@ -58,7 +58,7 @@ const WP_TICK_W: i32 = 2;
 const WP_TICK_H: i32 = 6;
 const WP_TICK_INSET_Y: i32 = 1;
 
-/// What `turn` does: scrub the cursor, or zoom the view about it.
+/// What Up/Down does: scrub the cursor, or zoom the view about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Cursor,
@@ -99,8 +99,8 @@ impl StatisticsScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let live = stat_fields::live_frac(cx.activity);
         match g {
-            Gesture::Turn(n) => {
-                self.on_turn(n, live, cx.now_ms);
+            Gesture::Step(n) => {
+                self.on_step(n, live, cx.now_ms);
                 Transition::None
             }
             // hold = enter/exit Zoom mode.
@@ -212,7 +212,7 @@ impl StatisticsScreen {
         }
     }
 
-    fn on_turn(&mut self, n: i32, live: f32, now_ms: u32) {
+    fn on_step(&mut self, n: i32, live: f32, now_ms: u32) {
         match self.mode {
             Mode::Cursor => {
                 let c = self.effective_cursor(now_ms, live);
@@ -221,7 +221,7 @@ impl StatisticsScreen {
                 self.last_scrub_ms = now_ms;
             }
             Mode::Zoom => {
-                // Multiply per detent (no_std: no powf).
+                // Multiply per step (no_std: no powf).
                 let step = if n >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
                 let mut z = self.zoom;
                 for _ in 0..n.unsigned_abs() {
@@ -508,7 +508,7 @@ mod tests {
         );
     }
 
-    /// A live position to scrub away from; one detent right lands at `scrubbed`.
+    /// A live position to scrub away from; one step right lands at `scrubbed`.
     const LIVE: f32 = 0.5;
     fn scrubbed() -> f32 {
         (LIVE + CURSOR_STEP_FRAC).clamp(0.0, 1.0)
@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn cursor_springs_back_after_idle() {
         let mut s = StatisticsScreen::new();
-        s.on_turn(1, LIVE, 1_000);
+        s.on_step(1, LIVE, 1_000);
         // Held while fresh and right up to (but not at) the threshold…
         assert_eq!(s.effective_cursor(1_000, LIVE), scrubbed());
         assert_eq!(s.effective_cursor(1_000 + IDLE_MS - 1, LIVE), scrubbed());
@@ -536,7 +536,7 @@ mod tests {
         // Untouched: tracking the live position already, nothing to settle.
         assert!(!s.tick_timers(1_000, &cfg).changed, "an untouched view never self-dirties");
 
-        s.on_turn(1, LIVE, 1_000); // scrub the cursor away from live
+        s.on_step(1, LIVE, 1_000); // scrub the cursor away from live
         assert!(!s.tick_timers(1_000, &cfg).changed, "the scrub frame itself isn't a spring-back");
         assert!(!s.tick_timers(1_000 + IDLE_MS - 1, &cfg).changed, "still frozen inside the idle window");
         assert!(s.tick_timers(1_000 + IDLE_MS, &cfg).changed, "springs back exactly at the deadline → dirty once");
@@ -550,7 +550,7 @@ mod tests {
     fn tick_timers_never_springs_back_in_zoom_mode() {
         let cfg = Settings::default();
         let mut s = StatisticsScreen::new();
-        s.on_turn(1, LIVE, 0); // a scrub…
+        s.on_step(1, LIVE, 0); // a scrub…
         s.mode = Mode::Zoom; // …then into zoom (as `Hold` would)
         assert!(!s.tick_timers(IDLE_MS * 3, &cfg).changed, "zoom mode holds the cursor — no spring-back");
     }
@@ -592,7 +592,7 @@ mod tests {
         let cfg = Settings::default(); // single page → only the cursor spring-back can be pending
         let mut s = StatisticsScreen::new();
         assert_eq!(s.tick_timers(1_000, &cfg).next_wake_ms, None, "an untouched view needs no timed wake");
-        s.on_turn(1, LIVE, 1_000); // scrub → the spring-back timer is now armed
+        s.on_step(1, LIVE, 1_000); // scrub → the spring-back timer is now armed
         assert_eq!(s.tick_timers(1_000, &cfg).next_wake_ms, Some(IDLE_MS), "the full idle window remains at the scrub");
         assert_eq!(
             s.tick_timers(1_000 + 1_000, &cfg).next_wake_ms,
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(s.tick_timers(10_000, &cfg).next_wake_ms, Some(period), "the anchoring poll = the full period");
         assert_eq!(s.tick_timers(10_000 + 2_000, &cfg).next_wake_ms, Some(period - 2_000), "2 s into the dwell");
         // A fresh scrub arms the spring-back too; IDLE_MS (4 s) < the 3 s left? no — 3 s page wins.
-        s.on_turn(1, LIVE, 10_000 + 2_000);
+        s.on_step(1, LIVE, 10_000 + 2_000);
         assert_eq!(
             s.tick_timers(10_000 + 2_000, &cfg).next_wake_ms,
             Some(period - 2_000),
@@ -648,7 +648,7 @@ mod tests {
     fn idle_timer_is_wrap_safe() {
         let mut s = StatisticsScreen::new();
         let t0 = u32::MAX - 1_000; // 1 s before the wrap; t0 + IDLE_MS would overflow
-        s.on_turn(1, LIVE, t0); // panicked here in debug before the fix
+        s.on_step(1, LIVE, t0); // panicked here in debug before the fix
                                 // Held across the wrap while still inside the window…
         assert_eq!(s.effective_cursor(t0, LIVE), scrubbed());
         assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS - 1), LIVE), scrubbed());
@@ -656,9 +656,9 @@ mod tests {
         assert_eq!(s.effective_cursor(t0.wrapping_add(IDLE_MS), LIVE), LIVE);
     }
 
-    // Zoom-mode math + clamps: `on_turn` in Zoom multiplies by `ZOOM_STEP` per detent and clamps to
+    // Zoom-mode math + clamps: `on_step` in Zoom multiplies by `ZOOM_STEP` per step and clamps to
     // [MIN_ZOOM, MAX_ZOOM]. A dropped clamp would zoom to a degenerate/inverted window; a `+`/`pow`
-    // instead of the per-detent multiply would mis-scale.
+    // instead of the per-step multiply would mis-scale.
 
     /// A helper screen frozen in Zoom mode at full zoom — the state `Hold` lands in.
     fn zoom_screen() -> StatisticsScreen {
@@ -669,50 +669,50 @@ mod tests {
         s
     }
 
-    /// Two detents in Zoom mode compound to `ZOOM_STEP²`, not `2·ZOOM_STEP` — the per-detent
+    /// Two steps in Zoom mode compound to `ZOOM_STEP²`, not `2·ZOOM_STEP` — the per-step
     /// geometric step.
     #[test]
-    fn zoom_in_multiplies_per_detent() {
+    fn zoom_in_multiplies_per_step() {
         let mut s = zoom_screen();
-        s.on_turn(1, LIVE, 0);
-        assert!((s.zoom - ZOOM_STEP).abs() < 1e-5, "one detent is ×ZOOM_STEP, got {}", s.zoom);
-        s.on_turn(1, LIVE, 0);
-        assert!((s.zoom - ZOOM_STEP * ZOOM_STEP).abs() < 1e-4, "two detents compound, got {}", s.zoom);
+        s.on_step(1, LIVE, 0);
+        assert!((s.zoom - ZOOM_STEP).abs() < 1e-5, "one step is ×ZOOM_STEP, got {}", s.zoom);
+        s.on_step(1, LIVE, 0);
+        assert!((s.zoom - ZOOM_STEP * ZOOM_STEP).abs() < 1e-4, "two steps compound, got {}", s.zoom);
     }
 
-    /// A `Turn(3)` compounds to `ZOOM_STEP³` in one call, matching three separate detents.
+    /// A `Step(3)` compounds to `ZOOM_STEP³` in one call, matching three separate steps.
     #[test]
-    fn zoom_multi_detent_turn_compounds_in_one_call() {
+    fn zoom_multi_step_turn_compounds_in_one_call() {
         let mut s = zoom_screen();
-        s.on_turn(3, LIVE, 0);
+        s.on_step(3, LIVE, 0);
         let expect = ZOOM_STEP * ZOOM_STEP * ZOOM_STEP;
-        assert!((s.zoom - expect).abs() < 1e-4, "Turn(3) compounds three steps, got {}", s.zoom);
+        assert!((s.zoom - expect).abs() < 1e-4, "Step(3) compounds three steps, got {}", s.zoom);
     }
 
-    /// A backward turn at full zoom can't drive the zoom under 1× and invert the span (lower clamp).
+    /// A backward step at full zoom can't drive the zoom under 1× and invert the span (lower clamp).
     #[test]
     fn zoom_out_at_full_is_clamped_at_min() {
         let mut s = zoom_screen(); // already at MIN_ZOOM
-        s.on_turn(-1, LIVE, 0);
+        s.on_step(-1, LIVE, 0);
         assert_eq!(s.zoom, MIN_ZOOM, "can't zoom out past the whole route");
-        s.on_turn(-5, LIVE, 0);
+        s.on_step(-5, LIVE, 0);
         assert_eq!(s.zoom, MIN_ZOOM, "a long backward flick saturates at full, not below");
     }
 
-    /// A huge forward turn saturates at `MAX_ZOOM` instead of running away.
+    /// A huge forward step saturates at `MAX_ZOOM` instead of running away.
     #[test]
     fn zoom_in_saturates_at_max() {
         let mut s = zoom_screen();
-        s.on_turn(100, LIVE, 0);
+        s.on_step(100, LIVE, 0);
         assert_eq!(s.zoom, MAX_ZOOM, "an enormous forward flick saturates at MAX_ZOOM, not beyond");
     }
 
-    /// A turn in Cursor mode scrubs and forces the zoom back to 1.0, so zoom state can't leak in
+    /// A step in Cursor mode scrubs and forces the zoom back to 1.0, so zoom state can't leak in
     /// from a scrub.
     #[test]
     fn cursor_mode_turn_keeps_zoom_at_full() {
         let mut s = StatisticsScreen::new(); // Cursor mode, zoom 1.0
-        s.on_turn(3, LIVE, 0);
+        s.on_step(3, LIVE, 0);
         assert_eq!(s.zoom, 1.0, "a scrub leaves the zoom at full");
     }
 

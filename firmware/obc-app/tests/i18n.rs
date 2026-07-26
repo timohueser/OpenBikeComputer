@@ -137,8 +137,8 @@ fn render_smoke() {
 
         // Home (idle) → press opens the compass Menu, whose title bar carries translated copy.
         let mut press = keys(&[
-            InputEvent::Button(ButtonEvent::Down(Button::Encoder)),
-            InputEvent::Button(ButtonEvent::Up(Button::Encoder)),
+            InputEvent::Button(ButtonEvent::Down(Button::Select)),
+            InputEvent::Button(ButtonEvent::Up(Button::Select)),
         ]);
         app.handle_input(InputClock(0), &mut press);
 

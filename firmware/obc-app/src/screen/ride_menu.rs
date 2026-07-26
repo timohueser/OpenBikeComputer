@@ -1,5 +1,5 @@
 //! The mid-ride compass menu (epic #789): five fixed stations with the same bezel, needle sweep and
-//! detents as the main Menu. Waypoints opens the route-ordered whole-plan list (#787), Detour
+//! steps as the main Menu. Waypoints opens the route-ordered whole-plan list (#787), Detour
 //! opens the rejoin chooser (#788 → routed detour #882), and POIs, Routes and Main menu open
 //! their existing screens.
 
@@ -44,7 +44,7 @@ impl RideMenuScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => self.dial.turn(n),
+            Gesture::Step(n) => self.dial.step(n),
             Gesture::Press => match self.dial.selected() {
                 // Open on the next waypoint when one is resolved, while keeping passed entries in
                 // the list above it. A route-less/no-waypoint ride simply starts at row 0.
@@ -130,7 +130,7 @@ impl RideWaypointsScreen {
         let len = cx.activity.waypoint_count;
         self.selected = self.selected.min(len.saturating_sub(1));
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, len),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, len),
             Gesture::Back => Transition::Pop,
             // MVP is the list: a row has no detail child yet. Holding/back-holding inside ride
             // chrome must likewise leave session, mode and navigation stack untouched.
@@ -375,9 +375,9 @@ mod tests {
 
     #[test]
     fn fixed_ring_dispatches_all_five_stations_in_order() {
-        fn press_at(turn: i32) -> Transition {
+        fn press_at(step: i32) -> Transition {
             let mut scr = RideMenuScreen::new();
-            run(&mut scr, Gesture::Turn(turn));
+            run(&mut scr, Gesture::Step(step));
             run(&mut scr, Gesture::Press)
         }
         assert!(matches!(press_at(0), Transition::Push(Screen::RideWaypoints(_))));
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn ring_wrap_and_back_are_stable() {
         let mut scr = RideMenuScreen::new();
-        run(&mut scr, Gesture::Turn(5));
+        run(&mut scr, Gesture::Step(5));
         assert!(matches!(run(&mut scr, Gesture::Press), Transition::Push(Screen::RideWaypoints(_))));
         assert!(matches!(run(&mut RideMenuScreen::new(), Gesture::Back), Transition::Pop));
     }
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn ride_menu_uses_the_shared_needle_timer() {
         let mut scr = RideMenuScreen::new();
-        run(&mut scr, Gesture::Turn(1));
+        run(&mut scr, Gesture::Step(1));
         assert_eq!(scr.tick_timers(0).next_wake_ms, Some(16));
         let tick = scr.tick_timers(16);
         assert!(tick.changed);
@@ -443,7 +443,7 @@ mod tests {
         activity.start_session();
         let session = activity.session;
         let mut screen = RideWaypointsScreen::new();
-        assert!(matches!(screen.handle(Gesture::Turn(-1), &mut waypoint_ctx(&mut activity, 3)), Transition::None));
+        assert!(matches!(screen.handle(Gesture::Step(-1), &mut waypoint_ctx(&mut activity, 3)), Transition::None));
         assert_eq!(screen.selected, 2, "turning above the first row wraps to the last resident waypoint");
         for g in [Gesture::Press, Gesture::Hold, Gesture::BackHold] {
             assert!(matches!(screen.handle(g, &mut waypoint_ctx(&mut activity, 3)), Transition::None));

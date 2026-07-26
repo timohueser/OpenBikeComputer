@@ -119,7 +119,7 @@ impl InputSource for NullInput {
 }
 
 /// The VCOM-injected input stream to chain after the physical buttons: the `debug-uart` source that
-/// drains host-injected turns/edges (`K` lines), or [`NullInput`] when the feature is off. One
+/// drains host-injected steps/edges (`K` lines), or [`NullInput`] when the feature is off. One
 /// helper so the input plane builds it the same `cfg` way regardless.
 fn debug_input() -> impl InputSource {
     #[cfg(feature = "debug-uart")]
@@ -161,7 +161,7 @@ pub(crate) async fn input_task(
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
             });
-            (plane.overlay_active(), plane.encoder_hold_progress() > 0.0 || plane.back_hold_progress() > 0.0)
+            (plane.overlay_active(), plane.select_hold_progress() > 0.0 || plane.back_hold_progress() > 0.0)
         });
         // Nudge the event-driven map loop for the whole hold lifecycle (charge → pop/retract). On
         // this backend the *map plane* owns every bulge push, and a press emits no gesture — so

@@ -62,7 +62,7 @@ impl RideStartScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => list::on_turn(&mut self.selected, n, N_ITEMS),
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
             Gesture::Press => match self.selected {
                 // Begin a route-less tracking session and root the stack to [Home, Map] — the same
                 // clean landing the Route overview's START RIDE does, minus the route.
@@ -168,7 +168,7 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RideStartScreen::new();
-        run(&mut scr, &mut st, &mut act, Gesture::Turn(1)); // highlight "Back"
+        run(&mut scr, &mut st, &mut act, Gesture::Step(1)); // highlight "Back"
         let t = run(&mut scr, &mut st, &mut act, Gesture::Press);
         assert!(matches!(t, Transition::Pop), "Back pops");
         assert!(!act.is_tracking(), "nothing started");

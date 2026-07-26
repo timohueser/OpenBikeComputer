@@ -220,7 +220,7 @@ COM, FLPR source), so the epic's rule is **absolute**:
 > display **source bus** (6 data + `BCK` = 7) and the SD-card **high-speed SPI** (4) — together
 > exactly 11. That fits **only if everything slow is pushed to P0/P1**: `COM` (≤60 Hz), the gate
 > lines (`GSP`/`GCK`/`GEN`/`INTB`, µs-scale), sensor **I²C** (GPS/altimeter), the **IMU SPI** can
-> share or sit on P1, the **encoder**, and buttons — none need the fast domain. **USB** (future,
+> share or sit on P1 and the **buttons** — none need the fast domain. **USB** (future,
 > nRF54LM20) is on dedicated USB pads, not GPIO, so it does not compete. The DK bench map here is
 > *not* this allocation — it reuses UART/SD/flash pins because nothing else runs during bring-up
 > (see the bring-up doc) — but the principle (**reserve P2 for source-bus + SD-SPI; slow signals →

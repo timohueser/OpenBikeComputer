@@ -1,6 +1,6 @@
 //! The Units screen — metric ↔ imperial. [`Units`](crate::settings::Units) re-captions and re-scales
 //! the Statistics readouts and the off-route distance. A binary choice, so it's a single value row
-//! that press (or a turn) flips in place — no field sub-mode.
+//! that press (or a step) flips in place — no field sub-mode.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -24,8 +24,8 @@ impl UnitsScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            // A binary choice: press or a turn flips it (no separate edit mode).
-            Gesture::Press | Gesture::Turn(_) => {
+            // A binary choice: press or a step flips it (no separate edit mode).
+            Gesture::Press | Gesture::Step(_) => {
                 cx.settings.units = cx.settings.units.toggled();
                 Transition::None
             }

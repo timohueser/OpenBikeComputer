@@ -21,13 +21,13 @@
 //! - `P <watts>` — a power sample (integer watts, `u16`; a signed meter reading is clamped at `0`
 //!   host-side).
 //! - `R <rpm>` — a cadence sample (integer rpm, `u8`).
-//! - `K t <n>` / `K e <d|u>` / `K b <d|u>` — **input injection**: an encoder turn of `n` detents
-//!   (signed), or an encoder/Back button down/up edge. These feed the gesture recogniser exactly
+//! - `K t <n>` / `K s <d|u>` / `K b <d|u>` — **input injection**: `n` signed Up/Down selection
+//!   steps, or a Select/Back button down/up edge. These feed the gesture recogniser exactly
 //!   like the physical buttons, so a host can drive the UI (taps and — via a delayed up — holds)
 //!   for hardware-in-the-loop work without anyone pressing a button.
 //! - `Z <mpp>` — set the map camera to exactly `mpp` meters-per-pixel (float). A
-//!   debug/benchmark hook: it drives the zoom directly instead of stepping the encoder (which
-//!   only moves in fixed 1.2× detents) and always forces one map redraw, so a host sweep can
+//!   debug/benchmark hook: it drives the zoom directly instead of stepping the selection (which
+//!   only moves in fixed 1.2× steps) and always forces one map redraw, so a host sweep can
 //!   pin an exact scale and read back one fresh render-stats line per setting.
 //! - `N <from_lon> <from_lat> <to_lon> <to_lat>` — **route-plan trigger** (issue #500 perf bench),
 //!   all integer **microdegrees**, **LON FIRST** (the OBCM `(lon, lat)` tuple order, unlike the
@@ -90,7 +90,7 @@ pub enum Msg {
     Power(u16),
     /// A cadence sample in rpm (fake BLE sensor injection, epic #707 SE8).
     Cadence(u8),
-    /// An injected raw input event (encoder turn or a button down/up edge).
+    /// An injected raw input event (an Up/Down step or a button down/up edge).
     Input(InputEvent),
     /// A debug camera-scale command: set the map viewport to exactly this meters-per-pixel.
     Zoom(f32),
@@ -150,12 +150,12 @@ fn parse_opt_f32(tok: Option<&str>) -> Option<f32> {
     }
 }
 
-/// Parse the tokens after a `K` tag into an injected input event: `K t <n>` an encoder turn of
-/// `n` signed detents, `K e <d|u>` an encoder down/up edge, `K b <d|u>` a Back down/up edge.
+/// Parse the tokens after a `K` tag into an injected input event: `K t <n>` `n` signed Up/Down
+/// selection steps, `K s <d|u>` a Select down/up edge, `K b <d|u>` a Back down/up edge.
 fn parse_key(it: &mut core::str::SplitAsciiWhitespace) -> Option<Msg> {
     let ev = match it.next()? {
-        "t" => InputEvent::Turn(it.next()?.parse::<i32>().ok()?),
-        "e" => InputEvent::Button(edge(it.next()?, Button::Encoder)?),
+        "t" => InputEvent::Step(it.next()?.parse::<i32>().ok()?),
+        "s" => InputEvent::Button(edge(it.next()?, Button::Select)?),
         "b" => InputEvent::Button(edge(it.next()?, Button::Back)?),
         _ => return None,
     };
@@ -409,7 +409,7 @@ mod handoff {
     /// loop via the gesture channel after the input plane recognises it, like a physical press.
     static EVENT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-    /// Injected input events (encoder turns / button edges), queued in order. A queue, not a latch:
+    /// Injected input events (Up/Down steps / button edges), queued in order. A queue, not a latch:
     /// a tap is a down+up *pair* and a burst must arrive intact.
     const INPUT_QUEUE: usize = 16;
     static INPUT: Channel<CriticalSectionRawMutex, InputEvent, INPUT_QUEUE> = Channel::new();
@@ -527,7 +527,7 @@ mod handoff {
     }
 
     /// Injected input, drained by the input plane next to the physical buttons — so injected
-    /// turns/edges become gestures (taps and holds) identically to real presses.
+    /// steps/edges become gestures (taps and holds) identically to real presses.
     pub struct DebugInput;
     impl InputSource for DebugInput {
         fn poll(&mut self) -> Option<InputEvent> {
@@ -699,13 +699,13 @@ mod tests {
 
     #[test]
     fn parses_input_injection() {
-        assert_eq!(parse_line("K t 1"), Some(Msg::Input(InputEvent::Turn(1))));
-        assert_eq!(parse_line("K t -2"), Some(Msg::Input(InputEvent::Turn(-2))));
-        assert_eq!(parse_line("K e d"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Down(Button::Encoder)))));
+        assert_eq!(parse_line("K t 1"), Some(Msg::Input(InputEvent::Step(1))));
+        assert_eq!(parse_line("K t -2"), Some(Msg::Input(InputEvent::Step(-2))));
+        assert_eq!(parse_line("K s d"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Down(Button::Select)))));
         assert_eq!(parse_line("K b u"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Up(Button::Back)))));
-        assert_eq!(parse_line("K e x"), None); // bad edge
+        assert_eq!(parse_line("K s x"), None); // bad edge
         assert_eq!(parse_line("K z 1"), None); // unknown key
-        assert_eq!(parse_line("K t"), None); // missing detents
+        assert_eq!(parse_line("K t"), None); // missing steps
     }
 
     #[test]

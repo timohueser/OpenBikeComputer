@@ -3,7 +3,7 @@
 //!
 //! It draws a code-generated topographic backdrop, the wall clock, and the battery gauge. Both
 //! `press` and `back-hold` open the compass [`Menu`](MenuScreen) — the one entry point into the
-//! app; the Route menu is reached from there via the Routes station. Encoder turns are ignored.
+//! app; the Route menu is reached from there via the Routes station. Up/Down steps are ignored.
 //!
 //! The backdrop is procedural: a smooth height field (a sum of [`Bump`] Lorentzians, [`field`])
 //! traced into iso-lines by marching squares ([`contours`]) — no map data or I/O. Its massif is

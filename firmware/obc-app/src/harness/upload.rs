@@ -104,9 +104,9 @@ fn idle_prompt_dismisses_on_back_and_on_the_dismiss_row() {
     assert!(matches!(app.top_screen(), Screen::Home(_)), "Back dismisses to what was underneath");
     assert_eq!(app.mode(), Mode::Idle, "dismissing navigates nothing");
 
-    // The Dismiss row (turn down, press) does the same.
+    // The Dismiss row (step down, press) does the same.
     app.apply_event(crate::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
-    app.apply_gesture(Gesture::Turn(1));
+    app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Home(_)));
     assert_eq!(app.mode(), Mode::Idle);
@@ -204,7 +204,7 @@ fn replace_of_a_non_active_route_is_not_the_info_card() {
 fn consecutive_uploads_replace_the_popup_most_recent_wins() {
     let mut app = idle_app();
     app.apply_event(crate::HostEvent::RouteUploaded { id: 10, replaced: false, elevation: None });
-    app.apply_gesture(Gesture::Turn(1)); // move the highlight to Dismiss…
+    app.apply_gesture(Gesture::Step(1)); // move the highlight to Dismiss…
     app.apply_event(crate::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None }); // …then a newer upload lands
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)));
 
@@ -229,11 +229,11 @@ fn an_upload_replaces_the_manual_swap_prompt_too() {
     let mut app = idle_app();
     start_riding(&mut app);
     // Open the *manual* swap prompt from the ride menu: Map → Ride menu (BackHold) → Routes →
-    // highlight route 1 (turn) → press (tracking + different route ⇒ the swap prompt).
+    // highlight route 1 (step down) → press (tracking + different route ⇒ the swap prompt).
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(3));
+    app.apply_gesture(Gesture::Step(3));
     app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Turn(1));
+    app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "the manual swap prompt is up");
 
@@ -317,9 +317,9 @@ fn a_passkey_does_not_remove_the_manual_swap_prompt() {
     let mut app = idle_app();
     start_riding(&mut app);
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(3));
+    app.apply_gesture(Gesture::Step(3));
     app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Turn(1));
+    app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)));
 
@@ -399,7 +399,7 @@ fn a_pending_deferred_prompt_for_a_deleted_route_is_dropped() {
 
 /// The user-reported loss path (T3-updated): an upload popup covers the Route overview; the rider
 /// starts a hold on the popup (aiming at its guarded action), thinks better of it and taps **Back
-/// while the encoder is still held**. Back pops the popup — and the encoder hold then crosses its
+/// while Select is still held**. Back pops the popup — and the Select hold then crosses its
 /// threshold with the Route overview as the new top, whose own hold is the hold-to-**delete** row:
 /// without the transition-cancels-holds rule, the previewed route is silently deleted from SD.
 #[test]
@@ -410,7 +410,7 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     // (not tracking, not the active ride's route).
     app.apply_gesture(Gesture::Press); // Home → Menu (Routes selected)
     app.apply_gesture(Gesture::Press); // Menu → Route menu
-    app.apply_gesture(Gesture::Turn(1)); // highlight index 1
+    app.apply_gesture(Gesture::Step(1)); // highlight index 1
     app.apply_gesture(Gesture::Press); // → Route overview of Beta
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
@@ -418,27 +418,27 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
     app.apply_event(crate::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)));
 
-    // Encoder down (the hold starts charging on the popup)…
-    app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Encoder)]));
-    // …then a Back tap while the encoder is still held: the popup pops, the overview is top.
+    // Select down (the hold starts charging on the popup)…
+    app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Select)]));
+    // …then a Back tap while Select is still held: the popup pops, the overview is top.
     app.handle_input(InputClock(1_100), &mut keys(&[down(Button::Back)]));
     app.handle_input(InputClock(1_180), &mut keys(&[up(Button::Back)]));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "Back dismissed the popup");
 
-    // The encoder hold crosses its 500 ms threshold — over the Route overview now. It was aimed at
+    // The Select hold crosses its 500 ms threshold — over the Route overview now. It was aimed at
     // the popup, so it must be cancelled by the transition, not delivered as a delete.
     app.handle_input(InputClock(1_700), &mut keys(&[]));
     assert_eq!(took_route_delete(&mut app), None, "a stray hold must never delete the previewed route");
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
     // And the eventual release stays silent — no surprise Press either.
-    app.handle_input(InputClock(1_800), &mut keys(&[up(Button::Encoder)]));
+    app.handle_input(InputClock(1_800), &mut keys(&[up(Button::Select)]));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
     // A fresh, deliberate delete afterwards still works (the cancel is one-shot, not a lockout):
     // select the Delete row (owner review round 2 — no hold-anywhere), then hold.
-    app.apply_gesture(Gesture::Turn(1));
-    app.handle_input(InputClock(2_000), &mut keys(&[down(Button::Encoder)]));
+    app.apply_gesture(Gesture::Step(1));
+    app.handle_input(InputClock(2_000), &mut keys(&[down(Button::Select)]));
     app.handle_input(InputClock(2_600), &mut keys(&[]));
     assert_eq!(took_route_delete(&mut app), Some(11), "a real hold on the overview still requests its delete");
 }
@@ -451,16 +451,16 @@ fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
     let mut app = idle_app();
     start_riding(&mut app);
     app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Turn(3));
+    app.apply_gesture(Gesture::Step(3));
     app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Turn(1));
+    app.apply_gesture(Gesture::Step(1));
     app.apply_event(crate::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)));
 
-    // One long-unpolled frame delivers everything at once: the encoder went down at 1 000; at
-    // 1 700 a Back tap arrives *and* the encoder hold has crossed its threshold. Recognition
+    // One long-unpolled frame delivers everything at once: Select went down at 1 000; at
+    // 1 700 a Back tap arrives *and* the Select hold has crossed its threshold. Recognition
     // emits [Back, Hold] into one batch; the Back's pop must swallow the trailing Hold.
-    app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Encoder)]));
+    app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Select)]));
     app.handle_input(InputClock(1_700), &mut keys(&[down(Button::Back), up(Button::Back)]));
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "Back dismissed the popup");
     assert_eq!(took_route_delete(&mut app), None, "the batched stray hold is dropped too");
@@ -476,7 +476,7 @@ fn a_stack_transition_raises_the_hold_cancel_edge_for_the_two_plane_host() {
     app.apply_gesture(Gesture::Press); // Home → Menu: a stack change
     assert!(app.take_hold_cancel(), "the transition rings the cancel edge");
     assert!(!app.take_hold_cancel(), "one-shot: drained");
-    app.apply_gesture(Gesture::Turn(1)); // a highlight move transitions nothing
+    app.apply_gesture(Gesture::Step(1)); // a highlight move transitions nothing
     assert!(!app.take_hold_cancel(), "no stack change, no cancel");
 }
 

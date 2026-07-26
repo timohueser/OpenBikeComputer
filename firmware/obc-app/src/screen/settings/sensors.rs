@@ -9,7 +9,7 @@
 //!   Bluetooth Forget-family guarded footer: a plain prompt while unselected, the shaded base filling
 //!   warning-red with the live hold while the row is selected).
 //! - [`SensorScanScreen`]: the scan list for one quantity — the discovered sensors of that kind
-//!   (name, or address when unnamed, + RSSI), a turn to move, a press to **save + connect** (writes
+//!   (name, or address when unnamed, + RSSI), a step to move, a press to **save + connect** (writes
 //!   the settings slot → the host reconciles it to the radio) and pop back to the row now `Connecting`.
 //!   Empty while scanning shows `Searching…`.
 //!
@@ -66,7 +66,7 @@ impl SensorsScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 self.selected = crate::screen::list::step_selection(self.selected, n, SENSOR_SLOTS);
                 Transition::None
             }
@@ -178,7 +178,7 @@ impl SensorScanScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Turn(n) => {
+            Gesture::Step(n) => {
                 let len = self.count(cx.sensor_scan_hits);
                 if len > 0 {
                     self.selected = crate::screen::list::step_selection(self.selected.min(len - 1), n, len);
@@ -322,7 +322,7 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
         let mut scr = SensorsScreen::new();
-        run(&mut scr, &mut st, &mut s, &[], Gesture::Turn(1)); // → Power (slot 1)
+        run(&mut scr, &mut st, &mut s, &[], Gesture::Step(1)); // → Power (slot 1)
         let t = {
             let mut act = Activity::new(Mode::Idle);
             let scratch = crate::screen::PoiScratch::new();
@@ -388,7 +388,7 @@ mod tests {
         assert!(!act.sensor_scan_active(), "picking leaves scan mode");
     }
 
-    /// Turn walks only this quantity's hits; a press with no hits does nothing (no panic on empty).
+    /// Up/Down walks only this quantity's hits; a press with no hits does nothing (no panic on empty).
     #[test]
     fn scan_cursor_bounded_to_kind_and_empty_is_safe() {
         let mut st = AppState::new(0, 0, 1.0);
@@ -397,7 +397,7 @@ mod tests {
         let mut scr = SensorScanScreen::new(2); // Cadence — no hits below
         let hits = [hit(0, "HRM", -60), hit(1, "PWR", -50)];
 
-        run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Turn(1));
+        run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Step(1));
         assert_eq!(scr.selected, 0, "no cadence hits → the cursor can't move");
         let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Press);
         assert!(matches!(t, Transition::None), "a press with no hit does nothing");
