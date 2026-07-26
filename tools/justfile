@@ -392,13 +392,43 @@ setup:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
+    # `setup` edits $HOME, not the repo, and the writes below bypass `_run` — so honour the dry-run
+    # switch explicitly rather than cheerfully reporting changes it already made.
+    if [[ -n "${OBC_DRY_RUN:-}" ]]; then
+      _say "dry run — would link ~/.local/bin/obc → $OBC_TOOLS/obc and wire completion into your shell rc"
+      exit 0
+    fi
+    # A git worktree has its own tools/ — linking from one pins `obc` to a checkout that is usually
+    # temporary. Point at the main working tree instead, whichever directory you ran this from.
+    main_root="$(git -C "$OBC_ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+    tools="$OBC_TOOLS"
+    if [[ -n "$main_root" && "$main_root" != "$OBC_ROOT" && -x "$main_root/tools/obc" ]]; then
+      _warn "$OBC_ROOT is a linked worktree — linking from the main checkout $main_root instead"
+      tools="$main_root/tools"
+    fi
     mkdir -p "$HOME/.local/bin"
-    ln -sf "$OBC_TOOLS/obc" "$HOME/.local/bin/obc"
-    _ok "linked ~/.local/bin/obc → $OBC_TOOLS/obc"
-    comp="$OBC_TOOLS/obc.bash"; rc="$HOME/.bashrc"
-    # Strip any prior obc-completion lines first (so a relocated tools/ dir self-heals), then add.
-    if [[ -f "$rc" ]]; then grep -vE 'OpenBikeComputer `obc` completion|/obc\.bash"' "$rc" > "$rc.obc-tmp" || true; mv "$rc.obc-tmp" "$rc"; fi
-    printf '\n# OpenBikeComputer `obc` completion\n[ -f "%s" ] && source "%s"\n' "$comp" "$comp" >> "$rc"
-    _ok "completion wired into ~/.bashrc → $comp"
-    case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) _warn "~/.local/bin is not on PATH — add it in ~/.bashrc";; esac
-    _say "open a new shell (or: source ~/.bashrc) to pick up 'obc' + completion"
+    ln -sf "$tools/obc" "$HOME/.local/bin/obc"
+    _ok "linked ~/.local/bin/obc → $tools/obc"
+    # Completion is written for bash, but zsh runs it fine behind `bashcompinit` — and a zsh user
+    # with no ~/.bashrc used to get a cheerful "wired in" for a file their shell never reads. Wire
+    # whichever rc files actually exist, plus the one $SHELL implies.
+    comp="$tools/obc.bash"; rcs=()
+    [[ -f "$HOME/.bashrc" || "$SHELL" == */bash ]] && rcs+=("$HOME/.bashrc")
+    [[ -f "$HOME/.zshrc"  || "$SHELL" == */zsh  ]] && rcs+=("$HOME/.zshrc")
+    (( ${#rcs[@]} )) || rcs=("$HOME/.bashrc")
+    for rc in "${rcs[@]}"; do
+      # Strip any prior obc-completion block first (so a relocated tools/ dir self-heals), then add.
+      if [[ -f "$rc" ]]; then
+        grep -vE 'OpenBikeComputer `obc` completion|/obc\.bash"|bashcompinit && bashcompinit' "$rc" > "$rc.obc-tmp" || true
+        mv "$rc.obc-tmp" "$rc"
+      fi
+      { printf '\n# OpenBikeComputer `obc` completion\n'
+        # zsh needs bash-completion emulation before `complete -F` means anything.
+        [[ "$rc" == *.zshrc ]] && printf 'autoload -Uz bashcompinit && bashcompinit\n'
+        printf '[ -f "%s" ] && source "%s"\n' "$comp" "$comp"
+      } >> "$rc"
+      _ok "completion wired into ${rc/#$HOME/~} → $comp"
+    done
+    case ":$PATH:" in *":$HOME/.local/bin:"*) : ;;
+      *) _warn "~/.local/bin is not on PATH — add it in ${rcs[0]/#$HOME/~}";; esac
+    _say "open a new shell (or: source ${rcs[0]/#$HOME/~}) to pick up 'obc' + completion"
