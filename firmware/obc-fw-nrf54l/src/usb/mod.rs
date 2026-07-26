@@ -64,12 +64,10 @@ use core::task::Poll;
 
 use defmt::{info, warn};
 use embassy_futures::join::join;
-use embassy_futures::select::select;
 use embassy_nrf::usb::vbus_detect::{HardwareVbusDetect, VbusDetect};
 use embassy_nrf::usb::{self as nrf_usb, Driver as UsbhsDriver};
 use embassy_nrf::{bind_interrupts, interrupt, pac, peripherals, Peri};
 use embassy_sync::waitqueue::AtomicWaker;
-use embassy_time::{Duration, Timer};
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::{Builder, Config, UsbDevice};
 
@@ -208,17 +206,6 @@ pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
 // [`vbus_present`] the single level source: the driver reads VBUS through [`BoardVbusDetect`], so
 // nothing of ours depends on embassy's private VBUS state and the vector is free to share.
 
-/// The parked plane's **safety net**, not its mechanism (#937).
-///
-/// The mechanism is [`VbusEdge`]: a cable edge raises VREGUSB, which wakes this task directly, so
-/// a device riding with nothing in J3 does not wake *at all* on USB's account and plug-in is
-/// perceived instantly rather than up to an interval later. This timer exists only so that a
-/// hypothetically missed edge self-heals on its own instead of parking the plane forever, and it is
-/// deliberately far too coarse to be a poll: at half a minute it is 60× cheaper than the 500 ms
-/// loop it replaces, and if it is ever what actually brings the plane up, that is a bug worth
-/// noticing rather than a latency worth tuning.
-const VBUS_RESYNC: Duration = Duration::from_secs(30);
-
 /// Woken on **every** VREGUSB edge — plug or unplug — by [`VbusEdge`].
 ///
 /// One task registers here ([`run`], through [`wait_for_vbus`]), so a single [`AtomicWaker`] is the
@@ -281,21 +268,28 @@ fn vbus_present() -> bool {
 ///   - [`VBUS_WAKER`] is registered *before* the level is read. An edge landing in between is
 ///     therefore never lost: the wake either finds the registration (and re-polls us) or the read
 ///     that follows it already sees the new level.
-///   - The outer `while` re-reads the level after every wake, so a wake for the *wrong* edge, a
-///     wake that predates the first registration, and the [`VBUS_RESYNC`] tick are all the same
-///     thing — a reason to look again — rather than three cases.
+///   - The outer `while` re-reads the level after every wake, so a wake for the *wrong* edge and a
+///     wake that predates the first registration are the same thing — a reason to look again —
+///     rather than two cases.
+///
+/// Those two together are why there is **no fallback timer**. A periodic re-check could only ever
+/// help if a wake were lost, and the ordering above means one cannot be: the registration precedes
+/// the read, and the read is of a *level*, not a latched edge. Confirmed on glass (Timo,
+/// 2026-07-26) — plug, unplug and re-plug are all perceived immediately, so a timer here would be
+/// wake-ups bought against a failure mode that does not exist. If USB ever *does* fail to notice a
+/// cable, that is a broken interrupt path to fix, not a latency to paper over — see the board
+/// README's failure-mode table.
 async fn wait_for_vbus() {
     while !vbus_present() {
-        let edge = poll_fn(|cx| {
+        poll_fn(|cx| {
             VBUS_WAKER.register(cx.waker());
             if vbus_present() {
                 Poll::Ready(())
             } else {
                 Poll::Pending
             }
-        });
-        // The timer is the self-healing net described on [`VBUS_RESYNC`], not the mechanism.
-        select(edge, Timer::after(VBUS_RESYNC)).await;
+        })
+        .await;
     }
 }
 
