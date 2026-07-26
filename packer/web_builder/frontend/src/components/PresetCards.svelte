@@ -1,6 +1,11 @@
 <script lang="ts">
     import type { Preset } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
+    import Gated from "./Gated.svelte";
+    import { ADVANCED_ROUTE } from "../lib/routes";
+
+    // Written once so the live link and its dead twin can't drift apart.
+    const FINE_TUNE = "Fine-tune colors, features and detail levels in the advanced editor";
 
     let { presets }: { presets: Preset[] } = $props();
 
@@ -44,7 +49,12 @@
 {/if}
 
 <div class="advanced small">
-    <a href="#/advanced">Fine-tune colors, features and detail levels in the advanced editor →</a>
+    <Gated need="styleEditor">
+        <a href={ADVANCED_ROUTE}>{FINE_TUNE} →</a>
+        {#snippet unavailable()}
+            <span>{FINE_TUNE}</span>
+        {/snippet}
+    </Gated>
 </div>
 
 <style>
