@@ -14,7 +14,7 @@ This page is the guided tour of what's actually in those files. The exhaustive b
 The map and the route are siblings: they were designed to feel identical to the code that reads them, so the renderer can treat a route chunk and a map chunk with the same instincts.
 
 <figure class="fig">
-<svg viewBox="0 0 720 290" role="img" aria-label="Two production pipelines. An OSM extract is turned into a dot-obcm map file offline by the obc-pack packer; a GPX upload is turned into a dot-obcr route file on the device by obc-route. Both files are read back by the same no_std reader code on the simulator and the device. They share a common design: little-endian, microdegree integers, anchor-plus-delta geometry, explicit offsets, and streaming.">
+<svg viewBox="0 0 720 290" role="img" aria-label="Two production pipelines. An OSM extract is turned into a dot-obcm map file offline by the obc-pack packer; a GPX upload is turned into a dot-obcr route file by obc-route, wherever it lands — on the device, in the simulator, or in a browser tab. Both files are read back by the same no_std reader code on the simulator and the device. They share a common design: little-endian, microdegree integers, anchor-plus-delta geometry, explicit offsets, and streaming.">
   <defs>
     <marker id="aF1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -35,7 +35,7 @@ The map and the route are siblings: they were designed to feel identical to the 
   <text class="d-label" x="98" y="188" text-anchor="middle">GPX upload</text>
   <text class="d-sub" x="98" y="204" text-anchor="middle">a ride you planned</text>
   <line class="d-flow" x1="170" y1="191" x2="298" y2="191" marker-end="url(#aF1)" />
-  <text class="d-sub" x="234" y="182" text-anchor="middle" style="fill:#a9501c">obc-route · on device</text>
+  <text class="d-sub" x="234" y="182" text-anchor="middle" style="fill:#a9501c">obc-route · device · sim · browser</text>
   <rect class="d-panel" x="304" y="166" width="120" height="50" rx="10" />
   <text class="d-label" x="364" y="188" text-anchor="middle">.obcr</text>
   <text class="d-sub" x="364" y="204" text-anchor="middle">route</text>
@@ -52,7 +52,7 @@ The map and the route are siblings: they were designed to feel identical to the 
   <rect class="d-panel-2" x="32" y="244" width="668" height="34" rx="9" />
   <text class="d-sub" x="366" y="265" text-anchor="middle">shared DNA — little-endian · µdeg integers · anchor + delta geometry · explicit offsets · streamed</text>
 </svg>
-<figcaption>The map is baked <b>offline</b> from an OpenStreetMap extract by the packer; the route is converted <b>on the device</b> (or in the simulator) from an uploaded GPX. Different origins, but the very same <code>no_std</code> reader code parses them on both machines — so what you draw in the browser is what the device draws.</figcaption>
+<figcaption>The map is baked <b>offline</b> from an OpenStreetMap extract by the packer; the route is converted <b>wherever the GPX lands</b> — on the device, in the simulator, or in a browser tab — from one <code>no_std</code> routine. Different origins, but the very same reader code parses them on every machine — so what you draw in the browser is what the device draws.</figcaption>
 </figure>
 
 Four principles run through both formats:
@@ -781,7 +781,7 @@ for record in records {            // each record: (dLon: i16, dLat: i16, ele: i
 
 A route you draw doesn't need every GPS sample — a thinned polyline looks identical at the device's pixel pitch. But a route you *plan with* does need exact numbers. OBCR keeps both honest by separating them at conversion time: the stored geometry is **decimated** (drop a vertex within a metre of the line it sits on, but force-keep one at least every ~1.2 km), while the header totals are computed from **every raw GPX point**. So the line is cheap to draw and the "total climb" you read is real. One last guard runs the other way: a leg longer than 30 000 µdeg is **densified** with interpolated vertices, so the `i16` deltas above can't overflow even when a sparse two-point upload has no intermediate vertex to keep — the same split the [packer applies](#features-an-anchor-then-deltas) to map geometry.
 
-> **Convert where it lands.** There is no offline route step. The GPX→OBCR converter is one portable `no_std` routine: the device runs it on a USB upload, the simulator runs it on import, and both produce the same bytes. It streams the GPX in a single pass — O(1) RAM regardless of route length — emitting each finished chunk while keeping only a bounded index in memory. (BLE uploads arrive **already converted**: the companion app encodes imported GPX/TCX to OBCR on the phone, per the [BLE interface spec](src:obc-ble-interface-spec.md), so the device just writes the bytes to storage.)
+> **Convert where it lands.** There is no offline route step. The GPX→OBCR converter is one portable `no_std` routine, and every place a GPX can land runs *that* routine: the device on a USB upload, the simulator on import, and — compiled to wasm — the web builder in the browser tab, so a route you drop on the site is converted client-side with no server involved at all. All three produce the same bytes, and the [shared fixtures](src:protocol-vectors) hold them to it. It streams the GPX in a single pass — O(1) RAM regardless of route length — emitting each finished chunk while keeping only a bounded index in memory. (BLE uploads arrive **already converted**: the companion app encodes imported GPX/TCX to OBCR on the phone, per the [BLE interface spec](src:obc-ble-interface-spec.md), so the device just writes the bytes to storage.)
 
 One thing the file *doesn't* store is the elevation **profile** the Statistics screen draws. That's rebuilt once when a route loads — a multi-resolution min/max pyramid over distance, the same coarse-to-fine idea as the map's LODs, so the profile can be zoomed and panned without ever re-reading geometry. It's a runtime structure rather than a format concern; the [UI page](../ui/) covers how it's drawn. The route's **climbs** are the same kind of runtime derivation — segmented from that profile when the route loads, never stored in the file or sent over the link (the [Climb panel](../ui/) draws them).
 
@@ -921,6 +921,8 @@ The map's caches matter because the [stub-select collector](../rendering/#4-deco
 - The canonical POI category/subtype ids and fallback labels (shared by reader + packer): [`obc-formats/src/obcm.rs`](src:firmware/obc-formats/src/obcm.rs); the packer's OSM-tag classifier stays in [`obc-pack/src/poi.rs`](src:firmware/obc-pack/src/poi.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs)
 - The recorded-track log + its GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec + the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
+- The browser's copy of both converters — a thin wasm shim over the same routines, plus the error vocabulary a dropped file needs: [`obc-web-convert`](src:firmware/obc-web-convert)
+- Checked-in bytes both directions are held to (a route and its OBCR, a track log and its GPX export): [`protocol-vectors/`](src:protocol-vectors)
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The byte-level specs: [`OBCM_Spec.md`](src:OBCM_Spec.md) · [`OBCR_Spec.md`](src:OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 

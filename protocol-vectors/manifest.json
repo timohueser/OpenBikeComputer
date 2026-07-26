@@ -50,6 +50,29 @@
       "identical_ride_to": "route-waypoints.obcr",
       "waypoints": []
     },
+    "track-log.obct": {
+      "format": "recorded track log — a flat array of 20-byte records, no header",
+      "byte_len": 107,
+      "record_len": 20,
+      "whole_records": 5,
+      "partial_tail_bytes": 7,
+      "points": [
+        { "t_ms": 0, "lat_udeg": 47995000, "lon_udeg": 7842000, "ele_m": 300, "segment_start": true, "hr_bpm": 132, "cadence_rpm": 78, "power_w": 185 },
+        { "t_ms": 1000, "lat_udeg": 47996000, "lon_udeg": 7843500, "ele_m": 305, "segment_start": false, "hr_bpm": 138, "cadence_rpm": null, "power_w": 190 },
+        { "t_ms": 2000, "lat_udeg": 47997200, "lon_udeg": 7845000, "ele_m": 318, "segment_start": false, "hr_bpm": null, "cadence_rpm": null, "power_w": null },
+        { "t_ms": 63000, "lat_udeg": -37774900, "lon_udeg": -122419400, "ele_m": -12, "segment_start": true, "hr_bpm": null, "cadence_rpm": null, "power_w": 240 },
+        { "t_ms": 64000, "lat_udeg": 0, "lon_udeg": 0, "ele_m": 0, "segment_start": false, "hr_bpm": 0, "cadence_rpm": 0, "power_w": 0 }
+      ]
+    },
+    "track-export.gpx": {
+      "format": "GPX 1.1 export of track-log.obct (obc_route::track_to_gpx)",
+      "byte_len": 1069,
+      "track_name": "Schauinsland & back",
+      "segments": 2,
+      "track_points": 5,
+      "creator": "OpenBikeComputer",
+      "note": "the partial trailing record contributes no <trkpt>; hr/cad/pwr = 0 are values, not the absent sentinels"
+    },
     "ride-v1.bin": {
       "format": "ride object v1 (spec 7.2)",
       "byte_len": 74,

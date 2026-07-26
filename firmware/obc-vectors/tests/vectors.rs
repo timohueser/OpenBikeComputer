@@ -2,14 +2,35 @@
 //! equal its spec-derived builder byte-for-byte, and the route vectors must load and
 //! ride through `obc-route`. The app's `swift test` consumes the same files.
 
-use obc_formats::io::SliceSource;
-use obc_route::{for_each_waypoint, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
-use obc_vectors::{all, crc32, dir, ride_v1, ride_v2, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS};
+use obc_formats::io::{ByteSink, Error, SliceSource};
+use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
+use obc_route::{for_each_waypoint, track_to_gpx, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_vectors::{
+    all, crc32, dir, ride_v1, ride_v2, TRACK_NAME, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS,
+};
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(dir().join(name)).unwrap_or_else(|e| {
         panic!("fixture {name} unreadable ({e}) — run `cargo test -p obc-vectors regenerate -- --ignored`")
     })
+}
+
+/// An in-memory sink for re-running a streaming converter against a checked-in fixture.
+#[derive(Default)]
+struct VecSink {
+    buf: Vec<u8>,
+}
+
+impl ByteSink for VecSink {
+    fn write(&mut self, b: &[u8]) -> Result<(), Error> {
+        self.buf.extend_from_slice(b);
+        Ok(())
+    }
+    fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
+        let o = off as usize;
+        self.buf[o..o + b.len()].copy_from_slice(b);
+        Ok(())
+    }
 }
 
 /// Spec §6's pinned check value — validates the vector crate's own CRC reference.
@@ -74,6 +95,67 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(info.point_count, idx_w.point_count);
     assert_eq!(info.waypoint_count, 2);
     assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
+}
+
+/// The recorded-track pair (A2, #896). `track-log.obct` is a flat 20-byte-record array with a
+/// deliberate partial tail, and `track-export.gpx` is what the production exporter writes from it
+/// — the pair the browser conversion bridge must reproduce byte-for-byte in wasm. Pinned here
+/// from the other side: the log decodes through the production record codec back to the fields
+/// the builder wrote, and the export re-derives from the checked-in log (not from the builder's
+/// own in-memory copy), so a drift in either file fails.
+#[test]
+fn track_vectors_pin_the_log_and_its_export() {
+    let log = fixture("track-log.obct");
+    let gpx = String::from_utf8(fixture("track-export.gpx")).expect("the export is UTF-8");
+
+    // Length is self-describing: whole records plus the truncated tail a power-loss leaves.
+    assert_eq!(log.len() % TRACK_RECORD_LEN, 7, "the fixture keeps a partial trailing record");
+    let whole = log.len() / TRACK_RECORD_LEN;
+    assert_eq!(whole, 5);
+
+    // The hand-built records decode through the production codec to the documented spread:
+    // sensor presence walks all-present → one-absent → all-absent → power-only → all-zero.
+    let point = |k: usize| {
+        let mut rec = [0u8; TRACK_RECORD_LEN];
+        rec.copy_from_slice(&log[k * TRACK_RECORD_LEN..(k + 1) * TRACK_RECORD_LEN]);
+        obc_route::decode_record(&rec)
+    };
+    let sensors: Vec<_> = (0..whole).map(|k| (point(k).hr, point(k).cadence, point(k).power)).collect();
+    assert_eq!(
+        sensors,
+        vec![
+            (Some(132), Some(78), Some(185)),
+            (Some(138), None, Some(190)),
+            (None, None, None),
+            (None, None, Some(240)),
+            (Some(0), Some(0), Some(0)), // zero is a value, not the absent sentinel
+        ]
+    );
+    assert_eq!((point(0).segment_start, point(3).segment_start), (true, true), "two segments");
+    assert_eq!((point(3).lon, point(3).lat, point(3).ele), (-122_419_400, -37_774_900, -12), "negative signs");
+
+    // The export re-derives from the checked-in log: same bytes, so the .obct and the .gpx cannot
+    // drift apart independently.
+    let mut sink = VecSink::default();
+    track_to_gpx(&SliceSource(&log), TRACK_NAME, &mut sink).unwrap();
+    assert_eq!(String::from_utf8(sink.buf).unwrap(), gpx, "track-export.gpx drifted from track-log.obct");
+
+    // The shapes the exporter's branches produce, spelled out once (the browser bridge reproduces
+    // this exact text, so a change here is a change to a cross-language contract).
+    assert_eq!(gpx.matches("<trkseg>").count(), 2, "the pause opens a second segment");
+    assert_eq!(gpx.matches("<trkpt").count(), whole, "the partial trailing record is ignored");
+    assert!(gpx.contains("<trk><name>Schauinsland &amp; back</name>"), "the name is XML-escaped");
+    assert!(gpx.contains("lat=\"-37.774900\" lon=\"-122.419400\"><ele>-12</ele>"), "negative fixed-6 degrees");
+    assert!(gpx.contains("lat=\"0.000000\" lon=\"0.000000\""), "zero keeps all six decimals");
+    assert!(
+        gpx.contains("<extensions><power>240</power></extensions>"),
+        "power alone skips the TrackPointExtension wrapper"
+    );
+    assert!(
+        gpx.contains("<gpxtpx:hr>138</gpxtpx:hr></gpxtpx:TrackPointExtension><power>190</power>"),
+        "an absent cadence drops only its element"
+    );
+    assert!(!gpx.contains("<time>"), "no fabricated timestamps");
 }
 
 /// The 12-byte upload descriptor announces the waypoint route's actual size and CRC, and the
