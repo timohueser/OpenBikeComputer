@@ -256,6 +256,24 @@ Every bulk payload is a typed **object**:
 | `9` | `trip` | app → device (upload), device → app (detail read) | trip object v1, §7.7 |
 | `10` | `tripList` | device → app | list object, §7.4 |
 | `11`–`15` | — | — | reserved (sensors, M4) |
+| `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** (§10), see below |
+
+`map` is the one type BLE could never have carried: a map is hundreds of
+megabytes, so the type would have been dead weight until a USB bulk endpoint
+existed (#889). It sits at `16` rather than at the next free number because
+`11`–`15` are already spoken for; the byte is a `u8` and there is no reason to
+crowd a reserved band. Like `fwImage`, the transfer layer is **format-blind** —
+the payload is opaque bytes.
+
+**The device does not yet accept a map upload**: it answers a typed `error`. The
+protocol side is settled so host and device agree on the byte, but the storage
+side is not, and it is not a small piece of work — the firmware's map loader
+matches on the *long* filename (`*.obcm`, because the 8.3 short name truncates
+both `.obcm` and `.obcr` to `OBC`) while its FAT layer cannot create long
+filenames; there is no map catalog (the renderer streams from the first `.obcm`
+in the card root, held open for the session); and a several-hundred-megabyte
+write runs for minutes against that open handle. Naming, collision policy,
+selection and the free-space guard are tracked separately.
 
 **Object ids** are `u16`, assigned by the device, **stable for the life of the
 stored object — including across device reboots** — and enumerated by the list
