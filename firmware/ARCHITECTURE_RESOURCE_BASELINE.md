@@ -177,6 +177,32 @@ board was plugged in for this change, and a USB task adds ISR-context work a sta
 histogram does not model. See the pending device-capture table below; static frame
 analysis is not a substitute for it.
 
+**#934 — the VBUS gate, +64 B.** The first on-glass run of the unconditional plane did
+not finish booting with J3 empty, which is the normal riding case; both profiles now
+carry the fix's cost. Re-measured on the same pinned rustc 1.96.0 host, against the
+develop merge base `333e1fca`:
+
+| | before (#930) | after (VBUS gate) | Δ |
+| :-- | --: | --: | --: |
+| `.bss` | 415,992 B | 416,056 B | +64 B |
+| `.data` | 5,136 B | 5,136 B | 0 |
+| **linked resident** | **421,128 B** | **421,192 B** | **+64 B** |
+| `.uninit` | 1,024 B | 1,024 B | 0 |
+| flash (both profiles) | 1,192,640 B | 1,192,936 B | +288 B |
+| largest guarded poll frame | 9,728 B | 9,728 B | 0 (limit 12,288 B, unchanged) |
+
+Both `resident_ram_max` ceilings move **421,128 → 421,192 B**, the exact measurement with
+no margin added, as every re-baseline before it. The 64 B is `usb::run::POOL` alone: the
+task future gained the gate's poll loop — a `Timer` held across an await, the guard's
+`poll_fn`, and the pinned endpoint join that used to be a bare `.await` temporary. **No
+new static**, so `usb_named` is unchanged at 2,644 B and the report still has 23 entries;
+`build_plane`'s 956 B transient boot frame and the 108 B `data_plane::run` async frame are
+unchanged, which is the point — the gate adds a check before a poll, not a buffer. This
+host measures the two profiles byte-identical for flash (1,192,936 B each); the recorded
+1,192,632 B for `ble` predates it. `floating_stable_observation` is **not** re-measured
+here — no CI run exists for this branch yet — and is flagged known-stale in the JSON with
+the expected deltas, rather than left to look current.
+
 The routed detour (#882) replaces the pure skip: the `NavPlanner` gains the
 resident **corridor blacklist** (`Option<Corridor>` — a 128-point downsampled
 skipped-span polyline + inflated bbox + exemption coords), growing the
