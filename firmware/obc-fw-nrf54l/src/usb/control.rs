@@ -44,7 +44,7 @@ use core::cell::RefCell;
 use defmt::{info, warn};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{with_timeout, Duration};
+use embassy_time::{with_timeout, Duration, Timer};
 use embassy_usb::driver::{Endpoint as _, EndpointError, EndpointIn, EndpointOut};
 use obc_ble::{ObjectType, StatusMessage, StoreChanged};
 
@@ -192,7 +192,12 @@ pub(crate) async fn run(
                     break;
                 }
                 Err(e) => {
-                    warn!("usb: [ctl] read failed: {:?} — re-arming", defmt::Debug2Format(&e));
+                    // Not a disable — a driver-level failure with the endpoint still up. Re-arming
+                    // immediately would hot-spin against a persistent one, and on a cooperative
+                    // executor that starves the ride loop (the map would freeze). Back off a beat
+                    // first, exactly as the BLE CoC accept loop does.
+                    warn!("usb: [ctl] read failed: {:?} — backing off", defmt::Debug2Format(&e));
+                    Timer::after_millis(200).await;
                     break;
                 }
             };
