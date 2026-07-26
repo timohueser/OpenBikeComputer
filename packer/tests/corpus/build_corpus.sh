@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Regenerate the obc-pack test fixtures (tiny.osm.pbf, poi.osm.pbf) from the
-# committed XML. Idempotent. Requires `osmium` (brew install osmium-tool).
+# Regenerate the obc-pack test fixtures (tiny.osm.pbf, poi.osm.pbf,
+# unsorted.osm.pbf) from the committed XML. Idempotent. Requires `osmium`
+# (brew install osmium-tool) — for `osmium cat`, which is the only thing in the
+# tree that still needs it: nothing here packs a map.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,3 +27,11 @@ echo "done: $DATA/tiny.osm.pbf"
 echo ">> poi"
 osmium cat "$HERE/poi/poi.osm" -o "$DATA/poi.osm.pbf" --overwrite
 echo "done: $DATA/poi.osm.pbf"
+
+# unsorted — a way written before its nodes (#910). `osmium cat` copies the
+# order as-is, which is what makes this fixture possible; do NOT pipe it through
+# `osmium sort`, that would defeat the point. `ingest::tests::
+# bbox_refuses_an_unsorted_pbf` hard-fails without the committed .pbf.
+echo ">> unsorted"
+osmium cat "$HERE/unsorted/unsorted.osm" -o "$DATA/unsorted.osm.pbf" --overwrite
+echo "done: $DATA/unsorted.osm.pbf"
