@@ -15,12 +15,11 @@
       "port": 5173
     },
     {
-      "name": "web-builder-device-harness",
+      "name": "web-builder-static",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5174"],
+      "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5173"],
       "cwd": "packer/web_builder/frontend",
-      "port": 5174,
-      "url": "http://localhost:5174"
+      "port": 5173
     },
     {
       "name": "landing-page",

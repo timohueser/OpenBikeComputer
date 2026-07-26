@@ -7,7 +7,7 @@
     import StyleTable from "../components/advanced/StyleTable.svelte";
     import { platform } from "../lib/platform";
     import { exportFile, importFile } from "../lib/config/edit";
-    import type { Preset, SchemaEnvelope } from "../lib/config/model";
+    import { isBuildable, type Preset, type SchemaEnvelope } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
 
     let tab = $state<"features" | "lods" | "routing" | "output">("features");
@@ -62,7 +62,10 @@
 
     function resetToPreset() {
         const preset = presets.find((p) => p.id === env?.based_on?.id);
-        if (!preset) return;
+        // This editor only exists on a tier that serves config-carrying presets
+        // (`caps.styleEditor`), so the guard is the type system's, not a case
+        // that happens: there is nothing to reset to without a config.
+        if (!preset || !isBuildable(preset)) return;
         if (!confirm(`Discard your edits and re-apply "${preset.name}" (v${preset.version})?`)) return;
         working.applyPreset(preset);
     }

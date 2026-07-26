@@ -45,11 +45,22 @@ describe.each(Object.entries(HOSTS))("%s host", (name, host) => {
         expect(schema !== null).toBe(caps.build || caps.styleEditor);
     });
 
-    it("fails unimplemented seams with PlatformNotImplemented, naming its issue", async () => {
-        // `catalog()` is the one seam no host implements yet (A3 #897 owns the
-        // format), so it is the honest sample of the not-written-yet path.
-        await expect(host.platform.catalog()).rejects.toThrow(PlatformNotImplemented);
-        await expect(host.platform.catalog()).rejects.toThrow(/A3 #897/);
+});
+
+describe("unimplemented seams", () => {
+    // Each still-empty seam names the issue that owes it, so a stack trace says
+    // who to chase. The list shrinking is the point: the web host's `catalog()`
+    // left it when C1 (#900) implemented it, and its `device()` when C3 (#902)
+    // did — every remaining row is a real debt with an owner.
+    it.each([
+        ["dev catalog", () => dev.platform.catalog(), /A3 #897/],
+        ["desktop catalog", () => desktop.platform.catalog(), /D1 #906/],
+        ["desktop regions", () => desktop.platform.regions(), /D1 #906/],
+        ["desktop device", () => desktop.platform.device!(), /D4 #909/],
+        ["desktop rides", () => desktop.platform.rides!(), /E2 #912/],
+    ])("%s rejects with PlatformNotImplemented", async (_name, call, owner) => {
+        await expect(call()).rejects.toThrow(PlatformNotImplemented);
+        await expect(call()).rejects.toThrow(owner);
     });
 });
 
