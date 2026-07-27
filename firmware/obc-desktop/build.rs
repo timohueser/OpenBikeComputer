@@ -37,10 +37,27 @@ fn embed_presets() {
     for path in &entries {
         println!("cargo:rerun-if-changed={}", path.display());
         let stem = path.file_stem().expect("preset file stem").to_string_lossy();
-        out.push_str(&format!("    ({stem:?}, include_str!({:?})),\n", path.canonicalize().unwrap_or(path.clone())));
+        out.push_str(&format!("    ({stem:?}, include_str!({:?})),\n", include_path(path)));
     }
     out.push_str("];\n");
 
     let dest = Path::new(&std::env::var("OUT_DIR").expect("OUT_DIR")).join("presets.rs");
     std::fs::write(&dest, out).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
+
+/// An absolute path `include_str!` will accept, on every platform (#907).
+///
+/// `canonicalize` is what resolves the `../../` in [`presets_dir`], but on Windows
+/// it hands back an **extended-length path** — `\\?\C:\…` — and `include_str!`
+/// resolves its argument through the compiler's own path handling rather than the
+/// raw Win32 API, so the verbatim prefix is not reliably understood. Stripping it
+/// leaves a perfectly ordinary `C:\…`, which is what we wanted from canonicalize
+/// in the first place. A no-op everywhere else.
+fn include_path(path: &Path) -> PathBuf {
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let text = resolved.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(plain) => PathBuf::from(plain),
+        None => resolved,
+    }
 }
