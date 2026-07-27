@@ -47,6 +47,15 @@ pub fn maps_dir(documents: Option<PathBuf>) -> PathBuf {
     documents.unwrap_or_else(home).join("OpenBikeComputer")
 }
 
+/// Exported style configs, beside the maps they build.
+///
+/// A subdirectory rather than a second top-level folder, so `reveal_file`'s
+/// "under the maps folder" rule covers it without widening, and so one folder is
+/// the whole answer to "where does this app put my things".
+pub fn styles_dir(documents: Option<PathBuf>) -> PathBuf {
+    maps_dir(documents).join("styles")
+}
+
 fn home() -> PathBuf {
     #[cfg(windows)]
     let var = "USERPROFILE";
@@ -59,15 +68,25 @@ fn home() -> PathBuf {
 /// `_sanitize_output_name`: the name comes from a text field, and it becomes a
 /// real path here rather than a URL.
 pub fn sanitize_output_name(name: &str) -> String {
+    sanitize_basename(name, ".obcm", "output")
+}
+
+/// The same rule for any suffix: strip every path separator, keep only characters
+/// that mean nothing to a shell or a filesystem, and force the extension.
+///
+/// Shared rather than duplicated because it is a *policy*, not a formatting
+/// helper — it is the reason a name typed into the window cannot name a place.
+/// `fallback` is the stem used when nothing survives the filter.
+pub fn sanitize_basename(name: &str, ext: &str, fallback: &str) -> String {
     let base = name.trim().rsplit(['/', '\\']).next().unwrap_or("");
     let mut cleaned: String =
         base.chars().filter(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | ' ')).collect();
     cleaned = cleaned.trim().to_string();
-    if cleaned.is_empty() || cleaned == ".obcm" {
-        cleaned = "output.obcm".into();
+    if cleaned.is_empty() || cleaned == ext {
+        cleaned = fallback.to_string();
     }
-    if !cleaned.ends_with(".obcm") {
-        cleaned.push_str(".obcm");
+    if !cleaned.ends_with(ext) {
+        cleaned.push_str(ext);
     }
     cleaned
 }
@@ -126,6 +145,15 @@ mod tests {
         assert_eq!(sanitize_output_name(""), "output.obcm");
         assert_eq!(sanitize_output_name("/"), "output.obcm");
         assert_eq!(sanitize_output_name("a/b\\c.obcm"), "c.obcm");
+    }
+
+    #[test]
+    fn the_same_rule_forces_any_other_suffix() {
+        assert_eq!(sanitize_basename("bikepacking", ".json", "style"), "bikepacking.json");
+        assert_eq!(sanitize_basename("../../.ssh/config", ".json", "style"), "config.json");
+        assert_eq!(sanitize_basename("", ".json", "style"), "style.json");
+        assert_eq!(sanitize_basename(".json", ".json", "style"), "style.json");
+        assert_eq!(sanitize_basename("obcm-style-default.json", ".json", "style"), "obcm-style-default.json");
     }
 
     #[test]
