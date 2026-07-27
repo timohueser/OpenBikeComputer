@@ -122,6 +122,37 @@ async fn storage_clear(id: String) -> Result<u64, String> {
     tauri::async_runtime::spawn_blocking(move || storage::clear(&id)).await.map_err(|e| e.to_string())?
 }
 
+/// Largest style export this command will write.
+///
+/// A working config with every feature type spelled out is tens of kilobytes; a
+/// megabyte is two orders of magnitude of headroom and still a bound. It is here
+/// because "the window may write a file" needs one — not because anything
+/// legitimate approaches it.
+const MAX_STYLE_BYTES: usize = 1024 * 1024;
+
+/// Write an exported style config where the user can find it (E3 #913).
+///
+/// **The webview cannot save a file itself, and its usual trick does not work
+/// here.** A browser exports by clicking an `<a download>` at a blob URL; inside
+/// this app that is silently a no-op, because wry only installs a download
+/// delegate when the embedder supplies a handler and Tauri supplies one only if
+/// the application asks. So the export is a command, and it is the same shape as
+/// every other filesystem policy in this crate: a fixed folder, a sanitised
+/// basename, a size ceiling, and a path handed back so the UI can say where the
+/// file went and offer to reveal it. The frontend names a file; it never names a
+/// place.
+#[tauri::command]
+fn save_style(app: tauri::AppHandle, name: String, body: String) -> Result<String, String> {
+    if body.len() > MAX_STYLE_BYTES {
+        return Err(format!("that config is {} bytes; the limit is {MAX_STYLE_BYTES}", body.len()));
+    }
+    let dir = paths::styles_dir(app.path().document_dir().ok());
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = paths::unique_in(&dir, &paths::sanitize_basename(&name, ".json", "style"));
+    std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Show a produced file in the platform's file manager.
 ///
 /// Scoped to the maps folder on purpose: this is a command a webview can call, and
@@ -153,6 +184,7 @@ fn main() {
             build_cancel,
             storage_info,
             storage_clear,
+            save_style,
             reveal_file,
             // D4 (#909). Bytes only — the protocol lives once, in TypeScript, over these.
             usb::usb_watch,

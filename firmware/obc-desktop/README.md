@@ -137,12 +137,14 @@ cargo test --release -- --nocapture     # includes the GEOS smoke test above
 cargo keys build-script output on the profile, so a debug clippy followed by a
 release build compiles the whole of GEOS **twice**. One profile, one GEOS.
 
-Two tests are `#[ignore]`d because they pack a real region and therefore need a
+Three tests are `#[ignore]`d because they pack a real region and therefore need a
 warm cache — a `.pbf` under `~/.cache/obcm/pbf`, the Geofabrik index, and the
-land-polygon dataset. They are the ones that answer #906's acceptance criteria:
+land-polygon dataset. They are the ones that answer #906's and E3 #913's
+acceptance criteria:
 
 ```sh
-# the app's map and the CLI's map, byte for byte, with digests
+# the app's map and the CLI's map, byte for byte, with digests — twice: once for a
+# shipped preset (#906) and once for an edited style cropped to a box (E3 #913)
 cargo build --release -p obc-pack --manifest-path ../Cargo.toml
 cargo test --release -- --ignored --nocapture
 
@@ -161,6 +163,7 @@ glue takes tens of seconds — and the ratio stops meaning anything.
 | | |
 |---|---|
 | Built maps | `~/Documents/OpenBikeComputer/` |
+| Exported styles | `~/Documents/OpenBikeComputer/styles/` |
 | `.pbf` extracts | `~/.cache/obcm/pbf/` |
 | Land-polygon dataset | `~/.cache/obcm/land/` |
 | Geofabrik index | `~/.cache/obcm/geofabrik/` |
@@ -213,6 +216,15 @@ Two planes, split by size:
 | bulk, small | routes, rides, catalogs, firmware images | IPC, raw `ArrayBuffer` bodies |
 | bulk, by path | maps — hundreds of megabytes | `usb_send_file`: disk → endpoint, never through the webview |
 
+The third row's caller is the app's own build (E3, #913): a finished `.obcm` is in
+the maps folder, which is one of the two roots `usb::sendable_path` allows, so
+"Send to device" in the window is a 12-byte descriptor plus a progress channel and
+the file never enters the webview. What that does **not** mean is a build streamed
+into the cable with no file at all: the transfer descriptor announces the whole
+object's length and CRC-32 before the first byte moves (spec §4.2), and neither is
+known until the packer has written its last chunk. The `.obcm` is the product, not
+an intermediate.
+
 ### Platform permissions
 
 macOS and Windows need nothing. Linux needs a udev rule, because usbfs nodes are
@@ -260,7 +272,15 @@ If it does not, `RUST_LOG=nusb=debug cargo run --release` prints what the OS sai
   tens of kilobytes and ride the ordinary pipe); what E2 owns is the managed
   folder, the dedupe by `(serial, epoch, id)` and the ack-after-fsync.
 - **A native file picker.** `usb_send_file` only streams from the app's own
-  folders, so the file-path plane's first caller is E3's build-to-device (#913).
-  A `.obcm` the rider picks in the window arrives as a `File` with no path and
-  goes over the ordinary chunked pipe — correct, and flat in memory, just not the
-  zero-copy path.
+  folders. A `.obcm` the rider picks in the window arrives as a `File` with no
+  path and goes over the ordinary chunked pipe — correct, and flat in memory,
+  just not the zero-copy path. Widening `sendable_path` to arbitrary selections
+  wants a *native* dialog, so that the choice is the OS's rather than a string
+  the frontend made up.
+- **A native save dialog.** `save_style` writes exports into
+  `OpenBikeComputer/styles/` rather than asking where they should go, for the
+  same reason: the app grants the window no filesystem capability, and a folder
+  chosen in Rust is a policy you can read. The one thing it is *not* is the
+  browser's `<a download>` — that is silently inert here (wry installs a download
+  delegate only when the embedder supplies a handler), which is why the export
+  goes through a command at all.

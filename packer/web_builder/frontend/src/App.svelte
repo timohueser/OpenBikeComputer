@@ -1,4 +1,5 @@
 <script lang="ts">
+    import ConfirmDialog from "./components/ConfirmDialog.svelte";
     import Header from "./components/Header.svelte";
     import Desktop from "./routes/Desktop.svelte";
     import Home from "./routes/Home.svelte";
@@ -54,6 +55,10 @@
     Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ·
     extracts by <a href="https://download.geofabrik.de/">Geofabrik</a>{#if available("build")}{" · builds run locally on this machine"}{/if}
 </footer>
+
+<!-- Mounted once, at the root: the app's own "are you sure?", because the browser's does not exist
+     in the desktop webview (lib/ui/confirm.svelte.ts). -->
+<ConfirmDialog />
 
 <style>
     .backdrop {

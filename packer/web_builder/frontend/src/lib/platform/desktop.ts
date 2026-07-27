@@ -89,6 +89,9 @@ export const platform: Platform = {
         places: () => desktop.storagePlaces(),
         clear: (id: string) => desktop.storageClear(id),
     },
+    // `<a download>` is inert in this webview, so an export is a Rust write —
+    // see `Platform.saveText`.
+    saveText: (name: string, text: string) => desktop.saveStyle(name, text),
     revealFile: (path: string) => desktop.revealFile(path),
 };
 
