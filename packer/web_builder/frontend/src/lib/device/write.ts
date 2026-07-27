@@ -9,6 +9,7 @@
  * | :-- | :-- | :-- |
  * | Map (catalog) | the CDN, streamed into a scratch file | size + SHA-256 against the manifest (`OBCC_Spec.md` §7) |
  * | Map (file) | a file the rider picked | nothing to check it against; the device's CRC is the guarantee |
+ * | Map (built here) | the app's own maps folder, read by Rust | nothing to check it against; it was produced by the packer in this process |
  * | Route | a dropped GPX, converted by wasm | the OBCR header is read back and shown before sending |
  * | Firmware | an `UPDATE.BIN` | the whole OBCU container: header CRC, image CRC, slot ceiling |
  *
@@ -30,6 +31,7 @@
 import type { ProtocolClient, UploadResult } from "../usb/client";
 import { blobSource } from "../usb/client";
 import { NEW_OBJECT_ID, ObjectType, SINGLETON_OBJECT_ID } from "../usb/protocol";
+import type { LocalFileSource } from "../usb/session";
 import { readUpdateImage, type UpdateImage } from "../firmware/obcu";
 import type { JobContext } from "./progress";
 import { stageStream, type StagingArea } from "./staging";
@@ -111,6 +113,39 @@ export async function sendCatalogMap(
 export async function sendMapFile(client: ProtocolClient, file: File, ctx: JobContext): Promise<UploadResult> {
     ctx.phase("reading", file.size);
     const source = await blobSource(file);
+    ctx.phase("sending", source.totalLen);
+    return client.upload(ObjectType.Map, NEW_OBJECT_ID, source, {
+        signal: ctx.signal,
+        chunkSize: MAP_CHUNK,
+        onProgress: (done, total) => ctx.progress(done, total),
+    });
+}
+
+/**
+ * Send a `.obcm` this app built, straight off the disk it was written to (E3 #913).
+ *
+ * The flow #894 is aiming at, and the only one where **no byte of the map is ever in this process**.
+ * `open` hands back a source whose length and CRC-32 were computed in Rust and whose `sendTo`
+ * streams the file into the bulk endpoint from there; `ProtocolClient.upload` prefers that over its
+ * own chunk loop, so the webview writes a 12-byte descriptor and then watches a progress channel.
+ *
+ * "No intermediate file" in the acceptance sense means exactly that: nothing is staged, copied or
+ * duplicated. The `.obcm` itself is not an intermediate — it is the build's product, and it lands
+ * in the rider's maps folder whether or not a device is plugged in, which is most of why the
+ * desktop tier exists. Streaming a *build* into the endpoint is not merely unimplemented but
+ * unreachable: the transfer descriptor announces the whole object's length and CRC-32 before the
+ * first byte moves (§4.2), and neither is known until the packer has written its last chunk.
+ */
+export async function sendLocalMap(
+    client: ProtocolClient,
+    map: { readonly path: string; readonly bytes: number },
+    open: LocalFileSource,
+    ctx: JobContext,
+): Promise<UploadResult> {
+    // Fingerprinting re-reads the file in Rust; on a several-hundred-megabyte map that is seconds
+    // of disk, so it gets its own phase rather than looking like a stalled send.
+    ctx.phase("reading", map.bytes);
+    const source = await open(map.path);
     ctx.phase("sending", source.totalLen);
     return client.upload(ObjectType.Map, NEW_OBJECT_ID, source, {
         signal: ctx.signal,

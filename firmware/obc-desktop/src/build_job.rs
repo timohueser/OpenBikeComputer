@@ -368,6 +368,49 @@ mod tests {
         assert!(plan(&jobs, request(&["monaco"]), std::env::temp_dir()).is_err());
     }
 
+    /// Run one build through the app's own backend and wait for it to settle.
+    ///
+    /// Polls rather than blocks, because that is what the window does: the worker
+    /// owns the job and everything the UI knows arrives on a channel. The channel
+    /// here deserializes each event back out of its IPC body, so an event shape
+    /// the frontend could not read fails in the test rather than in someone's
+    /// window.
+    fn build_and_wait(req: BuildRequest, out_dir: &std::path::Path) -> std::path::PathBuf {
+        let name = req.output_name.clone();
+        let jobs = Arc::new(Jobs::default());
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = &body {
+                if serde_json::from_str::<serde_json::Value>(json).is_ok() {
+                    sink.lock().expect("lock").push(json.clone());
+                }
+            }
+            Ok(())
+        });
+        let id = start(Arc::clone(&jobs), req, out_dir.to_path_buf(), channel).expect("start");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+        loop {
+            match jobs.snapshot().expect("job").state {
+                JobState::Running => {
+                    assert!(std::time::Instant::now() < deadline, "the build did not finish in 15 minutes");
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                JobState::Done => break,
+                other => panic!("build ended {other:?}: {:?}", seen.lock().expect("lock").last()),
+            }
+        }
+        assert_eq!(jobs.snapshot().expect("job").id, id);
+        out_dir.join(name)
+    }
+
+    /// SHA-256 as lowercase hex — printed beside every parity comparison so the
+    /// two digests are in the log, not merely equal in an assertion.
+    fn digest(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     /// A real build through the app's own backend, compared byte for byte with
     /// the CLI's — the acceptance criterion of #906, run rather than argued.
     ///
@@ -392,49 +435,20 @@ mod tests {
         let out_dir = std::env::temp_dir().join(format!("obc-desktop-parity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out_dir);
 
-        let jobs = Arc::new(Jobs::default());
-        let seen = Arc::new(Mutex::new(Vec::<BuildEvent>::new()));
-        let sink = Arc::clone(&seen);
-        let channel = Channel::new(move |body| {
-            // The channel hands over the serialized IPC body; deserializing it
-            // back is what a window would do, so a shape the frontend cannot
-            // read fails here.
-            if let tauri::ipc::InvokeResponseBody::Json(json) = &body {
-                if let Ok(ev) = serde_json::from_str::<serde_json::Value>(json) {
-                    sink.lock().expect("lock").push(BuildEvent::Log { line: ev.to_string() });
-                }
-            }
-            Ok(())
-        });
+        let app_out = build_and_wait(
+            BuildRequest {
+                region_ids: vec!["monaco".into()],
+                // Exactly what the build card posts: the preset's config, `_meta`
+                // and all (the parser ignores it — `config::tests::
+                // unknown_tooling_metadata_remains_compatible`).
+                config: serde_json::from_str(&std::fs::read_to_string(&preset).expect("preset")).expect("preset json"),
+                chunk_size: Some(4096),
+                output_name: "monaco-app.obcm".into(),
+                bbox: None,
+            },
+            &out_dir,
+        );
 
-        let req = BuildRequest {
-            region_ids: vec!["monaco".into()],
-            // Exactly what the build card posts: the preset's config, `_meta`
-            // and all (the parser ignores it — `config::tests::
-            // unknown_tooling_metadata_remains_compatible`).
-            config: serde_json::from_str(&std::fs::read_to_string(&preset).expect("preset")).expect("preset json"),
-            chunk_size: Some(4096),
-            output_name: "monaco-app.obcm".into(),
-            bbox: None,
-        };
-        let id = start(Arc::clone(&jobs), req, out_dir.clone(), channel).expect("start");
-
-        // Poll rather than block: the worker owns the job, and this is the same
-        // "watch until it settles" the window does.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
-        loop {
-            match jobs.snapshot().expect("job").state {
-                JobState::Running => {
-                    assert!(std::time::Instant::now() < deadline, "the build did not finish in 10 minutes");
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                JobState::Done => break,
-                other => panic!("build ended {other:?}: {:?}", seen.lock().expect("lock").last()),
-            }
-        }
-        assert_eq!(jobs.snapshot().expect("job").id, id);
-
-        let app_out = out_dir.join("monaco-app.obcm");
         let cli_out = out_dir.join("monaco-cli.obcm");
         let cli = std::process::Command::new(repo.join("firmware/target/release/obc-pack"))
             .arg(crate::paths::pbf_cache().join("monaco.osm.pbf"))
@@ -448,14 +462,204 @@ mod tests {
 
         let a = std::fs::read(&app_out).expect("the app's map");
         let b = std::fs::read(&cli_out).expect("the cli's map");
-        let digest = |bytes: &[u8]| {
-            use sha2::{Digest, Sha256};
-            Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>()
-        };
         println!("app {} bytes  sha256 {}", a.len(), digest(&a));
         println!("cli {} bytes  sha256 {}", b.len(), digest(&b));
         assert_eq!(a, b, "the app's map and the CLI's map must be the same bytes");
         let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    /// The same claim for a map nobody shipped: **a custom style, cropped to a
+    /// box** — E3's (#913) acceptance criterion, and the one the previous test
+    /// cannot make.
+    ///
+    /// The difference is not cosmetic. The preset build compares two runs over a
+    /// document that exists on disk in both worlds; this one compares a config
+    /// that only ever existed as an *edit*, and it takes both of the paths the
+    /// desktop tier adds to the loop:
+    ///
+    /// * every kind of change the advanced editor can make — a colour, a weight,
+    ///   a start LOD, a whole category removed, a feature type removed the way
+    ///   the disabled list removes one, a finer LOD tier appended, a routing
+    ///   profile's multiplier, and a different chunk size;
+    /// * a **bbox**, so D5's (#910) in-ingest crop runs on the app's side
+    ///   (`PackOptions.bbox`) and the CLI's (`--bbox`) and has to agree.
+    ///
+    /// If any of that reached the packer differently — a number that took a
+    /// different JSON path, a key order that changed the style ids, a crop
+    /// rectangle rounded on one side — the two files would differ, and nothing
+    /// short of comparing them would say so.
+    #[test]
+    #[ignore = "needs a cached monaco extract, the Geofabrik index and the land dataset"]
+    fn a_custom_style_cropped_to_a_box_matches_the_cli_byte_for_byte() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let out_dir = std::env::temp_dir().join(format!("obc-desktop-custom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).expect("out dir");
+
+        // Start from the preset, as the editor does: picking one *copies* it, and
+        // everything after is an edit to that copy.
+        let preset = repo.join("packer/presets/default.json");
+        let mut config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&preset).expect("preset")).expect("preset json");
+        edit_like_the_editor(&mut config);
+
+        // The submitted config, written out once and used by *both* sides — which
+        // is the honest comparison. Handing the app a `Value` and the CLI a
+        // separately-written file would be comparing two serializers.
+        let config_path = out_dir.join("custom-style.json");
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config).expect("config json")).expect("write");
+
+        // A box over central Monaco. Comfortably inside the extract's own bounds
+        // (roughly W 7.402 S 43.722 → E 7.448 N 43.754), so the crop has real work
+        // to do rather than selecting everything.
+        const BBOX: [f64; 4] = [7.418, 43.730, 7.428, 43.740];
+
+        let app_out = build_and_wait(
+            BuildRequest {
+                region_ids: vec!["monaco".into()],
+                config: config.clone(),
+                chunk_size: Some(2048),
+                output_name: "monaco-custom-app.obcm".into(),
+                bbox: Some(BBOX),
+            },
+            &out_dir,
+        );
+
+        let cli_out = out_dir.join("monaco-custom-cli.obcm");
+        let [w, s, e, n] = BBOX;
+        let cli = std::process::Command::new(repo.join("firmware/target/release/obc-pack"))
+            .arg(crate::paths::pbf_cache().join("monaco.osm.pbf"))
+            .arg(&config_path)
+            .arg(&cli_out)
+            .arg("--bbox")
+            .arg(format!("{w},{s},{e},{n}"))
+            .arg("--chunk-size")
+            .arg("2048")
+            .output()
+            .expect("run obc-pack (build it first: cargo build --release -p obc-pack)");
+        assert!(cli.status.success(), "obc-pack failed: {}", String::from_utf8_lossy(&cli.stderr));
+
+        let a = std::fs::read(&app_out).expect("the app's map");
+        let b = std::fs::read(&cli_out).expect("the cli's map");
+        println!("custom style, bbox {w},{s},{e},{n}");
+        println!("app {} bytes  sha256 {}", a.len(), digest(&a));
+        println!("cli {} bytes  sha256 {}", b.len(), digest(&b));
+        assert_eq!(a, b, "a custom style built in the app must be the same bytes as the CLI's");
+
+        // Guard the guard. Two identical *uncropped* builds would satisfy the
+        // assertion above and prove nothing whatever about the bbox — so the same
+        // config is built once more without one, and the cropped map has to be
+        // smaller and cover less.
+        //
+        // Comparing the header bounds against the requested box would be the
+        // wrong check, and it is worth writing down why: the crop selects the
+        // features that *intersect* the box and keeps each one whole, so a way
+        // that crosses the edge carries its far end into the map and the global
+        // bounds legitimately spill over. What must shrink is the extent, not the
+        // rectangle.
+        let whole = build_and_wait(
+            BuildRequest {
+                region_ids: vec!["monaco".into()],
+                config,
+                chunk_size: Some(2048),
+                output_name: "monaco-custom-whole.obcm".into(),
+                bbox: None,
+            },
+            &out_dir,
+        );
+        let uncropped = std::fs::read(&whole).expect("the uncropped map");
+        println!("uncropped {} bytes  sha256 {}", uncropped.len(), digest(&uncropped));
+        println!("cropped   {} bytes  ({:.0}% of it)", a.len(), a.len() as f64 / uncropped.len() as f64 * 100.0);
+        assert!(a.len() < uncropped.len(), "the bbox changed nothing — the crop did not run");
+        // `OBCM_Spec.md` §1: magic, version, then min lat / min lon / max lat /
+        // max lon as int32 microdegrees.
+        assert_eq!(&a[..4], b"OBCM", "not an OBCM file");
+        let bounds = |map: &[u8]| {
+            let micro = |at: usize| i32::from_le_bytes(map[at..at + 4].try_into().expect("4 bytes")) as f64 / 1e6;
+            (micro(9), micro(5), micro(17), micro(13))
+        };
+        let (cw, cs, ce, cn) = bounds(&a);
+        let (ww, ws, we, wn) = bounds(&uncropped);
+        println!("cropped   bounds W {cw} S {cs} E {ce} N {cn}");
+        println!("uncropped bounds W {ww} S {ws} E {we} N {wn}");
+        assert!(cw >= ww && cs >= ws && ce <= we && cn <= wn, "the cropped map covers ground the whole one does not");
+        assert!((cw, cs, ce, cn) != (ww, ws, we, wn), "the crop left the map's extent untouched");
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    /// Apply, in Rust, the edits the advanced editor makes in the window.
+    ///
+    /// Every one of them is a control that exists on screen: the colour picker,
+    /// the weight and z-index cells, the min-LOD segments, "Remove this
+    /// category", the disabled toggle, "Add a detail level", the bike-profile
+    /// multiplier grid, and the output tab's chunk size. What matters for the
+    /// test is that the result is a config **no preset file contains**.
+    fn edit_like_the_editor(config: &mut serde_json::Value) {
+        use serde_json::{json, Value};
+        let obj = config.as_object_mut().expect("a config object");
+        // The editor never posts `_meta`; `buildConfigForSubmit` rebuilds the
+        // document from the fields the schema declares.
+        obj.remove("_meta");
+        obj.insert("chunk_size".into(), json!(2048));
+
+        // Output tab: a finer detail level, appended the way `addLodTier` does.
+        let lods = obj.get_mut("lods").and_then(Value::as_array_mut).expect("lods");
+        let finest = lods.last().and_then(|l| l.get("max_mpp")).and_then(Value::as_f64).unwrap_or(120.0);
+        lods.push(json!({ "max_mpp": (finest / 2.0).round().max(1.0), "simplify": 0 }));
+        let tiers = lods.len();
+
+        let features = obj.get_mut("features").and_then(Value::as_object_mut).expect("features");
+        // "Remove this category" — buildings, the one a bikepacking map is most
+        // likely to lose on purpose. `natural` is deliberately left alone below:
+        // `natural.land` is what the land-polygon backdrop is styled as, and
+        // dropping it would quietly take the land stage out of the comparison.
+        assert!(features.remove("building").is_some(), "the preset no longer has a `building` category");
+
+        // Then per-feature edits, deterministically: outside `natural`, every
+        // fourth type is dropped (what the disabled list does by the time the
+        // build card posts), and the rest get a new colour, weight and start
+        // tier. Key order is untouched, because it is what the packer assigns
+        // style ids from.
+        for (i, (category, entries)) in features.iter_mut().enumerate() {
+            let keep_all = category == "natural";
+            let entries = entries.as_object_mut().expect("a category");
+            let names: Vec<String> = entries.keys().cloned().collect();
+            for (j, name) in names.iter().enumerate() {
+                if !keep_all && (i + j) % 4 == 3 {
+                    entries.remove(name);
+                    continue;
+                }
+                let def = entries.get_mut(name).and_then(Value::as_object_mut).expect("a style");
+                def.insert("color".into(), json!(format!("0x{:04X}", 0x1000 + ((i * 31 + j * 7) % 0xE000))));
+                def.insert("weight".into(), json!(1 + ((i + j) % 3)));
+                def.insert("min_lod".into(), json!((i + j) % tiers));
+            }
+        }
+
+        // Bike profiles: the multiplier grid, with one class toggled to
+        // forbidden. Every other cell is >= 1.0, which the editor enforces and
+        // the packer requires — the A* heuristic stops being admissible below it.
+        obj.insert(
+            "routing".into(),
+            json!({
+                "profiles": [
+                    {
+                        "name": "Bikepacking",
+                        "default": 2.0,
+                        "highway": { "track": 1.0, "path": 1.3, "cycleway": 1.1, "steps": "forbidden" },
+                        "surface": { "gravel": 1.0, "paved": 1.2, "rough": 2.5 }
+                    },
+                    {
+                        // ≤ 12 UTF-8 bytes: the profile table's wire field, which
+                        // the editor also enforces.
+                        "name": "Pavement",
+                        "default": 4.0,
+                        "highway": { "cycleway": 1.0, "residential": 1.2, "track": "forbidden" },
+                        "surface": { "paved": 1.0, "gravel": "forbidden" }
+                    }
+                ]
+            }),
+        );
     }
 
     /// Cancellation, measured rather than asserted: the same build runs twice,

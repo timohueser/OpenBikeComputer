@@ -107,6 +107,7 @@ export const desktop = {
     storagePlaces: () => invoke<StoragePlace[]>("storage_info"),
     storageClear: (id: string) => invoke<number>("storage_clear", { id }),
 
+    saveStyle: (name: string, body: string) => invoke<string>("save_style", { name, body }),
     revealFile: (path: string) => invoke<void>("reveal_file", { path }),
 
     usbWatch: (onEvent: Channel<UsbEvent>) => invoke<UsbDeviceSummary[]>("usb_watch", { onEvent }),

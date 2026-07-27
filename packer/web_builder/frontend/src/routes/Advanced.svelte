@@ -9,6 +9,7 @@
     import { exportFile, importFile } from "../lib/config/edit";
     import { isBuildable, type Preset, type SchemaEnvelope } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
+    import { confirmAction } from "../lib/ui/confirm.svelte";
 
     let tab = $state<"features" | "lods" | "routing" | "output">("features");
     let activeCat = $state("");
@@ -18,6 +19,14 @@
     let importError = $state<string | null>(null);
     let legacyConfig = $state<Record<string, unknown> | null>(null);
     let fileInput: HTMLInputElement;
+    /** Where the last export landed, on a host that saves files rather than downloading them. */
+    let exported = $state<string | null>(null);
+    let exportError = $state<string | null>(null);
+
+    // Read once: neither changes while the app runs. Both absent in a browser tab, where an
+    // `<a download>` is the whole story and there is no file manager to point at.
+    const saveText = platform.saveText;
+    const revealFile = platform.revealFile;
 
     const env = $derived(working.envelope);
     const basedOnName = $derived(
@@ -60,24 +69,63 @@
         if (cats.length && !cats.includes(activeCat)) activeCat = cats[0];
     });
 
-    function resetToPreset() {
+    async function resetToPreset() {
         const preset = presets.find((p) => p.id === env?.based_on?.id);
         // This editor only exists on a tier that serves config-carrying presets
         // (`caps.styleEditor`), so the guard is the type system's, not a case
         // that happens: there is nothing to reset to without a config.
         if (!preset || !isBuildable(preset)) return;
-        if (!confirm(`Discard your edits and re-apply "${preset.name}" (v${preset.version})?`)) return;
+        // The explicit re-copy the envelope's semantics are built around: a preset never reaches a
+        // working config except by someone asking for it. Asked through the app's own dialog,
+        // because the browser's `confirm()` answers "no" on its own in the desktop webview — which
+        // made this exact button a no-op there (see lib/ui/confirm.svelte.ts).
+        const ok = await confirmAction({
+            title: `Re-apply “${preset.name}” (v${preset.version})?`,
+            body: "Your edits to this style are discarded and the preset is copied in again.",
+            confirmLabel: "Reset to preset",
+            destructive: true,
+        });
+        if (!ok) return;
         working.applyPreset(preset);
     }
 
-    function exportNow() {
+    /**
+     * Write the working config out as a plain, CLI-usable packer config.
+     *
+     * Two ways, because the two hosts disagree about what "save a file" is — not about the
+     * document, which is byte-identical either way. A browser gets the anchor it has always had;
+     * the desktop app gets a Rust write, because that anchor is silently inert inside a Tauri
+     * webview (see `Platform.saveText`). Nothing here branches on a host name: the seam being
+     * present *is* the statement that the fallback would not work.
+     */
+    async function exportNow() {
         if (!env) return;
-        const blob = new Blob([exportFile(env)], { type: "application/json" });
+        exported = null;
+        exportError = null;
+        const name = `obcm-style-${env.based_on?.id ?? "custom"}.json`;
+        const text = exportFile(env);
+        if (saveText) {
+            try {
+                exported = await saveText(name, text);
+            } catch (e) {
+                exportError = e instanceof Error ? e.message : String(e);
+            }
+            return;
+        }
+        const blob = new Blob([text], { type: "application/json" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = `obcm-style-${env.based_on?.id ?? "custom"}.json`;
+        a.download = name;
         a.click();
         URL.revokeObjectURL(a.href);
+    }
+
+    async function revealExport(path: string) {
+        try {
+            await revealFile?.(path);
+        } catch (e) {
+            exportError = e instanceof Error ? e.message : String(e);
+        }
     }
 
     async function importPicked(files: FileList | null) {
@@ -136,6 +184,20 @@
 
 {#if importError}
     <p class="error small">{importError}</p>
+{/if}
+
+{#if exportError}
+    <p class="error small">{exportError}</p>
+{/if}
+
+{#if exported}
+    <p class="small muted saved">
+        Saved to <span class="mono">{exported}</span>
+        {#if revealFile}
+            {@const path = exported}
+            <button type="button" class="btn ghost" onclick={() => revealExport(path)}>Show</button>
+        {/if}
+    </p>
 {/if}
 
 {#if legacyConfig}
@@ -229,6 +291,15 @@
     .error {
         color: var(--coral);
         margin: 0 0 10px;
+    }
+
+    .saved {
+        margin: 0 0 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        word-break: break-all;
     }
 
     .legacy {

@@ -23,6 +23,7 @@
     } from "../../lib/config/profiles";
     import type { Multiplier, SchemaEnvelope } from "../../lib/config/model";
     import { working } from "../../lib/config/storage.svelte";
+    import { confirmAction } from "../../lib/ui/confirm.svelte";
     import MultiplierCell from "./MultiplierCell.svelte";
 
     let { schema }: { schema: SchemaEnvelope | null } = $props();
@@ -71,12 +72,18 @@
         touch();
     }
 
-    function reset(i: number) {
+    async function reset(i: number) {
         if (!ps) return;
         const name = profiles[i]?.name ?? "this profile";
-        if (!confirm(`Reset “${name}” to its shipped defaults? Your tweaks to it are discarded.`)) {
-            return;
-        }
+        const ok = await confirmAction({
+            title: `Reset “${name}” to its shipped defaults?`,
+            body: "Your tweaks to it are discarded. The other profiles are untouched.",
+            confirmLabel: "Reset",
+            destructive: true,
+        });
+        // `ps` is re-read after the await: the schema could have arrived, or gone, while the
+        // dialog was up.
+        if (!ok || !ps) return;
         hint = null;
         resetProfile(env.config, i, ps);
         touch();
