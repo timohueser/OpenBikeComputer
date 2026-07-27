@@ -136,4 +136,79 @@ export const desktop = {
     usbFileDigest: (path: string) => invoke<UsbFileDigest>("usb_file_digest", { path }),
     usbSendFile: (handle: number, path: string, onProgress: Channel<UsbSendProgress>) =>
         invoke<number>("usb_send_file", { handle, path, onProgress }),
+
+    // --- the ride library (E2 #912) -----------------------------------------
+    //
+    // `ridesImport` is the one command in this file whose *timing* is part of a
+    // contract: it resolves after the ride object, the GPX and the index have
+    // each been fsynced, and `pullRides` sends `ackRides` only afterwards. See
+    // firmware/obc-desktop/src/rides.rs.
+
+    ridesIndex: () => invoke<RideIndexView>("rides_index"),
+    ridesImport: (request: RideImportRequest) => invoke<RideImported>("rides_import", { request }),
+    ridesAckSet: (serial: string, epoch: number) => invoke<number[]>("rides_ack_set", { serial, epoch }),
+    /** The stored ride object. Raw, like `usbRead` — a JSON number array would be 4× the bytes. */
+    ridesRead: (key: string) => invoke<ArrayBuffer>("rides_read", { key }),
+    ridesWriteGpx: (key: string, gpx: string) => invoke<string>("rides_write_gpx", { key, gpx }),
+    /** Opens the OS folder chooser and moves the library. `null` when it was dismissed. */
+    ridesChooseFolder: () => invoke<string | null>("rides_choose_folder"),
 };
+
+// --- the ride library's payloads ---------------------------------------------
+//
+// Field for field what `serde` reads and writes in firmware/obc-desktop/src/rides.rs.
+// `lib/device/library.ts` owns the app-facing shapes; these are the wire ones, and
+// `lib/desktop/library.ts` is the (thin) translation between them.
+
+export interface RideIndexEntry {
+    key: string;
+    serial: string;
+    epoch: number;
+    objectId: number;
+    name: string;
+    startTime: number;
+    distanceM: number;
+    movingTimeS: number;
+    climbM: number;
+    points: number;
+    bytes: number;
+    crc32: number;
+    importedAt: number;
+    /** Basenames — what the index stores, because the folder can move. */
+    rideFile: string;
+    gpxFile: string;
+    track: Array<[number, number]>;
+    /** The basenames joined to the current folder, by the side that owns a path separator. */
+    ridePath: string;
+    gpxPath: string;
+    /** Recomputed against the filesystem on every read, never trusted from the index. */
+    present: boolean;
+    gpxPresent: boolean;
+}
+
+export interface RideIndexView {
+    folder: string;
+    isDefault: boolean;
+    rides: RideIndexEntry[];
+}
+
+export interface RideImportRequest {
+    serial: string;
+    epoch: number;
+    objectId: number;
+    name: string;
+    startTime: number;
+    distanceM: number;
+    movingTimeS: number;
+    climbM: number;
+    points: number;
+    crc32: number;
+    track: Array<[number, number]>;
+    object: number[];
+    gpx: string;
+}
+
+export interface RideImported {
+    ride: RideIndexEntry;
+    imported: boolean;
+}

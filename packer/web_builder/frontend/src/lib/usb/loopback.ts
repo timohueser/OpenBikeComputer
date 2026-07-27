@@ -425,6 +425,24 @@ export class MockDevice {
         this.nextTripId = Math.max(this.nextTripId, entry.objectId + 1);
     }
 
+    /**
+     * Re-mint the store epoch and empty the card — a chip erase, a factory reset, a reformatted
+     * card (spec §1).
+     *
+     * The whole point is that ids start again from 1, so the *next* ride minted here legitimately
+     * carries an id an old ride already used. That is what turns a bare-id library into a silent
+     * data loser, and it is why the epoch exists; the iOS companion's `LibraryScopingE2ETests` has
+     * the same knob (`setIdentity(epoch:)`) for the same reason. Synced flags go with the card, so
+     * they are cleared too.
+     */
+    reopenIdSpace(storeEpoch: number | null): void {
+        this.storeEpoch = storeEpoch;
+        this.rides.clear();
+        this.rideEntries.clear();
+        this.syncedRides.clear();
+        this.nextRideId = 1;
+    }
+
     /** The bytes the device holds for an object, or `null` — what a test asserts an upload against. */
     stored(type: ObjectType, objectId: number): Uint8Array | null {
         return this.storeFor(type)?.get(objectId)?.bytes ?? null;
