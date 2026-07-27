@@ -283,7 +283,7 @@ describe("the device saying no", () => {
         // Epoch 0 is a legal era. Conflating "the device could not name its era" with it would let
         // a peer key durable state to an era it never actually read.
         await withDevice({ storeEpoch: null }, async ({ client }) => {
-            expect(await client.identity()).toEqual({ version: 2, storeEpoch: null });
+            expect(await client.identity()).toEqual({ version: 2, storeEpoch: null, obcmVersion: null });
         });
     });
 });

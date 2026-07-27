@@ -6,7 +6,7 @@
 // be.
 
 import { describe, expect, it } from "vitest";
-import { artifactState, regionState, stylingLagsPreset } from "./availability";
+import { artifactState, deviceFromIdentity, regionState, stylingLagsPreset } from "./availability";
 import type { CatalogArtifact } from "./manifest";
 import type { RegionEntry } from "./regions";
 
@@ -35,6 +35,31 @@ function entry(artifacts: CatalogArtifact[]): RegionEntry {
         artifacts,
     };
 }
+
+describe("the device fact, straight off the identity read", () => {
+    // E1 (#911) closed C1's one seam: the identity read (spec §1) now carries the OBCM version
+    // the firmware reads, so `deviceFromIdentity` is the whole wiring between a USB session and
+    // this file. The interesting half is what it refuses to invent.
+    it("takes the version the device stated", () => {
+        expect(deviceFromIdentity(10)).toEqual({ obcmVersion: 10 });
+        expect(deviceFromIdentity(11)).toEqual({ obcmVersion: 11 });
+    });
+
+    it("reports no device when the read carried no version", () => {
+        // A firmware predating the field (the 6-byte read) and a card-less device (the 2-byte
+        // read) both land here. "Connected" is not "readable" — assuming the current version
+        // because something is plugged in is the guess this field exists to remove.
+        expect(deviceFromIdentity(null)).toBeNull();
+        expect(deviceFromIdentity(undefined)).toBeNull();
+    });
+
+    it("does not treat OBCM version 0 as absent", () => {
+        // The mirror image of the rule above: `0` is a number the device stated, and it must not
+        // fall into the unknown branch just because it is falsy. (No firmware reads v0; this pins
+        // the shape of the check, which is where that bug would live.)
+        expect(deviceFromIdentity(0)).toEqual({ obcmVersion: 0 });
+    });
+});
 
 describe("with no device attached", () => {
     it("offers the download whatever version it is", () => {

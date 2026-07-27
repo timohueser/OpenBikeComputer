@@ -102,20 +102,35 @@ pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shar
     }
 }
 
-/// The §1 identity read (V2 / #632; card-resident epoch #776). With a store epoch (`Some`) it is the
-/// full 6-byte [`VersionRead`](obc_ble::VersionRead) — `version u16 · store_epoch u32`. With **no
-/// store** (`None` — a no-card boot has no epoch, and 0 is a *legal* epoch we must never fabricate)
-/// it is the 2-byte **version-only** form (`PROTOCOL_VERSION` LE): the peer reads a short value,
-/// decodes `storeEpoch = nil`, and fail-closes the ack. Returned as `(buf, len)` so the caller
-/// serves whichever length applies.
+/// The §1 identity read (V2 / #632; card-resident epoch #776; OBCM version E1 / #911). With a store
+/// epoch (`Some`) it is the full 7-byte [`VersionRead`](obc_ble::VersionRead) — `version u16 ·
+/// store_epoch u32 · obcm_version u8`. With **no store** (`None` — a no-card boot has no epoch, and
+/// 0 is a *legal* epoch we must never fabricate) it is the 2-byte **version-only** form
+/// (`PROTOCOL_VERSION` LE): the peer reads a short value, decodes `storeEpoch = nil`, and
+/// fail-closes the ack. Returned as `(buf, len)` so the caller serves whichever length applies.
+///
+/// `obcm_version` is read straight off [`obc_formats::obcm::VERSION`] — the same constant the map
+/// reader validates every `.obcm` header against — so what the device *claims* to read and what it
+/// *does* read cannot drift: a format bump moves both or neither. It is deliberately not a
+/// hand-kept number here, and not derived from the firmware-revision string, which maps to a format
+/// version only through a table that exists nowhere. A host uses it for `OBCC_Spec.md` §6(c): don't
+/// offer a map artifact this device can't read.
+///
+/// The store-less read carries no `obcm_version` even though the device knows it — the fields are
+/// positional, `store_epoch` has no absent encoding, and a device with no card has nowhere to put a
+/// map anyway (see the [`VersionRead`](obc_ble::VersionRead) docs).
 pub(crate) fn version_read_bytes(store_epoch: Option<u32>) -> ([u8; obc_ble::VersionRead::ENCODED_LEN], usize) {
     let mut buf = [0u8; obc_ble::VersionRead::ENCODED_LEN];
     match store_epoch {
         Some(epoch) => {
-            let vr = obc_ble::VersionRead { version: obc_ble::PROTOCOL_VERSION, store_epoch: epoch };
-            let encoded = vr.encode();
+            let vr = obc_ble::VersionRead {
+                version: obc_ble::PROTOCOL_VERSION,
+                store_epoch: epoch,
+                obcm_version: Some(obc_formats::obcm::VERSION),
+            };
+            let (encoded, len) = vr.encode();
             buf.copy_from_slice(&encoded);
-            (buf, encoded.len())
+            (buf, len)
         }
         None => {
             let v = obc_ble::PROTOCOL_VERSION.to_le_bytes();

@@ -300,10 +300,28 @@
       "total": 3
     },
     "version-read.bin": {
-      "format": "protocolVersion read (spec 1) — version u16 · store_epoch u32",
+      "format": "protocolVersion read (spec 1) — version u16 · store_epoch u32 · obcm_version u8",
+      "byte_len": 7,
+      "version": 2,
+      "store_epoch": "0xA1B2C3D4",
+      "obcm_version": 10,
+      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose."
+    },
+    "version-read-noobcm.bin": {
+      "format": "protocolVersion read (spec 1), pre-#911 — version u16 · store_epoch u32",
       "byte_len": 6,
       "version": 2,
-      "store_epoch": "0xA1B2C3D4"
+      "store_epoch": "0xA1B2C3D4",
+      "obcm_version": null,
+      "_note": "A firmware that predates the obcm_version byte. Decoders take the absent field as unknown (null/nil/None), never as 0 — obcm_version 0 would read as 'supports OBCM v0' and refuse every real map."
+    },
+    "version-read-nostore.bin": {
+      "format": "protocolVersion read (spec 1), no mounted store — version u16 only",
+      "byte_len": 2,
+      "version": 2,
+      "store_epoch": null,
+      "obcm_version": null,
+      "_note": "No card ⇒ no era to name, and the fields are positional, so there is no room for the obcm byte after an epoch that is not there. A reader must fail its ack closed rather than read epoch 0, which is a legal era."
     },
     "status-download-announce.bin": {
       "format": "status msg 4 downloadAnnounce (spec 4.3) — msg byte + 12-byte descriptor",

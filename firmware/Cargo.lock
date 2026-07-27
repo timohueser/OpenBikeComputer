@@ -2496,6 +2496,7 @@ dependencies = [
 name = "obc-ble"
 version = "0.1.0"
 dependencies = [
+ "obc-formats",
  "obc-vectors",
 ]
 

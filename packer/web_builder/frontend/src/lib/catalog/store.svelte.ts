@@ -39,20 +39,21 @@ export class CatalogStore {
 
     /**
      * The device the maps are for, or null when none is known — the hosted
-     * tier's designed case, and the only one reachable today: C3's session
-     * reports a protocol version and a firmware string, neither of which is the
-     * OBCM format version §6(c) turns on (see `DeviceMapSupport`). Null is not
-     * a degraded mode; it is the branch the spec writes for "no known target
-     * firmware".
+     * tier's designed case, and still the common one: nothing plugged in, or a
+     * browser with no USB at all. Null is not a degraded mode; it is the branch
+     * the spec writes for "no known target firmware".
+     *
+     * Set by the device step from a real identity read (E1, #911). It stays
+     * null for a device whose read carries no `obcm_version` — an older
+     * firmware, or the store-less short read — because "unknown" and "reads
+     * some particular version" are different answers and only one of them is
+     * true.
      */
     device = $state<DeviceMapSupport | null>(null);
-    /** True when `device` came from the URL hook rather than a real device. */
-    deviceIsSimulated = $state(false);
 
     async load(): Promise<void> {
         if (this.state === "loading" || this.state === "ready") return;
         this.state = "loading";
-        this.readDeviceHook();
 
         let regions: RegionFeature[];
         try {
@@ -97,12 +98,13 @@ export class CatalogStore {
         this.state = "ready";
     }
 
-    /** The seam a device session calls once it can state which OBCM version the
-     *  firmware reads. Kept deliberately independent of C3's `DeviceSession`:
-     *  the catalog wants one number, not a connection. */
+    /** The seam the device step calls with the OBCM version the connected
+     *  firmware reads, and with `null` on disconnect / an unknown version. Kept
+     *  deliberately independent of C3's `DeviceSession`: the catalog wants one
+     *  number, not a connection — which is also what keeps the USB stack out of
+     *  the entry bundle, since nothing here imports it. */
     setDevice(device: DeviceMapSupport | null): void {
         this.device = device;
-        this.deviceIsSimulated = false;
     }
 
     private cache(catalog: Catalog): void {
@@ -126,25 +128,6 @@ export class CatalogStore {
         } catch {
             localStorage.removeItem(CACHE_KEY);
             return null;
-        }
-    }
-
-    /**
-     * `?device-obcm=9` stands in for a connected device until C3 lands, so the
-     * unsupported state can be exercised without one. The UI shows a banner
-     * whenever it is on, so it can never be mistaken for a real device; C3
-     * replaces it with `setDevice()` from a real session.
-     */
-    private readDeviceHook(): void {
-        try {
-            const raw = new URLSearchParams(location.search).get("device-obcm");
-            if (raw === null) return;
-            const obcmVersion = Number.parseInt(raw, 10);
-            if (!Number.isInteger(obcmVersion) || obcmVersion < 0) return;
-            this.device = { obcmVersion, label: "Simulated device" };
-            this.deviceIsSimulated = true;
-        } catch {
-            // No location (SSR, tests): no hook, which is the normal case.
         }
     }
 }

@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { Crc32 } from "./crc32";
-import { loopbackDevice } from "./loopback";
+import { REFERENCE_OBCM_VERSION, loopbackDevice, type MockDevice } from "./loopback";
 import {
     decodeRideList,
     decodeRideObject,
@@ -52,6 +52,7 @@ import {
     encodeStatusMessage,
     encodeTransferControl,
     encodeVersionRead,
+    viewOf,
 } from "./protocol";
 
 /** Walk up from this file to the repo root (the directory holding `protocol-vectors/`). */
@@ -88,6 +89,23 @@ function expectSameBytes(actual: Uint8Array, expected: Uint8Array, what: string)
 
 /** The manifest's hex strings, as the numbers the codecs deal in. */
 const hex = (s: string): number => Number.parseInt(s, 16) >>> 0;
+
+/** A ride on the device with nothing in it — enough for an ack to have something to flag. */
+function seedEmptyRide(device: MockDevice, objectId: number): void {
+    device.seedRide(
+        {
+            objectId,
+            byteLen: 0,
+            startTime: 0,
+            distanceM: 0,
+            movingTimeS: 0,
+            avgSpeedCms: 0,
+            climbM: 0,
+            name: `ride ${objectId}`,
+        },
+        new Uint8Array(0),
+    );
+}
 
 describe("CRC-32 against the fixtures", () => {
     it("reproduces the manifest's check value", () => {
@@ -217,17 +235,40 @@ describe("control-plane codecs", () => {
         expect(() => encodeSetRouteRetention(7, 6)).toThrow(RangeError);
     });
 
-    it("round-trips the identity read, with and without a mounted store", () => {
+    it("round-trips the identity read at all three lengths", () => {
+        // 7 bytes: the full read. `obcmVersion` is the OBCM *map-format* version the device's
+        // reader reads — the fact `OBCC_Spec.md` §6(c) filters the catalog on, and a different
+        // number in a different sequence from the protocol `version` beside it.
         const full = decodeVersionRead(vector("version-read.bin"));
-        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4") });
+        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: 10 });
         expectSameBytes(encodeVersionRead(full), vector("version-read.bin"), "version-read");
 
-        // No card means no era to name, so the device serves two bytes. That absent epoch has to
-        // decode as "none", never as epoch 0 — 0 is a legal era, and conflating them would let a
-        // peer stamp id-keyed state under an era it never read.
+        // 6 bytes: a firmware predating the field. Unknown, not zero — `obcmVersion: 0` would read
+        // as "supports OBCM v0" and refuse every real map, where null takes §6(c)'s
+        // no-known-target-firmware branch and offers the download stating the version.
+        const noObcm = decodeVersionRead(vector("version-read-noobcm.bin"));
+        expect(noObcm).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: null });
+        expectSameBytes(encodeVersionRead(noObcm), vector("version-read-noobcm.bin"), "version-read-noobcm");
+
+        // 2 bytes: no card means no era to name, so the device serves the version alone. That
+        // absent epoch has to decode as "none", never as epoch 0 — 0 is a legal era, and
+        // conflating them would let a peer stamp id-keyed state under an era it never read. There
+        // is no room for an obcm byte after an epoch that is not there, either.
         const short = decodeVersionRead(vector("version-read-nostore.bin"));
-        expect(short).toEqual({ version: 2, storeEpoch: null });
+        expect(short).toEqual({ version: 2, storeEpoch: null, obcmVersion: null });
         expectSameBytes(encodeVersionRead(short), vector("version-read-nostore.bin"), "version-read-nostore");
+    });
+
+    it("ignores identity bytes past the fields it knows", () => {
+        // The append-only rule the `obcm_version` byte itself rode in on (§1): a longer read from a
+        // newer firmware decodes to what this build understands rather than failing, which is why
+        // appending the field needed no `PROTOCOL_VERSION` bump.
+        const future = new Uint8Array([...vector("version-read.bin"), 0xee, 0xee]);
+        expect(decodeVersionRead(future)).toEqual({
+            version: 2,
+            storeEpoch: hex("0xA1B2C3D4"),
+            obcmVersion: 10,
+        });
     });
 
     it("round-trips the Config object", () => {
@@ -481,10 +522,93 @@ describe("round-trip over the loopback pipe", () => {
             expect(await client.identity()).toEqual({
                 version: MANIFEST.protocol_version,
                 storeEpoch: hex("0xA1B2C3D4"),
+                obcmVersion: REFERENCE_OBCM_VERSION,
             });
             expect((await client.deviceInfo()).firmwareRevision).toBe("0.4.0+abc1234");
         } finally {
             await close();
+        }
+    });
+
+    /**
+     * `ackRides` over USB (E1, #911).
+     *
+     * There is deliberately **no `command-ack-rides-usb.bin`**. A USB ack is the checked-in
+     * `command-ack-rides.bin` bytes carried on control selector 1, and a second file with identical
+     * contents would assert the opposite of what is true — that the transports differ. So the
+     * fixture is reused and the *routing* is what gets pinned: the same bytes, over the USB
+     * envelope, reach the same handler and move the same sidecar. (The firmware side is structural
+     * rather than tested here: `usb::control`'s `COMMAND` arm and `ble::control`'s `command` write
+     * both call one `link::command::run_command`.)
+     */
+    it("acks rides over USB with the same bytes the BLE command carries", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            for (const id of [3, 5, 9]) seedEmptyRide(device, id);
+            // The fixture's own ids: `count` 3 · 3, 5, 9.
+            expectSameBytes(encodeAckRides([3, 5, 9]), vector("command-ack-rides.bin"), "ackRides");
+            expect(await client.ackRides([3, 5, 9])).toBe(3);
+            expect([...device.synced].sort((a, b) => a - b)).toEqual([3, 5, 9]);
+        } finally {
+            await close();
+        }
+    });
+
+    /**
+     * Both merge orders, over the wire, read back off the persisted sidecar.
+     *
+     * The claim E1 rests on is that a desktop ack and a phone heal need no coordination — no
+     * per-sink field, no ownership, no new command — because the ack is add-only and idempotent.
+     * The sharp end is the middle case: a phone acking its own library must not un-flag a ride the
+     * desktop already fsynced and flagged, and "the phone didn't list it" is not evidence the ride
+     * is unsynced. Read off `syncedSidecar()` — the `/tracks/SYNCED.SET` bytes the firmware writes
+     * — rather than off a flag, so the thing that actually persists is the thing checked.
+     *
+     * **What commutes is the set and the stamps, not the file.** The sidecar serialises entries in
+     * *insertion* order, so acking 3,5 then 5,9 lays them out `3,5,9` and the reverse lays them out
+     * `5,9,3`: same synced rides, same stamps, different bytes. Worth knowing before writing a test
+     * that compares two devices' sidecars byte-for-byte — #904's pin compares one device's sidecar
+     * across a session, which is a different question and stays valid.
+     */
+    it("merges a desktop ack and a phone heal to the same synced set in either order", async () => {
+        const DESKTOP = [3, 5]; // fsynced into the desktop library
+        const PHONE = [5, 9]; // the phone's library — it never held ride 3
+
+        /** The sidecar decoded to `id → synced_at`, which is what the file *means*. */
+        function entriesOf(sidecar: Uint8Array): Map<number, number> {
+            const view = viewOf(sidecar);
+            const count = view.getUint16(6, true);
+            const out = new Map<number, number>();
+            for (let i = 0; i < count; i++) {
+                const at = 8 + i * 6;
+                out.set(view.getUint16(at, true), view.getUint32(at + 2, true));
+            }
+            return out;
+        }
+
+        async function ackedInOrder(first: number[], second: number[]): Promise<Map<number, number>> {
+            const { client, device, close } = loopbackDevice();
+            try {
+                for (const id of [3, 5, 9]) seedEmptyRide(device, id);
+                // The counts are the other half of the claim: the second ack only ever *adds*, so
+                // whichever sink goes second reports exactly the ids the first one didn't hold.
+                expect(await client.ackRides(first)).toBe(2);
+                expect(await client.ackRides(second)).toBe(1);
+                return entriesOf(device.syncedSidecar());
+            } finally {
+                await close();
+            }
+        }
+
+        const desktopFirst = await ackedInOrder(DESKTOP, PHONE);
+        const phoneFirst = await ackedInOrder(PHONE, DESKTOP);
+
+        // All three flagged either way — in particular ride 3, which the phone's ack omitted and
+        // which a "the peer's list is the truth" reading would have cleared.
+        expect([...desktopFirst.keys()].sort((a, b) => a - b)).toEqual([3, 5, 9]);
+        expect([...phoneFirst.keys()].sort((a, b) => a - b)).toEqual([3, 5, 9]);
+        for (const id of [3, 5, 9]) {
+            expect(phoneFirst.get(id), `ride ${id}'s stamp`).toBe(desktopFirst.get(id));
         }
     });
 });

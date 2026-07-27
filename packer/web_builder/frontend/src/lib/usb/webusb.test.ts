@@ -15,7 +15,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { DeviceError } from "./client";
-import { MockDevice, loopbackLink, type LoopbackLink, type MockDeviceOptions } from "./loopback";
+import {
+    MockDevice,
+    REFERENCE_OBCM_VERSION,
+    loopbackLink,
+    type LoopbackLink,
+    type MockDeviceOptions,
+} from "./loopback";
 import { ObjectType } from "./protocol";
 import {
     OBC_USB_FILTERS,
@@ -197,7 +203,11 @@ describe("the permission model", () => {
         const watcher = new WebUsbWatcher({ usb });
         expect(await watcher.start()).toBe(true);
         expect(watcher.current.status).toBe("ready");
-        expect(watcher.current.identity).toEqual({ version: 2, storeEpoch: 0xa1b2c3d4 });
+        expect(watcher.current.identity).toEqual({
+            version: 2,
+            storeEpoch: 0xa1b2c3d4,
+            obcmVersion: REFERENCE_OBCM_VERSION,
+        });
         expect(watcher.current.info?.firmwareRevision).toBe("0.4.0+abc1234");
         expect(usb.filtersSeen, "adopting must never open the chooser").toEqual([]);
         await watcher.close();

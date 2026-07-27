@@ -350,34 +350,62 @@ export function encodeSetRouteRetention(objectId: number, retention: number): Ui
 // --- the identity read (§1) ---------------------------------------------------
 
 /**
- * The `protocolVersion` read: `version u16 · store_epoch u32`, or a bare `version u16` when the
- * device has **no mounted store**.
+ * The `protocolVersion` read: `version u16 · store_epoch u32 · obcm_version u8`, served at one of
+ * **three** lengths. The length is the version mechanism — it has been since the 2-byte no-store
+ * read (#776), and the `obcm_version` byte (#911) joins the same scheme rather than inventing one:
+ *
+ * | Bytes | Means |
+ * | --: | :-- |
+ * | 7 | the full read |
+ * | 6 | a firmware predating `obcm_version` → `obcmVersion: null` |
+ * | 2 | no mounted card → no era to name, and no room for the byte after it |
  *
  * The epoch names the store's id era, and every durable link the peer keeps — a route's device id,
  * a ride's synced flag — is scoped to `(serial, epoch)` so an era change can never silently alias
  * months-old ids. An absent epoch is a *failed* identity read, not epoch `0` (a legal value): the
  * spec's ack fail-closed contract says a connection whose identity read failed reconciles nothing.
+ *
+ * `obcmVersion` is the OBCM **map-format** version this device's firmware reads — a different
+ * number in a different sequence from `version`, which is the wire contract. It is the one fact
+ * `OBCC_Spec.md` §6(c) turns on: don't offer a map artifact the connected device cannot read. A
+ * trailing field the read did not carry is `null`, **never** a fabricated `0`: `obcmVersion: 0`
+ * would read as "this device supports OBCM v0" and refuse every real map, where `null` correctly
+ * means "unknown" and takes §6(c)'s no-known-target-firmware branch (offer it, stating the
+ * version).
  */
 export interface VersionRead {
     version: number;
     /** `null` when the device serves the 2-byte short read — no card, so no era to name. */
     storeEpoch: number | null;
+    /** `null` when the read carried no `obcm_version` byte: a firmware predating it, or the
+     *  store-less short read (which stops before the epoch, let alone the byte after it). */
+    obcmVersion: number | null;
 }
 
 export function encodeVersionRead(v: VersionRead): Uint8Array {
-    const out = new Uint8Array(v.storeEpoch === null ? 2 : 6);
+    // The three lengths, in the one place that decides them. An `obcmVersion` without a
+    // `storeEpoch` has no encoding — the fields are positional — so it is dropped rather than
+    // silently shifted into the epoch's bytes.
+    const length = v.storeEpoch === null ? 2 : v.obcmVersion === null ? 6 : 7;
+    const out = new Uint8Array(length);
     const view = new DataView(out.buffer);
     view.setUint16(0, v.version, true);
-    if (v.storeEpoch !== null) view.setUint32(2, v.storeEpoch, true);
+    if (length >= 6) view.setUint32(2, v.storeEpoch as number, true);
+    if (length >= 7) out[6] = v.obcmVersion as number;
     return out;
 }
 
 export function decodeVersionRead(data: Uint8Array): VersionRead {
-    if (data.length < 2) throw new DecodeError("truncated", `identity read is ${data.length} bytes, expected 2 or 6.`);
+    if (data.length < 2)
+        throw new DecodeError("truncated", `identity read is ${data.length} bytes, expected 2, 6 or 7.`);
     const view = viewOf(data);
     return {
         version: view.getUint16(0, true),
         storeEpoch: data.length >= 6 ? view.getUint32(2, true) : null,
+        // Bytes past the last field we know are ignored, not rejected: that append-only rule is
+        // what let this field land without a `PROTOCOL_VERSION` bump, and it has to keep holding
+        // for whatever lands after it.
+        obcmVersion: data.length >= 7 ? data[6] : null,
     };
 }
 
