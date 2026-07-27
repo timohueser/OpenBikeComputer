@@ -32,6 +32,7 @@ pub mod host;
 pub mod i18n;
 pub mod input;
 pub mod input_plane;
+pub mod map_catalog;
 pub mod nav_profiles;
 pub(crate) mod render_res;
 pub mod retention;
@@ -64,6 +65,7 @@ pub use host::{DetourPreview, DrainStatus, HostCommand, HostEvent, HostMailbox, 
 pub use i18n::{t, Msg};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
+pub use map_catalog::{choose_map, MapChoice};
 pub use nav_profiles::NavProfiles;
 pub use retention::{
     decode_route_retention, encode_route_retention, Retention, RideRetention, RideRetentionRecord, RouteRetentionMeta,
@@ -74,10 +76,11 @@ pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
 pub use settings::{
-    decode_route_crcs, decode_store_epoch, decode_synced_rides, encode_route_crcs, encode_store_epoch,
-    encode_synced_rides, route_crcs_len, synced_rides_len, ClimbMode, DateTime, DateTimeEditorExt, IdleReturn,
-    RouteCrcs, SavedSensor, Settings, SyncedRides, Units, WaypointMode, DATETIME_MAX_YEAR, DATETIME_MIN_YEAR,
-    ROUTE_CRCS_MAX_LEN, SENSOR_SLOTS, STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN,
+    decode_route_crcs, decode_selected_map, decode_store_epoch, decode_synced_rides, encode_route_crcs,
+    encode_selected_map, encode_store_epoch, encode_synced_rides, route_crcs_len, synced_rides_len, ClimbMode,
+    DateTime, DateTimeEditorExt, IdleReturn, RouteCrcs, SavedSensor, Settings, SyncedRides, Units, WaypointMode,
+    DATETIME_MAX_YEAR, DATETIME_MIN_YEAR, ROUTE_CRCS_MAX_LEN, SELECTED_MAP_LEN, SELECTED_MAP_NAME_MAX, SENSOR_SLOTS,
+    STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN,
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};

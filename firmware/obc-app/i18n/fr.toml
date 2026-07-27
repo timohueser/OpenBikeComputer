@@ -458,6 +458,18 @@ install_pending_save = "Une sortie est encore en cours d'enregistrement. Réessa
 install_no_card = "Aucune carte trouvée. Insérez la carte et réessayez."
 install_snapshot_failed = "Impossible d'écrire une copie de secours sur la carte. Mise à jour non installée."
 install_state_write = "Impossible de préparer la mise à jour. Rien n'a été modifié."
+
+[map_transfer]
+title = "CARTE"
+receiving = "Réception de la carte"
+keep_cable = "Gardez le câble branché."
+installed = "Carte enregistrée"
+restart = "Redémarrez l'appareil pour l'utiliser."
+failed = "Carte non enregistrée"
+failed_storage = "La carte SD n'a pas pu enregistrer la carte."
+failed_damaged = "La carte est arrivée endommagée. Renvoyez-la."
+failed_format = "Ce fichier n'est pas une carte lisible par cet appareil."
+
 # --- Boot-fault cards (pre-app; the device renders the English column) ---
 [fault]
 nocard_what = "Pas de carte SD"

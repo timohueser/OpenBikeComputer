@@ -12,7 +12,15 @@
 //! object on Finish.
 //!
 //! ## Card layout (FAT16/FAT32)
-//!   `/<name>.obcm`   — the map tile (first one found in the root is loaded)
+//!   `/<name>.obcm`   — a side-loaded map (long filename, dragged on from a computer)
+//!   `/MP{id}.OBM`    — a map the device received over USB (issue #927): the durable object id lives
+//!                      in the 8.3 name, exactly as it does for routes/rides/trips. `OBM` is the
+//!                      3-char twin of `.obcm`, the same trick `_NAV.OBR` uses for `.obcr` —
+//!                      embedded-sdmmc creates short names only. The upload streams **straight into
+//!                      this file** with its 4-byte magic held back, so a torn write leaves a
+//!                      zero-magic file the scan refuses and the boot sweep reclaims.
+//!   `/MAP.SEL`       — which map the renderer streams from (see `obc_app::store_meta`); absent or
+//!                      torn = no preference, and the loader takes the first readable map
 //!   `/routes/*.obcr` — the route catalog the Route menu lists (side-loaded, long filenames)
 //!   `/routes/RT{id}.OBR` — BLE-uploaded routes (the durable object id lives in the name);
 //!                      the in-flight upload lives here as `UPLOAD.TMP` until commit
@@ -148,6 +156,26 @@ const TRIP_CRCS: &str = "TRIPS.CRC";
 /// (host-tested), the direct analogue of the `SYNCED.SET` / `ROUTES.CRC` sidecars.
 const EPOCH_FILE: &str = "EPOCH.OBE";
 
+/// The **selected map** file in the card root (issue #927): the 8.3 filename of the `.obcm` the
+/// renderer streams from, in the same tiny CRC-framed shape as [`EPOCH_FILE`]. Card-resident rather
+/// than an RRAM setting because the thing it names lives on the card — swap in another card and it
+/// brings its own selection; an RRAM line would point at a file that may not be in the slot now.
+/// A missing/torn file reads as **no preference**, and [`Storage::open_map`] falls back to the first
+/// readable map, which is exactly the pre-#927 behaviour. Codec + torn semantics live in
+/// `obc-app::store_meta` (host-tested), like every other card sidecar.
+const MAP_SELECTED: &str = "MAP.SEL";
+
+/// How many maps one card's catalog scan reports (issue #927). Maps are hundreds of megabytes, so a
+/// card holding more than a handful is not a real configuration — this is a scan bound, not a store
+/// cap: an upload is never refused for exceeding it, the extra map simply isn't listed.
+pub const MAX_MAPS: usize = 8;
+
+/// Free bytes a map upload must leave on the card after itself (issue #927). A map that fills the
+/// card to the last cluster strands the ride log, the route uploads, and every sidecar — and the
+/// rider finds out mid-ride, not at the desk where the upload happened. 16 MiB is generous against
+/// a ride log (a long day is tens of KB) and negligible against a map.
+pub const MAP_FREE_HEADROOM: u64 = 16 << 20;
+
 /// The in-flight BLE route upload, inside `/routes`. Its extension never matches the catalog scan,
 /// so a partial upload — a drop, a power cut — is invisible until [`Storage::upload_commit`]
 /// promotes it. Truncated-and-reused per upload.
@@ -220,6 +248,43 @@ static mut SD_CARD: core::mem::MaybeUninit<Sd> = core::mem::MaybeUninit::uninit(
 /// ~2 KB table inside `Storage` measurably cost the main-task future ~4 KB (two resident copies)
 /// and the ride stack region shrank by the same RAM. `Storage` holds `Option<&'static _>`.
 static mut MAP_EXTENTS: core::mem::MaybeUninit<ExtentTable> = core::mem::MaybeUninit::uninit();
+
+/// One map on the card, as [`Storage::scan_maps_into`] reports it (issue #927) — **the map
+/// catalog**, and the reason there is no catalog *file*.
+///
+/// Every field here is derived from the card at scan time: the directory entry gives the name, the
+/// long-name stem and the byte length, and a single 40-byte header read gives the OBCM version and
+/// the global bbox. Nothing has to be written, so nothing can go stale, and a card that has never
+/// met this firmware enumerates exactly as one that has.
+///
+/// What is **not** here is equally deliberate. The 40-byte OBCM header carries no name, no build
+/// date and no source-snapshot date (`OBCM_Spec.md` §1), and a map upload is a stream of opaque
+/// bytes with a 12-byte descriptor in front of it — so the device is never *told* a display name or
+/// a build date and has nothing to record. That is a protocol gap, not a filesystem one; see the
+/// notes on #914/#915.
+#[derive(Debug, Clone)]
+pub struct MapSummary {
+    /// The durable object id, for a map this device received (`MP{id}.OBM`). `None` for a
+    /// side-loaded `.obcm`, which carries no device-assigned identity — the filename is all it has.
+    pub id: Option<u16>,
+    /// The 8.3 filename, which is what [`MAP_SELECTED`] records and what reopens the file.
+    pub file: ShortFileName,
+    /// The display name: the long filename's stem when the file has one, else the 8.3 stem. For an
+    /// uploaded map that is `MP{id}` — the honest consequence of having no name on the wire.
+    pub name: String<24>,
+    /// Size on the card, from the directory entry (no read).
+    pub byte_len: u32,
+    /// The OBCM format version from header byte 4. Reported, never filtered: a map built for another
+    /// version is still on the card, and a consumer that wants to *flag* it (#915) needs to see it.
+    pub obcm_version: u8,
+    /// The global bounding box from header bytes 5..21 — the map's footprint, for coverage checks.
+    pub bbox: obc_reader::BBox,
+    /// Whether [`MAP_SELECTED`] names this map.
+    pub selected: bool,
+    /// Directory-entry location, so a chosen map's extent table can be built without a second scan.
+    entry_block: embedded_sdmmc::BlockIdx,
+    entry_offset: u32,
+}
 
 /// What [`Storage::map_source`] hands out: extent-mapped direct block reads when the map's chain
 /// resolved at open (#500), the manager's seek+read path otherwise. One enum rather than a trait
@@ -322,6 +387,12 @@ pub struct Storage {
     /// length)`. The map streams through this (issue #37) instead of being read resident into
     /// RAM — `map_source` hands out a fresh source over it each redraw.
     open_map: Option<(RawFile, u32)>,
+    /// The open map's 8.3 filename. Kept because embedded-sdmmc refuses every second open of an open
+    /// file (`FileAlreadyOpen`), so [`scan_maps_into`](Storage::scan_maps_into) must read the loaded
+    /// map's header **through this handle** — without the name it cannot tell which catalog entry is
+    /// the open one, and the loaded map would be the one map missing from its own catalog (the
+    /// `open_object` trap from issue #480, in the map plane).
+    open_map_name: Option<ShortFileName>,
     /// The open map's FAT chain resolved to extent runs (#500): when present, `map_source` serves
     /// direct block reads (zero per-read FAT traffic) instead of the manager's O(offset) seek.
     /// `None` = build refused (fragmented past the cap / odd geometry) or failed verification —
@@ -490,6 +561,7 @@ impl Storage {
             next_sideload: SIDELOAD_ID_BASE as u32,
             open_route: None,
             open_map: None,
+            open_map_name: None,
             map_extents: None,
             open_track: None,
             pending_save: None,
@@ -1185,44 +1257,38 @@ impl Storage {
         Some(id)
     }
 
-    /// Open the first `*.obcm` in the card root and hold it open for the session, so the map can
-    /// **stream** from it (issue #37) rather than be read resident into RAM. Returns the file
-    /// length on success, or `None` if there's no map file / it can't be opened. Call once at
-    /// startup; [`map_source`](Self::map_source) then hands out a reader over the open handle.
+    /// Open the card's **selected** map and hold it open for the session, so the map can **stream**
+    /// from it (issue #37) rather than be read resident into RAM. Returns the file length on
+    /// success, or `None` if the card holds no map / it can't be opened. Call once at startup;
+    /// [`map_source`](Self::map_source) then hands out a reader over the open handle.
+    ///
+    /// Before #927 this was "the first `*.obcm` the directory scan yields", which was an answer only
+    /// while a card could hold one map. Now it is, in order:
+    ///
+    /// 1. the map [`MAP_SELECTED`] names, if it is still on the card;
+    /// 2. else the newest **uploaded** map (highest `MP{id}.OBM` id) whose OBCM version this
+    ///    firmware reads — so the map a rider just sent is the one that comes up, with no second
+    ///    step, which is the whole point of the one-click flow;
+    /// 3. else the first readable map of any kind (a side-loaded `.obcm`);
+    /// 4. else the first map at all — so a card holding only a wrong-version map still reaches the
+    ///    **MAP UNREADABLE** fault screen rather than the indistinguishable **NO MAP** one.
     pub fn open_map(&mut self) -> Option<u32> {
         if let Some((_, len)) = self.open_map {
             return Some(len);
         }
-        // The name to open, plus the directory-entry location the extent build reads the first
-        // cluster from (public `DirEntry` facts, captured in the same scan). The long name's stem is
-        // captured too for the System screen's `Map` row (T8 item 6).
-        let mut found: Option<(ShortFileName, embedded_sdmmc::BlockIdx, u32)> = None;
-        let mut long_stem: String<24> = String::new();
-        self.iter_dir_lfn(self.root, |e, long| {
-            if found.is_none() && !e.attributes.is_directory() && long_has_ext(long, b".obcm") {
-                found = Some((e.name.clone(), e.entry_block, e.entry_offset));
-                if let Some(long) = long {
-                    long_stem.clear();
-                    // The stem before the `.obcm` extension (case-insensitive), truncated to the cap.
-                    let stem = long.rsplit_once('.').map(|(s, _)| s).unwrap_or(long);
-                    for ch in stem.chars() {
-                        if long_stem.push(ch).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-        let (name, entry_block, entry_offset) = found?;
-        // Fall back to the 8.3 short name's base (trailing padding trimmed) if there was no LFN.
-        if long_stem.is_empty() {
-            for &b in name.base_name().iter().take_while(|&&b| b != b' ') {
-                if long_stem.push(b as char).is_err() {
-                    break;
-                }
-            }
-        }
-        self.map_name = long_stem;
+        let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
+        self.scan_maps_into(&mut maps);
+        let chosen = choose_map(&maps)?;
+        let (name, display, entry_block, entry_offset) =
+            (chosen.file.clone(), chosen.name.clone(), chosen.entry_block, chosen.entry_offset);
+        defmt::info!(
+            "SD: {=usize} map(s) on the card; loading {} (v{=u8}, {=u32} B)",
+            maps.len(),
+            defmt::Debug2Format(&name),
+            chosen.obcm_version,
+            chosen.byte_len
+        );
+        self.map_name = display;
         let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
         let len = self.vmgr.file_length(file).unwrap_or(0);
         if len == 0 {
@@ -1230,8 +1296,149 @@ impl Storage {
             return None;
         }
         self.open_map = Some((file, len));
+        self.open_map_name = Some(name);
         self.build_map_extents(entry_block, entry_offset, file, len);
         Some(len)
+    }
+
+    /// Scan the card root into the **map catalog** (issue #927) — the "which maps are on this card"
+    /// surface the selection rule, the id allocator, and (later) the device dashboard all read.
+    ///
+    /// Every fact in a [`MapSummary`] is **derived from the card**: the filename and its long-name
+    /// stem come from the directory entry, the byte length from the entry too, and the OBCM version
+    /// plus the global bbox from **one 40-byte header read** per map. There is no sidecar and nothing
+    /// to keep in sync — which is also why the catalog carries no build date and no display name
+    /// beyond the filename: the OBCM header has neither, and no channel exists to deliver them (see
+    /// the module notes and #915).
+    ///
+    /// A file whose magic isn't `OBCM` is **not a map**: that is precisely the signature a torn
+    /// upload leaves (the held-back magic never patched in), so the scan is what makes an interrupted
+    /// transfer invisible instead of a half-map the renderer would try to parse.
+    pub fn scan_maps_into(&self, out: &mut Vec<MapSummary, MAX_MAPS>) {
+        out.clear();
+        let selected = self.load_selected_map();
+        let mut entries: Vec<(ShortFileName, String<24>, embedded_sdmmc::BlockIdx, u32, u32), MAX_MAPS> = Vec::new();
+        self.iter_dir_lfn(self.root, |e, long| {
+            if !is_map_entry(e, long) {
+                return;
+            }
+            let _ =
+                entries.push((e.name.clone(), map_display_name(&e.name, long), e.entry_block, e.entry_offset, e.size));
+        });
+        for (file, name, entry_block, entry_offset, byte_len) in entries {
+            let Some((obcm_version, bbox)) = self.map_identity(&file) else { continue };
+            let selected = selected
+                .as_ref()
+                .is_some_and(|s| file.base_name() == s.base_name() && file.extension() == s.extension());
+            let entry = MapSummary {
+                id: uploaded_map_id(&file),
+                file,
+                name,
+                byte_len,
+                obcm_version,
+                bbox,
+                selected,
+                entry_block,
+                entry_offset,
+            };
+            if out.push(entry).is_err() {
+                defmt::warn!("SD: more than {=usize} maps on the card — the rest are not listed", MAX_MAPS);
+                break;
+            }
+        }
+    }
+
+    /// One map's `(obcm_version, bbox)` from its 40-byte header, or `None` when the file is shorter
+    /// than a header, unreadable, or doesn't carry the `OBCM` magic (a torn upload, or clutter that
+    /// happens to sit on an `.OBM`/`.obcm` name).
+    ///
+    /// The **version is returned, not checked**: a map built for another OBCM version is still a map
+    /// and still belongs in the catalog — the consumer decides. Only the magic gates membership.
+    ///
+    /// The currently-open map is read **through its existing handle**: embedded-sdmmc refuses every
+    /// second open of an open file (`FileAlreadyOpen`), which would otherwise drop the loaded map out
+    /// of its own catalog — the same trap `route_object_info` documents (issue #480).
+    fn map_identity(&self, name: &ShortFileName) -> Option<(u8, obc_reader::BBox)> {
+        let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
+        let read_through = |src: &dyn ByteSource, header: &mut [u8; obc_formats::obcm::HEADER_LEN]| {
+            (src.len() as usize >= header.len()) && src.read_at(0, header).is_ok()
+        };
+        let ok = match self.open_map {
+            Some((f, len)) if self.map_file_is(name) => {
+                read_through(&SdByteSource::new(&self.vmgr, f, len), &mut header)
+            }
+            _ => {
+                let file = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly).ok()?;
+                let len = self.vmgr.file_length(file).unwrap_or(0);
+                let ok = read_through(&SdByteSource::new(&self.vmgr, file, len), &mut header);
+                let _ = self.vmgr.close_file(file);
+                ok
+            }
+        };
+        if !ok || header[0..4] != obc_formats::obcm::MAGIC {
+            return None;
+        }
+        let rd = |o: usize| i32::from_le_bytes([header[o], header[o + 1], header[o + 2], header[o + 3]]);
+        // Header field order is lat, lon, lat, lon (OBCM_Spec.md §1) — not the order bbox code expects.
+        let bbox = obc_reader::BBox { min_lat: rd(5), min_lon: rd(9), max_lat: rd(13), max_lon: rd(17) };
+        Some((header[4], bbox))
+    }
+
+    /// Whether `name` is the map file currently held open — the guard that routes
+    /// [`map_identity`](Self::map_identity) through the live handle instead of a refused second open.
+    fn map_file_is(&self, name: &ShortFileName) -> bool {
+        self.open_map.is_some() && self.open_map_name.as_ref() == Some(name)
+    }
+
+    /// The card's recorded map selection ([`MAP_SELECTED`]), or `None` for absent / torn / a name
+    /// this device would never have written — all of which mean **no preference**.
+    pub fn load_selected_map(&self) -> Option<ShortFileName> {
+        let name = ShortFileName::create_from_str(MAP_SELECTED).ok()?;
+        let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
+        let mut buf = [0u8; obc_app::settings::SELECTED_MAP_LEN];
+        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
+        let _ = self.vmgr.close_file(file);
+        ShortFileName::create_from_str(obc_app::settings::decode_selected_map(&buf[..n])?).ok()
+    }
+
+    /// Record which map the renderer should stream from, as a truncating rewrite of
+    /// [`MAP_SELECTED`]. Best-effort by design: a failed write leaves the previous selection (or
+    /// none), and the loader's fallback still lands on a map — so a map upload never fails because
+    /// the *preference* couldn't be persisted, it just may not come up first.
+    pub fn save_selected_map(&mut self, name: &ShortFileName) -> bool {
+        let mut text: String<16> = String::new();
+        for &b in name.base_name().iter().take_while(|&&b| b != b' ') {
+            let _ = text.push(b as char);
+        }
+        let ext = name.extension();
+        if !ext.is_empty() {
+            let _ = text.push('.');
+            for &b in ext.iter().take_while(|&&b| b != b' ') {
+                let _ = text.push(b as char);
+            }
+        }
+        let Some(bytes) = obc_app::settings::encode_selected_map(text.as_str()) else {
+            defmt::warn!(
+                "SD: map selection {} is not a writable 8.3 name — selection unchanged",
+                defmt::Debug2Format(name)
+            );
+            return false;
+        };
+        match self.vmgr.open_file_in_dir(self.root, MAP_SELECTED, Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                let ok = self.vmgr.write(file, &bytes).is_ok()
+                    && self.vmgr.flush_file(file).is_ok()
+                    && self.vmgr.close_file(file).is_ok();
+                if !ok {
+                    defmt::warn!("SD: could not persist the map selection — the loader falls back");
+                }
+                ok
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot open /MAP.SEL: {}", defmt::Debug2Format(&e));
+                false
+            }
+        }
     }
 
     /// The loaded map's display name (T8 item 6) — its filename stem, or `""` before a map opens.
@@ -1961,6 +2168,177 @@ impl Storage {
         Some(len)
     }
 
+    // ==================== the map upload (issue #927) ====================
+    //
+    // **Why this path is not the route path.** Every other upload streams into `/routes/UPLOAD.TMP`
+    // and is *copied* to its final name at commit with the magic held back — an invisible temp, an
+    // atomic promote, no half-object ever visible. A map cannot afford that copy: at hundreds of
+    // megabytes it would double both the write time (already minutes) and the free space the card
+    // must have, to buy atomicity for a file that is, uniquely, re-derivable from the builder that
+    // made it.
+    //
+    // So a map streams **straight into its final `MP{id}.OBM`** and gets the same commit point
+    // another way: the file opens with four zero bytes standing in for the magic, the stream's own
+    // first four bytes are withheld by the caller's `obc_ble::HeldMagic`, and `map_upload_commit`
+    // patches them in after the whole-object CRC and the header have both validated. The torn state
+    // is byte-identical to the copy path's — a zero-magic file `is_map_entry` may list but
+    // `map_identity` refuses, so it never reaches a catalog, is never chosen by `open_map`, and is
+    // reclaimed by the boot sweep.
+    //
+    // The consequence is the one policy this path enforces: a map upload is **new-only**. Writing
+    // into an existing map's file would destroy it as the new bytes arrive, and §4.2's "a failed CRC
+    // never touches the old copy" is not a guarantee to give up on the one object the device cannot
+    // rebuild. `TransferStatus::map_announce_reject` turns every named id away before a byte moves;
+    // replacing a map is "upload the new one, then delete the old one".
+
+    /// One past the highest map object id on the card — the scan half of the `max(scan_max + 1,
+    /// RRAM floor)` allocation every durable id namespace uses (spec §4.1). A zero-magic torn upload
+    /// is invisible to the scan, so a retried transfer re-derives the *same* id and truncates the
+    /// file it abandoned, rather than leaking one id per interruption.
+    pub fn next_map_id_from_scan(&self) -> u16 {
+        let mut next: u32 = 0;
+        let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
+        self.scan_maps_into(&mut maps);
+        for m in &maps {
+            if let Some(id) = m.id {
+                next = next.max(id as u32 + 1);
+            }
+        }
+        next.min(u16::MAX as u32) as u16
+    }
+
+    /// Open `MP{id}.OBM` (truncating) for a map upload and write the four zero bytes that stand in
+    /// for the held-back magic, so the file is length-correct from the first appended byte and inert
+    /// from the moment it exists. `false` = the card refused; the caller answers `error` and no file
+    /// is left behind that a scan would show.
+    pub fn map_upload_begin(&mut self, id: u16) -> bool {
+        self.upload_close();
+        let Some(name) = map_file_name_for(id) else { return false };
+        // `name_is_free` is the same discipline as `fresh_upload_name`: only a confirmed `NotFound`
+        // green-lights a truncating create, so a transient bus error can never overwrite a stored map.
+        // A *zero-magic* file under this name is the exception — it is our own abandoned transfer,
+        // invisible to every catalog, and truncating it is the whole point of re-deriving the id.
+        let mut text: String<12> = String::new();
+        let _ = core::fmt::Write::write_fmt(&mut text, format_args!("MP{id}.OBM"));
+        if !self.name_is_free(self.root, text.as_str()) && self.map_identity(&name).is_some() {
+            defmt::warn!("SD: map name MP{=u16}.OBM is taken by a stored map — refusing to overwrite", id);
+            return false;
+        }
+        match self.vmgr.open_file_in_dir(self.root, text.as_str(), Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                if self.vmgr.write(file, &[0u8; 4]).is_err() {
+                    defmt::warn!("SD: cannot start MP{=u16}.OBM — the card refused the first write", id);
+                    let _ = self.vmgr.close_file(file);
+                    return false;
+                }
+                self.open_upload = Some(file);
+                defmt::info!("SD: map upload streaming into /MP{=u16}.OBM (magic held back)", id);
+                true
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot create /MP{=u16}.OBM: {}", id, defmt::Debug2Format(&e));
+                false
+            }
+        }
+    }
+
+    /// Commit a streamed map: flush + close the handle, validate the 40-byte header with the caller's
+    /// held-back `magic` patched over the placeholder, then write that magic to bytes `0..4` — the
+    /// commit point. Returns the stored byte length, or `None` with the file **deleted** (an invalid
+    /// payload is not a map and must not linger as a zero-magic decoy the sweep would have to reason
+    /// about).
+    ///
+    /// The header check is what stops a well-CRC'd non-map — the transfer CRC only proved the bytes
+    /// are the ones the host sent. It is the direct analogue of the route path's OBCR parse and the
+    /// fwImage path's OBCU decode, and it rejects a map built for another OBCM version too: the
+    /// device would only reach the *MAP UNREADABLE* fault screen on the next boot, which is a much
+    /// worse way to learn it.
+    pub fn map_upload_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u32> {
+        self.upload_close();
+        let name = map_file_name_for(id)?;
+        let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadWriteAppend).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
+        let read = self.vmgr.file_seek_from_start(file, 0).is_ok()
+            && matches!(self.vmgr.read(file, &mut header), Ok(n) if n == header.len());
+        header[0..4].copy_from_slice(&magic);
+        if !read || obc_formats::obcm::validate_header_prefix(&header).is_err() {
+            let _ = self.vmgr.close_file(file);
+            let _ = self.vmgr.delete_file_in_dir(self.root, &name);
+            defmt::warn!(
+                "SD: map upload is not a readable OBCM v{=u8} — rejected, file deleted",
+                obc_formats::obcm::VERSION
+            );
+            return None;
+        }
+        // The commit point: the real magic replaces the placeholder, then a flush makes it durable.
+        // Until this lands the file is inert to every reader on the device.
+        let patched = self.vmgr.file_seek_from_start(file, 0).is_ok()
+            && self.vmgr.write(file, &magic).is_ok()
+            && self.vmgr.flush_file(file).is_ok();
+        let _ = self.vmgr.close_file(file);
+        if !patched {
+            defmt::warn!(
+                "SD: map magic patch failed — /MP{=u16}.OBM left zero-magic (inert; the boot sweep reclaims it)",
+                id
+            );
+            return None;
+        }
+        defmt::info!("SD: map committed → /MP{=u16}.OBM ({=u32} B)", id, len);
+        Some(len)
+    }
+
+    /// Abandon an in-flight map upload: close the handle and leave the zero-magic file behind for the
+    /// boot sweep. Deliberately **not** a delete — the file is already inert (no catalog lists it, no
+    /// loader picks it), and keeping the name means a retry truncates it instead of stranding its
+    /// clusters under a *second* name while the first still holds the space.
+    pub fn map_upload_abort(&mut self) {
+        if let Some(file) = self.open_upload.take() {
+            let _ = self.vmgr.close_file(file);
+        }
+    }
+
+    /// Sweep abandoned map uploads from the card root (issue #927): delete every `MP*.OBM` whose
+    /// held-back magic was never patched in. Run once at boot, the map twin of the route/trip
+    /// `is_aborted_commit` sweep — without it an interrupted transfer's hundreds of megabytes would
+    /// sit on the card forever, invisible to every catalog that could explain them. Returns how many
+    /// were reclaimed.
+    pub fn sweep_aborted_maps(&mut self) -> usize {
+        let mut candidates: Vec<ShortFileName, MAX_MAPS> = Vec::new();
+        self.iter_dir_lfn(self.root, |e, long| {
+            if is_map_entry(e, long) && uploaded_map_id(&e.name).is_some() {
+                let _ = candidates.push(e.name.clone());
+            }
+        });
+        let mut swept = 0;
+        for name in candidates {
+            // Only the exact torn signature is sweepable: a *readable* header keeps the file, and so
+            // does an unreadable one whose magic is intact (a transient bus glitch, or a map for
+            // another OBCM version — neither is ours to delete).
+            if self.map_identity(&name).is_some() || !self.is_zero_magic_root(&name) {
+                continue;
+            }
+            if self.vmgr.delete_file_in_dir(self.root, &name).is_ok() {
+                defmt::info!("SD: swept abandoned map upload {}", defmt::Debug2Format(&name));
+                swept += 1;
+            }
+        }
+        swept
+    }
+
+    /// Whether a card-root file's first four bytes are zeros — the held-back-magic signature of a
+    /// commit that never finished. The root twin of [`is_aborted_commit`](Self::is_aborted_commit);
+    /// an unreadable file is **not** claimed (a bus glitch must never green-light a delete).
+    fn is_zero_magic_root(&self, name: &ShortFileName) -> bool {
+        let Ok(file) = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly) else {
+            return false;
+        };
+        let mut magic = [0u8; 4];
+        let zeroed = matches!(self.vmgr.read(file, &mut magic), Ok(4)) && magic == [0u8; 4];
+        let _ = self.vmgr.close_file(file);
+        zeroed
+    }
+
     /// Whether a staged `/UPDATE.BIN` exists in the card root — the `installFw` `noStaged` cheap
     /// existence check (spec §4.4). Presence only (a directory scan, no read): the full CRC validation
     /// is the on-device confirm flow's, never a BLE command handler's.
@@ -2505,6 +2883,78 @@ fn is_trip_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
         return false;
     }
     long_has_ext(long, b".obt") || (e.name.extension() == b"OBT" && !long.is_some_and(|n| n.starts_with('.')))
+}
+
+/// Whether a card-root directory entry belongs to the **map** catalog (issue #927): a side-loaded
+/// `.obcm` (long-filename match, as before) **or** a device-received `*.OBM`.
+///
+/// The 8.3 arm is the whole answer to "the firmware can read long filenames but cannot create them".
+/// embedded-sdmmc 0.9's `write_new_directory_entry` takes a `ShortFileName`, and the 4-char `.obcm`
+/// extension needs an LFN it can't write — so, exactly as `/routes` already does for `.obcr`↔`.OBR`
+/// and `_NAV.OBR`, the catalog accepts a dedicated 3-char twin the device *can* create. `OBM` rather
+/// than the literal 8.3 truncation `OBC`, because `OBC` is what a host's LFN shortening produces for
+/// **both** `.obcm` and `.obcr`: matching it would make a stray route in the card root look like a
+/// map. `OBM` is unambiguous by construction.
+///
+/// Dot-prefixed clutter is excluded on both arms (a macOS `._x.OBM` AppleDouble also fails the
+/// header read, but why open it at all).
+fn is_map_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
+    if e.attributes.is_directory() {
+        return false;
+    }
+    long_has_ext(long, b".obcm") || (e.name.extension() == b"OBM" && !long.is_some_and(|n| n.starts_with('.')))
+}
+
+/// The **durable map object id** in a received map's filename — `MP{id}.OBM` → `id`, the same
+/// filenames-guard-stored-ids rule (spec §4.1) as routes/rides/trips. `None` for a side-loaded
+/// `.obcm`, which carries no id at all.
+pub fn uploaded_map_id(name: &ShortFileName) -> Option<u16> {
+    id_in_name(name, b"MP", b"OBM")
+}
+
+/// The 8.3 filename a map with object id `id` is stored under — the exact inverse of
+/// [`uploaded_map_id`]. `None` only if the id somehow doesn't fit an 8.3 name, which `u16` can't.
+pub fn map_file_name_for(id: u16) -> Option<ShortFileName> {
+    let mut name: String<12> = String::new();
+    core::fmt::Write::write_fmt(&mut name, format_args!("MP{id}.OBM")).ok()?;
+    ShortFileName::create_from_str(name.as_str()).ok()
+}
+
+/// A map's display name: the **long** filename's stem when the entry has one (`freiburg.obcm` →
+/// `freiburg`), else the 8.3 base with its padding trimmed (`MP7.OBM` → `MP7`). Truncated to the
+/// [`MapSummary::name`] cap; never empty for a real entry.
+fn map_display_name(short: &ShortFileName, long: Option<&str>) -> String<24> {
+    let mut out: String<24> = String::new();
+    if let Some(long) = long {
+        let stem = long.rsplit_once('.').map(|(s, _)| s).unwrap_or(long);
+        for ch in stem.chars() {
+            if out.push(ch).is_err() {
+                break;
+            }
+        }
+    }
+    if out.is_empty() {
+        for &b in short.base_name().iter().take_while(|&&b| b != b' ') {
+            if out.push(b as char).is_err() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Pick the map [`Storage::open_map`] loads, by the rule documented there — the board's binding of
+/// the host-tested [`obc_app::choose_map`] classifier to the scanned catalog.
+fn choose_map(maps: &[MapSummary]) -> Option<&MapSummary> {
+    let mut choices: Vec<obc_app::MapChoice, MAX_MAPS> = Vec::new();
+    for m in maps.iter().take(MAX_MAPS) {
+        let _ = choices.push(obc_app::MapChoice {
+            selected: m.selected,
+            uploaded_id: m.id,
+            readable: m.obcm_version == obc_formats::obcm::VERSION,
+        });
+    }
+    maps.get(obc_app::choose_map(&choices)?)
 }
 
 /// The **durable trip object id** in an uploaded trip's filename — `TP{id}.OBT` → `id` (spec §7.7;

@@ -1,0 +1,121 @@
+//! Which map on the card the renderer streams from (issue #927).
+//!
+//! Before the device could receive a map, a card held one and the loader took "the first `*.obcm`
+//! the directory scan yields". With uploads that stops being an answer: directory order is not
+//! something a rider can predict, let alone steer, and the one thing they *do* expect after sending
+//! a map to a plugged-in device is to see that map.
+//!
+//! The rule is a pure function over the scanned catalog so it can be tested where tests actually
+//! run. The board crate has no `test` harness in CI (bare metal), and its own storage scan is the
+//! only thing that could exercise this — so the decision lives here and the board binds its
+//! `MapSummary` list to [`MapChoice`] at the call site.
+
+/// One candidate from the card's map catalog, reduced to the three facts the choice turns on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapChoice {
+    /// The card's recorded selection (`MAP.SEL`) names this map.
+    pub selected: bool,
+    /// The durable object id, for a map the device received (`MP{id}.OBM`); `None` for a side-loaded
+    /// file, which has no id. Higher = more recently uploaded, because ids are minted monotonically.
+    pub uploaded_id: Option<u16>,
+    /// The map's OBCM version is the one this firmware's reader parses. A `false` here is still a
+    /// map on the card — it just cannot be rendered by this build.
+    pub readable: bool,
+}
+
+/// The index of the map to load, or `None` for a card with no maps at all. In order:
+///
+/// 1. **The recorded selection**, if it is still on the card and readable. This is what makes the
+///    choice durable and, later, steerable from outside.
+/// 2. **The newest readable upload** — the highest `MP{id}.OBM` id. A rider who just sent a map
+///    gets that map on the next boot without a second step, which is the entire point of the
+///    one-click flow; and because ids are monotonic within a store epoch, "newest" is exactly
+///    "highest id", with no timestamps involved (the card has none to offer).
+/// 3. **The first readable map of any kind** — a side-loaded `.obcm`, the pre-#927 case.
+/// 4. **The first map at all.** Deliberately not `None`: a card holding only a wrong-version map
+///    must reach the *MAP UNREADABLE* fault screen, which names the actual problem, rather than the
+///    *NO MAP* one, which would send the rider looking for a file that is right there.
+///
+/// A selection that names a map which is present but **unreadable** does not win outright — it
+/// falls through to a readable one if the card has any, and only lands back on itself via clause 4
+/// if it doesn't. Honouring it blindly would let one stale selection hide a perfectly good map.
+pub fn choose_map(maps: &[MapChoice]) -> Option<usize> {
+    if maps.is_empty() {
+        return None;
+    }
+    if let Some(i) = maps.iter().position(|m| m.selected && m.readable) {
+        return Some(i);
+    }
+    let newest_upload = maps
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.readable && m.uploaded_id.is_some())
+        .max_by_key(|(_, m)| m.uploaded_id.unwrap_or(0))
+        .map(|(i, _)| i);
+    if let Some(i) = newest_upload {
+        return Some(i);
+    }
+    if let Some(i) = maps.iter().position(|m| m.readable) {
+        return Some(i);
+    }
+    Some(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn side_loaded(readable: bool) -> MapChoice {
+        MapChoice { selected: false, uploaded_id: None, readable }
+    }
+    fn uploaded(id: u16, readable: bool) -> MapChoice {
+        MapChoice { selected: false, uploaded_id: Some(id), readable }
+    }
+
+    #[test]
+    fn an_empty_card_chooses_nothing() {
+        assert_eq!(choose_map(&[]), None);
+    }
+
+    /// The pre-#927 case is preserved exactly: one side-loaded map, no selection, and it loads.
+    #[test]
+    fn a_single_side_loaded_map_still_loads() {
+        assert_eq!(choose_map(&[side_loaded(true)]), Some(0));
+    }
+
+    /// The recorded selection wins over both a newer upload and directory order.
+    #[test]
+    fn the_recorded_selection_wins() {
+        let maps = [uploaded(9, true), MapChoice { selected: true, uploaded_id: Some(2), readable: true }];
+        assert_eq!(choose_map(&maps), Some(1), "the selection beats a higher id");
+
+        let maps = [side_loaded(true), MapChoice { selected: true, uploaded_id: None, readable: true }];
+        assert_eq!(choose_map(&maps), Some(1), "a side-loaded map can be the selection too");
+    }
+
+    /// With no selection, the newest upload wins — the one-click flow's whole promise. Note it beats
+    /// a side-loaded map regardless of scan order.
+    #[test]
+    fn the_newest_upload_wins_when_nothing_is_selected() {
+        let maps = [uploaded(3, true), uploaded(11, true), uploaded(7, true)];
+        assert_eq!(choose_map(&maps), Some(1), "highest id = most recently minted");
+
+        let maps = [side_loaded(true), uploaded(1, true)];
+        assert_eq!(choose_map(&maps), Some(1), "an upload outranks a side-loaded map");
+    }
+
+    /// Version-readability filters every preference tier, so one wrong-version map can never hide a
+    /// good one — but a card with nothing readable still yields a map, so the fault screen can be
+    /// the specific one.
+    #[test]
+    fn unreadable_maps_never_hide_a_readable_one() {
+        let maps = [uploaded(99, false), uploaded(2, true)];
+        assert_eq!(choose_map(&maps), Some(1), "a newer but unreadable upload loses to a readable one");
+
+        let maps = [MapChoice { selected: true, uploaded_id: Some(5), readable: false }, side_loaded(true)];
+        assert_eq!(choose_map(&maps), Some(1), "an unreadable selection falls through to a readable map");
+
+        let maps = [uploaded(5, false), side_loaded(false)];
+        assert_eq!(choose_map(&maps), Some(0), "nothing readable → the first map, so the fault names the version");
+    }
+}

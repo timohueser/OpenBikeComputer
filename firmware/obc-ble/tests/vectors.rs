@@ -469,6 +469,85 @@ fn upload_open_reject_rule() {
     assert_eq!(TransferStatus::upload_open_reject(known, true, true), None, "replace trip at the cap still commits");
 }
 
+/// The **map** announce-time reject rule (issue #927), as a truth table — the exact classifier the
+/// board's `ObjectStore::map_upload_open` calls before a single byte of a several-hundred-megabyte
+/// transfer moves. Pinned here for the same reason as `upload_open_reject_rule`: the board crate's
+/// own tests never run in CI.
+#[test]
+fn map_announce_reject_rule() {
+    use obc_ble::TransferControl;
+    const HEADER: u32 = 40; // obc_formats::obcm::HEADER_LEN — the board passes it in
+    const HEADROOM: u64 = 8 << 20;
+    let new = TransferControl::NEW_OBJECT_ID;
+    let map = |id, len, free| TransferStatus::map_announce_reject(id, len, HEADER, free, HEADROOM);
+
+    // The happy path: a new map that fits, on a card whose free count we can read.
+    assert_eq!(map(new, 300_000_000, Some(600 << 20)), None, "new map with room → arm");
+
+    // New-only. Every named id is refused — the device never rewrites a stored map in place, so
+    // there is no id an upload may target. (Contrast `upload_open_reject`, where a known id is the
+    // *exempt* case.)
+    assert_eq!(map(0, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "id 0 → notFound");
+    assert_eq!(map(7, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "a named id → notFound");
+    assert_eq!(map(0xFF00, 1_000, Some(u64::MAX)), Some(TransferStatus::NotFound), "even a session-band id → notFound");
+
+    // Too short to be an OBCM at all — rejected before the free-space arithmetic.
+    assert_eq!(map(new, 0, Some(u64::MAX)), Some(TransferStatus::Error), "an empty map → error");
+    assert_eq!(map(new, HEADER - 1, Some(u64::MAX)), Some(TransferStatus::Error), "shorter than a header → error");
+    assert_eq!(map(new, HEADER, Some(u64::MAX)), None, "exactly a header is structurally acceptable");
+
+    // The free-space guard, including the reserve that keeps a map from taking the last cluster.
+    let len = 100u32 << 20;
+    assert_eq!(map(new, len, Some(len as u64 + HEADROOM)), None, "exactly len + headroom free → arm");
+    assert_eq!(
+        map(new, len, Some(len as u64 + HEADROOM - 1)),
+        Some(TransferStatus::StorageFull),
+        "one byte short of the reserve → storageFull"
+    );
+    assert_eq!(map(new, len, Some(len as u64)), Some(TransferStatus::StorageFull), "fits but eats the reserve");
+    assert_eq!(map(new, len, Some(0)), Some(TransferStatus::StorageFull), "a full card → storageFull");
+
+    // An unmeasurable free count must not become a blanket refusal.
+    assert_eq!(map(new, u32::MAX, None), None, "unknown free space → arm (fail late, not never)");
+}
+
+/// The held-back magic of a direct-to-final streamed upload (issue #927): the first four payload
+/// bytes are withheld from the write and replayed at commit, whatever the host's segmentation.
+#[test]
+fn held_magic_withholds_the_first_four_bytes() {
+    use obc_ble::{HeldMagic, MAGIC_LEN};
+
+    // One fat chunk: the magic is held, the rest is written.
+    let mut h = HeldMagic::new();
+    assert_eq!(h.feed(b"OBCM\x0a\x01\x02\x03"), b"\x0a\x01\x02\x03", "the tail of the first chunk is written");
+    assert_eq!(h.take(), Some(*b"OBCM"));
+    assert_eq!(h.feed(b"more"), b"more", "later chunks pass straight through");
+
+    // Byte-at-a-time: the same magic, nothing written until it is complete.
+    let mut h = HeldMagic::new();
+    for (i, byte) in b"OBCM".iter().enumerate() {
+        assert_eq!(h.feed(&[*byte]), b"", "byte {i} is held, not written");
+        assert_eq!(h.take().is_some(), i + 1 == MAGIC_LEN, "complete only on the {MAGIC_LEN}th byte");
+    }
+    assert_eq!(h.take(), Some(*b"OBCM"));
+    assert_eq!(h.feed(b"body"), b"body");
+
+    // A split across an awkward boundary, and the total written length is always `len - MAGIC_LEN`.
+    let payload = b"OBCMxxxxxxxxxxxxxxxxxxxx";
+    for split in 0..payload.len() {
+        let mut h = HeldMagic::new();
+        let a = h.feed(&payload[..split]).len();
+        let b = h.feed(&payload[split..]).len();
+        assert_eq!(a + b, payload.len() - MAGIC_LEN, "split at {split}: exactly the magic is withheld");
+        assert_eq!(h.take(), Some(*b"OBCM"), "split at {split}: the magic still reassembles");
+    }
+
+    // An object shorter than a magic never yields one (the announce guard rejects those first).
+    let mut h = HeldMagic::new();
+    assert_eq!(h.feed(b"OB"), b"");
+    assert_eq!(h.take(), None, "a 2-byte object has no magic to replay");
+}
+
 /// An unknown `status` discriminator decodes to `None` (ignored), never an error — forward
 /// compatibility.
 #[test]

@@ -15,7 +15,7 @@ use obc_ble::{ObjectType, Op, TransferControl, TransferStatus};
 use crate::object_store::ObjectStore;
 use crate::SharedStore;
 
-use super::{transfer_result, Armed, StatusBytes, TRANSFER_ACTIVE};
+use super::{transfer_result, Armed, StatusBytes, Transport, TRANSFER_ACTIVE};
 
 /// How a decoded `transferControl` proceeds.
 pub(crate) enum TransferDisposition {
@@ -27,15 +27,19 @@ pub(crate) enum TransferDisposition {
     AbortActive,
 }
 
-/// Decode + classify against the store: echo uploads, route/trip/firmware uploads, and
+/// Decode + classify against the store: echo uploads, route/trip/firmware/**map** uploads, and
 /// route / ride / list / diagnostics downloads. Everything invalid — malformed bytes, an unknown id
-/// (`notFound`), a second open mid-transfer (`busy`), an unsupported op/type combination — is
-/// answered immediately with the typed [`obc_ble::TransferResult`], never a hang or a bare
-/// transport-level failure.
+/// (`notFound`), a second open mid-transfer (`busy`), an unsupported op/type combination, a map on
+/// the radio — is answered immediately with the typed [`obc_ble::TransferResult`], never a hang or a
+/// bare transport-level failure.
+///
+/// `transport` is the one transport fact this classifier needs, and it buys exactly one rule: maps
+/// are USB-only (spec §10). Everything else here is wire-blind.
 pub(crate) fn classify_transfer(
     data: &[u8],
     store: &RefCell<ObjectStore>,
     shared: &mut SharedStore,
+    transport: Transport,
 ) -> TransferDisposition {
     let Ok(desc) = TransferControl::decode(data) else {
         // A malformed descriptor — the peer can't have meant a real transfer; report `error`.
@@ -116,31 +120,31 @@ pub(crate) fn classify_transfer(
                 TransferDisposition::Answer(transfer_result(desc.object_id, status))
             }
         },
-        // A map upload (#889): the *type* is settled — the host and the device now agree that 16 is
-        // `map` — but the device deliberately does **not** accept one yet, and answers a typed,
-        // logged reject rather than falling through the catch-all below, so a host that tries gets a
-        // diagnosable "no" instead of a bare `error` on an unknown byte.
+        // A map upload (#889 for the type, #927 for the storage): **USB only** (spec §10). A map is
+        // hundreds of megabytes — over BLE that is days, which is why the type did not exist before a
+        // cable did — so a map descriptor on the radio is refused here rather than being handed to a
+        // data plane that would treat it as a route. The reject is typed and logged, not a silent
+        // fall-through to the catch-all, so a host that tries gets a diagnosable "no".
         //
-        // What is missing is storage, not transport. Three problems, none of them small, and all of
-        // them on-glass:
-        //
-        //  1. **The device could not find what it wrote.** `sd::Storage::open_map` matches on the
-        //     **long** filename (`*.obcm`), because the 8.3 short name truncates both `.obcm` and
-        //     `.obcr` to `OBC` — and embedded-sdmmc 0.9 cannot *create* long filenames. A map the
-        //     firmware wrote would be an invisible `SOMETHING.OBC`.
-        //  2. **There is no map catalog.** The renderer streams from "the first `*.obcm` in the card
-        //     root", chosen by directory order and held open for the whole session. An upload needs
-        //     a naming/collision policy and a way to become the *selected* map — which is a UI
-        //     question, not just a storage one.
-        //  3. **Scale.** Hundreds of megabytes at the card's proven throughput is minutes of
-        //     sustained writing, against an open map handle, a cached FAT extent list and a running
-        //     watchdog. A free-space guard at announce is the least of it.
-        //
-        // Tracked separately (see the #889 PR); until then this arm is the honest answer.
+        // On USB the store's own announce guard runs: new-only (the device never rewrites a stored
+        // map in place — see the map section of `sd.rs`), long enough to be an OBCM, and a card with
+        // room to spare. All three refuse **before any byte streams**, because a several-hundred-
+        // megabyte transfer that fails at the end has cost the rider minutes.
+        (Op::Upload, ObjectType::Map) if transport == Transport::Usb => {
+            match store.borrow_mut().map_upload_open(shared, &desc) {
+                Ok(rx) => {
+                    log_transfer_arm(&desc);
+                    TransferDisposition::Arm(Armed::Upload(desc, rx))
+                }
+                Err(status) => {
+                    log_transfer_reject(&desc, status);
+                    TransferDisposition::Answer(transfer_result(desc.object_id, status))
+                }
+            }
+        }
         (Op::Upload, ObjectType::Map) => {
             warn!(
-                "link: [ctl] map upload rejected: the type is agreed but device-side map storage is not implemented \
-                 (id {} len {})",
+                "link: [ctl] map upload rejected: maps are USB-only (spec §10) — id {} len {}",
                 desc.object_id, desc.total_len
             );
             TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error))

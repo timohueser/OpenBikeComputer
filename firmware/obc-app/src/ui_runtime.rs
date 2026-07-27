@@ -515,6 +515,58 @@ impl UiRuntime {
         }
     }
 
+    /// The stack index of the map-transfer card, or `None` when it isn't up (issue #927). Searched
+    /// across the whole stack for the same reason the passkey card's index is: a close must find it
+    /// wherever it ended up.
+    fn map_transfer_index(&self) -> Option<usize> {
+        self.stack.iter().position(|s| matches!(s, Screen::MapTransfer(_)))
+    }
+
+    /// Whether the map-transfer card is up — the modal-priority query, and what
+    /// [`App::map_transfer_card_up`](crate::App::map_transfer_card_up) exposes.
+    pub(crate) fn map_transfer_card_up(&self) -> bool {
+        self.map_transfer_index().is_some()
+    }
+
+    /// Reconcile the host-pushed map-transfer card to the board's live transfer state (issue #927) —
+    /// the tail of [`App::set_map_transfer`](crate::App::set_map_transfer), and the direct analogue
+    /// of [`reconcile_passkey_card`](Self::reconcile_passkey_card):
+    ///
+    /// - a state with no card up → push one;
+    /// - a **changed** state with a card up → rewrite it in place and dirty (never stack a second);
+    /// - an unchanged state → nothing, so the per-pass feed never re-dirties on the steady state
+    ///   (progress is published in KiB, so even a fast card only changes this a few times a second);
+    /// - no state with a card up → remove it and repaint what it covered.
+    ///
+    /// **Deferred while a hold charges**, like every host-pushed screen: the desired state is re-fed
+    /// each pass, so the deferral is just "try again next pass". Unlike the passkey card this one
+    /// does *not* clear the upload popups — the two cannot coexist in practice (a map transfer is
+    /// USB-only and a route popup is BLE-driven), and stacking over one is harmless if they ever do.
+    pub(crate) fn reconcile_map_transfer_card(&mut self, state: Option<crate::screen::MapTransfer>) {
+        if self.hold_charging() {
+            return;
+        }
+        match (state, self.map_transfer_index()) {
+            (Some(state), Some(i)) => {
+                let Screen::MapTransfer(card) = &mut self.stack[i] else { return };
+                if card.state() != state {
+                    card.set_state(state);
+                    self.map_dirty = true;
+                }
+            }
+            (Some(state), None) => {
+                let r = self.stack.push(Screen::MapTransfer(crate::screen::MapTransferScreen::new(state)));
+                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+                self.map_dirty = true;
+            }
+            (None, Some(i)) => {
+                let _ = self.stack.remove(i);
+                self.map_dirty = true;
+            }
+            (None, None) => {}
+        }
+    }
+
     /// Queue a route-upload advisory event (single slot — most recent wins) and try to deliver
     /// it immediately — the tail of [`HostEvent::RouteUploaded`](crate::host::HostEvent) handling.
     pub(crate) fn post_upload_event(&mut self, ev: UploadEvent, catalogs: &CatalogState, tracking: bool) {

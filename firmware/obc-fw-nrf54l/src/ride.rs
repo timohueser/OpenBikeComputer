@@ -676,6 +676,11 @@ pub(crate) async fn run_app(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     control.set_power(prev_power);
 
+    // Whether the map-transfer card (issue #927) was **observed** on the stack last pass — the latch
+    // that turns "the card is gone" into "the rider dismissed it". See the reconcile below.
+    #[cfg(feature = "ble")]
+    let mut map_card_shown = false;
+
     loop {
         let now = Instant::now().as_millis() as u32;
         let hw = stackmeter::used(now);
@@ -817,6 +822,27 @@ pub(crate) async fn run_app(
             // this loop never blocks on the radio winding down, so no wake source here can go dead
             // with the radio off (#438's lesson).
             crate::ble::set_radio_enabled(app.settings().ble_enabled);
+        }
+
+        // ── Map-transfer card (issue #927): the on-glass half of a write that runs for minutes ──
+        // The USB data plane publishes the transfer state into `link`'s atomics; this is the one task
+        // allowed to touch the `App`, so it reads them once per pass and reconciles the card. Fed an
+        // unchanged state the reconcile repaints nothing.
+        //
+        // Dismissal has to be observed rather than signalled: the terminal card pops itself on a
+        // press, and without this the next pass would simply push it back. `card_shown` latches the
+        // *observed* card (never the intent, so a push deferred mid-hold isn't mistaken for a
+        // dismissal), and a card that was up and no longer is means the rider closed it — so the
+        // published state is cleared instead of re-fed.
+        #[cfg(feature = "ble")]
+        {
+            if map_card_shown && !app.map_transfer_card_up() {
+                crate::link::clear_map_transfer();
+                map_card_shown = false;
+            } else {
+                app.set_map_transfer(crate::link::map_transfer_state());
+                map_card_shown = app.map_transfer_card_up();
+            }
         }
 
         // ── Typed host-command drain (FAR-19, #812): the pass's single `drain_host_commands`, run
