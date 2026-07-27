@@ -72,6 +72,7 @@
                     info={session.info}
                     identity={session.identity}
                     {artifact}
+                    localFileSource={session.localFileSource ?? null}
                 />
             {:catch}
                 <p class="note error small" role="alert">

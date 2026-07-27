@@ -1,10 +1,17 @@
 <!--
   Put a map on the device.
 
-  Two sources, one path. A catalog artifact is fetched from the CDN and staged before a byte
+  Three sources, one path. A catalog artifact is fetched from the CDN and staged before a byte
   reaches the device (`OBCC_Spec.md` §7: verify the size and the SHA-256 first); a `.obcm` the
-  rider already has is read straight off disk. Neither is ever held in memory — see
-  `lib/device/staging.ts` for why that takes a scratch file and not a Blob.
+  rider already has is read straight off disk; and — on a tier that builds maps and drives USB
+  itself — the map this app just built goes disk → endpoint inside Rust without entering the
+  webview at all (E3 #913). None is ever held in memory — see `lib/device/staging.ts` for why that
+  takes a scratch file and not a Blob.
+
+  The built map is listed first when it exists, because it is the one the rider came here for: the
+  flow the desktop tier exists to make one click is *build a map, plug in, send*. It is offered
+  only when `localFileSource` is present, which is a property of the transport rather than a host
+  name — a browser has no paths, so on the hosted tier this row simply does not exist.
 
   The line about minutes is not an apology, it is the specification: throughput is bounded by the
   SD card, so a country map takes a while and saying so up front is the difference between a slow
@@ -12,24 +19,41 @@
 -->
 <script lang="ts">
     import { formatBytes } from "../../lib/format";
+    import { builtMap, type BuiltMap } from "../../lib/device/built.svelte";
     import { DeviceJob } from "../../lib/device/job.svelte";
     import { opfsStaging } from "../../lib/device/staging";
-    import { sendCatalogMap, sendMapFile, type MapArtifact } from "../../lib/device/write";
+    import { sendCatalogMap, sendLocalMap, sendMapFile, type MapArtifact } from "../../lib/device/write";
     import type { ProtocolClient } from "../../lib/usb/client";
+    import type { LocalFileSource } from "../../lib/usb/session";
     import TransferBar from "./TransferBar.svelte";
 
     let {
         client,
         artifact = null,
+        localFileSource = null,
     }: {
         client: ProtocolClient;
         /** The selected region's baked map, when one is selected. C1 (#900) owns the catalog and
          *  the picker; this component only needs the four facts an upload turns on. */
         artifact?: MapArtifact | null;
+        /** The session's disk-to-endpoint path, where the transport has one. Null is not a
+         *  failure: it is what "this tier is a browser tab" looks like from here. */
+        localFileSource?: LocalFileSource | null;
     } = $props();
 
     const job = new DeviceJob();
     let picker = $state<HTMLInputElement>();
+
+    // Both halves have to be true: something was built, and this transport can read it. Either
+    // alone offers a button that cannot work.
+    const built = $derived(localFileSource ? builtMap.current : null);
+
+    async function sendBuilt(map: BuiltMap, open: LocalFileSource) {
+        await job.run(
+            (ctx) => sendLocalMap(client, map, open, ctx),
+            (result) => `${map.filename} is on the device (map ${result.objectId}).`,
+        );
+    }
 
     async function sendArtifact(entry: MapArtifact) {
         const area = opfsStaging();
@@ -65,7 +89,13 @@
 <section class="block">
     <h4>Map</h4>
 
-    {#if artifact}
+    {#if built}
+        <p class="what small">
+            <span class="name">{built.filename}</span>
+            <span class="faint">{formatBytes(built.bytes)}</span>
+            <span class="faint">· built here</span>
+        </p>
+    {:else if artifact}
         <p class="what small">
             <span class="name">{artifact.filename}</span>
             <span class="faint">{formatBytes(artifact.bytes)}</span>
@@ -73,6 +103,18 @@
     {/if}
 
     <div class="actions">
+        {#if built && localFileSource}
+            {@const open = localFileSource}
+            {@const map = built}
+            <button
+                type="button"
+                class="btn primary"
+                disabled={job.running}
+                onclick={() => void sendBuilt(map, open)}
+            >
+                Send to device
+            </button>
+        {/if}
         {#if artifact}
             <button
                 type="button"

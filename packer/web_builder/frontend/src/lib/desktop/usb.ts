@@ -410,6 +410,21 @@ export class NativeWatcher implements DeviceWatcher {
         return this.connect(devices[0]);
     }
 
+    /**
+     * A file on this disk, as an {@link ObjectSource} — the seam E3 (#913) reaches for when the map
+     * to send is one this app just built.
+     *
+     * Reads `this.link` at call time rather than closing over a handle: a device that was unplugged
+     * and put back is a *different* handle, and a source built against the old one would be sent to
+     * an endpoint that no longer exists. Rejecting when there is no link is the same rule the pipes
+     * hold — an operation on a device that is not there fails, it does not queue.
+     */
+    localFileSource = async (path: string): Promise<ObjectSource> => {
+        const link = this.link;
+        if (!link) throw new PipeError("closed", "No device is connected.");
+        return nativeFileSource(link.info.handle, path);
+    };
+
     /** Drop the link but keep watching, so re-plugging reconnects. */
     async disconnect(): Promise<void> {
         const client = this.state.client;
