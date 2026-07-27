@@ -32,8 +32,8 @@ invocation — and its own CI job.
 | :-- | :-- |
 | Anything Rust | A stable toolchain (`rustup`). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew**. |
-| The packer (`obc-pack`) | System **GEOS** (`brew install geos`) — its only native dependency. Multi-`.pbf` merge and `--bbox` both run in-process. |
-| The desktop app (`obc-desktop`) | GEOS as above (it links the packer), plus Node to build the frontend it embeds. Linux also wants WebKitGTK — see [its README](obc-desktop/README.md). |
+| The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`) — its only native dependency. Multi-`.pbf` merge, `--bbox` and the land-dataset download all run in-process; no `osmium`, `curl` or `unzip`. |
+| The desktop app (`obc-desktop`) | **Not** GEOS — it builds a vendored copy in, so it needs **CMake** and a C++ compiler instead. Plus Node for the frontend it embeds. Linux also wants WebKitGTK — see [its README](obc-desktop/README.md). |
 | Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ## Build

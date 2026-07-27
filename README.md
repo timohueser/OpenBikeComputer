@@ -78,7 +78,8 @@ The nRF54L firmware and the website's
 | For… | You need |
 | :-- | :-- |
 | Building anything Rust | A stable Rust toolchain (`rustup`). |
-| The packer (`obc-pack`) | System **GEOS** (`brew install geos`) — linked for multipolygon area assembly, and the packer's only native dependency. |
+| The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`; `tools/install-geos.sh` builds it if your distro's is older) — linked for multipolygon area assembly, and the packer's only native dependency. |
+| The desktop app (`obc-desktop`) | **No GEOS** — it compiles a vendored one into the binary. It wants **CMake** (to build that) and **Node 22+** (it embeds the built frontend) instead. See [its README](firmware/obc-desktop/README.md). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew setup**. |
 | The web builder (optional) | Python 3.13 + the deps in `packer/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `packer/web_builder/frontend/`). |
 | Checking the shared crates build for the device | `rustup target add thumbv8m.main-none-eabihf`. |
