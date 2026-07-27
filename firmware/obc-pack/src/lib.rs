@@ -1,9 +1,17 @@
 //! `obc-pack` — the OBCM map packer: OSM `.osm.pbf` → `.obcm`. Shares one binary
 //! format definition with the no_std reader (`obc-reader`).
 //!
-//! Geometry work (simplify, clip, multipolygon assembly) runs through system GEOS;
-//! the quadtree build and serializer are deterministic integer/byte work. Feature
+//! Geometry work (simplify, clip, multipolygon assembly) runs through libGEOS; the
+//! quadtree build and serializer are deterministic integer/byte work. Feature
 //! selection is config-driven ([`config`]).
+//!
+//! **libGEOS is the only native dependency**, and how it is supplied is a property
+//! of the *build graph*, not of this crate: the `firmware/` workspace links the
+//! system library (fast, and a developer has one), while `obc-desktop` turns on
+//! `geos/static` so a shipped app carries GEOS inside its binary and asks a user to
+//! install nothing (#907). Everything else the packer needs — HTTP and zip
+//! ([`net`]) — is Rust, on purpose: an app cannot assume `curl`, and Windows has no
+//! `unzip`.
 //!
 //! [`pipeline::pack`] is the whole thing end to end and the **only** entry point
 //! anyone should build a map through: the `obc-pack` binary is arg parsing around
@@ -22,6 +30,7 @@ pub mod ingest;
 pub mod land;
 pub mod merge;
 pub mod nav;
+pub mod net;
 pub mod pipeline;
 pub mod poi;
 pub mod progress;

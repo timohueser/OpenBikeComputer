@@ -27,6 +27,9 @@ name: CI
 #     platform webview with it (WebKitGTK on Linux) and would otherwise put those headers in
 #     every renderer test's way. Its job is also the only Rust one that needs Node — the shell
 #     *embeds* the built frontend, so it breaks from either side and both halves are built there.
+#     It is the only **three-OS matrix** in this file (D2, #907): it is the artifact a user
+#     installs, it statically links a vendored libGEOS, and a C++ dependency proved on Linux
+#     alone is not proved. Deliberately the one Rust job with *no* system GEOS anywhere.
 #   * `--locked` everywhere so a stale Cargo.lock (any of the four) fails CI.
 
 on:
@@ -90,6 +93,10 @@ jobs:
               - 'firmware/obc-pack/**'
               - 'packer/web_builder/frontend/**'
               - 'packer/presets/**'
+              # The GEOS smoke test (#907) packs this fixture with that preset and
+              # pins the digest, so either one moving must re-run the three-platform
+              # matrix rather than leaving a stale hash asserted.
+              - 'packer/tests/corpus/**'
               - 'packer/palette.json'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
@@ -555,10 +562,51 @@ jobs:
   #
   # Build-only plus tests: the `#[ignore]`d ones pack a real region off the network
   # and belong on a developer's machine, not in CI.
+  #
+  # **Three platforms since D2 (#907)**, because a vendoring story exercised on one
+  # OS is not a vendoring story. `obc-pack` links libGEOS, a C++ library; the app
+  # turns on `geos/static` so a user installs nothing, and the only way to know that
+  # holds for macOS, Windows MSVC and Linux is to build it on macOS, Windows MSVC
+  # and Linux.
+  #
+  # Two properties are load-bearing and easy to lose in an edit:
+  #
+  #  * **No runner here has a system libGEOS**, and `setup-host-deps` — which builds
+  #    one for the host workspace's jobs — is deliberately *not* used. So this job
+  #    cannot accidentally pass by linking someone else's GEOS: if `vendored-geos`
+  #    stopped working, `geos-sys`'s build script would fail to find any library at
+  #    all and every leg would go red.
+  #  * **Everything runs in `--release`.** Not for speed of the code but for count of
+  #    GEOS builds: cargo keys build-script output on the profile, so a debug clippy
+  #    plus a release build would compile the whole of GEOS twice per platform.
+  #
+  # `geos_smoke.rs` is the acceptance test — it packs the checked-in fixture through
+  # the linked GEOS and pins the digest, so all three platforms assert the *same*
+  # bytes. Linking is not evidence that the geometry runs.
   desktop:
     needs: [changes, wasm-convert]
     if: needs.changes.outputs.desktop == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform's failure must not hide another's — with a C++ dependency the
+      # interesting information is *which* of the three broke.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            slug: linux-x86_64
+            exe: obc-desktop
+          - os: macos-latest
+            slug: macos-arm64
+            exe: obc-desktop
+          - os: windows-latest
+            slug: windows-x86_64-msvc
+            exe: obc-desktop.exe
+    defaults:
+      run:
+        # Git Bash on the Windows runner, so the shared steps below are one script
+        # rather than three. Nothing here needs a Windows-native shell.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -567,12 +615,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: firmware/obc-desktop
-          key: desktop
-      # obc-pack links the system libGEOS; the packer is a library dependency here.
-      - uses: ./.github/actions/setup-host-deps
+          key: desktop-${{ matrix.slug }}
       # wry's Linux backend. macOS and Windows need nothing extra — which is most of
       # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
+      # (CMake, which builds the vendored GEOS, is preinstalled on all three images.)
       - name: Install the Linux webview deps
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
@@ -593,13 +641,56 @@ jobs:
           npm run build:desktop
       - name: "obc-desktop: clippy"
         working-directory: firmware/obc-desktop
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: "obc-desktop: test"
+        run: cargo clippy --release --all-targets --locked -- -D warnings
+      # The GEOS smoke test lives here: packs the fixture through the vendored
+      # library and asserts the digest. --nocapture so the log records the digest
+      # and the linked GEOS version even on a green run.
+      - name: "obc-desktop: test (incl. the GEOS smoke test)"
         working-directory: firmware/obc-desktop
-        run: cargo test --locked
+        run: cargo test --release --locked -- --nocapture
       - name: "obc-desktop: build (release)"
         working-directory: firmware/obc-desktop
         run: cargo build --release --locked
+      # A dynamic reference to libGEOS here would mean the app only works on a
+      # machine that already has it — the exact failure D2 exists to remove. On
+      # Windows there is nothing to check: a missing DLL is a load failure, so the
+      # smoke test above could not have run at all.
+      - name: "obc-desktop: no dynamic libGEOS"
+        if: runner.os != 'Windows'
+        working-directory: firmware/obc-desktop
+        run: |
+          bin="target/release/${{ matrix.exe }}"
+          if [ "$RUNNER_OS" = "macOS" ]; then deps=$(otool -L "$bin"); else deps=$(ldd "$bin"); fi
+          if echo "$deps" | grep -i geos; then
+            echo "::error::$bin links libGEOS dynamically — the vendored static build did not take"
+            exit 1
+          fi
+          echo "no libGEOS in the dynamic dependencies"
+      # Recorded so a regression is noticeable (#907's acceptance), and because the
+      # +1.2 MB the static GEOS costs is the number the alternative — shipping a
+      # dylib beside the app — has to beat.
+      - name: "obc-desktop: record the artifact size"
+        working-directory: firmware/obc-desktop
+        run: |
+          bytes=$(wc -c < "target/release/${{ matrix.exe }}")
+          echo "| ${{ matrix.slug }} | $bytes bytes |" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-desktop-${{ matrix.slug }}
+          path: firmware/obc-desktop/target/release/${{ matrix.exe }}
+          retention-days: 7
+      # macOS ships two architectures and this crate is built on the Apple-silicon
+      # runner, so the Intel slice is proved by *cross-building* it: enough to know
+      # the vendored GEOS still configures, compiles and links for x86_64, which is
+      # the part that would break. It is not run — a universal `lipo`'d bundle is
+      # D3's (#908) job, and this step is what keeps that option open.
+      - name: "obc-desktop: the macOS Intel slice (build-only)"
+        if: runner.os == 'macOS'
+        working-directory: firmware/obc-desktop
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          file target/x86_64-apple-darwin/release/obc-desktop
 
   ci:
     if: always()

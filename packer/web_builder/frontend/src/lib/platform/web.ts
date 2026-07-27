@@ -19,9 +19,13 @@ import { parseCatalog, type Catalog } from "../catalog/manifest";
 import { catalogPresets } from "../catalog/presets";
 import type { LoadStyleEditor, Platform, RegionFeature } from "./types";
 
-const DATA_BASE: string = import.meta.env.VITE_DATA_BASE ?? "./data";
+// `||`, not `??`: a deployment that has no catalog to point at yet (the site deploy
+// passes the repository variable straight through, and an unset variable arrives as
+// an empty string) must fall back to the default rather than treat "" as a URL —
+// which resolves to the page itself and reports a JSON parse error for an HTML body.
+const DATA_BASE: string = import.meta.env.VITE_DATA_BASE || "./data";
 const REGIONS_URL: string = `${DATA_BASE}/regions.json`;
-const CATALOG_URL: string = import.meta.env.VITE_CATALOG_URL ?? `${DATA_BASE}/catalog.json`;
+const CATALOG_URL: string = import.meta.env.VITE_CATALOG_URL || `${DATA_BASE}/catalog.json`;
 
 // Every seam this host declares is implemented now — C1 (#900) filled in the
 // three data calls and C3 (#902) the device one — so the `pending()` helper the
