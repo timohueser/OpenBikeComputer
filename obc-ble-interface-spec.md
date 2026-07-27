@@ -338,15 +338,46 @@ existed (#889). It sits at `16` rather than at the next free number because
 crowd a reserved band. Like `fwImage`, the transfer layer is **format-blind** —
 the payload is opaque bytes.
 
-**The device does not yet accept a map upload**: it answers a typed `error`. The
-protocol side is settled so host and device agree on the byte, but the storage
-side is not, and it is not a small piece of work — the firmware's map loader
-matches on the *long* filename (`*.obcm`, because the 8.3 short name truncates
-both `.obcm` and `.obcr` to `OBC`) while its FAT layer cannot create long
-filenames; there is no map catalog (the renderer streams from the first `.obcm`
-in the card root, held open for the session); and a several-hundred-megabyte
-write runs for minutes against that open handle. Naming, collision policy,
-selection and the free-space guard are tracked separately.
+A map upload carries **four rules the other upload types do not** (#927). All of
+them follow from one fact: a map is hundreds of megabytes, which makes it the
+only object whose transfer is measured in minutes rather than frames.
+
+1. **New-only.** `object_id` MUST be `0xFFFF`. A named id is answered
+   `notFound` — for a map there is no id an upload may target. Replacing a map in
+   place would mean destroying the stored bytes as the new ones arrive, which
+   forfeits the "a failed CRC never touches the old copy" guarantee below on the
+   one object a device cannot rebuild for itself. Replacing a map is *upload the
+   new one, then delete the old one*.
+2. **A free-space guard at announce.** A device SHOULD refuse with `storageFull`
+   when the announced length plus a reserve it keeps for ride logs and sidecars
+   exceeds free space, **before any byte streams** — a transfer that fails at
+   byte 300,000,000 has cost the rider minutes. A device that cannot *measure*
+   free space allows the transfer rather than refusing every one.
+3. **An announced length below one OBCM header** is answered `error`.
+4. **The commit point is the format magic, patched in last.** Because staging a
+   map in a temp file and copying it would double both the write time and the
+   free space required, the reference firmware streams a map straight into its
+   final file with the leading 4-byte `OBCM` magic held back, and writes that
+   magic only after the whole-object CRC *and* the header have validated. An
+   interrupted transfer therefore leaves a zero-magic file that every reader
+   refuses and a boot sweep reclaims — the same durability the other types get
+   from an invisible temp, reached without the copy.
+
+**Where an uploaded map lands** is a device convention, not a wire one, but the
+reference firmware's is worth stating because it follows the `RT{id}.OBR` rule
+this section already describes: a received map is `MP{id}.OBM` in the card root
+(`OBM` is an 8.3-safe twin of `.obcm`; the FAT layer creates short names only),
+so the durable object id is guarded by the filename like every other stored
+object. Which map the renderer streams from is recorded separately on the card,
+and a committed upload becomes that selection — it takes effect at the device's
+next boot, since the map's parsed tables are read once at startup.
+
+**The device is never told a map's name.** The descriptor has no field for one,
+the payload is opaque, and the OBCM header (`OBCM_Spec.md` §1) carries no name,
+build date or source-snapshot date. A device can therefore enumerate the maps it
+holds — id, filename, size, OBCM version, bounding box, all derivable from the
+card — but not describe where any of them came from. Closing that gap needs a
+new §4.4 command, not a change to this section.
 
 **Object ids** are `u16`, assigned by the device, **stable for the life of the
 stored object — including across device reboots** — and enumerated by the list
@@ -369,6 +400,9 @@ foreign-card hole (#776). Conventions:
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
   object atomically (commit-then-swap; a failed CRC never touches the old copy).
+  **`map` is the exception**: it is new-only, because atomic replacement of a
+  several-hundred-megabyte object is not something a device can offer — see the
+  map rules above.
 - Objects that exist once (`routeList`, `rideList`, `tripList`, `diagnostics`,
   `echo`, and the `fwImage` staging slot) use object id `0`. A `fwImage` upload is
   a singleton stage: the app sends object id `0`, the device assigns no id and the

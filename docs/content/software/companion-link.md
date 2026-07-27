@@ -132,8 +132,8 @@ scratch file, checksums it against the [catalog
 manifest](src:OBCC_Spec.md) and only then opens the transfer, because the
 descriptor has to announce a whole-object CRC before the first byte moves), and
 the transfer takes *minutes* — the ceiling is the SD card at a few hundred KB/s,
-not the cable. The type's number and how maps are named and enumerated on the
-card are the device side's to settle.
+not the cable. How maps are named and enumerated on the card is the device side's
+answer to the same size, and it is worth its own section below.
 
 ## Objects are files the device already speaks
 
@@ -154,11 +154,51 @@ Every bulk payload is a typed **object**. The set is small and closed:
 `map` is the one type Bluetooth could never have carried, and it is the clearest
 illustration of what a second transport buys: a map is hundreds of megabytes, so
 the type would have been dead weight until [a wire existed](#the-same-link-down-a-cable)
-that could move one. The device does not accept a map upload yet — the byte is
-agreed so both sides mean the same thing, but where an uploaded map *lands* on
-the card is an unsolved question rather than a small one, because the map the
-renderer streams from is chosen by filename at boot and held open for the whole
-session.
+that could move one.
+
+### A map is the one object that does not fit the pattern
+
+Every other upload gets its atomicity the same way: the bytes stream into a temp
+file the catalog scans never match, and the commit *copies* that temp to its
+final name, holding the 4-byte format magic back until the body is durable. A
+power cut leaves either an invisible temp or a magic-less file every reader
+rejects. Nothing half-written is ever visible.
+
+A map cannot pay for that copy. At a few hundred megabytes it would double both
+the write time — already minutes — and the free space the card must have, to buy
+a guarantee for the one object that can always be built again. So a map streams
+**straight into its final file**, and earns the same commit point a different
+way: the file opens with four zero bytes where the magic goes, the stream's own
+first four bytes are held aside, and they are written last, after the
+whole-object checksum *and* the header have both checked out. The interrupted
+state is byte-for-byte the one the copy leaves — a magic-less file the map
+catalog refuses and a boot sweep reclaims.
+
+Three more rules fall out of the same size:
+
+- **A map upload is new-only.** Writing into a stored map's file would destroy it
+  as the replacement arrives, and "a failed checksum never touches the old copy"
+  is not a promise to break on the one file the rider needs to see where they
+  are. Replacing a map is *send the new one, then delete the old one*.
+- **Free space is checked before the first byte**, not discovered at the last.
+  A card that cannot fit the announced map is told so at the announce, with a
+  reserve left over so a map can never take the last cluster and strand the ride
+  log.
+- **The device knows the map arrived, but not what it is.** The descriptor has no
+  name field, the payload is opaque bytes, and the [OBCM header](../formats/)
+  carries no name and no build date. A device can list the maps it holds — id,
+  filename, size, format version, bounding box, all read off the card — and
+  cannot say where any of them came from. That is a gap in the protocol, not in
+  the filesystem, and closing it means a new command rather than a new object.
+
+Because the FAT layer the firmware uses creates 8.3 filenames only, a received
+map lands as `MP7.OBM` — the same trick the [reserved computed-route
+file](../architecture/#on-device-routing-the-router-seam) plays with `.OBR`, and the
+same convention that puts a stored object's durable id in its filename. Which map
+the renderer streams from
+is recorded in a small file beside them, and a map that has just arrived becomes
+that choice; it takes effect at the next start-up, because the map's tables are
+parsed once at boot and held for the whole session.
 
 The key move is that **a route on the wire is the same bytes as a route on the
 card.** The phone converts an imported GPX or TCX to an OBCR file and streams
