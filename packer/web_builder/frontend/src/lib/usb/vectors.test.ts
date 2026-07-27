@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { Crc32 } from "./crc32";
-import { REFERENCE_OBCM_VERSION, loopbackDevice } from "./loopback";
+import { REFERENCE_OBCM_VERSION, loopbackDevice, type MockDevice } from "./loopback";
 import {
     decodeRideList,
     decodeRideObject,
@@ -52,6 +52,7 @@ import {
     encodeStatusMessage,
     encodeTransferControl,
     encodeVersionRead,
+    viewOf,
 } from "./protocol";
 
 /** Walk up from this file to the repo root (the directory holding `protocol-vectors/`). */
@@ -88,6 +89,23 @@ function expectSameBytes(actual: Uint8Array, expected: Uint8Array, what: string)
 
 /** The manifest's hex strings, as the numbers the codecs deal in. */
 const hex = (s: string): number => Number.parseInt(s, 16) >>> 0;
+
+/** A ride on the device with nothing in it — enough for an ack to have something to flag. */
+function seedEmptyRide(device: MockDevice, objectId: number): void {
+    device.seedRide(
+        {
+            objectId,
+            byteLen: 0,
+            startTime: 0,
+            distanceM: 0,
+            movingTimeS: 0,
+            avgSpeedCms: 0,
+            climbM: 0,
+            name: `ride ${objectId}`,
+        },
+        new Uint8Array(0),
+    );
+}
 
 describe("CRC-32 against the fixtures", () => {
     it("reproduces the manifest's check value", () => {
@@ -509,6 +527,88 @@ describe("round-trip over the loopback pipe", () => {
             expect((await client.deviceInfo()).firmwareRevision).toBe("0.4.0+abc1234");
         } finally {
             await close();
+        }
+    });
+
+    /**
+     * `ackRides` over USB (E1, #911).
+     *
+     * There is deliberately **no `command-ack-rides-usb.bin`**. A USB ack is the checked-in
+     * `command-ack-rides.bin` bytes carried on control selector 1, and a second file with identical
+     * contents would assert the opposite of what is true — that the transports differ. So the
+     * fixture is reused and the *routing* is what gets pinned: the same bytes, over the USB
+     * envelope, reach the same handler and move the same sidecar. (The firmware side is structural
+     * rather than tested here: `usb::control`'s `COMMAND` arm and `ble::control`'s `command` write
+     * both call one `link::command::run_command`.)
+     */
+    it("acks rides over USB with the same bytes the BLE command carries", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            for (const id of [3, 5, 9]) seedEmptyRide(device, id);
+            // The fixture's own ids: `count` 3 · 3, 5, 9.
+            expectSameBytes(encodeAckRides([3, 5, 9]), vector("command-ack-rides.bin"), "ackRides");
+            expect(await client.ackRides([3, 5, 9])).toBe(3);
+            expect([...device.synced].sort((a, b) => a - b)).toEqual([3, 5, 9]);
+        } finally {
+            await close();
+        }
+    });
+
+    /**
+     * Both merge orders, over the wire, read back off the persisted sidecar.
+     *
+     * The claim E1 rests on is that a desktop ack and a phone heal need no coordination — no
+     * per-sink field, no ownership, no new command — because the ack is add-only and idempotent.
+     * The sharp end is the middle case: a phone acking its own library must not un-flag a ride the
+     * desktop already fsynced and flagged, and "the phone didn't list it" is not evidence the ride
+     * is unsynced. Read off `syncedSidecar()` — the `/tracks/SYNCED.SET` bytes the firmware writes
+     * — rather than off a flag, so the thing that actually persists is the thing checked.
+     *
+     * **What commutes is the set and the stamps, not the file.** The sidecar serialises entries in
+     * *insertion* order, so acking 3,5 then 5,9 lays them out `3,5,9` and the reverse lays them out
+     * `5,9,3`: same synced rides, same stamps, different bytes. Worth knowing before writing a test
+     * that compares two devices' sidecars byte-for-byte — #904's pin compares one device's sidecar
+     * across a session, which is a different question and stays valid.
+     */
+    it("merges a desktop ack and a phone heal to the same synced set in either order", async () => {
+        const DESKTOP = [3, 5]; // fsynced into the desktop library
+        const PHONE = [5, 9]; // the phone's library — it never held ride 3
+
+        /** The sidecar decoded to `id → synced_at`, which is what the file *means*. */
+        function entriesOf(sidecar: Uint8Array): Map<number, number> {
+            const view = viewOf(sidecar);
+            const count = view.getUint16(6, true);
+            const out = new Map<number, number>();
+            for (let i = 0; i < count; i++) {
+                const at = 8 + i * 6;
+                out.set(view.getUint16(at, true), view.getUint32(at + 2, true));
+            }
+            return out;
+        }
+
+        async function ackedInOrder(first: number[], second: number[]): Promise<Map<number, number>> {
+            const { client, device, close } = loopbackDevice();
+            try {
+                for (const id of [3, 5, 9]) seedEmptyRide(device, id);
+                // The counts are the other half of the claim: the second ack only ever *adds*, so
+                // whichever sink goes second reports exactly the ids the first one didn't hold.
+                expect(await client.ackRides(first)).toBe(2);
+                expect(await client.ackRides(second)).toBe(1);
+                return entriesOf(device.syncedSidecar());
+            } finally {
+                await close();
+            }
+        }
+
+        const desktopFirst = await ackedInOrder(DESKTOP, PHONE);
+        const phoneFirst = await ackedInOrder(PHONE, DESKTOP);
+
+        // All three flagged either way — in particular ride 3, which the phone's ack omitted and
+        // which a "the peer's list is the truth" reading would have cleared.
+        expect([...desktopFirst.keys()].sort((a, b) => a - b)).toEqual([3, 5, 9]);
+        expect([...phoneFirst.keys()].sort((a, b) => a - b)).toEqual([3, 5, 9]);
+        for (const id of [3, 5, 9]) {
+            expect(phoneFirst.get(id), `ride ${id}'s stamp`).toBe(desktopFirst.get(id));
         }
     });
 });

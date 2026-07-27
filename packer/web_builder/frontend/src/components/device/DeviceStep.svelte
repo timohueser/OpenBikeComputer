@@ -12,6 +12,7 @@
     import { onMount } from "svelte";
     import Gated from "../Gated.svelte";
     import { platform } from "../../lib/platform";
+    import { deviceFromIdentity } from "../../lib/catalog/availability";
     import { catalogStore } from "../../lib/catalog/store.svelte";
     import { deviceHolder } from "../../lib/device/session.svelte";
     import type { MapArtifact } from "../../lib/device/write";
@@ -44,8 +45,7 @@
     // offer the download stating the version, and inventing a number here would either refuse maps
     // that work or offer maps that don't.
     $effect(() => {
-        const obcmVersion = session?.identity?.obcmVersion ?? null;
-        catalogStore.setDevice(obcmVersion === null ? null : { obcmVersion });
+        catalogStore.setDevice(deviceFromIdentity(session?.identity?.obcmVersion));
         return () => catalogStore.setDevice(null);
     });
 

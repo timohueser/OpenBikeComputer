@@ -40,6 +40,23 @@ export interface DeviceMapSupport {
     obcmVersion: number;
 }
 
+/**
+ * The identity read's `obcm_version` (spec §1) as a catalog device, or `null`
+ * when the device did not state one.
+ *
+ * One line, but it is *the* line the §6(c) wiring turns on, and it lives here —
+ * a plain `number | null` in, no session, no import from `lib/usb/` — so it can
+ * be tested and so the device step stays a two-call component. `null` in means
+ * `null` out: an older firmware (the 6-byte read) and a card-less device (the
+ * 2-byte read) both leave the picker in its no-known-target-firmware branch,
+ * which offers the download stating the version. The tempting shortcut — treat
+ * a connected device as "surely current" — is the guess this whole field exists
+ * to remove.
+ */
+export function deviceFromIdentity(obcmVersion: number | null | undefined): DeviceMapSupport | null {
+    return typeof obcmVersion === "number" ? { obcmVersion } : null;
+}
+
 export type ArtifactState =
     | { kind: "available" }
     | { kind: "unsupported"; artifactObcm: number; deviceObcm: number };
