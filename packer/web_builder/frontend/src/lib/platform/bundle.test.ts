@@ -36,6 +36,7 @@ const DESKTOP_ONLY = {
     "the Tauri build tracker": /\/src\/lib\/desktop\/build\.svelte\.ts$/,
     "the native USB transport": /\/src\/lib\/desktop\/usb\.ts$/,
     "the native USB session": /\/src\/lib\/desktop\/usb\.svelte\.ts$/,
+    "the ride library's Tauri backing": /\/src\/lib\/desktop\/library\.ts$/,
     "the Tauri JS API": /\/@tauri-apps\/api\//,
     "the style editor route": /\/src\/routes\/Advanced\.svelte/,
     "the style editor components": /\/src\/components\/advanced\//,
@@ -55,6 +56,12 @@ const DESKTOP_TARGET_ONLY = {
     // otherwise surface on someone's desk.
     "the native USB transport": /\/src\/lib\/desktop\/usb\.ts$/,
     "the native USB session": /\/src\/lib\/desktop\/usb\.svelte\.ts$/,
+    // E2 (#912): the ride library is a folder on a disk, so only the tier with
+    // one may carry the code that writes it. Its presence here is also what
+    // proves `desktop.ts`'s dynamic `import()` still resolves — `rides()` is
+    // only called from a click, so a broken path would surface on someone's
+    // desk rather than in CI.
+    "the ride library's Tauri backing": /\/src\/lib\/desktop\/library\.ts$/,
     "the Tauri JS API": /\/@tauri-apps\/api\//,
 };
 

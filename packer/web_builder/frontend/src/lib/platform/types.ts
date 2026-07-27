@@ -24,6 +24,7 @@ import type { Component } from "svelte";
 import type { Catalog } from "../catalog/manifest";
 import type { Preset, SchemaEnvelope } from "../config/model";
 import type { DeviceSession } from "../usb/session";
+import type { RideLibrary } from "../device/library";
 
 export type PlatformName = "web" | "desktop" | "dev";
 
@@ -156,8 +157,18 @@ export type MapCatalog = Catalog;
  */
 export type { DeviceSession };
 
-/** The managed ride library. E2 (#912) owns it. */
-export type RideLibrary = unknown;
+/**
+ * The managed ride library — a real folder, a small index, and the durable
+ * write an `ackRides` is allowed to follow (E2 #912).
+ *
+ * The only tier that has one is the desktop app, and that is a statement about
+ * durability rather than about effort: `synced` on the device means "a durable
+ * copy of this ride exists off the device", and it is what unlocks deleting the
+ * ride there and anchors its auto-expiry countdown (#638). A browser's OPFS is
+ * evictable and its downloads are cancellable, so the hosted tier exports one
+ * GPX, keeps no record, and never acks (`obc-ble-interface-spec.md` §4.4).
+ */
+export type { RideLibrary };
 
 // --- what the app has put on this disk ---------------------------------------
 

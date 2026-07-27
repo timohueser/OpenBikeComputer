@@ -52,15 +52,16 @@ describe("unimplemented seams", () => {
     // who to chase. The list shrinking is the point: the web host's `catalog()`
     // left it when C1 (#900) implemented it, its `device()` when C3 (#902) did,
     // the desktop host's data calls when D1 (#906) built the Tauri backend, and
-    // its `device()` when D4 (#909) put `nusb` under the same seam — every
-    // remaining row is a real debt with an owner.
-    it.each([
-        ["dev catalog", () => dev.platform.catalog(), /A3 #897/],
-        ["desktop rides", () => desktop.platform.rides!(), /E2 #912/],
-    ])("%s rejects with PlatformNotImplemented", async (_name, call, owner) => {
-        await expect(call()).rejects.toThrow(PlatformNotImplemented);
-        await expect(call()).rejects.toThrow(owner);
-    });
+    // its `device()` when D4 (#909) put `nusb` under the same seam, and its
+    // `rides()` when E2 (#912) built the library — every remaining row is a
+    // real debt with an owner.
+    it.each([["dev catalog", () => dev.platform.catalog(), /A3 #897/]])(
+        "%s rejects with PlatformNotImplemented",
+        async (_name, call, owner) => {
+            await expect(call()).rejects.toThrow(PlatformNotImplemented);
+            await expect(call()).rejects.toThrow(owner);
+        },
+    );
 });
 
 describe("the hosts as a set", () => {

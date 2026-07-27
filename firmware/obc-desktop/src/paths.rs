@@ -56,6 +56,17 @@ pub fn styles_dir(documents: Option<PathBuf>) -> PathBuf {
     maps_dir(documents).join("styles")
 }
 
+/// The **default** home of the managed ride library (E2 #912) — beside the maps, for the same
+/// reason the styles are: one folder is the whole answer to "where does this app put my things",
+/// and `reveal_file`'s "under the maps folder" rule covers it without widening.
+///
+/// Only the default. A rider whose rides belong on an external drive relocates it, and the choice
+/// is remembered in the app's config directory rather than here (`rides::configured`) — a folder
+/// that named itself could not be found once it moved.
+pub fn rides_dir(documents: Option<PathBuf>) -> PathBuf {
+    maps_dir(documents).join("rides")
+}
+
 fn home() -> PathBuf {
     #[cfg(windows)]
     let var = "USERPROFILE";
