@@ -16,6 +16,11 @@
   The line about minutes is not an apology, it is the specification: throughput is bounded by the
   SD card, so a country map takes a while and saying so up front is the difference between a slow
   transfer and a broken-looking one.
+
+  Every success line ends with "restart it" (#927), and that is not padding either. A committed map
+  is recorded as the device's selected one, but the device parses its map tables once at boot and
+  streams from that map for the whole session — so until it restarts it is still showing the old
+  one. Saying only "is on the device" would be true and would still read as a bug.
 -->
 <script lang="ts">
     import { formatBytes } from "../../lib/format";
@@ -51,7 +56,7 @@
     async function sendBuilt(map: BuiltMap, open: LocalFileSource) {
         await job.run(
             (ctx) => sendLocalMap(client, map, open, ctx),
-            (result) => `${map.filename} is on the device (map ${result.objectId}).`,
+            (result) => `${map.filename} is on the device (map ${result.objectId}). Restart it to switch to the new map.`,
         );
     }
 
@@ -66,14 +71,14 @@
         }
         await job.run(
             (ctx) => sendCatalogMap(client, entry, area, ctx),
-            (result) => `${entry.filename} is on the device (map ${result.objectId}).`,
+            (result) => `${entry.filename} is on the device (map ${result.objectId}). Restart it to switch to the new map.`,
         );
     }
 
     async function sendFile(file: File) {
         await job.run(
             (ctx) => sendMapFile(client, file, ctx),
-            (result) => `${file.name} is on the device (map ${result.objectId}).`,
+            (result) => `${file.name} is on the device (map ${result.objectId}). Restart it to switch to the new map.`,
         );
     }
 
