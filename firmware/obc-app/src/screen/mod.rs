@@ -34,6 +34,7 @@ mod dfu;
 mod home;
 mod list;
 mod map;
+mod map_transfer;
 mod menu;
 mod nav_route;
 mod passkey;
@@ -63,6 +64,7 @@ pub use dfu::{
 pub use home::HomeScreen;
 pub use list::window_start;
 pub use map::{MapScreen, ROUTE_WEIGHT};
+pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
 pub use nav_route::{needle_region, NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
@@ -725,6 +727,10 @@ screens! {
     /// The BLE pairing passkey card (epic #447, P2). **Host-pushed** by [`App::set_ble_status`]
     /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
     Passkey(PasskeyScreen) => Caps::modal(),
+    /// The map-transfer card (issue #927). **Host-pushed** by [`App::set_map_transfer`] when a map
+    /// upload starts and popped when the state clears — the one screen a multi-minute SD write is
+    /// visible on. Non-dismissible while bytes land, dismissable once terminal.
+    MapTransfer(MapTransferScreen) => Caps::modal(),
     /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
     /// **Host-pushed** by [`App::apply_event`], coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),

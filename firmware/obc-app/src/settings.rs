@@ -968,8 +968,8 @@ pub use crate::dfu::{decode_arm_marker, encode_arm_marker, ArmMarker, ARM_MARKER
 pub use crate::ride::{decode_synced_rides, encode_synced_rides, synced_rides_len, SyncedRides, SYNCED_RIDES_MAX_LEN};
 pub use crate::route::{decode_route_crcs, encode_route_crcs, route_crcs_len, RouteCrcs, ROUTE_CRCS_MAX_LEN};
 pub use crate::store_meta::{
-    decode_id_marks, decode_store_epoch, encode_id_marks, encode_store_epoch, store_epoch_mint, IdMarks, ID_MARKS_LEN,
-    STORE_EPOCH_LEN,
+    decode_id_marks, decode_selected_map, decode_store_epoch, encode_id_marks, encode_selected_map, encode_store_epoch,
+    store_epoch_mint, IdMarks, ID_MARKS_LEN, SELECTED_MAP_LEN, SELECTED_MAP_NAME_MAX, STORE_EPOCH_LEN,
 };
 
 #[cfg(test)]

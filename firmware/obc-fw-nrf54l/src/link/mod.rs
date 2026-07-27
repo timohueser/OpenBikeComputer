@@ -156,6 +156,94 @@ pub(crate) enum Armed {
     Download(TransferControl),
 }
 
+/// Which wire a descriptor arrived on — the *only* place transport identity crosses into the shared
+/// classifier, and it exists for exactly one rule: **a map is USB-only** (spec §10). A map is
+/// hundreds of megabytes; over BLE it would be days, which is why the type did not exist before a
+/// cable did. Rather than leave that to a comment, [`transfer::classify_transfer`] takes this and a
+/// map descriptor on the radio is refused with a typed, logged `error` — the same shape as any other
+/// unsupported op/type pair, rather than silently falling into the route commit path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Transport {
+    /// The BLE link: GATT control plane, L2CAP CoC data plane.
+    Ble,
+    /// The USB device plane: framed control endpoint, bulk data endpoints.
+    Usb,
+}
+
+// ============================ Map-transfer progress mirror (issue #927) ============================
+//
+// A map upload writes for **minutes**. The ride loop owns the `App` and is the only task that may
+// touch it, and the USB data plane must not block on it, so progress crosses the plane boundary the
+// same way `RECORDING` does — plain atomics the ride loop reads once per pass and feeds through
+// `App::set_map_transfer`. Nothing here is a queue: the value is a *state*, always re-readable, and
+// a missed intermediate is simply a frame that showed the previous percentage.
+
+/// The transfer phase, as a `u8` so it fits an atomic: 0 = idle, 1 = receiving, 2 = installed,
+/// 3 = storage failure, 4 = damaged (CRC), 5 = not a readable map.
+static MAP_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// Kibibytes received so far, and the announced total. KiB rather than bytes so a 4 GiB map still
+/// fits a `u32` with room, and finer than any bar 240 px can resolve.
+static MAP_RX_KIB: AtomicU32 = AtomicU32::new(0);
+static MAP_TOTAL_KIB: AtomicU32 = AtomicU32::new(0);
+
+/// Publish "a map transfer has started, `total_len` bytes announced" (USB data plane).
+pub(crate) fn map_transfer_started(total_len: u32) {
+    MAP_RX_KIB.store(0, Ordering::Relaxed);
+    MAP_TOTAL_KIB.store(total_len / 1024, Ordering::Relaxed);
+    MAP_PHASE.store(1, Ordering::Relaxed);
+}
+
+/// Publish the running byte count (USB data plane, once per chunk — two relaxed stores).
+pub(crate) fn map_transfer_progress(received: u32) {
+    MAP_RX_KIB.store(received / 1024, Ordering::Relaxed);
+}
+
+/// Publish the transfer's outcome. `None` clears the state entirely — which is what an abort or an
+/// unplug does, deliberately: the rider caused those and needs no card explaining it back to them.
+pub(crate) fn map_transfer_ended(outcome: Option<TransferStatus>) {
+    MAP_PHASE.store(
+        match outcome {
+            None => 0,
+            Some(TransferStatus::Committed) => 2,
+            Some(TransferStatus::CrcMismatch) => 4,
+            // `error` after the bytes landed is the commit's verdict: either the card refused the
+            // write or the payload wasn't a readable OBCM. The store logs which; the card says the
+            // one the rider can act on — re-send from a builder that targets this OBCM version.
+            Some(_) => 5,
+        },
+        Ordering::Relaxed,
+    );
+}
+
+/// Publish a storage failure (the file could not be opened or a chunk could not be appended) —
+/// distinct from a bad payload, because the fix is different: free space or a different card.
+pub(crate) fn map_transfer_storage_failed() {
+    MAP_PHASE.store(3, Ordering::Relaxed);
+}
+
+/// The app-facing map-transfer state, or `None` when there is nothing to show — read once per pass
+/// by the ride loop and handed to [`obc_app::App::set_map_transfer`].
+pub fn map_transfer_state() -> Option<obc_app::screen::MapTransfer> {
+    use obc_app::screen::{MapTransfer, MapTransferError};
+    Some(match MAP_PHASE.load(Ordering::Relaxed) {
+        1 => MapTransfer::Receiving {
+            received_kib: MAP_RX_KIB.load(Ordering::Relaxed),
+            total_kib: MAP_TOTAL_KIB.load(Ordering::Relaxed),
+        },
+        2 => MapTransfer::Installed,
+        3 => MapTransfer::Failed(MapTransferError::Storage),
+        4 => MapTransfer::Failed(MapTransferError::Damaged),
+        5 => MapTransfer::Failed(MapTransferError::NotAMap),
+        _ => return None,
+    })
+}
+
+/// Clear the map-transfer state — called when the rider dismisses the terminal card, so the ride
+/// loop's next pass doesn't immediately push it back.
+pub fn clear_map_transfer() {
+    MAP_PHASE.store(0, Ordering::Relaxed);
+}
+
 /// One transfer at a time, **across every transport**: set by whichever control plane armed it,
 /// cleared by that transport's data plane when the transfer concludes (answered, aborted, or the
 /// channel dropped). While set, any further `transferControl` open — BLE or USB — is answered

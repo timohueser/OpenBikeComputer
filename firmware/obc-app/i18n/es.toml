@@ -458,6 +458,18 @@ install_pending_save = "Todavía se está guardando una ruta. Inténtalo de nuev
 install_no_card = "No se encontró la tarjeta. Insértala e inténtalo de nuevo."
 install_snapshot_failed = "No se pudo guardar una copia de seguridad en la tarjeta. Actualización no instalada."
 install_state_write = "No se pudo preparar la actualización. No se cambió nada."
+
+[map_transfer]
+title = "MAPA"
+receiving = "Recibiendo mapa"
+keep_cable = "Mantén el cable conectado."
+installed = "Mapa guardado"
+restart = "Reinicia el dispositivo para usarlo."
+failed = "Mapa no guardado"
+failed_storage = "La tarjeta no pudo guardar el mapa."
+failed_damaged = "El mapa llegó dañado. Envíalo de nuevo."
+failed_format = "Ese archivo no es un mapa que lea este dispositivo."
+
 # --- Boot-fault cards (pre-app; the device renders the English column) ---
 [fault]
 nocard_what = "Sin tarjeta SD"

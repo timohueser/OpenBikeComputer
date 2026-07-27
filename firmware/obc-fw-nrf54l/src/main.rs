@@ -1087,10 +1087,18 @@ async fn main(_spawner: Spawner) {
             idle_blink(&mut led).await
         };
 
-        // Open the `.obcm` and hold it open for the session — the map **streams** from it, never read
-        // resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the app's Route
-        // menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB `Catalog`
-        // never sits on `main`'s stack beneath the long-lived ride loop.)
+        // Reclaim any map upload that never committed (issue #927) before the catalog is read: a
+        // torn transfer leaves its final `MP{id}.OBM` with the held-back magic still zeroed, which
+        // every catalog refuses — so without this sweep its hundreds of megabytes would sit on the
+        // card forever, invisible to the one surface that could explain them. The map twin of the
+        // object store's `is_aborted_commit` sweep over `/routes`, and it must run **before**
+        // `open_map` so the selection never lands on a corpse.
+        storage.sweep_aborted_maps();
+
+        // Open the selected `.obcm` and hold it open for the session — the map **streams** from it,
+        // never read resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the
+        // app's Route menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB
+        // `Catalog` never sits on `main`'s stack beneath the long-lived ride loop.)
         storage.open_map();
 
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero

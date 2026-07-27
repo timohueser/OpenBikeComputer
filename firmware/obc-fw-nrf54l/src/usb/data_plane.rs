@@ -139,18 +139,44 @@ async fn run_upload(
     buf: &mut [u8],
 ) -> TransferOutcome {
     info!("usb: [bulk] upload start: {} bytes (type {})", desc.total_len, desc.ty.as_u8());
-    // Open the SD temp here — at the first real byte — rather than when the control plane armed it:
+    // A **map** (#927) is the one type that does not stream into `/routes/UPLOAD.TMP`: at hundreds
+    // of megabytes the temp-then-copy promote would double both the minutes of writing and the free
+    // space required, so a map streams straight into its final `MP{id}.OBM` with its first four bytes
+    // — the OBCM magic — withheld here and patched in at commit. `map_id` is the assigned object id,
+    // carried in this frame because a map holds no slot in the store to remember it in.
+    let is_map = desc.ty == ObjectType::Map;
+    let mut held = obc_ble::HeldMagic::new();
+    let mut map_id = 0u16;
+    // Open the SD file here — at the first real byte — rather than when the control plane armed it:
     // a host that sends `transferControl` and then never writes holds no storage handle (it only
     // wedges its own one-transfer gate until it unplugs).
     let began = {
         let mut guard = shared.lock().await;
-        store.borrow_mut().upload_begin(&mut guard)
+        if is_map {
+            match store.borrow_mut().map_upload_begin(&mut guard) {
+                Some(id) => {
+                    map_id = id;
+                    true
+                }
+                None => false,
+            }
+        } else {
+            store.borrow_mut().upload_begin(&mut guard)
+        }
     };
     if !began {
-        warn!("usb: [bulk] cannot open upload temp — rejecting");
+        warn!("usb: [bulk] cannot open the upload target — rejecting");
+        if is_map {
+            crate::link::map_transfer_storage_failed();
+        }
         close_transfer();
         tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;
+    }
+    if is_map {
+        // Raise the on-glass card now: from here the SD bus is saturated for minutes and the map
+        // plane's own reads queue behind this transfer. Unexplained, that reads as a wedged device.
+        crate::link::map_transfer_started(rx.total_len());
     }
     let started = Instant::now();
     while !rx.is_complete() {
@@ -163,7 +189,7 @@ async fn run_upload(
                 // answer, and a late `aborted` could be consumed as the next descriptor's result.
                 {
                     let mut guard = shared.lock().await;
-                    store.borrow_mut().upload_discard(&mut guard);
+                    discard_upload(&mut store.borrow_mut(), &mut guard, is_map);
                 }
                 info!("usb: [bulk] upload interrupted ({:?}) — discarded", defmt::Debug2Format(&e));
                 close_transfer();
@@ -173,7 +199,7 @@ async fn run_upload(
                 // The host aborted (op 3): discard and confirm.
                 {
                     let mut guard = shared.lock().await;
-                    store.borrow_mut().upload_discard(&mut guard);
+                    discard_upload(&mut store.borrow_mut(), &mut guard, is_map);
                 }
                 info!("usb: [bulk] upload aborted by the host");
                 close_transfer();
@@ -182,30 +208,48 @@ async fn run_upload(
             }
         };
         let consumed = rx.push(&buf[..n]);
-        let appended = {
+        // The receiver's CRC always sees every payload byte; only the *write* skips the held magic.
+        let write = if is_map { held.feed(&buf[..consumed]) } else { &buf[..consumed] };
+        let appended = write.is_empty() || {
             let mut guard = shared.lock().await;
-            store.borrow_mut().upload_append(&mut guard, &buf[..consumed])
+            store.borrow_mut().upload_append(&mut guard, write)
         };
         if !appended {
             {
                 let mut guard = shared.lock().await;
-                store.borrow_mut().upload_discard(&mut guard);
+                discard_upload(&mut store.borrow_mut(), &mut guard, is_map);
             }
             warn!("usb: [bulk] SD append failed — upload rejected");
+            if is_map {
+                crate::link::map_transfer_storage_failed();
+            }
             close_transfer();
             tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
+        if is_map {
+            crate::link::map_transfer_progress(rx.committed_offset());
+        }
     }
     // The commit target is the object type: a `fwImage` promotes to /UPDATE.BIN in the card root
     // (staging, no catalog id, no store-revision bump — spec §7.6); a `trip` commits into the trip
-    // catalog as `TP{id}.OBT` (bumping the *trip* store, §4.3); everything else is a route.
+    // catalog as `TP{id}.OBT` (bumping the *trip* store, §4.3); a `map` patches the held magic into
+    // `MP{id}.OBM` and becomes the selected map (#927); everything else is a route.
     let is_fwimage = desc.ty == ObjectType::FwImage;
     let is_trip = desc.ty == ObjectType::Trip;
     let (id, status) = {
         let mut guard = shared.lock().await;
         let mut st = store.borrow_mut();
-        if is_fwimage {
+        if is_map {
+            // A map shorter than a magic can't reach here — the announce guard rejects anything
+            // below a full OBCM header — but the codec is total, so answer `error` rather than
+            // fabricate one.
+            let status = match held.take() {
+                Some(magic) => st.map_upload_finish(&mut guard, &rx, map_id, magic),
+                None => TransferStatus::Error,
+            };
+            (map_id, status)
+        } else if is_fwimage {
             (rx.object_id(), st.fwimage_finish(&mut guard, &rx))
         } else if is_trip {
             st.upload_finish_trip(&mut guard, &rx, desc.crc32)
@@ -213,8 +257,14 @@ async fn run_upload(
             st.upload_finish(&mut guard, &rx, desc.crc32)
         }
     };
+    if is_map {
+        crate::link::map_transfer_ended(Some(status));
+    }
     let committed = status == TransferStatus::Committed;
     let elapsed_ms = started.elapsed().as_millis().max(1);
+    if committed && is_map {
+        info!("usb: [bulk] map {} is now the selected map — it loads on the next boot", id);
+    }
     info!(
         "usb: [bulk] upload finished: id {} -> {} ({} bytes in {} ms, ~{} kB/s)",
         id,
@@ -226,11 +276,29 @@ async fn run_upload(
     let offset = if committed { rx.total_len() } else { 0 };
     close_transfer();
     tx.send_status(transfer_result_at(id, status, offset)).await;
-    if committed && !is_fwimage {
+    // A `fwImage` is a staging slot and a `map` is not a listed object (there is no `mapList`), so
+    // neither has a catalog for a peer to re-read — only routes and trips raise `storeChanged`.
+    if committed && !is_fwimage && !is_map {
         let ty = if is_trip { ObjectType::Trip } else { ObjectType::Route };
         tx.publish_store_change(store, ty).await;
     }
     TransferOutcome::Answered
+}
+
+/// Drop an in-flight upload's partial. A map's partial is its final file with the magic still
+/// zeroed — inert to every catalog and reclaimed by the boot sweep — so it is *closed*, not deleted:
+/// erasing hundreds of megabytes on the failure path would add minutes to a transfer that has
+/// already failed, and a retry truncates the same file anyway (the id re-derives to the same value,
+/// since the scan cannot see a zero-magic map). Every other type drops its `UPLOAD.TMP`.
+fn discard_upload(store: &mut ObjectStore, shared: &mut crate::SharedStore, is_map: bool) {
+    if is_map {
+        crate::link::map_transfer_ended(None);
+        if let Some(storage) = &mut shared.storage {
+            storage.map_upload_abort();
+        }
+    } else {
+        store.upload_discard(shared);
+    }
 }
 
 /// A download: open the source, send the filled announce descriptor on the control plane, then

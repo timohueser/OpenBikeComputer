@@ -262,6 +262,51 @@ impl TransferStatus {
             None
         }
     }
+
+    /// The announce-time reject for a **map** upload (spec §4.2 / §10; issue #927) — the rule that
+    /// keeps a several-hundred-megabyte transfer from starting when it cannot possibly land.
+    ///
+    /// Three refusals, all **before any byte streams**, because a map that fails at byte
+    /// 300,000,000 has cost the rider minutes and the card a wasted write:
+    ///
+    /// - **Not new** (`object_id != 0xFFFF`) → [`NotFound`](Self::NotFound). A map upload is
+    ///   *new-only*: the device never replaces a stored map in place. A replace would have to
+    ///   destroy the old map's bytes as the new ones stream (the file is far too large to stage a
+    ///   second copy and swap), which breaks §4.2's "a failed CRC never touches the old copy"
+    ///   guarantee on the one object the device cannot re-derive. So every named id is, for a map,
+    ///   an id this device will not write to — which is exactly `notFound`. Replacing a map is
+    ///   "upload the new one, then delete the old one".
+    /// - **Too short** (`total_len < min_len`) → [`Error`](Self::Error). `min_len` is the OBCM
+    ///   header length; the constant stays out of this crate so the wire codec never links the
+    ///   format crate (the `fwimage_announce_reject` convention).
+    /// - **Won't fit** → [`StorageFull`](Self::StorageFull), when `free_bytes` is known and
+    ///   `total_len + headroom` exceeds it. `headroom` is the device's reserve so a map can never
+    ///   fill the card to the last cluster and strand the ride log. `free_bytes = None` means the
+    ///   device could not measure free space (a non-FAT32 card, an FSInfo with no cached count):
+    ///   the transfer is **allowed**, because refusing every upload on a card whose free count is
+    ///   merely unreadable would be worse than failing late on the rare card that is genuinely full.
+    ///
+    /// `None` = accept (the caller arms the [`Receiver`](crate::Receiver)).
+    pub const fn map_announce_reject(
+        object_id: u16,
+        total_len: u32,
+        min_len: u32,
+        free_bytes: Option<u64>,
+        headroom: u64,
+    ) -> Option<Self> {
+        if object_id != TransferControl::NEW_OBJECT_ID {
+            return Some(Self::NotFound);
+        }
+        if total_len < min_len {
+            return Some(Self::Error);
+        }
+        if let Some(free) = free_bytes {
+            if total_len as u64 + headroom > free {
+                return Some(Self::StorageFull);
+            }
+        }
+        None
+    }
 }
 
 /// The closing result of a transfer (`msg = 1`). `committed_offset` is the durable byte count.
