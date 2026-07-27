@@ -50,6 +50,18 @@ import type { VersionRead } from "./protocol";
 // exactly which of the API's surface the transport depends on, and it makes the whole thing
 // injectable, so `webusb.test.ts` drives the real code paths under Node with a scripted device.
 
+/** What a `transferIn` settles with. Named because the pipe holds one across a cancelled read. */
+export interface UsbInResult {
+    data?: DataView;
+    status: string;
+}
+
+/** What a `transferOut` settles with. */
+export interface UsbOutResult {
+    bytesWritten: number;
+    status: string;
+}
+
 export interface UsbEndpointLike {
     endpointNumber: number;
     direction: "in" | "out";
@@ -79,8 +91,8 @@ export interface UsbDeviceLike {
     selectConfiguration(value: number): Promise<void>;
     claimInterface(interfaceNumber: number): Promise<void>;
     releaseInterface(interfaceNumber: number): Promise<void>;
-    transferIn(endpointNumber: number, length: number): Promise<{ data?: DataView; status: string }>;
-    transferOut(endpointNumber: number, data: Uint8Array): Promise<{ bytesWritten: number; status: string }>;
+    transferIn(endpointNumber: number, length: number): Promise<UsbInResult>;
+    transferOut(endpointNumber: number, data: Uint8Array): Promise<UsbOutResult>;
     clearHalt(direction: "in" | "out", endpointNumber: number): Promise<void>;
 }
 
@@ -113,6 +125,18 @@ const VENDOR_CLASS = 0xff;
 
 // --- the pipe -----------------------------------------------------------------
 
+/**
+ * An IN transfer whose result nobody has taken yet.
+ *
+ * `settled` tracks the *wire*, not the caller: a transfer that has completed is off the endpoint
+ * even while its bytes are still waiting for a reader, and those are two different questions —
+ * {@link WebUsbPipe.reset} asks the first, {@link WebUsbPipe.read} the second.
+ */
+interface HeldTransfer {
+    readonly transfer: Promise<UsbInResult>;
+    settled: boolean;
+}
+
 /** One endpoint pair as a byte pipe. */
 class WebUsbPipe implements BytePipe {
     readonly transport = "webusb";
@@ -121,6 +145,12 @@ class WebUsbPipe implements BytePipe {
     private closedByUs = false;
     /** Rejectors for {@link dead}, released when the pipe closes or fails. */
     private readonly mourners: Array<(error: PipeError) => void> = [];
+    /** The IN transfer no reader has taken the result of — a cancelled read's, kept rather than
+     *  abandoned. At most one, because {@link receive} claims before it submits. */
+    private heldIn: HeldTransfer | null = null;
+    /** OUT transfers still on the wire. Only ever 0 or 1 (the client serialises writes), counted
+     *  rather than flagged so an overlapping pair could not clear it early. */
+    private writesInFlight = 0;
 
     constructor(
         readonly kind: "control" | "bulk",
@@ -147,11 +177,7 @@ class WebUsbPipe implements BytePipe {
     async read(signal?: AbortSignal): Promise<Uint8Array> {
         this.check();
         for (;;) {
-            const result = await this.transfer(
-                () => this.device.transferIn(this.inEndpoint, this.packetSize),
-                signal,
-                "the read",
-            );
+            const result = await this.receive(signal);
             // `stall` and `babble` both mean the endpoint is no longer trustworthy — anything but
             // `ok` has to surface, not be read past.
             if (result.status !== "ok") {
@@ -179,26 +205,62 @@ class WebUsbPipe implements BytePipe {
                 `a ${bytes.length}-byte control frame does not fit the ${this.packetSize}-byte endpoint.`,
             );
         }
-        const result = await this.transfer(() => this.device.transferOut(this.outEndpoint, bytes), signal, "the write");
+        const result = await this.transfer(() => this.send(bytes), signal, "the write");
         if (result.status !== "ok") {
             throw new PipeError("device-error", `The device answered "${result.status}" to a write.`);
         }
     }
 
     /**
-     * Clear both halves of the endpoint pair.
+     * Return the endpoint pair to a known-empty state — by argument, because WebUSB will not let it
+     * be done by force.
      *
-     * `clearHalt` is what un-sticks a stalled endpoint and, on the device side, what a firmware
-     * treats as "the host has given up on this exchange" — the closest USB equivalent of BLE's
-     * close-and-reopen-the-CoC (§4.1). It is best-effort: an endpoint that was never halted may
-     * reject the request, and that is not a failure of the reset.
+     * §4.1 wants the channel *emptied* before the slot goes to another descriptor. BLE closes and
+     * reopens the CoC; D4's native pipe cancels every URB, drains the completions, then clears the
+     * halt (`firmware/obc-desktop/src/usb/link.rs`). This pipe can do only the last of those three.
+     * `clearHalt` is a `CLEAR_FEATURE(ENDPOINT_HALT)` control request — it neither cancels a
+     * transfer nor discards a byte — and the WebUSB API has no per-transfer cancel at all; the only
+     * thing that aborts a submitted transfer is `close()`, which would take the control plane's read
+     * loop down with it and turn every cancelled download into a reconnect. So the emptiness rests
+     * on three facts, none of which is `clearHalt`:
+     *
+     * - **Nothing is buffered on the IN side.** A bulk IN endpoint delivers only into an outstanding
+     *   transfer; with none submitted there is no host-side buffer at all, and the unread bytes are
+     *   still in the device, where §4.2's abort has it discard them.
+     * - **Stray OUT bytes are the device's problem, and it handles them.** An aborted write leaves a
+     *   `transferOut` that will still be delivered. The firmware reads and discards bytes that
+     *   arrive with no descriptor armed (`firmware/obc-fw-nrf54l/src/usb/data_plane.rs`), which is
+     *   exactly what makes that orphan harmless.
+     * - **A cancelled read's transfer is kept, not orphaned.** This is the one C3 got wrong, and
+     *   the abort handshake is why it matters rather than why it doesn't. `ProtocolClient.sendAbort`
+     *   waits for `transferResult(aborted)`, and a device that has answered it sends **nothing
+     *   more** for that object — so a transfer still pending then will never see a stale byte, and
+     *   will never complete on its own either. It just sits on the endpoint. Submitting a fresh
+     *   `transferIn` for the next object would queue *behind* it, and the abandoned one would take
+     *   that object's first packet and drop it on the floor: a download one packet short, parked
+     *   forever on a read the device had already satisfied, and every later cancel adding another.
+     *   {@link receive} keeps it for the next reader instead, which is both correct and free —
+     *   every read requests the same one max packet, so a transfer submitted for one object fits
+     *   the next. Note it keeps the *result*, not merely the transfer: the device commonly answers
+     *   while no read is outstanding (that is the whole reason the abort raced one), and letting
+     *   that value fall on the floor loses the packet just as thoroughly.
+     *
+     * Which leaves `clearHalt` doing its actual job, un-sticking a stalled endpoint, and only where
+     * that can be true. A half with a transfer **still on the wire** is skipped: it cannot be
+     * halted (a stall would have completed the transfer), so there is no halt to clear, and clearing
+     * one would reset the endpoint's data toggle underneath a live transfer — the same rule D4
+     * meets by cancelling and draining first. A held result whose transfer has already completed
+     * does not block it: that endpoint is idle, and a stall is exactly what it may be idle *from*.
+     * Best-effort otherwise — an endpoint that was never halted may reject the request, and that is
+     * not a failure of the reset.
      */
     async reset(): Promise<void> {
         this.check();
-        for (const [direction, endpoint] of [
-            ["in", this.inEndpoint],
-            ["out", this.outEndpoint],
+        for (const [direction, endpoint, onTheWire] of [
+            ["in", this.inEndpoint, this.heldIn !== null && !this.heldIn.settled],
+            ["out", this.outEndpoint, this.writesInFlight > 0],
         ] as const) {
+            if (onTheWire) continue;
             try {
                 await this.device.clearHalt(direction, endpoint);
             } catch {
@@ -249,6 +311,55 @@ class WebUsbPipe implements BytePipe {
         if (this.closedByUs) throw new PipeError("closed", "The device link is closed.");
     }
 
+    /**
+     * One IN transfer's result: the held one if a cancelled read left it, a fresh one otherwise.
+     *
+     * The result is held, not just the transfer — the device may well answer while nobody is
+     * reading, and dropping the value then would lose the packet exactly as surely as dropping the
+     * transfer would. So the hold is released only when a caller has actually been given the
+     * outcome; a caller who walks away leaves it standing. {@link reset} has the full argument.
+     */
+    private async receive(signal?: AbortSignal): Promise<UsbInResult> {
+        try {
+            const result = await this.transfer(() => (this.heldIn ??= this.hold()).transfer, signal, "the read");
+            this.heldIn = null;
+            return result;
+        } catch (cause) {
+            // Only a cancelled *caller* leaves a transfer worth keeping. Anything else — a stall, a
+            // dead pipe — is the transfer's own end, and it has now been reported to someone.
+            if (!(cause instanceof PipeError) || cause.code !== "aborted") this.heldIn = null;
+            throw cause;
+        }
+    }
+
+    private hold(): HeldTransfer {
+        const held: HeldTransfer = {
+            transfer: this.device.transferIn(this.inEndpoint, this.packetSize),
+            settled: false,
+        };
+        const done = () => {
+            held.settled = true;
+        };
+        // Observing both outcomes also means a held transfer that fails unread is never an
+        // unhandled rejection — the next reader still sees it, once.
+        void held.transfer.then(done, done);
+        return held;
+    }
+
+    /**
+     * One OUT transfer, counted but never held — the next writer has its own bytes to send, and an
+     * abandoned write's bytes are already the device's to discard ({@link reset}).
+     */
+    private send(bytes: Uint8Array): Promise<UsbOutResult> {
+        const transfer = this.device.transferOut(this.outEndpoint, bytes);
+        this.writesInFlight += 1;
+        const done = () => {
+            this.writesInFlight -= 1;
+        };
+        void transfer.then(done, done);
+        return transfer;
+    }
+
     /** Run one WebUSB transfer, translating its failures and honouring cancellation. */
     private async transfer<T>(run: () => Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
         let promise: Promise<T>;
@@ -258,10 +369,10 @@ class WebUsbPipe implements BytePipe {
             throw this.asPipeError(cause);
         }
         try {
-            // An orphaned transfer is left to settle on its own: WebUSB cannot cancel a submitted
-            // one. That is safe only because a cancelled transfer is always followed by a reset —
-            // the bytes it eventually delivers are bytes the caller has agreed to discard.
-            return await Promise.race([withAbort(promise, signal, what, () => undefined), this.dead()]);
+            // Cancelling releases the *caller*, never the transfer: WebUSB cannot cancel a submitted
+            // one. What becomes of the transfer left on the endpoint is `reset`'s subject, and it is
+            // not "nothing" — an abandoned read is held for the next reader rather than discarded.
+            return await Promise.race([withAbort(promise, signal, what), this.dead()]);
         } catch (cause) {
             if (cause instanceof PipeError) throw cause;
             throw this.asPipeError(cause);
