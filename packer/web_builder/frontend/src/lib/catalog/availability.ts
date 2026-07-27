@@ -20,25 +20,24 @@ import type { RegionEntry } from "./regions";
  * number rather than a range, and `supports()` is the one place that assumption
  * lives if a future device ever reads two.
  *
- * **Nothing sets this yet, and that is not an oversight.** C3 (#902) landed the
- * device session, and it does not carry this number: `identity.version` is the
- * *protocol* version (`PROTOCOL_VERSION`, 2 — the wire contract, not the map
- * format), and `info.firmwareRevision` is a release string like `0.4.0+abc1234`
- * that only maps to an OBCM version through a table nothing here has. Deriving
- * one would mean guessing what a firmware build can read, and guessing wrong
- * means either refusing a map that works or offering one that doesn't — both
- * worse than §6(c)'s stated fallback, which is exactly what this tier does with
- * no device: offer the download and state the version.
+ * **The device says it; this file never guesses it.** E1 (#911) added the byte:
+ * the identity read (spec §1) now carries `obcm_version`, sourced on the
+ * firmware side straight from `obc_formats::obcm::VERSION` — the same constant
+ * the reader validates every `.obcm` header against, so what the device claims
+ * and what it reads cannot drift. Before that there was nothing to read it
+ * from: `identity.version` is the *protocol* version (the wire contract), and
+ * `info.firmwareRevision` is a release string that maps to a format version
+ * only through a table nothing here has.
  *
- * So the state is designed, tested and reachable through `setDevice()`; closing
- * it needs the device to *say* which OBCM version it reads — a field in the
- * identity read, or a firmware→format table published beside the catalog.
+ * A device whose read carries no such byte (an older firmware; the store-less
+ * 2-byte read) stays `null` here rather than becoming a number, and `null` is
+ * the honest answer: §6(c)'s no-known-target-firmware branch offers the
+ * download stating the version, which beats both refusing a map that works and
+ * offering one that doesn't.
  */
 export interface DeviceMapSupport {
     /** The OBCM format version this device's firmware reads. */
     obcmVersion: number;
-    /** How to name the device in copy, e.g. "OpenBikeComputer". Optional. */
-    label?: string;
 }
 
 export type ArtifactState =

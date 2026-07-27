@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { Crc32 } from "./crc32";
-import { loopbackDevice } from "./loopback";
+import { REFERENCE_OBCM_VERSION, loopbackDevice } from "./loopback";
 import {
     decodeRideList,
     decodeRideObject,
@@ -217,17 +217,40 @@ describe("control-plane codecs", () => {
         expect(() => encodeSetRouteRetention(7, 6)).toThrow(RangeError);
     });
 
-    it("round-trips the identity read, with and without a mounted store", () => {
+    it("round-trips the identity read at all three lengths", () => {
+        // 7 bytes: the full read. `obcmVersion` is the OBCM *map-format* version the device's
+        // reader reads — the fact `OBCC_Spec.md` §6(c) filters the catalog on, and a different
+        // number in a different sequence from the protocol `version` beside it.
         const full = decodeVersionRead(vector("version-read.bin"));
-        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4") });
+        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: 10 });
         expectSameBytes(encodeVersionRead(full), vector("version-read.bin"), "version-read");
 
-        // No card means no era to name, so the device serves two bytes. That absent epoch has to
-        // decode as "none", never as epoch 0 — 0 is a legal era, and conflating them would let a
-        // peer stamp id-keyed state under an era it never read.
+        // 6 bytes: a firmware predating the field. Unknown, not zero — `obcmVersion: 0` would read
+        // as "supports OBCM v0" and refuse every real map, where null takes §6(c)'s
+        // no-known-target-firmware branch and offers the download stating the version.
+        const noObcm = decodeVersionRead(vector("version-read-noobcm.bin"));
+        expect(noObcm).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: null });
+        expectSameBytes(encodeVersionRead(noObcm), vector("version-read-noobcm.bin"), "version-read-noobcm");
+
+        // 2 bytes: no card means no era to name, so the device serves the version alone. That
+        // absent epoch has to decode as "none", never as epoch 0 — 0 is a legal era, and
+        // conflating them would let a peer stamp id-keyed state under an era it never read. There
+        // is no room for an obcm byte after an epoch that is not there, either.
         const short = decodeVersionRead(vector("version-read-nostore.bin"));
-        expect(short).toEqual({ version: 2, storeEpoch: null });
+        expect(short).toEqual({ version: 2, storeEpoch: null, obcmVersion: null });
         expectSameBytes(encodeVersionRead(short), vector("version-read-nostore.bin"), "version-read-nostore");
+    });
+
+    it("ignores identity bytes past the fields it knows", () => {
+        // The append-only rule the `obcm_version` byte itself rode in on (§1): a longer read from a
+        // newer firmware decodes to what this build understands rather than failing, which is why
+        // appending the field needed no `PROTOCOL_VERSION` bump.
+        const future = new Uint8Array([...vector("version-read.bin"), 0xee, 0xee]);
+        expect(decodeVersionRead(future)).toEqual({
+            version: 2,
+            storeEpoch: hex("0xA1B2C3D4"),
+            obcmVersion: 10,
+        });
     });
 
     it("round-trips the Config object", () => {
@@ -481,6 +504,7 @@ describe("round-trip over the loopback pipe", () => {
             expect(await client.identity()).toEqual({
                 version: MANIFEST.protocol_version,
                 storeEpoch: hex("0xA1B2C3D4"),
+                obcmVersion: REFERENCE_OBCM_VERSION,
             });
             expect((await client.deviceInfo()).firmwareRevision).toBe("0.4.0+abc1234");
         } finally {

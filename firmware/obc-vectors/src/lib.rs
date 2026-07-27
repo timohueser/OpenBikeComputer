@@ -329,8 +329,19 @@ pub fn status_download_announce(ty: u8, object_id: u16, total_len: u32, crc: u32
     v
 }
 
-/// The widened `protocolVersion` read (spec §1): `version u16 · store_epoch u32`. 6 bytes.
-pub fn version_read(version: u16, store_epoch: u32) -> Vec<u8> {
+/// The full `protocolVersion` read (spec §1): `version u16 · store_epoch u32 · obcm_version u8`.
+/// 7 bytes.
+pub fn version_read(version: u16, store_epoch: u32, obcm_version: u8) -> Vec<u8> {
+    let mut v = version_read_noobcm(version, store_epoch);
+    v.push(obcm_version);
+    v
+}
+
+/// The **pre-E1** `protocolVersion` read (spec §1): `version u16 · store_epoch u32`, 6 bytes — what
+/// a firmware that predates the `obcm_version` byte serves. Every decoder must take it as
+/// `obcmVersion = nil` (unknown), never as a fabricated `0`, which would read as "supports OBCM v0"
+/// and refuse every real map.
+pub fn version_read_noobcm(version: u16, store_epoch: u32) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&le16(version));
     v.extend_from_slice(&le32(store_epoch));
@@ -541,8 +552,16 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("ride-v1.bin", ride_v1()),
         ("ride-v2.bin", ride_v2()),
         ("config-v1.bin", config_v1()),
-        // The widened protocolVersion read (spec §1): version 2 + a store epoch nonce.
-        ("version-read.bin", version_read(2, 0xA1B2_C3D4)),
+        // The full protocolVersion read (spec §1): version 2 + a store epoch nonce + the OBCM
+        // map-format version the reader reads. The last one is **self-sourced** from
+        // `obc_formats::obcm::VERSION` rather than written out as a literal: the fixture's whole
+        // point is to be the bytes a current device serves, so an OBCM bump must re-cut it (and, via
+        // manifest.json, force the Swift + TS consumers of that number to be looked at) rather than
+        // leave three implementations pinned to a number the firmware stopped saying.
+        ("version-read.bin", version_read(2, 0xA1B2_C3D4, obc_formats::obcm::VERSION)),
+        // The pre-E1 (#911) read: version + epoch, no obcm byte — an older firmware talking to a
+        // newer host. Decodes with `obcmVersion` absent, never a fabricated 0.
+        ("version-read-noobcm.bin", version_read_noobcm(2, 0xA1B2_C3D4)),
         // The version-only protocolVersion read (spec §1, #776): a device with no mounted store
         // serves just the 2-byte version — the app treats the absent epoch as a failed identity read.
         ("version-read-nostore.bin", version_read_nostore(2)),

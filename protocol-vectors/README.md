@@ -36,8 +36,9 @@ A drift on any side fails that side's tests — the files are the contract.
 | `ride-v1.bin` | ride object v1 (spec §7.2) | "Höhenweg", 3 points, the last without elevation |
 | `ride-v2.bin` | ride object v2 (spec §7.2, epic #707) | "Sensor Ride", 3 points, BLE-sensor summary + per-point hr/cad/pwr with mixed present/absent (0xFF/0xFFFF sentinels) — the app must accept v1 **and** v2 |
 | `config-v1.bin` | Config v1 (spec §7.3) | name "OBC Tourer", metric |
-| `version-read.bin` | `protocolVersion` read §1 | the widened identity read: `version u16` = 2 · `store_epoch u32` = `0xA1B2C3D4` |
-| `version-read-nostore.bin` | `protocolVersion` read §1 | the **short** read a device with no mounted card serves: `version u16` = 2 and nothing else. A reader must take it as "no epoch" — never epoch `0`, which is a legal era — and fail its ack closed |
+| `version-read.bin` | `protocolVersion` read §1 | the **full** identity read: `version u16` = 2 · `store_epoch u32` = `0xA1B2C3D4` · `obcm_version u8` = 10. The last byte is the OBCM **map-format** version the device's reader reads — a different number in a different sequence from the protocol version beside it — and it is **self-sourced** from `obc_formats::obcm::VERSION`, so an OBCM bump re-cuts this file on purpose |
+| `version-read-noobcm.bin` | `protocolVersion` read §1 | the **6-byte** read a firmware predating `obcm_version` serves. The epoch is present (the ack gate is open); the trailing field must decode to *unknown*, never `0` — `obcm_version` 0 would read as "supports OBCM v0" and refuse every real map |
+| `version-read-nostore.bin` | `protocolVersion` read §1 | the **2-byte** read a device with no mounted card serves: `version u16` = 2 and nothing else. A reader must take it as "no epoch" — never epoch `0`, which is a legal era — and fail its ack closed. No epoch also means no room for the `obcm_version` after it |
 | `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); **12-byte v2 descriptor** (no `offset`); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
 | `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object (12 bytes) |
 | `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload (12 bytes) |
@@ -71,3 +72,10 @@ cd firmware && cargo test -p obc-vectors regenerate -- --ignored
 …then update `manifest.json` to match and flag the app side **and** the web
 builder's two consumers — the conversion bridge and the USB protocol client. All
 of them pin the same bytes.
+
+One builder input is **not** a literal: `version-read.bin`'s `obcm_version` comes
+from `obc_formats::obcm::VERSION`. That is deliberate — the fixture's job is to be
+the bytes a current device serves, and a device that reads OBCM v11 saying "10"
+would be a lie three implementations agreed on. So an OBCM format bump fails
+`cargo test -p obc-vectors`, and the regeneration walks you past the Swift and TS
+assertions on that number, which is exactly the review this change wants.
