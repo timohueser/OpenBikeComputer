@@ -164,6 +164,7 @@ glue takes tens of seconds — and the ratio stops meaning anything.
 |---|---|
 | Built maps | `~/Documents/OpenBikeComputer/` |
 | Exported styles | `~/Documents/OpenBikeComputer/styles/` |
+| Pulled rides | `~/Documents/OpenBikeComputer/rides/` — **relocatable**, see below |
 | `.pbf` extracts | `~/.cache/obcm/pbf/` |
 | Land-polygon dataset | `~/.cache/obcm/land/` |
 | Geofabrik index | `~/.cache/obcm/geofabrik/` |
@@ -178,6 +179,14 @@ button, in its "On this machine" card.
 Built maps go somewhere a person can find, back up and copy to a card — that a
 desktop app *has* a filesystem is most of the reason it exists (#894).
 
+The **ride library** (E2, #912) is the one folder the rider can move: "Change…" in
+the ride panel opens the OS directory chooser, moves the library's files, and
+remembers the choice in `ride-library.json` under the app's config directory (not
+in the library — a folder that named itself could not be found once it moved). The
+default is the row above. Inside it, per ride, a `.gpx` and the device's own ride
+object as `.obcride`, plus one `index.json`; `rides.rs`'s module docs say why both
+files and not one.
+
 ## Layout
 
 | | |
@@ -189,12 +198,17 @@ desktop app *has* a filesystem is most of the reason it exists (#894).
 | `storage.rs` | what is on this disk and how to get it back |
 | `http.rs` | the list of hosts the app reaches; the bytes move through `obc_pack::net` |
 | `paths.rs` | where things go, and why |
+| `rides.rs` | the ride library: the index, the durable write the `ackRides` waits on, and relocation |
 | `usb/` | native USB (`nusb`): device discovery, hot-plug, and two byte pipes — see below |
 
 The window is granted `core:default` and nothing else: no filesystem plugin, no
 shell, no HTTP. Every one of those policies is Rust code — `storage_clear` takes an
-id from a fixed table rather than a path, `reveal_file` refuses anything outside
-the maps folder, and `usb_send_file` streams only from the app's own folders.
+id from a fixed table rather than a path, `reveal_file` refuses anything outside the
+maps folder and the ride library, and `usb_send_file` streams only from the app's
+own folders. Two plugins are registered (`opener`, `dialog`) and **neither grants
+the webview anything**: both are called from Rust, so the frontend still names a
+file and never a place — when a place has to be named, the OS's own chooser does
+it with the person driving.
 Three hosts are reachable and no more: Geofabrik, the map catalog, and
 `osmdata.openstreetmap.de` for the land dataset — that last one through the
 packer, on the first build that needs land.
@@ -280,19 +294,17 @@ If it does not, `RUST_LOG=nusb=debug cargo run --release` prints what the OS sai
   WebKitGTK, so a distribution-independent artifact means an AppImage or a Flatpak
   runtime, not just this file. (USB adds nothing to that list: `nusb` is pure Rust
   and the udev rule above is a text file, not a runtime dependency.)
-- **The ride library** — E2 (#912). The download direction works today (rides are
-  tens of kilobytes and ride the ordinary pipe); what E2 owns is the managed
-  folder, the dedupe by `(serial, epoch, id)` and the ack-after-fsync.
-- **A native file picker.** `usb_send_file` only streams from the app's own
-  folders. A `.obcm` the rider picks in the window arrives as a `File` with no
-  path and goes over the ordinary chunked pipe — correct, and flat in memory,
-  just not the zero-copy path. Widening `sendable_path` to arbitrary selections
-  wants a *native* dialog, so that the choice is the OS's rather than a string
-  the frontend made up.
+- **A native *file* picker.** E2 (#912) added a native **directory** chooser, for
+  relocating the ride library — but only that one. `usb_send_file` still streams
+  from the app's own folders, and a `.obcm` the rider picks in the window arrives
+  as a `File` with no path and goes over the ordinary chunked pipe — correct, and
+  flat in memory, just not the zero-copy path. Widening `sendable_path` to
+  arbitrary selections wants the file half of the same dialog.
 - **A native save dialog.** `save_style` writes exports into
-  `OpenBikeComputer/styles/` rather than asking where they should go, for the
-  same reason: the app grants the window no filesystem capability, and a folder
-  chosen in Rust is a policy you can read. The one thing it is *not* is the
+  `OpenBikeComputer/styles/`, and a pulled ride's GPX lands in the ride library,
+  rather than either asking where it should go. Not for want of a dialog now: a
+  folder chosen in Rust is a policy you can read, and it is the one that keeps the
+  window's capability set at `core:default`. The one thing neither is is the
   browser's `<a download>` — that is silently inert here (wry installs a download
-  delegate only when the embedder supplies a handler), which is why the export
-  goes through a command at all.
+  delegate only when the embedder supplies a handler), which is why an export goes
+  through a command at all.
