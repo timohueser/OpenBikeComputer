@@ -35,6 +35,7 @@ page and heading id (the cross-page `#anchor` audit CI runs) and exit non-zero i
 import datetime
 import html
 import json
+import os
 import re
 import shutil
 import sys
@@ -573,11 +574,27 @@ def fill(template, repl):
     return template
 
 
+def builder_link(site_root):
+    """The header's link to the static map builder, or '' when there isn't one.
+
+    The builder is a sibling app in the same published artifact (`/builder/`), not a
+    rendered page — the site deploy sets OBC_BUILDER_PATH to its site-root-relative
+    path *only* when that deployment has a map catalog configured. Until the bakery
+    publishes one, the builder opens on "couldn't load the map catalog", and a nav
+    link straight into that is a broken front door. So the deploy decides, and a local
+    `python3 build_docs.py` (no variable set) simply renders the header without it."""
+    path = os.environ.get("OBC_BUILDER_PATH", "").strip()
+    if not path:
+        return ""
+    return '<a href="%s%s">Map builder</a>' % (esc(site_root), esc(path))
+
+
 def site_head(site_root, crumb, nav_toggle=""):
     """Expand the shared topo + header partial (templates/_sitehead.html) — one copy
     of the markup, so a nav change can't drift between the docs and blog shells."""
     return fill(SITEHEAD_TEMPLATE.read_text(),
-                {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle})
+                {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle,
+                 "builder_link": builder_link(site_root)})
 
 
 def build_blog(rendered):
@@ -670,6 +687,10 @@ def check_links(rendered):
                 continue
             path, _, frag = href.partition("#")
             target = urljoin(url, path).lstrip("/") if path else url
+            # The map builder is a sibling *app* in the published artifact, not a page
+            # this renderer produces — there is no HTML here to validate it against.
+            if target.startswith("builder/"):
+                continue
             label = "/" + url
             if target not in pages:
                 broken.append("%s: '%s' -> no such page '%s'" % (label, href, target or "(index)"))
