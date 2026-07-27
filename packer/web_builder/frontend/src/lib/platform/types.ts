@@ -277,6 +277,21 @@ export interface Platform {
      * at.
      */
     readonly revealFile?: (path: string) => Promise<void>;
+
+    /**
+     * Save a small text document — a style export — and resolve with where it
+     * went (E3 #913).
+     *
+     * Optional rather than a capability, and not because the tiers disagree
+     * about *whether* you can export a style: all three can. They disagree
+     * about **how a file leaves the app**. A browser has `<a download>`, which
+     * is the right answer there and needs nothing from the host. Inside the
+     * Tauri webview that same anchor does nothing at all — wry installs a
+     * download delegate only when the embedder asks for one — so the desktop
+     * app has to write the file itself, through a command that decides the
+     * folder. Present exactly where the fallback does not work.
+     */
+    readonly saveText?: (name: string, text: string) => Promise<string>;
 }
 
 /**
