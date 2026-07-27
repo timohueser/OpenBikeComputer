@@ -2,7 +2,17 @@
 # standalone obc-fw-nrf54l board crate). Run from the repo root against each lockfile:
 #   cargo deny --manifest-path firmware/Cargo.toml --all-features check
 #   cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features check
+#   cargo deny --manifest-path firmware/obc-desktop/Cargo.toml --all-features check
 # Checks advisories (RustSec), licenses, banned crates, and dependency sources.
+#
+# ONE THING THIS FILE CANNOT SEE, so it is written down here (#907): `geos-src`
+# declares MIT — that is the licence of the *wrapper crate*, not of the GEOS C++
+# sources it carries, which are **LGPL-2.1**. The desktop app statically links them,
+# which is fine (LGPL-2.1 §3 permits GPL-2-or-later, and this project is GPL-3) but
+# is not free of obligations: a distributed binary has to come with the licence text
+# and the corresponding source. D3 (#908) owns the installers and therefore owns
+# putting that in them. Nothing changed about *which* code we link — the dynamic
+# build carried the same library — only about it now being inside the artifact.
 
 [graph]
 # Resolve every feature so feature-gated deps (debug-link, the sim's eframe stack...) are

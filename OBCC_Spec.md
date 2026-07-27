@@ -277,6 +277,16 @@ writer *and* the reader, and both halves are required.
   every artifact it references is fetchable;
 - emit exactly one JSON document, UTF-8, no BOM, trailing newline.
 
+**Producers SHOULD** serve the manifest with a **short** cache lifetime — a `max-age`
+of at most 60 seconds, or a revalidation policy — while the artifacts it references,
+which are content-addressed by `sha256` and never rewritten in place, MAY be cached
+indefinitely. A consumer cannot compensate for an over-cached manifest: it has no way
+to know a newer one exists, so a fresh bake stays invisible for as long as the cache
+says. This makes the manifest's *home* a real decision rather than a convenience — a
+host that cannot set response headers (GitHub Pages, notably) is not a place to
+publish one, and publishing it beside a consumer rather than beside the artifacts
+would mean every bake needs that consumer redeployed.
+
 **Consumers MUST:**
 
 - read the **entire** response body before parsing, and parse it as one JSON

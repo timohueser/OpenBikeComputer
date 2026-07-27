@@ -196,6 +196,8 @@ What this buys is what the crop bought. Nothing is re-written to disk, and nothi
 
 OSM ways draw the *coast*, but not the sea or the land fill. Those come from a separate global dataset of land polygons, clipped to the map's bounding box and added as features styled `natural.land`. The sea needs no geometry at all: it's the **backdrop** the renderer clears to before drawing, and land is simply painted on top.
 
+That dataset is ~950 MB, downloaded and unpacked once into a shared cache that every host points at — the CLI, the dev server and the desktop app between them keep one copy, not three. Both steps are the packer's own code rather than a `curl` and an `unzip` it hopes are installed: it is the same binary inside a shipped app, where neither is a safe assumption and where a subprocess could not be cancelled or asked how far along it is.
+
 <figure class="fig">
 <svg viewBox="0 0 720 230" role="img" aria-label="The global land-polygons dataset, a world map of land shapes, is clipped to the map's bounding box, producing land faces. On the device these are drawn over a sea-coloured backdrop, so land sits on top of sea.">
   <defs>
@@ -627,7 +629,23 @@ That last sentence decides the shape of everything. Map building is memory-hungr
 
 The Python server is the local development host and the CLI's companion; the two the world sees are the other two. What the app adds is not features bolted on but the two things a browser tab does not have: real CPU, and a real filesystem. Custom styles, [cropping to a box](#cropping-to-a-box), a rides folder and a USB cable all follow from those.
 
+Three constraints draw the line between them, and they all point the same way: heavy compute (the packer), persistent user data (a rides folder wants to be a folder, not an evictable browser store), and browser API reach (WebUSB is Chromium-only, so the app is the *universal* cable path — including for Safari and Firefox). What falls out:
+
+| | Hosted site | Desktop app |
+| :-- | :-- | :-- |
+| Prebuilt regional maps, in a few preset styles | yes | yes |
+| Custom styles, the style editor | no | yes |
+| Cropping to a box | no — whole regions only | yes |
+| Drag-and-drop route conversion | yes | yes |
+| Writing a map, route or firmware over USB | Chromium only | every OS |
+| Ride export | one-shot GPX, no record kept | a managed library |
+| Device dashboard, settings editor | no | yes |
+
+The hosted site is not a crippled demo of the app: it is the whole *"pick a region, pick a style, put a map and a route on the device"* loop, complete, for someone who does not want to install anything. What it cannot do it says so at the moment you reach for it, with the reason — a disabled control next to a sentence, never a hidden feature.
+
 **The packer is a library, not a subprocess.** The dev server spawns `obc-pack` and reads its stdout to guess which stage it is in; the app links the crate and calls [`pipeline::pack`](src:firmware/obc-pack/src/pipeline.rs) — the same function the CLI's `main` calls, which is what makes "the app and the CLI produce the same bytes" a property rather than a hope. Two consequences are visible in the UI. The packer *names* its phases now instead of printing them for something else to match, so the progress bar reads a value; and a build can be **cancelled**, because the flag that stops it is read inside the ingest passes, the land clip, and the per-feature simplify, rather than between them.
+
+**The app brings its own dependencies.** Linking the packer means inheriting the packer's one native dependency — libGEOS, the C++ library behind [area assembly](#ingest-two-passes-then-assemble), the simplify, and the [quadtree clip](#the-quadtree-packing-geometry-into-chunks). A developer types `brew install geos`; someone who downloads an app must not have to, and on Windows the answer to "install GEOS 3.14" is barely a sentence. So the desktop build compiles GEOS **from vendored sources, statically, into the binary**: the app has no libGEOS on its dynamic-dependency list at all, and a fresh checkout on a machine that has never heard of GEOS builds it. The workspace build keeps using the system library, because a developer already has one and a from-source C++ build is two and a half minutes they didn't ask for. That the two agree is asserted, not assumed — the same fixture packed through each produces the same digest, on all three platforms. The same reasoning removed the last two shell-outs: fetching and unpacking the land dataset used to run `curl` and `unzip`, and `unzip` is not a Windows program. Both are Rust now, which also made the download cancellable and gave it a progress percentage; a subprocess could offer neither.
 
 ### The static tier, with no packer behind it
 
@@ -638,6 +656,16 @@ Three states, and the interesting one is the third. A region the bakery has buil
 Regions **nest** — a country and its states can be baked independently — and the manifest is explicit that neither substitutes for the other: they cover different areas at very different sizes. So the picker never quietly swaps one for the other. An unbaked region instead *names* the baked region that contains it and the baked regions inside it, each with its own size, and the rider chooses. What it cannot offer is a smaller piece of one: there is no packer here to crop with, so the download is the whole region, and the panel says so at the moment of selection rather than in a footnote.
 
 The last step is the one that protects the card. A downloaded artifact is checked against the manifest's byte count and SHA-256 **before** it is written anywhere, so a truncated response or a bad publish is an error message in the browser rather than a map that fails on a mountain. That is why the whole file is buffered first: a digest can only be checked over complete bytes.
+
+### Where the hosted tier lives
+
+Having no backend is not only a cost decision; it decides what publishing *is*. There is no deploy target, no runtime, no secret — there is a directory of files, and the site is whatever a static host serves out of it. This one is built from `develop` on every push as a **single artifact with four surfaces**: the landing page and its live device demo at the root (the firmware's own render path [compiled to wasm](../architecture/)), `/docs/` and `/blog/`, and the builder at `/builder/` with the region index baked in beside it ([`deploy-site.yml`](src:.github/workflows/deploy-site.yml)).
+
+Two properties are worth stating because they are easy to lose and expensive to rediscover.
+
+**Nothing in the artifact knows where it is mounted.** Every asset URL is relative, so the same bytes work under a project-Pages sub-path or at the root of a domain. That is not tidiness: it is what makes moving the site a DNS change rather than a rebuild-and-hope. The deploy proves it each time by serving the artifact from a deep prefix and fetching each page's own assets through it.
+
+**A static host will not set your headers.** GitHub Pages serves everything with one fixed policy (`Cache-Control: max-age=600`) and offers no way to change it. Mostly that costs nothing — the asset filenames are content-hashed, so a new build is a new URL and a stale cache entry can never serve stale code. But it settles where the [catalog manifest](../formats/#the-catalog-a-third-format-for-finding-the-first-two) lives: a manifest served *beside the site* could only change by redeploying the site, which would make every fresh bake a frontend release. So the manifest is published **with the artifacts**, on the storage the bakery writes to, where a short cache lifetime is the publisher's to set — and the site holds nothing but its URL, as configuration. The same restriction has one more consequence, recorded here so nobody has to find it twice: without control of `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` there is no cross-origin isolation, therefore no `SharedArrayBuffer`, therefore no *threaded* wasm. Everything shipped today is single-threaded and unaffected; anything that wanted threads — an in-browser packer, say — would have to move the site first.
 
 ## Following a route
 
