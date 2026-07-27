@@ -240,8 +240,16 @@ pub fn map_transfer_state() -> Option<obc_app::screen::MapTransfer> {
 
 /// Clear the map-transfer state — called when the rider dismisses the terminal card, so the ride
 /// loop's next pass doesn't immediately push it back.
+///
+/// Clears **only a terminal state**. The dismissal is observed a pass after it happened (the card
+/// pops itself; nothing tells the board), so in the gap a fresh transfer could have started — and
+/// clearing *that* would leave a multi-minute write with no card and no way to raise one, since
+/// progress updates only touch the byte counters. Every plane runs as a cooperative future on the
+/// one executor and this holds no `await`, so the read-modify-write needs no stronger ordering.
 pub fn clear_map_transfer() {
-    MAP_PHASE.store(0, Ordering::Relaxed);
+    if MAP_PHASE.load(Ordering::Relaxed) >= 2 {
+        MAP_PHASE.store(0, Ordering::Relaxed);
+    }
 }
 
 /// One transfer at a time, **across every transport**: set by whichever control plane armed it,
