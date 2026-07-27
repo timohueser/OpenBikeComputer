@@ -29,8 +29,9 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 ## Versioning & store epoch
 
 The `protocolVersion` characteristic read is widened in v2 to
-`version u16 · store_epoch u32` (6 bytes LE, readable without encryption) when a
-store is mounted. The `protocol_version` is **currently `2`**; `store_epoch` is a
+`version u16 · store_epoch u32 · obcm_version u8` (7 bytes LE, readable without
+encryption) when a store is mounted — the trailing byte added by E1 (#911), see
+below. The `protocol_version` is **currently `2`**; `store_epoch` is a
 `u32` TRNG nonce naming the store's **id era**. It is **card-resident** — it lives
 on the SD card, so the card carries its own era name — and the device changes it
 only on an id-era reset: a lost RRAM id floor (a full-chip reflash, a factory
@@ -45,7 +46,28 @@ or reconciles anything.
 **No store ⇒ no epoch (short read).** A device with no mounted card serves only the
 **2-byte version** (`version` alone). The app treats the absent epoch as a **failed
 identity read** — ack fail-closed (below), never epoch `0` (a legal value). The
-full 6-byte shape returns whenever a store is mounted.
+full shape returns whenever a store is mounted.
+
+**`obcm_version` — the map format the device reads (E1, #911).** The read's third
+field is the **OBCM map-format version** the running firmware's reader reads (`10`
+today). It is a *different number in a different sequence* from `protocol_version`
+beside it: one is the wire contract, the other the map file format, and neither is
+derivable from the other (nor from the DIS firmware-revision string, which maps to
+a format version only through a table that exists nowhere). `OBCC_Spec.md` §6(c)
+consumes it — a host offering map artifacts must not offer one this firmware cannot
+read. That host is the web/desktop builder rather than this app; the app decodes the
+field into `DeviceInfo.obcmVersion` so the mirror stays honest about what the wire
+says.
+
+**Decode by length, never by an expected total.** The identity read has three
+lengths — **7** (full), **6** (a firmware predating `obcm_version`), **2** (no
+mounted store) — and the app decodes each field on `count >= n`, ignoring anything
+past the fields it knows. That append-only rule is *why* `obcm_version` needed **no
+`protocol_version` bump**: appending a trailing field to a length-driven read breaks
+no peer in either direction, and a bump would instead stop two peers that are fully
+interoperable. A field that did not arrive is `nil`, **never** a fabricated `0` —
+`0` is a legal store epoch, and OBCM `0` would read as "supports OBCM v0" and refuse
+every real map.
 
 **Store epoch — why the app needs it.** Every durable link keys on bare `u16`
 object ids (ride synced-set + tombstones, route `deviceObjectID` links). A device
@@ -91,7 +113,7 @@ not be reused**:
 | `0004` | `config` | read + write | the Config object incl. **device name** (see *Delta 1*) → `DeviceConfig` |
 | `0005` | `transferControl` | **write** | open / abort a CoC object transfer (§ below) — **write-only, no CCCD** in v2 |
 | `0007` | `psm` | read | the dynamically-assigned L2CAP CoC PSM the app opens the channel on |
-| `0008` | `protocolVersion` | read | `version u16 · store_epoch u32` LE, readable without encryption — the connect-time identity check |
+| `0008` | `protocolVersion` | read | `version u16 · store_epoch u32 · obcm_version u8` LE, readable without encryption — the connect-time identity check. Decoded **by length**: 7 / 6 / 2 bytes, absent trailing fields `nil` |
 
 *(v2 dropped `0003` `objectStore` — the change signal is `storeChanged` alone — and
 `0006` `diagnostics`, which returned 0 bytes; real diagnostics cross the CoC as
