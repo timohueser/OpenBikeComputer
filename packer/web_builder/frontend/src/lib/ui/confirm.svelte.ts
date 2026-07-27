@@ -4,10 +4,13 @@
  * ## Why this exists (E3, #913)
  *
  * `window.confirm()` **does not work in the desktop app**, and it does not fail loudly — it returns
- * `false`. WKWebView has no built-in UI for the JavaScript dialogs; it asks its `WKUIDelegate`, and
- * wry only installs one when the embedder supplies a handler, which Tauri does not. So every
- * `if (!confirm(...)) return;` in this frontend is, inside the app, a statement that reads *"never
- * do this"*.
+ * `false`. WKWebView has no built-in UI for the JavaScript dialogs: it asks its `WKUIDelegate`, and
+ * when the delegate does not implement the panel method, no dialog is shown and the call answers
+ * `false`. wry *does* install a delegate (unconditionally — `wkwebview/mod.rs` `setUIDelegate`), but
+ * `WryWebViewUIDelegate` implements only `runOpenPanel`, the media-capture permission and the
+ * new-window request. `runJavaScriptConfirmPanel` (and its alert/prompt siblings) are simply absent,
+ * so every `if (!confirm(...)) return;` in this frontend is, inside the app, a statement that reads
+ * *"never do this"*.
  *
  * That mattered for four controls, all of them ones only the app has: **Reset to preset**, **Reset
  * a routing profile**, **Remove a category**, and **Clear a cache**. The first is one of the three

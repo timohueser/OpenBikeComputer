@@ -137,9 +137,10 @@ cargo test --release -- --nocapture     # includes the GEOS smoke test above
 cargo keys build-script output on the profile, so a debug clippy followed by a
 release build compiles the whole of GEOS **twice**. One profile, one GEOS.
 
-Two tests are `#[ignore]`d because they pack a real region and therefore need a
+Three tests are `#[ignore]`d because they pack a real region and therefore need a
 warm cache — a `.pbf` under `~/.cache/obcm/pbf`, the Geofabrik index, and the
-land-polygon dataset. They are the ones that answer #906's acceptance criteria:
+land-polygon dataset. They are the ones that answer #906's and E3 #913's
+acceptance criteria:
 
 ```sh
 # the app's map and the CLI's map, byte for byte, with digests — twice: once for a
