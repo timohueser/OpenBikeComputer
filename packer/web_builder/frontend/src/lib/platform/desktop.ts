@@ -1,7 +1,7 @@
 // The desktop host: the same frontend inside a Tauri shell, with obc-pack linked
 // in as a library and a real filesystem underneath. Every method here is one
 // `invoke()` of a Rust command in firmware/obc-desktop — D1 (#906) built that
-// shell, and D4 (#909) still owes the native USB transport.
+// shell and D4 (#909) added the native USB transport under it.
 //
 // The caps were already true before any of this was implemented: they are the
 // tier's contract, and what C2's gating layer compares the web tier against.
@@ -17,6 +17,9 @@
 //     PATH that a shipped app does not have. The editor's capability and the
 //     binary that packs are the same artifact, structurally.
 //   * `buildMap()` writes into a folder the user can open, and can be cancelled.
+//   * `device()` drives USB itself (`nusb`), because the system webview has no
+//     WebUSB — which is also what makes this the only tier a Safari or Firefox
+//     user can plug a device into at all.
 
 import { PlatformNotImplemented, type LoadStyleEditor, type Platform } from "./types";
 import { DesktopBuild } from "../desktop/build.svelte";
@@ -71,7 +74,15 @@ export const platform: Platform = {
     // Synchronous, like every `StartBuild`: it hands back a session, not a
     // promise. The session's own `start()` is what talks to the backend.
     buildMap: () => new DesktopBuild(),
-    device: () => pending("device", "D4 #909"),
+
+    // Native USB (D4 #909), loaded on demand for the same reason the web host
+    // does it: the protocol client, the codecs and the transport are their own
+    // chunk, and a window that only builds a map never parses them. Underneath
+    // it is C3's `ProtocolClient` unchanged — only the byte pipe differs.
+    device: async () => {
+        const { openNativeSession } = await import("../desktop/usb.svelte");
+        return openNativeSession();
+    },
     rides: () => pending("rides", "E2 #912"),
 
     storage: {

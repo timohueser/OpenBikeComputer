@@ -22,6 +22,11 @@ Deliberately short, and deliberately **not GEOS** (see below):
 Windows and macOS need nothing else — no vcpkg, no Homebrew, no WebView2 install
 on Windows 10/11 (it ships with the OS).
 
+Nothing on that list is for USB: `nusb` is pure Rust and talks to each platform's
+own stack, so there is no libusb to install or vendor. The one thing a *device*
+needs is a Linux udev rule, which is a permission rather than a dependency — see
+[Platform permissions](#platform-permissions).
+
 ## Build and run
 
 The Rust side embeds the built frontend, so the frontend is built first:
@@ -174,20 +179,70 @@ desktop app *has* a filesystem is most of the reason it exists (#894).
 
 | | |
 |---|---|
-| `main.rs` | the Tauri commands — one per FastAPI endpoint the dev server has, plus storage |
+| `main.rs` | the Tauri commands — one per FastAPI endpoint the dev server has, plus storage and USB |
 | `build_job.rs` | one build: download → `obc_pack::pipeline::pack` → events on a channel; the cancel token |
 | `regions.rs` | the Geofabrik index, trimmed + simplified (through the GEOS the packer already links) |
 | `content.rs` | presets, palette and the config schema — all baked in, none read off a repo |
 | `storage.rs` | what is on this disk and how to get it back |
 | `http.rs` | the list of hosts the app reaches; the bytes move through `obc_pack::net` |
 | `paths.rs` | where things go, and why |
+| `usb/` | native USB (`nusb`): device discovery, hot-plug, and two byte pipes — see below |
 
 The window is granted `core:default` and nothing else: no filesystem plugin, no
 shell, no HTTP. Every one of those policies is Rust code — `storage_clear` takes an
-id from a fixed table rather than a path, and `reveal_file` refuses anything outside
-the maps folder. Three hosts are reachable and no more: Geofabrik, the map catalog,
-and `osmdata.openstreetmap.de` for the land dataset — that last one through the
+id from a fixed table rather than a path, `reveal_file` refuses anything outside
+the maps folder, and `usb_send_file` streams only from the app's own folders.
+Three hosts are reachable and no more: Geofabrik, the map catalog, and
+`osmdata.openstreetmap.de` for the land dataset — that last one through the
 packer, on the first build that needs land.
+
+## USB
+
+The system webview has no WebUSB (WKWebView, WebView2 and WebKitGTK all lack it),
+so this app drives USB itself through `nusb`. **The protocol is not reimplemented
+here**: the object model, the descriptors and the CRC are C3's TypeScript client
+(`packer/web_builder/frontend/src/lib/usb/`), the same one the hosted site runs,
+and `src/usb/` supplies the byte pipes underneath it. The concepts are in the docs
+site ([companion link](../../docs/content/software/companion-link.md)).
+
+Two planes, split by size:
+
+| | carries | route |
+|---|---|---|
+| control | one framed message per operation, ≤ ~131 B | IPC, raw binary |
+| bulk, small | routes, rides, catalogs, firmware images | IPC, raw `ArrayBuffer` bodies |
+| bulk, by path | maps — hundreds of megabytes | `usb_send_file`: disk → endpoint, never through the webview |
+
+### Platform permissions
+
+macOS and Windows need nothing. Linux needs a udev rule, because usbfs nodes are
+root-owned by default and the failure otherwise reads as a bug in the app:
+
+```sh
+sudo cp linux/99-openbikecomputer.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# then unplug and re-plug the device
+```
+
+The file itself explains the choice of `TAG+="uaccess"` and why the other two
+platforms are free.
+
+### Checking it against a real device
+
+There is no device in CI, so `cargo test` covers the endpoint-layout rule, the
+CRC, the chunk arithmetic and the send-path policy; everything above the Tauri
+command boundary is covered by `npm test` in the frontend, against C3's simulated
+device. What only hardware answers — enumeration, hot-plug latency, short-packet
+termination, throughput — is the on-glass recipe in the D4 PR (#909).
+
+A quick smoke test with the device plugged in:
+
+```sh
+# The app should light up on its own within about a second of plugging in.
+cargo run --release
+```
+
+If it does not, `RUST_LOG=nusb=debug cargo run --release` prints what the OS said.
 
 ## Not here yet
 
@@ -199,6 +254,13 @@ packer, on the first build that needs land.
   but nothing here `lipo`s them into one bundle. Linux distribution has the same
   shape of open question — the binary is GEOS-free but still dynamically links
   WebKitGTK, so a distribution-independent artifact means an AppImage or a Flatpak
-  runtime, not just this file.
-- **USB** — D4 (#909) swaps `nusb` in behind the platform seam's `device()`.
-- **The ride library** — E2 (#912).
+  runtime, not just this file. (USB adds nothing to that list: `nusb` is pure Rust
+  and the udev rule above is a text file, not a runtime dependency.)
+- **The ride library** — E2 (#912). The download direction works today (rides are
+  tens of kilobytes and ride the ordinary pipe); what E2 owns is the managed
+  folder, the dedupe by `(serial, epoch, id)` and the ack-after-fsync.
+- **A native file picker.** `usb_send_file` only streams from the app's own
+  folders, so the file-path plane's first caller is E3's build-to-device (#913).
+  A `.obcm` the rider picks in the window arrives as a `File` with no path and
+  goes over the ordinary chunked pipe — correct, and flat in memory, just not the
+  zero-copy path.

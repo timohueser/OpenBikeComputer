@@ -100,9 +100,25 @@ drives the whole contract over an in-memory device; the device half — the LM20
 USB peripheral, and the small matter of which control characteristic a frame
 belongs to when there is no GATT to say so — is
 [`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb), and it ships in
-**every** firmware build rather than behind a flag. What it has not had yet is a
-cable: the peripheral bring-up is written and measured but unverified on
-hardware.
+**every** firmware build rather than behind a flag. The plane now comes up on
+hardware, and the fix that got it there is worth knowing about: it must be built
+*when a cable appears*, never at boot — see below.
+
+That host client has **two** transports under it, and only one of them is a
+browser. WebUSB is Chromium-only, so the desktop app drives the cable itself
+through [`nusb`](src:firmware/obc-desktop/src/usb) and is the universal path,
+including for Safari and Firefox. Everything above the byte pipe is the same
+code: the same object model, the same descriptors, the same CRC, the same
+fixtures. The native side moves bytes and nothing else — it does not know what an
+object id is — which is the property that keeps one protocol implementation
+rather than two drifting ones.
+
+There is one place the two hosts genuinely differ, and it is about size. A
+browser holds a map in a scratch file and streams it through the tab; the desktop
+app hands the *file path* to the transport and the bytes go disk → endpoint
+without ever entering the webview. Copying a few hundred megabytes into
+JavaScript so JavaScript can hand them straight back is the kind of thing that
+works and should still not be done.
 
 The browser side already **writes** over it: a map, a dropped GPX and a firmware
 image, from the [map builder](https://timohueser.github.io/OpenBikeComputer/)'s
@@ -882,6 +898,13 @@ real product rather than a demo:
   upload temp and open download source — not the wire. Start a transfer over the
   cable while the phone is mid-upload and you get the same typed `busy` the phone
   would get from another phone.
+- **A cancel has to reach the wire, not just the caller.** A browser cannot
+  cancel a USB transfer it has already submitted, so it releases the *caller* and
+  lets the transfer settle into nothing — which is survivable only because an
+  interrupted exchange is always followed by a channel reset. A native host can
+  cancel for real, and must: after an abort the device stops sending by design,
+  so a read left waiting on it would hold the endpoint forever and the link would
+  be dead while still looking alive.
 
 Everything else about the link is unchanged by the choice of wire: the same
 objects, the same restart-don't-resume rule, the same change signal, the same
@@ -901,7 +924,8 @@ holding it.
 - The app-facing sensor mailboxes both the radio manager and the injection path feed — one instance-owned `SensorHub`, handed to each task at spawn: [`obc-platform/src/sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
-- The browser side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:packer/web_builder/frontend/src/lib/usb)
+- The host side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:packer/web_builder/frontend/src/lib/usb)
+- The desktop app's transport — `nusb`, hot-plug, and the file-path bulk plane, under the *same* client: [`obc-desktop/src/usb/`](src:firmware/obc-desktop/src/usb) and [`lib/desktop/usb.ts`](src:packer/web_builder/frontend/src/lib/desktop/usb.ts)
 - The browser's flows over that client — sending a map, a route or a firmware image, and the read-only ride export whose device handle has no way to ack: [`web_builder/frontend/src/lib/device/`](src:packer/web_builder/frontend/src/lib/device)
 - Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`protocol-vectors/`](src:protocol-vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)

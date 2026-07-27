@@ -46,7 +46,7 @@ export type { DeviceState, DeviceStatus };
  * interface only promises they are observable, not how, exactly as `BuildSession` does for builds.
  */
 export interface DeviceSession {
-    /** Diagnostics only: `"webusb"` today, `"native"` when D4 (#909) lands. */
+    /** Diagnostics only: `"webusb"` on the hosted tier, `"native"` in the desktop app (D4 #909). */
     readonly transport: string;
     /** False where the browser has no WebUSB at all. Distinct from "nothing plugged in". */
     readonly supported: boolean;
@@ -78,8 +78,9 @@ export interface DeviceSession {
 /**
  * The framework-free half a session wraps: discovery, hot-plug and the client's lifetime.
  *
- * `WebUsbWatcher` is the browser implementation; D4's native transport implements the same three
- * methods over `nusb`, and the reactive shell above it does not change.
+ * `WebUsbWatcher` is the browser implementation and `NativeWatcher` (`lib/desktop/usb.ts`) the
+ * desktop one, over `nusb`; the reactive shell above them does not change, and neither does any
+ * component that renders a session.
  */
 export interface DeviceWatcher {
     readonly current: DeviceState;

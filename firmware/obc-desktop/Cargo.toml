@@ -73,7 +73,26 @@ obc-pack = { path = "../obc-pack" }
 # fails if the two drift, because a silently *older* system GEOS satisfying
 # `v3_14_0`'s runtime check is exactly the bug this vendoring exists to prevent.
 geos = { version = "11.1.1", features = ["v3_14_0", "static"], optional = true }
+# The device's own CRC-32/IEEE, linked rather than re-typed. A file streamed to a
+# device needs its whole-object checksum before the descriptor is written (spec
+# §4.2), and this is the implementation `lib/usb/crc32.ts` was ported from — so
+# the host, the app and the firmware cannot drift. No radio types come with it:
+# obc-ble is deliberately no_std and transport-free.
+obc-ble = { path = "../obc-ble" }
 tauri = { version = "2", features = [] }
+# Native USB (#909). Pure Rust, and chosen over `rusb`/libusb for exactly the
+# reason `vendored-geos` above exists: there is no C library to vendor, no CMake
+# leg, and nothing for a user to install. It talks to each platform's own USB
+# stack directly — usbfs on Linux, IOKit on macOS, WinUSB on Windows.
+nusb = "0.2"
+# `HotplugWatch` is a `futures_core::Stream`; this is the trait, and nothing else
+# (futures-core has no dependencies of its own).
+futures-core = "0.3"
+# Tauri's async runtime is tokio, and these are the pieces the USB plane needs:
+# `sync` for the per-endpoint mutexes and the cancel epochs, `macros` for the
+# select! that makes a parked transfer cancellable, `fs` to read a map off the
+# disk without blocking a runtime worker.
+tokio = { version = "1", features = ["sync", "macros", "fs", "io-util"] }
 # Used from Rust only (no JS permission needed): "show the file I just built" in
 # the platform's own file manager.
 tauri-plugin-opener = "2"
