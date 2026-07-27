@@ -189,7 +189,7 @@ async fn run_upload(
                 // answer, and a late `aborted` could be consumed as the next descriptor's result.
                 {
                     let mut guard = shared.lock().await;
-                    discard_upload(&mut store.borrow_mut(), &mut guard, is_map);
+                    discard_upload(&mut store.borrow_mut(), &mut guard, is_map, map_id);
                 }
                 info!("usb: [bulk] upload interrupted ({:?}) — discarded", defmt::Debug2Format(&e));
                 close_transfer();
@@ -199,7 +199,7 @@ async fn run_upload(
                 // The host aborted (op 3): discard and confirm.
                 {
                     let mut guard = shared.lock().await;
-                    discard_upload(&mut store.borrow_mut(), &mut guard, is_map);
+                    discard_upload(&mut store.borrow_mut(), &mut guard, is_map, map_id);
                 }
                 info!("usb: [bulk] upload aborted by the host");
                 close_transfer();
@@ -217,7 +217,7 @@ async fn run_upload(
         if !appended {
             {
                 let mut guard = shared.lock().await;
-                discard_upload(&mut store.borrow_mut(), &mut guard, is_map);
+                discard_upload(&mut store.borrow_mut(), &mut guard, is_map, map_id);
             }
             warn!("usb: [bulk] SD append failed — upload rejected");
             if is_map {
@@ -285,16 +285,16 @@ async fn run_upload(
     TransferOutcome::Answered
 }
 
-/// Drop an in-flight upload's partial. A map's partial is its final file with the magic still
-/// zeroed — inert to every catalog and reclaimed by the boot sweep — so it is *closed*, not deleted:
-/// erasing hundreds of megabytes on the failure path would add minutes to a transfer that has
-/// already failed, and a retry truncates the same file anyway (the id re-derives to the same value,
-/// since the scan cannot see a zero-magic map). Every other type drops its `UPLOAD.TMP`.
-fn discard_upload(store: &mut ObjectStore, shared: &mut crate::SharedStore, is_map: bool) {
+/// Drop an in-flight upload's partial. Every type but a map drops its `UPLOAD.TMP`; a map's partial
+/// **is** its final file with the magic still zeroed, so it is deleted by name — see
+/// [`Storage::map_upload_abort`](crate::sd::Storage::map_upload_abort) for why waiting for the boot
+/// sweep is not good enough. Clearing the published transfer state closes the on-glass card without
+/// a red outcome: an abort or an unplug is something the rider did.
+fn discard_upload(store: &mut ObjectStore, shared: &mut crate::SharedStore, is_map: bool, map_id: u16) {
     if is_map {
         crate::link::map_transfer_ended(None);
         if let Some(storage) = &mut shared.storage {
-            storage.map_upload_abort();
+            storage.map_upload_abort(map_id);
         }
     } else {
         store.upload_discard(shared);
