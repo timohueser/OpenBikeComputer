@@ -535,9 +535,10 @@ synced"* while the app insisted everything was up to date.)
 The fix names each id era with something the phone can watch change: a **store
 epoch** — a `u32` random nonce. The device serves it in the same **open,
 pre-pairing** `protocolVersion` read the app already performs first on every
-connect, widened from a bare version to `version u16 · store_epoch u32`. So before
-`ackRides` or any reconcile write fires, the app knows both the protocol version
-*and* which era it is looking at.
+connect, widened from a bare version to `version u16 · store_epoch u32 ·
+obcm_version u8`. So before `ackRides` or any reconcile write fires, the app knows
+the protocol version, which era it is looking at, and which map format the device
+reads (below).
 
 **The epoch lives on the card.** It is persisted as a tiny **`EPOCH.OBE`** file in
 the card root — the record layout and its torn-file → fresh-era conventions are in
@@ -569,6 +570,26 @@ in the [BLE interface spec §1](src:obc-ble-interface-spec.md); the design ratio
 is epic [#632](https://github.com/timohueser/OpenBikeComputer/issues/632) item 5,
 with the card-resident decision in
 [#776](https://github.com/timohueser/OpenBikeComputer/issues/776).
+
+**One more field, and why it isn't a version bump.** The read carries a third value:
+`obcm_version`, the [OBCM map-format version](../formats/#the-catalog-a-third-format-for-finding-the-first-two)
+this firmware's reader reads. It is a *different number in a different sequence* from
+the protocol version beside it — one is this wire contract, the other is the file
+format on the card — and neither can be derived from the other, nor from the firmware
+revision string, which maps to a format version only through a table nobody keeps. A
+site that hands out pre-baked maps needs it, and had nothing to read it from.
+
+Appending it changed the read's length, and a read whose length changed sounds like a
+protocol break. It isn't, because **the length has always been the version mechanism
+here**: a device with no card already served a short read, so the decode was never "expect
+exactly *n* bytes" — it is "take each field if that many bytes arrived, ignore anything
+past the ones you know". Three lengths now exist: **7** with a mounted store, **6** from a
+firmware predating this field, **2** with no card. A field that didn't arrive reads as
+*unknown*, never as a fabricated `0` — `0` is a legal store epoch, and OBCM `0` would read
+as "supports map format v0" and refuse every real map. So an old app against a new device
+loses nothing it had, and a new site against an old device gets *unknown* and falls back to
+offering the download with its version stated. Bumping the protocol version would instead
+stop both — a hard mutual "we can't talk" for a field that is allowed to be missing.
 
 ## Verified badges — presence you can prove
 
