@@ -199,6 +199,18 @@ Three hosts are reachable and no more: Geofabrik, the map catalog, and
 `osmdata.openstreetmap.de` for the land dataset — that last one through the
 packer, on the first build that needs land.
 
+The window also sets **`dragDropEnabled: false`**, which reads backwards and is
+not. The flag governs Tauri's *own* OS-level drag-and-drop handler, not the
+frontend's: while it is on, wry claims the webview as an `NSDraggingDestination`
+and Tauri's handler reports every event as handled, so the file never reaches the
+page at all. `RouteDrop`'s "Drop a GPX file here" would be dead here while
+working on the hosted site — a silent tier difference with only the "Choose a
+file…" fallback standing between it and a bug report. Nothing in this app listens
+for `tauri://drag-drop`, so switching it off gives up nothing and hands the page
+back the ordinary HTML5 `dragover`/`drop` events it is already written against.
+Tauri's own docs mention only Windows here; the interception is the same on
+macOS, which is where this was measured.
+
 ## USB
 
 The system webview has no WebUSB (WKWebView, WebView2 and WebKitGTK all lack it),
