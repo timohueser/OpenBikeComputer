@@ -202,6 +202,85 @@ pub fn store_epoch_mint(epoch: Option<u32>, marks: Option<IdMarks>, fresh: u32) 
     Some((fresh, marks.unwrap_or_default()))
 }
 
+// ==================== the selected map (issue #927) ====================
+//
+// Which `.obcm` in the card root the renderer streams from. Before #927 there was no choice to
+// record — the loader took *the first* map the directory scan yielded — but once the device can
+// receive a map there are several on the card and "first by directory order" stops being an answer
+// a rider could predict, let alone change.
+//
+// It is a **card** file (`MAP.SEL` in the root, beside `EPOCH.OBE`) and not an RRAM setting for the
+// same reason the store epoch is: the thing it names lives on the card, so the choice must travel
+// with it. Swap in a card built for another trip and it brings its own selection; put the first card
+// back and the old one returns. An RRAM line would instead point at a filename that may not exist on
+// the card now in the slot.
+//
+// The payload is the map's **8.3 filename**, not its object id, because side-loaded maps (a plain
+// `something.obcm` the rider dragged on from a laptop) carry no device-assigned id — the filename is
+// the one name every map on the card has. A selection naming a file that is no longer there decodes
+// fine and the loader simply falls back, which is also what a torn/absent file does: the codec's
+// failure direction is "no preference", never "no map".
+
+/// The selected-map file's fixed length: 24 bytes, `magic(4) · version(1) · len(1) · name[12]
+/// (ASCII, NUL-padded) · pad(4) · crc16 LE · pad(2)` — CRC-16 over bytes `[0..20]`. Fixed-length
+/// like the other tiny card sidecars, so a rewrite is one truncating write with no torn-tail case.
+pub const SELECTED_MAP_LEN: usize = 24;
+/// The selected-map file's tag; anything else there (absent, torn, older layout) decodes to `None`
+/// — "no preference", and the loader falls back to the first valid map on the card.
+const SELECTED_MAP_MAGIC: [u8; 4] = *b"OBCS";
+/// Selected-map layout version — bump on any field change (an old version reads as no preference).
+const SELECTED_MAP_VERSION: u8 = 1;
+/// CRC-covered prefix of the selected-map file.
+const SELECTED_MAP_PAYLOAD: usize = 20;
+/// The widest 8.3 name the file can carry: `12345678.EXT`.
+pub const SELECTED_MAP_NAME_MAX: usize = 12;
+
+/// Pack a selected map's 8.3 filename into its fixed 24-byte card file. Inverse of
+/// [`decode_selected_map`]. A name longer than [`SELECTED_MAP_NAME_MAX`] or carrying a non-ASCII
+/// byte is refused (`None`) rather than truncated — a truncated name would select a *different*
+/// file, and silently pointing the renderer somewhere else is worse than keeping the old choice.
+pub fn encode_selected_map(name: &str) -> Option<[u8; SELECTED_MAP_LEN]> {
+    let raw = name.as_bytes();
+    if raw.is_empty() || raw.len() > SELECTED_MAP_NAME_MAX || !raw.iter().all(|b| b.is_ascii_graphic()) {
+        return None;
+    }
+    let mut b = [0u8; SELECTED_MAP_LEN];
+    b[0..4].copy_from_slice(&SELECTED_MAP_MAGIC);
+    b[4] = SELECTED_MAP_VERSION;
+    b[5] = raw.len() as u8;
+    b[6..6 + raw.len()].copy_from_slice(raw);
+    let crc = crc16(&b[0..SELECTED_MAP_PAYLOAD]);
+    b[SELECTED_MAP_PAYLOAD..SELECTED_MAP_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+    Some(b)
+}
+
+/// Decode a selected-map file into the 8.3 filename it names, or `None` for anything but a clean
+/// read — absent, torn, short, an older layout, or a length/charset the encoder would never have
+/// written. `None` is **no preference**, so every failure lands on "load the first valid map",
+/// which is exactly the pre-#927 behaviour.
+pub fn decode_selected_map(bytes: &[u8]) -> Option<&str> {
+    if bytes.len() < SELECTED_MAP_LEN {
+        return None;
+    }
+    let b = &bytes[..SELECTED_MAP_LEN];
+    if b[0..4] != SELECTED_MAP_MAGIC || b[4] != SELECTED_MAP_VERSION {
+        return None;
+    }
+    let crc = u16::from_le_bytes([b[SELECTED_MAP_PAYLOAD], b[SELECTED_MAP_PAYLOAD + 1]]);
+    if crc != crc16(&b[0..SELECTED_MAP_PAYLOAD]) {
+        return None;
+    }
+    let len = b[5] as usize;
+    if len == 0 || len > SELECTED_MAP_NAME_MAX {
+        return None;
+    }
+    let name = &b[6..6 + len];
+    if !name.iter().all(|byte| byte.is_ascii_graphic()) {
+        return None;
+    }
+    core::str::from_utf8(name).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +330,50 @@ mod tests {
         let crc = crc16(&old[0..STORE_EPOCH_PAYLOAD]);
         old[STORE_EPOCH_PAYLOAD..STORE_EPOCH_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode_store_epoch(&old), None, "a foreign layout version is no epoch");
+    }
+
+    /// The 24-byte selected-map card file round-trips every name the device can write, and every
+    /// torn/absent/foreign/malformed shape decodes to `None` — "no preference", which the loader
+    /// reads as "take the first valid map", i.e. exactly the pre-#927 behaviour.
+    #[test]
+    fn selected_map_codec_round_trips_and_falls_back_on_anything_else() {
+        for name in ["MP1.OBM", "MP65535.OBM", "12345678.OBM", "A.O", "FREIBU~1.OBC"] {
+            let encoded = encode_selected_map(name).expect("a legal 8.3 name encodes");
+            assert_eq!(encoded.len(), SELECTED_MAP_LEN, "the file is a fixed 24 bytes");
+            assert_eq!(decode_selected_map(&encoded), Some(name), "{name} round-trips");
+        }
+
+        // Refused rather than truncated: a truncated name would select a *different* file.
+        assert_eq!(encode_selected_map(""), None, "an empty name is not a selection");
+        assert_eq!(encode_selected_map("123456789.OBM"), None, "13 chars is past the 8.3 ceiling");
+        assert_eq!(encode_selected_map("MP1 .OBM"), None, "a space is not a graphic 8.3 byte");
+        assert_eq!(encode_selected_map("MÄP.OBM"), None, "a non-ASCII name is refused");
+
+        let good = encode_selected_map("MP7.OBM").unwrap();
+        assert_eq!(decode_selected_map(&[0u8; SELECTED_MAP_LEN]), None, "a blank file is no preference");
+        assert_eq!(decode_selected_map(&[0xFF; SELECTED_MAP_LEN]), None, "an erased file is no preference");
+        assert_eq!(decode_selected_map(&[]), None, "an absent (empty) file is no preference");
+        assert_eq!(decode_selected_map(&good[..SELECTED_MAP_LEN - 1]), None, "a short slice is rejected");
+        let mut torn = good;
+        torn[7] ^= 0xFF; // flip a name byte without fixing the CRC — the torn-write shape
+        assert_eq!(decode_selected_map(&torn), None, "a CRC mismatch (torn write) is no preference");
+        let mut old = good;
+        old[4] = SELECTED_MAP_VERSION + 1;
+        let crc = crc16(&old[0..SELECTED_MAP_PAYLOAD]);
+        old[SELECTED_MAP_PAYLOAD..SELECTED_MAP_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode_selected_map(&old), None, "a foreign layout version is no preference");
+
+        // A CRC-valid file whose declared length is impossible must not escape as a bogus name.
+        let mut lying = good;
+        lying[5] = (SELECTED_MAP_NAME_MAX + 1) as u8;
+        let crc = crc16(&lying[0..SELECTED_MAP_PAYLOAD]);
+        lying[SELECTED_MAP_PAYLOAD..SELECTED_MAP_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode_selected_map(&lying), None, "an over-long declared length is rejected");
+        let mut zero = good;
+        zero[5] = 0;
+        let crc = crc16(&zero[0..SELECTED_MAP_PAYLOAD]);
+        zero[SELECTED_MAP_PAYLOAD..SELECTED_MAP_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode_selected_map(&zero), None, "a zero-length name is no preference");
     }
 
     /// The mint rule's four cases, plus the two invariants the 2026-07-12 review added. `FRESH` is

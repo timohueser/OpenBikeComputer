@@ -1490,6 +1490,33 @@ impl App {
         self.ui.passkey_card_up()
     }
 
+    // ==================== map-transfer seam (issue #927) ====================
+
+    /// Feed the board's live **map-transfer** state and reconcile the host-pushed card to it — the
+    /// map twin of [`set_ble_status`](App::set_ble_status)'s passkey handling, and the only thing
+    /// on glass during a write that runs for minutes.
+    ///
+    /// A map upload is unlike every other object the device accepts: hundreds of megabytes at the
+    /// card's proven throughput saturate the SD bus for minutes, and the map plane's own reads queue
+    /// behind it. Left unexplained that reads as a device that has gone sluggish or wedged, so the
+    /// board publishes progress (through atomics the ride loop polls, hence a `Copy` value fed every
+    /// pass rather than an event) and this raises the card.
+    ///
+    /// Idempotent: an unchanged state repaints nothing. `None` closes the card — which is also how
+    /// an abort or an unplug ends it, deliberately: the rider caused those, and a red card
+    /// explaining what they just did is noise. Only outcomes they can act on
+    /// ([`MapTransfer::Installed`](crate::screen::MapTransfer::Installed) /
+    /// [`Failed`](crate::screen::MapTransfer::Failed)) stay up to be dismissed.
+    pub fn set_map_transfer(&mut self, state: Option<crate::screen::MapTransfer>) {
+        self.ui.reconcile_map_transfer_card(state);
+    }
+
+    /// Whether the map-transfer card is currently up (issue #927) — how a host observes the seam,
+    /// and the query a future modal-priority rule would consult.
+    pub fn map_transfer_card_up(&self) -> bool {
+        self.ui.map_transfer_card_up()
+    }
+
     /// The live BLE pairing passkey, or `None` when not pairing — [`BleStatus::passkey`](crate::BleStatus)
     /// as last fed to [`set_ble_status`](App::set_ble_status). Consumed by the passkey card in P2
     /// (#449); exposed now so the seam is observable end to end.
@@ -4574,6 +4601,47 @@ mod tests {
         assert_eq!(checks, 1, "exactly one wait screen pushed");
         assert_eq!(drain_dfu(&mut app), Some(DfuAction::Scan), "a Scan is posted — NEVER Install");
         assert_eq!(drain_dfu(&mut app), None, "…exactly once");
+    }
+
+    /// The map-transfer card's whole life cycle (issue #927), the seam a multi-minute SD write is
+    /// visible through: one card for the whole transfer (never a stack of them), progress rewritten
+    /// in place, an unchanged re-feed repainting nothing, a terminal state dismissable by a press
+    /// while a receiving one is not, and `None` closing it.
+    #[test]
+    fn map_transfer_card_opens_updates_and_closes() {
+        use crate::screen::{MapTransfer, MapTransferError};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let cards = |app: &App| app.ui.stack.iter().filter(|s| matches!(s, Screen::MapTransfer(_))).count();
+
+        assert!(!app.map_transfer_card_up(), "no card before a transfer");
+        app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 0, total_kib: 400_000 }));
+        assert!(app.map_transfer_card_up(), "the first announced byte raises the card");
+        assert_eq!(cards(&app), 1);
+
+        // Progress rewrites the one card; an identical re-feed (the steady state, fed every pass)
+        // must not dirty the map, or the transfer would repaint the panel continuously.
+        app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 100_000, total_kib: 400_000 }));
+        assert_eq!(cards(&app), 1, "progress never stacks a second card");
+        app.ui.map_dirty = false;
+        app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 100_000, total_kib: 400_000 }));
+        assert!(!app.ui.map_dirty, "an unchanged state repaints nothing");
+
+        // Modal while receiving: a press cannot dismiss the one explanation for the busy glass.
+        app.apply_gesture(Gesture::Press);
+        assert!(app.map_transfer_card_up(), "a receiving card swallows input");
+
+        // Terminal → dismissable.
+        app.set_map_transfer(Some(MapTransfer::Installed));
+        assert_eq!(cards(&app), 1, "the outcome replaces the progress state in place");
+        app.apply_gesture(Gesture::Press);
+        assert!(!app.map_transfer_card_up(), "a terminal card dismisses on a press");
+
+        // A failure raises the card the same way, and `None` (abort / unplug) closes it silently.
+        app.set_map_transfer(Some(MapTransfer::Failed(MapTransferError::Damaged)));
+        assert!(app.map_transfer_card_up());
+        app.set_map_transfer(None);
+        assert!(!app.map_transfer_card_up(), "clearing the state removes the card");
+        assert_eq!(cards(&app), 0);
     }
 
     /// Remote-check deferral behind the passkey card (S6, #621): the request is *deferred*, not

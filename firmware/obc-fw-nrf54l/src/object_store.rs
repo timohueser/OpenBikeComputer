@@ -1191,6 +1191,102 @@ impl ObjectStore {
         shared.storage.as_ref().is_some_and(|s| s.has_update_bin())
     }
 
+    // ==================== the map upload (issue #927) ====================
+
+    /// Validate + arm a **map** upload (spec §4.2 / §10). Three refusals, all before a byte streams,
+    /// because a map runs for minutes and a late failure costs the rider all of them:
+    /// a named object id (maps are **new-only** — see `Storage`'s map section for why the device
+    /// never rewrites a stored map in place), an object too short to be an OBCM at all, and one the
+    /// card cannot hold with [`MAP_FREE_HEADROOM`](crate::sd::MAP_FREE_HEADROOM) left over. The rule
+    /// itself is the host-tested [`TransferStatus::map_announce_reject`]; the constants are the
+    /// board's, exactly as `fwimage_open` passes its own ceiling in.
+    ///
+    /// Like every other upload, the SD file is **not** opened here — the data plane opens it at the
+    /// first streamed byte ([`map_upload_begin`](Self::map_upload_begin)), so an armed transfer whose
+    /// stream never starts leaves nothing on the card.
+    ///
+    /// A map carries no catalog slot in this store: there is no `mapList` on the wire, and the card's
+    /// map catalog is derived by a directory scan whenever it is wanted
+    /// ([`Storage::scan_maps_into`](crate::sd::Storage::scan_maps_into)) rather than held resident.
+    pub fn map_upload_open(
+        &mut self,
+        shared: &SharedStore,
+        desc: &TransferControl,
+    ) -> Result<Receiver, TransferStatus> {
+        let Some(storage) = shared.storage.as_ref() else { return Err(TransferStatus::Error) };
+        let free = storage.card_free_bytes();
+        if let Some(status) = TransferStatus::map_announce_reject(
+            desc.object_id,
+            desc.total_len,
+            obc_formats::obcm::HEADER_LEN as u32,
+            free,
+            crate::sd::MAP_FREE_HEADROOM,
+        ) {
+            return Err(status);
+        }
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Allocate the fresh map object id and open `MP{id}.OBM` for the stream — called by the data
+    /// plane at the first byte. Returns the id, which the data plane carries to
+    /// [`map_upload_finish`](Self::map_upload_finish) (a map holds no slot in this store, so there is
+    /// nothing here to remember it in — and nothing to leak if the transfer dies).
+    ///
+    /// The id is `max(card scan + 1, RRAM floor)`, the durable-id rule of spec §4.1. The **floor is
+    /// bumped here, not at commit**, so an id handed to a transfer is spent even if that transfer
+    /// fails: re-issuing it would be safe today (the failed upload stored nothing) but the invariant
+    /// worth keeping is the simple one — an id this device has ever named an object with is never
+    /// handed out twice within a store epoch.
+    pub fn map_upload_begin(&mut self, shared: &mut SharedStore) -> Option<u16> {
+        let scan_next = shared.storage.as_ref()?.next_map_id_from_scan();
+        let floor = shared.settings.load_map_mark().unwrap_or(0);
+        let id = floor.max(scan_next);
+        if id == u16::MAX {
+            defmt::warn!("store: map id space exhausted — refusing the upload");
+            return None;
+        }
+        shared.settings.save_map_mark(id.saturating_add(1));
+        shared.storage.as_mut()?.map_upload_begin(id).then_some(id)
+    }
+
+    /// All bytes arrived: verify the whole-object CRC (the [`Receiver`] outcome, as for every other
+    /// type) and, on a match, patch the held-back magic into `MP{id}.OBM` — the commit point — then
+    /// record the map as the card's **selected** one, so the map a rider just sent is what comes up
+    /// on the next boot without a second step.
+    ///
+    /// Deliberately does **not** bump the store revision or notify `storeChanged`: a map is not a
+    /// listed object (there is no `mapList`), so there is no catalog for a peer to re-read. It also
+    /// does not touch the running session — the map plane keeps streaming from the map it opened at
+    /// boot, because `MapTables` is parsed once into a `.bss` slot the whole ride loop borrows. That
+    /// is what the card's "restart to use it" line is telling the rider.
+    pub fn map_upload_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        if outcome.status != TransferStatus::Committed {
+            // A CRC mismatch: the partial never had its magic patched in, so nothing durable was
+            // created — drop it rather than leave its clusters to the next boot's sweep (the retry
+            // gets a fresh id and a fresh filename, so it would not reuse this one).
+            if let Some(storage) = &mut shared.storage {
+                storage.map_upload_abort(id);
+            }
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        let Some(_len) = storage.map_upload_commit(id, magic) else { return TransferStatus::Error };
+        if let Some(name) = crate::sd::map_file_name_for(id) {
+            storage.save_selected_map(&name);
+        }
+        TransferStatus::Committed
+    }
+
     // ==================== downloads ====================
 
     /// Open a download: build the list / diagnostics object, or open the stored route/ride (with its

@@ -243,24 +243,26 @@ async fn serve_frame(
             forget_after_ack = outcome.forget_bond;
             info!("usb: [ctl] command frame ({} B)", payload.len());
         }
-        host_frame::TRANSFER_CONTROL => match classify_transfer(payload, store, &mut guard) {
-            TransferDisposition::Arm(armed) => {
-                info!("usb: [ctl] transfer armed");
-                // Set the gate *before* the data plane can observe the arm, exactly as the GATT
-                // path does: the cross-transport `TRANSFER_ACTIVE` is what turns a second open —
-                // from either wire — into a typed `busy`.
-                TRANSFER_ACTIVE.store(true, core::sync::atomic::Ordering::Relaxed);
-                TRANSFER_ARM.signal(armed);
+        host_frame::TRANSFER_CONTROL => {
+            match classify_transfer(payload, store, &mut guard, crate::link::Transport::Usb) {
+                TransferDisposition::Arm(armed) => {
+                    info!("usb: [ctl] transfer armed");
+                    // Set the gate *before* the data plane can observe the arm, exactly as the GATT
+                    // path does: the cross-transport `TRANSFER_ACTIVE` is what turns a second open —
+                    // from either wire — into a typed `busy`.
+                    TRANSFER_ACTIVE.store(true, core::sync::atomic::Ordering::Relaxed);
+                    TRANSFER_ARM.signal(armed);
+                }
+                TransferDisposition::AbortActive => {
+                    info!("usb: [ctl] abort → data plane");
+                    TRANSFER_ABORT.signal(());
+                }
+                TransferDisposition::Answer(bytes) => {
+                    info!("usb: [ctl] transfer answered immediately");
+                    status_msg = Some(bytes);
+                }
             }
-            TransferDisposition::AbortActive => {
-                info!("usb: [ctl] abort → data plane");
-                TRANSFER_ABORT.signal(());
-            }
-            TransferDisposition::Answer(bytes) => {
-                info!("usb: [ctl] transfer answered immediately");
-                status_msg = Some(bytes);
-            }
-        },
+        }
         host_frame::CONFIG_WRITE => {
             // Applied + persisted, or rejected. A rejection has no ATT error code to ride on here,
             // so it is reported the way every other typed failure is: the caller re-reads the
