@@ -128,8 +128,8 @@ pair that is fully interoperable in order to announce a field that is allowed to
 missing. The precedent is `routeList`'s 76 → 84-byte entry (§7.4, §9): a trailing
 field appended to an existing layout whose length is self-describing is additive,
 and additive changes do not bump. What *would* require a bump is changing or
-reordering a field already defined here — which this does not do; bytes 0..6 are
-untouched.
+reordering a field already defined here — which this does not do: bytes 0–5 keep
+their meaning and their offsets, and the new field is byte 6.
 
 **Map-format version (`obcm_version`).** The OBCM version (`OBCM_Spec.md`) the
 running firmware's map reader reads — `10` at time of writing. It is a **different
@@ -1196,10 +1196,11 @@ The USB transport (§10, #889) and the identity read's `obcm_version` byte (§1,
   routing to a leading selector byte and carries §4's bytes unchanged, so nothing
   in this document's object model moved.
 - **`protocolVersion` read 6 → 7 bytes** (§1): a trailing `obcm_version u8` on a
-  read that was already decoded by length. Bytes 0..6 are untouched, absent
-  trailing fields have defined "unknown" behaviour on both sides, and a bump would
-  stop two peers that remain fully interoperable — the argument is written out in
-  §1. Re-cuts the `version-read.bin` fixture and adds `version-read-noobcm.bin`.
+  read that was already decoded by length. Bytes 0–5 keep their meaning and their
+  offsets, absent trailing fields have defined "unknown" behaviour on both sides,
+  and a bump would stop two peers that remain fully interoperable — the argument
+  is written out in §1. Re-cuts the `version-read.bin` fixture and adds
+  `version-read-noobcm.bin`.
 
 Their iOS mirror repin — `setClock`/`setRouteRetention` sent at the documented
 times, the 84-byte `routeList` entry decoded by `entry_len`, and the
