@@ -2288,13 +2288,34 @@ impl Storage {
         Some(len)
     }
 
-    /// Abandon an in-flight map upload: close the handle and leave the zero-magic file behind for the
-    /// boot sweep. Deliberately **not** a delete — the file is already inert (no catalog lists it, no
-    /// loader picks it), and keeping the name means a retry truncates it instead of stranding its
-    /// clusters under a *second* name while the first still holds the space.
-    pub fn map_upload_abort(&mut self) {
+    /// Abandon an in-flight map upload: close the handle and **delete** the partial.
+    ///
+    /// The file is already inert — its magic was never patched in, so no catalog lists it and no
+    /// loader picks it — and the boot sweep would reclaim it eventually. Waiting for that boot is
+    /// still wrong: the id is spent at `begin` (the durable floor advances there, so an id is never
+    /// re-issued), which means a *retry* streams into a **new** filename and the abandoned one keeps
+    /// its clusters. Three retries of a 300 MB map would strand nearly a gigabyte until the next
+    /// power cycle, on the device least able to spare it. Deleting is cheap by comparison — a FAT
+    /// chain walk, not a rewrite — so the sweep is left to do only what nothing running can: clean up
+    /// after a power cut.
+    pub fn map_upload_abort(&mut self, id: u16) {
         if let Some(file) = self.open_upload.take() {
             let _ = self.vmgr.close_file(file);
+        }
+        let Some(name) = map_file_name_for(id) else { return };
+        // Never delete a *committed* map: `map_upload_commit` may have already patched the magic in
+        // and this call be a late cleanup, and the sweep's rule applies here too — only the exact
+        // zero-magic torn signature is ours to remove.
+        if self.map_identity(&name).is_some() {
+            return;
+        }
+        match self.vmgr.delete_file_in_dir(self.root, &name) {
+            Ok(()) => defmt::info!("SD: abandoned map upload /MP{=u16}.OBM deleted", id),
+            Err(e) => defmt::warn!(
+                "SD: could not delete the abandoned /MP{=u16}.OBM ({}) — the boot sweep will reclaim it",
+                id,
+                defmt::Debug2Format(&e)
+            ),
         }
     }
 

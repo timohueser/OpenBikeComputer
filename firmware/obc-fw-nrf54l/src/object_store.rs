@@ -1271,10 +1271,11 @@ impl ObjectStore {
             None => return TransferStatus::Error, // caller bug: not complete
         };
         if outcome.status != TransferStatus::Committed {
-            // A CRC mismatch or an abort: leave the zero-magic file for the boot sweep rather than
-            // spending minutes of SD time deleting hundreds of megabytes on the failure path.
+            // A CRC mismatch: the partial never had its magic patched in, so nothing durable was
+            // created — drop it rather than leave its clusters to the next boot's sweep (the retry
+            // gets a fresh id and a fresh filename, so it would not reuse this one).
             if let Some(storage) = &mut shared.storage {
-                storage.map_upload_abort();
+                storage.map_upload_abort(id);
             }
             return outcome.status;
         }
