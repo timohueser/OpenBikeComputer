@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<!-- The OG/Twitter share card (docs/assets/og-card.png), as a browser compose.
+     The device is drawn with the same housing CSS as docs/index.html (keep the
+     two in sync if the industrial design changes) around the committed
+     device-poster.png sim frame — so the card's screen stays a real render.
+
+     Regenerate after changing the tagline, the housing, or the poster:
+
+       google-chrome --headless=new --disable-gpu --window-size=1200,630 \
+         --force-device-scale-factor=1 \
+         --screenshot=../assets/og-card.png og_card.html
+
+     (run from docs/tools/). Serif is P052 (URW Palladio, urw-base35), the
+     Linux stand-in for the site's Palatino stack — Chrome falls back through
+     the stack if it's missing, so check the render before committing. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  /* 1200x630 card — colourway + housing CSS lifted from docs/index.html. */
+  :root {
+    --parchment: #ece8cf;
+    --ink: #24331c;
+    --ink-soft: #4d5b3c;
+    --forest: #3c6b39;
+    --coral: #cf6a2a;
+    --device-body: #2f6350;
+    --device-accent: #8be3bc;
+    --serif: "P052", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: "Noto Sans", ui-sans-serif, system-ui, sans-serif;
+    --mono: "Noto Sans Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    position: relative;
+    background: var(--parchment);
+    font-family: var(--sans);
+    display: flex; align-items: center;
+  }
+  .topo { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.75; }
+
+  .text {
+    position: relative; z-index: 1;
+    padding-left: 76px; width: 660px; flex: none;
+  }
+  .brand { display: flex; align-items: baseline; gap: 14px; margin-bottom: 40px; }
+  .brand .mark {
+    font-family: var(--mono); font-weight: 700; letter-spacing: 0.06em;
+    font-size: 22px; color: var(--parchment); background: var(--forest);
+    padding: 6px 12px; border-radius: 10px;
+  }
+  .brand .name { font-family: var(--serif); font-size: 27px; font-weight: 700; color: var(--ink); }
+  .eyebrow {
+    text-transform: uppercase; letter-spacing: 0.26em; font-size: 17px;
+    font-weight: 700; color: var(--forest); margin: 0 0 18px;
+  }
+  h1 {
+    font-family: var(--serif); font-weight: 700; color: var(--ink);
+    font-size: 82px; line-height: 1.04; letter-spacing: -0.01em; margin: 0 0 26px;
+  }
+  h1 em { font-style: italic; color: var(--coral); }
+  .sub { font-size: 26px; color: var(--ink-soft); margin: 0; }
+  .sub b { color: var(--ink); font-weight: 700; }
+
+  /* ---- the device housing, lifted from docs/index.html ---- */
+  .device-col { position: relative; z-index: 1; flex: none; margin-left: 30px; transform: rotate(-5deg); }
+  .device {
+    position: relative;
+    width: 360px;
+    padding: 5.2% 5.85% 0;
+    background: linear-gradient(163deg, #3d7a63 0%, var(--device-body) 48%, #1f4739 100%);
+    border-radius: 46px;
+    box-shadow:
+      inset 0 2px 2px rgba(206, 255, 232, 0.28),
+      inset 0 -4px 8px rgba(6, 32, 22, 0.36),
+      0 22px 30px rgba(44, 33, 20, 0.30);
+  }
+  .device::before {
+    content: ""; position: absolute; z-index: -1;
+    inset: -1.95%;
+    background: linear-gradient(163deg, var(--device-accent) 0%, #6fd3a7 100%);
+    border-radius: 50px;
+    box-shadow: 0 10px 18px rgba(31, 71, 57, 0.28);
+  }
+  .side {
+    position: absolute; width: 13px; height: 14%;
+    background: #2b2f36;
+    background-image:
+      repeating-linear-gradient(180deg, rgba(0,0,0,0.30) 0 1px, transparent 1px 4px),
+      repeating-linear-gradient(90deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 4px);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(6, 32, 22, 0.4);
+  }
+  .side-l { left: -13px; border-radius: 6px 0 0 6px; }
+  .side-r { right: -13px; border-radius: 0 6px 6px 0; }
+  .side-up, .side-select { top: 33.65%; }
+  .side-down, .side-back { top: 52.35%; }
+  .bezel {
+    position: relative; background: #101317; border-radius: 14px; padding: 5.9%;
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.65), 0 1px 0 rgba(206, 255, 232, 0.16);
+  }
+  .panel { position: relative; aspect-ratio: 3 / 4; }
+  .panel img {
+    display: block; width: 100%; height: 100%;
+    border-radius: 3px; image-rendering: pixelated;
+  }
+  .chin { display: flex; align-items: center; justify-content: center; padding: 12% 0 15.3%; }
+  .wordmark {
+    font-family: var(--mono); font-size: 20px; font-weight: 700;
+    letter-spacing: 0.34em; text-indent: 0.34em;
+    color: rgba(9, 42, 31, 0.7);
+    text-shadow: 0 1px 0 rgba(206, 255, 232, 0.3);
+  }
+</style>
+</head>
+<body>
+  <svg class="topo" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g fill="none" stroke="#2c5e54" stroke-width="1.1" stroke-opacity="0.17">
+      <path d="M-50 150 C 240 92, 420 222, 700 172 S 1180 82, 1500 192" />
+      <path d="M-50 220 C 240 165, 430 290, 710 240 S 1180 155, 1500 265" />
+      <path d="M-50 300 C 260 250, 440 370, 720 315 S 1190 235, 1500 350" />
+      <path d="M-50 388 C 250 342, 450 452, 740 402 S 1190 322, 1500 438" />
+      <path d="M-50 470 C 250 426, 470 532, 760 486 S 1200 408, 1500 520" />
+      <path d="M-50 620 C 250 570, 470 690, 760 630 S 1200 545, 1500 665" />
+      <path d="M-50 690 C 250 640, 470 760, 760 700 S 1200 615, 1500 735" />
+      <path d="M-50 760 C 250 712, 470 832, 760 772 S 1200 690, 1500 808" />
+    </g>
+  </svg>
+
+  <div class="text">
+    <div class="brand">
+      <span class="mark">OBC</span>
+      <span class="name">OpenBikeComputer</span>
+    </div>
+    <p class="eyebrow">Open-source bikepacking computer</p>
+    <h1>Own your<br><em>adventure.</em></h1>
+    <p class="sub"><b>Try the real firmware live</b> — in your browser.</p>
+  </div>
+
+  <div class="device-col">
+    <div class="device">
+      <span class="side side-l side-up"></span>
+      <span class="side side-l side-down"></span>
+      <span class="side side-r side-select"></span>
+      <span class="side side-r side-back"></span>
+      <div class="bezel">
+        <div class="panel">
+          <img src="../assets/device-poster.png" width="240" height="320" alt="" />
+        </div>
+      </div>
+      <div class="chin"><span class="wordmark">OBC</span></div>
+    </div>
+  </div>
+</body>
+</html>
