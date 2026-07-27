@@ -286,12 +286,20 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         async let fw = readString(GATT.firmwareRevision)
         async let hw = readString(GATT.hardwareRevision)
         async let serial = readString(GATT.serialNumber)
-        // v2 read: `version u16 · store_epoch u32` LE (spec §1). The version field
-        // keeps the **lenient prefix** decode (count >= 2 reads the first u16) —
-        // that's the v1-peer compat path: a v1 device returns 2 bytes, reads as
-        // `version = 1`, and takes the #303 mismatch banner. The epoch decode
-        // instead requires the **full 6 bytes**; a short read leaves it `nil`
-        // (unknown), never a fabricated `0` (`0` is a legal epoch). V5 (#769) gates
+        // v2 read: `version u16 · store_epoch u32 · obcm_version u8` LE (spec §1).
+        // **The length is the version mechanism** — every field is decoded by how
+        // much of the read arrived, never by an expected total, which is what let
+        // `obcm_version` (E1 / #911) land without a protocol bump. Three lengths
+        // exist: 7 (full), 6 (a firmware predating the obcm byte), 2 (no mounted
+        // store). Anything past what we know is ignored, so the next field to be
+        // appended will not break this build either.
+        //
+        // The version field keeps the **lenient prefix** decode (count >= 2 reads
+        // the first u16) — that's the v1-peer compat path: a v1 device returns 2
+        // bytes, reads as `version = 1`, and takes the #303 mismatch banner. Every
+        // trailing field decodes to `nil` when it did not arrive, never to a
+        // fabricated `0`: `0` is a legal store epoch, and OBCM `0` would read as
+        // "supports OBCM v0" and refuse every real map. V5 (#769) gates
         // `ackRides`/reconcile on a present epoch — a `nil` here is that failed
         // identity read surfaced, not hidden behind a fake value.
         let versionData = try await read(GATT.protocolVersion)
@@ -301,10 +309,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             ? UInt32(versionData[b + 2]) | (UInt32(versionData[b + 3]) << 8)
                 | (UInt32(versionData[b + 4]) << 16) | (UInt32(versionData[b + 5]) << 24)
             : nil
+        let obcmVersion: UInt8? = versionData.count >= 7 ? versionData[b + 6] : nil
         let name = await currentPeripheralName() ?? "OBC"
         let info = DeviceInfo(
             name: name, firmwareVersion: try await fw, hardwareVersion: try await hw,
-            serial: try await serial, protocolVersion: version, storeEpoch: storeEpoch
+            serial: try await serial, protocolVersion: version, storeEpoch: storeEpoch,
+            obcmVersion: obcmVersion
         )
         // Cache the scope for `listRides()` minting (#769). A read that carried
         // no epoch caches `nil` — deliberately: minting under a stale or absent

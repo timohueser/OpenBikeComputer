@@ -218,11 +218,18 @@ extension FixtureSet {
     /// and the possession ack dead.
     public static let defaultStoreEpoch: UInt32 = 0x0BC0_0001
 
+    /// The OBCM map-format version every mock device reports unless a fixture
+    /// overrides it (E1 / #911) — what the reference firmware's reader reads
+    /// (`obc_formats::obcm::VERSION`). A mock device is a device, so it states
+    /// one rather than serving the pre-E1 short read by default.
+    public static let defaultObcmVersion: UInt8 = 10
+
     /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
     public static let builtIn = FixtureSet(
         deviceInfo: DeviceInfo(
             name: "OBC (mock)", firmwareVersion: "0.0.0-mock",
-            serial: "OBC-MOCK-000000", storeEpoch: defaultStoreEpoch),
+            serial: "OBC-MOCK-000000", storeEpoch: defaultStoreEpoch,
+            obcmVersion: defaultObcmVersion),
         config: DeviceConfig(name: "OBC (mock)"),
         battery: 72, routes: [], rides: [],
         diagnostics: Data("OBC diagnostics — built-in fallback\n".utf8)
@@ -349,12 +356,16 @@ private struct DeviceInfoDTO: Decodable {
     /// every fixture device has an id era (#769 — the identity gate is
     /// fail-closed, and a device without an epoch can't sync).
     let storeEpoch: UInt32?
+    /// Optional in the JSON; defaults to `FixtureSet.defaultObcmVersion` so a
+    /// mock device states the map format it reads, the way a real one does.
+    let obcmVersion: UInt8?
 
     var domain: DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion,
                    hardwareVersion: hardwareVersion ?? "", serial: serial ?? "",
                    protocolVersion: protocolVersion ?? OBCProtocol.version,
-                   storeEpoch: storeEpoch ?? FixtureSet.defaultStoreEpoch)
+                   storeEpoch: storeEpoch ?? FixtureSet.defaultStoreEpoch,
+                   obcmVersion: obcmVersion ?? FixtureSet.defaultObcmVersion)
     }
 }
 

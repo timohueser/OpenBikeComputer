@@ -285,6 +285,16 @@ interface Stored {
 export const MAX_ROUTES = 64;
 export const MAX_TRIPS = 16;
 
+/**
+ * The OBCM map-format version the reference firmware's reader reads (`obc_formats::obcm::VERSION`).
+ *
+ * It lives here, in the **mock device**, and nowhere else in the app: the site's whole §6(c)
+ * mechanism is that it asks the connected device rather than assuming, so a constant in the app
+ * would be exactly the guess this field exists to remove. A mock device is a device, so it gets to
+ * hold one.
+ */
+export const REFERENCE_OBCM_VERSION = 10;
+
 /** How a {@link MockDevice} starts out. Everything has a working default. */
 export interface MockDeviceOptions {
     /** The store epoch to serve. `null` models a device with **no mounted card**, which serves the
@@ -293,6 +303,11 @@ export interface MockDeviceOptions {
     /** The protocol version to serve. Override it to exercise the mismatch path — a peer must
      *  surface and stop, never best-effort decode a wire it does not know. */
     protocolVersion?: number;
+    /** The OBCM map-format version this device's firmware reads (§1, #911) — what `OBCC_Spec.md`
+     *  §6(c) filters the map catalog on. `null` models a firmware that predates the field and
+     *  serves the 6-byte read; a peer must read that as *unknown* and offer the download stating
+     *  the version, never as "supports OBCM v0". */
+    obcmVersion?: number | null;
     deviceInfo?: DeviceInfo;
     config?: DeviceConfig;
     /** The update-slot ceiling. An announced `fwImage` past it is rejected before any bytes move. */
@@ -328,6 +343,7 @@ export class MockDevice {
 
     private storeEpoch: number | null;
     private readonly protocolVersion: number;
+    private readonly obcmVersion: number | null;
     private info: DeviceInfo;
     private config: DeviceConfig;
 
@@ -373,6 +389,7 @@ export class MockDevice {
         this.link = link;
         this.storeEpoch = options.storeEpoch === undefined ? 0xa1b2c3d4 : options.storeEpoch;
         this.protocolVersion = options.protocolVersion ?? PROTOCOL_VERSION;
+        this.obcmVersion = options.obcmVersion === undefined ? REFERENCE_OBCM_VERSION : options.obcmVersion;
         this.info = options.deviceInfo ?? {
             firmwareRevision: "0.4.0+abc1234",
             hardwareRevision: "obc-lm20-r1",
@@ -488,7 +505,11 @@ export class MockDevice {
             case HostFrame.IdentityRead:
                 await this.send(
                     DeviceFrame.Identity,
-                    encodeVersionRead({ version: this.protocolVersion, storeEpoch: this.storeEpoch }),
+                    encodeVersionRead({
+                        version: this.protocolVersion,
+                        storeEpoch: this.storeEpoch,
+                        obcmVersion: this.obcmVersion,
+                    }),
                 );
                 return;
             case HostFrame.DeviceInfoRead:

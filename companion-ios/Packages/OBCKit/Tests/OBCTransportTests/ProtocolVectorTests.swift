@@ -130,16 +130,53 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(announce.encode(), announceBytes)
     }
 
-    func testVersionReadDecodesVersionAndEpoch() throws {
-        // The widened v2 identity read: `version u16 · store_epoch u32` LE.
-        let bytes = try fixture("version-read.bin")
-        XCTAssertEqual(bytes.count, 6)
-        let b = bytes.startIndex
-        let version = UInt16(bytes[b]) | (UInt16(bytes[b + 1]) << 8)
-        let epoch = UInt32(bytes[b + 2]) | (UInt32(bytes[b + 3]) << 8)
-            | (UInt32(bytes[b + 4]) << 16) | (UInt32(bytes[b + 5]) << 24)
-        XCTAssertEqual(version, OBCProtocol.version)
-        XCTAssertEqual(epoch, 0xA1B2_C3D4)
+    /// The identity read's decode is **length-driven**, and this walks all three lengths the wire
+    /// defines (spec §1). The rule that matters is the same at every step: a trailing field that
+    /// did not arrive is `nil`, never a fabricated `0` — `0` is a legal store epoch, and OBCM `0`
+    /// would read as "supports OBCM v0" and refuse every real map.
+    func testVersionReadDecodesEveryLength() throws {
+        /// The same decode `BLETransport.deviceInfo()` performs, over an arbitrary read.
+        func decode(_ bytes: Data) -> (version: UInt16, epoch: UInt32?, obcm: UInt8?) {
+            let b = bytes.startIndex
+            let version = bytes.count >= 2 ? UInt16(bytes[b]) | (UInt16(bytes[b + 1]) << 8) : OBCProtocol.version
+            let epoch: UInt32? = bytes.count >= 6
+                ? UInt32(bytes[b + 2]) | (UInt32(bytes[b + 3]) << 8)
+                    | (UInt32(bytes[b + 4]) << 16) | (UInt32(bytes[b + 5]) << 24)
+                : nil
+            return (version, epoch, bytes.count >= 7 ? bytes[b + 6] : nil)
+        }
+
+        // 7 bytes: `version u16 · store_epoch u32 · obcm_version u8`. The last is the OBCM
+        // map-format version the device's reader reads — not the protocol version beside it.
+        let full = try fixture("version-read.bin")
+        XCTAssertEqual(full.count, 7)
+        let decodedFull = decode(full)
+        XCTAssertEqual(decodedFull.version, OBCProtocol.version)
+        XCTAssertEqual(decodedFull.epoch, 0xA1B2_C3D4)
+        XCTAssertEqual(decodedFull.obcm, 10)
+
+        // 6 bytes: a firmware predating the field. The epoch is present, so the ack gate is open;
+        // the map version is simply unknown.
+        let noObcm = try fixture("version-read-noobcm.bin")
+        XCTAssertEqual(noObcm.count, 6)
+        let decodedNoObcm = decode(noObcm)
+        XCTAssertEqual(decodedNoObcm.epoch, 0xA1B2_C3D4)
+        XCTAssertNil(decodedNoObcm.obcm, "an absent trailing field is unknown, never 0")
+
+        // 2 bytes: no mounted card, so no era to name — and no room for the byte after it.
+        let noStore = try fixture("version-read-nostore.bin")
+        XCTAssertEqual(noStore.count, 2)
+        let decodedNoStore = decode(noStore)
+        XCTAssertEqual(decodedNoStore.version, OBCProtocol.version)
+        XCTAssertNil(decodedNoStore.epoch, "ack fail-closed — never epoch 0, which is a legal era")
+        XCTAssertNil(decodedNoStore.obcm)
+
+        // And the append-only rule the obcm byte itself rode in on: bytes past the known fields are
+        // ignored rather than rejected, which is why the field needed no protocol-version bump.
+        let future = full + Data([0xEE, 0xEE])
+        let decodedFuture = decode(future)
+        XCTAssertEqual(decodedFuture.epoch, 0xA1B2_C3D4)
+        XCTAssertEqual(decodedFuture.obcm, 10)
     }
 
     func testRideVectorDecodesAndReEncodesByteExactly() throws {

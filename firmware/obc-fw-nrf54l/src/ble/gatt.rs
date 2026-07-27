@@ -96,12 +96,12 @@ pub(crate) struct ObcControlService {
     #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated), value = OBC_PSM)]
     pub psm: u16,
     /// `protocol_version` — read **without** encryption (the connect-time version check happens before
-    /// pairing). Protocol v2 widens it to the 6-byte [`VersionRead`](obc_ble::VersionRead): `version
-    /// u16 · store_epoch u32`. **Variable-length** (a `Vec`, like `status`/`config`): with a mounted
-    /// store the boot seed sets the full 6 bytes; with **no store** (card-resident epoch #776 — no
-    /// card ⇒ no epoch) it sets the 2-byte **version-only** form, which the app decodes as
-    /// `storeEpoch = nil` → ack fail-closed. Empty until the seed runs (before advertising). See
-    /// [`version_read_blob`].
+    /// pairing). Protocol v2 widens it to the [`VersionRead`](obc_ble::VersionRead): `version u16 ·
+    /// store_epoch u32 · obcm_version u8` (the last byte E1 / #911). **Variable-length** (a `Vec`,
+    /// like `status`/`config`): with a mounted store the boot seed sets the full 7 bytes; with **no
+    /// store** (card-resident epoch #776 — no card ⇒ no epoch) it sets the 2-byte **version-only**
+    /// form, which the app decodes as `storeEpoch = nil` → ack fail-closed. Empty until the seed
+    /// runs (before advertising). See [`version_read_blob`].
     #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read)]
     pub protocol_version: heapless09::Vec<u8, { obc_ble::VersionRead::ENCODED_LEN }>,
 }
@@ -177,7 +177,7 @@ pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
 }
 
 /// The `protocolVersion` read blob for the boot seed. The attribute is a variable-length `Vec`, so
-/// the read serves whichever length [`identity::version_read_bytes`] produced (6 with a mounted
+/// the read serves whichever length [`identity::version_read_bytes`] produced (7 with a mounted
 /// store, the 2-byte version-only form without).
 pub(crate) fn version_read_blob(
     store_epoch: Option<u32>,

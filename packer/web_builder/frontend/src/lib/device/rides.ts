@@ -17,7 +17,11 @@
  * A browser download is not durable. The rider can cancel at the save dialog, the disk can be full,
  * the tab can close between the transfer and the write. #894 therefore locks three sinks at three
  * levels of trust — the phone acks and heals from its own library, the desktop app acks *after
- * fsync*, and **the browser never acks, on any path, under any circumstance**.
+ * fsync*, and **the browser never acks, on any path, under any circumstance**. That rule is now
+ * normative rather than epic folklore: `obc-ble-interface-spec.md` §4.4, "What `synced` means, and
+ * who is allowed to say it" (E1, #911), which also spells out why two acking sinks need no
+ * coordination — the ack is add-only and idempotent, so a desktop ack and a phone heal merge to the
+ * same flags in either order.
  *
  * So this file does not merely omit the call. {@link RideSource} is the entire surface the export
  * path is given, and it holds exactly two reads: list the catalog, download one ride. There is no

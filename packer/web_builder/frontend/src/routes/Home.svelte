@@ -153,12 +153,6 @@
     />
 
     <div class="steps">
-        {#if catalogMode && catalogStore.deviceIsSimulated}
-            <p class="notice small">
-                Simulated device: firmware that reads OBCM v{device?.obcmVersion}. Test hook
-                (<code>?device-obcm=</code>) until C3 lands.
-            </p>
-        {/if}
         {#if catalogMode && catalogStore.staleReason}
             <p class="notice small">
                 Showing the catalog cached {new Date(catalogStore.cachedAt ?? 0).toISOString().slice(0, 10)}

@@ -40,7 +40,14 @@ pub use sensors::{
 };
 pub use transfer::{Receiver, StreamSender, TransferError};
 
-/// The protocol version this crate implements. The app reads it (with the store epoch, as a
-/// [`VersionRead`]) on connect and stops on a mismatch — a v1 peer sees this `u16 = 2` first and
-/// surfaces its mismatch path. There is no dual-version serving.
+/// The protocol version this crate implements. The app reads it (with the store epoch and the
+/// reader's OBCM version, as a [`VersionRead`]) on connect and stops on a mismatch — a v1 peer sees
+/// this `u16 = 2` first and surfaces its mismatch path. There is no dual-version serving.
+///
+/// **Not the map-format version.** `obc_formats::obcm::VERSION` is a different number in a
+/// different sequence — this is the wire contract, that is the file format on the card — and
+/// [`VersionRead::obcm_version`] carries the latter precisely because neither can be derived from
+/// the other. Appending that field did **not** bump this: the identity read is decoded by length
+/// (spec §1), so a trailing field is additive in both directions, and a bump would stop two peers
+/// that remain fully interoperable.
 pub const PROTOCOL_VERSION: u16 = 2;

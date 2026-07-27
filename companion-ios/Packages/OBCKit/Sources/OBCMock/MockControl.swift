@@ -822,8 +822,12 @@ public final class MockControl: @unchecked Sendable {
                 hardwareVersion: current.hardwareVersion, serial: current.serial,
                 protocolVersion: current.protocolVersion,
                 // A DFU install is NOT an era event (RRAM survives): the
-                // epoch rides through, like on the real device.
-                storeEpoch: current.storeEpoch
+                // epoch rides through, like on the real device. The OBCM
+                // version the reader reads *could* legitimately change across
+                // an install — this mock doesn't model a format bump, so it
+                // carries through too rather than silently dropping to nil.
+                storeEpoch: current.storeEpoch,
+                obcmVersion: current.obcmVersion
             )
             connection = .connecting
             try? await Task.sleep(for: .seconds(1))
@@ -929,7 +933,8 @@ extension DeviceInfo {
     /// A copy with a new name — the last-read `Config` name (Delta 1) surfacing in DIS.
     fileprivate func renamed(_ name: String) -> DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion,
-                   serial: serial, protocolVersion: protocolVersion, storeEpoch: storeEpoch)
+                   serial: serial, protocolVersion: protocolVersion, storeEpoch: storeEpoch,
+                   obcmVersion: obcmVersion)
     }
 }
 #endif

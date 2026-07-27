@@ -12,6 +12,8 @@
     import { onMount } from "svelte";
     import Gated from "../Gated.svelte";
     import { platform } from "../../lib/platform";
+    import { deviceFromIdentity } from "../../lib/catalog/availability";
+    import { catalogStore } from "../../lib/catalog/store.svelte";
     import { deviceHolder } from "../../lib/device/session.svelte";
     import type { MapArtifact } from "../../lib/device/write";
 
@@ -30,6 +32,22 @@
 
     const session = $derived(deviceHolder.session);
     let prompting = $state(false);
+
+    // OBCC §6(c), wired: tell the catalog which OBCM version the connected firmware reads, so the
+    // picker stops offering maps this device can't open (E1, #911 — it replaces C1's `?device-obcm=`
+    // stand-in). It lives here, not in the lazily-loaded write surfaces, because the *picker* is
+    // steps 1–2 and must react the moment a device appears — before anyone scrolls this far. One
+    // number crosses, never the session, which is what keeps `lib/catalog/` free of the USB stack
+    // and the USB stack out of the entry bundle.
+    //
+    // `obcmVersion == null` — an older firmware whose read predates the byte, or the store-less
+    // 2-byte read — deliberately reports **no device**: §6(c)'s branch for an unknown target is to
+    // offer the download stating the version, and inventing a number here would either refuse maps
+    // that work or offer maps that don't.
+    $effect(() => {
+        catalogStore.setDevice(deviceFromIdentity(session?.identity?.obcmVersion));
+        return () => catalogStore.setDevice(null);
+    });
 
     function connect() {
         const current = session;

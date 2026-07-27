@@ -21,6 +21,17 @@ canonical source the firmware Track-A issues (epic #267) implement.
 > where they disagree, this spec wins and the mirror is corrected. §9 lists the
 > v1 → v2 wire changes so the app-side repin is a checklist, not a diff hunt.
 
+> **The title says BLE; most of the document does not.** BLE came first and named
+> the file, but only §2 (advertising), §3 (the GATT table), §5 (the CoC) and §8
+> (pairing) are actually about the radio. §1 (identity), §4 (the object model,
+> descriptors, status envelope and **commands**), §6 (CRC) and §7 (object layouts)
+> are the transport-free contract, and USB (§10) binds the same bytes to a
+> different wire. Rules stated in those sections — including which peers may send
+> `ackRides` and what `synced` means (§4.4) — apply to **every** transport unless
+> they say otherwise. The file has not been renamed because the URL is load-bearing
+> across the firmware, the app and the web builder; §10 is the map of what is
+> radio-specific.
+
 All multi-byte integers are **little-endian** (matching OBCM/OBCR). Shared
 binary test vectors pinning these layouts live in
 [`protocol-vectors/`](protocol-vectors/) and are consumed by both `cargo test`
@@ -59,31 +70,93 @@ binary test vectors pinning these layouts live in
 
 ---
 
-## 1. Protocol version & store epoch
+## 1. Protocol version, store epoch & map-format version
 
 `protocol_version` is an unsigned 16-bit integer, **currently `2`**, exposed
 first in the `protocolVersion` read (§3.3). It covers everything in this
 document: UUIDs, descriptor layouts, object types, and status codes.
 
-**v2 widens the read** from a bare `u16` to `version u16 · store_epoch u32` — six
-little-endian bytes:
+**v2 widened the read** from a bare `u16` to `version u16 · store_epoch u32`, and
+**E1 (#911) appended `obcm_version u8`** — seven little-endian bytes:
 
 ```
-protocolVersion read (6 bytes, little-endian):
-  version      u16   the protocol version (2)
-  store_epoch  u32   the device's current store-epoch nonce
+protocolVersion read (7 bytes, little-endian):
+  version       u16   the protocol version (2)
+  store_epoch   u32   the device's current store-epoch nonce
+  obcm_version  u8    the OBCM map-format version this firmware's reader reads
 ```
 
 - The app reads it on every connect, before any other OBC Control traffic. It is
-  an **open** (pre-pairing) read (§8), so the app knows both the version and the
-  epoch *before* `ackRides` or any reconcile write fires.
+  an **open** (pre-pairing) read (§8), so the app knows the version, the epoch and
+  the map format *before* `ackRides` or any reconcile write fires.
 - On version mismatch the app **surfaces and stops** (banner / disabled sync) —
   it must never trap or attempt a best-effort decode. A **v1 peer** reads the
   first `u16 = 2` and takes exactly that mismatch path; **there is no dual-version
   serving** — the device speaks v2 only. The device ignores traffic it can't
   parse and answers unknown commands with `unknown` (§4.4).
 - Additive, compatible changes (a new object type id, a new command, a new
-  waypoint type) do **not** bump the version; changing an existing layout does.
+  waypoint type, **a trailing field on a length-driven read**) do **not** bump the
+  version; changing an existing layout does.
+
+**The read is decoded by length, and that *is* its version mechanism.** This has
+been true since the store-less short read (#776) — it is not a special case bolted
+onto a fixed shape. Three lengths are defined:
+
+| Bytes | Served by | Decodes to |
+| --: | :-- | :-- |
+| 7 | a device with a mounted store | version + epoch + map-format version |
+| 6 | a firmware predating `obcm_version` | version + epoch, `obcm_version` **absent** |
+| 2 | a device with **no mounted store** | version only, `store_epoch` **absent** |
+
+A reader takes each field on "did at least this many bytes arrive", and **ignores
+bytes past the fields it knows** — so a future trailing field breaks no shipped
+peer. A field that did not arrive decodes to *absent* (`nil` / `None` / `null`),
+**never to a fabricated default**: `store_epoch = 0` names a legal id era the
+device never claimed, and `obcm_version = 0` reads as "this device supports OBCM
+v0" and would refuse every real map. Absent means *unknown*, and unknown has its
+own defined behaviour in both cases (ack fail-closed below; §6(c)'s
+no-known-target-firmware branch for the map version).
+
+**Why appending `obcm_version` did not bump `protocol_version`.** A bump is a hard
+stop — the mismatch path above disables sync in both directions, by design, because
+a bump means the wire is no longer mutually intelligible. That is the wrong signal
+here. The field is optional by construction: a peer that predates it reads seven
+bytes, takes the six it understands, and loses nothing it had; a peer that expects
+it against an older device reads six, gets *absent*, and takes the defined unknown
+branch. Neither side is wrong and neither needs to stop, so bumping would break a
+pair that is fully interoperable in order to announce a field that is allowed to be
+missing. The precedent is `routeList`'s 76 → 84-byte entry (§7.4, §9): a trailing
+field appended to an existing layout whose length is self-describing is additive,
+and additive changes do not bump. What *would* require a bump is changing or
+reordering a field already defined here — which this does not do: bytes 0–5 keep
+their meaning and their offsets, and the new field is byte 6.
+
+**Map-format version (`obcm_version`).** The OBCM version (`OBCM_Spec.md`) the
+running firmware's map reader reads — `10` at time of writing. It is a **different
+number in a different sequence** from `protocol_version` beside it: one is this
+wire contract, the other is the on-card map file format, and neither is derivable
+from the other. Nor is it derivable from the DIS firmware-revision string (§3.1),
+which is a release string that maps to a format version only through a table that
+exists nowhere. The reference firmware sources the byte from
+`obc_formats::obcm::VERSION` — the same constant its reader validates every
+`.obcm` header against — so what a device *claims* to read and what it *does* read
+cannot drift.
+
+Its consumer is `OBCC_Spec.md` §6(c): a host offering map artifacts MUST NOT offer
+one whose `obcm_version` the connected device cannot read, and SHOULD show it as
+unsupported *with the reason* rather than hiding it. The reader supports exactly
+one version at a time (earlier maps are repacked), so this is a single `u8`, not a
+range. A host that reads *absent* — an older firmware, or the store-less short read
+— takes §6(c)'s branch for no known target firmware: offer the download, stating
+the version. Guessing would mean either refusing a map that works or offering one
+that doesn't.
+
+A store-less device serves 2 bytes even though it knows its OBCM version. The
+fields are positional and `store_epoch` has no absent encoding, so byte 6 cannot be
+reached without inventing bytes 2..6; a 3-byte `version · obcm_version` form would
+make byte 2 mean two different things depending on the total length, which is
+decodable but is the kind of positional special case that outlives the reason for
+it. Nothing is lost: a device with no card has nowhere to put a map.
 
 **Store epoch.** `store_epoch` is a `u32` TRNG nonce that names a store's **id
 era**. It is **card-resident** — persisted as **`EPOCH.OBE`** in the card root, so
@@ -122,9 +195,9 @@ The essentials the wire depends on:
   distinct `(serial, epoch)` scope — no foreign ids alias under a shared era.
 - **No mounted store ⇒ no epoch.** A device with no card has nothing to name and
   nothing to prove, so it serves only the **2-byte version** (`version` alone, no
-  `store_epoch`). The app treats the absent epoch as a **failed identity read** —
-  ack fail-closed (below) — never as epoch `0` (a legal value). The full 6-byte
-  shape is served whenever a store is mounted.
+  `store_epoch`, and therefore no `obcm_version` after it). The app treats the
+  absent epoch as a **failed identity read** — ack fail-closed (below) — never as
+  epoch `0` (a legal value). The full shape is served whenever a store is mounted.
 - **Ack fail-closed contract.** The version+epoch read **gates** `ackRides` and
   every reconcile write: a connection whose identity read failed — including the
   short version-only read above — sends no ack and reconciles nothing (library
@@ -197,7 +270,7 @@ Base UUID (random; **not** derived from the SIG base): the 16-bit block
 | `0004` | `config` | read + write | the Config object (§7.3), whole-blob |
 | `0005` | `transferControl` | write | open / abort a CoC transfer (§4.2) — **write-only, no CCCD** |
 | `0007` | `psm` | read | `u16` — the dynamic L2CAP PSM the app opens the CoC on |
-| `0008` | `protocolVersion` | read | `version u16 · store_epoch u32` — §1. Readable **without** encryption |
+| `0008` | `protocolVersion` | read | `version u16 · store_epoch u32 · obcm_version u8` — §1, decoded **by length** (7 / 6 / 2 bytes). Readable **without** encryption |
 
 **Six characteristics** (v2 drops two of v1's eight). The `0003` and `0006`
 blocks — v1's `objectStore` digest and reserved `diagnostics` — are **retired and
@@ -501,25 +574,57 @@ at `6`, not the `3`/`4` epic #638's draft table drew: that draft predates
 **`ackRides` — possession reconciliation.** The device keeps a per-ride
 "synced" flag (it drives the delete-guard cue on the device's Rides screen).
 Setting it only when a ride download completes leaves the flag an *event
-inference* — any divergence between the app's library and the device's record
+inference* — any divergence between a peer's library and the device's record
 (rides synced before the device tracked the flag, a record lost with a
-reflashed card, an app reinstall) would be permanent, because a ride the app
+reflashed card, an app reinstall) would be permanent, because a ride the peer
 already holds is never downloaded again. `ackRides` converts the flag into
-*reconciled state*: the app's library is the ground truth for "the phone has
-this ride", and the app sends the device-namespace ride ids it holds on every
-connect (and after edits, as it likes). Rules:
+*reconciled state*: the peer's library is the ground truth for "a copy of this
+ride exists over there", and the peer sends the device-namespace ride ids it
+holds on every connect (and after edits, as it likes). Rules:
 
 - **Monotonic**: the device only sets flags from an ack, never clears them —
-  the flag means "downloaded at least once", not "still held by the phone".
+  the flag means "synced at least once", not "still held by the acking peer".
   (A phone-side delete keeps the ride's tombstone, so its id stays in the
   ack list; ids never reuse, so a stale flag can't mislabel a future ride.)
 - **Idempotent and order-free**: re-acking a flagged ride changes nothing, so
-  the app may chunk a long list across several `command` writes (the
+  a peer may chunk a long list across several `command` writes (the
   reference firmware accepts ≤ 31 ids per write — a 64-byte value) and
   re-send the whole list every connect.
-- **Unknown ids are ignored**, answered `ok`: the app may hold rides the
+- **Unknown ids are ignored**, answered `ok`: a peer may hold rides the
   device has since deleted. `error` is answered only for a malformed write
   (`count` promising more ids than the write carries).
+- **First sync, not last**: flagging a ride records its `synced_at` once. A
+  second ack of an already-flagged ride does **not** re-stamp it, so a
+  reconnect can never push an auto-expiry countdown anchor forward (#638).
+
+**What `synced` means, and who is allowed to say it.** `synced` means **a durable
+copy of this ride exists off the device** — *not* "the phone has it". The
+distinction became load-bearing the moment USB (§10) gave the device a second peer,
+because the flag is what unlocks deleting the ride, and auto-expiry (#638) counts
+from its `synced_at`. Saying it when no durable copy exists loses a rider's ride.
+
+The three sinks, and what each may do:
+
+| Sink | Transport | Acks? |
+| :-- | :-- | :-- |
+| Companion app | BLE | **Yes** — and *heals*: it re-sends its whole library every connect, which is what repairs a record the device lost |
+| Desktop app | USB | **Yes, after `fsync`** — the ack follows the durable write, never the successful transfer |
+| Browser | USB (WebUSB) | **Never, on any path** — a file the browser handed to a download is cancellable, overwritable and not yet anywhere; it is not durable, so it is not a sync |
+
+The browser's rule is structural rather than disciplinary: the hosted tier's ride
+path is handed a two-method read surface with no `command` on it, so `ackRides` is
+not reachable from that code at all.
+
+**Two acking sinks need no coordination** — no per-sink field, no ownership, no new
+command — because the ack is add-only and idempotent. A desktop ack and a phone
+heal **merge to the same flags in either order**: the phone acking a library that
+never held a ride the desktop already fsynced does not un-flag it (the phone's
+silence is not evidence), and the desktop re-acking a ride the phone flagged
+changes nothing. The `synced_at` stamp is **first-ack-wins**: the ride keeps the
+instant it was first flagged with, whichever sink got there first, so no re-ack can
+extend a ride's life. (In the reference firmware the question does not arise: both
+handlers flag with an unset stamp because the ack path holds no trusted-clock
+handle, and the retention sweep sets the one anchor afterwards — §4.4 `setClock`.)
 
 **`installFw` — install the staged update (M4).** After a `fwImage` upload
 (§7.6) lands `/UPDATE.BIN` on the card, the app sends `installFw` to ask the
@@ -1084,6 +1189,19 @@ changes on v2, not part of the v1→v2 break above:
   `entry_len` mechanism. The 76-byte v2 core is byte-identical; `rideList` (72) and
   `tripList` (76) are untouched.
 
+The USB transport (§10, #889) and the identity read's `obcm_version` byte (§1, E1
+#911) are additive on v2 for the same reason each of the above is:
+
+- **USB is a second transport, not a second protocol** — it re-binds §3's GATT
+  routing to a leading selector byte and carries §4's bytes unchanged, so nothing
+  in this document's object model moved.
+- **`protocolVersion` read 6 → 7 bytes** (§1): a trailing `obcm_version u8` on a
+  read that was already decoded by length. Bytes 0–5 keep their meaning and their
+  offsets, absent trailing fields have defined "unknown" behaviour on both sides,
+  and a bump would stop two peers that remain fully interoperable — the argument
+  is written out in §1. Re-cuts the `version-read.bin` fixture and adds
+  `version-read-noobcm.bin`.
+
 Their iOS mirror repin — `setClock`/`setRouteRetention` sent at the documented
 times, the 84-byte `routeList` entry decoded by `entry_len`, and the
 `command-set-clock.bin` / `command-set-route-retention.bin` / regenerated
@@ -1131,13 +1249,21 @@ exactly filling a packet would need a ZLP to be delimited).
 | 5 | host → device | device-information read (§3.1) — no payload |
 | 6 | host → device | `config` read (§7.3) — no payload |
 | 1 | device → host | `status` (§4.3), verbatim, discriminator included |
-| 2 | device → host | the §1 identity bytes (6 with a store, 2 without) |
+| 2 | device → host | the §1 identity bytes (7 with a store, 2 without — the same length-driven read, verbatim) |
 | 3 | device → host | device information: `len u8 · UTF-8` ×3, firmware · hardware · serial |
 | 4 | device → host | the §7.3 config blob |
 
 Device → host selector 1 is the **sole unsolicited channel**, exactly as the
 `status` CCCD is on BLE: one ordering domain for every device → host edge,
 including a download's `downloadAnnounce`.
+
+**Every §4.4 command is reachable over USB, `ackRides` included**, and not as a
+per-command decision: selector 1 carries the `command` bytes into the *same*
+transport-free handler the GATT write reaches, so the command set is whatever §4.4
+says it is on both wires. What differs is not the plumbing but the *policy* — who is
+allowed to ack, and when — which is written down with the command (§4.4, "What
+`synced` means"): a USB peer acks only after its own durable write, and the browser
+never acks at all.
 
 Two device-side rules the host may rely on:
 
