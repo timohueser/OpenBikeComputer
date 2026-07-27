@@ -30,7 +30,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Crc32 } from "../usb/crc32";
-import { loopbackLink, MockDevice, type LoopbackLink, type LoopbackOptions, type MockDeviceOptions } from "../usb/loopback";
+import {
+    loopbackLink,
+    MockDevice,
+    REFERENCE_OBCM_VERSION,
+    type LoopbackLink,
+    type LoopbackOptions,
+    type MockDeviceOptions,
+} from "../usb/loopback";
 import { decodeRouteList } from "../usb/objects";
 import { PipeError, type BytePipe } from "../usb/pipe";
 import { NEW_OBJECT_ID, ObjectType, PROTOCOL_VERSION, SINGLETON_OBJECT_ID } from "../usb/protocol";
@@ -273,7 +280,11 @@ describe("the native pipe under C3's client", () => {
 
         // §1 identity and §3.1 device info: the two reads every connection makes before anything
         // else, and the ones that would fail first if the control frame envelope were wrong.
-        expect(state.identity).toEqual({ version: PROTOCOL_VERSION, storeEpoch: 0xa1b2c3d4 });
+        expect(state.identity).toEqual({
+            version: PROTOCOL_VERSION,
+            storeEpoch: 0xa1b2c3d4,
+            obcmVersion: REFERENCE_OBCM_VERSION,
+        });
         expect(state.info?.firmwareRevision).toBe("0.4.0+abc1234");
 
         // An upload of a real OBCR fixture: descriptor, raw bytes over the bulk plane, whole-object

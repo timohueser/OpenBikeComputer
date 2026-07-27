@@ -44,8 +44,9 @@ fn transfer_control_vectors_round_trip() {
     }
 }
 
-/// The widened `protocolVersion` read (spec §1): `version u16 · store_epoch u32`. The production
-/// codec decodes the fixture, sees protocol version 2, and re-encodes it byte-for-byte.
+/// The full `protocolVersion` read (spec §1): `version u16 · store_epoch u32 · obcm_version u8`.
+/// The production codec decodes the fixture, sees protocol version 2 and the OBCM version this
+/// build's reader actually reads, and re-encodes it byte-for-byte.
 #[test]
 fn version_read_vector() {
     let bytes = fixture("version-read.bin");
@@ -53,19 +54,55 @@ fn version_read_vector() {
     let vr = VersionRead::decode(&bytes).unwrap();
     assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION, "the fixture pins protocol version 2");
     assert_eq!(vr.store_epoch, 0xA1B2_C3D4);
-    assert_eq!(&vr.encode()[..], &bytes[..], "re-encode");
+    assert_eq!(
+        vr.obcm_version,
+        Some(obc_formats::obcm::VERSION),
+        "the fixture is what a current device serves — the map version its reader reads, not a literal"
+    );
+    let (enc, len) = vr.encode();
+    assert_eq!(&enc[..len], &bytes[..], "re-encode");
+}
+
+/// The **pre-E1** read (spec §1): `version u16 · store_epoch u32`, no `obcm_version` — an older
+/// firmware talking to a newer host. It decodes cleanly (the epoch is there, so the ack gate is
+/// open) with `obcm_version = None`, and re-encodes to the same 6 bytes. `None`, not `Some(0)`: a
+/// fabricated `0` would read as "this device supports OBCM v0" and refuse every real map, the same
+/// class of mistake as fabricating store epoch `0`.
+#[test]
+fn version_read_noobcm_vector() {
+    let bytes = fixture("version-read-noobcm.bin");
+    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN_NO_OBCM);
+    let vr = VersionRead::decode(&bytes).unwrap();
+    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION);
+    assert_eq!(vr.store_epoch, 0xA1B2_C3D4, "the epoch is present — this read is not a failed one");
+    assert_eq!(vr.obcm_version, None, "an absent trailing field is unknown, never a fabricated default");
+    let (enc, len) = vr.encode();
+    assert_eq!(&enc[..len], &bytes[..], "re-encode stays 6 bytes — the encoder does not invent the byte either");
 }
 
 /// The version-only `protocolVersion` read (spec §1, card-resident epoch #776): a device with no
 /// mounted store serves just the 2-byte version. It carries the protocol version, but the full
 /// [`VersionRead`] decode **rejects** it as truncated — exactly the app's "short read ⇒ storeEpoch
-/// nil ⇒ ack fail-closed" gate. The 6-byte shape is unchanged when a store is mounted.
+/// nil ⇒ ack fail-closed" gate. Unchanged by E1: the no-store read never grew a byte.
 #[test]
 fn version_read_nostore_vector() {
     let bytes = fixture("version-read-nostore.bin");
     assert_eq!(bytes.len(), 2, "version-only: just the u16 version, no epoch");
     assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), obc_ble::PROTOCOL_VERSION, "pins protocol version 2");
     assert!(VersionRead::decode(&bytes).is_err(), "a short read is not a full VersionRead — the app fail-closes");
+}
+
+/// The append-only rule this field rode in on (§1): a decoder takes the fields it knows and
+/// **ignores** bytes past them, so a future firmware appending another trailing field does not
+/// break this build — which is exactly why `obcm_version` needs no `PROTOCOL_VERSION` bump.
+#[test]
+fn version_read_ignores_unknown_trailing_bytes() {
+    let mut bytes = fixture("version-read.bin");
+    bytes.extend_from_slice(&[0xEE, 0xEE, 0xEE]);
+    let vr = VersionRead::decode(&bytes).unwrap();
+    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION);
+    assert_eq!(vr.store_epoch, 0xA1B2_C3D4);
+    assert_eq!(vr.obcm_version, Some(obc_formats::obcm::VERSION));
 }
 
 /// The download announce (status `msg = 4`): the `msg` byte + the 12-byte descriptor. The

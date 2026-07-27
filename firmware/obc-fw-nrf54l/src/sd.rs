@@ -804,7 +804,10 @@ impl Storage {
     /// rewritten. Ids already flagged (or dropped by a full set) count as nothing-new.
     pub fn mark_rides_synced(&mut self, ids: impl Iterator<Item = u16>, synced_at: u32) -> usize {
         let mut set = self.load_synced_set();
-        let added = ids.filter(|&id| set.insert(id, synced_at)).count();
+        // The merge rule itself lives in `SyncedRides::ack` (obc-app), where it is host-tested:
+        // add-only, idempotent, first-stamp-wins — which is what lets a desktop ack and a phone
+        // heal commute (E1, #911). This function only owns the read-modify-write around it.
+        let added = set.ack(ids, synced_at);
         if added > 0 {
             let _ = self.write_synced_set(&set);
         }

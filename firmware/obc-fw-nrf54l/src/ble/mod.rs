@@ -449,11 +449,11 @@ pub async fn run(
     // `protocolVersion` (V2 / #632; card-resident epoch #776): the pre-pairing read. `store_epoch` is
     // the boot mint pass's outcome, threaded in (never re-read here) — the epoch lives on the card
     // now, and a card swap must not silently change what this task serves. `Some(epoch)` → the full
-    // 6-byte `version u16 · store_epoch u32` [`VersionRead`]; `None` (no mounted store) → the 2-byte
-    // **version-only** form (`PROTOCOL_VERSION` LE), which the app decodes as `storeEpoch = nil` and
-    // fail-closes the ack — never a fabricated epoch (0 is a legal value). The attribute is a
-    // variable-length `Vec` so a 2- or 6-byte read is served verbatim. The value never changes for
-    // the connection's life.
+    // 7-byte `version u16 · store_epoch u32 · obcm_version u8` [`VersionRead`] (E1 / #911); `None`
+    // (no mounted store) → the 2-byte **version-only** form (`PROTOCOL_VERSION` LE), which the app
+    // decodes as `storeEpoch = nil` and fail-closes the ack — never a fabricated epoch (0 is a legal
+    // value). The attribute is a variable-length `Vec` so a 2- or 7-byte read is served verbatim.
+    // The value never changes for the connection's life.
     let _ = server.set(&server.obc.protocol_version, &gatt::version_read_blob(store_epoch));
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",

@@ -7,7 +7,8 @@
 //! - [`StatusMessage`]: the device → app `status` notification envelope — a `u8` discriminator +
 //!   fixed body. In v2 it is the **sole** device → app control channel, so the download announce
 //!   (`msg = 4`) shares its one subscription / one ordering domain.
-//! - [`VersionRead`]: the widened `protocolVersion` read — `version u16 · store_epoch u32` (§1).
+//! - [`VersionRead`]: the widened `protocolVersion` read — `version u16 · store_epoch u32 ·
+//!   obcm_version u8` (§1), a **length-driven** read served at 7, 6 or 2 bytes.
 //! - [`Config`]: the whole-blob Config object that crosses GATT (not the CoC).
 //!
 //! Every layout mirrors the app's Swift codecs field-for-field. All integers little-endian.
@@ -717,33 +718,92 @@ impl StatusMessage {
 /// mint rule lives on the device (V3); a random nonce leaks nothing beyond open DIS. Readable
 /// **without** encryption.
 ///
+/// **`obcm_version`** (E1, #911) is the third field: the **OBCM map-format version this firmware's
+/// reader reads** — `10` today, the value of `obc_formats::obcm::VERSION`. It exists because nothing
+/// else the device says carries it: [`PROTOCOL_VERSION`](crate::PROTOCOL_VERSION) is the *wire*
+/// contract (a different number in a different sequence) and the DIS firmware-revision string maps
+/// to a format version only through a table that exists nowhere. A host that offers map artifacts
+/// (`OBCC_Spec.md` §6(c)) must not offer one this device cannot read, and this byte is the whole of
+/// that decision. The reader supports exactly **one** version at a time (`OBCM_Spec.md` — earlier
+/// maps get repacked), so it is a single `u8`, not a range. This crate deliberately does **not**
+/// link `obc-formats` to source it — the wire codec stays dependency-free, exactly as it does for
+/// the `fwImage` size ceiling — so the *caller* supplies the number from the reader's own constant.
+///
 /// ```text
 ///   version      u16   the protocol version (currently 2)
-///   store_epoch  u32   the device's current store-epoch nonce
+///   store_epoch  u32   the device's current store-epoch nonce      — absent on a store-less device
+///   obcm_version u8    the OBCM map-format version the reader reads — absent before E1
 /// ```
+///
+/// **The read is length-driven, and has been since #776** — the 2-byte no-store form is not a
+/// degenerate case bolted on, it is how this attribute has always been decoded. E1 adds a third
+/// length to the same mechanism:
+///
+/// | Bytes | Means |
+/// | --: | :-- |
+/// | 7 | the full read |
+/// | 6 | a firmware that predates `obcm_version` → [`obcm_version`](Self::obcm_version) `None` |
+/// | 2 | no mounted store → no epoch to name, and therefore no room for the byte after it |
+///
+/// A trailing field the read did not carry decodes to `None`, **never** to a fabricated default:
+/// `obcm_version: Some(0)` would read as "supports OBCM v0" and refuse every real map, exactly the
+/// way `store_epoch: 0` would name a legal-but-wrong id era. `None` means *unknown*, and a host
+/// that cannot tell takes §6(c)'s no-known-target-firmware branch (offer, stating the version)
+/// rather than guessing.
+///
+/// A store-less device serves 2 bytes even though it knows its OBCM version: the fields are
+/// positional and `store_epoch` has no absent encoding, so byte 6 cannot be reached without
+/// fabricating bytes 2..6. Serving a 3-byte `version · obcm` form instead would make byte 2 mean
+/// two different things depending on total length — decodable, but the kind of positional
+/// special-case that outlives the reason for it. A device with no card has nowhere to put a map
+/// anyway, so nothing is lost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VersionRead {
     pub version: u16,
     pub store_epoch: u32,
+    /// The OBCM map-format version the device's reader reads; `None` when the read carried no such
+    /// byte (a firmware predating E1). Never `Some(0)` from a decode of a short read.
+    pub obcm_version: Option<u8>,
 }
 
 impl VersionRead {
-    pub const ENCODED_LEN: usize = 6;
+    /// The full read: `version u16 · store_epoch u32 · obcm_version u8`. Also the buffer size a
+    /// caller reserves — [`encode`](Self::encode) reports how much of it is live.
+    pub const ENCODED_LEN: usize = 7;
+    /// The pre-E1 read: everything but the trailing `obcm_version`. Still decoded (as `None`), and
+    /// still the shortest length a full [`decode`](Self::decode) accepts.
+    pub const ENCODED_LEN_NO_OBCM: usize = 6;
 
-    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+    /// Encode into a fixed buffer; the returned length is the slice to serve (`&buf[..len]`) — 7
+    /// bytes with an `obcm_version`, 6 without. The 2-byte no-store form is **not** produced here:
+    /// it carries no `store_epoch`, so it is not a `VersionRead` at all (the board writes the bare
+    /// `PROTOCOL_VERSION` bytes for it).
+    pub fn encode(&self) -> ([u8; Self::ENCODED_LEN], usize) {
         let mut b = [0u8; Self::ENCODED_LEN];
         b[0..2].copy_from_slice(&self.version.to_le_bytes());
         b[2..6].copy_from_slice(&self.store_epoch.to_le_bytes());
-        b
+        match self.obcm_version {
+            Some(v) => {
+                b[6] = v;
+                (b, Self::ENCODED_LEN)
+            }
+            None => (b, Self::ENCODED_LEN_NO_OBCM),
+        }
     }
 
+    /// Decode an identity read. Accepts 6 bytes (`obcm_version = None`) and any longer read,
+    /// taking byte 6 when it is there and ignoring anything past it — the append-only rule that
+    /// lets this field land without a `PROTOCOL_VERSION` bump. A read shorter than 6 bytes —
+    /// including the 2-byte no-store form — is [`Truncated`](DescriptorError::Truncated): there is
+    /// no epoch in it, and inventing one is precisely what the ack fail-closed contract forbids.
     pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
-        if data.len() < Self::ENCODED_LEN {
+        if data.len() < Self::ENCODED_LEN_NO_OBCM {
             return Err(DescriptorError::Truncated);
         }
         Ok(Self {
             version: u16::from_le_bytes([data[0], data[1]]),
             store_epoch: u32::from_le_bytes([data[2], data[3], data[4], data[5]]),
+            obcm_version: data.get(6).copied(),
         })
     }
 }
