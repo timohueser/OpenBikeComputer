@@ -14,6 +14,7 @@
 <script lang="ts">
     import type { ProtocolClient } from "../../lib/usb/client";
     import type { VersionRead } from "../../lib/usb/protocol";
+    import type { LocalFileSource } from "../../lib/usb/session";
     import type { DeviceInfo } from "../../lib/usb/transport";
     import type { MapArtifact } from "../../lib/device/write";
     import { rideAccess, rideScope } from "../../lib/device/rides";
@@ -27,11 +28,16 @@
         info,
         identity = null,
         artifact = null,
+        localFileSource = null,
     }: {
         client: ProtocolClient;
         info: DeviceInfo | null;
         identity?: VersionRead | null;
         artifact?: MapArtifact | null;
+        /** The session's disk-to-endpoint path (E3 #913), narrowed to the one surface that has a
+         *  local file to send. A route or a firmware image is kilobytes and arrives from a drop,
+         *  so neither has anything to gain from it. */
+        localFileSource?: LocalFileSource | null;
     } = $props();
 
     const rides = $derived(rideAccess(client));
@@ -40,7 +46,7 @@
     const scope = $derived(rideScope(info, identity));
 </script>
 
-<MapSend {client} {artifact} />
+<MapSend {client} {artifact} {localFileSource} />
 <RouteDrop {client} />
 <RideExport {rides} {scope} />
 <FirmwareCard {client} {info} />

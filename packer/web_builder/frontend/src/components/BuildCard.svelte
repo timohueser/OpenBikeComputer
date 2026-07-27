@@ -2,8 +2,10 @@
     import { onMount, untrack } from "svelte";
     import { formatBytes } from "../lib/format";
     import { platform, type StartBuild } from "../lib/platform";
+    import { available } from "../lib/platform/gating";
     import { buildConfigForSubmit, type SchemaEnvelope } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
+    import { builtMap } from "../lib/device/built.svelte";
     import { buildRegionIds, selectionReady, type AreaSelection } from "../lib/map/selection";
 
     // The build session comes in as a prop rather than off `platform` so this
@@ -49,7 +51,26 @@
     // Null on a host that cannot stop a build (see `BuildSession.cancel`), which
     // is why this is a member check and not a platform-name check.
     const stop = tracker.cancel;
+    // Whether this visitor can put the map on a cable at all — the gating layer's
+    // question, asked once so the pointer below is never a promise the tier
+    // cannot keep.
+    const usbHere = available(["deviceUsb", "webUsb"]);
     let revealError = $state<string | null>(null);
+
+    // Hand a finished build to the device step, so "build a map, plug in, one click" is one click
+    // (#894). Only where the result is a real file: the dev server's build lives behind a download
+    // URL, and there is no path for a transport to stream.
+    //
+    // `noted` is a plain `let` on purpose. The effect must not *read* the holder it writes to, or
+    // every announcement schedules the run that would announce it again.
+    let noted: string | null = null;
+    $effect(() => {
+        const done = tracker.state === "done" ? tracker.result : null;
+        if (done?.path && done.path !== noted) {
+            noted = done.path;
+            builtMap.note({ path: done.path, filename: done.filename, bytes: done.size });
+        }
+    });
 
     async function reveal(path: string) {
         revealError = null;
@@ -63,6 +84,10 @@
     async function build() {
         validation = null;
         strippedNote = null;
+        // The previous map is no longer "the one you just built": a Send button still pointing at
+        // it while a new build runs would put the wrong file on the card.
+        builtMap.clear();
+        noted = null;
         if (!selection || !selectionReady(selection)) {
             validation =
                 selection?.mode === "bbox"
@@ -137,6 +162,11 @@
                 {formatBytes(tracker.result.size)} — copy it onto the device's SD card
             </span>
             <span class="small faint mono path">{path}</span>
+            {#if usbHere}
+                <!-- The flow this tier exists for (#894). The button itself lives with the device,
+                     where the connection state is; saying so here is what makes it findable. -->
+                <span class="small muted next">…or send it straight to the device, under Device.</span>
+            {/if}
         {:else}
             <a class="btn primary" href={tracker.result.downloadUrl} download={tracker.result.filename}>
                 Download {tracker.result.filename}
@@ -224,6 +254,10 @@
     .done .path {
         flex-basis: 100%;
         word-break: break-all;
+    }
+
+    .done .next {
+        flex-basis: 100%;
     }
 
     .log {

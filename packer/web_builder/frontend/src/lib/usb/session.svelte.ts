@@ -8,7 +8,7 @@
  */
 
 import { WebUsbWatcher, type WatcherOptions } from "./webusb";
-import type { DeviceSession, DeviceStatus, DeviceWatcher } from "./session";
+import type { DeviceSession, DeviceStatus, DeviceWatcher, LocalFileSource } from "./session";
 import type { ProtocolClient } from "./client";
 import type { VersionRead } from "./protocol";
 import type { DeviceInfo } from "./transport";
@@ -22,6 +22,12 @@ export class WatchedDeviceSession implements DeviceSession {
 
     readonly transport: string;
     readonly supported: boolean;
+    /**
+     * Present exactly when the watcher has one, so the "is there a disk-to-endpoint path" question
+     * has a single answer and it is the transport's. Bound to the watcher rather than copied, so it
+     * keeps reading whichever link is open now.
+     */
+    readonly localFileSource?: LocalFileSource;
 
     private readonly watcher: DeviceWatcher;
     private readonly unsubscribe: () => void;
@@ -30,6 +36,8 @@ export class WatchedDeviceSession implements DeviceSession {
         this.watcher = watcher;
         this.transport = transport;
         this.supported = watcher.current.status !== "unsupported";
+        const local = watcher.localFileSource;
+        if (local) this.localFileSource = (path) => local.call(watcher, path);
         // `subscribe` fires immediately with the current snapshot, so the initial state is set here
         // rather than duplicated above.
         this.unsubscribe = watcher.subscribe((state) => {
