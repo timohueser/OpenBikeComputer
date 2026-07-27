@@ -102,6 +102,12 @@ tokio = { version = "1", features = ["sync", "macros", "fs", "io-util"] }
 # Used from Rust only (no JS permission needed): "show the file I just built" in
 # the platform's own file manager.
 tauri-plugin-opener = "2"
+# The one place the *user* names a directory: relocating the ride library (E2
+# #912). Called from Rust, like the opener above, so `capabilities/default.json`
+# stays at `core:default` and no JS gets a file-picker. That is also the crate's
+# standing rule about paths, met rather than bent — the frontend still never
+# names a place; here the OS's own chooser does, with the person driving it.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 # `preserve_order` for the same reason obc-pack needs it: a packer config's style
 # IDs are assigned in document order, and this crate hands configs through.

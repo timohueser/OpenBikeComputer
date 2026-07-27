@@ -21,17 +21,15 @@
 //     WebUSB — which is also what makes this the only tier a Safari or Firefox
 //     user can plug a device into at all.
 
-import { PlatformNotImplemented, type LoadStyleEditor, type Platform } from "./types";
+import type { LoadStyleEditor, Platform } from "./types";
 import { DesktopBuild } from "../desktop/build.svelte";
 import { desktop } from "../desktop/invoke";
 import { parseCatalog, type Catalog } from "../catalog/manifest";
 
-// `async` so an unimplemented seam *rejects* rather than throwing past the
-// caller's `.catch()` — every method here is declared to return a promise, and
-// a seam that isn't written yet must not also break that contract.
-async function pending(member: string, owner: string): Promise<never> {
-    throw new PlatformNotImplemented("desktop", member, owner);
-}
+// Every seam this host declares is implemented now — D1 (#906) filled in the
+// data calls, D4 (#909) the device one and E2 (#912) the ride library — so the
+// `pending()` helper that named the issue owing each one has nothing left to
+// name here, exactly as it does on the web host.
 
 /**
  * OBCC §7: the whole body, parsed as one document — the Rust side read it whole
@@ -83,7 +81,14 @@ export const platform: Platform = {
         const { openNativeSession } = await import("../desktop/usb.svelte");
         return openNativeSession();
     },
-    rides: () => pending("rides", "E2 #912"),
+    // The managed ride library (E2 #912), loaded on demand for the same reason
+    // `device()` is: it reaches the ride codecs, the wasm GPX exporter and the
+    // Tauri ride commands, and a window that only builds a map never needs any
+    // of it. `platform/bundle.test.ts` pins the module to this target.
+    rides: async () => {
+        const { openRideLibrary } = await import("../desktop/library");
+        return openRideLibrary();
+    },
 
     storage: {
         places: () => desktop.storagePlaces(),
