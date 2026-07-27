@@ -16,19 +16,20 @@
     href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233c6b39'/%3E%3Ctext x='32' y='42' font-family='ui-monospace,Menlo,Consolas,monospace' font-size='22' font-weight='700' letter-spacing='1' fill='%23ece8cf' text-anchor='middle'%3EOBC%3C/text%3E%3C/svg%3E" />
 
   <!-- Open Graph / Twitter share card. og:image must be ABSOLUTE — scrapers don't
-       resolve relative URLs. The PNG is a real device render (native sim --png)
-       composed on parchment; regenerate alongside the poster if the demo map changes. -->
+       resolve relative URLs. The PNG is composed by docs/tools/og_card.html (the
+       housing CSS around the real device-poster.png sim frame) — regenerate with it
+       if the tagline, the housing, or the poster changes. -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://timohueser.github.io/OpenBikeComputer/" />
-  <meta property="og:title" content="OpenBikeComputer — your whole map, offline, on your bars" />
+  <meta property="og:title" content="OpenBikeComputer — own your adventure" />
   <meta property="og:description"
     content="An open-source bikepacking computer with offline maps, on-device routing, and days of battery — try the real firmware live in your browser." />
   <meta property="og:image" content="https://timohueser.github.io/OpenBikeComputer/og-card.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="The OpenBikeComputer device showing an offline map of the Grimsel Pass, beside the words: Your whole map. Offline. On your bars." />
+  <meta property="og:image:alt" content="The OpenBikeComputer device showing an offline map of the Grimsel Pass, beside the words: Own your adventure." />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="OpenBikeComputer — your whole map, offline, on your bars" />
+  <meta name="twitter:title" content="OpenBikeComputer — own your adventure" />
   <meta name="twitter:description"
     content="An open-source bikepacking computer with offline maps, on-device routing, and days of battery — try the real firmware live in your browser." />
   <meta name="twitter:image" content="https://timohueser.github.io/OpenBikeComputer/og-card.png" />
@@ -442,15 +443,6 @@
     .spec .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--forest); font-weight: 700; }
     .spec .v { font-family: var(--serif); font-size: 17px; }
 
-    /* ---------- "how it's built" teaser — the bridge for the engineer audience ---------- */
-    .how { padding: 0 0 30px; }
-    .how-inner {
-      display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px;
-      padding: 18px 22px;
-    }
-    .how-inner h2 { font-family: var(--serif); font-size: 19px; margin: 0; }
-    .how-inner p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
-
     /* ---------- footer ---------- */
     footer { position: relative; z-index: 1; border-top: 1px solid var(--parchment-3); margin-top: 30px; padding: 30px 0 46px; }
     footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
@@ -558,10 +550,10 @@
       <div class="wrap hero-grid">
         <div class="hero-head">
           <p class="eyebrow">Open-source bikepacking computer</p>
-          <h1>Your whole map.<br><em>Offline.</em> On your bars.</h1>
+          <h1>Own your <em>adventure.</em></h1>
           <p class="lede">
-            Offline vector maps, on-device route planning, and ride recording on a device
-            built to go <strong>days off-grid</strong> — no account, no subscription, no cloud.
+            Open hardware, open firmware, <strong>your data on your device</strong>.
+            Navigation that stays out of your way — and out of the cloud.
           </p>
         </div>
 
@@ -663,61 +655,50 @@
       <div class="wrap">
         <div class="section-head">
           <h2>Built for the long way round</h2>
-          <p>The things that matter when you're a long way from the nearest plug or signal.</p>
+          <p>The things that matter when the nearest plug — or signal — is days away.</p>
         </div>
         <div class="features">
           <div class="card">
             <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg></div>
             <h3>Sunlight-readable display</h3>
-            <p>A memory-LCD (MIP) screen that's crisp and always on — and only redraws what changes, so it stays readable in direct sun without burning power.</p>
+            <p>Crisp, always on, and it loves direct sun — the reflective screen reads by daylight, and only spends power on pixels that change.</p>
           </div>
           <div class="card">
             <div class="ico"><svg viewBox="0 0 24 24"><rect x="2" y="8" width="16" height="8" rx="2"/><path d="M22 11v2M6 11v2M9 11v2M12 11v2"/></svg></div>
             <h3>Lasts for days</h3>
-            <p>The low-power display and microcontroller sip from the battery — so you measure runtime in days on the trail, not hours between charges.</p>
+            <p>No nightly charging ritual. One charge covers days of riding — so the computer isn't the thing that dies on day three of the trip.</p>
           </div>
           <div class="card">
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></div>
-            <h3>3D-printed case</h3>
-            <p>Open hardware: the enclosure is 3D-printable, so you can make it, mount it your way, mod it, and repair it yourself — no proprietary parts.</p>
+            <h3>Own it, fix it</h3>
+            <p>Every part is replaceable — the battery, the quarter-turn mount, the USB socket, even the buttons. Nothing proprietary between you and a repair.</p>
           </div>
           <div class="card">
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M15 7l5 5-5 5"/></svg></div>
             <h3>Open-source software</h3>
-            <p>Every part of it is open — firmware and the tools that feed it. Read it, build it, change what you don't like, and make it your own.</p>
+            <p>Firmware, simulator, map toolchain — every line is open. Read it, build it, and change what you don't like.</p>
           </div>
           <div class="card">
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 12l9 5 9-5M3 16l9 5 9-5"/></svg></div>
-            <h3>Style your own maps</h3>
-            <p>Pick a region and style the map to your taste, then build it yourself. Your colours, your detail — the map looks the way you want it to.</p>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>
+            <h3>Routes to anywhere</h3>
+            <p>A campsite, a water source, the last bakery before the pass — pick a point and the device plans the route right there, in the field. No phone, no signal.</p>
           </div>
           <div class="card">
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"/><path d="M9.2 12l1.9 1.9 3.7-4"/></svg></div>
             <h3 class="tag">Completely cloud-free</h3>
-            <p>No account, no subscription, no cloud. Your maps and your rides live on the device and on your computer — and only there. Your data stays yours.</p>
+            <p>No account, no subscription, no server anywhere. Maps and rides live on the device and your computer — and it all works without a phone.</p>
           </div>
         </div>
 
         <div class="specs">
-          <div class="spec"><span class="k">Brain</span><span class="v">nRF54L · Rust, no_std</span></div>
-          <div class="spec"><span class="k">Display</span><span class="v">Sharp memory LCD</span></div>
-          <div class="spec"><span class="k">Resolution</span><span class="v">240×320 · 64 colours</span></div>
-          <div class="spec"><span class="k">Input</span><span class="v">Encoder + Back, no touch</span></div>
-          <div class="spec"><span class="k">Licence</span><span class="v">GPL-3.0</span></div>
+          <div class="spec"><span class="k">Screen</span><span class="v">2.13″ · always on · reads in full sun</span></div>
+          <div class="spec"><span class="k">Controls</span><span class="v">Four buttons · works with gloves</span></div>
+          <div class="spec"><span class="k">Mount</span><span class="v">Quarter-turn</span></div>
+          <div class="spec"><span class="k">Licence</span><span class="v">GPL-3.0 · everything open</span></div>
         </div>
       </div>
     </section>
 
-    <!-- HOW IT'S BUILT — one sentence + the bridge into the docs for the engineer audience. -->
-    <section class="band how">
-      <div class="wrap">
-        <div class="card how-inner">
-          <h2>How it's built</h2>
-          <p>One render path — the firmware, the desktop simulator, and the demo above all draw
-            from the same Rust crates. <a href="docs/software/architecture/">Read the architecture</a>.</p>
-        </div>
-      </div>
-    </section>
   </main>
 
   <section class="band wip-band">
