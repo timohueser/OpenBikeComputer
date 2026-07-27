@@ -98,7 +98,9 @@ pub(crate) async fn serve_connection(
                             info!("ble: [gatt] command write");
                             e.accept()
                         } else if handle == server.obc.transfer_control.handle {
-                            match e.with_data(|_off, data| classify_transfer(data, store, &mut guard)) {
+                            match e.with_data(|_off, data| {
+                                classify_transfer(data, store, &mut guard, crate::link::Transport::Ble)
+                            }) {
                                 TransferDisposition::Arm(armed) => {
                                     info!("ble: [gatt] transfer_control: transfer armed");
                                     TRANSFER_ACTIVE.store(true, Ordering::Relaxed);

@@ -38,7 +38,7 @@ pub use sensors::{
     WheelRevs, UUID_BATTERY_LEVEL, UUID_BATTERY_SERVICE, UUID_CSC_MEASUREMENT, UUID_CSC_SERVICE,
     UUID_CYCLING_POWER_MEASUREMENT, UUID_CYCLING_POWER_SERVICE, UUID_HEART_RATE_SERVICE, UUID_HR_MEASUREMENT,
 };
-pub use transfer::{Receiver, StreamSender, TransferError};
+pub use transfer::{HeldMagic, Receiver, StreamSender, TransferError, MAGIC_LEN};
 
 /// The protocol version this crate implements. The app reads it (with the store epoch and the
 /// reader's OBCM version, as a [`VersionRead`]) on connect and stops on a mismatch — a v1 peer sees

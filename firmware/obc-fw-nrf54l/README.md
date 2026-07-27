@@ -158,8 +158,10 @@ cargo run --release --no-default-features --features ble
 
 ### SD read throughput diagnostic
 
-`sd_bench` measures the real SERIAL22 → embedded-sdmmc → card path against the first `.obcm` in
-the card root. It compares CMD17-per-block reads with CMD18 batches across sequential, random 4 KB,
+`sd_bench` measures the real SERIAL22 → embedded-sdmmc → card path against the first `.obcm` its
+own scan finds in the card root — deliberately *not* the app's selected map (`/MAP.SEL`, #927): the
+benchmark wants a large file to read, not the one the renderer would pick. It compares
+CMD17-per-block reads with CMD18 batches across sequential, random 4 KB,
 and random 512-byte shapes, and checks sequential passes against an FNV integrity hash:
 
 ```sh
@@ -298,7 +300,15 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vector
 - **Storage lives on SD, ids are durable in filenames.** Uploaded routes land as 8.3 `RTnn.OBR`
   files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route
   the boot scan accepts); the **map build's** catalog scan matches `*.OBR` beside `.obcr`, so an
-  uploaded route shows in the on-device menu after a reflash. Every ride Finish on the map build
+  uploaded route shows in the on-device menu after a reflash. A **map** received over USB (#927) is
+  the fourth member of that family: `/MPnn.OBM` in the card root, same durable-id-in-the-filename
+  rule, and `OBM` is the 8.3-safe twin of `.obcm` the scan accepts beside it. It is the one upload
+  that streams *straight into its final file* rather than through `UPLOAD.TMP` — a temp-then-copy
+  promote would double both the minutes of writing and the free space needed — so the held-back
+  magic is patched into the final file itself at commit, and `sweep_aborted_maps()` reclaims the
+  zero-magic corpse of an interrupted transfer at the next boot. `/MAP.SEL` records which map the
+  renderer streams from; a committed upload becomes that choice, effective at the next boot (the
+  map's tables are parsed once at startup and held for the session). Every ride Finish on the map build
   writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
   build just serves those. The id in each filename is recovered at boot and is what the app's
   synced-set keys on. A ride is deleted **only on the device** (its Rides screen, hold-to-delete);

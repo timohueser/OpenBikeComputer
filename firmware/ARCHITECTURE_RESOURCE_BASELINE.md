@@ -85,11 +85,26 @@ python3 ../tools/resource_guard.py boot \
 
 ## Linked ELF baseline
 
+Current, **as CI links it** (the `embedded` job is the gate, and since #927 the JSON's
+`resident_ram_max` / `measured_flash` are taken from there rather than from the pinned
+host — see the note in `resource_baseline.json`). Both shipping profiles link an
+identical resident set:
+
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
+| :-- | --: | --: | --: | --: | --: | --: | --: |
+| default | 416,088 B | 5,136 B | 421,224 B | 1,024 B | 1,185,668 B | 2 × 76,800 B | 9,728 B |
+| BLE | 416,088 B | 5,136 B | 421,224 B | 1,024 B | 1,185,668 B | 2 × 76,800 B | 9,728 B |
+| bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
+
+The rows below this line are the **historical** 256 KB-part figures kept for the
+narrative they carry; they were never updated through the LM20 retarget and are an
+order of magnitude below the table above. The machine-readable authority is, as ever,
+[`tools/resource_baseline.json`](tools/resource_baseline.json).
+
+| Profile (historical, pre-LM20) | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
 | default | 204,544 B | 72 B | 204,616 B | 1,024 B | 685,484 B | 1 × 76,800 B | 52 B |
 | BLE | 211,032 B | 4,504 B | 215,536 B | 1,024 B | 1,124,104 B | 1 × 76,800 B | 6,240 B |
-| bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
 
 The USB device plane (#889) introduces `src/link/` — the transport-free companion-link
 core (the §4.4 command handler, descriptor classification, the identity blobs, the
@@ -444,6 +459,57 @@ part-2 convention). **Default is byte-identical** (`.bss 200,800 + .data 72 =
 toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
+
+### Device-side map storage (#927), 2026-07-27 — **+48 B resident, taken from CI**
+
+The first re-baseline whose numbers come from **CI rather than the pinned host**, and the
+change is small enough to say why plainly: the `embedded` job is the gate, it runs
+floating stable, and it linked exactly the recorded 421,176 B on develop `9bb7adf8`
+(run [30300503081](https://github.com/timohueser/OpenBikeComputer/actions/runs/30300503081))
+— so its 421,224 B on this branch is a clean, attributable **+48 B**. The pinned 1.96.0
+host links **+40 B** for the identical tree (416,040 → 416,080 `.bss`); the 8 B gap is
+toolchain layout, not a second change, and pinning the ceiling to the *lower* of the two
+would red the gate on every CI run.
+
+| | develop `9bb7adf8` (CI) | with #927 (CI) | Δ |
+| :-- | --: | --: | --: |
+| `.bss` | 416,040 B | 416,088 B | +48 B |
+| `.data` | 5,136 B | 5,136 B | 0 |
+| **linked resident** | **421,176 B** | **421,224 B** | **+48 B** |
+| `.uninit` | 1,024 B | 1,024 B | 0 |
+| flash | 1,166,192 B | 1,185,668 B | +19,476 B |
+| largest guarded poll frame | 9,728 B | 9,728 B | 0 (limit 12,288 B) |
+
+Itemized per symbol from an `llvm-nm -S` diff against `9bb7adf8` on the pinned host (the
+one place a stable-hash-free comparison was available), which accounts for the +40 there
+and, symbol for symbol, for the +48 on CI:
+
+| symbol | before | after | Δ | what it is |
+| :-- | --: | --: | --: | :-- |
+| `link::MAP_PHASE` | — | 1 B | +1 B | the map-transfer progress mirror the ride loop |
+| `link::MAP_RX_KIB` | — | 4 B | +4 B | polls once per pass to drive the on-glass card — |
+| `link::MAP_TOTAL_KIB` | — | 4 B | +4 B | the `RECORDING` pattern, three relaxed cells |
+| `SHARED_STORE` | 5,716 B | 5,728 B | +12 B | `Storage::open_map_name: Option<ShortFileName>` |
+| `__embassy_main::POOL` | 31,216 B | 31,240 B | +24 B | the ride loop's map-card reconcile block |
+| `.L_MergedGlobals` (all) | 869 B | 880 B | +11 B | the compiler's small-static pool, re-laid out |
+
+The `Storage` field is the one worth a sentence: embedded-sdmmc refuses every second open
+of an open file, so the map catalog has to read the **loaded** map's header through its
+live handle — and to recognise which scanned entry that is, it needs the open map's 8.3
+name. Without it the loaded map would be the one map missing from its own catalog, which
+is exactly the trap issue #480 documents for route downloads.
+
+**No named compile-time allocation moved.** `app` is still 135,224 B and
+`ble_object_store` still 13,528 B, verified against the report ELF on both profiles: the
+feature added module statics and a single `Storage` field, and its new `Screen` variant
+(`MapTransfer`, 12 B of state) is far smaller than the enum's largest, so
+`size_of::<App>()` is untouched. That is the discriminator this document already states —
+module statics move the `.bss` gate only; fields of `App` / `ObjectStore` move the report
+as well — landing on the expected side for once.
+
+Flash is not gated on this target, but +19 KB is worth naming: the new `sd.rs` map path
+and catalog scan, the map-transfer screen and its four-language copy, and the `obc-ble`
+announce/held-magic codecs.
 
 “Linked resident” is the CI contract's `.bss + .data`. `.uninit` is reported
 separately. The M33 receives 253,952 B after the FLPR carve, leaving 51,008 B

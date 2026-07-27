@@ -477,6 +477,20 @@ install_pending_save = "A ride is still being saved. Try again in a moment."
 install_no_card = "No card found. Insert the card and try again."
 install_snapshot_failed = "Could not save a rollback copy to the card. Update not installed."
 install_state_write = "Could not prepare the update. Nothing was changed."
+
+# --- The map-transfer card (map_transfer.rs, issue #927): what the glass shows while a map
+# is written to the card over USB, and what it says when the write ends ---
+[map_transfer]
+title = "MAP"
+receiving = "Receiving map"
+keep_cable = "Keep the cable connected."
+installed = "Map installed"
+restart = "Restart the device to use it."
+failed = "Map not stored"
+failed_storage = "The card could not store the map."
+failed_damaged = "The map arrived damaged. Send it again."
+failed_format = "That file is not a map this device reads."
+
 # --- Boot-fault cards (fault.rs; drawn pre-app, so the device renders the English
 # column in every build — catalogued so the repertoire test pins the copy) ---
 [fault]

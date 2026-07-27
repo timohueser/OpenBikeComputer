@@ -110,6 +110,64 @@ impl Receiver {
     }
 }
 
+/// The **held-back magic** of a streamed upload that is written straight to its final filename
+/// (issue #927): the first [`MAGIC_LEN`] payload bytes, withheld from the write and replayed only
+/// once the whole object has verified.
+///
+/// Every other upload gets its atomicity from `UPLOAD.TMP` → copy-to-final-with-held-magic: the
+/// temp is invisible to the catalog scans, and the copy patches the 4-byte format magic in as its
+/// last write, so a power cut leaves either an invisible temp or a zero-magic final file that every
+/// header read rejects. A **map** cannot afford the copy — it is hundreds of megabytes, so staging
+/// then copying would double both the write time and the free space needed. So a map streams into
+/// its final name directly and gets the *same* commit point another way: the file opens with four
+/// zero bytes, the stream's own first four bytes are held here instead of written, and the commit
+/// patches them in after the CRC and the header validate. The torn state is byte-for-byte the one
+/// the copy path leaves — a zero-magic file the scan refuses and the boot sweep reclaims.
+///
+/// Segmentation-proof: the held bytes fill across as many `feed` calls as it takes, so a host that
+/// opens with a 1-byte packet is handled exactly like one that opens with 512.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldMagic {
+    bytes: [u8; MAGIC_LEN],
+    /// How many of `bytes` are filled (0..=[`MAGIC_LEN`]).
+    held: u8,
+}
+
+/// How many leading payload bytes [`HeldMagic`] withholds — the width of every OBC format magic
+/// (`OBCM`, `OBCR`, `OBCU`).
+pub const MAGIC_LEN: usize = 4;
+
+impl HeldMagic {
+    /// Nothing held yet — the state at the first payload byte.
+    pub const fn new() -> Self {
+        HeldMagic { bytes: [0; MAGIC_LEN], held: 0 }
+    }
+
+    /// Take the leading magic out of `bytes` and return **what the caller should write**: the
+    /// remainder after the held prefix is complete, and an empty slice while it is still filling.
+    /// Idempotent once full — every later chunk passes straight through.
+    pub fn feed<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        let want = MAGIC_LEN - self.held as usize;
+        if want == 0 {
+            return bytes;
+        }
+        let take = core::cmp::min(want, bytes.len());
+        self.bytes[self.held as usize..self.held as usize + take].copy_from_slice(&bytes[..take]);
+        self.held += take as u8;
+        &bytes[take..]
+    }
+
+    /// The complete held magic, or `None` while fewer than [`MAGIC_LEN`] payload bytes have been
+    /// fed (an object too short to have one — the announce guard rejects those long before here).
+    pub const fn take(&self) -> Option<[u8; MAGIC_LEN]> {
+        if self.held as usize == MAGIC_LEN {
+            Some(self.bytes)
+        } else {
+            None
+        }
+    }
+}
+
 /// The send half of a transfer (download): the board reads `object[position…]` from storage chunk
 /// by chunk and advances this tracker, which owns the announce descriptor and the typed close. The
 /// whole-object `crc32` is precomputed by the caller — this core never sees the bytes, so it stays
