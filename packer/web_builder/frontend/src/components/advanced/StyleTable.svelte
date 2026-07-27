@@ -5,6 +5,7 @@
     // automatically). All edits mutate the working envelope + markModified.
     import { newStyleDef, removeCategory, reorderCategory } from "../../lib/config/edit";
     import { working } from "../../lib/config/storage.svelte";
+    import { confirmAction } from "../../lib/ui/confirm.svelte";
     import ColorControl from "./ColorControl.svelte";
     import LodSegments from "./LodSegments.svelte";
     import SchemaField from "./SchemaField.svelte";
@@ -74,9 +75,15 @@
         working.markModified();
     }
 
-    function deleteCategory() {
+    async function deleteCategory() {
         const n = Object.keys(entries).length;
-        if (!confirm(`Remove the "${cat}" category and all ${n} of its types?`)) return;
+        const ok = await confirmAction({
+            title: `Remove the "${cat}" category?`,
+            body: `All ${n} of its feature types go with it. Nothing tagged with them will be drawn.`,
+            confirmLabel: "Remove",
+            destructive: true,
+        });
+        if (!ok) return;
         const keys = removeCategory(env.config, cat);
         env.disabled = env.disabled.filter((k) => !keys.includes(k));
         working.markModified();

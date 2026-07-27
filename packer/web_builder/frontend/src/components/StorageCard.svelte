@@ -12,6 +12,7 @@
 
     import { onMount } from "svelte";
     import { formatBytes } from "../lib/format";
+    import { confirmAction } from "../lib/ui/confirm.svelte";
     import type { DiskStorage, StoragePlace } from "../lib/platform/types";
 
     let { storage }: { storage: DiskStorage } = $props();
@@ -35,7 +36,12 @@
         // Deleting the land dataset means a ~950 MB re-download; deleting an
         // extract means one region. The confirm carries the size so the answer
         // isn't guesswork.
-        const ok = confirm(`Delete ${formatBytes(place.bytes)} from ${place.path}?\n\n${place.note}`);
+        const ok = await confirmAction({
+            title: `Delete ${formatBytes(place.bytes)} from ${place.path}?`,
+            body: place.note,
+            confirmLabel: "Delete",
+            destructive: true,
+        });
         if (!ok) return;
         busy = place.id;
         try {
