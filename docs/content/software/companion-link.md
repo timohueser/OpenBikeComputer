@@ -482,6 +482,27 @@ transfer completion**. Acking when the last byte arrives starts a countdown
 against a ride that is not yet on anyone's disk, which is the single way this
 feature can lose data.
 
+"Durable" is a syscall, not a hope. On the desktop side a pulled ride is written
+to a temporary sibling, `fsync`ed, renamed over its destination, and the
+*directory* is `fsync`ed too — that last step is what makes the rename survive a
+power cut, and skipping it is the classic failure where the bytes are on the disk
+and the name pointing at them is not. Only then does the index that lists the ride
+commit, by the same four steps; only then does the ack go out. A crash anywhere in
+the middle leaves an index that does not mention the ride, so the next pull
+fetches it again and the device was never told anything — the direction that costs
+a re-download rather than a ride. And because the ack list is computed by asking
+the *filesystem* which rides are there, rather than by remembering which ones were
+just written, a file the rider deleted in Finder drops out of it on its own.
+
+Two more rules fall out of the same reasoning, and both are about *fetching*
+rather than acking. The peer always pulls the **whole** ride list and dedupes
+against its own library: the device's `synced` flag is a statement about
+durability somewhere else, so using it to decide what to download would skip
+exactly the rides a second peer has never seen. And a ride is keyed by
+`(serial, epoch, id)` — the [id era](#store-epochs-which-id-era-youre-talking-to)
+below — never by the bare id, because a bare-id library silently discards a new
+ride that reused a recycled one.
+
 ### The trusted clock and route retention
 
 Two more things ride every connect, both from the storage auto-expiry work
@@ -948,5 +969,6 @@ holding it.
 - The host side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:packer/web_builder/frontend/src/lib/usb)
 - The desktop app's transport — `nusb`, hot-plug, and the file-path bulk plane, under the *same* client: [`obc-desktop/src/usb/`](src:firmware/obc-desktop/src/usb) and [`lib/desktop/usb.ts`](src:packer/web_builder/frontend/src/lib/desktop/usb.ts)
 - The browser's flows over that client — sending a map, a route or a firmware image, and the read-only ride export whose device handle has no way to ack: [`web_builder/frontend/src/lib/device/`](src:packer/web_builder/frontend/src/lib/device)
+- The desktop app's ride library — the folder, the index, and the temp-fsync-rename-fsync write the ack waits on: [`obc-desktop/src/rides.rs`](src:firmware/obc-desktop/src/rides.rs); the pull that fills it, and the ack list it computes from the disk: [`lib/device/library.ts`](src:packer/web_builder/frontend/src/lib/device/library.ts)
 - Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`protocol-vectors/`](src:protocol-vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)
