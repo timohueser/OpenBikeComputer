@@ -51,11 +51,11 @@ describe("unimplemented seams", () => {
     // Each still-empty seam names the issue that owes it, so a stack trace says
     // who to chase. The list shrinking is the point: the web host's `catalog()`
     // left it when C1 (#900) implemented it, its `device()` when C3 (#902) did,
-    // and the desktop host's data calls when D1 (#906) built the Tauri backend —
-    // every remaining row is a real debt with an owner.
+    // the desktop host's data calls when D1 (#906) built the Tauri backend, and
+    // its `device()` when D4 (#909) put `nusb` under the same seam — every
+    // remaining row is a real debt with an owner.
     it.each([
         ["dev catalog", () => dev.platform.catalog(), /A3 #897/],
-        ["desktop device", () => desktop.platform.device!(), /D4 #909/],
         ["desktop rides", () => desktop.platform.rides!(), /E2 #912/],
     ])("%s rejects with PlatformNotImplemented", async (_name, call, owner) => {
         await expect(call()).rejects.toThrow(PlatformNotImplemented);

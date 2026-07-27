@@ -1,0 +1,30 @@
+# OpenBikeComputer — let a logged-in desktop session open the device (#909).
+#
+# Linux is the only platform that needs anything. The device declares a
+# vendor-specific interface (class 0xFF, #889), and:
+#
+#   * macOS lets an application open one with no driver, no entitlement and no
+#     kext — IOKit hands it over as long as nothing else has claimed it.
+#   * Windows binds WinUSB automatically from the MS OS 2.0 BOS descriptors the
+#     firmware ships, so there is no .inf, no Zadig and no driver install.
+#   * Linux exposes it through usbfs at /dev/bus/usb/BBB/DDD, which is
+#     root-owned by default. Without a rule the app can enumerate the device and
+#     then fail to open it, which reads as "Permission denied" and looks like a
+#     bug in the app.
+#
+# TAG+="uaccess" is the modern answer: systemd-logind grants the *currently
+# active local session* an ACL on the node, so the person sitting at the machine
+# can use their device and a remote or background user cannot. It is what every
+# other hardware tool ships, and it is better than MODE="0666" (which opens the
+# device to every process on the box) or a plugdev group (which needs the user
+# added to it and logged out and back in).
+#
+# Install:
+#     sudo cp 99-openbikecomputer.rules /etc/udev/rules.d/
+#     sudo udevadm control --reload-rules && sudo udevadm trigger
+# then unplug and re-plug the device. Existing nodes keep their old permissions.
+#
+# The ids are pid.codes' prototype/testing pair, matching the firmware's
+# VENDOR_ID / PRODUCT_ID. When a real product id is allocated this file moves
+# with firmware/obc-fw-nrf54l/src/usb/mod.rs and the host's OBC_USB_FILTERS.
+SUBSYSTEM=="usb", ATTR{idVendor}=="1209", ATTR{idProduct}=="0001", TAG+="uaccess"

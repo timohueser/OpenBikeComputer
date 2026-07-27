@@ -19,6 +19,7 @@
 //! | `GET /api/palette` | [`palette`] |
 //! | `POST /api/jobs` + SSE + `GET .../download` | [`build_start`] + a channel + a real path |
 //! | — | [`storage_info`] / [`storage_clear`], because caches this large need a door |
+//! | — | [`usb`], because the webview has no WebUSB and this tier is the universal USB path |
 //!
 //! ## Why the frontend can't do any of it itself
 //!
@@ -35,6 +36,7 @@ mod http;
 mod paths;
 mod regions;
 mod storage;
+mod usb;
 
 use std::sync::Arc;
 
@@ -138,6 +140,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Arc::new(Jobs::default()))
+        .manage(Arc::new(usb::UsbState::default()))
         .invoke_handler(tauri::generate_handler![
             regions,
             presets,
@@ -151,6 +154,17 @@ fn main() {
             storage_info,
             storage_clear,
             reveal_file,
+            // D4 (#909). Bytes only — the protocol lives once, in TypeScript, over these.
+            usb::usb_watch,
+            usb::usb_list,
+            usb::usb_open,
+            usb::usb_close,
+            usb::usb_read,
+            usb::usb_write,
+            usb::usb_cancel,
+            usb::usb_reset,
+            usb::usb_file_digest,
+            usb::usb_send_file,
         ])
         .run(tauri::generate_context!())
         .expect("run the OpenBikeComputer app");

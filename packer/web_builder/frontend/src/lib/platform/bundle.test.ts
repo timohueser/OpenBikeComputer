@@ -34,6 +34,8 @@ const DESKTOP_ONLY = {
     "the desktop host": /\/src\/lib\/platform\/desktop\.ts$/,
     "the Tauri command bridge": /\/src\/lib\/desktop\/invoke\.ts$/,
     "the Tauri build tracker": /\/src\/lib\/desktop\/build\.svelte\.ts$/,
+    "the native USB transport": /\/src\/lib\/desktop\/usb\.ts$/,
+    "the native USB session": /\/src\/lib\/desktop\/usb\.svelte\.ts$/,
     "the Tauri JS API": /\/@tauri-apps\/api\//,
     "the style editor route": /\/src\/routes\/Advanced\.svelte/,
     "the style editor components": /\/src\/components\/advanced\//,
@@ -46,6 +48,13 @@ const DESKTOP_TARGET_ONLY = {
     "the desktop host": /\/src\/lib\/platform\/desktop\.ts$/,
     "the Tauri command bridge": /\/src\/lib\/desktop\/invoke\.ts$/,
     "the Tauri build tracker": /\/src\/lib\/desktop\/build\.svelte\.ts$/,
+    // D4 (#909): the desktop tier drives USB natively, so the Rust-backed byte
+    // pipe must be in this bundle and nowhere else. Its presence here is also
+    // what proves the dynamic `import()` in `desktop.ts` still resolves —
+    // `device()` is only ever called from a click, so a broken path would
+    // otherwise surface on someone's desk.
+    "the native USB transport": /\/src\/lib\/desktop\/usb\.ts$/,
+    "the native USB session": /\/src\/lib\/desktop\/usb\.svelte\.ts$/,
     "the Tauri JS API": /\/@tauri-apps\/api\//,
 };
 

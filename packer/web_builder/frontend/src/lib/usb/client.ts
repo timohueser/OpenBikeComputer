@@ -2,7 +2,7 @@
  * The protocol client: the interface spec's object model driven over a {@link DeviceLink}.
  *
  * One implementation serves both tiers. The hosted site drives it over WebUSB (`webusb.ts`), the
- * desktop app will drive it over `nusb` behind Tauri (D4 #909), and CI drives it over an in-memory
+ * desktop app over `nusb` behind Tauri (`lib/desktop/usb.ts`, D4 #909), and CI over an in-memory
  * loopback (`loopback.ts`) — the client cannot tell, because everything below it is two byte pipes.
  * That is the whole point of building this once: a parallel desktop implementation would drift, and
  * the thing it would drift from is a byte-exact wire contract with a device that ships in the field.
@@ -31,7 +31,7 @@ import {
     type RouteListEntry,
     type TripListEntry,
 } from "./objects";
-import { PipeError, throwIfAborted, type DeviceLink } from "./pipe";
+import { PipeError, throwIfAborted, type BytePipe, type DeviceLink } from "./pipe";
 import {
     COMMAND_STATUS_NAMES,
     Command,
@@ -108,6 +108,29 @@ export const DEFAULT_CHUNK_SIZE = 16 * 1024;
  */
 export const DEFAULT_TIMEOUT_MS = 15_000;
 
+/**
+ * The two checks the upload loop makes between chunks, handed to a source that does its own I/O.
+ *
+ * A {@link ObjectSource.sendTo} implementation is *replacing* that loop, so it inherits the loop's
+ * obligations rather than being trusted to have none.
+ */
+export interface SendHooks {
+    /** The caller's cancel. Also honoured by {@link check}, so a source that only polls is correct. */
+    signal?: AbortSignal;
+    /** Bytes handed to the transport so far, for the progress bar. */
+    onProgress?: (done: number) => void;
+    /**
+     * Throws if the send must stop **now**.
+     *
+     * Two reasons, and the second is the one that is easy to miss: the caller cancelled, or the
+     * device has already rejected the descriptor. A descriptor-open reject (storage full, a size
+     * ceiling, busy) is asynchronous — it arrives on the control plane while these bytes are
+     * queued — and a source that never checks would push a whole 300 MB map at a device that said
+     * no on the first megabyte. Call it at least as often as progress is reported.
+     */
+    check(): void;
+}
+
 /** An object to upload, with its length and whole-object CRC known before the first byte moves —
  *  the descriptor announces both (§4.2). */
 export interface ObjectSource {
@@ -115,6 +138,20 @@ export interface ObjectSource {
     readonly crc32: number;
     /** Yield the object's bytes in order, in slices of at most `chunkSize`. */
     chunks(chunkSize: number): AsyncIterable<Uint8Array>;
+    /**
+     * Optional: move the whole object into `pipe` without its bytes passing through this process.
+     *
+     * A source has this only where the bytes already live somewhere the *transport* can reach on
+     * its own — which today means one thing: the desktop app, where the file is on the same disk as
+     * the Rust process that owns the USB endpoint (D4 #909). Routing a several-hundred-megabyte map
+     * through the webview to hand it straight back would copy every byte twice for nothing, and
+     * #894 says so explicitly.
+     *
+     * Resolves with the number of bytes the transport took. The caller still checks that against
+     * the announced length, so a short send is caught here rather than becoming a half-written
+     * object the device is asked to commit.
+     */
+    sendTo?(pipe: BytePipe, hooks: SendHooks): Promise<number>;
 }
 
 /** An in-memory object: one CRC pass now, then straight slices. */
@@ -308,19 +345,23 @@ export class ProtocolClient {
 
             let sent = 0;
             onProgress?.(0, src.totalLen);
-            for await (const chunk of src.chunks(chunkSize)) {
-                throwIfAborted(signal, "the upload");
-                // A descriptor-open reject (storage full, a size ceiling, busy) is asynchronous:
-                // the device answers while these bytes are already queued. Stop at the first sign
-                // of it rather than pushing a whole map at a device that has said no.
-                const early = this.statuses.tryTake(isTransferResult);
-                if (early) {
-                    this.transferClosed = true;
-                    throw this.transferFailure(early, "upload");
+            const check = () => this.checkUploadOpen(signal);
+            if (src.sendTo) {
+                // The source owns the transport for the length of the object (the desktop app's
+                // file-path plane). It gets the same two checks the loop below makes, and its
+                // answer is still measured against the announced length underneath.
+                sent = await src.sendTo(this.link.bulk, {
+                    signal,
+                    onProgress: (done) => onProgress?.(done, src.totalLen),
+                    check,
+                });
+            } else {
+                for await (const chunk of src.chunks(chunkSize)) {
+                    check();
+                    await this.link.bulk.write(chunk, signal);
+                    sent += chunk.length;
+                    onProgress?.(sent, src.totalLen);
                 }
-                await this.link.bulk.write(chunk, signal);
-                sent += chunk.length;
-                onProgress?.(sent, src.totalLen);
             }
             if (sent !== src.totalLen) {
                 throw new DeviceError(
@@ -647,6 +688,24 @@ export class ProtocolClient {
         } catch {
             // A device that is gone, or one that never answers, is no reason to hide the caller's
             // original error — the reset that follows is the backstop either way.
+        }
+    }
+
+    /**
+     * May the upload keep pushing bytes?
+     *
+     * The two conditions the chunk loop used to check inline, hoisted so a source that streams
+     * itself ({@link ObjectSource.sendTo}) makes exactly the same checks rather than a similar set.
+     */
+    private checkUploadOpen(signal?: AbortSignal): void {
+        throwIfAborted(signal, "the upload");
+        // A descriptor-open reject (storage full, a size ceiling, busy) is asynchronous: the device
+        // answers while these bytes are already queued. Stop at the first sign of it rather than
+        // pushing a whole map at a device that has said no.
+        const early = this.statuses.tryTake(isTransferResult);
+        if (early) {
+            this.transferClosed = true;
+            throw this.transferFailure(early, "upload");
         }
     }
 
