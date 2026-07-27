@@ -84,7 +84,13 @@ tauri = { version = "2", features = [] }
 # reason `vendored-geos` above exists: there is no C library to vendor, no CMake
 # leg, and nothing for a user to install. It talks to each platform's own USB
 # stack directly — usbfs on Linux, IOKit on macOS, WinUSB on Windows.
-nusb = "0.2"
+#
+# `features = ["tokio"]` is load-bearing, not tuning. nusb wraps every blocking
+# syscall in a `MaybeFuture`, and without a runtime feature the `.await` arm of
+# that type is a `panic!` — it compiles on all three platforms and dies the first
+# time anything is actually awaited. Tauri's runtime is tokio, so this is the
+# arm to enable. See `usb::runtime_guard` for what stops it happening again.
+nusb = { version = "0.2", features = ["tokio"] }
 # `HotplugWatch` is a `futures_core::Stream`; this is the trait, and nothing else
 # (futures-core has no dependencies of its own).
 futures-core = "0.3"

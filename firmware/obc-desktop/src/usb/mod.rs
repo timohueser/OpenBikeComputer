@@ -41,6 +41,7 @@
 //! not a path the webview gets to name freely.
 
 pub mod link;
+pub mod runtime_guard;
 pub mod sendfile;
 pub mod watch;
 
