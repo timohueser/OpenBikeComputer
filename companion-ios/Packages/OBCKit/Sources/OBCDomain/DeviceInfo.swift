@@ -32,6 +32,19 @@ public struct DeviceInfo: Equatable, Sendable {
     /// fabricated value. The (serial, epoch) library scoping that consumes it is
     /// V5 (#769); this field is the wire fact it stands on.
     public let storeEpoch: UInt32?
+    /// The **OBCM map-format version** this device's firmware reads (the identity read's third
+    /// field, E1 / #911) — `10` today. Not to be confused with `protocolVersion` beside it: that is
+    /// the *wire* contract, a different number in a different sequence, and neither is derivable
+    /// from the other. `OBCC_Spec.md` §6(c) is what consumes it — a host offering map artifacts must
+    /// not offer one this firmware cannot read — which today is the web/desktop builder rather than
+    /// this app; the app carries the field so the mirror stays honest about what the wire says, and
+    /// so a device dashboard can show it.
+    ///
+    /// `nil` when the read carried no such byte: a firmware predating the field (a 6-byte read), or
+    /// the store-less 2-byte read. **Deliberately not defaulted to `0`** — the same rule as
+    /// `storeEpoch`: `0` would read as "supports OBCM v0" and refuse every real map, where `nil`
+    /// correctly means unknown.
+    public let obcmVersion: UInt8?
 
     public init(
         name: String,
@@ -39,7 +52,8 @@ public struct DeviceInfo: Equatable, Sendable {
         hardwareVersion: String = "",
         serial: String = "",
         protocolVersion: UInt16 = OBCProtocol.version,
-        storeEpoch: UInt32? = nil
+        storeEpoch: UInt32? = nil,
+        obcmVersion: UInt8? = nil
     ) {
         self.name = name
         self.firmwareVersion = firmwareVersion
@@ -47,5 +61,6 @@ public struct DeviceInfo: Equatable, Sendable {
         self.serial = serial
         self.protocolVersion = protocolVersion
         self.storeEpoch = storeEpoch
+        self.obcmVersion = obcmVersion
     }
 }
