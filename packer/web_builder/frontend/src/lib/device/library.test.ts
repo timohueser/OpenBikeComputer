@@ -8,7 +8,7 @@
  *
  * ## Where the fsync lives, and what this file can and cannot prove
  *
- * The real durable write is Rust (`firmware/obc-desktop/src/rides.rs`), and it is tested there,
+ * The real durable write is Rust (`apps/obc-desktop/src/rides.rs`), and it is tested there,
  * against the real filesystem, with the power cut between `write()` and `fsync()`
  * (`a_crash_between_write_and_fsync_leaves_the_ride_unacked`). Node cannot run that code.
  *

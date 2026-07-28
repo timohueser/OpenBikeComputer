@@ -1,0 +1,19 @@
+[package]
+name = "obc-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false # host-only bench harness — never shipped or published
+description = "Host render benchmark harness + CI pixel-hash tripwire over the real obc-reader → obc-render pipeline (issue #327)"
+
+[dependencies]
+obc-reader = { path = "../../firmware/obc-reader" }
+obc-render = { path = "../../firmware/obc-render" }
+# The app owns the route-overlay draw params; the route scene imports the stroke colour + weight
+# from here so the bench can't silently drift from what the Map screen actually draws.
+obc-app = { path = "../../firmware/obc-app" }
+# `Framebuffer565` — the same RGB565 DrawTarget the banded device path renders into (obc-display, #807).
+obc-display = { path = "../../firmware/obc-display" }
+# The deterministic bench fixture (`build_bench_map`) the committed frame hashes are computed over.
+obcm-testkit = { path = "../obcm-testkit" }
+# Same 0.8 the render path uses, so `Rgb565`/`DrawTarget` unify.
+embedded-graphics = "0.8"

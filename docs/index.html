@@ -38,7 +38,7 @@
        the real firmware render path behind a thin obc_demo_* API (no egui/wgpu; the page's
        JS below owns the frame loop and the canvas). wasm-opt only runs on --release builds,
        so dev (trunk serve) stays fast while release ships a small, size-optimised binary. -->
-  <link data-trunk rel="rust" href="../firmware/obc-web-demo/Cargo.toml" data-wasm-opt="z" />
+  <link data-trunk rel="rust" href="../apps/obc-web-demo/Cargo.toml" data-wasm-opt="z" />
   <!-- Ship the placeholder docs page (dist/docs/index.html) until real docs exist. -->
   <link data-trunk rel="copy-dir" href="docs" />
   <!-- The blog ("expedition log") — rendered by the same build_docs.py pre_build hook. -->
@@ -788,7 +788,7 @@
       }
 
       // ------------------------------------------------------------------------------------------
-      // DRIFT-GUARD convention (read by firmware/obc-web-demo's `tour_targets_are_real_screens`
+      // DRIFT-GUARD convention (read by apps/obc-web-demo's `tour_targets_are_real_screens`
       // test): every screen a guided step waits for is written as a double-quoted string inside a
       // `until: [ ... ]` array literal below — and NOWHERE else. The test scans this file for every
       // `until:` array and asserts each quoted name is in `obc_app::Screen::NAMES`, so a screen

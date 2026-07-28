@@ -7,7 +7,7 @@ render pipeline, formats, UI) read the docs site:
 <https://timohueser.github.io/OpenBikeComputer/>. Per-crate roles are tabulated
 in the [repo README](../README.md#repository-layout).
 
-The host workspace (`firmware/Cargo.toml`) builds the shared `no_std` crates
+The host workspace (`Cargo.toml`, at the repo root) builds the shared `no_std` crates
 (`obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
 (`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
 both simulator hosts share in `obc-host-core`), the web builder's wasm

@@ -12,7 +12,7 @@ recorded-track log, consumed by **four** implementations:
   `ProvisionalConfigCodec`, `TransferDescriptor`, the OBCR route encoder) to the
   same files.
 - **Browser**: two consumers, for two different reasons.
-  - The wasm conversion bridge (`firmware/obc-web-convert`, #896) must reproduce
+  - The wasm conversion bridge (`apps/obc-web-convert`, #896) must reproduce
     the route and track fixtures byte-for-byte from the same inputs —
     `packer/web_builder/frontend/src/lib/convert/bridge.test.ts`. That is what keeps
     client-side conversion honest: the file a visitor downloads is the file the
@@ -61,7 +61,7 @@ against data instead of hard-coding.
 
 ## Regenerating
 
-The builders live in `firmware/obc-vectors` (the route vectors go through the real
+The builders live in `host/obc-vectors` (the route vectors go through the real
 GPX→OBCR converter; everything else is built from spec constants). After a
 **deliberate** spec change:
 

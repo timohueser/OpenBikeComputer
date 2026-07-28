@@ -9,7 +9,7 @@
         "build:web": "vite build --mode web",
         "build:desktop": "vite build --mode desktop",
         "build:all": "npm run build && npm run build:web && npm run build:desktop",
-        "build:wasm": "wasm-pack build ../../../firmware/obc-web-convert --release --target web --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg --out-name obc_web_convert",
+        "build:wasm": "wasm-pack build ../../../apps/obc-web-convert --release --target web --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg --out-name obc_web_convert",
         "preview": "vite preview",
         "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
         "test": "vitest run"

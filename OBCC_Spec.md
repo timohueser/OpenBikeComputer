@@ -11,11 +11,11 @@ hosted static site, the desktop app). It is the only file a consumer reads befor
 knows what exists.
 
 This document is normative. Its code authority is
-[`firmware/obc-pack/src/catalog.rs`](firmware/obc-pack/src/catalog.rs), which is also
+[`host/obc-pack/src/catalog.rs`](host/obc-pack/src/catalog.rs), which is also
 the only sanctioned producer; the generated JSON Schema is checked in at
-[`firmware/obc-pack/schema/catalog.schema.json`](firmware/obc-pack/schema/catalog.schema.json)
+[`host/obc-pack/schema/catalog.schema.json`](host/obc-pack/schema/catalog.schema.json)
 and a worked example at
-[`firmware/obc-pack/schema/catalog.example.json`](firmware/obc-pack/schema/catalog.example.json).
+[`host/obc-pack/schema/catalog.example.json`](host/obc-pack/schema/catalog.example.json).
 
 Unlike [`OBCM`](OBCM_Spec.md) / [`OBCR`](OBCR_Spec.md) / [`OBCU`](OBCU_Spec.md), this
 format is JSON rather than bytes: nothing on the device ever reads it, and every
@@ -188,7 +188,7 @@ bbox: completing partially-in-box ways and pulling in coastline and boundary fea
 pushes it out.
 
 That distinction carries a rule.
-[`firmware/obc-sim/assets/repack.sh`](firmware/obc-sim/assets/repack.sh) forbids
+[`apps/obc-sim/assets/repack.sh`](apps/obc-sim/assets/repack.sh) forbids
 deriving an *extract* bbox from an existing artifact's header, because self-sourcing
 ratchets the box wider on every re-pack — a fixture once grew to 14.5 MB that way.
 The rule is about **inputs**; this field is an **output**, and the honest answer to
@@ -401,11 +401,11 @@ twice over one tree is byte-identical.
 ## 10. Where this lives
 
 - Generator, types, schema, and the version-law tests:
-  [`firmware/obc-pack/src/catalog.rs`](firmware/obc-pack/src/catalog.rs)
+  [`host/obc-pack/src/catalog.rs`](host/obc-pack/src/catalog.rs)
 - Generated JSON Schema (checked in for consumers):
-  [`firmware/obc-pack/schema/catalog.schema.json`](firmware/obc-pack/schema/catalog.schema.json)
+  [`host/obc-pack/schema/catalog.schema.json`](host/obc-pack/schema/catalog.schema.json)
 - Worked example manifest:
-  [`firmware/obc-pack/schema/catalog.example.json`](firmware/obc-pack/schema/catalog.example.json)
+  [`host/obc-pack/schema/catalog.example.json`](host/obc-pack/schema/catalog.example.json)
 - The OBCM header the version and bbox are read from:
   [`OBCM_Spec.md` §1](OBCM_Spec.md); its code authority
   [`firmware/obc-formats/src/obcm.rs`](firmware/obc-formats/src/obcm.rs)

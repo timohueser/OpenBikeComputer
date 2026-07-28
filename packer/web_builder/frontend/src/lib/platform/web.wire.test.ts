@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
 const EXAMPLE = readFileSync(
-    new URL("../../../../../../firmware/obc-pack/schema/catalog.example.json", import.meta.url),
+    new URL("../../../../../../host/obc-pack/schema/catalog.example.json", import.meta.url),
     "utf8",
 );
 

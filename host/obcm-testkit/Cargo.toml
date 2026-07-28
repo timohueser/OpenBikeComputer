@@ -1,0 +1,11 @@
+[package]
+name = "obcm-testkit"
+version = "0.1.0"
+edition = "2021"
+publish = false # test-only helper crate — never shipped or published
+description = "Hand-written OBCM v10 byte builder shared by obc-reader and obc-render integration tests"
+
+[dependencies]
+# Import normative constants only. Byte assembly remains deliberately independent of production
+# serializers/parsers so this crate stays a meaningful oracle.
+obc-formats = { path = "../../firmware/obc-formats" }

@@ -295,7 +295,7 @@ strands a device that holds perfectly good firmware.
 (the canonical DFU-side CRC-32/IEEE), `engine.rs` (the bootloader's install engine —
 the verify → flash → readback → state-transition sequencing over a small `InstallIo`
 trait, host-tested with mock IO in `tests/engine.rs`, including the §2.3 header-skip
-arithmetic). The host tool `firmware/obc-mkimage` produces
+arithmetic). The host tool `host/obc-mkimage` produces
 and inspects §1 containers (`wrap` / `inspect`). Format-contract tests build blobs by
 hand and round-trip every variant (`obc-dfu/tests/boot_state.rs`, the unit tests in
 `image.rs`, `obc-mkimage/tests/cli.rs`); see `firmware/README.md` for the

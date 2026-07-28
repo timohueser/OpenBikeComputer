@@ -42,7 +42,7 @@ _obc_maps() {
 # Bundled + saved GPX tracks worth suggesting.
 _obc_gpx() {
   local root; root="$(_obc_root)" || return
-  find "$root/firmware/obc-sim/assets" "$root/tracks" -maxdepth 1 -name '*.gpx' 2>/dev/null
+  find "$root/apps/obc-sim/assets" "$root/tracks" -maxdepth 1 -name '*.gpx' 2>/dev/null
 }
 
 _obc_presets() {

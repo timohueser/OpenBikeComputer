@@ -1,6 +1,6 @@
 // The desktop host: the same frontend inside a Tauri shell, with obc-pack linked
 // in as a library and a real filesystem underneath. Every method here is one
-// `invoke()` of a Rust command in firmware/obc-desktop — D1 (#906) built that
+// `invoke()` of a Rust command in apps/obc-desktop — D1 (#906) built that
 // shell and D4 (#909) added the native USB transport under it.
 //
 // The caps were already true before any of this was implemented: they are the

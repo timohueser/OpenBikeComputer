@@ -1,7 +1,7 @@
 /**
  * The browser side of the conversion bridge (epic #894, A2 — issue #896).
  *
- * GPX -> OBCR and recorded ride log -> GPX, run client-side by `firmware/obc-web-convert`
+ * GPX -> OBCR and recorded ride log -> GPX, run client-side by `apps/obc-web-convert`
  * compiled to wasm. There is no TypeScript re-implementation here on purpose: the bytes a
  * visitor downloads are produced by the same `obc-route` code the device and the CLI run, and
  * `bridge.test.ts` pins that equality against the checked-in `protocol-vectors/` fixtures.
@@ -19,7 +19,7 @@ import type { InitInput } from "./pkg/obc_web_convert.js";
 
 /**
  * Why a conversion failed. Mirrors `ErrorCode::as_str` in
- * `firmware/obc-web-convert/src/convert.rs` — the two are one contract, so add or rename in both.
+ * `apps/obc-web-convert/src/convert.rs` — the two are one contract, so add or rename in both.
  *
  * - `empty-file` — the dropped file is zero bytes.
  * - `not-gpx` — the route file is not XML at all (a `.fit`/`.tcx` export, a zip, an image).

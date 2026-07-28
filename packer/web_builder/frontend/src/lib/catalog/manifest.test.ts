@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { CatalogFormatError, parseCatalog } from "./manifest";
 
 const EXAMPLE_PATH = new URL(
-    "../../../../../../firmware/obc-pack/schema/catalog.example.json",
+    "../../../../../../host/obc-pack/schema/catalog.example.json",
     import.meta.url,
 );
 const EXAMPLE = readFileSync(EXAMPLE_PATH, "utf8");

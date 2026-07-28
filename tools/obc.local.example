@@ -7,7 +7,7 @@
 #OBC_MAP="freiburg.obcm"
 
 # Default GPX track for `obc sim` / `obc uart`. If unset, the bundled
-# firmware/obc-sim/assets/grimsel-climb.gpx is used.
+# apps/obc-sim/assets/grimsel-climb.gpx is used.
 #OBC_GPX="tracks/my-favourite-loop.gpx"
 
 # Default packer preset for `obc pack`. If unset, packer/presets/default.json.

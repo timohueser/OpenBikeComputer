@@ -2,7 +2,7 @@
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
-(MCUs). It is written by the Rust packer (`firmware/obc-pack`) and read by the
+(MCUs). It is written by the Rust packer (`host/obc-pack`) and read by the
 Rust crate (`firmware/obc-reader`, shared by the desktop simulator and the nRF54L
 firmware).
 
@@ -100,7 +100,7 @@ screen space is the renderer's responsibility, not the format's.
 [Nav Directory][Profile Table][Node Index + Chunks][Edge Pool] (§8 — file tail)
 ```
 
-The byte layout is produced by `firmware/obc-pack/src/serialize.rs` (`serialize_lods`) and
+The byte layout is produced by `host/obc-pack/src/serialize.rs` (`serialize_lods`) and
 parsed by `firmware/obc-reader/src/reader.rs`. All multi-byte integers are **little-endian**.
 
 ---
@@ -818,20 +818,20 @@ legality) is the profile's job.
   (version, fixed record lengths, flags, sentinels, POI ids/categories/labels) and
   `firmware/obc-formats/src/io.rs` (checked little-endian primitives + the neutral
   byte-source/sink seam). It contains no reader, packer, cache, or rendering policy.
-- **Writer (Rust, std host):** `firmware/obc-pack/src/serialize.rs` (`serialize_lods`,
+- **Writer (Rust, std host):** `host/obc-pack/src/serialize.rs` (`serialize_lods`,
   `serialize_tree`, `serialize_poi_section`, `serialize_nav_section`,
   `flatten_nav_tree` (§8.2 bin-packing), `pack_nav_record`, `pack_edge_record`,
   `pack_profile_table`, `pack_feature`, `pack_chunk`, `pack_style_dict`),
-  `firmware/obc-pack/src/poi.rs` (the OSM-tag classifier for the shared §7.4 ids),
-  `firmware/obc-pack/src/hours.rs` (the `opening_hours` parser + 29-byte blob
-  encoder + dedup pool for §7.5), `firmware/obc-pack/src/nav.rs` (the routable-graph
+  `host/obc-pack/src/poi.rs` (the OSM-tag classifier for the shared §7.4 ids),
+  `host/obc-pack/src/hours.rs` (the `opening_hours` parser + 29-byte blob
+  encoder + dedup pool for §7.5), `host/obc-pack/src/nav.rs` (the routable-graph
   builder + the canonical way-kind table behind §8.6), and
-  `firmware/obc-pack/src/config.rs` (the `routing` config + profile quantization).
+  `host/obc-pack/src/config.rs` (the `routing` config + profile quantization).
 - **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
   (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI + nav directories +
   the profile table in `MapTables`, `for_each_nav_node`, `NavNeighbor` delta
   decode, `nav_edge`, `MapProfile::multiplier`) — and `firmware/obc-render`
   (`Viewport`, `MapRenderer`). Format-contract tests in
   `firmware/obc-reader/tests/format.rs` (byte pins) and
-  `firmware/obc-pack/tests/nav_round_trip.rs` (writer↔reader §8 round trip, incl.
+  `host/obc-pack/tests/nav_round_trip.rs` (writer↔reader §8 round trip, incl.
   the profile table, kinds, delta reconstruction, and the bin-packing fill floor).

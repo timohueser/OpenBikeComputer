@@ -285,7 +285,7 @@ describe("route upload", () => {
     it("converts a dropped GPX and sends the OBCR the device would have produced itself", async () => {
         const { client, device, close } = loopbackDevice();
         try {
-            const gpx = readFileSync(join(ROOT, "firmware/obc-vectors/src/route-source.gpx"));
+            const gpx = readFileSync(join(ROOT, "host/obc-vectors/src/route-source.gpx"));
             // The route's name comes from the file's stem, which is what makes this comparable to
             // the checked-in vector: same input, same name, same bytes.
             const prepared = await prepareRoute(new File([gpx], "Vector Loop.gpx"));

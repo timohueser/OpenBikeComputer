@@ -1,6 +1,6 @@
 # obc-pack test fixtures
 
-Fixtures for the `firmware/obc-pack` packer tests: hand-authored OSM extracts
+Fixtures for the `host/obc-pack` packer tests: hand-authored OSM extracts
 whose ingest outcome is known by construction.
 
 - [`tiny/tiny.osm`](tiny/tiny.osm) — exercises every way/area ingest branch. Its
