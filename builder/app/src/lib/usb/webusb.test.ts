@@ -420,6 +420,31 @@ describe("the pipe", () => {
             await link.host.close();
         });
 
+        it("does not keep a transfer that already took the aborted object's last packet", async () => {
+            // The counterpart of the test above, and the half an earlier draft got wrong in the
+            // other direction. The device only stops when the abort reaches it, so the transfer the
+            // caller walked away from may complete with one last packet of the object being
+            // abandoned. Keeping *that* would prepend a stale packet to the next object — the same
+            // desync as dropping one, arrived at from the opposite side. `reset` runs before the
+            // transfer slot is released, so anything settled by then is stale by construction.
+            const { link, usbDevice } = bareLink();
+            const webusb = await openWebUsbLink(usbDevice);
+            const controller = new AbortController();
+            const parked = webusb.bulk.read(controller.signal);
+            controller.abort();
+            await expect(parked).rejects.toMatchObject({ code: "aborted" });
+            void link.device.bulk.write(new Uint8Array([0xde, 0xad]));
+            // A macrotask boundary, so every microtask between the write and the transfer marking
+            // itself settled has run — the point of the test is what `reset` sees, not a race.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await webusb.bulk.reset();
+
+            void link.device.bulk.write(new Uint8Array([1, 2, 3]));
+            expect(await webusb.bulk.read()).toEqual(new Uint8Array([1, 2, 3]));
+            await webusb.close();
+            await link.host.close();
+        });
+
         it("leaves the busy half's halt alone", async () => {
             // `clearHalt` is `CLEAR_FEATURE(ENDPOINT_HALT)`: it resets the endpoint's data toggle,
             // which must not happen under a live transfer — and the IN half cannot be halted anyway
