@@ -5,6 +5,7 @@
 
 import { api } from "../api/client";
 import { JobTracker } from "../api/jobs.svelte";
+import { LINKS } from "../constants";
 import { PlatformNotImplemented, type LoadStyleEditor, type Platform } from "./types";
 
 export const platform: Platform = {
@@ -39,6 +40,9 @@ export const platform: Platform = {
     rides: null,
 
     legacyConfig: () => api.legacyConfig(),
+
+    // A localhost stand-in for the hosted site keeps the site's chrome.
+    siteNav: LINKS,
 };
 
 export const loadStyleEditor: LoadStyleEditor | null = () => import("../../routes/Advanced.svelte");
