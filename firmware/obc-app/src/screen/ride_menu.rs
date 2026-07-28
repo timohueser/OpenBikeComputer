@@ -537,7 +537,10 @@ mod tests {
         let mut stale = Waypoints::new();
         let mut name = heapless::String::new();
         name.push_str("Stale").unwrap();
-        stale.entries.push(WptEntry { dist_along_m: 10, lon: 0, lat: 0, name }).unwrap();
+        stale
+            .entries
+            .push(WptEntry { dist_along_m: 10, lon: 0, lat: 0, category: None, lateral_offset_m: 0, name })
+            .unwrap();
 
         let mut route_less = TextRec::default();
         draw_waypoint_list(

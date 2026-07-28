@@ -1199,7 +1199,7 @@ mod tests {
     fn wp(dist_along_m: u32, name: &str) -> WptEntry {
         let mut n = heapless::String::new();
         let _ = n.push_str(name);
-        WptEntry { dist_along_m, lon: 0, lat: 0, name: n }
+        WptEntry { dist_along_m, lon: 0, lat: 0, category: None, lateral_offset_m: 0, name: n }
     }
 
     /// The waypoint chip's pure visibility helper: shown only when not panning, the warning chip is
