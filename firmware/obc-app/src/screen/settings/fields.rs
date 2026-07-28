@@ -167,17 +167,22 @@ impl StatFieldsScreen {
                     crate::screen::waypoint_panel_ghost(cv, area, rdt.language, bg);
                 } else {
                     let mut cell = f.cell(&rdt);
-                    ghost_value(*f, &mut cell);
-                    crate::screen::tile(
-                        cv,
-                        area,
-                        &cell.caption,
-                        &cell.value,
-                        cell.arrow,
-                        cell.value_align,
-                        bg,
-                        SUBTEXT,
-                    );
+                    ghost_value(*f, &mut cell, rdt.language);
+                    match f.category() {
+                        Some(cat) => {
+                            crate::screen::category_tile(cv, area, cat, &cell.caption, &cell.value, bg, SUBTEXT)
+                        }
+                        None => crate::screen::tile(
+                            cv,
+                            area,
+                            &cell.caption,
+                            &cell.value,
+                            cell.arrow,
+                            cell.value_align,
+                            bg,
+                            SUBTEXT,
+                        ),
+                    }
                 }
                 if is_sel && self.grabbed {
                     move_arrows(cv, area);
@@ -268,11 +273,39 @@ fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
 /// | HeartRate     | `152`                   |
 /// | Power         | `210`                   |
 /// | Cadence       | `88`                    |
+/// | Next: \<cat\> | the category's own name + a per-category sample distance |
 ///
 /// The captions (unit labels) stay whatever `cell()` produced, so metric/imperial re-captioning still
 /// shows; only the value is a placeholder. The tile drawer paints it in olive `SUBTEXT`.
-fn ghost_value(field: crate::stat_fields::StatField, cell: &mut crate::stat_fields::StatCell) {
+///
+/// The six `Next: <category>` tiles are pinned to their **empty-state** caption (the localized
+/// category name) plus a sample distance, rather than a made-up place name: the editor has no route
+/// and no corridor snapshot, and inventing "Fontaine du port" there would be one more untranslated
+/// English string on-glass for the sake of a preview. The icon is what identifies the tile anyway,
+/// and each category gets a different distance so a page of them doesn't read as copy-paste.
+fn ghost_value(
+    field: crate::stat_fields::StatField,
+    cell: &mut crate::stat_fields::StatCell,
+    lang: crate::settings::Language,
+) {
     use crate::stat_fields::StatField as F;
+    use obc_reader::PoiCategory;
+    if let Some(cat) = field.category() {
+        // Whatever a live App had cached must not leak into the editor's preview: re-pin the caption
+        // to the category name so the tile is the same picture on every device.
+        cell.caption.clear();
+        let _ = cell.caption.push_str(field.name(lang));
+        cell.value.clear();
+        let _ = cell.value.push_str(match cat {
+            PoiCategory::Water => "1.2km",
+            PoiCategory::Campsite => "24km",
+            PoiCategory::Accommodation => "18km",
+            PoiCategory::Resupply => "2.4km",
+            PoiCategory::Pharmacy => "6.8km",
+            PoiCategory::BikeShop => "12km",
+        });
+        return;
+    }
     let sample: &str = match field {
         F::Speed => "23.4",
         F::AvgSpeed => "19.2",
@@ -295,6 +328,9 @@ fn ghost_value(field: crate::stat_fields::StatField, cell: &mut crate::stat_fiel
         F::HeartRate => "152",
         F::Power => "210",
         F::Cadence => "88",
+        // Handled above (they need the category, not just the variant) — spelled out so the match
+        // stays exhaustive and a new field can't slip through without a ghost.
+        F::NextWater | F::NextCampsite | F::NextLodging | F::NextResupply | F::NextPharmacy | F::NextBikeShop => return,
     };
     cell.value.clear();
     let _ = cell.value.push_str(sample);
@@ -429,6 +465,49 @@ mod tests {
         run(&mut scr, &mut s, Gesture::Step(1));
         assert_eq!(scr.selected, panel_idx, "and back down a page");
         assert_eq!(s.stat_fields.as_slice()[panel_idx], StatField::WaypointList);
+    }
+
+    /// The `Next: <category>` tiles' editor **ghost** (epic #946, U5): a fixed, localized preview —
+    /// the category's own word plus a per-category sample distance — never whatever a live App had
+    /// cached, so the editor is the same picture on every device (the `waypoint_panel_ghost` rule).
+    #[test]
+    fn category_tiles_ghost_a_localized_name_and_a_sample_distance() {
+        use crate::next_ahead::NextAhead;
+        use crate::settings::Language;
+        use crate::stat_fields::{Readout, StatField};
+        let mut act = Activity::new(Mode::Riding);
+        // A live-looking readout: a route is loaded and the cache holds a real POI name.
+        act.active_route = Some(0);
+        let cache = NextAhead::new();
+        let wpts = obc_route::Waypoints::new();
+        let cx = Readout {
+            fix: None,
+            activity: &act,
+            units: crate::Units::Metric,
+            route: None,
+            profile: None,
+            climb: None,
+            waypoints: &wpts,
+            next_waypoint: None,
+            now: crate::settings::DateTime::default(),
+            now_ms: 0,
+            language: Language::De,
+            next_ahead: &cache,
+        };
+        let mut seen: std::vec::Vec<(std::string::String, std::string::String)> = std::vec::Vec::new();
+        for f in StatField::ALL.into_iter().filter(|f| f.category().is_some()) {
+            let mut cell = f.cell(&cx);
+            ghost_value(f, &mut cell, Language::De);
+            assert_eq!(cell.caption.as_str(), f.name(Language::De), "the ghost caption is the localized category");
+            assert!(cell.value.as_str().ends_with("km"), "and the sample is a plausible distance");
+            seen.push((cell.caption.as_str().into(), cell.value.as_str().into()));
+        }
+        assert_eq!(seen.len(), 6);
+        assert_eq!(seen[0].0, "Wasser", "German, not an English placeholder");
+        let mut distances: std::vec::Vec<&str> = seen.iter().map(|(_, v)| v.as_str()).collect();
+        distances.sort_unstable();
+        distances.dedup();
+        assert_eq!(distances.len(), 6, "each category gets its own sample, so a page of them isn't copy-paste");
     }
 
     /// The editor's cursor→page mapping: with seven fields (two pages), walking the cursor past
