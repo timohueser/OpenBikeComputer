@@ -50,7 +50,7 @@ binary test vectors pinning these layouts live in
    and one whole-object CRC-32 is verified at commit. The MCU sinks bytes
    straight to storage with a running CRC — no reassembly buffer.
 3. **Objects are files the device already speaks.** A route crosses the wire as
-   OBCR v2 bytes and is written to SD verbatim; a ride crosses as the compact
+   OBCR v3 bytes and is written to SD verbatim; a ride crosses as the compact
    ride object (§7.2). The phone does all format conversion (GPX/TCX → OBCR);
    the device never parses XML.
 4. **Interrupted transfers restart, not resume — in both directions.** Objects
@@ -318,7 +318,7 @@ Every bulk payload is a typed **object**:
 
 | `type` | Object | Direction | Payload |
 |---|---|---|---|
-| `1` | `route` | app → device (upload), device → app (detail read) | an OBCR v2 file, §7.1 |
+| `1` | `route` | app → device (upload), device → app (detail read) | an OBCR v3 file, §7.1 |
 | `2` | `ride` | device → app | ride object v1 or v2, §7.2 |
 | `3` | `config` | — | reserved on the CoC; Config crosses GATT (§3.3) |
 | `4` | `diagnostics` | device → app | diagnostics blob, §7.5 |
@@ -820,13 +820,15 @@ mistakes, end to end from phone encode to device flash (and back).
 
 ## 7. Object layouts
 
-### 7.1 `route` — an OBCR v2 file
+### 7.1 `route` — an OBCR v3 file
 
-A route object's payload is **exactly the bytes of an OBCR v2 file** — see
-[`OBCR_Spec.md`](OBCR_Spec.md), including the v2 waypoints section. The phone
-encodes imported GPX/TCX to OBCR v2 (waypoints included — Delta 2 in the
-mirror); the device writes the payload to SD verbatim and serves it back
-verbatim.
+A route object's payload is **exactly the bytes of an OBCR v3 file** — see
+[`OBCR_Spec.md`](OBCR_Spec.md), including the waypoints section (categorized and
+carrying a signed lateral offset since v3). The phone encodes imported GPX/TCX to
+OBCR v3 (waypoints included — Delta 2 in the mirror); the device writes the
+payload to SD verbatim and serves it back verbatim. The device **rejects** a v1/v2
+payload at commit, so an app build that still encodes v2 must be updated with this
+bump rather than silently uploading routes the device won't open.
 
 **Route detail read (app screen E2) is pinned as: download the route object.**
 There is no separate detail codec — the app decodes waypoints and the
@@ -1071,7 +1073,7 @@ Config object (§7.3).
 A **trip** groups planned routes into one named unit (one folder on the device,
 one card in the app). It is a tiny metadata object that **references route object
 ids** in ride order — it never contains route bytes. Routes stay byte-identical
-OBCR v2 files (§7.1); membership edits never touch a route payload. The reference
+OBCR v3 files (§7.1); membership edits never touch a route payload. The reference
 firmware stores each trip as `TP{id}.OBT` beside the `RT{id}.OBR` route files (no
 FAT subdirectories); trip ids come from a separate device counter (§4.1).
 
@@ -1319,7 +1321,7 @@ command, not a transport one.
 ## Reference implementation
 
 Firmware: the `obc-ble` workspace crate (descriptor codec + transfer state
-machine, lands with A5) and `obc-route` (OBCR v2). App:
+machine, lands with A5) and `obc-route` (OBCR v3). App:
 `companion-ios/Packages/OBCKit` (`OBCTransport/Transfer`, `Codecs/`,
 `BLE/GATT.swift`). Shared fixtures: [`specs/vectors/`](vectors/) —
 routes with/without waypoints, a ride, a config blob, the route list, and
