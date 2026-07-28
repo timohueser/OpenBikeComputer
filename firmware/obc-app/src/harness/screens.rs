@@ -244,6 +244,41 @@ fn ride_menu_up_ahead_navigation_preserves_session_and_returns_to_map() {
     assert_eq!(app.activity.session, session);
 }
 
+/// The **source-scope arming rule** (epic #946, U4), end to end through the App: the Ride-settings
+/// value is read when the ride menu opens the timeline, and a rider who asked for *waypoints only*
+/// never arms the corridor snapshot at all — so the board is never asked to build a map `Reader`
+/// for a query whose rows the list would refuse to draw. The other two scopes arm it as U3 did.
+#[test]
+fn the_up_ahead_source_setting_decides_whether_the_corridor_is_armed() {
+    use crate::settings::UpAheadSource;
+
+    let open_timeline = |source| {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { up_ahead_source: source, ..Settings::default() });
+        app.activity.start_session();
+        app.activity.progress_m = 1_500;
+        app.apply_gesture(Gesture::BackHold); // Map → Ride menu
+        app.apply_gesture(Gesture::Press); // north station = Up ahead
+        assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "{source:?} still opens the timeline");
+        app
+    };
+
+    let mut quiet = open_timeline(UpAheadSource::WaypointsOnly);
+    assert!(!quiet.corridor_snapshot_pending(), "Waypoints only never arms the query");
+    assert!(!quiet.base_needs_reader(), "…so the reader-build seam stays quiet on the timeline");
+    // Not even the Hold picker turns it on: a category filter scopes rows, it doesn't add a source.
+    quiet.apply_gesture(Gesture::Hold);
+    quiet.apply_gesture(Gesture::Step(1));
+    quiet.apply_gesture(Gesture::Press);
+    assert!(!quiet.corridor_snapshot_pending(), "a filter change under Waypoints only re-queries nothing");
+
+    for source in [UpAheadSource::Both, UpAheadSource::MapPoisOnly] {
+        let app = open_timeline(source);
+        assert!(app.corridor_snapshot_pending(), "{source:?} arms the snapshot on entry");
+        assert!(app.base_needs_reader(), "{source:?} keeps the Reader built until the query lands");
+    }
+}
+
 #[test]
 fn ride_control_resume_is_a_press_that_pops() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Paused));
