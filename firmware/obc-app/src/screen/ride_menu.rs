@@ -32,10 +32,14 @@ impl RideMenuScreen {
         match g {
             Gesture::Step(n) => self.dial.step(n),
             Gesture::Press => match self.dial.selected() {
-                // The timeline anchors its corridor snapshot on live progress **at entry** and
-                // homes its cursor on the first entry still ahead (epic #946, U3); a
-                // route-less ride simply opens on its empty state.
-                0 => Transition::Push(Screen::UpAhead(UpAheadScreen::new(cx.activity.progress_m))),
+                // The timeline anchors its corridor snapshot on live progress **at entry**, takes
+                // the rider's source scope from Ride settings at the same moment (U4), and homes
+                // its cursor on the first entry still ahead (epic #946, U3); a route-less ride
+                // simply opens on its empty state.
+                0 => Transition::Push(Screen::UpAhead(UpAheadScreen::new(
+                    cx.activity.progress_m,
+                    cx.settings.up_ahead_source,
+                ))),
                 // Replace the transient compass, so chooser Press/Back can Pop once to the exact
                 // caller (Map, Statistics/Climb, or paused Ride control). A dimmed station (no
                 // nav graph / no route / off-route) never transitions.
@@ -201,12 +205,9 @@ mod tests {
         let mut menu = RideMenuScreen::new();
         match menu.handle(Gesture::Press, &mut station_ctx(&mut activity)) {
             Transition::Push(Screen::UpAhead(screen)) => {
-                assert_eq!(screen.corridor_key().anchor_m, 4_200, "the snapshot anchors where the rider is");
-                assert_eq!(
-                    screen.corridor_key().filter,
-                    obc_reader::PoiCategorySet::ALL,
-                    "the list opens on Everything, every time"
-                );
+                let key = screen.corridor_key().expect("the default source scope wants a snapshot");
+                assert_eq!(key.anchor_m, 4_200, "the snapshot anchors where the rider is");
+                assert_eq!(key.filter, obc_reader::PoiCategorySet::ALL, "the list opens on Everything, every time");
             }
             _ => panic!("the Up ahead station did not push its timeline"),
         }

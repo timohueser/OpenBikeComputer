@@ -47,7 +47,19 @@ filter_title = "SHOW"
 none = "Nothing up ahead"
 none_sub = "No stops on route"
 none_category_sub = "None of this kind"
+# The two source-scoped empty sub-lines (U4): with only one source feeding the list, "No stops on
+# route" would be a lie — name the scope instead.
+none_waypoints_sub = "Waypoints only"
+none_pois_sub = "Map POIs only"
 no_route_sub = "Load a route first"
+
+# --- UpAheadSource enum labels (Ride settings row, epic #946 U4). Short by necessity: the value
+# --- shares the row's sub-caption line with its cue at 240 px, so the ring's three words carry
+# --- the "only" the epic spells out.
+[up_ahead_source]
+both = "Both"
+waypoints = "Waypoints"
+map_pois = "Map POIs"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
@@ -217,6 +229,8 @@ climb = "Climb"
 climb_sub = "panel"
 waypoints = "Waypoints"
 waypoints_sub = "chip"
+up_ahead = "Up ahead"
+up_ahead_sub = "shows"
 autodelete = "Auto-delete"
 autodelete_sub = "rides"
 
