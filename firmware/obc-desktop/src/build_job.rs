@@ -450,7 +450,7 @@ mod tests {
         );
 
         let cli_out = out_dir.join("monaco-cli.obcm");
-        let cli = std::process::Command::new(repo.join("firmware/target/release/obc-pack"))
+        let cli = std::process::Command::new(repo.join("target/release/obc-pack"))
             .arg(crate::paths::pbf_cache().join("monaco.osm.pbf"))
             .arg(&preset)
             .arg(&cli_out)
@@ -527,7 +527,7 @@ mod tests {
 
         let cli_out = out_dir.join("monaco-custom-cli.obcm");
         let [w, s, e, n] = BBOX;
-        let cli = std::process::Command::new(repo.join("firmware/target/release/obc-pack"))
+        let cli = std::process::Command::new(repo.join("target/release/obc-pack"))
             .arg(crate::paths::pbf_cache().join("monaco.osm.pbf"))
             .arg(&config_path)
             .arg(&cli_out)

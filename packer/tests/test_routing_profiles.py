@@ -42,7 +42,7 @@ def _pack_bin():
     if override and os.path.exists(override):
         return override
     for profile in ("release", "debug"):
-        p = os.path.join(REPO_ROOT, "firmware", "target", profile, "obc-pack")
+        p = os.path.join(REPO_ROOT, "target", profile, "obc-pack")
         if os.path.exists(p) and os.access(p, os.X_OK):
             return p
     return None

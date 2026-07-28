@@ -7,7 +7,7 @@
 #   OUT_DIR   where the PNGs land (default: ui-snapshots/)
 #
 # Env overrides:
-#   SIM   the obc-sim binary   (default: <repo>/firmware/target/release/obc-sim)
+#   SIM   the obc-sim binary   (default: <repo>/target/release/obc-sim)
 #   MAP   the .obcm map        (default: the committed Grimsel showcase fixture, OBCM v7)
 #   GPX   the replay track     (default: the committed Grimsel climb fixture)
 #
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-SIM="${SIM:-$repo_root/firmware/target/release/obc-sim}"
+SIM="${SIM:-$repo_root/target/release/obc-sim}"
 MAP="${MAP:-$repo_root/firmware/obc-sim/assets/grimsel.obcm}"
 GPX="${GPX:-$repo_root/firmware/obc-sim/assets/grimsel-climb.gpx}"
 # A second, tiny replay that lies *on* protocol-vectors' `route-waypoints.obcr` ("Vector Loop") — the

@@ -198,7 +198,10 @@ def cargo_metadata(manifest: Path) -> dict[str, object]:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--rules", type=Path, default=DEFAULT_RULES)
-    result.add_argument("--manifest-path", type=Path, default=HERE.parent / "Cargo.toml")
+    # The workspace root is the repo root (HERE is firmware/tools/), not firmware/: the
+    # workspace spans firmware/, host/ and apps/. `standalone_manifests` in the rules file
+    # are resolved relative to this manifest's directory.
+    result.add_argument("--manifest-path", type=Path, default=HERE.parent.parent / "Cargo.toml")
     return result
 
 
