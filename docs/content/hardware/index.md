@@ -36,7 +36,7 @@ description: The OpenBikeComputer hardware — reflective memory-LCD, nRF54L mic
   <!-- annotations -->
   <line class="d-stroke" x1="490" y1="176" x2="556" y2="176" />
   <text class="d-label" x="564" y="173">reflective MIP panel</text>
-  <text class="d-sub" x="564" y="189">sunlight-readable · holds its image</text>
+  <text class="d-sub" x="564" y="189">sunlight-readable</text>
   <line class="d-stroke" x1="230" y1="176" x2="164" y2="176" />
   <text class="d-label" x="156" y="173" text-anchor="end">nRF54LM20</text>
   <text class="d-sub" x="156" y="189" text-anchor="end">Cortex-M33 · BLE</text>
