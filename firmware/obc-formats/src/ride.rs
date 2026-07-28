@@ -54,8 +54,8 @@ mod tests {
     #[test]
     fn lengths_match_committed_ride_fixtures() {
         for (fixture, version) in [
-            (&include_bytes!("../../../protocol-vectors/ride-v1.bin")[..], VERSION_V1),
-            (&include_bytes!("../../../protocol-vectors/ride-v2.bin")[..], VERSION_V2),
+            (&include_bytes!("../../../specs/vectors/ride-v1.bin")[..], VERSION_V1),
+            (&include_bytes!("../../../specs/vectors/ride-v2.bin")[..], VERSION_V2),
         ] {
             assert_eq!(fixture[0], version);
             let name_len = u16::from_le_bytes([fixture[1], fixture[2]]) as usize;

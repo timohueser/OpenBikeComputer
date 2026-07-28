@@ -4,7 +4,7 @@
  * Two things are being decided here, and only one of them is "does the flow work".
  *
  * The first is **byte identity**: the GPX a visitor saves has to be the file the device itself would
- * have written. The pinned pair is `protocol-vectors/track-log.obct` → `track-export.gpx`, produced
+ * have written. The pinned pair is `specs/vectors/track-log.obct` → `track-export.gpx`, produced
  * by the real `obc_route::track_to_gpx`, and the export path has to land on those exact bytes after
  * a full round trip through the wire's ride object — with one documented exception the wire format
  * makes unavoidable, asserted as *the only* exception rather than waved at.
@@ -50,14 +50,14 @@ import {
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
-        if (existsSync(join(dir, "protocol-vectors", "manifest.json"))) return dir;
+        if (existsSync(join(dir, "specs", "vectors", "manifest.json"))) return dir;
         dir = dirname(dir);
     }
     throw new Error("could not locate the repo root from " + import.meta.url);
 }
 
 const ROOT = repoRoot();
-const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "protocol-vectors", name)));
+const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 
 /** The name `track-export.gpx` was produced with (`obc_vectors::TRACK_NAME`). */
 const TRACK_NAME = "Schauinsland & back";

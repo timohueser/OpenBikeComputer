@@ -3,12 +3,12 @@ import Testing
 import OBCDomain
 @testable import OBCTransport
 
-/// The app half of the shared OBCU pin: `protocol-vectors/update-container-v1.bin`
+/// The app half of the shared OBCU pin: `specs/vectors/update-container-v1.bin`
 /// — the same bytes `obc-dfu` decodes in `cargo test -p obc-dfu --test vectors` and
 /// `obc-vectors` regenerates. A drift on either side goes red, so the file is the
 /// firmware↔app contract for the update container (`OBCU_Spec.md` §1 / spec §7.6).
 struct OBCUHeaderTests {
-    /// `protocol-vectors/` at the repo root, resolved from this file's location
+    /// `specs/vectors/`, resolved from this file's location
     /// (companion-ios/Packages/OBCKit/Tests/OBCTransportTests/…).
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent() // OBCTransportTests
@@ -17,7 +17,7 @@ struct OBCUHeaderTests {
         .deletingLastPathComponent() // Packages
         .deletingLastPathComponent() // companion-ios
         .deletingLastPathComponent() // repo root
-        .appendingPathComponent("protocol-vectors")
+        .appendingPathComponent("specs/vectors")
 
     private func fixture(_ name: String) throws -> Data {
         let url = Self.vectorsDir.appendingPathComponent(name)

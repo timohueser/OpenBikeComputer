@@ -117,12 +117,12 @@ jobs:
               - 'builder/app/**'
               # The frontend now embeds firmware code: obc-web-convert (#896) compiles the shared
               # obc-route conversion path to wasm and the builder imports it, so any shared-crate
-              # change can move those bytes. Its byte-identity guard reads protocol-vectors/, and
+              # change can move those bytes. Its byte-identity guard reads specs/vectors/, and
               # the toolchain file picks the compiler that produces the module.
               - 'firmware/**'
               - 'host/**'
               - 'apps/**'
-              - 'protocol-vectors/**'
+              - 'specs/vectors/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
 

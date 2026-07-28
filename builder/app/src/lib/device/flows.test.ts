@@ -33,14 +33,14 @@ import { syntheticBody, syntheticBytes, tempStaging } from "./testing";
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
-        if (existsSync(join(dir, "protocol-vectors", "manifest.json"))) return dir;
+        if (existsSync(join(dir, "specs", "vectors", "manifest.json"))) return dir;
         dir = dirname(dir);
     }
     throw new Error("could not locate the repo root from " + import.meta.url);
 }
 
 const ROOT = repoRoot();
-const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "protocol-vectors", name)));
+const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 beforeAll(async () => {

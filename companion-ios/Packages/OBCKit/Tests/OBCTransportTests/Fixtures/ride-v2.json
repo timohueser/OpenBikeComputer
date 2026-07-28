@@ -1,5 +1,5 @@
 {
-  "note": "Expected decode of protocol-vectors/ride-v2.bin through RideObjectCodec — the SE4 (#711) contract, mirroring manifest.json's ride-v2.bin entry. Sensor sentinels (0xFF / 0xFFFF) decode to null.",
+  "note": "Expected decode of specs/vectors/ride-v2.bin through RideObjectCodec — the SE4 (#711) contract, mirroring manifest.json's ride-v2.bin entry. Sensor sentinels (0xFF / 0xFFFF) decode to null.",
   "version": 2,
   "summary": {
     "name": "Sensor Ride",

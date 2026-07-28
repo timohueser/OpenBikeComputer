@@ -24,7 +24,7 @@ import OBCDomain
 /// the object holds (dangling refs included — the device tolerates them on read
 /// and never rewrites a stored trip), so decode∘encode round-trips byte-exactly.
 ///
-/// Pinned byte-for-byte against `protocol-vectors/trip-v1.bin`
+/// Pinned byte-for-byte against `specs/vectors/trip-v1.bin`
 /// (`TripCodecTests`), which the firmware side pins too, so neither can drift
 /// from the spec without a test going red.
 public enum TripObjectCodec {

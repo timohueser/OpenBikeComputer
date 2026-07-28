@@ -1,4 +1,4 @@
-//! Contract tests over the checked-in `protocol-vectors/` fixtures: every file must
+//! Contract tests over the checked-in `specs/vectors/` fixtures: every file must
 //! equal its spec-derived builder byte-for-byte, and the route vectors must load and
 //! ride through `obc-route`. The app's `swift test` consumes the same files.
 

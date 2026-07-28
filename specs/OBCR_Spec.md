@@ -229,7 +229,7 @@ sentinels) and `io.rs` ([`ByteSource`](#bytesource)/`ByteSink` + endian primitiv
 `gpx.rs` (streaming `<trkpt>` + `<wpt>` scans). Its `byte_io.rs` remains only as a
 temporary source-compatibility re-export. Format-contract tests build synthetic
 `.obcr` bytes by hand, mirroring this layout (`obc-route/tests/format.rs` +
-`tests/waypoints.rs`); shared phone↔firmware fixtures live in `protocol-vectors/`.
+`tests/waypoints.rs`); shared phone↔firmware fixtures live in `specs/vectors/`.
 
 ### ByteSource
 

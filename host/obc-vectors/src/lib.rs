@@ -1,4 +1,4 @@
-//! Builders for the shared S0 wire-protocol test vectors (`protocol-vectors/`).
+//! Builders for the shared S0 wire-protocol test vectors (`specs/vectors/`).
 //!
 //! Each function constructs one fixture directly from the spec text
 //! (`obc-ble-interface-spec.md` / `OBCR_Spec.md`), independently of the production
@@ -24,9 +24,9 @@ use std::path::PathBuf;
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
-/// The `protocol-vectors/` directory at the repo root.
+/// The `specs/vectors/` directory at the repo root.
 pub fn dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-vectors")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors")
 }
 
 /// CRC-32/IEEE per spec §6: reflected, poly `0xEDB88320`, init/xorout `0xFFFFFFFF`.

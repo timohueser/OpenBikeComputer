@@ -1,5 +1,5 @@
 //! Trip-object codec (`obc-ble-interface-spec.md` §7.7): round-trip, the committed
-//! `protocol-vectors/trip-v1.bin` pin (dangling-ref fixture), and the read guards.
+//! `specs/vectors/trip-v1.bin` pin (dangling-ref fixture), and the read guards.
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
@@ -61,7 +61,7 @@ fn empty_trip_is_header_only() {
 /// byte-for-byte, so the production writer is pinned to the spec builder too.
 #[test]
 fn pins_the_committed_trip_v1_vector() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-vectors/trip-v1.bin");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors/trip-v1.bin");
     let Ok(bytes) = std::fs::read(&path) else {
         eprintln!("skipping: {} not reachable", path.display());
         return;

@@ -34,7 +34,7 @@ canonical source the firmware Track-A issues (epic #267) implement.
 
 All multi-byte integers are **little-endian** (matching OBCM/OBCR). Shared
 binary test vectors pinning these layouts live in
-[`protocol-vectors/`](../protocol-vectors/) and are consumed by both `cargo test`
+[`specs/vectors/`](vectors/) and are consumed by both `cargo test`
 (firmware) and `swift test` (app).
 
 ## Design principles
@@ -892,7 +892,7 @@ byte keeping the `u16` sensor fields 2-byte aligned.
 The reference firmware stores each tracked ride as **exactly these bytes**
 (`/tracks/RD{id}.ORD`, encoded once at ride Finish), so a ride download is a
 verbatim file stream — the §7.1 discipline in the device → app direction.
-`protocol-vectors/ride-v1.bin` and `ride-v2.bin` pin the two layouts (the v2
+`specs/vectors/ride-v1.bin` and `ride-v2.bin` pin the two layouts (the v2
 fixture mixes present and absent sensor fields across its header and points).
 
 ### 7.3 `config` — the Config object
@@ -1184,7 +1184,7 @@ The object length is fully determined by its header: `56 + 2·stage_count` bytes
 Protocol v2 (epic #632) is the one coordinated wire break. The iOS mirror
 ([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) is updated to
 match in the same change; each item below is a single-spot repin on both sides,
-pinned by the shared `protocol-vectors/` fixtures:
+pinned by the shared `specs/vectors/` fixtures:
 
 1. **`protocolVersion` read widened** `u16` → `version u16 · store_epoch u32`
    (§1, §3.3): the app reads the store epoch alongside the version on every
@@ -1250,7 +1250,7 @@ Everything above is written against BLE because BLE came first, but only §2
 (advertising), §3 (the GATT table), §5 (the CoC) and §8 (pairing) are actually
 *about* the radio. The object model, the descriptors (§4.2), the status envelope
 (§4.3), the commands (§4.4), the object layouts (§7) and the CRC (§6) are
-transport-free, and `protocol-vectors/` pins them for **every** transport.
+transport-free, and `specs/vectors/` pins them for **every** transport.
 
 The nRF54LM20 exposes the same contract over USB, as a **second transport, not a
 second protocol**. One vendor-specific interface (class `0xFF`), four bulk
@@ -1321,6 +1321,6 @@ command, not a transport one.
 Firmware: the `obc-ble` workspace crate (descriptor codec + transfer state
 machine, lands with A5) and `obc-route` (OBCR v2). App:
 `companion-ios/Packages/OBCKit` (`OBCTransport/Transfer`, `Codecs/`,
-`BLE/GATT.swift`). Shared fixtures: [`protocol-vectors/`](../protocol-vectors/) —
+`BLE/GATT.swift`). Shared fixtures: [`specs/vectors/`](vectors/) —
 routes with/without waypoints, a ride, a config blob, the route list, and
 transfer-descriptor transcripts, asserted byte-exact from both languages.

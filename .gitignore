@@ -8,7 +8,7 @@ __pycache__/
 # ...except the shared wire-protocol test vectors (S0, issue #268). They must ship
 # in-repo: firmware `cargo test -p obc-vectors` and the app's swift tests pin their
 # codecs to these exact bytes.
-!protocol-vectors/*.obcr
+!specs/vectors/*.obcr
 *.osm.pbf
 # ...except the 735-byte hand-authored fixture the obc-pack ingest test reads
 # (host/obc-pack `ingest::tests::tiny_truth_table`). It must ship in-repo so the
@@ -34,7 +34,7 @@ __pycache__/
 *.obct
 # ...except the shared recorded-track vector (A2, #896): the browser conversion bridge's
 # byte-identity test reads it, so it must ship in-repo like the other protocol vectors.
-!protocol-vectors/*.obct
+!specs/vectors/*.obct
 # The simulator's persisted-settings file (the device-RRAM stand-in) — a runtime artifact.
 firmware/obc-settings.bin
 # ui-snapshots.sh output — before/after PNG sweeps are per-branch scratch, never committed.
@@ -48,7 +48,7 @@ user_config.json
 !host/obc-vectors/src/route-source.gpx
 # ...and the checked-in GPX export of the recorded-track vector (A2, #896) — the expected
 # output the wasm bridge is compared against.
-!protocol-vectors/*.gpx
+!specs/vectors/*.gpx
 # ...and the iOS companion's bundled GPX import fixture (three OBCKit tests load it).
 !companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx
 project/

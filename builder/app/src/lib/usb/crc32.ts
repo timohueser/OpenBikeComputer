@@ -3,7 +3,7 @@
  *
  * Reflected, polynomial `0xEDB88320` (the reflected form of `0x04C11DB7`), init and final XOR
  * `0xFFFFFFFF`; check value `crc32("123456789") === 0xCBF43926`, pinned in `crc32.test.ts` and in
- * `protocol-vectors/manifest.json`. This is a straight port of `firmware/obc-ble/src/crc32.rs`,
+ * `specs/vectors/manifest.json`. This is a straight port of `firmware/obc-ble/src/crc32.rs`,
  * which is itself byte-identical to the app's Swift `CRC32.Hasher`.
  *
  * **Incremental on purpose.** A map is tens of megabytes: the browser streams it to the device in

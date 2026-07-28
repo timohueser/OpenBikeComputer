@@ -1,4 +1,4 @@
-//! `obc-ble`'s **production** codecs against the shared `protocol-vectors/` fixtures — the same
+//! `obc-ble`'s **production** codecs against the shared `specs/vectors/` fixtures — the same
 //! files the app's `swift test` pins and `obc-vectors` builds from the spec. `obc-vectors` proves
 //! the *bytes* match spec-derived builders; this proves the shipped codecs decode and re-encode
 //! those bytes exactly. A drift fails here, there, and on the Swift side.

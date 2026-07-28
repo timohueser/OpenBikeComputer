@@ -1,7 +1,7 @@
 /**
  * The drift guard between this client and the wire (C3, issue #902).
  *
- * `protocol-vectors/` is the contract three implementations agree on: the firmware pins it with
+ * `specs/vectors/` is the contract three implementations agree on: the firmware pins it with
  * `cargo test -p obc-vectors`, the iOS app with `swift test`, the browser's conversion bridge with
  * `convert/bridge.test.ts` — and now this client, which is the fourth. A file in that directory is
  * not a fixture in the "some bytes I captured" sense; it is the spec made executable. A divergence
@@ -55,19 +55,19 @@ import {
     viewOf,
 } from "./protocol";
 
-/** Walk up from this file to the repo root (the directory holding `protocol-vectors/`). */
+/** Walk up from this file to the repo root (the directory holding `specs/vectors/`). */
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
-        if (existsSync(join(dir, "protocol-vectors", "manifest.json"))) return dir;
+        if (existsSync(join(dir, "specs", "vectors", "manifest.json"))) return dir;
         dir = dirname(dir);
     }
     throw new Error("could not locate the repo root from " + import.meta.url);
 }
 
 const ROOT = repoRoot();
-const vector = (name: string): Uint8Array => new Uint8Array(readFileSync(join(ROOT, "protocol-vectors", name)));
-const MANIFEST = JSON.parse(readFileSync(join(ROOT, "protocol-vectors", "manifest.json"), "utf8")) as {
+const vector = (name: string): Uint8Array => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
+const MANIFEST = JSON.parse(readFileSync(join(ROOT, "specs/vectors", "manifest.json"), "utf8")) as {
     crc32_check: { input: string; value: string };
     protocol_version: number;
     fixtures: Record<string, Record<string, unknown>>;

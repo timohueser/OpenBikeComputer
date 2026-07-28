@@ -5,7 +5,7 @@
         "module": "ESNext",
         "moduleResolution": "bundler",
         // "node" is here for the vitest suites only: the conversion bridge's drift guard reads
-        // the checked-in protocol-vectors/ fixtures off disk (src/lib/convert/bridge.test.ts).
+        // the checked-in specs/vectors/ fixtures off disk (src/lib/convert/bridge.test.ts).
         // It does widen the globals for app code too — nothing in src/ outside a *.test.ts may
         // use a Node builtin, and a review that spots one should say so.
         "types": ["vite/client", "node"],

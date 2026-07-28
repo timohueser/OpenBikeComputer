@@ -4,10 +4,10 @@ import OBCDomain
 @testable import OBCTransport
 
 /// The `ackRides` command encoder (spec §4.4 cmd 2): wire layout pinned against
-/// the shared `protocol-vectors/` fixtures (the firmware pins the same files),
+/// the shared `specs/vectors/` fixtures (the firmware pins the same files),
 /// plus the chunking rules that make a long possession list safe to split.
 @Suite struct AckRidesCommandTests {
-    /// `protocol-vectors/` at the repo root, resolved from this file's location
+    /// `specs/vectors/`, resolved from this file's location
     /// (the `ProtocolVectorTests` convention).
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // OBCTransportTests
@@ -16,7 +16,7 @@ import OBCDomain
         .deletingLastPathComponent()  // Packages
         .deletingLastPathComponent()  // companion-ios
         .deletingLastPathComponent()  // repo root
-        .appendingPathComponent("protocol-vectors")
+        .appendingPathComponent("specs/vectors")
 
     private func fixture(_ name: String) throws -> Data {
         let url = Self.vectorsDir.appendingPathComponent(name)

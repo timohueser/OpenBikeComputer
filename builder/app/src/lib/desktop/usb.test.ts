@@ -9,7 +9,7 @@
  *
  * That means these tests are about the two things a fake *can* prove:
  *
- * 1. **The seam holds.** The same `protocol-vectors/` fixtures round-trip through the real client
+ * 1. **The seam holds.** The same `specs/vectors/` fixtures round-trip through the real client
  *    over the native pipe, byte for byte, with a real whole-object CRC — which is #909's first
  *    acceptance criterion and the entire claim that USB is a second transport rather than a second
  *    protocol.
@@ -239,13 +239,13 @@ const { NativeWatcher, nativeFileSource, openNativeLink } = await import("./usb"
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
-        if (existsSync(join(dir, "protocol-vectors", "manifest.json"))) return dir;
+        if (existsSync(join(dir, "specs", "vectors", "manifest.json"))) return dir;
         dir = dirname(dir);
     }
     throw new Error("could not locate the repo root");
 }
 const ROOT = repoRoot();
-const vector = (name: string): Uint8Array => new Uint8Array(readFileSync(join(ROOT, "protocol-vectors", name)));
+const vector = (name: string): Uint8Array => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 
 const DEVICE = { id: "usb#1", vendorId: 0x1209, productId: 0x0001, product: "OpenBikeComputer", serialNumber: "0011223344556677" };
 
@@ -275,7 +275,7 @@ beforeEach(() => {
 // --- the seam ------------------------------------------------------------------
 
 describe("the native pipe under C3's client", () => {
-    it("round-trips protocol-vectors objects, byte for byte", async () => {
+    it("round-trips specs/vectors objects, byte for byte", async () => {
         const { watcher, ok } = await connected();
         expect(ok).toBe(true);
         const state = watcher.current;
@@ -658,7 +658,7 @@ describe("the map this app just built", () => {
 describe("the digest a descriptor announces", () => {
     it("is the CRC-32 the whole toolchain agrees on", () => {
         // Pinned on this side too, so the Rust unit test and this one state the same constant:
-        // crc32("123456789") == 0xCBF43926, which is also `protocol-vectors/manifest.json`'s.
+        // crc32("123456789") == 0xCBF43926, which is also `specs/vectors/manifest.json`'s.
         const dir = mkdtempSync(join(tmpdir(), "obc-usb-digest-"));
         try {
             const path = join(dir, "check.bin");

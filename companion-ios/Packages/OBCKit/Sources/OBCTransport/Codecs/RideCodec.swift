@@ -3,7 +3,7 @@ import OBCDomain
 
 /// The **ride object** codec (v1 **and** v2) — the compact-binary object a ride
 /// crosses the wire as (B7), ratified byte-for-byte by firmware
-/// (`obc-ble-interface-spec.md` §7.2; pinned against `protocol-vectors/ride-v{1,2}.bin`
+/// (`obc-ble-interface-spec.md` §7.2; pinned against `specs/vectors/ride-v{1,2}.bin`
 /// by `ProtocolVectorTests` / `RideCodecV2Tests`). Public on purpose: the mock
 /// encodes fixture rides with it and the sync flow decodes downloads through it,
 /// so the app exercises the real decode path with no firmware.

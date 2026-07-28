@@ -9,7 +9,7 @@ import OBCDomain
 
 /// The `Config` object codec — `[nameLen: u16-LE][name UTF-8 ≤ 48 B][units: u8]`,
 /// **ratified by firmware S0** (`obc-ble-interface-spec.md` §7.3; pinned against
-/// `protocol-vectors/config-v1.bin`). Append-only is the version mechanism: fields
+/// `specs/vectors/config-v1.bin`). Append-only is the version mechanism: fields
 /// are never reordered or resized, and unknown trailing bytes are ignored.
 enum ConfigObjectCodec {
     static func encode(_ config: DeviceConfig) -> Data {

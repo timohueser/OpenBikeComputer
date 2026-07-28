@@ -408,7 +408,7 @@ export async function pullRide(
  * The GPX, from the same `obc_route::track_to_gpx` the device runs at Finish.
  *
  * Through the wasm bridge and the ride-object → track-log inversion `rides.ts` already owns and
- * `rides.test.ts` pins byte-for-byte against `protocol-vectors/track-export.gpx`. There is no
+ * `rides.test.ts` pins byte-for-byte against `specs/vectors/track-export.gpx`. There is no
  * TypeScript GPX writer in this app and there must never be one — a library whose files disagreed
  * with the device's own export would be a slow-burning support problem.
  */

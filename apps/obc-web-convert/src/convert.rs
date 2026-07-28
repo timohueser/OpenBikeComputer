@@ -90,7 +90,7 @@ impl ErrorCode {
 ///
 /// Byte-for-byte the same output as the native path (`obc_route::gpx_to_obcr`) on the same input
 /// — this function contributes no geometry, only the buffer adapter and the guards below. The
-/// `protocol-vectors/route-*.obcr` fixtures pin that equality from both sides.
+/// `specs/vectors/route-*.obcr` fixtures pin that equality from both sides.
 ///
 /// The two pre-checks (empty, not-XML) exist because they are the two failures a *dropped file*
 /// actually produces, and the converter cannot tell them apart: both would otherwise surface as
@@ -125,7 +125,7 @@ pub fn gpx_to_obcr(gpx: &[u8], name: &str) -> Result<Vec<u8>, ConvertFailure> {
 /// Convert a recorded `.obct` ride log's bytes into a GPX 1.1 document named `name`.
 ///
 /// Byte-for-byte the same output as the native path (`obc_route::track_to_gpx`) — again, only the
-/// buffer adapter is new. `protocol-vectors/track-log.obct` + `track-export.gpx` pin the pair.
+/// buffer adapter is new. `specs/vectors/track-log.obct` + `track-export.gpx` pin the pair.
 pub fn track_to_gpx(log: &[u8], name: &str) -> Result<String, ConvertFailure> {
     if log.is_empty() {
         return Err(ConvertFailure::new(

@@ -190,7 +190,7 @@ pub struct ImportRequest {
     pub climb_m: u32,
     /// Points in the recorded track. From the caller's decode of the object — this crate has no
     /// ride-object decoder and must not grow one: the codecs live once, in `lib/usb/objects.ts`,
-    /// pinned to `protocol-vectors/`. A second decoder here would be a second thing to drift.
+    /// pinned to `specs/vectors/`. A second decoder here would be a second thing to drift.
     pub points: u32,
     pub crc32: u32,
     pub track: Vec<[f64; 2]>,
