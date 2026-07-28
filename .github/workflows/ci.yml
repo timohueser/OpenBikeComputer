@@ -582,12 +582,12 @@ jobs:
   # wry and a platform webview, and putting WebKitGTK's headers in the way of
   # `cargo test` for the renderer helps nobody.
   #
-  # It is also the one Rust job that needs Node, because `tauri::generate_context!`
-  # *embeds* the built frontend — so a desktop build genuinely fails when either half
-  # breaks, which is the point of building it here rather than trusting that two
-  # green halves make a green whole. The wasm bridge comes from `wasm-convert` for the
-  # same reason the `web` job takes it: the frontend imports it, so `build:desktop`
-  # cannot run without it.
+  # `tauri::generate_context!` *embeds* the built frontend, so a desktop build
+  # genuinely fails when either half breaks — which is the point of building it here
+  # rather than trusting that two green halves make a green whole. The bundle itself
+  # comes from `desktop-frontend` above (built once, on Linux); the wasm bridge it
+  # imports comes from `wasm-convert`, for the same reason the `web` job takes it.
+  # No leg of this matrix runs Node.
   #
   # Build-only plus tests: the `#[ignore]`d ones pack a real region off the network
   # and belong on a developer's machine, not in CI.
@@ -612,8 +612,40 @@ jobs:
   # `geos_smoke.rs` is the acceptance test — it packs the checked-in fixture through
   # the linked GEOS and pins the digest, so all three platforms assert the *same*
   # bytes. Linking is not evidence that the geometry runs.
-  desktop:
+  # The bundle the Tauri shell embeds. Built once, on Linux, and handed to all three
+  # legs of `desktop` below: it is a Vite build of the same sources whatever runner
+  # produces it, so building it per-platform bought nothing and cost three `npm ci`
+  # runs and a Node toolchain on each. Split out rather than folded into `web`
+  # because that job builds the *web* host and runs the test suite; this is one
+  # `--mode desktop` bundle and nothing else.
+  desktop-frontend:
     needs: [changes, wasm-convert]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: builder/app/src/lib/convert/pkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: builder/app/package-lock.json
+      - name: Build the desktop bundle
+        working-directory: builder/app
+        run: |
+          npm ci
+          npm run build:desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-desktop-frontend
+          path: builder/app/dist/desktop
+          retention-days: 1
+
+  desktop:
+    needs: [changes, desktop-frontend]
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
@@ -654,32 +686,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev
+      # The bundle the shell embeds, built once on Linux by `desktop-frontend` and
+      # unpacked here. It is byte-identical on all three runners — a Vite build of the
+      # same sources — so building it per-platform was three runs of `npm ci` and
+      # three Node toolchains for one output. Landing it at the path tauri.conf.json's
+      # `frontendDist` names is the whole integration; nothing here runs npm, and the
+      # `beforeBuildCommand` in that file is never executed (there is no Tauri CLI in
+      # this repo — see the note above about `custom-protocol`).
       - uses: actions/download-artifact@v4
         with:
-          name: obc-web-convert-pkg
-          path: builder/app/src/lib/convert/pkg
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: builder/app/package-lock.json
-      - name: Build the frontend the shell embeds
-        working-directory: builder/app
-        run: |
-          npm ci
-          npm run build:desktop
+          name: obc-desktop-frontend
+          path: builder/app/dist/desktop
+      # Order matters. `cargo test` never produces the plain binary — even with
+      # --all-targets it builds bins as *test harnesses*, a different artifact — so the
+      # `build` below is a full codegen + link either way. Running it first means the
+      # normal lib it produces is already there for `test` to link against, instead of
+      # `test` building one set of artifacts and `build` starting a second.
       - name: "obc-desktop: clippy"
         working-directory: apps/obc-desktop
         run: cargo clippy --release --all-targets --locked -- -D warnings
+      - name: "obc-desktop: build (release)"
+        working-directory: apps/obc-desktop
+        run: cargo build --release --locked
       # The GEOS smoke test lives here: packs the fixture through the vendored
       # library and asserts the digest. --nocapture so the log records the digest
       # and the linked GEOS version even on a green run.
       - name: "obc-desktop: test (incl. the GEOS smoke test)"
         working-directory: apps/obc-desktop
         run: cargo test --release --locked -- --nocapture
-      - name: "obc-desktop: build (release)"
-        working-directory: apps/obc-desktop
-        run: cargo build --release --locked
       # A dynamic reference to libGEOS here would mean the app only works on a
       # machine that already has it — the exact failure D2 exists to remove. On
       # Windows there is nothing to check: a missing DLL is a load failure, so the
@@ -713,8 +747,15 @@ jobs:
       # the vendored GEOS still configures, compiles and links for x86_64, which is
       # the part that would break. It is not run — a universal `lipo`'d bundle is
       # D3's (#908) job, and this step is what keeps that option open.
+      #
+      # **Push events only, not pull requests.** A second target triple means a second
+      # vendored GEOS and a second full dependency tree: measured at 415 s on a cold
+      # cache, the largest single step in this workflow and about 40 % of the macOS
+      # leg. It is build-only insurance for a future universal bundle, not a
+      # correctness gate on the app anyone runs, so it belongs off the per-PR path —
+      # a merge to develop still catches an x86_64 vendoring break within one commit.
       - name: "obc-desktop: the macOS Intel slice (build-only)"
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name == 'push'
         working-directory: apps/obc-desktop
         run: |
           rustup target add x86_64-apple-darwin
@@ -723,7 +764,7 @@ jobs:
 
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-convert, docs, ios-unit, ios-app, web, desktop]
+    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-convert, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)
