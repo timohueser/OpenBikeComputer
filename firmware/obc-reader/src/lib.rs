@@ -39,6 +39,7 @@
 extern crate alloc;
 
 pub mod color;
+pub mod corridor;
 pub mod geo;
 pub mod hours;
 pub mod reader;
@@ -46,6 +47,10 @@ mod scene;
 
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
+pub use corridor::{
+    project_onto_chunk, CorridorPoi, PathProjection, PoiCategorySet, RoutePath, CORRIDOR_HALF_WIDTH_M,
+    MAX_CORRIDOR_RESULTS,
+};
 pub use geo::{cos_lat, delta_m, ground_dist_m, ground_dist_m_cl, seg_dist_m, seg_dist_m_cl};
 pub use hours::{weekday_from_ymd, Interval, WeeklySchedule, MINUTES_PER_DAY};
 // The byte-I/O seam is owned by `obc-formats`; re-exported here at the crate root for convenience
