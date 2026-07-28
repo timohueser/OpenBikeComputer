@@ -47,6 +47,37 @@ final class GPXRouteDecoderTests: XCTestCase {
         XCTAssertNil(route.waypoints[0].note, "no <desc> → no note")
     }
 
+    /// `<sym>`/`<type>` become the waypoint's category (`OBCR_Spec.md` §4.1, #947),
+    /// `<sym>` winning when both are present — and an unmapped symbol degrades to
+    /// generic without costing the waypoint its place in the list.
+    func testWaypointSymbolsBecomeCategories() throws {
+        // One waypoint per track point (distinct `along`s, so ride order is total
+        // and the assertion can't depend on `sorted` being stable).
+        let gpx = """
+            <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
+              <wpt lat="47.000" lon="11.0"><name>Fountain</name><sym>Drinking Water</sym></wpt>
+              <wpt lat="47.002" lon="11.0"><name>Camp</name><type>Campground</type></wpt>
+              <wpt lat="47.004" lon="11.0"><name>Both</name><sym>Bike Shop</sym><type>Campground</type></wpt>
+              <wpt lat="47.006" lon="11.0"><name>Turn</name><sym>Flag, Blue</sym></wpt>
+              <wpt lat="47.008" lon="11.0"><name>Plain</name></wpt>
+              <trk><trkseg>
+                <trkpt lat="47.000" lon="11.0"><ele>500</ele></trkpt>
+                <trkpt lat="47.002" lon="11.0"><ele>504</ele></trkpt>
+                <trkpt lat="47.004" lon="11.0"><ele>508</ele></trkpt>
+                <trkpt lat="47.006" lon="11.0"><ele>512</ele></trkpt>
+                <trkpt lat="47.008" lon="11.0"><ele>516</ele></trkpt>
+              </trkseg></trk>
+            </gpx>
+            """
+        let route = try decoder.decode(Data(gpx.utf8))
+
+        XCTAssertEqual(route.waypoints.map(\.name), ["Fountain", "Camp", "Both", "Turn", "Plain"],
+                       "every waypoint survives, whatever its symbol")
+        XCTAssertEqual(route.waypoints.map(\.category),
+                       [.water, .campsite, .bikeShop, nil, nil],
+                       "<sym> wins over <type>; unmapped and absent are generic")
+    }
+
     func testRoutepointFallbackWhenThereIsNoTrack() throws {
         let rteOnly = """
             <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">

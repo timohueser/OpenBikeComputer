@@ -29,7 +29,7 @@ use obc_route::{ground_dist_m, ClimbProfile, ClimbSeg, RouteIndex, RouteReader, 
 // reader parses. Only the fields the reader reads are populated.
 // -------------------------------------------------------------------------------------------
 
-const HEADER_V2_LEN: usize = 128;
+const HEADER_FULL_LEN: usize = 128;
 const CHUNK_META_LEN: usize = 44;
 
 fn put_u16(b: &mut [u8], o: usize, v: u16) {
@@ -69,7 +69,7 @@ fn build_obcr(chunks: &[Chunk], total_distance_m: u32) -> (Vec<u8>, Vec<ChunkExt
     let mut extents = Vec::new();
     let mut metas: Vec<[u8; CHUNK_META_LEN]> = Vec::new();
 
-    let data_start = HEADER_V2_LEN as u32;
+    let data_start = HEADER_FULL_LEN as u32;
     let mut pos = data_start;
 
     let (mut gmin_lon, mut gmin_lat, mut gmax_lon, mut gmax_lat) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
@@ -129,9 +129,9 @@ fn build_obcr(chunks: &[Chunk], total_distance_m: u32) -> (Vec<u8>, Vec<ChunkExt
     let index_offset = pos;
 
     // Header.
-    let mut h = [0u8; HEADER_V2_LEN];
+    let mut h = [0u8; HEADER_FULL_LEN];
     h[0..4].copy_from_slice(b"OBCR");
-    h[4] = 2; // version
+    h[4] = 3; // version
     let name = b"test";
     h[6] = name.len() as u8;
     h[64..64 + name.len()].copy_from_slice(name);
@@ -151,7 +151,7 @@ fn build_obcr(chunks: &[Chunk], total_distance_m: u32) -> (Vec<u8>, Vec<ChunkExt
     put_i16(&mut h, 50, gmax_ele);
     put_u32(&mut h, 52, chunks.len() as u32);
     put_u32(&mut h, 56, index_offset);
-    put_u32(&mut h, 60, HEADER_V2_LEN as u32); // data_offset
+    put_u32(&mut h, 60, HEADER_FULL_LEN as u32); // data_offset
     put_u32(&mut h, 112, 0); // waypoint offset (none)
     put_u16(&mut h, 116, 0); // waypoint count
 

@@ -1,7 +1,7 @@
 # Shared wire-protocol test vectors (S0)
 
 Binary fixtures pinning the byte layouts of
-[`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR v2
+[`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR v3
 waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), and the device's own
 recorded-track log, consumed by **four** implementations:
 
@@ -29,8 +29,8 @@ A drift on any side fails that side's tests — the files are the contract.
 
 | File | Layout | Content |
 |---|---|---|
-| `route-waypoints.obcr` | OBCR v2 | "Vector Loop", 9-point track at 48°N, 2 waypoints (`Brunnen` @ 0 m with ele 238, `Pass Summit` mid-route without ele) |
-| `route-plain.obcr` | OBCR v2 | the same track, no waypoints — must ride identically |
+| `route-waypoints.obcr` | OBCR v3 | "Vector Loop", 9-point track at 48°N, 2 waypoints (`Brunnen` @ 0 m with ele 238, `<sym>Drinking Water</sym>` → category 1, 13 m left of travel; `Pass Summit` mid-route without ele, an unmapped `<type>Viewpoint</type>` → generic, on-route) |
+| `route-plain.obcr` | OBCR v3 | the same track, no waypoints — must ride identically |
 | `track-log.obct` | recorded track log (flat 20-byte records, no header — `obc-formats/src/track.rs`) | 5 points shaped for coverage, not plausibility: two `<trkseg>`s, sensor presence walking all → one-absent → none → power-only → all-zero, one point at negative lat/lon/elevation, plus a **7-byte partial trailing record** (what a power-loss leaves) that the exporter must ignore |
 | `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of `track-log.obct` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization *is* the contract, so this file is its output, and its value is cross-implementation |
 | `ride-v1.bin` | ride object v1 (spec §7.2) | "Höhenweg", 3 points, the last without elevation |

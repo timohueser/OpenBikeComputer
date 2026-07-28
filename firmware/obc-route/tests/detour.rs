@@ -127,16 +127,22 @@ fn road_graph(street: bool, bridge: bool) -> NavGraph {
 
 /// The original route: a GPX straight along the road (one `<trkpt>` per node position) with a
 /// linear elevation ramp 100 → 200 m and three named waypoints — head (~278 m), mid-span
-/// (~1 670 m, on the avoided road), tail (~3 062 m).
+/// (~1 670 m, on the avoided road), tail (~3 062 m). Each waypoint carries a `<sym>` and sits a
+/// little off the (eastward) road line, so a splice has a category and a signed offset to carry.
+const WPT_LAT_OFF: i32 = 900; // µdeg, ~100 m at this latitude
+
 fn road_route_obcr() -> Vec<u8> {
     let mut g = String::from("<gpx>\n");
-    for (x_seg, name) in [(1, "W-head"), (6, "W-mid"), (11, "W-tail")] {
+    for (x_seg, name, sym, side) in
+        [(1, "W-head", "Drinking Water", 1), (6, "W-mid", "Campground", -1), (11, "W-tail", "Bike Shop", -1)]
+    {
         let (lon, lat) = road_at(x_seg);
         g.push_str(&format!(
-            "  <wpt lat=\"{:.7}\" lon=\"{:.7}\"><name>{}</name></wpt>\n",
-            lat as f64 * 1e-6,
+            "  <wpt lat=\"{:.7}\" lon=\"{:.7}\"><name>{}</name><sym>{}</sym></wpt>\n",
+            (lat + side * WPT_LAT_OFF) as f64 * 1e-6,
             lon as f64 * 1e-6,
-            name
+            name,
+            sym
         ));
     }
     g.push_str("<trk><trkseg>\n");
@@ -501,6 +507,31 @@ fn splice_keeps_head_drops_span_shifts_tail_waypoints() {
         "tail waypoint keeps its distance from the route end (total {measured_total}, got {})",
         got[1].1
     );
+}
+
+/// …and each surviving waypoint keeps its **category** and its **signed lateral offset** through
+/// the rewrite (#947): head and tail sit beside untouched geometry, so both ride along verbatim —
+/// the same treatment `dist_along_m` gets on the head.
+#[test]
+fn splice_preserves_waypoint_categories_and_offsets() {
+    let original = road_route_obcr();
+    let (spliced, _, _) = spliced_road();
+
+    let read = |bytes: &[u8]| {
+        let src = SliceSource(bytes);
+        let mut out: Vec<(String, u8, i16)> = Vec::new();
+        for_each_waypoint(&src, |w| out.push((w.name.as_str().into(), w.category_id, w.lateral_offset_m))).unwrap();
+        out
+    };
+
+    let before = read(&original);
+    // North of an eastward road is left (negative); south is right (positive). ~100 m either way.
+    assert_eq!(before.iter().map(|w| w.1).collect::<Vec<_>>(), [1, 2, 6], "water · campsite · bike shop");
+    assert!(before[0].2 < -90 && before[0].2 > -110, "head waypoint sits ~100 m left (got {})", before[0].2);
+    assert!(before[2].2 > 90 && before[2].2 < 110, "tail waypoint sits ~100 m right (got {})", before[2].2);
+
+    let after = read(&spliced);
+    assert_eq!(after, vec![before[0].clone(), before[2].clone()], "the survivors' category + offset are unchanged");
 }
 
 /// The seam contract the matcher-floor install relies on: the spliced head is the original

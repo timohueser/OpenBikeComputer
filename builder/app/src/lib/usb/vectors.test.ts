@@ -118,8 +118,8 @@ describe("CRC-32 against the fixtures", () => {
      * what every commit in the protocol turns on.
      */
     it.each([
-        ["route-waypoints.obcr", "0x1F66C051"],
-        ["route-plain.obcr", "0xEBD7D5B6"],
+        ["route-waypoints.obcr", "0x1BFB6E3C"],
+        ["route-plain.obcr", "0x1557AE0B"],
         ["trip-v1.bin", "0xA3C5D591"],
     ])("agrees with the device's fingerprint of %s", (file, expected) => {
         expect(Crc32.of(vector(file))).toBe(hex(expected));
@@ -130,7 +130,7 @@ describe("CRC-32 against the fixtures", () => {
         // buffers would pass every unit test and fail on hardware.
         const data = vector("route-waypoints.obcr");
         const whole = Crc32.of(data);
-        for (const split of [0, 1, 7, 64, 299, data.length]) {
+        for (const split of [0, 1, 7, 64, 307, data.length]) {
             const h = new Crc32();
             h.update(data.subarray(0, split));
             h.update(data.subarray(split));
@@ -146,8 +146,8 @@ describe("control-plane codecs", () => {
             op: Op.Upload,
             type: ObjectType.Route,
             objectId: NEW_OBJECT_ID,
-            totalLen: 300,
-            crc32: hex("0x1F66C051"),
+            totalLen: 308,
+            crc32: hex("0x1BFB6E3C"),
         });
         expectSameBytes(encodeTransferControl(upload), vector("transfer-upload-start.bin"), "upload descriptor");
 
@@ -172,7 +172,7 @@ describe("control-plane codecs", () => {
             msg: "transferResult",
             objectId: 7,
             status: TransferStatus.Committed,
-            committedOffset: 300,
+            committedOffset: 308,
         });
 
         const full = decodeStatusMessage(vector("status-transfer-storage-full.bin"));
@@ -196,8 +196,8 @@ describe("control-plane codecs", () => {
                 op: Op.Download,
                 type: ObjectType.Route,
                 objectId: 7,
-                totalLen: 300,
-                crc32: hex("0x1F66C051"),
+                totalLen: 308,
+                crc32: hex("0x1BFB6E3C"),
             },
         });
 
@@ -285,13 +285,13 @@ describe("object codecs", () => {
         expect(entries.map((e) => e.objectId)).toEqual([7, 8, 9]);
         expect(entries[0]).toEqual({
             objectId: 7,
-            byteLen: 300,
+            byteLen: 308,
             distanceM: 2207,
             ascentM: 76,
             pointCount: 9,
             waypointCount: 2,
             name: "Vector Loop",
-            crc32: hex("0x1F66C051"),
+            crc32: hex("0x1BFB6E3C"),
             expiresAt: 1784808000,
             retention: 3,
         });
@@ -372,13 +372,13 @@ describe("round-trip over the loopback pipe", () => {
     const ROUTE_ENTRIES: RouteListEntry[] = [
         {
             objectId: 7,
-            byteLen: 300,
+            byteLen: 308,
             distanceM: 2207,
             ascentM: 76,
             pointCount: 9,
             waypointCount: 2,
             name: "Vector Loop",
-            crc32: hex("0x1F66C051"),
+            crc32: hex("0x1BFB6E3C"),
             expiresAt: 1784808000,
             retention: 3,
         },
@@ -390,7 +390,7 @@ describe("round-trip over the loopback pipe", () => {
             pointCount: 9,
             waypointCount: 0,
             name: "Vector Loop",
-            crc32: hex("0xEBD7D5B6"),
+            crc32: hex("0x1557AE0B"),
             expiresAt: 0,
             retention: 1,
         },
@@ -402,7 +402,7 @@ describe("round-trip over the loopback pipe", () => {
             pointCount: 9,
             waypointCount: 0,
             name: "Vector Loop",
-            crc32: hex("0xEBD7D5B6"),
+            crc32: hex("0x1557AE0B"),
             expiresAt: 0,
             retention: 0,
         },

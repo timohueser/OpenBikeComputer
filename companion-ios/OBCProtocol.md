@@ -337,8 +337,10 @@ CoC object (there is no firmware download direction).
 
 Routes and rides both cross the wire as **compact binary**, never XML:
 
-- **Routes** — an **OBCR v2 file, verbatim** (`OBCR_Spec.md`, incl. the v2
-  waypoints section): the phone encodes imported GPX/TCX to OBCR before upload;
+- **Routes** — an **OBCR v3 file, verbatim** (`OBCR_Spec.md`, incl. the
+  waypoints section — categorized and carrying a signed lateral offset since v3,
+  which the device **rejects v1/v2** for): the phone encodes imported GPX/TCX to
+  OBCR before upload;
   **the device never parses XML** (see *Delta 2*) and stores/serves the blob
   byte-for-byte. The E2 **route detail read is pinned as "download the route
   object"** — the app decodes waypoints + the elevation profile from the same
@@ -428,7 +430,7 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 | `DeviceInfo` | `DeviceInfo.swift` | DIS mirror (name, fw/hw, serial, protocolVersion) |
 | `DeviceConfig` | `DeviceConfig.swift` | `Config` blob — **incl. `name`** (Delta 1) |
 | `RouteSummary` / `RouteBlob` | `Route.swift` | route metadata + opaque binary payload |
-| `RouteDetail` | `Route.swift` | detail read for E2 (waypoints + elevation profile) — pinned: decoded from the downloaded OBCR v2 route object |
+| `RouteDetail` | `Route.swift` | detail read for E2 (waypoints + elevation profile) — pinned: decoded from the downloaded OBCR v3 route object |
 | `RouteSource` | `Route.swift` | GPX / TCX (Delta 2) |
 | `RideSummary` | `Ride.swift` | enumerable tracked ride (a `rideList` object entry) |
 | `RideDetail` | `Ride.swift` | detail read for E3 (elevation profile) — pinned: decoded from the downloaded ride object |

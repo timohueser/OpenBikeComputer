@@ -649,6 +649,12 @@ private struct WaypointDTO: Codable {
     var distanceAlongMeters: Double
     var lat: Double
     var lon: Double
+    /// The §7.4 category wire id (`0`/absent = generic) and the signed lateral
+    /// offset, both **optional** so a library written before OBCR v3 still decodes
+    /// — an older record simply reads back generic and on-route, and re-uploading
+    /// it re-derives nothing (the import is where those are fixed).
+    var category: UInt8?
+    var lateralOffsetMeters: Double?
 
     init(_ waypoint: Waypoint) {
         index = waypoint.index
@@ -657,13 +663,17 @@ private struct WaypointDTO: Codable {
         distanceAlongMeters = waypoint.distanceAlongMeters
         lat = waypoint.coordinate.latitude
         lon = waypoint.coordinate.longitude
+        category = waypoint.category?.rawValue
+        lateralOffsetMeters = waypoint.lateralOffsetMeters
     }
 
     var domain: Waypoint {
         Waypoint(
             index: index, name: name, note: note,
             distanceAlongMeters: distanceAlongMeters,
-            coordinate: Coordinate(latitude: lat, longitude: lon)
+            coordinate: Coordinate(latitude: lat, longitude: lon),
+            category: category.flatMap(WaypointCategory.init(wireID:)),
+            lateralOffsetMeters: lateralOffsetMeters ?? 0
         )
     }
 }

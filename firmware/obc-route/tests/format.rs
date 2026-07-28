@@ -8,7 +8,7 @@
 use core::cell::Cell;
 
 use obc_formats::io::{ByteSource, Error, SliceSource};
-use obc_formats::obcr::{CHUNK_META_LEN, HEADER_LEN};
+use obc_formats::obcr::{CHUNK_META_LEN, HEADER_FULL_LEN, VERSION};
 use obc_route::{
     RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
 };
@@ -81,7 +81,7 @@ fn build_route(
     // Distinct points: seams (each chunk's first == previous chunk's last) count once.
     let distinct: usize = chunks.iter().map(|c| c.points.len()).sum::<usize>() - chunks.len().saturating_sub(1);
 
-    let index_offset = HEADER_LEN;
+    let index_offset = HEADER_FULL_LEN;
     let data_offset = index_offset + chunks.len() * CHUNK_META_LEN;
 
     let mut metas: Vec<u8> = Vec::new();
@@ -120,10 +120,10 @@ fn build_route(
     }
     assert_eq!(metas.len(), chunks.len() * CHUNK_META_LEN);
 
-    // Header (112 bytes).
+    // Header (128 bytes: the 112-byte core + the waypoint extension).
     let mut f: Vec<u8> = Vec::new();
     f.extend_from_slice(b"OBCR");
-    f.push(1); // version
+    f.push(VERSION);
     f.push(0); // flags
     f.push(name.len() as u8);
     f.push(0); // reserved
@@ -145,7 +145,11 @@ fn build_route(
     let mut name_field = [0u8; 48];
     name_field[..name.len()].copy_from_slice(name.as_bytes());
     f.extend_from_slice(&name_field);
-    assert_eq!(f.len(), HEADER_LEN, "header must be 112 bytes");
+    // §1.1 extension: no waypoints, so offset and count are 0 and the rest is reserved.
+    f.extend_from_slice(&0u32.to_le_bytes());
+    f.extend_from_slice(&0u16.to_le_bytes());
+    f.extend_from_slice(&[0u8; 10]);
+    assert_eq!(f.len(), HEADER_FULL_LEN, "header must be 128 bytes");
 
     f.extend_from_slice(&metas);
     f.extend_from_slice(&data);
@@ -452,13 +456,12 @@ fn rejects_bad_input() {
     bytes[0] = b'X';
     assert_eq!(err(&bytes), Error::BadMagic);
 
-    let mut bytes = two_chunk_route();
-    bytes[4] = 3; // unsupported version (v2 is accepted — the waypoint extension)
-    assert_eq!(err(&bytes), Error::BadVersion);
-
-    let mut bytes = two_chunk_route();
-    bytes[4] = 0;
-    assert_eq!(err(&bytes), Error::BadVersion);
+    // v3 is the only accepted version: both the retired ones and a future one are rejected.
+    for version in [0u8, 1, 2, VERSION + 1] {
+        let mut bytes = two_chunk_route();
+        bytes[4] = version;
+        assert_eq!(err(&bytes), Error::BadVersion, "v{version} must not load");
+    }
 }
 
 /// `chunk_count > MAX_ROUTE_CHUNKS` is rejected before any chunk is read: a corrupt header must
@@ -478,8 +481,8 @@ fn rejects_chunk_count_over_cap() {
 #[test]
 fn rejects_point_count_over_cap() {
     let mut bytes = two_chunk_route();
-    // index_offset = HEADER_LEN (chunk metas follow the header); point_count is at meta byte 26.
-    let pc_off = HEADER_LEN + 26;
+    // index_offset = HEADER_FULL_LEN (chunk metas follow the header); point_count is at meta byte 26.
+    let pc_off = HEADER_FULL_LEN + 26;
     let bad = (MAX_POINTS_PER_CHUNK as u16 + 1).to_le_bytes();
     bytes[pc_off..pc_off + 2].copy_from_slice(&bad);
     let src = SliceSource(&bytes);
@@ -492,7 +495,7 @@ fn rejects_point_count_over_cap() {
 fn rejects_chunk_data_region_past_end() {
     let mut bytes = two_chunk_route();
     // Inflate chunk 0's byte_len (meta byte 40) so byte_offset + byte_len exceeds the file.
-    let len_off = HEADER_LEN + 40;
+    let len_off = HEADER_FULL_LEN + 40;
     let bad = (bytes.len() as u32 + 1).to_le_bytes();
     bytes[len_off..len_off + 4].copy_from_slice(&bad);
     let src = SliceSource(&bytes);

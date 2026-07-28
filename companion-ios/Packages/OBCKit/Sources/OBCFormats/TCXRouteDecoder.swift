@@ -128,7 +128,13 @@ final class TCXCollector: NSObject, XMLParserDelegate {
                 // often lean on PointType ("Left", "Water", "Summit") instead.
                 let name = pendingName?.isEmpty == false ? pendingName!
                     : (pendingPointType?.isEmpty == false ? pendingPointType! : "Waypoint")
-                rawWaypoints.append(RawWaypoint(name: name, note: pendingNotes, coordinate: coordinate))
+                // `PointType` is also the course point's *symbol* ("Water", "Food",
+                // "Left"): the same vocabulary GPX writes in `<sym>`, so it maps
+                // through the same table — even when it doubled as the name above.
+                rawWaypoints.append(RawWaypoint(
+                    name: name, note: pendingNotes, coordinate: coordinate,
+                    symbol: WaypointSymbol.symbol(sym: pendingPointType, type: nil)
+                ))
             }
             container = nil
         default:

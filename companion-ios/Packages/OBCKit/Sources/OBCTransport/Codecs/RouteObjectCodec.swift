@@ -1,11 +1,15 @@
 import Foundation
 import OBCDomain
 
-/// The **route object** codec — the phone-side `ImportedRoute → OBCR v2` encoder
+/// The **route object** codec — the phone-side `ImportedRoute → OBCR v3` encoder
 /// (and its reader), the upload sibling of ``RideObjectCodec``. A route object's
-/// payload is *exactly the bytes of an OBCR v2 file* (`obc-ble-interface-spec.md`
+/// payload is *exactly the bytes of an OBCR v3 file* (`obc-ble-interface-spec.md`
 /// §7.1); the device writes it to SD verbatim and rides it through the same
 /// `no_std` `obc-route` reader the firmware runs.
+///
+/// **v3 is a breaking bump** (`OBCR_Spec.md`): the waypoint record grew to 44
+/// bytes for a category and a signed lateral offset, and the firmware **rejects**
+/// v1/v2 files outright, so this encoder must never emit one.
 ///
 /// This is a **hand-written all-Swift** port of the layout in
 /// [`OBCR_Spec.md`](../../../../../../specs/OBCR_Spec.md) — the same choice `OBCKit`
@@ -19,9 +23,9 @@ import OBCDomain
 ///
 /// File layout (little-endian throughout, coordinates in microdegrees):
 /// ```
-/// [Header 128 B][Chunk 0 data]…[Chunk N-1 data][Chunk Index N×44 B][Waypoints M×40 B]
+/// [Header 128 B][Chunk 0 data]…[Chunk N-1 data][Chunk Index N×44 B][Waypoints M×44 B]
 /// ```
-/// The header (patched last, once offsets are known) reaches the index and the v2
+/// The header (patched last, once offsets are known) reaches the index and the
 /// waypoint table by explicit offset; geometry is split into ≤``maxPointsPerChunk``
 /// **seam-sharing** chunks (chunk k's last point == chunk k+1's anchor), each an
 /// anchor + `int16` deltas. See `OBCR_Spec.md` §§1–5.
@@ -29,13 +33,17 @@ public enum RouteObjectCodec {
     // MARK: Format constants (OBCR_Spec.md)
 
     static let magic = Data("OBCR".utf8)
-    static let version: UInt8 = 2
-    /// v1 base header; every ride-path field lives here. v2 appends the 16-byte
-    /// waypoint extension at offset 112.
+    /// The one version the device accepts (`OBCR_Spec.md`): v1/v2 are rejected on
+    /// both sides, so a stored route re-imports rather than mis-decoding.
+    static let version: UInt8 = 3
+    /// The header's ride core; every ride-path field lives here. The 16-byte
+    /// waypoint extension follows at offset 112.
     static let headerBaseLength = 112
     static let headerLength = 128
     static let chunkMetaLength = 44
-    static let waypointLength = 40
+    static let waypointLength = 44
+    /// First byte of a waypoint record's name field (§4).
+    static let waypointNameOffset = 20
     /// Header route-name cap (matches the device `NAME_CAP`).
     static let nameCap = 48
     /// Waypoint short-name cap.
@@ -58,7 +66,7 @@ public enum RouteObjectCodec {
 
     // MARK: Encode
 
-    /// Encode an imported route's geometry + waypoints into an OBCR v2 file, named
+    /// Encode an imported route's geometry + waypoints into an OBCR v3 file, named
     /// `name` (truncated to ``nameCap`` on a char boundary). Convenience over the
     /// `points`/`waypoints` form for the "ImportedRoute → payload" call site.
     public static func encode(_ route: ImportedRoute, name: String) -> Data {
@@ -74,7 +82,7 @@ public enum RouteObjectCodec {
         CRC32.checksum(encode(points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name))
     }
 
-    /// Encode geometry + waypoints into an OBCR v2 file. `waypoints` are stored
+    /// Encode geometry + waypoints into an OBCR v3 file. `waypoints` are stored
     /// verbatim (already placed along the route by `WaypointPlacement`); `points`
     /// carry the geometry and drive the exact header stats.
     ///
@@ -205,6 +213,11 @@ public enum RouteObjectCodec {
         return file
     }
 
+    /// The §4 waypoint records: 44 bytes each, in the caller's (already
+    /// distance-sorted) order. `category` is the §7.4 wire id the import mapped
+    /// from `<sym>`/`<type>` (`0` = generic), and the lateral offset is stored
+    /// **saturating** — a waypoint further off route than `Int16` metres reads as
+    /// "very far to that side", never as the opposite one.
     private static func encodeWaypoints(_ waypoints: [Waypoint]) -> Data {
         guard !waypoints.isEmpty else { return Data() }
         var data = Data(capacity: waypoints.count * waypointLength)
@@ -214,13 +227,25 @@ public enum RouteObjectCodec {
             record.putI32(toMicrodegrees(waypoint.coordinate.longitude), at: 4)
             record.putI32(toMicrodegrees(waypoint.coordinate.latitude), at: 8)
             record.putI16(waypointElevationUnknown, at: 12)  // Waypoint carries no elevation
-            record[14] = 0  // type: generic — the app doesn't map <sym>/course-point types yet
+            record[14] = WaypointCategory.wireID(waypoint.category)
             let nameBytes = truncatedUTF8(waypoint.name, maxBytes: waypointNameCap)
             record[15] = UInt8(nameBytes.count)
-            record.replaceSubrange(16..<(16 + nameBytes.count), with: nameBytes)
+            record.putI16(lateralOffsetInt16(waypoint.lateralOffsetMeters), at: 16)  // [18..20] reserved
+            record.replaceSubrange(waypointNameOffset..<(waypointNameOffset + nameBytes.count), with: nameBytes)
             data.append(record)
         }
         return data
+    }
+
+    /// A signed lateral offset in whole metres, saturating at ±`Int16.max` — the
+    /// magnitude is clamped and *then* signed, exactly as the firmware converter
+    /// does, so a waypoint dropped 40 km off route reads as "very far to that
+    /// side" and never wraps to the other one. A non-finite offset stores as `0`
+    /// (on-route), the same value an unplaced waypoint carries.
+    private static func lateralOffsetInt16(_ meters: Double) -> Int16 {
+        guard meters.isFinite else { return 0 }
+        let magnitude = min(abs(meters).rounded(), Double(Int16.max))
+        return Int16(meters < 0 ? -magnitude : magnitude)
     }
 
     // MARK: Decode
@@ -248,14 +273,16 @@ public enum RouteObjectCodec {
         public var waypoints: [Waypoint]
     }
 
-    /// Decode an OBCR v1/v2 file. Every section is reached by an explicit offset
+    /// Decode an OBCR v3 file. Every section is reached by an explicit offset
     /// and bounds-checked — malformed device bytes throw ``DeviceError/readFailed``,
-    /// never trap.
+    /// never trap. A v1/v2 file is **rejected**, not read: its waypoint records are
+    /// a different width and its category byte a retired taxonomy, so the honest
+    /// answer is "re-import it", exactly what the device does.
     public static func decode(_ data: Data) throws -> Decoded {
         let reader = ByteView(data)
         guard try reader.bytes(at: 0, count: 4) == magic else { throw DeviceError.readFailed }
         let version = try reader.u8(at: 4)
-        guard version == 1 || version == 2 else { throw DeviceError.readFailed }
+        guard version == RouteObjectCodec.version else { throw DeviceError.readFailed }
         let nameLength = min(Int(try reader.u8(at: 6)), nameCap)
 
         let start = Coordinate(
@@ -274,7 +301,7 @@ public enum RouteObjectCodec {
 
         var waypointOffset = 0
         var waypointCount = 0
-        if version >= 2, data.count >= headerLength {
+        if data.count >= headerLength {
             waypointOffset = Int(try reader.u32(at: 112))
             waypointCount = Int(try reader.u16(at: 116))
         }
@@ -306,11 +333,18 @@ public enum RouteObjectCodec {
             let distanceAlong = try reader.u32(at: base)
             let lon = try reader.i32(at: base + 4)
             let lat = try reader.i32(at: base + 8)
+            // An unknown category byte reads as generic (§4's read-tolerance rule),
+            // never as a decode failure.
+            let category = WaypointCategory(wireID: try reader.u8(at: base + 14))
             let nameLength = min(Int(try reader.u8(at: base + 15)), waypointNameCap)
-            let name = String(decoding: try reader.bytes(at: base + 16, count: nameLength), as: UTF8.self)
+            let lateralOffset = try reader.i16(at: base + 16)
+            let name = String(
+                decoding: try reader.bytes(at: base + waypointNameOffset, count: nameLength), as: UTF8.self
+            )
             waypoints.append(Waypoint(
                 index: k, name: name, distanceAlongMeters: Double(distanceAlong),
-                coordinate: Coordinate(latitude: fromMicrodegrees(lat), longitude: fromMicrodegrees(lon))
+                coordinate: Coordinate(latitude: fromMicrodegrees(lat), longitude: fromMicrodegrees(lon)),
+                category: category, lateralOffsetMeters: Double(lateralOffset)
             ))
         }
 
