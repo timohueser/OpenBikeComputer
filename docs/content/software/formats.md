@@ -35,7 +35,8 @@ The map and the route are siblings: they were designed to feel identical to the 
   <text class="d-label" x="98" y="188" text-anchor="middle">GPX upload</text>
   <text class="d-sub" x="98" y="204" text-anchor="middle">a ride you planned</text>
   <line class="d-flow" x1="170" y1="191" x2="298" y2="191" marker-end="url(#aF1)" />
-  <text class="d-sub" x="234" y="182" text-anchor="middle" style="fill:#a9501c">obc-route · device · sim · browser</text>
+  <text class="d-sub" x="234" y="182" text-anchor="middle" style="fill:#a9501c">obc-route</text>
+  <text class="d-sub" x="234" y="207" text-anchor="middle" style="fill:#a9501c;font-size:9px">device · sim · browser</text>
   <rect class="d-panel" x="304" y="166" width="120" height="50" rx="10" />
   <text class="d-label" x="364" y="188" text-anchor="middle">.obcr</text>
   <text class="d-sub" x="364" y="204" text-anchor="middle">route</text>
@@ -194,7 +195,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. A few small details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header rather than the style table, because the marker isn't an OpenStreetMap feature; a <b>POI-section offset</b> (coral) and, appended by <b>v8</b>, a <b>navigation-graph offset</b> (teal) sit at the tail — the growth that carried the header from 32 → 36 → 40 bytes. Neither tail offset is ever zero — both sections are always present, empty or not. <b>v8's only header change</b> was appending that last offset; the earlier fields never move, so a v7 reader that stops at byte 36 still parses everything it knew. <b>v9</b> reworked the nav section's internals (below) and <b>v10</b> grew the style record (next) — both left the header untouched, only ticking the version byte (now <code>10</code>).</figcaption>
+<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9/v10 changed section internals and the style record without touching the header, only ticking the version byte (now <code>10</code>).</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is eight bytes (v10 grew it from six):
@@ -319,7 +320,7 @@ Inside a chunk, each feature's geometry is stored as one absolute starting point
 <figcaption>The first vertex is the anchor, stored once and relative to the leaf's corner so even it stays small; every other vertex is a step from the one before. Most steps are a handful of microdegrees, so a whole ring usually fits in <b>single bytes</b> — and a feature with one long edge simply bumps the whole ring to 16-bit deltas. (The packer also pre-splits any segment longer than 30 000 µdeg, so a delta can never overflow 16 bits.)</figcaption>
 </figure>
 
-The device decodes one complete feature into fixed caller-owned point and ring buffers. Before it publishes that geometry, it validates every encoded ring and checks that the whole feature fits. An over-capacity or malformed feature is therefore consumed and **dropped whole** with a typed outcome; it is never exposed as a shortened line or an open polygon. Production maps stay within the format's 2,048-vertex cap, while this rule keeps smaller device profiles and damaged files honest without changing a byte on disk. The [rendering pipeline](../rendering/#4-decode-by-priority-the-clever-bit) explains how those outcomes are counted separately from ordinary frame-budget drops.
+The device decodes one complete feature into fixed caller-owned point and ring buffers. Before it publishes that geometry, it validates every encoded ring and checks that the whole feature fits. An over-capacity or malformed feature is therefore consumed and **dropped whole** with a typed outcome; it is never exposed as a shortened line or an open polygon. Production maps stay within the format's 2,048-vertex cap, while this rule keeps smaller device profiles and damaged files honest without changing a byte on disk. The [rendering pipeline](../rendering/#4-decode-by-priority) explains how those outcomes are counted separately from ordinary frame-budget drops.
 
 Decoding a ring is exactly as simple as it looks — pick the delta width once, then walk:
 
@@ -358,14 +359,14 @@ A feature is introduced by a 12-byte header, and a flags byte in it says how to 
   <text class="d-sub" x="580" y="106" text-anchor="middle" style="font-size:9px">1 B</text>
 
   <!-- flags expand -->
-  <line x1="580" y1="92" x2="580" y2="124" stroke="#cf6a2a" stroke-width="1.2" />
+  <line x1="580" y1="92" x2="573" y2="124" stroke="#cf6a2a" stroke-width="1.2" />
   <g>
-    <rect x="436" y="124" width="100" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="486" y="139" text-anchor="middle" style="font-size:9.5px">bit 0 · 16-bit Δ</text>
-    <rect x="540" y="124" width="80" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="580" y="139" text-anchor="middle" style="font-size:9.5px">bit 1 · polygon</text>
-    <rect x="624" y="124" width="72" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="660" y="139" text-anchor="middle" style="font-size:9.5px">bit 2 · holes</text>
+    <rect x="418" y="124" width="102" height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="469" y="139" text-anchor="middle" style="font-size:9px">bit 0 · 16-bit Δ</text>
+    <rect x="526" y="124" width="94" height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="573" y="139" text-anchor="middle" style="font-size:9px">bit 1 · polygon</text>
+    <rect x="626" y="124" width="80" height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="666" y="139" text-anchor="middle" style="font-size:9px">bit 2 · holes</text>
   </g>
 
   <!-- holes layout ribbon -->
@@ -406,15 +407,15 @@ The section is a small **directory** followed by, per category, a familiar pair:
   <text class="d-tag" x="20" y="24">The POI section — a quadtree per category over 36-byte records</text>
 
   <!-- directory -->
-  <rect class="d-panel-2" x="24" y="44" width="150" height="88" rx="9" />
+  <rect class="d-panel-2" x="24" y="44" width="162" height="88" rx="9" />
   <text class="d-label" x="40" y="62" style="font-size:11px">directory</text>
-  <text class="d-sub" x="40" y="78"  style="font-size:9.5px">count = 6 · chunk size</text>
-  <text class="d-sub" x="40" y="92"  style="font-size:9.5px">per cat: id · index off</text>
-  <text class="d-sub" x="40" y="104" style="font-size:9.5px">node count · chunk count</text>
-  <text class="d-sub" x="40" y="122" style="font-size:9.5px;fill:#a9501c">+ hours-pool off · count</text>
+  <text class="d-sub" x="40" y="78"  style="font-size:9px">count = 6 · chunk size</text>
+  <text class="d-sub" x="40" y="92"  style="font-size:9px">per cat: id · index off</text>
+  <text class="d-sub" x="40" y="104" style="font-size:9px">node count · chunk count</text>
+  <text class="d-sub" x="40" y="122" style="font-size:9px;fill:#a9501c">+ hours-pool off · count</text>
 
   <!-- one category's index + chunks (LOD-shaped) -->
-  <line class="d-flow" x1="176" y1="80" x2="214" y2="80" marker-end="url(#aF5)" />
+  <line class="d-flow" x1="188" y1="80" x2="214" y2="80" marker-end="url(#aF5)" />
   <g stroke="#3c6b39" stroke-width="1.2">
     <rect x="220" y="56" width="96"  height="44" class="d-muted" />
     <rect x="316" y="56" width="112" height="44" class="d-water" />
@@ -450,7 +451,7 @@ The section is a small **directory** followed by, per category, a familiar pair:
   <text class="d-sub" x="414" y="214" text-anchor="middle" style="font-size:9px">10–33</text>
   <text class="d-sub" x="655" y="214" text-anchor="middle" style="font-size:9px">34–35</text>
 </svg>
-<figcaption>Each category's index and chunks are laid out <b>exactly</b> like a LOD layer — a flat <code>u32</code> quadtree (the same branch-bit / empty-leaf / chunk-id encoding) built over the <b>same global bbox from the header</b>, its chunks packed straight after. So the reader walks a POI category with the very same leaf-walk it uses for geometry. The record differs in one telling way: coordinates are stored <b>absolute</b>, not anchored-and-deltated. At a fixed 36 bytes the delta saving isn't worth breaking symmetry with geometry, and fixed-size records make chunk packing trivial — exactly <code>512 / 36 = 14</code> per chunk, no length bookkeeping. The final two bytes are a <b>HoursRef</b> (coral) — a <code>u16</code> index into the hours pool below, or <code>0xFFFF</code> when the POI has no listed hours.</figcaption>
+<figcaption>Each category's index and chunks are laid out exactly like a LOD layer — the same flat <code>u32</code> quadtree over the same header bbox — so the reader walks a POI category with the very same leaf-walk it uses for geometry. Coordinates are stored <b>absolute</b>: at a fixed 36 bytes the delta saving isn't worth breaking symmetry, and fixed-size records make chunk packing trivial (<code>512 / 36 = 14</code> per chunk, no length bookkeeping). The final two bytes are a <b>HoursRef</b> (coral) — an index into the hours pool below, or <code>0xFFFF</code> when the POI has no listed hours.</figcaption>
 </figure>
 
 Two design notes are worth pulling out. First, the **category is never stored in the record** — it's implied by *which* category's quadtree the record came from, and each subtype maps to exactly one category anyway. Second, **names are folded to printable ASCII at pack time** and capped at 24 bytes, because the `Name` field is a fixed-width, one-byte-per-character slot (the [packer](../packer-routing/#extracting-pois) transliterates umlauts and accents — `ä → ae` — rather than store variable-width UTF-8); an unnamed POI (name length `0`) shows its subtype's fallback label on-device. A `0xFF` subtype byte ends a chunk, mirroring geometry's `0xFF`-style-id sentinel.
@@ -536,7 +537,7 @@ That `HoursRef` at the end of every record points into a pooled section written 
   <text class="d-sub" x="504" y="255" style="font-size:9px">blob i at</text>
   <text class="d-sub" x="504" y="269" style="font-size:9px" font-family="var(--mono)">pool_off + 2 + i·29</text>
 </svg>
-<figcaption>A schedule is a <b>flags byte</b> then seven days (Mon…Sun), each holding up to two open intervals. An interval is two bytes — an <b>open</b> and a <b>close</b> quarter-hour from midnight (<code>0…96</code>, so <code>96</code> = 24:00, a 15-minute resolution). A closed day is <code>(0, 0)</code>; a 24-hour day is <code>(0, 96)</code>; an <b>overnight</b> interval (say 22:00–02:00) stores <code>close ≤ open</code> and wraps past midnight in place, never split across two days. Two <b>flag bits</b> record what the packer couldn't keep verbatim: <b>seasonal</b> (a month/date rule was flattened to a representative in-season week) and <b>truncated</b> (a public-holiday rule, a <code>sunrise/sunset</code> time, or a third interval on a day was dropped). Both are baked but ignored by the v1 UI. Because a whole region's shops share the same handful of schedules, the pool is <b>deduplicated</b>: identical 29-byte blobs collapse to one, and a record's <code>HoursRef</code> is just its index — <code>0xFFFF</code> meaning "no hours listed."</figcaption>
+<figcaption>A schedule is a <b>flags byte</b> then seven days, each holding up to two open intervals of two bytes — an <b>open</b> and a <b>close</b> quarter-hour from midnight (<code>0…96</code>, so <code>96</code> = 24:00). A closed day is <code>(0, 0)</code>; a 24-hour day is <code>(0, 96)</code>; an overnight interval stores <code>close ≤ open</code> and wraps in place. Two flag bits record what the packer couldn't keep verbatim — <b>seasonal</b> (a date rule flattened to an in-season week) and <b>truncated</b> (a public-holiday rule, <code>sunrise/sunset</code> time, or third interval dropped). Because a region's shops share the same handful of schedules, identical blobs collapse to one, and a record's <code>HoursRef</code> is just its pool index — <code>0xFFFF</code> meaning "no hours listed."</figcaption>
 </figure>
 
 The pool's exact layout — the leading `count`, the blob byte order, the flag bits, and the overnight/24-hour conventions — is [`OBCM_Spec.md` §7.5](src:specs/OBCM_Spec.md). The pack-time parser that fills it is the [`opening_hours` stage](../packer-routing/#parsing-opening-hours); the device-side lookup that turns a blob into *today's hours* and an *open-now* answer drives the [POI detail view](../ui/#the-poi-detail-view).
@@ -565,28 +566,29 @@ Its shape is set by one hard fact: the device has **no room for a node-id → of
   <line class="d-flow" x1="166" y1="74" x2="196" y2="74" marker-end="url(#aN1)" />
   <rect class="d-water" x="200" y="48" width="128" height="52" rx="9" stroke="#3c6b39" stroke-width="1.2" />
   <text class="d-label" x="264" y="70" text-anchor="middle" style="fill:#fff;font-size:10.5px">profile table</text>
-  <text class="d-sub" x="264" y="86" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">1..8 × 52 B · always present</text>
+  <text class="d-sub" x="264" y="86" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">1..8 × 52 B</text>
 
   <!-- quadtree -->
   <line class="d-flow" x1="330" y1="74" x2="360" y2="74" marker-end="url(#aN1)" />
   <rect class="d-panel" x="364" y="50" width="118" height="48" rx="9" />
   <text class="d-label" x="423" y="70" text-anchor="middle" style="font-size:10px">node quadtree</text>
-  <text class="d-sub" x="423" y="86" text-anchor="middle" style="font-size:8.5px">flat u32 · §4 · header bbox</text>
+  <text class="d-sub" x="423" y="86" text-anchor="middle" style="font-size:8.5px">flat u32 · §4</text>
 
   <!-- junction chunks -->
   <line class="d-flow" x1="484" y1="74" x2="514" y2="74" marker-end="url(#aN1)" />
   <rect class="d-water" x="518" y="50" width="178" height="48" rx="9" stroke="#3c6b39" stroke-width="1.2" />
   <text class="d-label" x="607" y="68" text-anchor="middle" style="fill:#fff;font-size:10px">junction records</text>
-  <text class="d-sub" x="607" y="84" text-anchor="middle" style="fill:#dfe6e0;font-size:8px">variable · bin-packed in 512 B chunks</text>
+  <text class="d-sub" x="607" y="84" text-anchor="middle" style="fill:#dfe6e0;font-size:8px">variable · 512 B chunks</text>
   <text class="d-sub" x="607" y="114" text-anchor="middle" style="font-size:8px;fill:#a9501c">bin-packed — leaves may share a chunk</text>
 
   <!-- edge pool (separate offset) -->
   <line class="d-flow" x1="94" y1="106" x2="94" y2="140" marker-end="url(#aN1)" />
   <rect class="d-muted" x="24" y="142" width="150" height="46" rx="9" stroke="#3c6b39" stroke-width="1.2" />
   <text class="d-label" x="38" y="162" style="font-size:10.5px">edge pool</text>
-  <text class="d-sub" x="38" y="178" style="font-size:9px">polylines · own offset · fetched at emit</text>
-  <text class="d-sub" x="184" y="166" style="font-size:8.5px;fill:#a9501c">edge id = pool-relative byte offset</text>
-  <text class="d-sub" x="184" y="179" style="font-size:8.5px">(chunk = id / 512) — zero index bytes</text>
+  <text class="d-sub" x="38" y="178" style="font-size:9px">polylines · own offset</text>
+  <text class="d-sub" x="184" y="158" style="font-size:8.5px;fill:#a9501c">edge id = pool-relative byte offset</text>
+  <text class="d-sub" x="184" y="171" style="font-size:8.5px">(chunk = id / 512) — zero index bytes</text>
+  <text class="d-sub" x="184" y="184" style="font-size:8.5px">fetched only at route emit</text>
 
   <!-- explode one junction record -->
   <line x1="518" y1="98" x2="410" y2="150" stroke="#9aa884" stroke-width="1.1" />
@@ -594,11 +596,11 @@ Its shape is set by one hard fact: the device has **no room for a node-id → of
   <rect class="d-hot" x="392" y="150" width="308" height="96" rx="10" style="fill:#f8efe4" />
   <text class="d-tag" x="408" y="168" style="fill:#a9501c">one junction record — 13 + 15 × degree B</text>
   <text class="d-sub" x="408" y="186" style="font-size:9.5px">lat · lon · dense id · degree</text>
-  <text class="d-sub" x="408" y="202" style="font-size:9.5px">then <b>degree</b> × neighbour (15 B each):</text>
+  <text class="d-sub" x="408" y="202" style="font-size:9.5px">then <tspan style="font-weight:700">degree</tspan> × neighbour (15 B each):</text>
   <text class="d-sub" x="420" y="218" style="font-size:8.5px" font-family="var(--mono)">nbr id · nbr lat,lon · edge id · cost m · way-kind</text>
-  <text class="d-sub" x="420" y="234" style="font-size:8px;fill:#a9501c">coord INLINE (no fetch for h) · way-kind drives the profile weight</text>
+  <text class="d-sub" x="420" y="234" style="font-size:8px;fill:#a9501c">coord + way-kind inline — a settle relaxes with no extra fetch</text>
 </svg>
-<figcaption>The whole section's resident cost is a <b>28-byte directory</b>: two data offsets, three counts, the pinned <b>512 B</b> chunk size, and the profile table's offset and count. Right behind it sits the <b>profile table</b> — 1–8 bike profiles, always present, [covered on the packer page](../packer-routing/#weighting-the-graph-bike-profiles). The <b>node quadtree</b> is byte-for-byte the same flat-<code>u32</code> encoding as an <a href="#the-quadtree-index">LOD index</a> — same branch-bit, same empty-leaf sentinel, built over the <b>same global bbox from the header</b> — so the reader walks it with the identical leaf-walk. Its leaves point at <b>junction records</b>, packed into 512-byte chunks (variable-length here, so <code>0xFF</code>-padding is the end-of-chunk sentinel). v9 <b>bin-packs</b> those leaves first-fit, so a half-full leaf no longer wastes a whole chunk — one consequence is that <b>distinct leaves may share a chunk</b>, and a walk decodes a shared chunk once per leaf, so the reader is written to be <b>idempotent</b>. Each record stores its own coordinate and dense id, then its adjacency: one <b>15-byte</b> entry per neighbour holding the neighbour's <b>coordinate inline</b>, the connecting edge's id, its cost in metres, and the edge's <b>way-kind</b> byte — the class the router weights by. The <b>edge pool</b> — the actual polylines — sits behind its own offset and is touched <i>only when a route is emitted</i>; an edge is addressed by a <b>byte offset into the pool</b>, so there's no edge-id table to keep resident either.</figcaption>
+<figcaption>The section's resident cost is a <b>28-byte directory</b>: offsets, counts, the pinned 512 B chunk size, and the profile table's location. The <b>node quadtree</b> is byte-for-byte the same flat-<code>u32</code> encoding as an <a href="#the-quadtree-index">LOD index</a>, built over the same header bbox, so the reader walks it with the identical leaf-walk. Its leaves point at <b>junction records</b>, bin-packed first-fit into 512-byte chunks — distinct leaves may share a chunk, so the walk is written to decode a shared chunk idempotently. Each record stores its own coordinate and dense id, then one <b>15-byte</b> entry per neighbour with the neighbour's <b>coordinate inline</b>, the connecting edge's id, its cost in metres, and its <b>way-kind</b> byte. The <b>edge pool</b> — the actual polylines — is touched only when a route is emitted, and an edge is addressed by byte offset into the pool, so there's no edge-id table to keep resident either.</figcaption>
 </figure>
 
 Why store the neighbour's coordinate twice — once in its own record, once in every record that points at it? Because that redundancy is exactly what makes the router cheap. A\* settling a node needs, for each neighbour, the straight-line distance to the goal (the heuristic `h`). With the coordinate inline, that number falls straight out of the record already in hand — no chase to the neighbour's own record just to read where it is. **One quadtree descent, one chunk read, then relax every neighbour from bytes already decoded.**
@@ -650,20 +652,20 @@ Why store the neighbour's coordinate twice — once in its own record, once in e
   <text x="480" y="142" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#3c6b39">relax</text>
   <text class="d-sub" x="520" y="52" style="font-size:9px;fill:#6b7758">③ relax — no further read</text>
   <rect class="d-hot" x="520" y="60" width="180" height="150" rx="10" style="fill:#f8efe4" />
-  <text class="d-sub" x="536" y="84" style="font-size:9.5px">for each neighbour, from bytes</text>
+  <text class="d-sub" x="536" y="84" style="font-size:9.5px">per neighbour, from bytes</text>
   <text class="d-sub" x="536" y="98" style="font-size:9.5px">already in hand:</text>
   <text class="d-sub" x="536" y="118" style="font-family:var(--mono);font-size:9px">g' = g + cost_m · w</text>
   <text class="d-sub" x="536" y="134" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">w  = profile(way_kind)</text>
   <text class="d-sub" x="536" y="150" style="font-family:var(--mono);font-size:9px">h  = gc_dist(nbr, goal)</text>
   <text class="d-sub" x="536" y="166" style="font-family:var(--mono);font-size:9px;fill:#a9501c">f  = g' + ε·h</text>
-  <text class="d-sub" x="536" y="186" style="font-size:8px">coord inline → <b>h</b> needs zero fetches;</text>
-  <text class="d-sub" x="536" y="197" style="font-size:8px">way-kind inline → <b>w</b> needs none either</text>
+  <text class="d-sub" x="536" y="186" style="font-size:8px">coord inline → <tspan style="font-weight:700">h</tspan>: zero fetches</text>
+  <text class="d-sub" x="536" y="197" style="font-size:8px">way-kind inline → <tspan style="font-weight:700">w</tspan>: none either</text>
 
   <!-- edge-pool footnote -->
   <rect class="d-panel-2" x="34" y="258" width="666" height="30" rx="8" />
-  <text class="d-sub" x="366" y="277" text-anchor="middle" style="font-size:9.5px">the <b>edge pool</b> is untouched until the route is <b>emitted</b> — then the came-from chain's edge ids stitch into one output polyline</text>
+  <text class="d-sub" x="366" y="277" text-anchor="middle" style="font-size:9px">the <tspan style="font-weight:700">edge pool</tspan> is untouched until the route is <tspan style="font-weight:700">emitted</tspan> — then the came-from chain's edge ids stitch into one polyline</text>
 </svg>
-<figcaption>A settle is <b>one descent + one read + a straight relax</b>. The quadtree walk is a <i>point</i> query — the leaf holding the node's coordinate, not a viewport rectangle — resolving to a single chunk. That chunk read brings the whole junction record into RAM, and every neighbour is relaxed straight off it: the cost step <code>g</code> is the edge's stored metres <b>scaled by the chosen bike profile's weight for that edge's way-kind</b> (both the metres and the way-kind byte are right there in the neighbour entry), and the heuristic <code>h</code> is the great-circle distance from the neighbour's <b>inline</b> coordinate to the goal — no chase to the neighbour's own record. Because the A\* frontier keeps a handful of quadtree leaves simultaneously active, a small eight-slot tile cache holds them resident and turns most of those per-settle chunk reads into hits (the device is SD-bound, so that cache is the whole performance story — see <a href="../architecture/#on-device-routing-the-router-seam">the router seam</a>). The <b>edge pool</b> — the heavy polyline geometry — is read only at the end, once, to turn the winning chain of nodes into the route's line.</figcaption>
+<figcaption>A settle is <b>one descent + one read + a straight relax</b>. The quadtree walk is a <i>point</i> query resolving to a single chunk; that read brings the whole junction record into RAM, and every neighbour relaxes straight off it — the cost step <code>g</code> scales the stored metres by the bike profile's weight for the edge's way-kind, and the heuristic <code>h</code> is the great-circle distance from the <b>inline</b> coordinate to the goal, with no chase to the neighbour's own record. An eight-slot tile cache holds the frontier's active leaves resident (see <a href="../architecture/#on-device-routing-the-router-seam">the router seam</a>); the edge pool is read once, at the end, to stitch the winning chain into the route's line.</figcaption>
 </figure>
 
 The full byte layout — the 28-byte directory fields, the 52-byte profile records and their `1/16` fixed-point multipliers, the 15-byte neighbour entry, the `0xFF` degree sentinel and degree-24 cap, the edge record with its densified `int16` deltas, and how an over-long edge is split at synthetic junctions so no record ever straddles a chunk — is [`OBCM_Spec.md` §8](src:specs/OBCM_Spec.md). What the packer does to *build* this graph from raw highways, and how a profile weights it, is the [extraction stage](../packer-routing/#building-the-navigation-graph); how the device turns it into a route the rest of the system can't tell from a GPX is [the router seam](../architecture/#on-device-routing-the-router-seam).
@@ -742,7 +744,7 @@ Those cumulative stats are the trick that makes "42 km / 600 m to go" an O(1) su
   <text class="d-sub" x="40"  y="178" style="font-size:9.5px">chunk 0</text>
   <text class="d-sub" x="196" y="200" text-anchor="middle" style="font-size:9.5px">chunk 1</text>
   <text class="d-sub" x="312" y="74"  style="font-size:9.5px">chunk 2</text>
-  <text class="d-sub" x="150" y="118" text-anchor="middle" style="fill:#a9501c;font-size:9px">shared</text>
+  <text class="d-sub" x="150" y="112" text-anchor="middle" style="fill:#a9501c;font-size:9px">shared</text>
   <text class="d-sub" x="40" y="224" style="font-size:10px">chunk k's last point = chunk k+1's anchor</text>
 
   <!-- RIGHT: one chunk's parts -->
@@ -911,25 +913,67 @@ On the host that's a slice of memory; on the device it's a file on the SD card. 
 <figcaption>A map never has to fit in RAM — the device has 512 KB and no external memory to hold the whole file. Even the quadtree index streams, through a small block cache that coalesces the 4-byte node reads; geometry chunks stream through a slot cache too, and the renderer touches each visible chunk at most twice a frame (once to pick features, once to draw the survivors) so the SD reads stay bounded. The route's index is a short flat list, so it's read whole at open; its geometry streams chunk-by-chunk through a small resident cache of its own, so a redraw of the same route re-reads nothing either.</figcaption>
 </figure>
 
-The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority-the-clever-bit) walks the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. With it, pass B's winner chunks are already resident, and a slow pan re-hits last frame's chunks. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
+The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority) walks the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. With it, pass B's winner chunks are already resident, and a slow pan re-hits last frame's chunks. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
 
 ## The catalog — a third format, for finding the first two
 
 Everything above is read by the device. There is one more format in the family that the device never sees, and it exists because of a single number in the OBCM header: the **version byte**.
 
-The reader supports exactly one OBCM version at a time — v10 today, and the versions before it were hard cuts, not fallbacks. That's the right trade for a microcontroller (no branching parsers, no dead code paths in 512 KB), and it costs nothing while maps are built one at a time on the rider's own machine: you rebuild, you copy, you ride. But a distribution that **bakes maps centrally** — build the popular regions once, serve them as static files, amortise the CPU across everyone — turns that one byte into a hazard. The artifacts are large, cached at the edge, and nobody re-checks them by hand. The day the format moves, every one of them silently becomes a file the device will refuse.
+The reader supports exactly one OBCM version at a time — v10 today, and the versions before it were hard cuts, not fallbacks. That's the right trade for a microcontroller (no branching parsers, no dead code paths in 512 KB), and it costs nothing while maps are built one at a time on the rider's own machine. But a distribution that **bakes maps centrally** — build the popular regions once, serve them as static files — turns that one byte into a hazard: the artifacts are large, cached at the edge, and the day the format moves, every one of them silently becomes a file the device will refuse.
 
-The fix is to make the version *knowable before the download*. **OBCC** — the [catalog manifest](src:specs/OBCC_Spec.md) — is a single JSON document listing every baked artifact with its region, its preset, its coverage box, its size and digest, and the OBCM version **read out of its own header** rather than taken from the build recipe. A site holding that manifest can grey out a map the connected device can't read, instead of streaming two hundred megabytes and failing at the last byte.
+The fix is to make the version *knowable before the download*. **OBCC** — the [catalog manifest](src:specs/OBCC_Spec.md) — is a single JSON document listing every baked artifact with its region, preset, coverage box, size, digest, and the OBCM version **read out of the artifact's own header** rather than taken from the build recipe. The other half of the comparison comes from the device itself: it reports the OBCM version its reader accepts in the same open, pre-pairing identity read that carries its [store epoch](../companion-link/#store-epochs-which-id-era-youre-talking-to) — one byte, taken straight from the constant the reader validates every header against, so what a device claims to read and what it does read can't drift apart. A site holding the manifest can then grey out a map the connected device can't read, instead of streaming two hundred megabytes and failing at the last byte.
 
-That comparison needs *both* numbers, and for a while only one of them existed. The catalog states each artifact's version; nothing the device said stated the version it **reads** — the protocol version is a different sequence entirely, and the firmware revision is a release string. So the device now says it outright, in the same pre-pairing identity read that carries its [store epoch](../companion-link/#store-epochs-which-id-era-youre-talking-to): one byte, taken straight from the constant the reader validates every header against, so what a device claims to read and what it does read can't drift apart. A plugged-in device turns the catalog's version column from a label into a filter.
+<figure class="fig">
+<svg viewBox="0 0 720 232" role="img" aria-label="The catalog flow. A bake job packs regions into .obcm artifacts and generates the OBCC manifest, recording each artifact's obcm version read from its own header plus its size, digest and coverage box. A static site reads the manifest. A connected device reports the obcm version its reader accepts in its open identity read. The site compares the two versions per map and either offers the download or greys it out with the reason.">
+  <defs>
+    <marker id="aCC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="aCC2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24">Both versions known before a byte moves</text>
 
-The same document carries the two things a build system needs to stay honest about it. The generator refuses to emit a manifest whose artifacts aren't all at the packer's current OBCM version, so a half-re-baked catalog is a failed build rather than a published one; and it is written temp-file-then-rename, as one self-delimiting document, so a consumer sees the whole previous manifest or the whole new one — a truncated catalog can't parse, which is exactly the property you want from a file that decides what a device is allowed to be handed.
+  <!-- bakery -->
+  <rect class="d-panel-2" x="24" y="60" width="140" height="56" rx="10" />
+  <text class="d-label" x="94" y="84" text-anchor="middle">bake job</text>
+  <text class="d-sub" x="94" y="100" text-anchor="middle">packs regions</text>
 
-Three smaller decisions are worth naming, because each is a place where the obvious choice is wrong. The manifest's `bbox` is the **coverage** box copied from the artifact header, not the extract box it was cut from — those differ, because completing partially-in-box ways and dragging in coastline pushes the packed box outward, and the packer's own fixture tooling forbids feeding a header box back in as an extract box for exactly that reason (it ratchets wider on every re-pack). Here it's an output, not an input: the honest answer to *what does this download cover?*.
+  <!-- manifest -->
+  <line class="d-flow" x1="164" y1="88" x2="204" y2="88" marker-end="url(#aCC)" />
+  <rect class="d-panel" x="210" y="48" width="190" height="80" rx="10" />
+  <text class="d-label" x="305" y="70" text-anchor="middle">OBCC manifest</text>
+  <text class="d-sub" x="305" y="88" text-anchor="middle" style="font-size:9px">per artifact: region · preset</text>
+  <text class="d-sub" x="305" y="102" text-anchor="middle" style="font-size:9px">bbox · size · SHA-256</text>
+  <text class="d-sub" x="305" y="118" text-anchor="middle" style="font-size:9px;fill:#a9501c">obcm_version — from the header</text>
 
-The second follows the same instinct one step further. Facts the bytes *can't* state — the region's name, the build time, the source extract, the revision of the style preset it was packed with — are recorded by the bake job in a small sidecar and read back verbatim, never re-derived from whatever the tree looks like when the manifest is generated. That matters because a preset restyle, unlike a format bump, invalidates only that preset's artifacts, so re-baking half the regions and leaving the rest is normal rather than exceptional. Read the preset version back off the current config and every untouched artifact silently claims styling it doesn't have; record it at bake time and the manifest can say plainly that this map is a revision behind.
+  <!-- site -->
+  <line class="d-flow" x1="400" y1="88" x2="440" y2="88" marker-end="url(#aCC)" />
+  <rect class="d-hot" x="446" y="56" width="130" height="64" rx="11" style="fill:#f8efe4" />
+  <text class="d-label" x="511" y="82" text-anchor="middle" style="fill:#a9501c">static site</text>
+  <text class="d-sub" x="511" y="100" text-anchor="middle" style="font-size:9px">compares per map</text>
 
-And the generator reads a wall clock exactly once, for `generated_at`. Build times come from the bake, ordering is content-derived rather than filesystem-derived, and the same tree therefore produces byte-identical output.
+  <!-- device -->
+  <rect class="d-panel-2" x="446" y="156" width="130" height="56" rx="10" />
+  <text class="d-label" x="511" y="180" text-anchor="middle" style="font-size:10.5px">device</text>
+  <text class="d-sub" x="511" y="196" text-anchor="middle" style="font-size:9px">reads OBCM v10</text>
+  <line class="d-flow" x1="511" y1="154" x2="511" y2="122" marker-end="url(#aCC)" />
+  <text class="d-sub" x="522" y="142" style="font-size:8.5px">identity read</text>
+
+  <!-- outcomes -->
+  <line class="d-flow" x1="576" y1="76" x2="612" y2="66" marker-end="url(#aCC)" />
+  <text class="d-sub" x="620" y="62" style="font-size:9px;fill:#2c5230">match → offered,</text>
+  <text class="d-sub" x="620" y="75" style="font-size:9px;fill:#2c5230">digest-verified</text>
+  <line x1="576" y1="100" x2="612" y2="110" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aCC2)" />
+  <text class="d-sub" x="620" y="108" style="font-size:9px;fill:#c0492e">mismatch → greyed</text>
+  <text class="d-sub" x="620" y="121" style="font-size:9px;fill:#c0492e">out, with reason</text>
+</svg>
+<figcaption>The manifest states each artifact's version as read from its own bytes; the device states the version its reader accepts in its open identity read. The site compares the two per map — a mismatch is shown as unsupported with the reason, never hidden (that would read as a coverage hole) and never offered (the download would be refused).</figcaption>
+</figure>
+
+The generator keeps the manifest honest in a few deliberate ways:
+
+- **All-or-nothing versioning.** It refuses to emit a manifest whose artifacts aren't all at the packer's current OBCM version, so a half-re-baked catalog is a failed build rather than a published one; and it writes temp-file-then-rename, so a consumer sees the whole previous manifest or the whole new one — a truncated catalog can't parse.
+- **The `bbox` is the coverage box** copied from the artifact header, not the extract box it was cut from — completing partially-in-box ways pushes the packed box outward, so the header box is the honest answer to *what does this download cover?* (and must never be fed back in as an extract box, or it ratchets wider on every re-pack).
+- **Facts the bytes can't state** — region name, build time, source extract, the style-preset revision it was packed with — are recorded by the bake job in a sidecar and read back verbatim, never re-derived at generation time. A preset restyle invalidates only that preset's artifacts, so partial re-bakes are normal; recording the preset revision at bake time lets the manifest say plainly that a map is a revision behind.
+- **Deterministic output.** The generator reads a wall clock exactly once (`generated_at`); build times come from the bake and ordering is content-derived, so the same tree produces byte-identical output.
 
 The manifest layout, the bake-tree shape, the sidecar, and the version law are normative in [`OBCC_Spec.md`](src:specs/OBCC_Spec.md); it is generated by `obc-pack catalog`.
 

@@ -1,6 +1,6 @@
 ---
 title: Firmware updates
-description: How OpenBikeComputer updates its own firmware in the field — the SD-staged DFU trust model (verify before erase, an idempotent Armed state, a single trial boot with rollback, a torn state page that decodes to a no-op), the two delivery paths (a card sideload from Settings and a BLE push from the companion, both confirmed on the glass), and the RRAM layout the small bootloader and the app share.
+description: How OpenBikeComputer updates its own firmware in the field — the SD-staged DFU trust model, the delivery paths (card sideload, BLE, USB — all confirmed on the glass), and the RRAM layout the bootloader and the app share.
 ---
 
 # Firmware updates
@@ -92,15 +92,15 @@ landing on a bootable image:
 
   <!-- Idle -> Armed -->
   <path d="M170 184 C 300 120, 360 96, 438 92" fill="none" class="d-flow" marker-end="url(#fu-a)" />
-  <text class="d-sub" x="292" y="128" text-anchor="middle" style="fill:#3c6b39">app arms — validate CRC-32,</text>
-  <text class="d-sub" x="292" y="143" text-anchor="middle" style="fill:#3c6b39">snapshot ROLLBACK.BIN, reboot</text>
+  <text class="d-sub" x="36" y="128" style="fill:#3c6b39">app arms — validate CRC-32,</text>
+  <text class="d-sub" x="36" y="143" style="fill:#3c6b39">snapshot ROLLBACK.BIN, reboot</text>
 
   <!-- Armed -> Bootloader -->
   <line x1="518" y1="126" x2="518" y2="182" class="d-flow" marker-end="url(#fu-a)" />
-  <text class="d-sub" x="612" y="158" text-anchor="middle">reboot into obc-boot</text>
+  <text class="d-sub" x="508" y="158" text-anchor="end">reboot into obc-boot</text>
   <!-- idempotent self loop -->
   <path d="M596 96 C 664 96, 664 168, 600 172" fill="none" stroke="#9aa884" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#fu-g)" />
-  <text class="d-sub" x="672" y="120" text-anchor="middle" style="fill:#6b7758;font-size:9px" transform="rotate(90 672 120)">power loss ⇒ still Armed, redo</text>
+  <text class="d-sub" x="560" y="44" text-anchor="middle" style="fill:#6b7758;font-size:9px">power loss mid-install ⇒ still Armed — redo</text>
 
   <!-- Bootloader -> Trial -->
   <line x1="518" y1="254" x2="518" y2="310" class="d-flow" marker-end="url(#fu-a)" />
@@ -109,11 +109,11 @@ landing on a bootable image:
   <!-- Bootloader -> Idle (bad stage) -->
   <line x1="426" y1="218" x2="192" y2="218" class="d-hot" marker-end="url(#fu-c)" />
   <text class="d-sub" x="308" y="210" text-anchor="middle" style="fill:#a9501c">verify fails — arm cleared,</text>
-  <text class="d-sub" x="308" y="272" text-anchor="middle" style="fill:#a9501c">old app intact (zero cost)</text>
+  <text class="d-sub" x="308" y="234" text-anchor="middle" style="fill:#a9501c">old app intact (zero cost)</text>
 
   <!-- Trial -> Idle (confirm, green) -->
   <path d="M438 336 C 300 340, 220 300, 176 258" fill="none" stroke="#3c6b39" stroke-width="2" marker-end="url(#fu-a)" />
-  <text class="d-sub" x="300" y="330" text-anchor="middle" style="fill:#3c6b39">app confirms healthy → Idle</text>
+  <text class="d-sub" x="310" y="354" text-anchor="middle" style="fill:#3c6b39">app confirms healthy → Idle</text>
 
   <!-- Trial -> Idle (rollback, coral) -->
   <path d="M446 366 C 280 400, 150 340, 116 258" fill="none" class="d-hot" marker-end="url(#fu-c)" />
