@@ -146,7 +146,12 @@ class WebUsbPipe implements BytePipe {
     /** Rejectors for {@link dead}, released when the pipe closes or fails. */
     private readonly mourners: Array<(error: PipeError) => void> = [];
     /** The IN transfer no reader has taken the result of — a cancelled read's, kept rather than
-     *  abandoned. At most one, because {@link receive} claims before it submits. */
+     *  abandoned. At most one, because {@link receive} claims before it submits.
+     *
+     *  That claim-then-submit also assumes **one reader at a time** per pipe, which is what the
+     *  layers above provide: the control plane has a single read loop, and `ProtocolClient`'s
+     *  one-transfer gate (§4.1) serialises every bulk read. Two concurrent readers would share this
+     *  one transfer and be handed the same bytes twice rather than a packet each. */
     private heldIn: HeldTransfer | null = null;
     /** OUT transfers still on the wire. Only ever 0 or 1 (the client serialises writes), counted
      *  rather than flagged so an overlapping pair could not clear it early. */
@@ -217,7 +222,7 @@ class WebUsbPipe implements BytePipe {
      *
      * §4.1 wants the channel *emptied* before the slot goes to another descriptor. BLE closes and
      * reopens the CoC; D4's native pipe cancels every URB, drains the completions, then clears the
-     * halt (`firmware/obc-desktop/src/usb/link.rs`). This pipe can do only the last of those three.
+     * halt (`apps/obc-desktop/src/usb/link.rs`). This pipe can do only the last of those three.
      * `clearHalt` is a `CLEAR_FEATURE(ENDPOINT_HALT)` control request — it neither cancels a
      * transfer nor discards a byte — and the WebUSB API has no per-transfer cancel at all; the only
      * thing that aborts a submitted transfer is `close()`, which would take the control plane's read
@@ -231,31 +236,46 @@ class WebUsbPipe implements BytePipe {
      *   `transferOut` that will still be delivered. The firmware reads and discards bytes that
      *   arrive with no descriptor armed (`firmware/obc-fw-nrf54l/src/usb/data_plane.rs`), which is
      *   exactly what makes that orphan harmless.
-     * - **A cancelled read's transfer is kept, not orphaned.** This is the one C3 got wrong, and
-     *   the abort handshake is why it matters rather than why it doesn't. `ProtocolClient.sendAbort`
-     *   waits for `transferResult(aborted)`, and a device that has answered it sends **nothing
-     *   more** for that object — so a transfer still pending then will never see a stale byte, and
-     *   will never complete on its own either. It just sits on the endpoint. Submitting a fresh
-     *   `transferIn` for the next object would queue *behind* it, and the abandoned one would take
-     *   that object's first packet and drop it on the floor: a download one packet short, parked
-     *   forever on a read the device had already satisfied, and every later cancel adding another.
-     *   {@link receive} keeps it for the next reader instead, which is both correct and free —
-     *   every read requests the same one max packet, so a transfer submitted for one object fits
-     *   the next. Note it keeps the *result*, not merely the transfer: the device commonly answers
-     *   while no read is outstanding (that is the whole reason the abort raced one), and letting
-     *   that value fall on the floor loses the packet just as thoroughly.
+     * - **A cancelled read's transfer is kept, not orphaned — if it is still pending.** This is the
+     *   one C3 got wrong, and the abort handshake is why it matters rather than why it doesn't.
+     *   `ProtocolClient.sendAbort` waits for `transferResult(aborted)`, and a device that has
+     *   answered it sends **nothing more** for that object — so a transfer still pending then will
+     *   never see a stale byte, and will never complete on its own either. It just sits on the
+     *   endpoint. Submitting a fresh `transferIn` for the next object would queue *behind* it, and
+     *   the abandoned one would take that object's first packet and drop it on the floor: a
+     *   download one packet short, parked forever on a read the device had already satisfied, and
+     *   every later cancel adding another. {@link receive} keeps it for the next reader instead,
+     *   which is both correct and free — every read requests the same one max packet, so a transfer
+     *   submitted for one object fits the next. Note it keeps the *result*, not merely the
+     *   transfer: the device commonly answers while no read is outstanding (that is the whole
+     *   reason the abort raced one), and letting that value fall on the floor loses the packet just
+     *   as thoroughly.
+     * - **A cancelled read's transfer is dropped if it has already settled.** "Pending" above is
+     *   load-bearing, and the mirror image is just as wrong: a device that is mid-stream keeps
+     *   pushing until the abort reaches it, so the transfer the caller walked away from may have
+     *   taken one last packet of the **aborted** object. Keeping that would prepend a stale packet
+     *   to the next one. This is where reset earns its name: it runs inside `withTransferSlot`'s
+     *   failure path, *before* the slot is released and so before any next descriptor exists, which
+     *   makes the test total — a held result that has settled by now took bytes of the exchange
+     *   being abandoned, and there is nothing else it could be. Drop it, and the same line disposes
+     *   of a held `stall` or transfer error, which carries no bytes and describes an endpoint this
+     *   reset is about to clear anyway.
      *
      * Which leaves `clearHalt` doing its actual job, un-sticking a stalled endpoint, and only where
      * that can be true. A half with a transfer **still on the wire** is skipped: it cannot be
      * halted (a stall would have completed the transfer), so there is no halt to clear, and clearing
      * one would reset the endpoint's data toggle underneath a live transfer — the same rule D4
-     * meets by cancelling and draining first. A held result whose transfer has already completed
-     * does not block it: that endpoint is idle, and a stall is exactly what it may be idle *from*.
+     * meets by cancelling and draining first. The transfer discarded just above does not block it:
+     * having completed, it is off the endpoint, and a stall is exactly what that endpoint may now
+     * be idle *from*.
      * Best-effort otherwise — an endpoint that was never halted may reject the request, and that is
      * not a failure of the reset.
      */
     async reset(): Promise<void> {
         this.check();
+        // Settled by now means it took bytes of the exchange being abandoned — the next descriptor
+        // has not been sent yet, so there is nothing else those bytes could belong to.
+        if (this.heldIn?.settled) this.heldIn = null;
         for (const [direction, endpoint, onTheWire] of [
             ["in", this.inEndpoint, this.heldIn !== null && !this.heldIn.settled],
             ["out", this.outEndpoint, this.writesInFlight > 0],
