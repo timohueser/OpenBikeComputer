@@ -575,7 +575,7 @@ Pressing a list row opens the **detail view** for that POI — one more `Nav` sc
   <text class="d-sub" x="590" y="208" style="font-size:9.5px;fill:#a9501c">is_open?</text>
   <text class="d-sub" x="308" y="226" style="font-size:9px">read live every frame — the one part that isn't frozen</text>
 </svg>
-<figcaption>The hours block reads the POI's [pooled schedule](../formats/#opening-hours-a-pooled-weekly-schedule) once, in the same pre-draw <code>prepare</code> pass the list snapshot uses, then picks <b>today's</b> intervals — <b>Today</b> with the day's ranges stacked, <b>Closed today</b>, or <b>Hours not listed</b>. The <b>OPEN / CLOSED</b> pill is the only live piece, recomputed each frame from the local wall-clock (GPS clock + UTC offset): Zeller's congruence picks today's row, and the minute-of-day decides open vs. closed, including overnight intervals that opened last evening.</figcaption>
+<figcaption>The hours block reads the POI's <a href="../formats/#opening-hours-a-pooled-weekly-schedule">pooled schedule</a> once, in the same pre-draw <code>prepare</code> pass the list snapshot uses, then picks <b>today's</b> intervals — <b>Today</b> with the day's ranges stacked, <b>Closed today</b>, or <b>Hours not listed</b>. The <b>OPEN / CLOSED</b> pill is the only live piece, recomputed each frame from the local wall-clock (GPS clock + UTC offset): Zeller's congruence picks today's row, and the minute-of-day decides open vs. closed, including overnight intervals that opened last evening.</figcaption>
 </figure>
 
 ## Settings: a second level of focus

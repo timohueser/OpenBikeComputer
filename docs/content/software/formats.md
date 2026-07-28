@@ -742,7 +742,7 @@ A `<wpt>` in a planner's GPX carries more than a name. Komoot, RideWithGPS and G
     <rect x="146" y="40" width="61"  height="34" class="d-water" />
     <rect x="207" y="40" width="30"  height="34" class="d-muted" />
     <rect x="237" y="40" width="15"  height="34" class="d-hot-fill" />
-    <rect x="252" y="40" width="15"  height="34" class="d-amber" />
+    <rect x="252" y="40" width="15"  height="34" class="d-muted" />
     <rect x="267" y="40" width="30"  height="34" class="d-hot-fill" />
     <rect x="297" y="40" width="30"  height="34" class="d-muted" />
     <rect x="327" y="40" width="365" height="34" class="d-forest" />
