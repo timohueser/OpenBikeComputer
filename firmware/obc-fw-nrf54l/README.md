@@ -289,7 +289,7 @@ builds on it:
 ## BLE — board-specific notes & on-glass verification
 
 The wire protocol (advertising policy, GATT services/UUIDs, CoC framing, object layouts, pairing
-security) is canonical in [`obc-ble-interface-spec.md`](../../obc-ble-interface-spec.md) — read it
+security) is canonical in [`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md) — read it
 there, not here. `src/ble/` implements it; the S0 descriptor codecs + transfer state machine are the
 host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vectors/`). What's
 **board/firmware-specific** and worth knowing:
@@ -354,7 +354,7 @@ the shape that includes it (+5,096 B resident and +45,688 B flash for the plane,
 more for #936's VBUS gate, then +8 B resident and **−80 B** flash for #937's event-driven park;
 guarded poll frame 9,664 → 9,728 B against the unchanged 12,288 B limit, and unmoved since). The
 wire protocol is canonical in
-[`obc-ble-interface-spec.md`](../../obc-ble-interface-spec.md) — USB is a transport under it, not a
+[`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md) — USB is a transport under it, not a
 second protocol. What is **board-specific** and worth knowing:
 
 - **Zero GPIO cost.** D+/D−/VBUS/TXRTUNE are dedicated USBHS pins; nothing in the pin map above

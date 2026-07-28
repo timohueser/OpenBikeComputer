@@ -99,7 +99,7 @@ identical resident set:
 The rows below this line are the **historical** 256 KB-part figures kept for the
 narrative they carry; they were never updated through the LM20 retarget and are an
 order of magnitude below the table above. The machine-readable authority is, as ever,
-[`tools/resource_baseline.json`](tools/resource_baseline.json).
+[`tools/resource_baseline.json`](../tools/resource_baseline.json).
 
 | Profile (historical, pre-LM20) | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |

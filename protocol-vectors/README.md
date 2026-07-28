@@ -1,8 +1,8 @@
 # Shared wire-protocol test vectors (S0)
 
 Binary fixtures pinning the byte layouts of
-[`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR v2
-waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), and the device's own
+[`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md), the OBCR v2
+waypoint extension ([`OBCR_Spec.md`](../specs/OBCR_Spec.md)), and the device's own
 recorded-track log, consumed by **four** implementations:
 
 - **Firmware**: `cargo test -p obc-vectors` (workspace `firmware/`) verifies every
@@ -51,7 +51,7 @@ A drift on any side fails that side's tests — the files are the contract.
 | `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
 | `command-set-route-retention.bin` | `setRouteRetention` §4.4 cmd 6 | route id 7 · retention `3` (2 weeks) |
 | `route-list.bin` | `routeList` object §7.4 | three catalog entries — the two stored route fixtures (ids 7 + 8, fields from their OBCR headers, each with its whole-object `crc32`) plus a synthetic id 9 with no file behind it; **6-byte v2 header** (`total` = `count` = 3) + **84-byte entries** (the 76-byte v2 core + the auto-expiry tail), covering all three retention states: a live countdown, a clock not yet started, and `Never` |
-| `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1) | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader` |
+| `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../specs/OBCU_Spec.md) §1) | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader` |
 | `trip-v1.bin` | trip object v1 (spec §7.7) | "Alpen Traverse", 3 stages referencing route ids 7 + 8 (the two `route-list.bin` entries) **plus one deliberately dangling id (99)** — pins read-tolerance; 56-byte header + 2 bytes/stage |
 | `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
 

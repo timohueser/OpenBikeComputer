@@ -1,7 +1,7 @@
 /**
  * Incremental SHA-256 (FIPS 180-4), because WebCrypto has no streaming digest.
  *
- * [`OBCC_Spec.md`](../../../../../OBCC_Spec.md) §7 requires a consumer to verify a downloaded
+ * [`OBCC_Spec.md`](../../../../../specs/OBCC_Spec.md) §7 requires a consumer to verify a downloaded
  * artifact against the manifest's `bytes` and `sha256` **before writing it to a device**.
  * `crypto.subtle.digest` is one-shot: it takes a `BufferSource`, so honouring that rule through it
  * means holding the whole artifact in memory. For a 300 MB regional map that is the exact thing

@@ -72,7 +72,7 @@ cd firmware/obc-fw-nrf54l && cargo build --release --no-default-features --featu
 
 The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
 `cargo test` below already exercises it. The wire contract those bytes cross to the phone
-is [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md); the concepts are on the docs
+is [`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md); the concepts are on the docs
 site under [the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/).
 
 ## Test
@@ -199,7 +199,7 @@ python3 firmware/tools/wasm_size_guard.py   # from the repo root; --pkg override
 
 Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header
 plus the raw app image — dropped on the SD card as `/UPDATE.BIN`. The byte format is
-[`OBCU_Spec.md`](../OBCU_Spec.md); the shared codec + boot-decision logic live in
+[`OBCU_Spec.md`](../specs/OBCU_Spec.md); the shared codec + boot-decision logic live in
 `obc-dfu` (a `no_std` workspace member, host-tested by the `cargo test` above). The
 producer is `obc-mkimage`.
 

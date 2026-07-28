@@ -591,10 +591,10 @@ itself is **unchanged** from F2/F3 — only the *source* of the words (the frame
 
 The trickiest piece — turning RGB222 pixels into the panel's MSB/LSB-split, odd/even-interleaved,
 pre-shifted GPIO words — is deliberately **not** in the C blob. It is one pure Rust fn,
-[`obc_platform::ls021_pack_row`](../obc-platform/src/ls021_wire.rs), unit-tested on the host and run
+[`obc_platform::ls021_pack_row`](../obc-display/src/ls021/wire.rs), unit-tested on the host and run
 in CI (the board crate has no test harness, so this lives in the shared `obc-platform` workspace
 crate — the sibling of `device64_to_rgb565`, the ST7789's expand). It packs one row of
-[`FbDevice64`](../obc-platform/src/framebuffer.rs) device-64 bytes (`0b00_RR_GG_BB`) into the 248
+[`FbDevice64`](../obc-display/src/framebuffer.rs) device-64 bytes (`0b00_RR_GG_BB`) into the 248
 write-buffer words:
 
 - **area-gradation split** — each channel's 2-bit level → the MSB plane's 2/3-area bit (`level >> 1`)

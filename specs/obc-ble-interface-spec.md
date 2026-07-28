@@ -17,7 +17,7 @@ canonical source the firmware Track-A issues (epic #267) implement.
 > (§1). The one-line "what changed and why" for each item lives in its section.
 
 > **This document is canonical.** The iOS mirror
-> ([`companion-ios/OBCProtocol.md`](companion-ios/OBCProtocol.md)) defers to it:
+> ([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) defers to it:
 > where they disagree, this spec wins and the mirror is corrected. §9 lists the
 > v1 → v2 wire changes so the app-side repin is a checklist, not a diff hunt.
 
@@ -34,7 +34,7 @@ canonical source the firmware Track-A issues (epic #267) implement.
 
 All multi-byte integers are **little-endian** (matching OBCM/OBCR). Shared
 binary test vectors pinning these layouts live in
-[`protocol-vectors/`](protocol-vectors/) and are consumed by both `cargo test`
+[`protocol-vectors/`](../protocol-vectors/) and are consumed by both `cargo test`
 (firmware) and `swift test` (app).
 
 ## Design principles
@@ -1182,7 +1182,7 @@ The object length is fully determined by its header: `56 + 2·stage_count` bytes
 ## 9. Changes from v1 (the repin list)
 
 Protocol v2 (epic #632) is the one coordinated wire break. The iOS mirror
-([`companion-ios/OBCProtocol.md`](companion-ios/OBCProtocol.md)) is updated to
+([`companion-ios/OBCProtocol.md`](../companion-ios/OBCProtocol.md)) is updated to
 match in the same change; each item below is a single-spot repin on both sides,
 pinned by the shared `protocol-vectors/` fixtures:
 
@@ -1321,6 +1321,6 @@ command, not a transport one.
 Firmware: the `obc-ble` workspace crate (descriptor codec + transfer state
 machine, lands with A5) and `obc-route` (OBCR v2). App:
 `companion-ios/Packages/OBCKit` (`OBCTransport/Transfer`, `Codecs/`,
-`BLE/GATT.swift`). Shared fixtures: [`protocol-vectors/`](protocol-vectors/) —
+`BLE/GATT.swift`). Shared fixtures: [`protocol-vectors/`](../protocol-vectors/) —
 routes with/without waypoints, a ride, a config blob, the route list, and
 transfer-descriptor transcripts, asserted byte-exact from both languages.

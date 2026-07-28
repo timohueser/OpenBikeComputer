@@ -1,5 +1,5 @@
 /**
- * The control-plane codecs of [`obc-ble-interface-spec.md`](../../../../../obc-ble-interface-spec.md),
+ * The control-plane codecs of [`obc-ble-interface-spec.md`](../../../../../specs/obc-ble-interface-spec.md),
  * in TypeScript: the transfer descriptor (§4.2), the `status` envelope (§4.3), the `command` writes
  * (§4.4), the identity read (§1) and the Config blob (§7.3).
  *

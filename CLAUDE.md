@@ -45,7 +45,8 @@ and the simulator + tests first-class.
 Division of labor: **concepts** live in the docs site; **build / run / flash**
 specifics live in the READMEs (root + `firmware/` + the board crate). Keep each
 where it belongs — don't re-explain the architecture in a README.
-- `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` (repo root) — the normative
+- `specs/` — the normative contracts, one directory, referenced from all three
+  languages. `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` are the normative
   byte-level format specs (map / route / firmware-update image); the docs'
   data-formats + firmware-updates pages are the readable tours and link to them.
   DFU crates: `obc-dfu` (shared `no_std` container + boot-state codec + install

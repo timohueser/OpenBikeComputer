@@ -3,8 +3,8 @@
  *
  * Two rules shape this, both of them older than this issue:
  *
- * - **The device never parses XML** ([interface spec](../../../../../obc-ble-interface-spec.md)
- *   principle 3). A route crosses the wire as an [OBCR](../../../../../OBCR_Spec.md) file and is
+ * - **The device never parses XML** ([interface spec](../../../../../specs/obc-ble-interface-spec.md)
+ *   principle 3). A route crosses the wire as an [OBCR](../../../../../specs/OBCR_Spec.md) file and is
  *   written to storage verbatim, so the peer converts. Here that is A2's wasm bridge, which is the
  *   same `obc-route` code the device and the CLI run — byte-identical, pinned by `bridge.test.ts`.
  * - **Show what was dropped before sending it.** A GPX file's name says nothing about what is

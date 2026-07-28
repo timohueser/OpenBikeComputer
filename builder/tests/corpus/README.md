@@ -30,8 +30,7 @@ whose ingest outcome is known by construction.
 
 > Historically this directory held a larger validation corpus (monaco, malta,
 > Freiburg extracts) used to validate the Rust port against a Python oracle. That
-> oracle and its harness have been removed; the port's design notes live in
-> [`../../docs/`](../../docs/).
+> oracle and its harness have been removed, and so have the port's design notes.
 
 ## Known intentional divergence (a bug we do NOT replicate)
 

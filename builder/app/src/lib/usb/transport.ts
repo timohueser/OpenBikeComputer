@@ -21,7 +21,7 @@
  * This envelope started as the host's *proposal*, built against a loopback pipe before the device
  * side existed. #889 owned the decision and **adopted it unchanged** — selectors, payloads and all
  * — so this file is now the host half of a settled contract rather than a guess. It is normative in
- * [`obc-ble-interface-spec.md`](../../../../obc-ble-interface-spec.md) §10, and the device side
+ * [`obc-ble-interface-spec.md`](../../../../../specs/obc-ble-interface-spec.md) §10, and the device side
  * is `firmware/obc-fw-nrf54l/src/usb/control.rs`.
  *
  * The rejected alternatives are recorded there: a separate endpoint pair per characteristic (14
