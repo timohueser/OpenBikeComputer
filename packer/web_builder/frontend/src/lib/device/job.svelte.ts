@@ -31,6 +31,14 @@ const RATE_WINDOW_MS = 4_000;
  * not duplicate it; what it does guarantee is that *this* slot never runs two tasks at once.
  */
 export class DeviceJob {
+    /** What this slot writes, for chrome that reports a transfer it does not own — one word,
+     *  lowercase, reading naturally after "sending": "map", "route", "firmware", "rides". */
+    readonly label: string;
+
+    constructor(label = "transfer") {
+        this.label = label;
+    }
+
     phase = $state<JobPhase>("idle");
     done = $state(0);
     total = $state(0);
@@ -75,6 +83,7 @@ export class DeviceJob {
         if (this.controller) return null;
         const controller = new AbortController();
         this.controller = controller;
+        jobRegistry.add(this);
         this.error = null;
         this.errorCode = null;
         this.result = null;
@@ -121,6 +130,7 @@ export class DeviceJob {
         } finally {
             this.controller = null;
             this.rate = null;
+            jobRegistry.remove(this);
         }
     }
 
@@ -152,3 +162,32 @@ export class DeviceJob {
         this.rate = elapsed >= 1_000 ? ((done - firstBytes) * 1000) / elapsed : this.rate;
     }
 }
+
+/**
+ * Every job that is running right now, so chrome outside the surfaces — the header's device chip —
+ * can report a transfer without owning it. Jobs register per *run*, not per instance: an idle
+ * `DeviceJob` created in a component's script block is invisible here, and one abandoned by an
+ * unmount mid-run still unregisters, because `run()`'s `finally` is what removes it.
+ *
+ * A list rather than a single slot, deliberately: the client allows one *transfer* at a time, but a
+ * job may briefly overlap another during its non-transfer phases (a map send filling its scratch
+ * file while a pull settles). First registered wins the readout; precision beyond that buys nothing.
+ */
+class JobRegistry {
+    private jobs = $state<DeviceJob[]>([]);
+
+    add(job: DeviceJob): void {
+        this.jobs = [...this.jobs, job];
+    }
+
+    remove(job: DeviceJob): void {
+        this.jobs = this.jobs.filter((j) => j !== job);
+    }
+
+    /** The job the readout shows, or null when nothing is running. */
+    get active(): DeviceJob | null {
+        return this.jobs[0] ?? null;
+    }
+}
+
+export const jobRegistry = new JobRegistry();

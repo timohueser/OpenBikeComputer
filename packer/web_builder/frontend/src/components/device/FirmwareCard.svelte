@@ -23,7 +23,7 @@
 
     let { client, info }: { client: ProtocolClient; info: DeviceInfo | null } = $props();
 
-    const job = new DeviceJob();
+    const job = new DeviceJob("firmware");
     let release = $state<FirmwareRelease | null>(null);
     let checkFailed = $state(false);
     let staged = $state<string | null>(null);

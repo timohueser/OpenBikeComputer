@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { DeviceJob } from "./job.svelte";
+import { DeviceJob, jobRegistry } from "./job.svelte";
 import { deviceHolder } from "./session.svelte";
 import type { JobPhase } from "./progress";
 
@@ -79,5 +79,56 @@ describe("DeviceJob", () => {
         // survives it, and the rider reads the sentence next to the Connect button.
         expect(deviceHolder.interrupted).toContain("plug it back in");
         deviceHolder.interrupted = null;
+    });
+});
+
+describe("jobRegistry", () => {
+    it("exposes a job only while it runs, labelled", async () => {
+        const job = new DeviceJob("map");
+        expect(jobRegistry.active, "idle jobs are invisible").toBeNull();
+        const running = job.run(async () => {
+            expect(jobRegistry.active).toBe(job);
+            expect(jobRegistry.active?.label).toBe("map");
+            return 1;
+        }, () => "done");
+        await running;
+        expect(jobRegistry.active).toBeNull();
+    });
+
+    it("unregisters on failure and on cancel alike", async () => {
+        const failing = new DeviceJob("route");
+        await failing.run(async () => {
+            throw new Error("no");
+        }, () => "unreachable");
+        expect(jobRegistry.active).toBeNull();
+
+        const cancelled = new DeviceJob("route");
+        const running = cancelled.run(async (ctx) => {
+            cancelled.cancel();
+            await settle();
+            ctx.signal.throwIfAborted();
+            return 1;
+        }, () => "unreachable");
+        await running;
+        expect(jobRegistry.active).toBeNull();
+    });
+
+    it("reads the first-registered job when two overlap", async () => {
+        const first = new DeviceJob("rides");
+        const second = new DeviceJob("map");
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        const a = first.run(async () => {
+            await gate;
+            return 1;
+        }, () => "a");
+        const b = second.run(async () => {
+            await gate;
+            return 2;
+        }, () => "b");
+        expect(jobRegistry.active).toBe(first);
+        release();
+        await Promise.all([a, b]);
+        expect(jobRegistry.active).toBeNull();
     });
 });
