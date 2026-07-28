@@ -6,10 +6,10 @@
  * That is the shape everyone reaches for, and two independent rules forbid it:
  *
  * 1. **The transfer descriptor announces the whole-object CRC-32 before the first byte moves**
- *    ([interface spec](../../../../../obc-ble-interface-spec.md) §4.2). You cannot know a
+ *    ([interface spec](../../../../../specs/obc-ble-interface-spec.md) §4.2). You cannot know a
  *    checksum of bytes you have not seen, so the object has to be readable **twice** — once to
  *    fingerprint, once to send.
- * 2. **[`OBCC_Spec.md`](../../../../../OBCC_Spec.md) §7**: a consumer MUST verify a download
+ * 2. **[`OBCC_Spec.md`](../../../../../specs/OBCC_Spec.md) §7**: a consumer MUST verify a download
  *    against the manifest's `bytes` and `sha256` *before writing it to a device*. A single pass
  *    that discovers the mismatch at the end has already written the corrupt file.
  *

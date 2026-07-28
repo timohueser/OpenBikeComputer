@@ -6,7 +6,7 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 > ### Divergence policy — read first
 >
 > **This file is a mirror, not the freeze.** The wire contract is owned by
-> **[`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md)** (repo root — the
+> **[`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md)** (repo root — the
 > firmware `S0` freeze, landed in PR #279): the canonical source of truth for
 > services, transport, and security. If this document and that spec disagree,
 > **the spec wins and this file is corrected** — never the reverse.

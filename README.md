@@ -28,8 +28,8 @@ maps: a self-contained LOD pyramid of quadtree-indexed geometry) and **OBCR**
 be read *directly* off flash by a microcontroller, with no JSON, reparsing, or
 heap churn. How they work: the
 [data-formats guide](https://timohueser.github.io/OpenBikeComputer/software/formats/);
-the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
-[`OBCR_Spec.md`](OBCR_Spec.md).
+the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
+[`OBCR_Spec.md`](specs/OBCR_Spec.md).
 
 ---
 
@@ -70,8 +70,7 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `protocol-vectors/` | Shared binary fixtures pinning the BLE wire contract, the OBCR route format and the recorded-track log + its GPX export — asserted byte-exact by `cargo test`, `swift test`, and the web builder's wasm conversion tests. |
 | `tools/` | Dev scripts: the `justfile` behind `obc <task>`, the GEOS and RISC-V toolchain installers, and shell completion. |
 | `docs/` | The public docs site — `content/` is the source, `index.html` the landing page with the live wasm demo. |
-| `OBCC_Spec.md` | The **map catalog manifest** — the JSON contract between a map bakery and the sites/apps that hand artifacts to a device, and the OBCM version law that keeps them honest. |
-| `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route / firmware-update-image format specifications and the BLE wire contract. |
+| `specs/` | The **normative contracts**, in one place because all three languages read them. `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` are the binary map / route / firmware-update-image layouts; `obc-ble-interface-spec.md` is the BLE wire contract; `OBCC_Spec.md` is the map catalog manifest — the JSON contract between a map bakery and the sites/apps that hand artifacts to a device, plus the OBCM version law that keeps them honest. The docs site's pages are the readable tours; these are the byte tables they link to. |
 
 The split between the three Rust trees is **computed, not judged**: a crate lives in
 `firmware/` if and only if the device image reaches it through normal dependencies.
@@ -199,7 +198,7 @@ and the untouched artifacts keep reporting the version they were actually built 
 instead of being relabelled with the new one.
 
 The manifest layout, the sidecar, and the version law (an OBCM bump invalidates every
-baked artifact) are normative in [`OBCC_Spec.md`](OBCC_Spec.md); pass
+baked artifact) are normative in [`OBCC_Spec.md`](specs/OBCC_Spec.md); pass
 `--generated-at` in CI to make a re-run byte-reproducible.
 
 ### Web builder
@@ -259,7 +258,7 @@ Python server mounts:
 
 The static host has no API to call, so it reads two files instead: `regions.json`
 (the trimmed Geofabrik index the picker draws — the same document `/api/regions`
-returns) and `catalog.json` (the [OBCC](OBCC_Spec.md) manifest of pre-baked maps,
+returns) and `catalog.json` (the [OBCC](specs/OBCC_Spec.md) manifest of pre-baked maps,
 produced by `obc-pack catalog`). Both default to `./data/` beside the app;
 `VITE_DATA_BASE` and `VITE_CATALOG_URL` move them. To run that host locally:
 
@@ -389,7 +388,7 @@ the device writes the bytes to its card verbatim. How the link is shaped — the
 GATT control plane, the L2CAP data plane, pairing and reconnect — is
 [the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/);
 the normative byte contract is
-[`obc-ble-interface-spec.md`](obc-ble-interface-spec.md), and its host-tested
+[`obc-ble-interface-spec.md`](specs/obc-ble-interface-spec.md), and its host-tested
 core (descriptor codecs, CRC-32, the transfer state machine) is
 [`firmware/obc-ble/`](firmware/obc-ble), which rides the normal `cargo test`.
 
@@ -406,7 +405,7 @@ Flashing, the dependency pins, and the on-glass verify steps live in the
 ## Firmware updates
 
 The device updates itself in the field — no probe needed. An update ships as a
-single **`UPDATE.BIN`** file (an [`OBCU`](OBCU_Spec.md) container: a 64-byte
+single **`UPDATE.BIN`** file (an [`OBCU`](specs/OBCU_Spec.md) container: a 64-byte
 header plus the raw app image). The trust model — verify before erase, a single
 trial boot with rollback — is the
 [firmware updates](https://timohueser.github.io/OpenBikeComputer/software/firmware-updates/)
