@@ -1308,6 +1308,22 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// Drop **everything derived from the active route's geometry** — the whole-App seam, and the
+    /// only thing route-replacing paths should call.
+    ///
+    /// `RideEngine::drop_route_derived_state` covers the engine's
+    /// half (matcher, profile, climbs, waypoints, progress); the UI's
+    /// [`NextAhead`](crate::next_ahead::NextAhead) cache is the other half and lives on the far
+    /// side of the `ride`/`ui` split, so it cannot be reached from there. It is invalidated for
+    /// exactly the same reason as the rest: its entries are **along-route distances**, and a
+    /// same-index/new-bytes replace leaves the catalog index untouched — so the cache's own
+    /// route-identity check sees nothing change, and an entry measured on the old geometry would
+    /// name a different place on the new.
+    fn drop_route_derived_state(&mut self) {
+        self.ride.drop_route_derived_state(&mut self.activity);
+        self.ui.next_ahead.invalidate();
+    }
+
     /// [`HostEvent::NavPlanned`]: land the plan answer in the planning screen, or drop it.
     fn on_nav_planned(&mut self, result: Result<u16, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
@@ -1322,7 +1338,7 @@ impl App {
                 // New bytes may sit under a same-id reserved file (a re-route): drop everything
                 // derived from the old geometry so the matcher re-locks and the profile rebuilds
                 // from the fresh route — cheap, runs once per plan.
-                self.ride.drop_route_derived_state(&mut self.activity);
+                self.drop_route_derived_state();
                 // Activate for the preview (the overview contract: the host streams the geometry
                 // while the page shows); `prev_active` restores whatever was loaded on cancel.
                 let prev = self.activity.active_route;
@@ -1392,7 +1408,7 @@ impl App {
                     Screen::DetourPreview(p) => Some(p.anchor_m()),
                     _ => None,
                 });
-                self.ride.drop_route_derived_state(&mut self.activity);
+                self.drop_route_derived_state();
                 self.activity.active_route = Some(idx);
                 self.activity.request_seam(idx, anchor.unwrap_or(0));
                 self.catalogs.clear_detour_preview();
@@ -1586,7 +1602,7 @@ impl App {
             // Same index, same id — but new bytes. Invalidate everything derived from the old
             // geometry (the remap deliberately preserves same-id state; a replace is the one case
             // where that preservation would carry stale state onto new geometry).
-            self.ride.drop_route_derived_state(&mut self.activity);
+            self.drop_route_derived_state();
             self.ui.map_dirty = true; // the drawn route line + progress changed under the rider
         }
         self.ui.post_upload_event(
@@ -4056,6 +4072,64 @@ mod tests {
             app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.name.as_str().into()),
             Some(std::string::String::from("Spring")),
             "a passed entry re-arms out of turn and the next one takes its place"
+        );
+    }
+
+    /// A **same-index / new-bytes** route replace invalidates the `Next: <category>` cache (epic
+    /// #946, U5). The cache keys its identity on the catalog index, and a replace leaves that index
+    /// (and the id) exactly where it was — so nothing inside `NextAhead` can see the swap, and its
+    /// along-route distances would go on naming places on geometry that no longer exists. The
+    /// `App`-level `drop_route_derived_state` seam is what tells it, alongside the matcher and the
+    /// profile/climb/waypoint caches dropped for the identical reason.
+    ///
+    /// Deliberately pinned with progress at **0**: that is the case the progress-rewind trigger
+    /// cannot cover (there is nothing to rewind from), so it isolates the invalidation itself.
+    #[test]
+    fn a_same_index_route_replace_invalidates_the_next_category_cache() {
+        use crate::stat_fields::{StatField, StatFieldList};
+        use obc_reader::{CorridorPoi, Poi, PoiCategory, PoiCategorySet};
+
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.start_session();
+        app.set_routes_with_ids(&[summary("East")], &[10]);
+        app.activate_route(0);
+        let mut fields = StatFieldList::decode(0, &[]);
+        assert!(fields.push(StatField::NextWater));
+        app.set_settings(crate::settings::Settings { stat_fields: fields, ..Default::default() });
+        app.apply_gesture(Gesture::Back); // Map → Statistics
+        assert!(matches!(app.top_screen(), Screen::Statistics(_)));
+
+        // Fill the slot the way a landed snapshot would, at the very start of the route.
+        app.advance_animations(InputClock(1_000));
+        let key = app.ui.next_ahead.request().expect("the placed tile arms a refresh");
+        assert_eq!(key.filter, PoiCategorySet::only(PoiCategory::Water));
+        let mut name = heapless::String::new();
+        name.push_str("Old bytes").unwrap();
+        app.ui.next_ahead.harvest(
+            key,
+            &[CorridorPoi {
+                poi: Poi { lat: 0, lon: 0, subtype: 1, name, hours_ref: 0xFFFF, distance_m: 5_000 },
+                dist_along_m: 5_000,
+                offset_m: 0,
+            }],
+        );
+        app.advance_animations(InputClock(2_000));
+        assert_eq!(app.ui.next_ahead.request(), None, "settled on the old geometry's answer");
+
+        // The phone re-uploads route 10 over itself: same id, same index, new bytes.
+        app.apply_event(crate::HostEvent::RouteUploaded { id: 10, replaced: true, elevation: None });
+        assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water), None, "the old geometry's answer is dropped");
+
+        // Dismiss the advisory "route updated" card back to the grid (the tiles only refresh while
+        // Statistics is the base screen).
+        assert!(matches!(app.top_screen(), Screen::RouteUpdated(_)));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Statistics(_)));
+        app.advance_animations(InputClock(3_000));
+        assert_eq!(
+            app.ui.next_ahead.request(),
+            Some(crate::corridor::CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 0 }),
+            "…and the identical route index re-queries against the new bytes"
         );
     }
 
