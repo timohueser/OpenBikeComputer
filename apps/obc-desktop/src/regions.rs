@@ -1,6 +1,6 @@
 //! The Geofabrik download index, as the region picker wants it.
 //!
-//! This is `packer/web_builder/geofabrik.py` in Rust, on purpose and field for
+//! This is `builder/server/geofabrik.py` in Rust, on purpose and field for
 //! field: the raw `index-v1.json` is a GeoJSON FeatureCollection of every
 //! downloadable extract with a full-resolution boundary, which is tens of
 //! megabytes of coastline the picker has no use for. So the properties are
@@ -347,7 +347,7 @@ mod tests {
     /// Ignored: it reads whatever the dev server last wrote, so it only means
     /// something on a machine where both have run.
     #[test]
-    #[ignore = "needs ~/.cache/obcm/geofabrik written by `python -m packer.web_builder`"]
+    #[ignore = "needs ~/.cache/obcm/geofabrik written by `python -m builder.server`"]
     fn agrees_with_the_python_implementation_it_shares_a_cache_with() {
         let dir = crate::paths::geofabrik_cache();
         let raw = std::fs::read_to_string(dir.join("index-v1.json")).expect("raw index");

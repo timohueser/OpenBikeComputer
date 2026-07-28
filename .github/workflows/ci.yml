@@ -71,13 +71,13 @@ jobs:
               - 'host/**'
               # apps/ holds the four shells: the simulator, both wasm hosts, and the Tauri app.
               - 'apps/**'
-              - 'packer/presets/**'
-              # packer/tests/ drives the real obc-pack binary and the builder's pure API
+              - 'builder/presets/**'
+              # builder/tests/ drives the real obc-pack binary and the builder's pure API
               # endpoints, so the packer, the presets it round-trips, and the server module
               # under test all have to be able to trigger it.
-              - 'packer/tests/**'
-              - 'packer/web_builder/*.py'
-              - 'packer/requirements*.txt'
+              - 'builder/tests/**'
+              - 'builder/server/*.py'
+              - 'builder/requirements*.txt'
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - '.github/workflows/ci.yml'
@@ -104,17 +104,17 @@ jobs:
               # breaks from either side.
               - 'apps/obc-desktop/**'
               - 'host/obc-pack/**'
-              - 'packer/web_builder/frontend/**'
-              - 'packer/presets/**'
+              - 'builder/app/**'
+              - 'builder/presets/**'
               # The GEOS smoke test (#907) packs this fixture with that preset and
               # pins the digest, so either one moving must re-run the three-platform
               # matrix rather than leaving a stale hash asserted.
-              - 'packer/tests/corpus/**'
-              - 'packer/palette.json'
+              - 'builder/tests/corpus/**'
+              - 'builder/palette.json'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
             web:
-              - 'packer/web_builder/frontend/**'
+              - 'builder/app/**'
               # The frontend now embeds firmware code: obc-web-convert (#896) compiles the shared
               # obc-route conversion path to wasm and the builder imports it, so any shared-crate
               # change can move those bytes. Its byte-identity guard reads protocol-vectors/, and
@@ -215,9 +215,9 @@ jobs:
       # workflow ran it; requirements-dev.txt is what makes it installable.
       - name: web-builder packer tests (pytest)
         run: |
-          pip install -r packer/requirements-dev.txt
+          pip install -r builder/requirements-dev.txt
           cargo build -p obc-pack --release --locked
-          PYTHONPATH=. python3 -m pytest packer/tests/ -v
+          PYTHONPATH=. python3 -m pytest builder/tests/ -v
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
@@ -449,14 +449,14 @@ jobs:
       - name: wasm-pack build (obc-web-convert → wasm)
         run: |
           wasm-pack build apps/obc-web-convert --release --target web \
-            --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg \
+            --out-dir ../../builder/app/src/lib/convert/pkg \
             --out-name obc_web_convert
       - name: bundle-size budget
         run: python3 firmware/tools/wasm_size_guard.py
       - uses: actions/upload-artifact@v4
         with:
           name: obc-web-convert-pkg
-          path: packer/web_builder/frontend/src/lib/convert/pkg
+          path: builder/app/src/lib/convert/pkg
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
@@ -557,18 +557,18 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: packer/web_builder/frontend
+        working-directory: builder/app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: obc-web-convert-pkg
-          path: packer/web_builder/frontend/src/lib/convert/pkg
+          path: builder/app/src/lib/convert/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+          cache-dependency-path: builder/app/package-lock.json
       - run: npm ci
       - name: svelte-check
         run: npm run check
@@ -657,14 +657,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-web-convert-pkg
-          path: packer/web_builder/frontend/src/lib/convert/pkg
+          path: builder/app/src/lib/convert/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+          cache-dependency-path: builder/app/package-lock.json
       - name: Build the frontend the shell embeds
-        working-directory: packer/web_builder/frontend
+        working-directory: builder/app
         run: |
           npm ci
           npm run build:desktop

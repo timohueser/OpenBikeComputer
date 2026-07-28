@@ -1,5 +1,5 @@
 //! Two jobs: let `tauri-build` generate the app context (which embeds the built
-//! frontend named by `tauri.conf.json`), and bake `packer/presets/*.json` into the
+//! frontend named by `tauri.conf.json`), and bake `builder/presets/*.json` into the
 //! binary.
 //!
 //! The presets have to be *embedded* rather than read at runtime: a shipped app
@@ -16,7 +16,7 @@ fn main() {
 }
 
 fn presets_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packer/presets")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/presets")
 }
 
 fn embed_presets() {

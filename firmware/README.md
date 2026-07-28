@@ -68,7 +68,7 @@ site under [the companion link](https://timohueser.github.io/OpenBikeComputer/so
 
 ```sh
 cargo test            # the whole host workspace
-cargo test -p obc-pack    # just the packer (fixtures under ../packer/tests/corpus/)
+cargo test -p obc-pack    # just the packer (fixtures under ../builder/tests/corpus/)
 ```
 
 `cargo test` does **not** touch the excluded board crate.
@@ -169,7 +169,7 @@ Unlike the demo this is a **library** consumed by Vite, not an app Trunk
 bundles, so it builds with `wasm-pack` (`cargo install wasm-pack` once):
 
 ```sh
-# From packer/web_builder/frontend — writes src/lib/convert/pkg/ (gitignored).
+# From builder/app — writes src/lib/convert/pkg/ (gitignored).
 npm run build:wasm
 ```
 
@@ -181,7 +181,7 @@ native converter's checked-in output. CI does the same in its `wasm-convert`
 job, which also enforces the bundle-size budget:
 
 ```sh
-python3 tools/wasm_size_guard.py --pkg ../packer/web_builder/frontend/src/lib/convert/pkg
+python3 tools/wasm_size_guard.py --pkg ../builder/app/src/lib/convert/pkg
 ```
 
 ## Firmware update images (OBCU)

@@ -50,9 +50,9 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `apps/obc-web-convert/` | The web builder's **conversion bridge**: `obc-route`'s GPX → OBCR and track → GPX compiled to wasm behind two functions and a typed error, so route conversion runs in the visitor's browser instead of on a server. |
 | `host/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
 | `host/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
-| `packer/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
-| `packer/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
-| `packer/web_builder/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
+| `builder/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
+| `builder/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
+| `builder/server/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
 | `firmware/obc-ble/` | `no_std` — the **BLE data-plane core** (epic #267): the S0 control-plane descriptor codecs, CRC-32, list objects, and the whole-object transfer state machine. Radio-free and host-tested; the board crate drives the L2CAP bytes through it. |
 | `firmware/obc-dfu/` | `no_std` — the **SD-staged DFU core** (epic #615): the `OBCU` update-image container + boot-state page codecs, the bootloader's install engine (verify → flash → readback → trial/rollback), and the app-side armer. Host-tested with mock IO; both `obc-boot` and the board crate are thin drivers over it. |
 | `host/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
@@ -81,7 +81,7 @@ The nRF54L firmware and the website's
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`; `tools/install-geos.sh` builds it if your distro's is older) — linked for multipolygon area assembly, and the packer's only native dependency. |
 | The desktop app (`obc-desktop`) | **No GEOS** — it compiles a vendored one into the binary. It wants **CMake** (to build that) and **Node 22+** (it embeds the built frontend) instead. See [its README](apps/obc-desktop/README.md). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew setup**. |
-| The web builder (optional) | Python 3.13 + the deps in `packer/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `packer/web_builder/frontend/`). |
+| The web builder (optional) | Python 3.13 + the deps in `builder/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `builder/app/`). |
 | Checking the shared crates build for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ---
@@ -112,7 +112,7 @@ Download an OSM extract (e.g. from [Geofabrik](https://download.geofabrik.de/)),
 then:
 
 ```sh
-target/release/obc-pack region.osm.pbf packer/presets/default.json region.obcm
+target/release/obc-pack region.osm.pbf builder/presets/default.json region.obcm
 ```
 
 ```
@@ -140,7 +140,7 @@ usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size
 
 ### The config — features, styles, and LODs
 
-The config JSON (any preset under `packer/presets/`, or your own file) is the
+The config JSON (any preset under `builder/presets/`, or your own file) is the
 single source of truth for *what* gets packed and *how it looks*
 (`obc-pack schema` prints its JSON Schema):
 
@@ -189,19 +189,19 @@ device palette, watch build progress:
 
 ```sh
 # from the repo root
-.venv/bin/python -m packer.web_builder        # http://localhost:8000
+.venv/bin/python -m builder.server        # http://localhost:8000
 ```
 
 It drives the `obc-pack` binary you built above (override its path with the
 `OBC_PACK_BIN` env var). The UI is a Svelte app compiled once with Node
-(`cd packer/web_builder/frontend && npm ci && npm run build`). Features:
+(`cd builder/app && npm ci && npm run build`). Features:
 
 - **Region picker** — click regions or search the Geofabrik tree; builds stream
   live progress over server-sent events and finish with a download link.
 - **Bounding-box build mode** — draw a crop box on the map and the selected PBFs
   are cropped to it before packing, so you can target a small area precisely.
 - **Style presets** — pick Bikepacking / Minimal / High detail on the main page
-  (the files under `packer/presets/`); the **advanced editor** exposes every
+  (the files under `builder/presets/`); the **advanced editor** exposes every
   knob: per-feature colors / z-order / weights / per-LOD detail, LOD tiers, and
   output settings, with the color picker defaulting to the device's 64-color
   gamut (`palette.json`).
@@ -223,8 +223,8 @@ Downloads, caches, and the build queue are env-configurable (all optional):
 | `OBCM_MAX_CONCURRENT_JOBS` | `1` | Parallel packs (obc-pack is memory-hungry). |
 | `OBCM_KEEP_JOBS` | `20` | Finished builds kept before the sweeper evicts by count/age. |
 
-For frontend development, run the API (`.venv/bin/python -m packer.web_builder
---no-browser`) and `npm run dev` in `packer/web_builder/frontend/` side by side —
+For frontend development, run the API (`.venv/bin/python -m builder.server
+--no-browser`) and `npm run dev` in `builder/app/` side by side —
 Vite proxies `/api` to port 8000.
 
 The same Svelte source builds for three hosts, chosen by Vite mode (issue #895).
@@ -233,7 +233,7 @@ Python server mounts:
 
 | Script | Host | Output |
 | :-- | :-- | :-- |
-| `npm run build` | the local FastAPI dev server | `packer/web_builder/static/dist/` |
+| `npm run build` | the local FastAPI dev server | `builder/server/static/dist/` |
 | `npm run build:web` | the static hosted site (no backend) | `frontend/dist/web/` |
 | `npm run build:desktop` | the Tauri desktop app | `frontend/dist/desktop/` |
 
@@ -245,14 +245,14 @@ produced by `obc-pack catalog`). Both default to `./data/` beside the app;
 
 ```sh
 # regions.json — needs the packer venv (Geofabrik index + shapely)
-.venv/bin/python -m packer.web_builder.static_data \
-    --out packer/web_builder/frontend/public/data
+.venv/bin/python -m builder.server.static_data \
+    --out builder/app/public/data
 
 # catalog.json — from a bake tree (OBCC_Spec.md §8), pointed at where it is served
 target/release/obc-pack catalog <bake-tree> \
     --base-url http://localhost:5173/data
 
-cd packer/web_builder/frontend && npm run dev -- --mode web
+cd builder/app && npm run dev -- --mode web
 ```
 
 `obc site [PORT]` does the built version of all of that in one command: builds the
@@ -285,7 +285,7 @@ the way they will on hardware. It lives outside `src/` because no build has it a
 an input, which is what keeps the simulated device out of every shipped bundle.
 
 ```sh
-cd packer/web_builder/frontend
+cd builder/app
 VITE_DATA_BASE=/data npm run dev -- --mode web   # then open /dev-harness/
 ```
 
@@ -427,9 +427,9 @@ cargo test -p obc-pack   # the packer
 cd firmware && cargo test                                    # the whole workspace
 ```
 
-The `obc-pack` tests use fixtures under `packer/tests/corpus/` — the committed
+The `obc-pack` tests use fixtures under `builder/tests/corpus/` — the committed
 `tiny/tiny.osm` plus a `config.json`. Regenerate the binary fixtures with
-`packer/tests/corpus/build_corpus.sh`, the one thing left in the tree that wants
+`builder/tests/corpus/build_corpus.sh`, the one thing left in the tree that wants
 `osmium-tool` (for `osmium cat`, XML → PBF; it packs no map).
 
 ---

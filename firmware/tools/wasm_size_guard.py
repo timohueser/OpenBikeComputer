@@ -72,7 +72,7 @@ def main() -> int:
     parser.add_argument(
         "--pkg",
         type=Path,
-        default=Path("packer/web_builder/frontend/src/lib/convert/pkg"),
+        default=Path("builder/app/src/lib/convert/pkg"),
         help="the wasm-pack output directory (default: the frontend's checked-out location)",
     )
     args = parser.parse_args()

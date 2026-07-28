@@ -14,17 +14,17 @@ __pycache__/
 # (host/obc-pack `ingest::tests::tiny_truth_table`). It must ship in-repo so the
 # test actually runs in CI — otherwise it silently reported PASS without ever running
 # (issue #95). Source of truth is the committed tiny/tiny.osm; rebuild via
-# packer/tests/corpus/build_corpus.sh.
-!packer/tests/corpus/data/tiny.osm.pbf
+# builder/tests/corpus/build_corpus.sh.
+!builder/tests/corpus/data/tiny.osm.pbf
 # ...and the other two corpus fixtures, in-repo for the same reason: the POI
 # end-to-end test (#422) and the 233-byte deliberately-unsorted file that pins
 # `--bbox`'s refusal to crop a file whose ways precede their nodes (#910).
-!packer/tests/corpus/data/poi.osm.pbf
-!packer/tests/corpus/data/unsorted.osm.pbf
+!builder/tests/corpus/data/poi.osm.pbf
+!builder/tests/corpus/data/unsorted.osm.pbf
 # ...and the two overlapping halves of tiny.osm that pin the native multi-`.pbf`
 # merge (#920): ingesting the pair must reproduce ingesting the whole.
-!packer/tests/corpus/data/tiny_west.osm.pbf
-!packer/tests/corpus/data/tiny_east.osm.pbf
+!builder/tests/corpus/data/tiny_west.osm.pbf
+!builder/tests/corpus/data/tiny_east.osm.pbf
 # The simulator's default route + track stores (its "SD card") — runtime artifacts.
 firmware/routes/
 firmware/tracks/
@@ -52,7 +52,7 @@ project/
 # The wasm conversion bridge's build output (#896): `wasm-pack build` writes it into the
 # frontend, `npm run build:wasm` rebuilds it, and CI builds it fresh on every run. wasm-pack
 # drops its own `pkg/.gitignore` too — this entry is here so the intent is visible in one place.
-packer/web_builder/frontend/src/lib/convert/pkg/
+builder/app/src/lib/convert/pkg/
 # `obc` dev-task tooling (in tools/): personal defaults + the web builder's
 # virtualenv + the optional local maps drop. The tooling itself (everything in
 # tools/ except obc.local) is committed.
@@ -62,14 +62,14 @@ tools/obc.local
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
 # The dev host builds into static/dist/ (what the FastAPI server mounts); the
 # static-web and desktop hosts into frontend/dist/<host>/ — see #895.
-packer/web_builder/frontend/node_modules/
-packer/web_builder/frontend/dist/
-packer/web_builder/static/dist/
+builder/app/node_modules/
+builder/app/dist/
+builder/server/static/dist/
 # The static tier's data files (#900): the Geofabrik index is ~1.7 MB of
 # generated JSON that goes stale weekly, and the catalog manifest belongs to the
 # bakery — both are produced at deploy time, never committed.
-# `python -m packer.web_builder.static_data --out <this dir>`
-packer/web_builder/frontend/public/data/
+# `python -m builder.server.static_data --out <this dir>`
+builder/app/public/data/
 
 # XcodeBuildMCP session defaults (local tool state)
 .xcodebuildmcp/

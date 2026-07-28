@@ -23,7 +23,7 @@ and the simulator + tests first-class.
   ```compare / ```model directives: [docs/BLOG.md](docs/BLOG.md). `packer/` —
   the web builder (FastAPI `web_builder/` + Svelte `web_builder/frontend/`,
   built into `static/dist/` — gitignored, `npm run build`; CI runs the `web`
-  job) and the style presets in `packer/presets/` (each a complete, CLI-usable
+  job) and the style presets in `builder/presets/` (each a complete, CLI-usable
   packer config). The user's working config lives in the browser, not on disk.
 
 Division of labor: **concepts** live in the docs site; **build / run / flash**

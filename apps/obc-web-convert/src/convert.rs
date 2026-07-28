@@ -70,7 +70,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// The stable kebab-case identifier the browser wrapper re-exports as its `ConvertErrorCode`
-    /// union. Keep these in sync with `packer/web_builder/frontend/src/lib/convert/bridge.ts`.
+    /// union. Keep these in sync with `builder/app/src/lib/convert/bridge.ts`.
     pub const fn as_str(self) -> &'static str {
         match self {
             ErrorCode::EmptyFile => "empty-file",

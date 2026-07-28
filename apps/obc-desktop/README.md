@@ -32,7 +32,7 @@ needs is a Linux udev rule, which is a permission rather than a dependency — s
 The Rust side embeds the built frontend, so the frontend is built first:
 
 ```sh
-cd packer/web_builder/frontend
+cd builder/app
 npm ci
 npm run build:wasm        # the GPX↔OBCR bridge the app imports
 npm run build:desktop     # → dist/desktop, which tauri.conf.json embeds
@@ -50,7 +50,7 @@ white window for anyone running plain `cargo`; this crate does not.
 For a live-reload loop, opt out of it and run Vite instead:
 
 ```sh
-npm --prefix ../../packer/web_builder/frontend run dev -- --mode desktop
+npm --prefix ../../builder/app run dev -- --mode desktop
 cargo run --no-default-features --features vendored-geos   # follows :5173
 ```
 
@@ -108,7 +108,7 @@ system library. Keep the two `geos` version requirements identical; `tests/
 geos_smoke.rs` fails if they drift.
 
 That test is the whole guarantee. A successful *link* proves very little about a
-C++ library reached over a C ABI, so it packs `packer/tests/corpus/data/
+C++ library reached over a C ABI, so it packs `builder/tests/corpus/data/
 tiny.osm.pbf` through the linked GEOS and pins the SHA-256 of the result — one
 assertion that covers "GEOS ran", "GEOS was the 3.14 we vendored", and "every
 platform produces the same bytes". CI runs it on Linux, macOS and Windows MSVC,
@@ -170,7 +170,7 @@ glue takes tens of seconds — and the ratio stops meaning anything.
 | Geofabrik index | `~/.cache/obcm/geofabrik/` |
 
 The caches are the **shared** ones (`OBCM_CACHE_DIR` overrides the root, exactly as
-`packer/web_builder/paths.py` reads it), not a per-app directory: a `.pbf` is
+`builder/server/paths.py` reads it), not a per-app directory: a `.pbf` is
 hundreds of megabytes and the land dataset is over two gigabytes, and a developer
 who already downloaded Switzerland from the CLI should not download it again
 because they opened the app. The app reports all of them, with sizes and a Clear
@@ -230,7 +230,7 @@ macOS, which is where this was measured.
 The system webview has no WebUSB (WKWebView, WebView2 and WebKitGTK all lack it),
 so this app drives USB itself through `nusb`. **The protocol is not reimplemented
 here**: the object model, the descriptors and the CRC are C3's TypeScript client
-(`packer/web_builder/frontend/src/lib/usb/`), the same one the hosted site runs,
+(`builder/app/src/lib/usb/`), the same one the hosted site runs,
 and `src/usb/` supplies the byte pipes underneath it. The concepts are in the docs
 site ([companion link](../../docs/content/software/companion-link.md)).
 

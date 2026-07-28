@@ -20,7 +20,7 @@ use obc_pack::pipeline::{pack, PackOptions};
 use obc_pack::progress::Progress;
 use sha2::{Digest, Sha256};
 
-/// The `.obcm` that `packer/tests/corpus/data/tiny.osm.pbf` + `presets/default.json`
+/// The `.obcm` that `builder/tests/corpus/data/tiny.osm.pbf` + `presets/default.json`
 /// must produce, byte for byte, on every platform the app ships to.
 ///
 /// Pinning this is a *cross-platform determinism* assertion, which is worth more
@@ -66,9 +66,9 @@ fn out_dir(name: &str) -> PathBuf {
 fn the_linked_geos_packs_the_fixture_to_the_expected_bytes() {
     let dir = out_dir("pack");
     let out = dir.join("tiny.obcm");
-    let config = Config::load(&repo("packer/presets/default.json").to_string_lossy()).expect("preset parses");
+    let config = Config::load(&repo("builder/presets/default.json").to_string_lossy()).expect("preset parses");
     let summary = pack(
-        &[repo("packer/tests/corpus/data/tiny.osm.pbf").to_string_lossy().into_owned()],
+        &[repo("builder/tests/corpus/data/tiny.osm.pbf").to_string_lossy().into_owned()],
         &config,
         &out,
         &PackOptions { no_land: true, ..PackOptions::default() },

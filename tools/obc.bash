@@ -47,7 +47,7 @@ _obc_gpx() {
 
 _obc_presets() {
   local root; root="$(_obc_root)" || return
-  find "$root/packer/presets" -maxdepth 1 -name '*.json' 2>/dev/null
+  find "$root/builder/presets" -maxdepth 1 -name '*.json' 2>/dev/null
 }
 
 # Index of the current word among the non-flag args (0 = first positional, …).

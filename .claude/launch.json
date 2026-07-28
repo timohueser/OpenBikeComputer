@@ -4,21 +4,21 @@
     {
       "name": "web-builder",
       "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "packer.web_builder", "--no-browser", "--port", "8000"],
+      "runtimeArgs": ["-m", "builder.server", "--no-browser", "--port", "8000"],
       "port": 8000
     },
     {
       "name": "web-builder-frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--port", "5173"],
-      "cwd": "packer/web_builder/frontend",
+      "cwd": "builder/app",
       "port": 5173
     },
     {
       "name": "web-builder-static",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5173"],
-      "cwd": "packer/web_builder/frontend",
+      "cwd": "builder/app",
       "port": 5173
     },
     {

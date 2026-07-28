@@ -1719,8 +1719,8 @@ mod tests {
     /// the catalog's requirements, or B1's first bake fails on data we control.
     #[test]
     fn the_shipped_presets_describe_themselves() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packer/presets");
-        let presets = read_presets(&dir).expect("packer/presets is a valid preset directory");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/presets");
+        let presets = read_presets(&dir).expect("builder/presets is a valid preset directory");
         assert!(presets.contains_key("default") && presets.contains_key("minimal"));
         for (id, p) in &presets {
             assert_eq!(&p.id, id);

@@ -28,7 +28,7 @@ default = ["custom-protocol", "vendored-geos"]
 #
 # So it is ON by default here, and the live-reload loop is the explicit opt-out:
 #
-#     npm --prefix ../../packer/web_builder/frontend run dev -- --mode desktop
+#     npm --prefix ../../builder/app run dev -- --mode desktop
 #     cargo run --no-default-features --features vendored-geos   # follows Vite
 #
 # Keep the other default explicitly named there: the two features are orthogonal,
