@@ -24,3 +24,5 @@ obc-reader = { path = "../obc-reader" }
 # obc-reader. Host-only: dev-dependencies never touch the crate's no_std build.
 obc-pack = { path = "../../host/obc-pack" }
 obc-reader = { path = "../obc-reader" }
+# Shared OBCM byte builder — the corridor tests need a real packed POI quadtree to query.
+obcm-testkit = { path = "../../host/obcm-testkit" }
