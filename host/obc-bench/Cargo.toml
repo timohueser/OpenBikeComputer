@@ -8,6 +8,11 @@ description = "Host render benchmark harness + CI pixel-hash tripwire over the r
 [dependencies]
 obc-reader = { path = "../../firmware/obc-reader" }
 obc-render = { path = "../../firmware/obc-render" }
+# The OBCR route reader — the corridor bench (epic #946 U2) drives `Reader::corridor_pois` against a
+# real converted route rather than a fixture polyline, so the measured cost includes the chunk decode.
+obc-route = { path = "../../firmware/obc-route" }
+# The `ByteSource` / `ByteSink` seam the corridor bench's read-counting source implements.
+obc-formats = { path = "../../firmware/obc-formats" }
 # The app owns the route-overlay draw params; the route scene imports the stroke colour + weight
 # from here so the bench can't silently drift from what the Map screen actually draws.
 obc-app = { path = "../../firmware/obc-app" }
@@ -17,3 +22,5 @@ obc-display = { path = "../../firmware/obc-display" }
 obcm-testkit = { path = "../obcm-testkit" }
 # Same 0.8 the render path uses, so `Rgb565`/`DrawTarget` unify.
 embedded-graphics = "0.8"
+# Same 0.8 the firmware uses — the corridor query fills a caller-owned `heapless::Vec`.
+heapless = "0.8"
