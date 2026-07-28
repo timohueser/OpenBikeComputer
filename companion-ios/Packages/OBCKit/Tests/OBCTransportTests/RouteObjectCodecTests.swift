@@ -227,8 +227,8 @@ final class RouteObjectCodecTests: XCTestCase {
         // The stored fixture CRC — an encoder change must re-pin this on purpose,
         // not dim adoption silently. Re-pinned for OBCR v3 (#947: version byte 3,
         // the 44-byte waypoint record, and this waypoint's category + signed
-        // offset now inside it).
-        let goldenCRC: UInt32 = 0x6B3F_72E3
+        // offset now inside it); was `0x6B3F_72E3` under v2.
+        let goldenCRC: UInt32 = 0xFC21_7148
         XCTAssertEqual(
             CRC32.checksum(first), goldenCRC,
             "OBCR encoding changed; adoption's re-encode CRC moved — re-pin goldenCRC consciously")
