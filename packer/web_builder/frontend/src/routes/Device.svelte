@@ -15,11 +15,13 @@
     import RidesCard from "../components/device/RidesCard.svelte";
     import RoutesCard from "../components/device/RoutesCard.svelte";
     import { dashboard, type TripView } from "../lib/device/dashboard.svelte";
+    import { addStage, createTrip, moveStage, removeStage, renameRoute, updateTrip } from "../lib/device/manage";
     import { rideScope } from "../lib/device/rides";
     import { deviceHolder } from "../lib/device/session.svelte";
     import { jobRegistry } from "../lib/device/job.svelte";
     import { confirmAction } from "../lib/ui/confirm.svelte";
     import { ObjectType } from "../lib/usb/protocol";
+    import type { ProtocolClient } from "../lib/usb/client";
     import type { RouteListEntry } from "../lib/usb/objects";
 
     const session = $derived(deviceHolder.session);
@@ -32,6 +34,51 @@
         if (client) void dashboard.ensureLoaded(client, scope);
     });
 
+    /** One mutation, queued, with the refresh that makes the card the authority again. */
+    async function mutate(op: (client: ProtocolClient) => Promise<unknown>): Promise<void> {
+        const c = client;
+        if (!c) return;
+        try {
+            await dashboard.enqueue(() => op(c));
+            await dashboard.refresh(c);
+        } catch (cause) {
+            dashboard.error = cause instanceof Error ? cause.message : String(cause);
+        }
+    }
+
+    const doRenameRoute = (route: RouteListEntry, name: string) =>
+        void mutate((c) => renameRoute(c, route.objectId, name));
+
+    const doRenameTrip = (trip: TripView, name: string) =>
+        void mutate((c) => updateTrip(c, trip.objectId, (t) => ({ ...t, name })));
+
+    const doAddToTrip = (route: RouteListEntry, tripId: number | null) =>
+        void mutate((c) =>
+            tripId === null
+                ? createTrip(c, route.name || `Route ${route.objectId}`, [route.objectId])
+                : updateTrip(c, tripId, (t) => addStage(t, route.objectId)),
+        );
+
+    const doMoveStage = (trip: TripView, index: number, delta: number) =>
+        void mutate((c) => updateTrip(c, trip.objectId, (t) => moveStage(t, index, delta)));
+
+    async function doRemoveStage(trip: TripView, index: number) {
+        // Removing the last stage would leave an empty grouping — offer to take
+        // the trip with it instead of leaving a husk on the card.
+        if ((trip.detail?.stages.length ?? 0) <= 1) {
+            const ok = await confirmAction({
+                title: `Remove the last route from “${trip.name}”?`,
+                body: "An empty trip is nothing, so the trip is deleted with it. The route stays on the device.",
+                confirmLabel: "Remove and delete trip",
+                destructive: true,
+            });
+            if (!ok) return;
+            await mutate((c) => c.deleteObject(ObjectType.Trip, trip.objectId));
+            return;
+        }
+        await mutate((c) => updateTrip(c, trip.objectId, (t) => removeStage(t, index)));
+    }
+
     async function deleteRoute(route: RouteListEntry) {
         if (!client) return;
         const ok = await confirmAction({
@@ -41,12 +88,7 @@
             destructive: true,
         });
         if (!ok) return;
-        try {
-            await dashboard.enqueue(() => client.deleteObject(ObjectType.Route, route.objectId));
-            await dashboard.refresh(client);
-        } catch (cause) {
-            dashboard.error = cause instanceof Error ? cause.message : String(cause);
-        }
+        await mutate((c) => c.deleteObject(ObjectType.Route, route.objectId));
     }
 
     async function deleteTrip(trip: TripView) {
@@ -58,12 +100,7 @@
             destructive: true,
         });
         if (!ok) return;
-        try {
-            await dashboard.enqueue(() => client.deleteObject(ObjectType.Trip, trip.objectId));
-            await dashboard.refresh(client);
-        } catch (cause) {
-            dashboard.error = cause instanceof Error ? cause.message : String(cause);
-        }
+        await mutate((c) => c.deleteObject(ObjectType.Trip, trip.objectId));
     }
 
     function retry() {
@@ -109,7 +146,15 @@
             <p class="small muted">Reading the card…</p>
         {/if}
 
-        <RoutesCard ondelete={deleteRoute} ondeletetrip={deleteTrip} />
+        <RoutesCard
+            onrename={doRenameRoute}
+            ondelete={(route) => void deleteRoute(route)}
+            onaddtotrip={doAddToTrip}
+            onrenametrip={doRenameTrip}
+            ondeletetrip={(trip) => void deleteTrip(trip)}
+            onremovestage={(trip, index) => void doRemoveStage(trip, index)}
+            onmovestage={doMoveStage}
+        />
         <RidesCard />
         <section class="card">
             <FirmwareCard {client} info={session.info} />
