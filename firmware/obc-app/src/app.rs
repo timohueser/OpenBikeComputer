@@ -1628,8 +1628,16 @@ impl App {
     /// [`base_needs_reader`](App::base_needs_reader) keeps asking the host to build the `Reader`.
     ///
     /// Re-arming an unchanged `(filter, anchor_m)` is a no-op, so this is safe to call repeatedly;
-    /// a changed filter (or a new anchor) drops the stale rows and re-queries. U3's "Up ahead" list
-    /// calls this on entry and on a filter change; [`clear_corridor`](App::clear_corridor) on exit.
+    /// a changed filter (or a new anchor) drops the stale rows and re-queries.
+    ///
+    /// **Since U3 the request belongs to the screen stack**, not to this call: a screen declares the
+    /// key it wants through [`Screen::corridor_request`](crate::screen::Screen) and
+    /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) re-points the scratch
+    /// at it after every gesture and per-pass sweep — which is what disarms a request whose screen
+    /// went away. So a request armed *here* survives only until the next reconcile unless some screen
+    /// on the stack asks for the same key: this is the test/introspection door (and the pre-U3 seam),
+    /// while a new consumer (U5's "Next: \<category\>" stat fields) adds its own `corridor_request`
+    /// arm rather than calling this.
     pub fn arm_corridor(&mut self, filter: obc_reader::PoiCategorySet, anchor_m: u32) {
         self.ui.corridor_scratch.arm(crate::corridor::CorridorKey { filter, anchor_m });
     }
