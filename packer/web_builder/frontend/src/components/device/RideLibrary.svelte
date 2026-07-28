@@ -44,7 +44,7 @@
         scope,
     }: { rides: RideSyncSource; library: RideLibrary; scope: RideScope } = $props();
 
-    const job = new DeviceJob();
+    const job = new DeviceJob("rides");
 
     let view = $state<LibraryView | null>(null);
     let error = $state<string | null>(null);

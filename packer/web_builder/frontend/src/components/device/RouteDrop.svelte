@@ -17,7 +17,7 @@
 
     let { client }: { client: ProtocolClient } = $props();
 
-    const job = new DeviceJob();
+    const job = new DeviceJob("route");
     let route = $state<PreparedRoute | null>(null);
     let readError = $state<string | null>(null);
     let dragging = $state(false);

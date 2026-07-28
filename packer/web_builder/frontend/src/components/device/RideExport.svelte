@@ -38,7 +38,7 @@
 
     let { rides, scope }: { rides: RideSource; scope: RideScope } = $props();
 
-    const job = new DeviceJob();
+    const job = new DeviceJob("ride");
 
     let entries = $state<RideListEntry[]>([]);
     let truncated = $state(false);
