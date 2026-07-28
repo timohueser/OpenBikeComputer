@@ -34,7 +34,14 @@ filter_title = "AFFICHER"
 none = "Rien devant"
 none_sub = "Aucun arrêt prévu"
 none_category_sub = "Rien de ce type"
+none_waypoints_sub = "Points seuls"
+none_pois_sub = "POI carte seuls"
 no_route_sub = "Chargez une route"
+
+[up_ahead_source]
+both = "Les deux"
+waypoints = "Points"
+map_pois = "POI carte"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
@@ -200,6 +207,8 @@ climb = "Montée"
 climb_sub = "panneau"
 waypoints = "Points"
 waypoints_sub = "puce"
+up_ahead = "À venir"
+up_ahead_sub = "liste"
 autodelete = "Suppr. auto"
 autodelete_sub = "sorties"
 

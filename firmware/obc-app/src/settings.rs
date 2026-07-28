@@ -391,6 +391,95 @@ impl WaypointMode {
     }
 }
 
+/// Which sources feed the **"Up ahead" timeline** (epic #946, U4) — the ride compass's north
+/// station. A device-only setting, cycled in place by the Ride settings screen's press-to-cycle row
+/// and persisted in the codec next to [`ride_retention`](Settings::ride_retention).
+///
+/// Scope is deliberately narrow: this is *who feeds the list*, nothing else. It never hides the
+/// map's POI markers or waypoint diamonds, never touches the nearby-POI browser (Menu → POIs, which
+/// answers the other question — "what's near me *now*?"), and never touches the stats waypoint panel
+/// or the "Next: \<category\>" stat fields. It composes with the list's own Hold category picker:
+/// the category filter applies *within* the configured sources.
+///
+/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+/// byte always decodes to the same value (an unknown byte sanitises to the default, [`Both`]).
+///
+/// [`Both`]: UpAheadSource::Both
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum UpAheadSource {
+    /// Custom waypoints **and** route-corridor map POIs — the merged timeline the epic designed.
+    /// **The default**: the merge is the feature.
+    Both = 0,
+    /// The rider's own GPX waypoints only. The corridor query is never armed under this value, so
+    /// the map `Reader` is never built for it either — the list costs exactly what the old waypoint
+    /// list cost.
+    WaypointsOnly = 1,
+    /// Route-corridor map POIs only. The documented trade: the waypoint plan leaves the ride menu
+    /// entirely (it stays on the map and in the stats panel) — for riders who treat a planner's
+    /// exported waypoints as clutter.
+    MapPoisOnly = 2,
+}
+
+impl Default for UpAheadSource {
+    /// **Both** out of the box — one list answering "what's coming up on my route?" is the whole
+    /// point of the timeline; the single-source values are the pressure valves.
+    fn default() -> Self {
+        UpAheadSource::Both
+    }
+}
+
+impl UpAheadSource {
+    /// The label for the Ride screen's press-to-cycle row, in the UI `lang` (epic #602). Short by
+    /// necessity: the value shares the row's sub-caption line with its `◄` cue at 240 px, so the
+    /// row reads as the sentence *"Up ahead shows ◄ Waypoints"* rather than repeating "only".
+    #[inline]
+    pub const fn name(self, lang: Language) -> &'static str {
+        match self {
+            UpAheadSource::Both => t(Msg::UpAheadSourceBoth, lang),
+            UpAheadSource::WaypointsOnly => t(Msg::UpAheadSourceWaypoints, lang),
+            UpAheadSource::MapPoisOnly => t(Msg::UpAheadSourceMapPois, lang),
+        }
+    }
+
+    /// Whether custom route waypoints feed the list under this value.
+    #[inline]
+    pub const fn shows_waypoints(self) -> bool {
+        matches!(self, UpAheadSource::Both | UpAheadSource::WaypointsOnly)
+    }
+
+    /// Whether route-corridor map POIs feed the list under this value. Also the **arming** answer:
+    /// `false` means no [`CorridorKey`](crate::corridor::CorridorKey) is ever declared, so the query
+    /// never runs (see [`UpAheadScreen`](crate::screen::UpAheadScreen)).
+    #[inline]
+    pub const fn shows_pois(self) -> bool {
+        matches!(self, UpAheadSource::Both | UpAheadSource::MapPoisOnly)
+    }
+
+    /// The next value in the Both → Waypoints → Map POIs ring — the Ride row's one action, the twin
+    /// of [`ClimbMode::cycled`] / [`WaypointMode::cycled`].
+    #[inline]
+    pub const fn cycled(self) -> Self {
+        match self {
+            UpAheadSource::Both => UpAheadSource::WaypointsOnly,
+            UpAheadSource::WaypointsOnly => UpAheadSource::MapPoisOnly,
+            UpAheadSource::MapPoisOnly => UpAheadSource::Both,
+        }
+    }
+
+    /// Rebuild from a stored byte, sanitising an unknown value to the default
+    /// ([`Both`](UpAheadSource::Both)) — the decode-side clamp, exactly like the other codec fields.
+    #[inline]
+    fn from_byte(b: u8) -> Self {
+        match b {
+            0 => UpAheadSource::Both,
+            1 => UpAheadSource::WaypointsOnly,
+            2 => UpAheadSource::MapPoisOnly,
+            _ => UpAheadSource::default(),
+        }
+    }
+}
+
 /// How long the UI sits idle (no user input) before it navigates itself back to where it belongs —
 /// the Home root when not tracking a ride, the Map when a ride is running (see
 /// [`App::apply_idle_return`](crate::App::apply_idle_return)). A device-only setting, cycled by the
@@ -711,6 +800,12 @@ pub struct Settings {
     /// Default **1 week**. Only synced rides are ever deleted; unsynced rides are never touched. S5
     /// adds the Auto-delete settings screen that edits this.
     pub ride_retention: RideRetention,
+    /// Which sources feed the **"Up ahead" timeline** (epic #946, U4, the Ride settings screen
+    /// cycles it): both, custom waypoints only, or map POIs only. **Device-only**, like
+    /// [`climb_mode`](Settings::climb_mode) — a phone must never repick what the rider's ride menu
+    /// shows, so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default
+    /// **Both**; the scope is the Up-ahead list *only* (see [`UpAheadSource`]).
+    pub up_ahead_source: UpAheadSource,
 }
 
 impl Default for Settings {
@@ -734,6 +829,7 @@ impl Default for Settings {
             language: Language::default(),
             saved_sensors: [SavedSensor::EMPTY; SENSOR_SLOTS],
             ride_retention: RideRetention::default(),
+            up_ahead_source: UpAheadSource::default(),
         }
     }
 }
@@ -780,8 +876,9 @@ impl Settings {
 /// `bike_profile_idx` byte (routing-v2 N5, #538); v9 appended the `waypoint_mode` byte (epic #523);
 /// v10 appended the `language` byte (epic #602); v11 appended the 24-byte `saved_sensors` block
 /// (BLE-sensors SE7, #714) — 3 slots × 8 B (`present · addr_kind · addr[6]`); v12 appended the
-/// `ride_retention` byte (auto-expiry epic #638, S3).
-pub const VERSION: u8 = 12;
+/// `ride_retention` byte (auto-expiry epic #638, S3); v13 appended the `up_ahead_source` byte
+/// ("Up ahead" epic #946, U4).
+pub const VERSION: u8 = 13;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -790,7 +887,9 @@ pub const VERSION: u8 = 12;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = RIDE_RET_OFF + 1;
+const PAYLOAD_LEN: usize = UP_AHEAD_OFF + 1;
+/// Byte offset of the `up_ahead_source` byte (the v13 tail, right after `ride_retention`).
+const UP_AHEAD_OFF: usize = RIDE_RET_OFF + 1;
 /// Byte offset of the `ride_retention` byte (the v12 tail, right after the `saved_sensors` block).
 const RIDE_RET_OFF: usize = SENSORS_OFF + SENSOR_SLOTS * SAVED_SENSOR_LEN;
 /// Byte offset of the field selection (right after the 14-byte head).
@@ -872,6 +971,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     }
     // v12 tail: the ride-retention (auto-delete) setting.
     b[RIDE_RET_OFF] = s.ride_retention.as_u8();
+    // v13 tail: which sources feed the "Up ahead" timeline.
+    b[UP_AHEAD_OFF] = s.up_ahead_source as u8;
     let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -936,6 +1037,9 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // The v12 ride-retention (auto-delete) setting: an unknown byte sanitises to the default
         // (1 week), like the other enum codec fields.
         ride_retention: RideRetention::from_u8(b[RIDE_RET_OFF]),
+        // The v13 Up-ahead source scope: an unknown byte sanitises to the default (Both), like the
+        // other enum codec fields.
+        up_ahead_source: UpAheadSource::from_byte(b[UP_AHEAD_OFF]),
     };
     s.sanitize();
     Some(s)
@@ -1006,8 +1110,52 @@ mod tests {
                 SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]),
             ],
             ride_retention: RideRetention::Month1,
+            up_ahead_source: UpAheadSource::MapPoisOnly,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    /// The v13 tail: the Up-ahead source scope round-trips every value, defaults **Both** (the
+    /// merged timeline is the feature), sanitises an unknown byte back to Both, and is device-only
+    /// — [`adopt_ble_fields`] must never pull it across (a phone can't repick what the rider's ride
+    /// menu shows).
+    #[test]
+    fn up_ahead_source_round_trips_and_is_device_only() {
+        assert_eq!(Settings::default().up_ahead_source, UpAheadSource::Both, "the timeline defaults to Both");
+        // The one new byte still fits inside the same 16-byte RRAM line rounding as v12.
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
+
+        for src in [UpAheadSource::Both, UpAheadSource::WaypointsOnly, UpAheadSource::MapPoisOnly] {
+            let s = Settings { up_ahead_source: src, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "{src:?} round-trips");
+        }
+
+        // An out-of-range stored byte (a newer writer, a bit-flip the CRC missed) sanitises to Both
+        // — re-stamp the CRC so only the payload byte is "wrong".
+        let mut b = encode(&Settings { up_ahead_source: UpAheadSource::MapPoisOnly, ..Settings::default() });
+        b[UP_AHEAD_OFF] = 9;
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode(&b).expect("valid CRC").up_ahead_source, UpAheadSource::Both, "unknown → default");
+
+        // Device-only: a BLE blob's up_ahead_source never lands via the #456 coherence merge.
+        let mut app = Settings { up_ahead_source: UpAheadSource::WaypointsOnly, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { up_ahead_source: UpAheadSource::MapPoisOnly, ..Settings::default() });
+        assert_eq!(app.up_ahead_source, UpAheadSource::WaypointsOnly, "adopt_ble_fields leaves it alone");
+    }
+
+    /// The three values and the source predicates that drive both the list composition and the
+    /// corridor arming: the ring cycles Both → Waypoints → Map POIs → Both, and exactly one value
+    /// asks for **no** corridor query at all.
+    #[test]
+    fn up_ahead_source_cycles_and_scopes_the_two_sources() {
+        assert_eq!(UpAheadSource::Both.cycled(), UpAheadSource::WaypointsOnly);
+        assert_eq!(UpAheadSource::WaypointsOnly.cycled(), UpAheadSource::MapPoisOnly);
+        assert_eq!(UpAheadSource::MapPoisOnly.cycled(), UpAheadSource::Both, "the ring wraps");
+
+        assert!(UpAheadSource::Both.shows_waypoints() && UpAheadSource::Both.shows_pois());
+        assert!(UpAheadSource::WaypointsOnly.shows_waypoints() && !UpAheadSource::WaypointsOnly.shows_pois());
+        assert!(!UpAheadSource::MapPoisOnly.shows_waypoints() && UpAheadSource::MapPoisOnly.shows_pois());
     }
 
     /// A v11 blob written by a pre-#641 firmware carried the `gps_time` flag in byte 2. That byte's
@@ -1149,7 +1297,7 @@ mod tests {
         assert!(Settings::default().map_clock, "the map clock defaults on");
         assert!(Settings::default().map_scale_bar, "the scale bar defaults on");
         // The RRAM carve is unchanged — the two new bytes fit inside the same 16-byte line rounding.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v12 ride_retention tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
 
         // Every on/off combination round-trips byte-for-byte.
         for clock in [false, true] {
@@ -1173,7 +1321,7 @@ mod tests {
     fn bike_profile_idx_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().bike_profile_idx, 0, "the profile index defaults to 0");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v7.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v12 ride_retention tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
 
         // Every index round-trips byte-for-byte — including a value past any real map's profile count,
         // which the codec stores verbatim (the router/UI own the fallback, not decode).
@@ -1196,7 +1344,7 @@ mod tests {
     fn waypoint_mode_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().waypoint_mode, WaypointMode::Approach, "the chip defaults to Approach");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v8.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v12 ride_retention tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
 
         // Each mode round-trips through the codec byte-for-byte.
         for mode in [WaypointMode::Off, WaypointMode::Approach, WaypointMode::Always] {
@@ -1228,7 +1376,7 @@ mod tests {
         assert_eq!(Settings::default().language, Language::En, "the UI language defaults to English");
         // The saved_sensors tail (v11) then the ride_retention byte (v12) grew the blob to 128 B /
         // 8 RRAM lines; the language byte kept its v10 offset.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v12 ride_retention tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
 
         // Each language round-trips through the codec byte-for-byte.
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
@@ -1265,7 +1413,7 @@ mod tests {
     /// repick the rider's sensors).
     #[test]
     fn saved_sensors_round_trip_and_migration() {
-        assert_eq!(VERSION, 12, "saved_sensors is the v11 tail; the codec is now v12 (ride_retention)");
+        assert_eq!(VERSION, 13, "saved_sensors is the v11 tail; the codec is now v13 (up_ahead_source)");
         assert_eq!(
             Settings::default().saved_sensors,
             [SavedSensor::EMPTY; SENSOR_SLOTS],
