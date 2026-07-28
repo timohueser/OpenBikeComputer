@@ -95,8 +95,13 @@ export interface BytePipe {
      *
      * The spec's rule, §4.1: an exchange that does not reach its correlated close leaves the
      * channel at an unknown offset and is "not reusable" — over BLE the app closes and reopens the
-     * CoC. `reset` is that step for a pipe that has no channel to reopen: it drops bytes the peer
-     * queued before its asynchronous reject arrived, so the next descriptor starts clean.
+     * CoC. `reset` is that step for a pipe that has no channel to reopen, so that the next
+     * descriptor starts clean.
+     *
+     * *How* an implementation gets there differs, and the difference is not cosmetic: the loopback
+     * drops its queued slices, D4's native pipe cancels every URB and drains the completions, and
+     * `webusb.ts` can do neither — see its `reset`, which is the one place this contract is met by
+     * argument rather than by force.
      */
     reset(): Promise<void>;
 
@@ -135,17 +140,12 @@ export function abortedError(signal: AbortSignal | undefined, what: string): Pip
  * Race `promise` against `signal`, so a caller's cancel is observed even when the underlying
  * transfer cannot itself be cancelled.
  *
- * WebUSB has no way to cancel a submitted `transferIn`, which is precisely why this exists: the
- * *caller* is released immediately while the orphaned transfer settles into `onOrphan`. That is
- * safe only because a cancelled transfer is followed by a {@link BytePipe.reset} — the bytes that
- * eventually arrive are bytes we have already agreed to discard.
+ * WebUSB has no way to cancel a submitted transfer, which is precisely why this exists: the
+ * *caller* is released immediately and the transfer is left to settle on its own. Releasing the
+ * caller is **not** the same as being rid of the transfer, and confusing the two is a real bug —
+ * what happens to the one still on the endpoint is `webusb.ts`'s {@link BytePipe.reset} to explain.
  */
-export function withAbort<T>(
-    promise: Promise<T>,
-    signal: AbortSignal | undefined,
-    what: string,
-    onOrphan?: (result: PromiseSettledResult<T>) => void,
-): Promise<T> {
+export function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
     if (!signal) return promise;
     throwIfAborted(signal, what);
     return new Promise<T>((resolve, reject) => {
@@ -159,19 +159,15 @@ export function withAbort<T>(
         promise.then(
             (value) => {
                 signal.removeEventListener("abort", onAbort);
-                if (settled) onOrphan?.({ status: "fulfilled", value });
-                else {
-                    settled = true;
-                    resolve(value);
-                }
+                if (settled) return; // the caller is long gone; the transfer's fate is the pipe's business
+                settled = true;
+                resolve(value);
             },
             (reason: unknown) => {
                 signal.removeEventListener("abort", onAbort);
-                if (settled) onOrphan?.({ status: "rejected", reason });
-                else {
-                    settled = true;
-                    reject(reason);
-                }
+                if (settled) return;
+                settled = true;
+                reject(reason);
             },
         );
     });
