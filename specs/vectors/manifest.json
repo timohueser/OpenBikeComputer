@@ -16,37 +16,43 @@
   },
   "fixtures": {
     "route-waypoints.obcr": {
-      "format": "OBCR v2",
-      "byte_len": 300,
-      "crc32": "0x1F66C051",
+      "format": "OBCR v3",
+      "byte_len": 308,
+      "crc32": "0x1BFB6E3C",
       "name": "Vector Loop",
-      "version": 2,
+      "version": 3,
       "point_count": 9,
       "chunk_count": 1,
       "total_distance_m": 2207,
       "total_ascent_m": 76,
+      "waypoint_record_len": 44,
       "waypoints": [
         {
           "dist_along_m": 0,
           "lon_udeg": 7820100,
           "lat_udeg": 48000100,
           "ele_m": 238,
-          "type": 0,
-          "name": "Brunnen"
+          "category": 1,
+          "lateral_offset_m": -13,
+          "name": "Brunnen",
+          "note": "<sym>Drinking Water</sym> maps to category 1 (Water); it sits 13 m left of the direction of travel"
         },
         {
           "dist_along_m": 1700,
           "lon_udeg": 7842500,
           "lat_udeg": 47998700,
           "ele_m": null,
-          "type": 0,
-          "name": "Pass Summit"
+          "category": 0,
+          "lateral_offset_m": 0,
+          "name": "Pass Summit",
+          "note": "<type>Viewpoint</type> is unmapped, so generic; it sits on a track vertex, so on-route"
         }
       ]
     },
     "route-plain.obcr": {
-      "format": "OBCR v2",
+      "format": "OBCR v3",
       "byte_len": 220,
+      "crc32": "0x1557AE0B",
       "identical_ride_to": "route-waypoints.obcr",
       "waypoints": []
     },

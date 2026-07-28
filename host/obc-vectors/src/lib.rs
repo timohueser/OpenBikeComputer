@@ -43,7 +43,9 @@ pub fn crc32(bytes: &[u8]) -> u32 {
 }
 
 /// The deterministic route source: a short rolling track at 48°N with two `<wpt>`
-/// waypoints listed out of ride order (as GPX carries them).
+/// waypoints listed out of ride order (as GPX carries them). One carries a `<sym>` the
+/// converter maps (`Drinking Water` → Water), the other a `<type>` it doesn't (`Viewpoint` →
+/// generic) — so the fixture pins both halves of the symbol mapping.
 pub const ROUTE_GPX: &str = include_str!("route-source.gpx");
 
 /// Route fixture name (also the OBCR header name field).
@@ -73,7 +75,7 @@ impl ByteSink for VecSink {
     }
 }
 
-/// Convert a GPX string to OBCR v2 bytes via the reference converter.
+/// Convert a GPX string to OBCR v3 bytes via the reference converter.
 pub fn build_route(gpx: &str) -> Vec<u8> {
     let mut sink = VecSink(Vec::new());
     gpx_to_obcr(&SliceSource(gpx.as_bytes()), ROUTE_NAME, &mut sink).unwrap();

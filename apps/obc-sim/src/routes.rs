@@ -289,6 +289,34 @@ mod tests {
 
     /// The committed sample OBCR the folder store seeds from (twice, for a ≥2-route catalog).
     const ROUTE: &[u8] = include_bytes!("../assets/grimsel-climb.obcr");
+    /// …and the GPX it is the conversion of. The pair is the asset's provenance (see below).
+    const ROUTE_GPX: &[u8] = include_bytes!("../assets/grimsel-climb.gpx");
+    /// The route name `import_gpx` derives from the GPX's file stem.
+    const ROUTE_NAME: &str = "grimsel-climb";
+
+    /// Convert the committed GPX exactly as [`RouteStore::import_gpx`] would.
+    fn convert_the_committed_gpx() -> Vec<u8> {
+        let mut sink = VecSink::default();
+        gpx_to_obcr(&SliceSource(ROUTE_GPX), ROUTE_NAME, &mut sink).unwrap();
+        sink.bytes().to_vec()
+    }
+
+    /// The committed `grimsel-climb.obcr` is exactly what the production converter writes from the
+    /// `grimsel-climb.gpx` beside it — the asset's provenance pin, the `.obcr` sibling of trips.rs'
+    /// `committed_trip_asset_matches_the_production_writer`. An OBCR format bump therefore re-cuts
+    /// this fixture on purpose (`cargo test -p obc-sim regenerate_committed_route_asset -- --ignored`).
+    #[test]
+    fn committed_route_asset_matches_the_gpx_conversion() {
+        assert_eq!(ROUTE, convert_the_committed_gpx());
+    }
+
+    /// Rewrite the committed asset from its GPX. Ignored — run it deliberately after a format bump.
+    #[test]
+    #[ignore]
+    fn regenerate_committed_route_asset() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grimsel-climb.obcr");
+        std::fs::write(path, convert_the_committed_gpx()).unwrap();
+    }
 
     fn temp_route_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("obc-route-conf-{}-{tag}", std::process::id()));
