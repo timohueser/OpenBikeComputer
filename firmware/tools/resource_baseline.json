@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "measurement": {
-    "source_commit": "9bb7adf8 + #927",
+    "source_commit": "375de5a0 + #948",
     "rustc": "1.97.1 (8bab26f4f 2026-07-14) on CI; itemized on the pinned 1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
@@ -13,11 +13,11 @@
   "board": {
     "default": {
       "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
-      "_resident_note": "421,176 \u2192 421,224 B (+48) and flash 1,166,192 \u2192 1,185,668 for device-side map storage (#927). **Both figures are CI's, not the pinned host's** \u2014 the gate is the `embedded` job and it runs floating stable; CI linked exactly 421,176 on develop at 9bb7adf8 (run 30300503081), so the delta is a clean +48. The pinned local host links +40 for the same change (416,040 \u2192 416,080 .bss), which is the usual few-byte layout difference between toolchains and the reason the ceiling is taken from CI. Itemized from an `llvm-nm -S` diff against 9bb7adf8 on the pinned host: `link::MAP_PHASE` +1, `link::MAP_RX_KIB` +4, `link::MAP_TOTAL_KIB` +4 (the map-transfer progress mirror the ride loop polls to drive the on-glass card); `SHARED_STORE` +12 (`Storage` gained `open_map_name: Option<ShortFileName>` \u2014 embedded-sdmmc refuses a second open of an open file, so the map catalog must read the loaded map's header through its live handle and needs its name to recognise it); `__embassy_main::POOL` +24 (the ride loop's new map-card reconcile block); `.L_MergedGlobals` +11 net re-layout. **No named compile-time allocation moved** \u2014 `app` is still 135,224 and `ble_object_store` still 13,528: the feature added module statics and one `Storage` field, and its `Screen::MapTransfer` variant is far smaller than the enum's largest, so `size_of::<App>()` is unchanged. Poll frame unmoved at 9,728 B.",
-      "measured_resident": 421224,
-      "resident_ram_max": 421224,
+      "_resident_note": "421,224 \u2192 422,080 B (+856) and flash 1,185,668 \u2192 1,190,108 for the route-corridor POI snapshot (#948, epic #946). Figures are **CI's** (the `embedded` job is the gate and runs floating stable); the pinned local host links 8 B less resident, the usual layout difference, and a different flash figure \u2014 neither is gated. The whole increase is **one named allocation**: `app` 135,224 \u2192 136,080 B (+856), i.e. `size_of::<App>()`. Nothing else moved \u2014 the delta and the `app` delta are the same 856 bytes. It is the new `UiRuntime::corridor_scratch` (`CorridorScratch`): a 16-slot `heapless::Vec<CorridorPoi>` (16 \u00d7 52 B = 832) plus its `want`/`taken_for` snapshot keys. Held once in `App` **by design**, exactly like `poi_scratch` before it \u2014 inline in the `Screen` union it would multiply across all 10 stack slots (~8.6 KB) instead of costing the buffer once (issue #425). Poll frame unmoved at 9,728 B.",
+      "measured_resident": 422080,
+      "resident_ram_max": 422080,
       "uninit_max": 1024,
-      "measured_flash": 1185668,
+      "measured_flash": 1190108,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 135224,
+        "app": 136080,
         "map_cache": 37084,
         "map_tables": 4060,
         "route_cache": 9260,
@@ -51,11 +51,11 @@
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE + USB device plane, constrained nrf-mem capacities)",
-      "_resident_note": "421,176 \u2192 421,224 B (+48) and flash 1,166,192 \u2192 1,185,668 for device-side map storage (#927). **Both figures are CI's, not the pinned host's** \u2014 the gate is the `embedded` job and it runs floating stable; CI linked exactly 421,176 on develop at 9bb7adf8 (run 30300503081), so the delta is a clean +48. The pinned local host links +40 for the same change (416,040 \u2192 416,080 .bss), which is the usual few-byte layout difference between toolchains and the reason the ceiling is taken from CI. Itemized from an `llvm-nm -S` diff against 9bb7adf8 on the pinned host: `link::MAP_PHASE` +1, `link::MAP_RX_KIB` +4, `link::MAP_TOTAL_KIB` +4 (the map-transfer progress mirror the ride loop polls to drive the on-glass card); `SHARED_STORE` +12 (`Storage` gained `open_map_name: Option<ShortFileName>` \u2014 embedded-sdmmc refuses a second open of an open file, so the map catalog must read the loaded map's header through its live handle and needs its name to recognise it); `__embassy_main::POOL` +24 (the ride loop's new map-card reconcile block); `.L_MergedGlobals` +11 net re-layout. **No named compile-time allocation moved** \u2014 `app` is still 135,224 and `ble_object_store` still 13,528: the feature added module statics and one `Storage` field, and its `Screen::MapTransfer` variant is far smaller than the enum's largest, so `size_of::<App>()` is unchanged. Poll frame unmoved at 9,728 B.",
-      "measured_resident": 421224,
-      "resident_ram_max": 421224,
+      "_resident_note": "421,224 \u2192 422,080 B (+856) and flash 1,185,668 \u2192 1,190,108 for the route-corridor POI snapshot (#948, epic #946). Figures are **CI's** (the `embedded` job is the gate and runs floating stable); the pinned local host links 8 B less resident, the usual layout difference, and a different flash figure \u2014 neither is gated. The whole increase is **one named allocation**: `app` 135,224 \u2192 136,080 B (+856), i.e. `size_of::<App>()`. Nothing else moved \u2014 the delta and the `app` delta are the same 856 bytes. It is the new `UiRuntime::corridor_scratch` (`CorridorScratch`): a 16-slot `heapless::Vec<CorridorPoi>` (16 \u00d7 52 B = 832) plus its `want`/`taken_for` snapshot keys. Held once in `App` **by design**, exactly like `poi_scratch` before it \u2014 inline in the `Screen` union it would multiply across all 10 stack slots (~8.6 KB) instead of costing the buffer once (issue #425). Poll frame unmoved at 9,728 B.",
+      "measured_resident": 422080,
+      "resident_ram_max": 422080,
       "uninit_max": 1024,
-      "measured_flash": 1185668,
+      "measured_flash": 1190108,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -77,7 +77,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 135224,
+        "app": 136080,
         "map_cache": 37084,
         "map_tables": 4060,
         "route_cache": 9260,
