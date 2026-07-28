@@ -102,7 +102,7 @@ export function routeNameFrom(filename: string): string {
 }
 
 /** Trim to `maxBytes` of UTF-8 without splitting a codepoint — the rule `obc-route` applies too. */
-function truncateUtf8(text: string, maxBytes: number): string {
+export function truncateUtf8(text: string, maxBytes: number): string {
     const encoder = new TextEncoder();
     if (encoder.encode(text).length <= maxBytes) return text;
     let out = "";

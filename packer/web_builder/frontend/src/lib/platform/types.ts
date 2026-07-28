@@ -303,6 +303,18 @@ export interface Platform {
      * folder. Present exactly where the fallback does not work.
      */
     readonly saveText?: (name: string, text: string) => Promise<string>;
+
+    /**
+     * The site's outbound chrome — docs, the landing page's simulator, GitHub.
+     *
+     * Present only where the app is a page *of* the site; the desktop app is a
+     * standalone window with no site around it, so there it is absent and the
+     * header shows tabs instead. Optional rather than a capability for the
+     * documented reason nav links are never gated (#901): a link has no moment
+     * of intent, so there is no reason sentence to write and nothing for the
+     * desktop page to list as an "add".
+     */
+    readonly siteNav?: { readonly docs: string; readonly simulator: string; readonly github: string };
 }
 
 /**

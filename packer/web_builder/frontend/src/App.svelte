@@ -3,7 +3,7 @@
     import Header from "./components/Header.svelte";
     import Desktop from "./routes/Desktop.svelte";
     import Home from "./routes/Home.svelte";
-    import { loadStyleEditor, type StyleEditorModule } from "./lib/platform";
+    import { loadStyleEditor, platform, type StyleEditorModule } from "./lib/platform";
     import { available, DESKTOP_ADDS } from "./lib/platform/gating";
     import { router } from "./lib/router.svelte";
 
@@ -18,12 +18,28 @@
     let editor: Promise<StyleEditorModule> | undefined;
     const openEditor = load ? () => (editor ??= load()) : null;
 
+    // The device and rides pages reach the protocol codecs and the library —
+    // exactly the modules the entry chunk must not contain (usb/bundle.test.ts)
+    // — so both live behind memoized dynamic imports, the same shape the device
+    // surfaces already use. Gated on caps, not on a host name: a tier without
+    // the page treats its hash as home.
+    let devicePage: Promise<typeof import("./routes/Device.svelte")> | undefined;
+    const openDevice = platform.caps.deviceDashboard
+        ? () => (devicePage ??= import("./routes/Device.svelte"))
+        : null;
+    let ridesPage: Promise<typeof import("./routes/Rides.svelte")> | undefined;
+    const openRides = platform.caps.rideLibrary
+        ? () => (ridesPage ??= import("./routes/Rides.svelte"))
+        : null;
+
     const showEditor = $derived(router.route === "advanced" && openEditor !== null);
     // Same shape as the editor's gate: a host that is missing nothing has
     // nothing to read there, so #/desktop falls back to home rather than
     // rendering a page that pitches the app you are already running.
     const showDesktop = $derived(router.route === "desktop" && DESKTOP_ADDS.length > 0);
-    const showHome = $derived(!showEditor && !showDesktop);
+    const showDevice = $derived(router.route === "device" && openDevice !== null);
+    const showRides = $derived(router.route === "rides" && openRides !== null);
+    const showHome = $derived(!showEditor && !showDesktop && !showDevice && !showRides);
 </script>
 
 <!-- Contour-line backdrop, the field-guide signature (see docs/index.html). -->
@@ -48,6 +64,16 @@
     {/if}
     {#if showDesktop}
         <Desktop />
+    {/if}
+    {#if showDevice && openDevice}
+        {#await openDevice() then { default: Device }}
+            <Device />
+        {/await}
+    {/if}
+    {#if showRides && openRides}
+        {#await openRides() then { default: Rides }}
+            <Rides />
+        {/await}
     {/if}
 </main>
 
@@ -79,22 +105,34 @@
 
     main {
         flex: 1;
+        min-height: 0; /* the classic flex-overflow unlock: without it, children grow main past the viewport */
         width: min(1400px, 100% - 32px);
         margin: 0 auto;
         padding: 18px 0 28px;
         display: flex;
         flex-direction: column;
+        overflow-y: auto; /* every ordinary route scrolls here… */
     }
 
-    /* Fill the viewport so the map (Home's grid) grows into tall screens. */
+    /* …while Home clamps to the viewport: the map pane takes exactly the room
+       the window gives it, and Home's own steps column is what scrolls. */
     .route {
         flex: 1;
+        min-height: 0;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
     }
 
     .route[hidden] {
         display: none;
+    }
+
+    @media (max-width: 940px) {
+        main,
+        .route {
+            overflow: visible;
+        }
     }
 
     footer {

@@ -46,7 +46,7 @@
         localFileSource?: LocalFileSource | null;
     } = $props();
 
-    const job = new DeviceJob();
+    const job = new DeviceJob("map");
     let picker = $state<HTMLInputElement>();
 
     // Both halves have to be true: something was built, and this transport can read it. Either

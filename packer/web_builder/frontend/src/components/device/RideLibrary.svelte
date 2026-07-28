@@ -39,12 +39,21 @@
     import { initConvert } from "../../lib/convert/bridge";
 
     let {
-        rides,
+        rides = null,
         library,
-        scope,
-    }: { rides: RideSyncSource; library: RideLibrary; scope: RideScope } = $props();
+        scope = null,
+        onpreview = null,
+    }: {
+        /** The device's ride reads + ack. Null while no device is connected — the library still
+         *  renders and exports; only the pull needs a cable. */
+        rides?: RideSyncSource | null;
+        library: RideLibrary;
+        scope?: RideScope | null;
+        /** Open a preview of an archived ride (from disk, no cable). Null hides the button. */
+        onpreview?: ((ride: LibraryRide) => void) | null;
+    } = $props();
 
-    const job = new DeviceJob();
+    const job = new DeviceJob("rides");
 
     let view = $state<LibraryView | null>(null);
     let error = $state<string | null>(null);
@@ -71,9 +80,12 @@
     }
 
     async function pull() {
+        const source = rides;
+        const from = scope;
+        if (!source || !from) return;
         report = null;
         const result = await job.run(
-            (ctx) => pullRides(rides, library, scope, ctx),
+            (ctx) => pullRides(source, library, from, ctx),
             (value) => describe(value),
         );
         await refresh();
@@ -145,9 +157,11 @@
     /** The device's ride ids this library already holds — what the Pull button can promise. */
     const heldHere = $derived(
         new Set(
-            listed
-                .filter((ride) => ride.present && ride.serial === scope.serial && ride.epoch === scope.epoch)
-                .map((ride) => ride.objectId),
+            scope
+                ? listed
+                      .filter((ride) => ride.present && ride.serial === scope.serial && ride.epoch === scope.epoch)
+                      .map((ride) => ride.objectId)
+                : [],
         ),
     );
 
@@ -176,9 +190,13 @@
 <section class="block">
     <div class="head">
         <h4>Ride library</h4>
-        <button type="button" class="btn primary" disabled={job.running} onclick={() => void pull()}>
-            Pull rides from device
-        </button>
+        {#if rides && scope}
+            <button type="button" class="btn primary" disabled={job.running} onclick={() => void pull()}>
+                Pull rides from device
+            </button>
+        {:else}
+            <span class="small faint">Plug the device in to pull new rides.</span>
+        {/if}
     </div>
 
     <p class="small faint folder">
@@ -226,7 +244,7 @@
                     <div class="what">
                         <p class="name">
                             {ride.name || `Ride ${ride.objectId}`}
-                            {#if heldHere.has(ride.objectId) && ride.epoch === scope.epoch}
+                            {#if scope && heldHere.has(ride.objectId) && ride.epoch === scope.epoch}
                                 <span class="tag">on device</span>
                             {/if}
                         </p>
@@ -239,6 +257,16 @@
                             {/if}
                         </p>
                     </div>
+                    {#if onpreview}
+                        <button
+                            type="button"
+                            class="btn"
+                            disabled={!ride.present}
+                            onclick={() => onpreview?.(ride)}
+                        >
+                            Preview
+                        </button>
+                    {/if}
                     <button
                         type="button"
                         class="btn"

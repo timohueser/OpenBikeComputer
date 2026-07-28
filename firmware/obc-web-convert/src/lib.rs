@@ -12,6 +12,7 @@
 //! | :-- | :-- |
 //! | `obc_convert_gpx_to_obcr(bytes, name) -> Uint8Array` | a GPX file's bytes → a `.obcr` route |
 //! | `obc_convert_track_to_gpx(bytes, name) -> string` | a recorded `.obct` log → a GPX 1.1 document |
+//! | `obc_convert_obcr_to_track(bytes) -> Float64Array` | a `.obcr` route → flat `[lat°, lon°, ele m]` triples |
 //!
 //! A failure crosses to JS as a thrown `Error` whose `message` is written for a rider and whose
 //! `code` ([`ErrorCode`]) is the stable identifier a caller branches on. Every
@@ -24,7 +25,7 @@
 
 mod convert;
 
-pub use convert::{gpx_to_obcr, track_to_gpx, ConvertFailure, ErrorCode, MAX_STORED_POINTS};
+pub use convert::{gpx_to_obcr, obcr_to_track, track_to_gpx, ConvertFailure, ErrorCode, MAX_STORED_POINTS};
 
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -55,6 +56,15 @@ mod web {
     #[wasm_bindgen]
     pub fn obc_convert_track_to_gpx(bytes: &[u8], name: &str) -> Result<String, JsValue> {
         crate::convert::track_to_gpx(bytes, name).map_err(to_js)
+    }
+
+    /// Decode a `.obcr` route's polyline for the device page's preview: flat `[lat°, lon°, ele m]`
+    /// triples in route order, crossing as one `Float64Array`.
+    ///
+    /// Throws an `Error` carrying `code` + `message` on failure; see [`crate::ErrorCode`].
+    #[wasm_bindgen]
+    pub fn obc_convert_obcr_to_track(bytes: &[u8]) -> Result<Vec<f64>, JsValue> {
+        crate::convert::obcr_to_track(bytes).map_err(to_js)
     }
 
     /// Build the JS exception: a real `Error` instance (so it carries a stack and survives

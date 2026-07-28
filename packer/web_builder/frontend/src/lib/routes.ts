@@ -9,3 +9,9 @@ export const ADVANCED_ROUTE = "#/advanced";
 /** The desktop download page. The one next step every gate offers, so it is
  *  also the constant sibling features link to rather than spelling out. */
 export const DESKTOP_ROUTE = "#/desktop";
+
+/** The device page — what is on the card. Tiers with `caps.deviceDashboard`. */
+export const DEVICE_ROUTE = "#/device";
+
+/** The ride library — the managed folder. Tiers with `caps.rideLibrary`. */
+export const RIDES_ROUTE = "#/rides";
