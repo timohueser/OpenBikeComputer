@@ -27,25 +27,25 @@ pub const WINDOW_MARGIN: f32 = 18.0;
 /// The body colors the device ships in. Selectable in the control panel (and via `--colorway`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Colorway {
+    Petrol,
     Forest,
-    Coral,
-    Mint,
-    Mustard,
-    Slate,
+    Wine,
+    Aubergine,
+    Stealth,
 }
 
 impl Colorway {
-    /// Drives the dropdown, in the reference render's order (Forest first — the default).
+    /// Drives the dropdown, in the colorway sheet's order (01–05); Forest is the default.
     pub const ALL: [Colorway; 5] =
-        [Colorway::Forest, Colorway::Coral, Colorway::Mint, Colorway::Mustard, Colorway::Slate];
+        [Colorway::Petrol, Colorway::Forest, Colorway::Wine, Colorway::Aubergine, Colorway::Stealth];
 
     pub fn label(self) -> &'static str {
         match self {
+            Colorway::Petrol => "petrol",
             Colorway::Forest => "forest",
-            Colorway::Coral => "coral",
-            Colorway::Mint => "mint",
-            Colorway::Mustard => "mustard",
-            Colorway::Slate => "slate",
+            Colorway::Wine => "wine",
+            Colorway::Aubergine => "aubergine",
+            Colorway::Stealth => "stealth",
         }
     }
 
@@ -57,22 +57,22 @@ impl Colorway {
     /// The upper-shell color; the rest of the palette is derived from it + shared dark tones.
     fn body(self) -> Color32 {
         match self {
-            Colorway::Forest => hex("#2f6350"),
-            Colorway::Coral => hex("#cb6750"),
-            Colorway::Mint => hex("#62be9c"),
-            Colorway::Mustard => hex("#e0b348"),
-            Colorway::Slate => hex("#6c7891"),
+            Colorway::Petrol => hex("#29465c"),
+            Colorway::Forest => hex("#488781"),
+            Colorway::Wine => hex("#693744"),
+            Colorway::Aubergine => hex("#4d3c77"),
+            Colorway::Stealth => hex("#1f252c"),
         }
     }
 
     /// The accent base the upper shell is seated on — the lighter half of the two-tone body.
     fn accent(self) -> Color32 {
         match self {
+            Colorway::Petrol => hex("#3ad3e2"),
             Colorway::Forest => hex("#8be3bc"),
-            Colorway::Coral => hex("#f3a882"),
-            Colorway::Mint => hex("#b6ecd7"),
-            Colorway::Mustard => hex("#f5db9c"),
-            Colorway::Slate => hex("#b3bccf"),
+            Colorway::Wine => hex("#ff8b77"),
+            Colorway::Aubergine => hex("#d9d0f5"),
+            Colorway::Stealth => hex("#465059"),
         }
     }
 
