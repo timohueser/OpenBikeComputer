@@ -532,6 +532,57 @@ impl<'a> RouteReader<'a> {
     }
 }
 
+/// The route-corridor POI query's geometry seam (epic #946, U2). `obc-reader` sits **below** this
+/// crate, so it cannot name a [`RouteReader`]; it declares [`RoutePath`](obc_reader::RoutePath) and
+/// the OBCR side implements it — the same inversion `obc-render`'s `RouteOverlaySource` uses for
+/// the map overlay.
+///
+/// Everything but [`visit_chunk_points`](obc_reader::RoutePath::visit_chunk_points) reads the
+/// **resident** chunk index (no I/O); the point visit decodes one chunk through
+/// [`decode_chunk`](RouteReader::decode_chunk), so with a [`RouteCache`] attached a snapshot over a
+/// route the ride loop is already streaming costs no extra card reads for the chunks it has seen.
+impl obc_reader::RoutePath for RouteReader<'_> {
+    #[inline]
+    fn chunk_count(&self) -> usize {
+        self.chunks().len()
+    }
+
+    #[inline]
+    fn chunk_start_m(&self, k: usize) -> u32 {
+        // Past the last chunk the answer is "the route end" — the contract the corridor query's
+        // chunk-extent arithmetic relies on.
+        self.chunks().get(k).map_or(self.total_distance_m, |cm| cm.cum_distance_m)
+    }
+
+    #[inline]
+    fn chunk_bbox(&self, k: usize) -> BBox {
+        self.chunks().get(k).map(|cm| cm.bbox).unwrap_or(BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 })
+    }
+
+    fn visit_chunk_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)])) {
+        // Only coordinate scratch stays live across `visit`: the deeper `RoutePoint` decode frame is
+        // `#[inline(never)]` and has returned before the query descends into the POI quadtree walk.
+        // Same measured stack-lifetime discipline as `visit_points_between`.
+        let mut lonlat = [(0i32, 0i32); MAX_POINTS_PER_CHUNK];
+        if let Some(n) = decode_chunk_lonlat(self, k, &mut lonlat) {
+            visit(&lonlat[..n]);
+        }
+    }
+}
+
+/// Decode chunk `k` into caller-owned `(lon, lat)` scratch, returning the point count. Kept out of
+/// line so its `Vec<RoutePoint, 256>` frame is gone before the caller's callback runs (see
+/// [`decode_points_between`], the same rule).
+#[inline(never)]
+fn decode_chunk_lonlat(route: &RouteReader, k: usize, out: &mut [(i32, i32); MAX_POINTS_PER_CHUNK]) -> Option<usize> {
+    let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+    route.decode_chunk(k, &mut buf).ok()?;
+    for (dst, p) in out.iter_mut().zip(buf.iter()) {
+        *dst = (p.lon, p.lat);
+    }
+    Some(buf.len())
+}
+
 fn interpolate_point(a: RoutePoint, b: RoutePoint, t: f32) -> RoutePoint {
     RoutePoint {
         lon: libm::roundf(a.lon as f32 + (b.lon - a.lon) as f32 * t) as i32,

@@ -23,6 +23,7 @@ use obc_ports::Fix;
 use obc_reader::Reader;
 
 use crate::catalog_state::CatalogState;
+use crate::corridor::CorridorScratch;
 use crate::dirty::Dirty;
 use crate::input_plane::InputPlane;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack, WarningFlags};
@@ -122,6 +123,12 @@ pub(crate) struct UiRuntime {
     /// by the POI list screen's first draw; invalidated in [`apply_gesture`](App::apply_gesture)
     /// when a POI list opens, so re-entering a category re-queries.
     pub(crate) poi_scratch: screen::PoiScratch,
+    /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
+    /// ahead, frozen on take. Held once here for the same reason as
+    /// [`poi_scratch`](UiRuntime::poi_scratch): it must not multiply across the screen-stack union
+    /// (see [`CorridorScratch`](crate::corridor::CorridorScratch)). Disarmed until a screen asks
+    /// for it, so a device that never opens the Up-ahead list never runs the query.
+    pub(crate) corridor_scratch: CorridorScratch,
     /// The live BLE pairing passkey ([`BleStatus::passkey`](crate::BleStatus)), fed by
     /// [`set_ble_status`](App::set_ble_status) and driving the passkey card (P2, #449) via
     /// [`reconcile_passkey_card`](App::reconcile_passkey_card). Held off `AppState` so feeding it
@@ -185,6 +192,7 @@ impl UiRuntime {
             hold_progress_override: None,
             hold_cancel_pending: false,
             poi_scratch: PoiScratch::new(),
+            corridor_scratch: CorridorScratch::new(),
             ble_passkey: None,
             sensor_status: [crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS],
             sensor_scan_hits: crate::sensors::SensorScanHits::new(),
@@ -223,6 +231,7 @@ impl UiRuntime {
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).hold_cancel_pending).write(false);
             addr_of_mut!((*slot).poi_scratch).write(PoiScratch::new());
+            addr_of_mut!((*slot).corridor_scratch).write(CorridorScratch::new());
             addr_of_mut!((*slot).ble_passkey).write(None);
             addr_of_mut!((*slot).sensor_status)
                 .write([crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS]);
@@ -247,6 +256,7 @@ impl UiRuntime {
                 hold_progress_override: _,
                 hold_cancel_pending: _,
                 poi_scratch: _,
+                corridor_scratch: _,
                 ble_passkey: _,
                 sensor_status: _,
                 sensor_scan_hits: _,
@@ -339,6 +349,13 @@ impl UiRuntime {
     /// board host does, keeping its per-frame `Reader` build (and stack spike) off every non-map,
     /// already-resolved frame.
     pub(crate) fn base_needs_reader(&self) -> bool {
+        // The route-corridor snapshot (epic #946, U2) is armed by a screen but owned by the App, so
+        // its need is a **request**, not a `ReaderNeed` row: a screen that wants an Up-ahead list
+        // keeps the `Reader` built until the one query lands, then stops asking — the same one-shot
+        // energy pattern as the two POI rows below. Disarmed (the normal state) this is free.
+        if self.corridor_scratch.pending() {
+            return true;
+        }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let Some(scr) = self.stack.get(base) else { return false };
         match scr.caps().reader {
@@ -366,6 +383,10 @@ impl UiRuntime {
         route_total_m: u32,
         detour_preview: &[(i32, i32)],
     ) {
+        // The App-owned corridor snapshot (epic #946, U2) resolves first: it belongs to no single
+        // screen (U3's list and U5's stat fields both read it), so it runs at the boundary rather
+        // than inside one screen's `prepare`. A no-op unless a screen armed it.
+        self.corridor_scratch.prepare(reader, route);
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         if let Some(scr) = self.stack.get_mut(base) {
             let mut px = screen::Prepare {

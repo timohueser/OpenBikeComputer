@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "measurement": {
-    "source_commit": "375de5a0 + #947",
+    "source_commit": "58b4422b + #947",
     "rustc": "1.97.1 (8bab26f4f 2026-07-14) on CI; itemized on the pinned 1.96.0 (ac68faa20 2026-05-25)",
     "llvm": "22.1.6 on CI; 22.1.2 on the pinned host",
     "riscv_gcc": "riscv64-elf-gcc (GCC) 16.1.0",
@@ -13,11 +13,11 @@
   "board": {
     "default": {
       "features": "default (= all-features: map + router + BLE + USB device plane, LS021/FLPR, real sensors)",
-      "_resident_note": "421,224 \u2192 421,352 B (+128) and flash 1,185,668 \u2192 1,185,444 for the OBCR v3 waypoint record (#947). **Both figures are CI's, not the pinned host's** \u2014 the gate is the `embedded` job and it runs floating stable; CI linked exactly 421,224 on develop before this change and 421,352 with it (run 30355000643), so the delta is a clean +128. The pinned local host links 8 B less (421,344), the usual toolchain layout difference and the reason the ceiling is taken from CI. The whole increase is one named allocation: `app` 135,224 \u2192 135,352 \u2014 the resident `Waypoints` table's 32 \u00d7 `WptEntry` at +4 B each, the entry having gained `category: Option<PoiCategory>` (1 B, niche-packed) and `lateral_offset_m: i16`, which fit in the record's existing tail padding. Nothing else moved: `route_cache`, `route_index`, `ble_object_store` and every BLE figure are unchanged, and flash *fell* 224 B (the reader lost its two-version branches). Poll frame unmoved at 9,728 B.",
-      "measured_resident": 421352,
-      "resident_ram_max": 421352,
+      "_resident_note": "422,080 \u2192 422,208 B (+128) and flash 1,190,108 \u2192 1,189,884 for the OBCR v3 waypoint record (#947). Figures are **CI's** (the `embedded` job is the gate and runs floating stable); the pinned local host links 8 B less resident and a different flash figure, neither of which is gated. The whole increase is one named allocation: `app` 136,080 \u2192 136,208 \u2014 the resident `Waypoints` table's 32 \u00d7 `WptEntry` at +4 B each, the entry having gained `category: Option<PoiCategory>` (1 B, niche-packed) and `lateral_offset_m: i16`, which fit in the record's existing tail padding. Nothing else moved, and flash *fell* 224 B (the reader lost its two-version branches). Poll frame unmoved at 9,728 B. Previously: 421,224 \u2192 422,080 B (+856) and flash 1,185,668 \u2192 1,190,108 for the route-corridor POI snapshot (#948, epic #946). Figures are **CI's** (the `embedded` job is the gate and runs floating stable); the pinned local host links 8 B less resident, the usual layout difference, and a different flash figure \u2014 neither is gated. The whole increase is **one named allocation**: `app` 135,224 \u2192 136,080 B (+856), i.e. `size_of::<App>()`. Nothing else moved \u2014 the delta and the `app` delta are the same 856 bytes. It is the new `UiRuntime::corridor_scratch` (`CorridorScratch`): a 16-slot `heapless::Vec<CorridorPoi>` (16 \u00d7 52 B = 832) plus its `want`/`taken_for` snapshot keys. Held once in `App` **by design**, exactly like `poi_scratch` before it \u2014 inline in the `Screen` union it would multiply across all 10 stack slots (~8.6 KB) instead of costing the buffer once (issue #425). Poll frame unmoved at 9,728 B.",
+      "measured_resident": 422208,
+      "resident_ram_max": 422208,
       "uninit_max": 1024,
-      "measured_flash": 1185444,
+      "measured_flash": 1189884,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -25,7 +25,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 135352,
+        "app": 136208,
         "map_cache": 37084,
         "map_tables": 4060,
         "route_cache": 9260,
@@ -51,11 +51,11 @@
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE + USB device plane, constrained nrf-mem capacities)",
-      "_resident_note": "421,224 \u2192 421,352 B (+128) and flash 1,185,668 \u2192 1,185,444 for the OBCR v3 waypoint record (#947). **Both figures are CI's, not the pinned host's** \u2014 the gate is the `embedded` job and it runs floating stable; CI linked exactly 421,224 on develop before this change and 421,352 with it (run 30355000643), so the delta is a clean +128. The pinned local host links 8 B less (421,344), the usual toolchain layout difference and the reason the ceiling is taken from CI. The whole increase is one named allocation: `app` 135,224 \u2192 135,352 \u2014 the resident `Waypoints` table's 32 \u00d7 `WptEntry` at +4 B each, the entry having gained `category: Option<PoiCategory>` (1 B, niche-packed) and `lateral_offset_m: i16`, which fit in the record's existing tail padding. Nothing else moved: `route_cache`, `route_index`, `ble_object_store` and every BLE figure are unchanged, and flash *fell* 224 B (the reader lost its two-version branches). Poll frame unmoved at 9,728 B.",
-      "measured_resident": 421352,
-      "resident_ram_max": 421352,
+      "_resident_note": "422,080 \u2192 422,208 B (+128) and flash 1,190,108 \u2192 1,189,884 for the OBCR v3 waypoint record (#947). Figures are **CI's** (the `embedded` job is the gate and runs floating stable); the pinned local host links 8 B less resident and a different flash figure, neither of which is gated. The whole increase is one named allocation: `app` 136,080 \u2192 136,208 \u2014 the resident `Waypoints` table's 32 \u00d7 `WptEntry` at +4 B each, the entry having gained `category: Option<PoiCategory>` (1 B, niche-packed) and `lateral_offset_m: i16`, which fit in the record's existing tail padding. Nothing else moved, and flash *fell* 224 B (the reader lost its two-version branches). Poll frame unmoved at 9,728 B. Previously: 421,224 \u2192 422,080 B (+856) and flash 1,185,668 \u2192 1,190,108 for the route-corridor POI snapshot (#948, epic #946). Figures are **CI's** (the `embedded` job is the gate and runs floating stable); the pinned local host links 8 B less resident, the usual layout difference, and a different flash figure \u2014 neither is gated. The whole increase is **one named allocation**: `app` 135,224 \u2192 136,080 B (+856), i.e. `size_of::<App>()`. Nothing else moved \u2014 the delta and the `app` delta are the same 856 bytes. It is the new `UiRuntime::corridor_scratch` (`CorridorScratch`): a 16-slot `heapless::Vec<CorridorPoi>` (16 \u00d7 52 B = 832) plus its `want`/`taken_for` snapshot keys. Held once in `App` **by design**, exactly like `poi_scratch` before it \u2014 inline in the `Screen` union it would multiply across all 10 stack slots (~8.6 KB) instead of costing the buffer once (issue #425). Poll frame unmoved at 9,728 B.",
+      "measured_resident": 422208,
+      "resident_ram_max": 422208,
       "uninit_max": 1024,
-      "measured_flash": 1185444,
+      "measured_flash": 1189884,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -77,7 +77,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 135352,
+        "app": 136208,
         "map_cache": 37084,
         "map_tables": 4060,
         "route_cache": 9260,
