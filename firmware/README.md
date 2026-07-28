@@ -99,7 +99,7 @@ One-off runs against a real map:
 
 The frozen firmware resource numbers, dependency-direction contract, benchmark
 reference host, and repeatable on-device capture procedure live in
-[`ARCHITECTURE_RESOURCE_BASELINE.md`](ARCHITECTURE_RESOURCE_BASELINE.md). Read it
+[`docs/ARCHITECTURE_RESOURCE_BASELINE.md`](docs/ARCHITECTURE_RESOURCE_BASELINE.md). Read it
 before approving a resource-baseline change: report-only firmware is diagnostic
 and must never be flashed as the shipping artifact.
 
