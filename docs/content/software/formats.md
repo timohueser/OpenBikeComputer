@@ -456,6 +456,8 @@ The section is a small **directory** followed by, per category, a familiar pair:
 
 Two design notes are worth pulling out. First, the **category is never stored in the record** — it's implied by *which* category's quadtree the record came from, and each subtype maps to exactly one category anyway. Second, **names are folded to printable ASCII at pack time** and capped at 24 bytes, because the `Name` field is a fixed-width, one-byte-per-character slot (the [packer](../packer-routing/#extracting-pois) transliterates umlauts and accents — `ä → ae` — rather than store variable-width UTF-8); an unnamed POI (name length `0`) shows its subtype's fallback label on-device. A `0xFF` subtype byte ends a chunk, mirroring geometry's `0xFF`-style-id sentinel.
 
+**The same index now answers a second question.** *Nearest-N around the fix* was the query the section was designed for, and it's still the only one that shaped the bytes — but the per-category quadtrees also serve a **route-corridor walk**: give me the POIs of these categories within **300 m** of the route *still ahead of me*, ordered along the route. Nothing in the format changed for it; what changed is the window the walk is given. Instead of one disc around the rider, the reader takes the route chunk by chunk in route order, inflates each chunk's bounding box by the corridor half-width, and walks the same leaves inside that window — then projects each surviving record onto the chunk's polyline to get a **distance along the route** and a **signed lateral offset** (positive = right of travel, the identical convention [OBCR waypoints](#waypoints-a-category-and-a-side) store). The result is capped at **16** and the walk stops early once the slots are full and the next chunk starts farther along than the worst held entry, so the cost tracks POI *density*, not route length. That's what feeds the riding [Up ahead timeline](../ui/#up-ahead-one-timeline-for-the-route) — and why the two spatial questions the device can ask, *near me* and *up ahead*, run off one index.
+
 The full directory bytes, the canonical category/subtype id table, and the record fields are in [`OBCM_Spec.md` §7](src:specs/OBCM_Spec.md). What the packer harvests and how, and how the device browses the result, are the [extraction stage](../packer-routing/#extracting-pois) and the [POIs browser](../ui/#the-pois-browser).
 
 ### Opening hours: a pooled weekly schedule
@@ -699,7 +701,7 @@ A route is a single ordered polyline with elevation, plus precomputed ride stati
   <text class="d-label" x="554" y="80" text-anchor="middle" style="fill:#fff">Chunk index</text>
   <text class="d-sub"   x="554" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 44 B</text>
   <text class="d-label" x="652" y="80" text-anchor="middle">Waypoints</text>
-  <text class="d-sub"   x="652" y="94" text-anchor="middle">W × 40 B</text>
+  <text class="d-sub"   x="652" y="94" text-anchor="middle">W × 44 B</text>
 
   <!-- offsets -->
   <text class="d-sub" x="164" y="120" text-anchor="middle" style="font-size:9px">↑ Data Offset = 128</text>
@@ -723,9 +725,75 @@ A route is a single ordered polyline with elevation, plus precomputed ride stati
 <figcaption>The index and waypoint table are written <b>last</b>: a streaming converter doesn't know how many chunks a route needs until it has emitted them all, so it patches the header's offsets at the end. Because every section is reached by an explicit offset, the physical order isn't load-bearing — the reader would accept the index first just as happily.</figcaption>
 </figure>
 
-The header carries the route's bounding box, its start point (for centering the camera), and the **precomputed totals** — distance, ascent, descent, elevation range — plus the route name; format v2 appends a small extension pointing at the **waypoint table**: fixed 40-byte records (position along the route, coordinate, category, short name) for the points of interest a planner attaches to a route. The device has stored waypoints from day one and now surfaces them while riding — diamonds on the map, an approach chip, progress-bar ticks and two opt-in stat fields (see [Waypoints on the route](../ui/#waypoints-on-the-route)); a reader that ignores them still skips the section in O(1) by construction, which is also why v2 routes ride through unchanged v1 code. A 44-byte index entry per chunk holds that chunk's bounding box (for the viewport query), its anchor, its point count, the **cumulative distance and ascent at its first point**, and where its bytes live.
+The header carries the route's bounding box, its start point (for centering the camera), and the **precomputed totals** — distance, ascent, descent, elevation range — plus the route name; a small header extension points at the **waypoint table**: fixed 44-byte records for the points of interest a planner attaches to a route (covered [next](#waypoints-a-category-and-a-side)). A reader that ignores them still skips the section in O(1) by construction. A 44-byte index entry per chunk holds that chunk's bounding box (for the viewport query), its anchor, its point count, the **cumulative distance and ascent at its first point**, and where its bytes live.
 
 Those cumulative stats are the trick that makes "42 km / 600 m to go" an O(1) subtraction once you know which segment you're on, rather than a walk over the whole route every frame.
+
+### Waypoints: a category and a side
+
+A `<wpt>` in a planner's GPX carries more than a name. Komoot, RideWithGPS and Garmin BaseCamp all tag their waypoints with a symbol — *Water*, *Campground*, *Lodging* — and the device used to drop it on the floor. Format **v3** keeps it, along with one more fact the rider actually decides on: **how far off the route the stop sits, and on which side**.
+
+<figure class="fig">
+<svg viewBox="0 0 720 166" role="img" aria-label="One OBCR waypoint record drawn as a 44-byte ruler: bytes 0 to 3 the distance along the route as an unsigned 32-bit integer, 4 to 7 longitude, 8 to 11 latitude, 12 to 13 elevation, byte 14 the category id, byte 15 the name length, bytes 16 to 17 the signed lateral offset in metres, 18 to 19 reserved, and 20 to 43 the 24-byte name. The category and lateral-offset fields are highlighted as the two fields version 3 added.">
+  <text class="d-tag" x="20" y="24">One waypoint — a fixed 44 bytes <tspan style="fill:#a9501c">(v3)</tspan></text>
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="24"  y="40" width="61"  height="34" class="d-forest" />
+    <rect x="85"  y="40" width="61"  height="34" class="d-water" />
+    <rect x="146" y="40" width="61"  height="34" class="d-water" />
+    <rect x="207" y="40" width="30"  height="34" class="d-muted" />
+    <rect x="237" y="40" width="15"  height="34" class="d-hot-fill" />
+    <rect x="252" y="40" width="15"  height="34" class="d-muted" />
+    <rect x="267" y="40" width="30"  height="34" class="d-hot-fill" />
+    <rect x="297" y="40" width="30"  height="34" class="d-muted" />
+    <rect x="327" y="40" width="365" height="34" class="d-forest" />
+  </g>
+  <text class="d-sub" x="54"  y="55" text-anchor="middle" style="fill:#fff;font-size:8.5px">Distance</text>
+  <text class="d-sub" x="54"  y="67" text-anchor="middle" style="fill:#e7ead8;font-size:8px">Along (u32)</text>
+  <text class="d-sub" x="115" y="61" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lon (i32)</text>
+  <text class="d-sub" x="176" y="61" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lat (i32)</text>
+  <text class="d-sub" x="222" y="55" text-anchor="middle" style="font-size:8px">ele</text>
+  <text class="d-sub" x="222" y="67" text-anchor="middle" style="font-size:7.5px">i16</text>
+  <text class="d-sub" x="244" y="61" text-anchor="middle" style="fill:#fff;font-size:8px">c</text>
+  <text class="d-sub" x="259" y="61" text-anchor="middle" style="font-size:8px">n</text>
+  <text class="d-sub" x="282" y="55" text-anchor="middle" style="fill:#fff;font-size:8px">off</text>
+  <text class="d-sub" x="282" y="67" text-anchor="middle" style="fill:#fff;font-size:7.5px">i16</text>
+  <text class="d-sub" x="312" y="61" text-anchor="middle" style="font-size:8px">rsv</text>
+  <text class="d-sub" x="509" y="61" text-anchor="middle" style="fill:#fff;font-size:9.5px">Name — 24 B UTF-8, null-padded</text>
+  <text class="d-sub" x="54"  y="90" text-anchor="middle" style="font-size:9px">0–3</text>
+  <text class="d-sub" x="115" y="90" text-anchor="middle" style="font-size:9px">4–7</text>
+  <text class="d-sub" x="176" y="90" text-anchor="middle" style="font-size:9px">8–11</text>
+  <text class="d-sub" x="222" y="90" text-anchor="middle" style="font-size:9px">12–13</text>
+  <text class="d-sub" x="244" y="102" text-anchor="middle" style="font-size:9px">14</text>
+  <text class="d-sub" x="259" y="114" text-anchor="middle" style="font-size:9px">15</text>
+  <text class="d-sub" x="282" y="90" text-anchor="middle" style="font-size:9px">16–17</text>
+  <text class="d-sub" x="312" y="102" text-anchor="middle" style="font-size:9px">18–19</text>
+  <text class="d-sub" x="509" y="90" text-anchor="middle" style="font-size:9px">20–43</text>
+  <text class="d-sub" x="24" y="140" style="font-size:10px">the two coral fields are what v3 brought — <tspan style="fill:#a9501c">category</tspan> (byte 14, reusing the retired Type byte) and</text>
+  <text class="d-sub" x="24" y="156" style="font-size:10px">the signed <tspan style="fill:#a9501c">lateral offset</tspan> (16–17), which with its pad pushed Name to 20 and the record 40 → 44 B</text>
+</svg>
+<figcaption>Records are sorted ascending by <b>Distance Along</b>, which is defined by <b>nearest-point placement</b>: the cumulative route distance at the raw track point closest to the waypoint's own coordinate. A free-standing GPX <code>&lt;wpt&gt;</code> carries no ride-order of its own, so both the firmware converter and the phone importer place it that way — and the <b>lateral offset</b> falls straight out of the same projection, which is exactly why it's stored rather than derived on the device: re-measuring it would need the <i>raw</i> track the converter saw, not the decimated geometry it wrote.</figcaption>
+</figure>
+
+**Category is the map's own id space, not a second taxonomy.** Byte 14 holds `0` for generic or `1..=6` — the same six ids the [POI section](#pois-a-nearest-list-not-a-map-layer) uses (`1` water · `2` campsite · `3` accommodation · `4` resupply · `5` pharmacy · `6` bike shop, `OBCM_Spec.md` §7.4). That's the whole point: a stored waypoint and a map POI drawn from the same icon can be sorted into [one list](../ui/#up-ahead-one-timeline-for-the-route) without the rider having to remember which file a stop came from. `0` is first-class rather than an error case — most hand-placed waypoints ("turn left here") map to nothing and draw as a plain diamond — and an unrecognised value renders generic while surviving a rewrite byte-for-byte.
+
+**The offset is signed, and the sign is the side.** Its magnitude is the ground distance from the waypoint to the track point that won the placement; its sign is the cross product of the local direction of travel with the offset vector — **positive = right**, negative = left, `0` = on the line. That's a deliberate agreement with the [route-corridor query](#pois-a-nearest-list-not-a-map-layer) on the map side, which computes its own offsets the same way, so the riding UI reads one rule for both sources and can draw `←300m` or `→300m` without asking where the entry came from.
+
+**Symbols are freeform, so the mapping is a curation.** A producer takes `<sym>` if non-empty, else `<type>`, and matches it **case- and separator-insensitively** (`Drinking Water` = `drinking_water` = `drinking-water`; every non-alphanumeric byte is a word break, runs collapse, ends trim). Sixty-nine strings gathered from real Komoot / RideWithGPS / Garmin BaseCamp exports land on the six ids; anything else stores `0`, and a waypoint is **never dropped** for its symbol:
+
+| Category | A few of the symbols that map to it |
+| :-- | :-- |
+| `1` water | `Water` · `Drinking Water` · `Fountain` · `Spring` · `Well` |
+| `2` campsite | `Campground` · `Campsite` · `Tent` · `RV Park` |
+| `3` accommodation | `Lodging` · `Hotel` · `Hostel` · `Guest House` · `Alpine Hut` |
+| `4` resupply | `Convenience Store` · `Supermarket` · `Bakery` · `Restaurant` · `Cafe` · `Gas Station` |
+| `5` pharmacy | `Pharmacy` · `Chemist` · `Drugstore` |
+| `6` bike shop | `Bike Shop` · `Bicycle Repair` · `Cyclery` |
+
+Two curation calls are worth naming. **Eating and shopping share resupply** — there is no food category, because a rider hunting supplies wants the bakery and the café in the same list. And symbols with **no honest home** among the six stay generic rather than being forced into the nearest one: *Restroom*, *Parking*, *Ferry*, *Hospital*, *First Aid*, *Viewpoint* and *Summit* are all deliberately absent. A wrong icon is worse than a diamond.
+
+The full table, row for row, is [`OBCR_Spec.md` §4.1](src:specs/OBCR_Spec.md) — normative, and mirrored in code by [`obc-route/src/symbol.rs`](src:firmware/obc-route/src/symbol.rs), with a test asserting every table key is already in normal form so an unreachable row can't make the spec a lie.
+
+> **v3 rejects, it doesn't reinterpret.** The category byte reuses the offset the old 10-value waypoint taxonomy (water/food/…/danger) occupied, so a stored v2 file's byte would decode as a *different* category — silently wrong is the one outcome worth avoiding. The reader accepts **v3 only**; a route written by older firmware fails at the header and re-imports from its GPX through the phone or a USB drop. Recorded rides are a separate format and are unaffected. Same posture as the OBCM v8→v9 bump.
 
 ### Chunks, seams, and deltas
 
@@ -983,7 +1051,8 @@ The manifest layout, the bake-tree shape, the sidecar, and the version law are n
 
 - Map reader, quadtree walk, chunk decode, the POI nearest-16 query, and the nav directory / node-leaf walk / edge fetch: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
 - The canonical POI category/subtype ids and fallback labels (shared by reader + packer): [`obc-formats/src/obcm.rs`](src:firmware/obc-formats/src/obcm.rs); the packer's OSM-tag classifier stays in [`obc-pack/src/poi.rs`](src:host/obc-pack/src/poi.rs)
-- Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs)
+- The route-corridor POI query, its `RoutePath` seam and the projection maths: [`obc-reader/src/corridor.rs`](src:firmware/obc-reader/src/corridor.rs)
+- Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs); the GPX `<sym>`/`<type>` → category table: [`obc-route/src/symbol.rs`](src:firmware/obc-route/src/symbol.rs)
 - The recorded-track log + its GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec + the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
 - The browser's copy of both converters — a thin wasm shim over the same routines, plus the error vocabulary a dropped file needs: [`obc-web-convert`](src:apps/obc-web-convert)
 - Checked-in bytes both directions are held to (a route and its OBCR, a track log and its GPX export): [`specs/vectors/`](src:specs/vectors)
