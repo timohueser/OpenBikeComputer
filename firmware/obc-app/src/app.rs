@@ -1308,6 +1308,22 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// Drop **everything derived from the active route's geometry** — the whole-App seam, and the
+    /// only thing route-replacing paths should call.
+    ///
+    /// `RideEngine::drop_route_derived_state` covers the engine's
+    /// half (matcher, profile, climbs, waypoints, progress); the UI's
+    /// [`NextAhead`](crate::next_ahead::NextAhead) cache is the other half and lives on the far
+    /// side of the `ride`/`ui` split, so it cannot be reached from there. It is invalidated for
+    /// exactly the same reason as the rest: its entries are **along-route distances**, and a
+    /// same-index/new-bytes replace leaves the catalog index untouched — so the cache's own
+    /// route-identity check sees nothing change, and an entry measured on the old geometry would
+    /// name a different place on the new.
+    fn drop_route_derived_state(&mut self) {
+        self.ride.drop_route_derived_state(&mut self.activity);
+        self.ui.next_ahead.invalidate();
+    }
+
     /// [`HostEvent::NavPlanned`]: land the plan answer in the planning screen, or drop it.
     fn on_nav_planned(&mut self, result: Result<u16, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
@@ -1322,7 +1338,7 @@ impl App {
                 // New bytes may sit under a same-id reserved file (a re-route): drop everything
                 // derived from the old geometry so the matcher re-locks and the profile rebuilds
                 // from the fresh route — cheap, runs once per plan.
-                self.ride.drop_route_derived_state(&mut self.activity);
+                self.drop_route_derived_state();
                 // Activate for the preview (the overview contract: the host streams the geometry
                 // while the page shows); `prev_active` restores whatever was loaded on cancel.
                 let prev = self.activity.active_route;
@@ -1392,7 +1408,7 @@ impl App {
                     Screen::DetourPreview(p) => Some(p.anchor_m()),
                     _ => None,
                 });
-                self.ride.drop_route_derived_state(&mut self.activity);
+                self.drop_route_derived_state();
                 self.activity.active_route = Some(idx);
                 self.activity.request_seam(idx, anchor.unwrap_or(0));
                 self.catalogs.clear_detour_preview();
@@ -1586,7 +1602,7 @@ impl App {
             // Same index, same id — but new bytes. Invalidate everything derived from the old
             // geometry (the remap deliberately preserves same-id state; a replace is the one case
             // where that preservation would carry stale state onto new geometry).
-            self.ride.drop_route_derived_state(&mut self.activity);
+            self.drop_route_derived_state();
             self.ui.map_dirty = true; // the drawn route line + progress changed under the rider
         }
         self.ui.post_upload_event(
@@ -2049,7 +2065,11 @@ impl App {
         // the corridor snapshot at what the stack now wants — a request left armed after the
         // Up-ahead list was swept away would keep the board building the map `Reader` forever
         // (epic #946, U3). Never a *fresh* open: only a gesture opens a screen.
-        self.ui.reconcile_corridor(false);
+        //
+        // This also re-runs the `Next: <category>` tiles' refresh policy (U5) — the per-pass
+        // decision of whether the cache wants one more single-category snapshot — and ends in the
+        // same `reconcile_corridor`, so the stack still has the last word on the shared scratch.
+        self.ui.reconcile_next_ahead(&self.settings, self.activity.active_route, self.activity.progress_m);
     }
 
     /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in
@@ -2227,6 +2247,7 @@ impl App {
             poi_scratch: &ui.poi_scratch,
             corridor: ui.corridor_scratch.entries(),
             corridor_settled: !ui.corridor_scratch.pending(),
+            next_ahead: &ui.next_ahead,
             sensor_status: ui.sensor_status.as_slice(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
             w: w as i32,
@@ -3838,6 +3859,278 @@ mod tests {
         let now = app.wall_clock_now();
         assert_eq!((now.hour, now.minute), (14, 0), "Home shows local = UTC + offset, not the raw UTC anchor");
         assert_eq!(now, seeded.local_clock(), "and it matches the local_clock the Local time row reads");
+    }
+
+    /// The `Next: <category>` tiles' whole-App seam (epic #946, U5): the per-category cache asks for
+    /// a corridor snapshot **only** where the answer is read — the Statistics screen, with such a
+    /// tile placed and a route loaded — and the request is a *single*-category one anchored at live
+    /// progress. Everywhere else the scratch stays disarmed and the board never builds a `Reader`
+    /// for it.
+    #[test]
+    fn next_category_tiles_ask_for_a_corridor_only_where_they_are_drawn() {
+        use crate::stat_fields::{StatField, StatFieldList};
+        use obc_reader::{PoiCategory, PoiCategorySet};
+
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // base = the riding Map
+        app.activity.start_session();
+        app.activity.active_route = Some(0);
+        app.activity.progress_m = 1_500;
+
+        // No `Next:` tile on the grid: nothing is ever asked for, wherever the rider is.
+        app.advance_animations(InputClock(1_000));
+        assert!(!app.corridor_snapshot_pending(), "the default grid asks for nothing");
+        app.apply_gesture(Gesture::Back); // Map → Statistics
+        assert!(matches!(app.top_screen(), Screen::Statistics(_)));
+        app.advance_animations(InputClock(2_000));
+        assert!(!app.corridor_snapshot_pending(), "…not even on the stats page");
+
+        // Place one. The cache now wants exactly that category, anchored at live progress.
+        let mut fields = StatFieldList::decode(0, &[]);
+        assert!(fields.push(StatField::NextWater));
+        app.set_settings(crate::settings::Settings { stat_fields: fields, ..Default::default() });
+        app.advance_animations(InputClock(3_000));
+        assert_eq!(
+            app.ui.corridor_scratch.armed(),
+            Some(crate::corridor::CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 1_500 }),
+            "one category per query (the 16-result cap makes a union query unable to answer)"
+        );
+        assert!(app.corridor_snapshot_pending(), "…and the host is asked for the Reader until it lands");
+
+        // Leave the stats page: the request goes away with it, Reader seam quiet again.
+        app.apply_gesture(Gesture::Back);
+        assert!(!matches!(app.top_screen(), Screen::Statistics(_)));
+        app.advance_animations(InputClock(4_000));
+        assert!(!app.corridor_snapshot_pending(), "a tile nobody is looking at costs nothing");
+
+        // A route-less ride never asks either — there is no "ahead" to answer with.
+        app.activity.active_route = None;
+        app.apply_gesture(Gesture::Back);
+        app.advance_animations(InputClock(5_000));
+        assert!(!app.corridor_snapshot_pending());
+    }
+
+    /// A **screen** always outranks the stat-field cache for the one shared corridor scratch: opening
+    /// the Up-ahead list re-points it at the list's own key, and the cache's request waits (its
+    /// harvest only ever accepts its own key, so the list's snapshot can't land in a tile).
+    #[test]
+    fn an_up_ahead_screen_outranks_the_stat_field_cache() {
+        use crate::stat_fields::{StatField, StatFieldList};
+        use obc_reader::{PoiCategory, PoiCategorySet};
+
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.start_session();
+        app.activity.active_route = Some(0);
+        app.activity.progress_m = 2_000;
+        let mut fields = StatFieldList::decode(0, &[]);
+        assert!(fields.push(StatField::NextPharmacy));
+        app.set_settings(crate::settings::Settings { stat_fields: fields, ..Default::default() });
+
+        app.apply_gesture(Gesture::Back); // → Statistics
+        app.advance_animations(InputClock(1_000));
+        assert_eq!(
+            app.ui.corridor_scratch.armed().map(|k| k.filter),
+            Some(PoiCategorySet::only(PoiCategory::Pharmacy)),
+            "the cache holds the scratch while nothing else wants it"
+        );
+
+        app.apply_gesture(Gesture::BackHold); // → the ride menu
+        app.apply_gesture(Gesture::Press); // → Up ahead (the north station)
+        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+        app.advance_animations(InputClock(2_000));
+        assert_eq!(
+            app.ui.corridor_scratch.armed().map(|k| k.filter),
+            Some(PoiCategorySet::ALL),
+            "the screen's own key wins the shared buffer"
+        );
+    }
+
+    /// The **whole loop, through real frames** (epic #946, U5): the cache arms a single-category
+    /// corridor request on the stats page, the pre-draw `prepare` boundary runs the query off the map
+    /// `Reader` and distils entry `0` into the cache, the tile then reads it — and riding on inside
+    /// [`REFRESH_STEP_M`](crate::next_ahead::REFRESH_STEP_M) re-queries **nothing** while crossing it
+    /// re-arms exactly once. The query count is the point: the same seam per-frame would be an SD
+    /// read per frame.
+    #[test]
+    fn the_next_category_cache_fills_from_a_real_frame_and_then_goes_quiet() {
+        use crate::stat_fields::{StatField, StatFieldList};
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_formats::io::{ByteSink, SliceSource};
+        use obc_reader::{MapCache, MapTables, PoiCategory, Reader};
+        use obc_route::{RouteIndex, RouteReader};
+        use obcm_testkit::{build_poi_map, PoiSpec};
+
+        /// A `ByteSink` over a growable `Vec` — "write the .obcr to RAM".
+        #[derive(Default)]
+        struct VecSink(std::vec::Vec<u8>);
+        impl ByteSink for VecSink {
+            fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
+                self.0.extend_from_slice(b);
+                Ok(())
+            }
+            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
+                let o = off as usize;
+                self.0[o..o + b.len()].copy_from_slice(b);
+                Ok(())
+            }
+        }
+        /// A `DrawTarget` that keeps nothing — these frames are run for their `prepare` pass.
+        struct Sink;
+        impl embedded_graphics::prelude::Dimensions for Sink {
+            fn bounding_box(&self) -> Rectangle {
+                Rectangle::new(
+                    embedded_graphics::prelude::Point::zero(),
+                    embedded_graphics::prelude::Size::new(240, 320),
+                )
+            }
+        }
+        impl embedded_graphics::prelude::DrawTarget for Sink {
+            type Color = Rgb888;
+            type Error = core::convert::Infallible;
+            fn draw_iter<I>(&mut self, _: I) -> Result<(), Self::Error>
+            where
+                I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+            {
+                Ok(())
+            }
+        }
+
+        // A due-east route with three water points beside it, at ~1.7 km / 3.5 km / 5.2 km along.
+        let mut gpx = std::string::String::from(r#"<?xml version="1.0"?><gpx version="1.1"><trk><trkseg>"#);
+        for i in 0..30 {
+            let lon = 7.8000 + 0.0020 * i as f64;
+            gpx.push_str(&std::format!(r#"<trkpt lat="48.0000" lon="{lon:.4}"><ele>200.0</ele></trkpt>"#));
+        }
+        gpx.push_str("</trkseg></trk></gpx>");
+        let mut sink = VecSink::default();
+        obc_route::gpx_to_obcr(&SliceSource(gpx.as_bytes()), "East", &mut sink).unwrap();
+        let obcr = sink.0;
+        let map = build_poi_map(
+            (7_000_000, 47_000_000, 9_000_000, 49_000_000),
+            512,
+            &[(
+                1,
+                std::vec![
+                    PoiSpec { lat: 48_001_000, lon: 7_823_000, subtype: 1, name: "Brunnen".into(), hours_ref: 0xFFFF },
+                    PoiSpec { lat: 47_999_000, lon: 7_847_000, subtype: 1, name: "Spring".into(), hours_ref: 0xFFFF },
+                ],
+            )],
+        );
+
+        // One rendered frame with both inputs — the shape the board produces when
+        // `base_needs_reader` says it must.
+        let frame = |app: &mut App| {
+            let cache = MapCache::new();
+            let map_src = SliceSource(&map);
+            let tables = MapTables::parse(&map_src).expect("valid .obcm");
+            let reader = Reader::new(&map_src, &tables, &cache);
+            let route_src = SliceSource(&obcr);
+            let idx = RouteIndex::read(&route_src).expect("valid .obcr");
+            let route = RouteReader::new(&idx, &route_src);
+            app.render_frame(&mut Sink, &reader, Some(&route), 240.0, 320.0, |_| Rgb888::new(0, 0, 0));
+        };
+
+        let mut app = App::new(AppState::new(7_800_000, 48_000_000, 0.05));
+        app.activity.start_session();
+        app.activity.active_route = Some(0);
+        let mut fields = StatFieldList::decode(0, &[]);
+        assert!(fields.push(StatField::NextWater));
+        app.set_settings(crate::settings::Settings { stat_fields: fields, ..Default::default() });
+        app.apply_gesture(Gesture::Back); // Map → Statistics
+        assert!(matches!(app.top_screen(), Screen::Statistics(_)));
+
+        app.advance_animations(InputClock(1_000));
+        assert!(app.base_needs_reader(), "the armed refresh keeps the Reader built");
+        frame(&mut app);
+        assert!(!app.base_needs_reader(), "…exactly until the snapshot lands, then it stops");
+        let first = app.ui.next_ahead.poi(PoiCategory::Water).expect("the nearest water ahead is cached");
+        assert_eq!(first.name.as_str(), "Brunnen", "entry 0 of a single-category query is the nearest");
+        let brunnen_m = first.dist_along_m;
+        assert!((1_500..2_000).contains(&brunnen_m), "…projected onto the route axis, got {brunnen_m}");
+
+        // Ride on inside the step: many frames, not one further query.
+        for m in (100..500).step_by(50) {
+            app.activity.progress_m = m;
+            app.advance_animations(InputClock(2_000 + m));
+            assert!(!app.base_needs_reader(), "no re-query inside the refresh step (at {m} m)");
+            frame(&mut app);
+        }
+        assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.dist_along_m), Some(brunnen_m));
+
+        // Cross the step: exactly one re-take, and the answer is unchanged (nothing was passed).
+        app.activity.progress_m = crate::next_ahead::REFRESH_STEP_M;
+        app.advance_animations(InputClock(9_000));
+        assert!(app.base_needs_reader(), "crossing the step re-arms");
+        frame(&mut app);
+        assert!(!app.base_needs_reader(), "and settles again on the very next eligible frame");
+        assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.dist_along_m), Some(brunnen_m));
+
+        // Ride past the cached fountain: the re-take hands the tile the next one along.
+        app.activity.progress_m = brunnen_m + 10;
+        app.advance_animations(InputClock(10_000));
+        frame(&mut app);
+        assert_eq!(
+            app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.name.as_str().into()),
+            Some(std::string::String::from("Spring")),
+            "a passed entry re-arms out of turn and the next one takes its place"
+        );
+    }
+
+    /// A **same-index / new-bytes** route replace invalidates the `Next: <category>` cache (epic
+    /// #946, U5). The cache keys its identity on the catalog index, and a replace leaves that index
+    /// (and the id) exactly where it was — so nothing inside `NextAhead` can see the swap, and its
+    /// along-route distances would go on naming places on geometry that no longer exists. The
+    /// `App`-level `drop_route_derived_state` seam is what tells it, alongside the matcher and the
+    /// profile/climb/waypoint caches dropped for the identical reason.
+    ///
+    /// Deliberately pinned with progress at **0**: that is the case the progress-rewind trigger
+    /// cannot cover (there is nothing to rewind from), so it isolates the invalidation itself.
+    #[test]
+    fn a_same_index_route_replace_invalidates_the_next_category_cache() {
+        use crate::stat_fields::{StatField, StatFieldList};
+        use obc_reader::{CorridorPoi, Poi, PoiCategory, PoiCategorySet};
+
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.start_session();
+        app.set_routes_with_ids(&[summary("East")], &[10]);
+        app.activate_route(0);
+        let mut fields = StatFieldList::decode(0, &[]);
+        assert!(fields.push(StatField::NextWater));
+        app.set_settings(crate::settings::Settings { stat_fields: fields, ..Default::default() });
+        app.apply_gesture(Gesture::Back); // Map → Statistics
+        assert!(matches!(app.top_screen(), Screen::Statistics(_)));
+
+        // Fill the slot the way a landed snapshot would, at the very start of the route.
+        app.advance_animations(InputClock(1_000));
+        let key = app.ui.next_ahead.request().expect("the placed tile arms a refresh");
+        assert_eq!(key.filter, PoiCategorySet::only(PoiCategory::Water));
+        let mut name = heapless::String::new();
+        name.push_str("Old bytes").unwrap();
+        app.ui.next_ahead.harvest(
+            key,
+            &[CorridorPoi {
+                poi: Poi { lat: 0, lon: 0, subtype: 1, name, hours_ref: 0xFFFF, distance_m: 5_000 },
+                dist_along_m: 5_000,
+                offset_m: 0,
+            }],
+        );
+        app.advance_animations(InputClock(2_000));
+        assert_eq!(app.ui.next_ahead.request(), None, "settled on the old geometry's answer");
+
+        // The phone re-uploads route 10 over itself: same id, same index, new bytes.
+        app.apply_event(crate::HostEvent::RouteUploaded { id: 10, replaced: true, elevation: None });
+        assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water), None, "the old geometry's answer is dropped");
+
+        // Dismiss the advisory "route updated" card back to the grid (the tiles only refresh while
+        // Statistics is the base screen).
+        assert!(matches!(app.top_screen(), Screen::RouteUpdated(_)));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Statistics(_)));
+        app.advance_animations(InputClock(3_000));
+        assert_eq!(
+            app.ui.next_ahead.request(),
+            Some(crate::corridor::CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 0 }),
+            "…and the identical route index re-queries against the new bytes"
+        );
     }
 
     /// On Home, `advance_animations` self-dirties exactly once per minute as the wall clock rolls
