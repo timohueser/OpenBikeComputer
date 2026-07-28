@@ -22,8 +22,11 @@
 //! A category's cached entry is re-taken only when
 //!
 //! 1. **nothing is cached yet** for it (first visit to the stats page with that tile placed),
-//! 2. matched progress has advanced [`REFRESH_STEP_M`] since the take that filled it, or
-//! 3. **the cached entry was passed** (progress moved past its `dist_along_m`) — the one case where
+//! 2. matched progress has advanced [`REFRESH_STEP_M`] since the take that filled it,
+//! 3. matched progress has fallen more than [`REWIND_TOLERANCE_M`] **behind** that take — a
+//!    snapshot is only an answer for the axis *ahead of its anchor*, so progress moving back below
+//!    it leaves the cache blind to everything in between, or
+//! 4. **the cached entry was passed** (progress moved past its `dist_along_m`) — the one case where
 //!    a stale answer is actively wrong.
 //!
 //! and only for categories a `Next:` tile is actually **placed** on the grid, and only while the
@@ -58,6 +61,23 @@ use crate::corridor::CorridorKey;
 /// is ~1.5 min, which is well inside the resolution a `2.4km` readout even shows — while being far
 /// enough that the query runs a handful of times per hour, not per frame.
 pub const REFRESH_STEP_M: u32 = 500;
+
+/// How far matched progress may drift **backwards** below a take's anchor before the slot is
+/// re-taken.
+///
+/// Backward movement is not symmetric with riding on: the corridor query only returns entries
+/// *ahead of its anchor*, so once progress falls below that anchor the cache is blind to whatever
+/// sits in between — and a genuine rewind (a route re-upload or a second ride on the same route
+/// both zero `progress_m` while the route index stays put) would otherwise keep an old,
+/// far-along answer, or a `None`, for kilometres. So a rewind must re-take.
+///
+/// It cannot re-take on *any* backward step, though: the route matcher searches
+/// `BACK_SEGS` segments behind the cursor (`obc_route::matcher`), so ordinary re-matching wobbles
+/// progress back a few metres on GPS noise, and a zero-tolerance rule would burn a card query per
+/// wobble. 100 m is comfortably past that slack (three route segments of a decimated OBCR are well
+/// under it) while being a fifth of the forward step, so the blind window a tolerated rewind opens
+/// stays far smaller than the one riding on inside [`REFRESH_STEP_M`] already accepts.
+pub const REWIND_TOLERANCE_M: u32 = 100;
 
 /// Longest cached POI name — the [`StatCell`](crate::stat_fields::StatCell) caption's capacity, so
 /// the tile can show whatever the cache holds and the tile drawer does the ellipsizing.
@@ -137,6 +157,19 @@ impl NextAhead {
         self.want.map(|(_, key)| key)
     }
 
+    /// Drop every cached entry because the **geometry under the current route index changed** —
+    /// the same-index/new-bytes replace [`reconcile`](Self::reconcile) cannot see, because it keys
+    /// identity on the catalog index alone.
+    ///
+    /// Called from `App`'s `drop_route_derived_state` seam, alongside the matcher / profile /
+    /// climb / waypoint caches that are invalidated for exactly the same reason: an along-route
+    /// distance measured on the old bytes names a different place on the new ones. The route key
+    /// itself is left alone (the index really is unchanged), so the next
+    /// [`reconcile`](Self::reconcile) simply finds every placed category stale and re-takes it.
+    pub(crate) fn invalidate(&mut self) {
+        self.clear();
+    }
+
     /// Empty the cache (a route load/swap/close). Distances are route-relative, so entries from
     /// another route are wrong, not stale.
     fn clear(&mut self) {
@@ -183,15 +216,16 @@ impl NextAhead {
         self.want = self.pick(placed, progress_m);
     }
 
-    /// Whether slot `i` needs re-taking at `progress_m` — the three locked triggers.
+    /// Whether slot `i` needs re-taking at `progress_m` — the four locked triggers.
     fn is_stale(&self, i: usize, progress_m: u32) -> bool {
         let slot = &self.slots[i];
         match slot.taken_at_m {
             None => true, // (a) nothing cached yet
             Some(at) => {
                 progress_m.saturating_sub(at) >= REFRESH_STEP_M              // (b) rode on
+                    || at.saturating_sub(progress_m) > REWIND_TOLERANCE_M    // (c) rewound past the anchor
                     || slot.poi.as_ref().is_some_and(|p| progress_m > p.dist_along_m)
-                // (c) passed it
+                // (d) passed it
             }
         }
     }
@@ -438,6 +472,68 @@ mod tests {
         assert_eq!(c.poi(PoiCategory::Water), None, "another route ⇒ another axis ⇒ drop it");
         c.reconcile(placed, true, None, 0);
         assert_eq!(c.request(), None, "and a route-less ride asks for nothing");
+    }
+
+    /// Trigger (c): progress **rewinding** far below the take's anchor re-arms. The reachable case
+    /// is a route re-upload or a second ride on the same route — both zero `progress_m` while the
+    /// catalog index stays put, so the route-identity check sees nothing change. A snapshot only
+    /// answers for the axis ahead of its anchor, so keeping it would leave the tile blind (here:
+    /// showing `--`) all the way back up to the old anchor.
+    #[test]
+    fn rewinding_past_the_anchor_re_arms() {
+        let mut c = NextAhead::new();
+        let placed = PoiCategorySet::only(PoiCategory::Water);
+        c.reconcile(placed, true, Some(0), 8_000);
+        // Nothing of this kind left this far along: a settled, *empty* answer for the tail.
+        c.harvest(c.request().unwrap(), &[]);
+        assert_eq!(c.request(), None, "settled");
+
+        // The ride restarts on the same route (index unchanged, progress zeroed).
+        c.reconcile(placed, true, Some(0), 0);
+        assert_eq!(
+            c.request(),
+            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 0 }),
+            "progress back at the start re-takes — the old answer covered only the far tail"
+        );
+        c.harvest(c.request().unwrap(), &[poi(300, "Fontaine", WATER)]);
+        assert_eq!(c.poi(PoiCategory::Water).unwrap().dist_along_m, 300, "and the tile has an answer again");
+    }
+
+    /// …but the matcher's backward slack (`BACK_SEGS`) must not cost a query: progress wobbling a
+    /// few metres behind the anchor on GPS noise stays settled, right up to `REWIND_TOLERANCE_M`.
+    #[test]
+    fn matcher_jitter_behind_the_anchor_does_not_re_arm() {
+        let mut c = NextAhead::new();
+        let placed = PoiCategorySet::only(PoiCategory::Water);
+        c.reconcile(placed, true, Some(0), 2_000);
+        c.harvest(c.request().unwrap(), &[poi(2_400, "Fontaine", WATER)]);
+
+        for back in [1, 5, 25, REWIND_TOLERANCE_M] {
+            c.reconcile(placed, true, Some(0), 2_000 - back);
+            assert_eq!(c.request(), None, "{back} m of re-match jitter is inside the tolerance");
+        }
+        c.reconcile(placed, true, Some(0), 2_000 - REWIND_TOLERANCE_M - 1);
+        assert!(c.request().is_some(), "one metre past the tolerance is a real rewind");
+    }
+
+    /// `invalidate` is the seam a **same-index/new-bytes** replace needs: the route key doesn't
+    /// move, so nothing else in here would notice, and the next reconcile must re-take.
+    #[test]
+    fn invalidate_drops_the_cache_under_an_unchanged_route_key() {
+        let mut c = NextAhead::new();
+        let placed = PoiCategorySet::only(PoiCategory::Water);
+        c.reconcile(placed, true, Some(0), 0);
+        c.harvest(c.request().unwrap(), &[poi(500, "Fontaine", WATER)]);
+        assert!(c.poi(PoiCategory::Water).is_some());
+
+        c.invalidate();
+        assert_eq!(c.poi(PoiCategory::Water), None, "the old geometry's answer is gone");
+        c.reconcile(placed, true, Some(0), 0);
+        assert_eq!(
+            c.request(),
+            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 0 }),
+            "…and the very same route index re-queries"
+        );
     }
 
     /// An unnamed POI caches its subtype label, so a tile never shows a blank caption.
