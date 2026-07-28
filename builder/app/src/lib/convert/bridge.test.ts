@@ -4,7 +4,7 @@
  * These are not "does the wrapper work" tests. They exist so that a change to `obc-route` — the
  * decimator's tolerance, the OBCR header, the GPX exporter's element order — cannot ship a
  * browser build that quietly disagrees with the device and the CLI. The inputs and the expected
- * outputs are the checked-in `protocol-vectors/` fixtures, and `host/obc-vectors/tests/
+ * outputs are the checked-in `specs/vectors/` fixtures, and `host/obc-vectors/tests/
  * vectors.rs` holds the Rust side to those same bytes.
  *
  * **What that proves, precisely.** The route and track fixtures are produced by running the real
@@ -36,18 +36,18 @@ import { ConvertError, gpxToObcr, initConvert, routeTrack, trackToGpx } from "./
 const ROUTE_NAME = "Vector Loop";
 const TRACK_NAME = "Schauinsland & back";
 
-/** Walk up from this file to the repo root (the directory holding `protocol-vectors/`). */
+/** Walk up from this file to the repo root (the directory holding `specs/vectors/`). */
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
-        if (existsSync(join(dir, "protocol-vectors", "manifest.json"))) return dir;
+        if (existsSync(join(dir, "specs", "vectors", "manifest.json"))) return dir;
         dir = dirname(dir);
     }
     throw new Error("could not locate the repo root from " + import.meta.url);
 }
 
 const ROOT = repoRoot();
-const vector = (name: string): Uint8Array => new Uint8Array(readFileSync(join(ROOT, "protocol-vectors", name)));
+const vector = (name: string): Uint8Array => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 const text = (path: string): string => readFileSync(join(ROOT, path), "utf8");
 
 /**

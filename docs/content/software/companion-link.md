@@ -94,7 +94,7 @@ ordered" — and a USB bulk endpoint is exactly that. So the object model above,
 the 12-byte descriptor, the status envelope and the whole-object CRC-32 all
 transplant onto a cable without a byte changing: USB is a second *transport*, not
 a second protocol, and it reads the same
-[`protocol-vectors/`](src:protocol-vectors) fixtures. The host half lives in the
+[`specs/vectors/`](src:specs/vectors) fixtures. The host half lives in the
 web builder's [USB client](src:builder/app/src/lib/usb), which
 drives the whole contract over an in-memory device; the device half — the LM20's
 USB peripheral, and the small matter of which control characteristic a frame
@@ -1010,5 +1010,5 @@ holding it.
 - The desktop app's transport — `nusb`, hot-plug, and the file-path bulk plane, under the *same* client: [`obc-desktop/src/usb/`](src:apps/obc-desktop/src/usb) and [`lib/desktop/usb.ts`](src:builder/app/src/lib/desktop/usb.ts)
 - The browser's flows over that client — sending a map, a route or a firmware image, and the read-only ride export whose device handle has no way to ack: [`web_builder/frontend/src/lib/device/`](src:builder/app/src/lib/device)
 - The desktop app's ride library — the folder, the index, and the temp-fsync-rename-fsync write the ack waits on: [`obc-desktop/src/rides.rs`](src:apps/obc-desktop/src/rides.rs); the pull that fills it, and the ack list it computes from the disk: [`lib/device/library.ts`](src:builder/app/src/lib/device/library.ts)
-- Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`protocol-vectors/`](src:protocol-vectors)
+- Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`specs/vectors/`](src:specs/vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)

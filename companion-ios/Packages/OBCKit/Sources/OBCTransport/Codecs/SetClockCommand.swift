@@ -13,7 +13,7 @@ import OBCDomain
 /// answers `commandResult(unknownCommand)`, which the transport surfaces as
 /// `unsupported` (the capability gate S7 hides expiry UI behind).
 ///
-/// Pinned byte-for-byte against `protocol-vectors/command-set-clock.bin`
+/// Pinned byte-for-byte against `specs/vectors/command-set-clock.bin`
 /// (`SetClockCommandTests`), so the app and firmware can't drift from spec §4.4.
 public enum SetClockCommand {
     /// The `command` byte (spec §4.4).

@@ -31,8 +31,8 @@ mod tests {
     #[test]
     fn constants_match_committed_route_fixtures() {
         for fixture in [
-            &include_bytes!("../../../protocol-vectors/route-plain.obcr")[..],
-            &include_bytes!("../../../protocol-vectors/route-waypoints.obcr")[..],
+            &include_bytes!("../../../specs/vectors/route-plain.obcr")[..],
+            &include_bytes!("../../../specs/vectors/route-waypoints.obcr")[..],
         ] {
             assert_eq!(validate_header_prefix(fixture), Ok(VERSION_V2));
             assert!(fixture.len() >= HEADER_V2_LEN);

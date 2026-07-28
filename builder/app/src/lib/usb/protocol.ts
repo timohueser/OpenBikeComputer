@@ -4,7 +4,7 @@
  * (§4.4), the identity read (§1) and the Config blob (§7.3).
  *
  * These are ports of `firmware/obc-ble/src/descriptor.rs`, field for field, and they are pinned to
- * the **same** `protocol-vectors/` fixtures the firmware's `cargo test -p obc-vectors` and the iOS
+ * the **same** `specs/vectors/` fixtures the firmware's `cargo test -p obc-vectors` and the iOS
  * app's `swift test` assert against (see `vectors.test.ts`). Three implementations, one set of
  * bytes: a divergence here is a bug here, never a reason to move a fixture.
  *

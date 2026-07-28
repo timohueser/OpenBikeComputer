@@ -2,7 +2,7 @@
  * What the panel says about a dropped route, held to the checked-in OBCR vector.
  *
  * The numbers shown before a route is sent are read out of the header the converter produced, so
- * the guard that matters is that this reader agrees with `protocol-vectors/manifest.json` — the
+ * the guard that matters is that this reader agrees with `specs/vectors/manifest.json` — the
  * same record the firmware and the iOS app are pinned to. A distance read from the wrong offset
  * would look perfectly plausible on screen.
  */
@@ -17,14 +17,14 @@ import { RouteError, decodeRouteHeader, routeNameFrom } from "./route";
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
-        if (existsSync(join(dir, "protocol-vectors", "manifest.json"))) return dir;
+        if (existsSync(join(dir, "specs", "vectors", "manifest.json"))) return dir;
         dir = dirname(dir);
     }
     throw new Error("could not locate the repo root from " + import.meta.url);
 }
 
 const ROOT = repoRoot();
-const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "protocol-vectors", name)));
+const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 
 describe("decodeRouteHeader", () => {
     it("reads the vector's header exactly as the manifest records it", () => {

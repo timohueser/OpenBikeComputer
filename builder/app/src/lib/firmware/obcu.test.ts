@@ -1,5 +1,5 @@
 /**
- * The `UPDATE.BIN` reader, pinned to `protocol-vectors/update-container-v1.bin`.
+ * The `UPDATE.BIN` reader, pinned to `specs/vectors/update-container-v1.bin`.
  *
  * That fixture is the same one `cargo test -p obc-vectors` and the iOS suite read, so this is the
  * fourth implementation held to one set of bytes rather than a fixture captured from this code.
@@ -17,14 +17,14 @@ import { FirmwareFileError, OBCU_HEADER_LEN, readUpdateImage } from "./obcu";
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
-        if (existsSync(join(dir, "protocol-vectors", "manifest.json"))) return dir;
+        if (existsSync(join(dir, "specs", "vectors", "manifest.json"))) return dir;
         dir = dirname(dir);
     }
     throw new Error("could not locate the repo root from " + import.meta.url);
 }
 
 const CONTAINER = new Uint8Array(
-    readFileSync(join(repoRoot(), "protocol-vectors", "update-container-v1.bin")),
+    readFileSync(join(repoRoot(), "specs/vectors", "update-container-v1.bin")),
 );
 
 /** A copy with one byte changed — every rejection case is a one-byte edit of a valid file. */

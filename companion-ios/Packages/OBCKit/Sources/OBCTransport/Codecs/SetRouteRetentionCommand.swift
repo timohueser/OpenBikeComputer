@@ -12,7 +12,7 @@ import OBCDomain
 /// change. Replies: `ok` (applied), `notFound` (unknown id), `unknownCommand` (a
 /// device predating expiry → `unsupported`).
 ///
-/// Pinned byte-for-byte against `protocol-vectors/command-set-route-retention.bin`
+/// Pinned byte-for-byte against `specs/vectors/command-set-route-retention.bin`
 /// (`SetRouteRetentionCommandTests`), so the app and firmware can't drift from
 /// spec §4.4.
 public enum SetRouteRetentionCommand {

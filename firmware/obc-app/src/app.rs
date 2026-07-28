@@ -2808,7 +2808,7 @@ mod tests {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.set_settings(Settings::default());
         assert!(!app.clock_trusted(), "untrusted before the first setClock");
-        // 2026-07-09T12:00:30Z, +02:00 — the protocol-vectors timestamp (unix 1783598400) plus 30 s to
+        // 2026-07-09T12:00:30Z, +02:00 — the specs/vectors timestamp (unix 1783598400) plus 30 s to
         // exercise the seconds-into-the-minute back-date.
         app.stamp_clock_ble(1_783_598_400 + 30, 120);
         let now = app.wall_clock_now();

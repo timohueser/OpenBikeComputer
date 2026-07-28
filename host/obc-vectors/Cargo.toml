@@ -2,8 +2,8 @@
 name = "obc-vectors"
 version = "0.1.0"
 edition = "2021"
-publish = false # test-only: builds + verifies the shared protocol-vectors/ fixtures
-description = "S0 wire-protocol shared test vectors (obc-ble-interface-spec.md): builders and contract tests for the binary fixtures in protocol-vectors/, consumed by both cargo test and the companion app's swift test"
+publish = false # test-only: builds + verifies the shared specs/vectors/ fixtures
+description = "S0 wire-protocol shared test vectors (obc-ble-interface-spec.md): builders and contract tests for the binary fixtures in specs/vectors/, consumed by both cargo test and the companion app's swift test"
 
 [dependencies]
 obc-formats = { path = "../../firmware/obc-formats" }

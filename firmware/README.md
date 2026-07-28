@@ -186,7 +186,7 @@ npm run build:wasm
 
 The frontend needs that output before `npm run check`, `npm test` or
 `npm run build` will work: the TypeScript wrapper imports the generated
-bindings, and the vitest suite converts the checked-in `protocol-vectors/`
+bindings, and the vitest suite converts the checked-in `specs/vectors/`
 fixtures through the wasm module and compares them **byte-for-byte** against the
 native converter's checked-in output. CI does the same in its `wasm-convert`
 job, which also enforces the bundle-size budget:

@@ -4,13 +4,13 @@ import OBCDomain
 @testable import OBCTransport
 
 /// The Swift half of the TR5 shared-vector pin for the trip objects: the
-/// checked-in fixtures `protocol-vectors/trip-v1.bin` + `trip-list.bin` must
+/// checked-in fixtures `specs/vectors/trip-v1.bin` + `trip-list.bin` must
 /// decode through the app's codecs to the values `manifest.json` states, and
 /// re-encode **byte-exactly**. The firmware side pins the same files
 /// (`cargo test -p obc-vectors`), so neither side can drift from the spec (§7.7
 /// / §7.4) without a test going red. (Swift Testing, per the new-suite rule.)
 struct TripCodecTests {
-    /// `protocol-vectors/` at the repo root, resolved from this file's location
+    /// `specs/vectors/`, resolved from this file's location
     /// (companion-ios/Packages/OBCKit/Tests/OBCTransportTests/…).
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // OBCTransportTests
@@ -19,7 +19,7 @@ struct TripCodecTests {
         .deletingLastPathComponent()  // Packages
         .deletingLastPathComponent()  // companion-ios
         .deletingLastPathComponent()  // repo root
-        .appendingPathComponent("protocol-vectors")
+        .appendingPathComponent("specs/vectors")
 
     private func fixture(_ name: String) throws -> Data {
         let url = Self.vectorsDir.appendingPathComponent(name)

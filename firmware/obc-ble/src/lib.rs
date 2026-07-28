@@ -13,7 +13,7 @@
 //!   and neither buffers the whole object.
 //!
 //! The board crate owns the `L2capChannel` and GATT table; the companion app's Swift mirror
-//! implements the same layouts, and the shared `protocol-vectors/` fixtures pin both.
+//! implements the same layouts, and the shared `specs/vectors/` fixtures pin both.
 
 #![no_std]
 #![forbid(unsafe_code)]

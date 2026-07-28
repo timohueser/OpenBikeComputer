@@ -9,7 +9,7 @@
 //! endpoint are the same thing (reliable, ordered, unframed), so the object stream needs *zero*
 //! translation: the identical [`obc_ble::Receiver`] / [`obc_ble::StreamSender`] state machine, the
 //! identical descriptors, the identical whole-object CRC-32, and the identical
-//! `protocol-vectors/` fixtures. Everything that decides *what* a message means lives in
+//! `specs/vectors/` fixtures. Everything that decides *what* a message means lives in
 //! [`crate::link`], shared with the radio.
 //!
 //! Only one thing genuinely differs. BLE's control plane is GATT: seven separately-addressed

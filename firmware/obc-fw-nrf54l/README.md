@@ -291,7 +291,7 @@ builds on it:
 The wire protocol (advertising policy, GATT services/UUIDs, CoC framing, object layouts, pairing
 security) is canonical in [`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md) — read it
 there, not here. `src/ble/` implements it; the S0 descriptor codecs + transfer state machine are the
-host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `protocol-vectors/`). What's
+host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`). What's
 **board/firmware-specific** and worth knowing:
 
 - **DIS identity** — Firmware Revision is `<crate-semver>+<git-short>` (`build.rs` emits

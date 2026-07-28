@@ -4,7 +4,7 @@
  * GPX -> OBCR and recorded ride log -> GPX, run client-side by `apps/obc-web-convert`
  * compiled to wasm. There is no TypeScript re-implementation here on purpose: the bytes a
  * visitor downloads are produced by the same `obc-route` code the device and the CLI run, and
- * `bridge.test.ts` pins that equality against the checked-in `protocol-vectors/` fixtures.
+ * `bridge.test.ts` pins that equality against the checked-in `specs/vectors/` fixtures.
  *
  * The wasm module is fetched through a **dynamic import**, so the ~95 KB of glue + module land in
  * their own bundle chunk and cost nothing until someone actually drops a file. The first call

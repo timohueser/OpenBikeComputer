@@ -12,7 +12,7 @@
  *
  * One byte is what it becomes. Every control frame is `selector u8 · payload`, and **the payload is
  * the exact bytes the corresponding GATT characteristic carries** — the same bytes
- * `protocol-vectors/` pins and the firmware and iOS already encode. Nothing about the object model,
+ * `specs/vectors/` pins and the firmware and iOS already encode. Nothing about the object model,
  * the descriptors, the status envelope or the CRC changes. USB is a second transport, not a second
  * protocol.
  *
@@ -30,7 +30,7 @@
  * it, which is precisely the property that makes USB a transport rather than a protocol here).
  *
  * **What does not move at all, under any envelope**: the object model, the transfer descriptors, the
- * status envelope, the commands, the object layouts, the CRC-32, and every `protocol-vectors/`
+ * status envelope, the commands, the object layouts, the CRC-32, and every `specs/vectors/`
  * fixture. Those live in `protocol.ts` / `objects.ts` and are the reason USB is a second transport
  * rather than a second protocol. That is the claim worth protecting; the rest is plumbing.
  */

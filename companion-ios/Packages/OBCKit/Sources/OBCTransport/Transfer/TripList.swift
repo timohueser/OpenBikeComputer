@@ -8,7 +8,7 @@ import OBCDomain
 /// stages; `stageCount` counts **every** stored stage (dangling refs included),
 /// so it can exceed the number of stages the totals summed over.
 ///
-/// Pinned byte-for-byte by `protocol-vectors/trip-list.bin` (`TripCodecTests`),
+/// Pinned byte-for-byte by `specs/vectors/trip-list.bin` (`TripCodecTests`),
 /// alongside the firmware `obc-ble` list codec.
 public struct TripListEntry: Equatable, Sendable {
     public var objectID: UInt16

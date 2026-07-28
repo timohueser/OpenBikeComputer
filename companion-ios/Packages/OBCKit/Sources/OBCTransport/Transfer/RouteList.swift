@@ -11,7 +11,7 @@ import Foundation
 ///
 /// The device encodes (its catalog scan → the wire); the app decodes (`listRoutes`). This mirrors
 /// the firmware `obc-ble` `list` codec field-for-field and is pinned byte-for-byte by
-/// `protocol-vectors/route-list.bin` (`ProtocolVectorTests`), so neither side can drift from the
+/// `specs/vectors/route-list.bin` (`ProtocolVectorTests`), so neither side can drift from the
 /// spec without a test going red.
 public struct RouteListEntry: Equatable, Sendable {
     public var objectID: UInt16

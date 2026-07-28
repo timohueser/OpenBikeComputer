@@ -7,7 +7,7 @@
  * reach.
  *
  * **Nothing about the protocol lives here.** `lib/usb/` is the object model, the descriptors, the
- * whole-object CRC and the client, written once and validated against `protocol-vectors/`; this
+ * whole-object CRC and the client, written once and validated against `specs/vectors/`; this
  * file supplies the two byte pipes underneath it and a watcher with the same three methods
  * `WebUsbWatcher` has. `ProtocolClient` and `DeviceLink` are used unchanged, and they cannot tell
  * which transport they got — which was C3's whole design claim, and this is the thing that either

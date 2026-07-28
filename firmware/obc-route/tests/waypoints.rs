@@ -323,7 +323,7 @@ fn load_waypoints_v1_route_is_empty() {
 /// the crate (the same tolerance the issue calls for), so the unit contract above is authoritative.
 #[test]
 fn load_waypoints_reads_the_committed_vector() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-vectors/route-waypoints.obcr");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors/route-waypoints.obcr");
     let Ok(bytes) = std::fs::read(&path) else {
         eprintln!("skipping: {} not reachable", path.display());
         return;

@@ -176,7 +176,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("obc-usb-digest-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("check.bin");
-        // The CRC-32/IEEE check value, which is also what `protocol-vectors/manifest.json` and
+        // The CRC-32/IEEE check value, which is also what `specs/vectors/manifest.json` and
         // `lib/usb/crc32.test.ts` pin: crc32("123456789") == 0xCBF43926. Same constant on both
         // sides of the wire is the whole claim.
         std::fs::write(&path, b"123456789").expect("write");
