@@ -2,7 +2,8 @@
 //!
 //! [`GpxScanner`] pulls `<trkpt lat=".." lon="..">…<ele>…</ele></trkpt>` points out of
 //! a [`ByteSource`] one at a time; [`WptScanner`] does the same for top-level
-//! `<wpt>` waypoints (name + optional elevation). Both read the file in fixed blocks
+//! `<wpt>` waypoints (name, optional elevation, and the `<sym>`/`<type>` symbol the
+//! converter maps to a category). Both read the file in fixed blocks
 //! with compaction so an element that straddles a block boundary is handled
 //! transparently. RAM is O(1) (one [`SCAN_BUF`]-sized buffer per scanner) regardless
 //! of route length, so converting a hundreds-of-km GPX on-device is feasible.
@@ -23,6 +24,12 @@ use obc_formats::obcr::WAYPOINT_NAME_CAP;
 /// after a refill.
 const SCAN_BUF: usize = 4096;
 
+/// Stored bytes of a `<wpt>`'s symbol. Real `<sym>`/`<type>` values are one or two words
+/// ("Drinking Water", "Convenience Store"); a longer one is freeform prose that no
+/// [`category_for_symbol`](crate::symbol::category_for_symbol) row could match, so truncating it
+/// here costs nothing and keeps [`RawWaypoint`] small enough for a bounded resident set.
+pub const WAYPOINT_SYMBOL_CAP: usize = 32;
+
 /// One raw track point straight from the GPX: microdegree position + optional
 /// elevation in meters.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,14 +39,18 @@ pub struct RawPoint {
     pub ele: Option<f32>,
 }
 
-/// One raw `<wpt>` waypoint straight from the GPX: position, optional elevation, and
-/// its `<name>` truncated to [`WAYPOINT_NAME_CAP`] bytes (on a char boundary).
+/// One raw `<wpt>` waypoint straight from the GPX: position, optional elevation, its `<name>`
+/// truncated to [`WAYPOINT_NAME_CAP`] bytes (on a char boundary), and its raw symbol.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawWaypoint {
     pub lon: i32,
     pub lat: i32,
     pub ele: Option<f32>,
     pub name: String<WAYPOINT_NAME_CAP>,
+    /// The waypoint's icon as the exporter wrote it — `<sym>` if non-empty, else `<type>`, else
+    /// empty. Kept verbatim (truncated to [`WAYPOINT_SYMBOL_CAP`]); the mapping onto a category
+    /// is [`category_for_symbol`](crate::symbol::category_for_symbol)'s job, not the scanner's.
+    pub symbol: String<WAYPOINT_SYMBOL_CAP>,
 }
 
 /// The shared block-buffered scan state: a window over the source that refills with
@@ -208,22 +219,23 @@ impl<'a> WptScanner<'a> {
     }
 
     /// The next waypoint, or `None` once the source is exhausted. Malformed waypoints
-    /// (missing lat/lon) are skipped; a missing `<name>` yields an empty name.
+    /// (missing lat/lon) are skipped; a missing `<name>` yields an empty name, a missing
+    /// `<sym>`/`<type>` an empty symbol.
     pub fn next_waypoint(&mut self) -> Result<Option<RawWaypoint>, Error> {
         loop {
             let Some(el) = self.core.next_element(b"<wpt", b"</wpt>")? else {
                 return Ok(None);
             };
             let (lat, lon) = parse_latlon(&self.core.buf[el.attr]);
-            let (ele, name) = match el.body {
+            let (ele, name, symbol) = match el.body {
                 Some(b) => {
                     let body = &self.core.buf[b];
-                    (parse_ele(body), parse_name(body))
+                    (parse_ele(body), parse_name(body), parse_symbol(body))
                 }
-                None => (None, String::new()),
+                None => (None, String::new(), String::new()),
             };
             if let (Some(lat), Some(lon)) = (lat, lon) {
-                return Ok(Some(RawWaypoint { lon: micro(lon), lat: micro(lat), ele, name }));
+                return Ok(Some(RawWaypoint { lon: micro(lon), lat: micro(lat), ele, name, symbol }));
             }
         }
     }
@@ -283,14 +295,33 @@ fn parse_ele(body: &[u8]) -> Option<f32> {
 /// Pull `<name>…</name>` from a `<wpt>` body, trimmed and truncated to
 /// [`WAYPOINT_NAME_CAP`] bytes on a char boundary. Missing name → empty string.
 fn parse_name(body: &[u8]) -> String<WAYPOINT_NAME_CAP> {
+    parse_text(body, "<name>", "</name>")
+}
+
+/// Pull the waypoint's symbol from a `<wpt>` body: `<sym>` if present and non-empty, else
+/// `<type>`, else empty. Two tags for one idea — Garmin (and the planners that copy it) write
+/// `<sym>`, RideWithGPS/Komoot write `<type>`, some exports carry both — so `<sym>` wins when it
+/// says something and `<type>` is the fallback rather than a second, competing value.
+fn parse_symbol(body: &[u8]) -> String<WAYPOINT_SYMBOL_CAP> {
+    let sym = parse_text(body, "<sym>", "</sym>");
+    if !sym.is_empty() {
+        return sym;
+    }
+    parse_text(body, "<type>", "</type>")
+}
+
+/// Pull an `open`…`close` child element's text out of an element body, trimmed and truncated to
+/// `N` bytes on a char boundary (the same bounded-buffer discipline for every child tag). Missing
+/// tag, or an unterminated one → empty string.
+fn parse_text<const N: usize>(body: &[u8], open: &str, close: &str) -> String<N> {
     let mut out = String::new();
     let Ok(s) = core::str::from_utf8(body) else {
         return out;
     };
-    let Some(start) = s.find("<name>").map(|i| i + "<name>".len()) else {
+    let Some(start) = s.find(open).map(|i| i + open.len()) else {
         return out;
     };
-    let Some(end) = s[start..].find("</name>").map(|i| i + start) else {
+    let Some(end) = s[start..].find(close).map(|i| i + start) else {
         return out;
     };
     for ch in s[start..end].trim().chars() {
