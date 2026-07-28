@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="obc-vectors">
-  <wpt lat="47.9987" lon="7.8425"><name>Pass Summit</name></wpt>
-  <wpt lat="48.0001" lon="7.8201"><ele>238.0</ele><name>Brunnen</name></wpt>
+  <wpt lat="47.9987" lon="7.8425"><name>Pass Summit</name><type>Viewpoint</type></wpt>
+  <wpt lat="48.0001" lon="7.8201"><ele>238.0</ele><name>Brunnen</name><sym>Drinking Water</sym></wpt>
   <trk><name>Vector Loop</name><trkseg>
     <trkpt lat="48.0000" lon="7.8200"><ele>236.0</ele></trkpt>
     <trkpt lat="48.0005" lon="7.8230"><ele>241.0</ele></trkpt>

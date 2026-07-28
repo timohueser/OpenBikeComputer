@@ -19,7 +19,7 @@ import { viewOf } from "../usb/protocol";
 /** The route name field's cap, and the OBCR header's own (`Name Len`, §1). */
 export const ROUTE_NAME_MAX = 48;
 
-/** The base header both OBCR versions share. v2 adds 16 bytes of extension after it. */
+/** The header's ride core; the 16-byte waypoint extension (§1.1) follows it. */
 const HEADER_BASE_LEN = 112;
 const MAGIC = 0x4f424352; // "OBCR", big-endian read of the four ASCII bytes
 
@@ -57,8 +57,10 @@ export function decodeRouteHeader(bytes: Uint8Array): RouteHeader {
     const view = viewOf(bytes);
     if (view.getUint32(0, false) !== MAGIC) throw new RouteError("That file is not an OBCR route.");
     const version = bytes[4];
-    if (version !== 1 && version !== 2) {
-        throw new RouteError(`That route is OBCR v${version}; this page writes v1 and v2.`);
+    // v3 (#947) rewrote the waypoint record, so older files are rejected rather than read — the
+    // same posture the firmware reader takes.
+    if (version !== 3) {
+        throw new RouteError(`That route is OBCR v${version}; this page writes v3.`);
     }
     const nameLen = Math.min(bytes[6], ROUTE_NAME_MAX);
     return {

@@ -20,12 +20,12 @@ import { Crc32 } from "../usb/crc32";
 import { loopbackDevice } from "../usb/loopback";
 import { ObjectType } from "../usb/protocol";
 
-/** A minimal, valid OBCR v1: 112-byte header + no points — enough for the header codec. */
+/** A minimal, valid OBCR: the 128-byte header + no points — enough for the header codec. */
 function obcrWithName(name: string): Uint8Array {
-    const out = new Uint8Array(112);
+    const out = new Uint8Array(128);
     const view = new DataView(out.buffer);
     view.setUint32(0, 0x4f424352, false); // "OBCR"
-    out[4] = 1; // version
+    out[4] = 3; // version
     const bytes = new TextEncoder().encode(name);
     out[6] = bytes.length;
     out.set(bytes, 64);

@@ -30,7 +30,7 @@ describe("decodeRouteHeader", () => {
     it("reads the vector's header exactly as the manifest records it", () => {
         const header = decodeRouteHeader(vector("route-waypoints.obcr"));
         expect(header).toMatchObject({
-            version: 2,
+            version: 3,
             name: "Vector Loop",
             pointCount: 9,
             distanceM: 2207,
@@ -39,8 +39,8 @@ describe("decodeRouteHeader", () => {
     });
 
     it("reads a waypoint-free route the same way", () => {
-        // §1: "a reader that doesn't care about waypoints parses a v2 header exactly like a v1
-        // header" — the two fixtures are the same ride, so every stat must match.
+        // §1: the waypoint section is reached by an explicit offset and never by the ride path —
+        // the two fixtures are the same ride, so every stat must match.
         const withWaypoints = decodeRouteHeader(vector("route-waypoints.obcr"));
         const plain = decodeRouteHeader(vector("route-plain.obcr"));
         expect(plain.distanceM).toBe(withWaypoints.distanceM);
