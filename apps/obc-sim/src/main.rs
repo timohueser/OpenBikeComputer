@@ -369,19 +369,42 @@ fn stat_field_id(f: obc_app::StatField) -> &'static str {
     }
 }
 
+/// An empty [`StatFieldList`](obc_app::StatFieldList) — the grid selection every `--stat-fields`
+/// (and `--sensors-demo`) list is built onto, since the type starts at the device's default six and
+/// only shrinks by index.
+fn empty_stat_field_list() -> obc_app::StatFieldList {
+    let mut sf = obc_app::StatFieldList::default();
+    while !sf.is_empty() {
+        sf.remove(0);
+    }
+    sf
+}
+
 /// Parse a `--stat-fields` list into the grid selection. Unknown names fail with the whole
 /// vocabulary listed, so a typo in a snapshot script is a loud, self-explaining error.
+///
+/// Every name is also pushed onto a real [`StatFieldList`](obc_app::StatFieldList) as it is parsed,
+/// so a list the grid *cannot hold* fails here just as loudly instead of silently truncating into a
+/// snapshot: `push` refuses both past the grid's cap and on a repeat, and either way the frame the
+/// script asked for is not the frame it would get.
 fn parse_stat_fields(s: &str) -> Result<std::vec::Vec<obc_app::StatField>, String> {
-    s.split(',')
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map(|n| {
-            obc_app::StatField::ALL.into_iter().find(|f| stat_field_id(*f) == n).ok_or_else(|| {
-                let all: std::vec::Vec<&str> = obc_app::StatField::ALL.into_iter().map(stat_field_id).collect();
-                format!("--stat-fields: unknown field `{n}`; known: {}", all.join(", "))
-            })
-        })
-        .collect()
+    let mut fields = std::vec::Vec::new();
+    let mut grid = empty_stat_field_list();
+    for n in s.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let f = obc_app::StatField::ALL.into_iter().find(|f| stat_field_id(*f) == n).ok_or_else(|| {
+            let all: std::vec::Vec<&str> = obc_app::StatField::ALL.into_iter().map(stat_field_id).collect();
+            format!("--stat-fields: unknown field `{n}`; known: {}", all.join(", "))
+        })?;
+        if !grid.push(f) {
+            return Err(format!(
+                "--stat-fields: `{n}` does not fit the grid — it is either a repeat, or past the \
+                 grid's cap ({} field(s) accepted before it)",
+                grid.len()
+            ));
+        }
+        fields.push(f);
+    }
+    Ok(fields)
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -1069,12 +1092,12 @@ fn main() {
             // put a `Next: <category>` tile (or any other field) on the visible page without walking
             // the Fields editor. Applied after `--sensors-demo` so an explicit list always wins.
             if let Some(fields) = &args.stat_fields {
-                let mut sf = settings.stat_fields;
-                while !sf.is_empty() {
-                    sf.remove(0);
-                }
+                let mut sf = empty_stat_field_list();
                 for f in fields {
-                    sf.push(*f);
+                    // Can't fail: `parse_stat_fields` pushed the identical list onto an identical
+                    // grid and rejected the argument outright if any of it didn't fit.
+                    let added = sf.push(*f);
+                    debug_assert!(added, "`--stat-fields` is validated at parse time");
                 }
                 settings.stat_fields = sf;
             }
