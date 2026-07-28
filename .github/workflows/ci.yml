@@ -67,6 +67,12 @@ jobs:
             rust:
               - 'firmware/**'
               - 'packer/presets/**'
+              # packer/tests/ drives the real obc-pack binary and the builder's pure API
+              # endpoints, so the packer, the presets it round-trips, and the server module
+              # under test all have to be able to trigger it.
+              - 'packer/tests/**'
+              - 'packer/web_builder/*.py'
+              - 'packer/requirements*.txt'
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - '.github/workflows/ci.yml'
@@ -189,6 +195,20 @@ jobs:
       # intentional rendering change regenerates hashes.txt (--write-hashes) in the same PR.
       - name: obc-bench --check (render pixel-hash tripwire)
         run: cargo run --manifest-path firmware/Cargo.toml -p obc-bench --release --locked -- --check firmware/obc-bench/hashes.txt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Routing-profile round-trips through the builder's pack path. These shell out to the
+      # real obc-pack binary over the tiny corpus and byte-compare the §8.6 profile table
+      # against independently quantized expectations — so they pin the packer's writer
+      # against the spec rather than against itself — plus the pure /api/schema and
+      # /api/presets endpoints via FastAPI's TestClient. The suite existed and passed but no
+      # workflow ran it; requirements-dev.txt is what makes it installable.
+      - name: web-builder packer tests (pytest)
+        run: |
+          pip install -r packer/requirements-dev.txt
+          cargo build --manifest-path firmware/Cargo.toml -p obc-pack --release --locked
+          PYTHONPATH=. python3 -m pytest packer/tests/ -v
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
