@@ -78,6 +78,28 @@ import OBCDomain
         #expect(reversed.waypoints[1].note == "spring")
     }
 
+    /// Riding the line the other way swaps the sides: a spring on the left is on
+    /// the right coming back, so the stored signed offset flips (#947). The
+    /// category is a property of the place, not the direction — it rides through.
+    @Test func flipsTheLateralOffsetAndKeepsTheCategory() {
+        let total = Self.length(of: Self.climbingPoints)
+        let route = ImportedRoute(
+            name: "Climb", points: Self.climbingPoints,
+            waypoints: [
+                Waypoint(index: 0, name: "Spring", distanceAlongMeters: total * 0.25,
+                         coordinate: Coordinate(latitude: 48.008, longitude: 8.0),
+                         category: .water, lateralOffsetMeters: -120),
+                Waypoint(index: 1, name: "Hut", distanceAlongMeters: total * 0.5,
+                         coordinate: Coordinate(latitude: 48.02, longitude: 8.0),
+                         category: .accommodation, lateralOffsetMeters: 40),
+            ]
+        )
+        let reversed = route.reversed()
+        #expect(reversed.waypoints.map(\.name) == ["Hut", "Spring"])
+        #expect(reversed.waypoints.map(\.lateralOffsetMeters) == [-40, 120])
+        #expect(reversed.waypoints.map(\.category) == [.accommodation, .water])
+    }
+
     @Test func waypointClampsPastLengthToZero() {
         let total = Self.length(of: Self.climbingPoints)
         // A waypoint projected a hair past the measured end (rounding) must not

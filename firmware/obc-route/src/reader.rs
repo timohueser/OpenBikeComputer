@@ -17,8 +17,11 @@ use obc_reader::BBox;
 
 // The OBCR format constants this reader parses against are owned by `obc-formats`; imported here.
 // Not re-exported — consumers reach the format authority via `obc_formats::obcr`.
-use obc_formats::obcr::{CHUNK_META_LEN, HEADER_LEN, HEADER_V2_LEN, NAME_CAP, WAYPOINT_LEN, WAYPOINT_NAME_CAP};
-use obc_formats::obcr::{MAGIC, POINT_RECORD_LEN, VERSIONS, VERSION_V2};
+use obc_formats::obcr::{
+    CHUNK_META_LEN, HEADER_FULL_LEN, HEADER_LEN, NAME_CAP, WAYPOINT_LEN, WAYPOINT_NAME_CAP, WAYPOINT_NAME_OFF,
+};
+use obc_formats::obcr::{MAGIC, POINT_RECORD_LEN, VERSIONS};
+use obc_reader::PoiCategory;
 /// The device's waypoint cap — one number for both roles: the converter's `<wpt>` emission cap
 /// ([`gpx_to_obcr`](crate::gpx_to_obcr)) and the resident [`Waypoints`] table the ride loop holds
 /// (~40 B/entry ≈ 1.3 KB — negligible on the 512 KB target). The *format* allows up to `u16::MAX`
@@ -111,8 +114,8 @@ impl RouteSummary {
 }
 
 /// The stored-route facts a BLE `routeList` entry serves: raw metres (not
-/// [`RouteSummary`]'s display-rounded km) plus the waypoint count from the v2 header
-/// extension. Reads the base header and, on v2, the 16-byte extension; never the chunk index.
+/// [`RouteSummary`]'s display-rounded km) plus the waypoint count from the header
+/// extension. Reads the base header and the 16-byte extension; never the chunk index.
 #[derive(Debug, Clone)]
 pub struct RouteObjectInfo {
     pub name: String<NAME_CAP>,
@@ -123,17 +126,15 @@ pub struct RouteObjectInfo {
 }
 
 impl RouteObjectInfo {
-    /// Read the header (+ v2 extension) into the wire facts. Same validation as any header
+    /// Read the header (+ extension) into the wire facts. Same validation as any header
     /// read (bad magic/version/name reject), which the upload commit path relies on to keep
-    /// a non-OBCR payload out of the catalog.
+    /// a non-OBCR payload — or a pre-v3 route — out of the catalog.
     pub fn read(src: &dyn ByteSource) -> Result<RouteObjectInfo, Error> {
         let h = read_header(src)?;
-        let waypoint_count = if h.version >= VERSION_V2 {
-            let mut ext = [0u8; HEADER_V2_LEN - HEADER_LEN];
+        let waypoint_count = {
+            let mut ext = [0u8; HEADER_FULL_LEN - HEADER_LEN];
             src.read_at(HEADER_LEN as u32, &mut ext).map_err(|_| Error::BadOffset)?;
             rd_u16(&ext, 4)
-        } else {
-            0
         };
         Ok(RouteObjectInfo {
             name: h.name,
@@ -961,9 +962,10 @@ impl core::ops::Deref for RouteReader<'_> {
     }
 }
 
-/// Parsed header fields (shared by [`RouteIndex::read`] and [`RouteSummary::read`]).
+/// Parsed header fields (shared by [`RouteIndex::read`] and [`RouteSummary::read`]). No `version`
+/// field: [`read_header`] accepts exactly one version, so every reader below it is v3 by
+/// construction.
 pub(crate) struct Header {
-    pub(crate) version: u8,
     pub(crate) bbox: BBox,
     pub(crate) start_lon: i32,
     pub(crate) start_lat: i32,
@@ -993,7 +995,6 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
         let _ = name.push_str(s);
     }
     Ok(Header {
-        version: h[4],
         bbox: BBox {
             min_lon: rd_i32(&h, 8),
             min_lat: rd_i32(&h, 12),
@@ -1015,9 +1016,9 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
 }
 
 /// One stored route waypoint (`OBCR_Spec.md` §4): a POI pinned to a position along the route, as it
-/// sits on disk — every field, `ele`/`kind` included. The ride *geometry* path still skips it (a
-/// v2 route rides through the v1 code); [`RouteReader::load_waypoints`] distils the named ones into
-/// the resident [`Waypoints`] table the waypoint UI reads. Also serves hosts and tests.
+/// sits on disk — every field, `ele`/`category_id` included. The ride *geometry* path still skips
+/// the section entirely; [`RouteReader::load_waypoints`] distils the named ones into the resident
+/// [`Waypoints`] table the waypoint UI reads. Also serves hosts and tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waypoint {
     /// Cumulative distance from the route start to this waypoint's position, meters.
@@ -1027,22 +1028,35 @@ pub struct Waypoint {
     pub lat: i32,
     /// Elevation in meters; [`WAYPOINT_ELE_NONE`](obc_formats::obcr::WAYPOINT_ELE_NONE) when the source carried none.
     pub ele: i16,
-    /// Category byte (§4); `0` = generic. Render unknown values as generic.
-    pub kind: u8,
+    /// The stored category byte (§4): `0` = generic, `1..=6` the OBCM §7.4 [`PoiCategory`] wire
+    /// ids. Kept **raw** so a rewrite (the detour splice) can carry an unknown value through
+    /// byte-for-byte; [`category`](Self::category) is the typed read.
+    pub category_id: u8,
+    /// Signed lateral offset from the route line in meters, positive = **right** of the direction
+    /// of travel, `0` = on-route (§4). Saturating: a waypoint further than `i16` metres off route
+    /// clamps rather than wrapping.
+    pub lateral_offset_m: i16,
     pub name: String<WAYPOINT_NAME_CAP>,
+}
+
+impl Waypoint {
+    /// The typed category, or `None` for **generic** — an unmapped source symbol, a hand-placed
+    /// waypoint, or a category byte outside `1..=6` (the spec's "render unknown as generic").
+    #[inline]
+    pub fn category(&self) -> Option<PoiCategory> {
+        PoiCategory::from_id(self.category_id)
+    }
 }
 
 /// Visit each stored waypoint in route order (ascending `dist_along_m`), streaming one fixed
 /// [`WAYPOINT_LEN`] record at a time — the low-level cursor over the whole (unfiltered, any-count)
 /// section. [`RouteReader::load_waypoints`] layers the resident-table policy (name filter, window,
-/// cap) on top of it. Returns the number visited; a v1 route (or a v2 route without waypoints)
-/// yields none.
+/// cap) on top of it. Returns the number visited; a route without waypoints yields none.
 pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) -> Result<u16, Error> {
-    let h = read_header(src)?;
-    if h.version < 2 {
-        return Ok(0);
-    }
-    let mut ext = [0u8; HEADER_V2_LEN - HEADER_LEN];
+    // The header read is the version gate: a pre-v3 file is rejected there, so no record decoded
+    // here can be an old 40-byte one.
+    read_header(src)?;
+    let mut ext = [0u8; HEADER_FULL_LEN - HEADER_LEN];
     src.read_at(HEADER_LEN as u32, &mut ext)?;
     let offset = rd_u32(&ext, 0);
     let count = rd_u16(&ext, 4);
@@ -1052,7 +1066,7 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
         src.read_at(offset + k as u32 * WAYPOINT_LEN as u32, &mut rec)?;
         let name_len = (rec[15] as usize).min(WAYPOINT_NAME_CAP);
         let mut name = String::new();
-        if let Ok(s) = core::str::from_utf8(&rec[16..16 + name_len]) {
+        if let Ok(s) = core::str::from_utf8(&rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + name_len]) {
             let _ = name.push_str(s);
         }
         f(&Waypoint {
@@ -1060,7 +1074,8 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
             lon: rd_i32(&rec, 4),
             lat: rd_i32(&rec, 8),
             ele: rd_i16(&rec, 12),
-            kind: rec[14],
+            category_id: rec[14],
+            lateral_offset_m: rd_i16(&rec, 16),
             name,
         });
     }
@@ -1068,9 +1083,9 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
 }
 
 /// One resident waypoint: the compact subset of a stored [`Waypoint`] the ride UI actually needs —
-/// its along-route position, its own coordinate, and its (non-empty) name. `ele` and `kind` are
-/// **dropped** on purpose: the waypoint UI ignores both (plain diamonds; distances come from
-/// `dist_along_m`), so a `Copy`-ish 40-byte entry stays cheap to hold [`MAX_WAYPOINTS`] resident.
+/// its along-route position, its own coordinate, its category, how far off the route it sits, and
+/// its (non-empty) name. `ele` is **dropped** on purpose (the UI never shows it; distances come
+/// from `dist_along_m`), so the entry stays cheap to hold [`MAX_WAYPOINTS`] resident.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WptEntry {
     /// Cumulative distance from the route start to this waypoint, meters — the axis the ride
@@ -1079,6 +1094,12 @@ pub struct WptEntry {
     /// The waypoint's own coordinate (microdegrees) — where its map diamond is drawn.
     pub lon: i32,
     pub lat: i32,
+    /// The waypoint's category, or `None` for **generic** — the diamond a hand-placed waypoint
+    /// keeps. Shares the map's [`PoiCategory`] ids, so one icon language covers both sources.
+    pub category: Option<PoiCategory>,
+    /// Signed lateral offset from the route line, meters — positive = **right** of the direction
+    /// of travel, `0` = on-route. The `←`/`→` side hint reads this.
+    pub lateral_offset_m: i16,
     /// The waypoint's name (non-empty: an unnamed waypoint never enters the table).
     pub name: String<WAYPOINT_NAME_CAP>,
 }
@@ -1154,7 +1175,14 @@ impl RouteReader<'_> {
             if w.name.as_bytes().iter().all(u8::is_ascii_whitespace) {
                 return;
             }
-            let entry = WptEntry { dist_along_m: w.dist_along_m, lon: w.lon, lat: w.lat, name: w.name.clone() };
+            let entry = WptEntry {
+                dist_along_m: w.dist_along_m,
+                lon: w.lon,
+                lat: w.lat,
+                category: w.category(),
+                lateral_offset_m: w.lateral_offset_m,
+                name: w.name.clone(),
+            };
             // Full: keep the first-by-distance ones already pushed and flag the overflow. Keep
             // streaming (don't break) so `truncated` reflects the whole file, not the first extra.
             if wpts.entries.push(entry).is_err() {

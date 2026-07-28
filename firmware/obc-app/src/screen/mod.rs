@@ -1542,7 +1542,16 @@ mod tests {
         for &(dist_along_m, name) in items {
             let mut n = heapless::String::new();
             n.push_str(name).unwrap();
-            w.entries.push(obc_route::WptEntry { dist_along_m, lon: 0, lat: 0, name: n }).unwrap();
+            w.entries
+                .push(obc_route::WptEntry {
+                    dist_along_m,
+                    lon: 0,
+                    lat: 0,
+                    category: None,
+                    lateral_offset_m: 0,
+                    name: n,
+                })
+                .unwrap();
         }
         w
     }
