@@ -35,7 +35,10 @@ public extension ImportedRoute {
     /// Flip each waypoint's `Distance Along` about the route length, then re-sort
     /// ascending and re-index — the spec §4 rule. A waypoint at the old start
     /// (`0`) lands at the old end (`total_length`) and vice versa, so the ride
-    /// order is genuinely reversed. Coordinates and notes are untouched.
+    /// order is genuinely reversed. Coordinates, notes and categories are
+    /// untouched; the **lateral offset flips sign**, because "left of travel"
+    /// becomes "right of travel" when you ride the line the other way (§4 stores
+    /// it signed, positive = right).
     private static func reverseWaypoints(_ waypoints: [Waypoint], totalLength: Double) -> [Waypoint] {
         waypoints
             .map { waypoint -> (waypoint: Waypoint, along: Double) in
@@ -59,7 +62,9 @@ public extension ImportedRoute {
                     name: entry.waypoint.name,
                     note: entry.waypoint.note,
                     distanceAlongMeters: entry.along,
-                    coordinate: entry.waypoint.coordinate
+                    coordinate: entry.waypoint.coordinate,
+                    category: entry.waypoint.category,
+                    lateralOffsetMeters: -entry.waypoint.lateralOffsetMeters
                 )
             }
     }
