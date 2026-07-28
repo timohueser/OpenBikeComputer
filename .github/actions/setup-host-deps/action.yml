@@ -6,7 +6,7 @@ description: >
   (libudev) and obc-sim/obc-usb-host build eframe natively (X11/xkbcommon); rfd uses the XDG portal,
   so no GTK is needed.
 
-# Keep GEOS_VERSION in step with the `v3_*` feature on the `geos` dep in firmware/obc-pack/Cargo.toml.
+# Keep GEOS_VERSION in step with the `v3_*` feature on the `geos` dep in host/obc-pack/Cargo.toml.
 inputs:
   geos-version:
     description: GEOS version to build from source

@@ -3,7 +3,7 @@
   "standalone_manifests": [
     "firmware/obc-fw-nrf54l/Cargo.toml",
     "firmware/obc-boot/Cargo.toml",
-    "firmware/obc-desktop/Cargo.toml"
+    "apps/obc-desktop/Cargo.toml"
   ],
   "groups": {
     "foundation": [

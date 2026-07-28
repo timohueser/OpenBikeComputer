@@ -1,5 +1,5 @@
 # Web builder (packer/web_builder) runtime deps. The map packer itself is the
-# native `obc-pack` binary (firmware/obc-pack) — no Python packing deps needed.
+# native `obc-pack` binary (host/obc-pack) — no Python packing deps needed.
 # The Geofabrik half lives in requirements-static.txt: the site deploy needs it
 # without the server, and one file means the versions cannot drift apart.
 -r requirements-static.txt

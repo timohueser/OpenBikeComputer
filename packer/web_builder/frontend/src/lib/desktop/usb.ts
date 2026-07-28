@@ -48,7 +48,7 @@ import {
 
 // --- the pipe -----------------------------------------------------------------
 
-/** One endpoint pair, as a byte pipe over the Tauri commands in `firmware/obc-desktop/src/usb/`. */
+/** One endpoint pair, as a byte pipe over the Tauri commands in `apps/obc-desktop/src/usb/`. */
 class NativePipe implements BytePipe {
     readonly transport = "native";
 

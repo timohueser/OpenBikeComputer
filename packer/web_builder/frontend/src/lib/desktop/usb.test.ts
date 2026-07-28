@@ -5,7 +5,7 @@
  * chosen carefully. It is made at exactly one place: the **Tauri command boundary**. Everything
  * above it — `NativePipe`, `NativeWatcher`, `nativeFileSource`, `ProtocolClient`, the codecs, the
  * CRC — is the shipping code, and the fake backend below stands in for
- * `firmware/obc-desktop/src/usb/`, forwarding to C3's simulated device.
+ * `apps/obc-desktop/src/usb/`, forwarding to C3's simulated device.
  *
  * That means these tests are about the two things a fake *can* prove:
  *

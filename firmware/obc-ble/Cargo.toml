@@ -13,7 +13,7 @@ description = "no_std S0 BLE data-plane core (obc-ble-interface-spec.md): the tr
 [dev-dependencies]
 # The shared S0 fixtures the vector tests read from ../../protocol-vectors/ go through
 # obc-vectors' spec-derived builders so a drift fails on both crates at once.
-obc-vectors = { path = "../obc-vectors" }
+obc-vectors = { path = "../../host/obc-vectors" }
 # Dev-only, and deliberately not a real dependency: the wire codec must not link the map-format
 # crate (same rule that keeps obc-dfu's size ceiling out of it). The *test* asserts that the
 # identity read's `obcm_version` fixture is the version the reader actually reads (E1, #911).

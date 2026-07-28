@@ -4,7 +4,7 @@
  * These are not "does the wrapper work" tests. They exist so that a change to `obc-route` — the
  * decimator's tolerance, the OBCR header, the GPX exporter's element order — cannot ship a
  * browser build that quietly disagrees with the device and the CLI. The inputs and the expected
- * outputs are the checked-in `protocol-vectors/` fixtures, and `firmware/obc-vectors/tests/
+ * outputs are the checked-in `protocol-vectors/` fixtures, and `host/obc-vectors/tests/
  * vectors.rs` holds the Rust side to those same bytes.
  *
  * **What that proves, precisely.** The route and track fixtures are produced by running the real
@@ -83,7 +83,7 @@ beforeAll(async () => {
 
 describe("gpxToObcr", () => {
     it("reproduces the native converter's OBCR byte-for-byte, waypoints and all", async () => {
-        const gpx = text("firmware/obc-vectors/src/route-source.gpx");
+        const gpx = text("host/obc-vectors/src/route-source.gpx");
         const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME);
         expectSameBytes(obcr, vector("route-waypoints.obcr"), "route-waypoints.obcr");
     });
@@ -92,7 +92,7 @@ describe("gpxToObcr", () => {
         // `obc_vectors::route_gpx_plain()`: drop every top-level `<wpt …>` line, keep the rest,
         // one trailing newline per line. Rust's `str::lines()` + push('\n') and JS's split/join
         // agree exactly as long as the source ends in a newline — asserted, not assumed.
-        const source = text("firmware/obc-vectors/src/route-source.gpx");
+        const source = text("host/obc-vectors/src/route-source.gpx");
         expect(source.endsWith("\n"), "route-source.gpx must end with a newline").toBe(true);
         const plain = source
             .split("\n")
@@ -104,7 +104,7 @@ describe("gpxToObcr", () => {
     });
 
     it("returns a JS-owned copy that survives later conversions", async () => {
-        const gpx = new TextEncoder().encode(text("firmware/obc-vectors/src/route-source.gpx"));
+        const gpx = new TextEncoder().encode(text("host/obc-vectors/src/route-source.gpx"));
         const first = await gpxToObcr(gpx, ROUTE_NAME);
         const snapshot = Uint8Array.from(first);
         await gpxToObcr(gpx, "Something Else"); // reallocates + grows wasm memory
@@ -137,7 +137,7 @@ describe("routeTrack", () => {
             expect(Number.isFinite(p.ele)).toBe(true);
         }
         // Round-trip a fresh conversion: a stored point count equals the read-back count.
-        const gpx = text("firmware/obc-vectors/src/route-source.gpx");
+        const gpx = text("host/obc-vectors/src/route-source.gpx");
         const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME);
         const view = new DataView(obcr.buffer, obcr.byteOffset, obcr.byteLength);
         expect((await routeTrack(obcr)).length).toBe(view.getUint32(32, true));

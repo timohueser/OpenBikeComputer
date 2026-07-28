@@ -106,7 +106,7 @@ hardware, and the fix that got it there is worth knowing about: it must be built
 
 That host client has **two** transports under it, and only one of them is a
 browser. WebUSB is Chromium-only, so the desktop app drives the cable itself
-through [`nusb`](src:firmware/obc-desktop/src/usb) and is the universal path,
+through [`nusb`](src:apps/obc-desktop/src/usb) and is the universal path,
 including for Safari and Firefox. Everything above the byte pipe is the same
 code: the same object model, the same descriptors, the same CRC, the same
 fixtures. The native side moves bytes and nothing else — it does not know what an
@@ -1007,8 +1007,8 @@ holding it.
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
 - The host side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:packer/web_builder/frontend/src/lib/usb)
-- The desktop app's transport — `nusb`, hot-plug, and the file-path bulk plane, under the *same* client: [`obc-desktop/src/usb/`](src:firmware/obc-desktop/src/usb) and [`lib/desktop/usb.ts`](src:packer/web_builder/frontend/src/lib/desktop/usb.ts)
+- The desktop app's transport — `nusb`, hot-plug, and the file-path bulk plane, under the *same* client: [`obc-desktop/src/usb/`](src:apps/obc-desktop/src/usb) and [`lib/desktop/usb.ts`](src:packer/web_builder/frontend/src/lib/desktop/usb.ts)
 - The browser's flows over that client — sending a map, a route or a firmware image, and the read-only ride export whose device handle has no way to ack: [`web_builder/frontend/src/lib/device/`](src:packer/web_builder/frontend/src/lib/device)
-- The desktop app's ride library — the folder, the index, and the temp-fsync-rename-fsync write the ack waits on: [`obc-desktop/src/rides.rs`](src:firmware/obc-desktop/src/rides.rs); the pull that fills it, and the ack list it computes from the disk: [`lib/device/library.ts`](src:packer/web_builder/frontend/src/lib/device/library.ts)
+- The desktop app's ride library — the folder, the index, and the temp-fsync-rename-fsync write the ack waits on: [`obc-desktop/src/rides.rs`](src:apps/obc-desktop/src/rides.rs); the pull that fills it, and the ack list it computes from the disk: [`lib/device/library.ts`](src:packer/web_builder/frontend/src/lib/device/library.ts)
 - Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`protocol-vectors/`](src:protocol-vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)

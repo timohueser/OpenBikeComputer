@@ -7,7 +7,7 @@ description: How OpenStreetMap data becomes a device-ready OBCM map (the obc-pac
 
 Two jobs bracket the device's own work. **Packing** turns raw OpenStreetMap data into a styled `.obcm` map — a heavy job, run once on a computer, and (as of v8) it also bakes a [routable navigation graph](#building-the-navigation-graph) into the map — one that v9 makes [bike-type-aware](#weighting-the-graph-bike-profiles). **Routing** is the lighter on-device work: turning a GPX you upload into a navigable `.obcr`, **map-matching** your live position onto it as you ride, and — new this iteration — **computing** a route to a POI on the device itself over that baked graph. So "routing" here is mostly *following* a line you brought, with a memory-bounded bit of *pathfinding* when you ask the device to reach a POI on its own.
 
-The packer ([`obc-pack`](src:firmware/obc-pack)) lives in the same Rust workspace as the device firmware and depends on the same [`obc-reader`](src:firmware/obc-reader), so the program that *writes* the format and the program that *reads* it can never disagree about a byte.
+The packer ([`obc-pack`](src:host/obc-pack)) lives in the same Rust workspace as the device firmware and depends on the same [`obc-reader`](src:firmware/obc-reader), so the program that *writes* the format and the program that *reads* it can never disagree about a byte.
 
 ## Packing a map
 
@@ -355,7 +355,7 @@ The parser is a deliberate **subset**, not a full `opening_hours` engine — the
 <figcaption>The stage runs per POI, after classification. Two cases need flattening. A <b>seasonal</b> rule (<code>Apr-Oct: …</code>) carries a date selector the weekly blob can't express, so the packer bakes a <b>representative in-season week</b> and sets the <i>seasonal</i> flag — the v1 device ignores it, but the bit is there for a future season-aware pass. A rule the subset genuinely can't model — a public-holiday <code>PH</code> clause, a <code>sunrise/sunset</code> time, or a third interval on a day — is <b>dropped</b> and the <i>truncated</i> flag set, so the device knows the schedule is partial rather than wrong. Finally every schedule is <b>deduplicated</b> into a shared pool: because a whole town's shops so often keep the same hours, the pool stays tiny, and a POI with no parseable hours (the common case) costs nothing but a <code>0xFFFF</code> sentinel in its record.</figcaption>
 </figure>
 
-The subset grammar, the flag semantics, and the quarter-hour encoding live in [`obc-pack/src/hours.rs`](src:firmware/obc-pack/src/hours.rs); the pooled bytes are described in [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The device end — turning a pooled blob into *today's hours* and an *open-now* badge — is the [POI detail view](../ui/#the-poi-detail-view).
+The subset grammar, the flag semantics, and the quarter-hour encoding live in [`obc-pack/src/hours.rs`](src:host/obc-pack/src/hours.rs); the pooled bytes are described in [`OBCM_Spec.md` §7.5](src:OBCM_Spec.md). The device end — turning a pooled blob into *today's hours* and an *open-now* badge — is the [POI detail view](../ui/#the-poi-detail-view).
 
 ### Building the navigation graph
 
@@ -440,7 +440,7 @@ A real pack run logs the graph next to the POI counts, so a glance at the build 
 nav graph: 12874 nodes, 15903 edges, 8421.6 km
 ```
 
-The in-memory build — the way-kind classification, the bike-legality filter, junction detection, edge split and dedup, island pruning, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the device *does* with it — snap, profile-weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
+The in-memory build — the way-kind classification, the bike-legality filter, junction detection, edge split and dedup, island pruning, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:OBCM_Spec.md). What the device *does* with it — snap, profile-weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
 
 ### Weighting the graph: bike profiles
 
@@ -615,7 +615,7 @@ Everything above hides behind an app that turns *"I want a map of the Black Fore
 - **Presets over knobs.** The main page offers complete style presets — Bikepacking, Minimal, High detail — each a full packer config shipped in [`packer/presets/`](src:packer/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
 - **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the local dev server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten; the desktop app has no fallback to reach for, because there the schema comes out of the packer it is linked against.
 - **No state anywhere.** The working config lives in the browser ("Custom — based on Bikepacking"), never on a server; builds stream their progress live. That shape survives having no server at all, which is what the two shipping tiers below actually do.
-- **Routes need no server at all.** The GPX→OBCR converter is `no_std` Rust, so it compiles to wasm and runs *in the tab* ([`obc-web-convert`](src:firmware/obc-web-convert)) — the same routine the device runs, producing the same bytes, held to the [shared fixtures](src:protocol-vectors). Dropping a route on the builder uploads nothing; the same shim also turns a recorded `.obct` ride log back into a GPX. Map building is the part that still needs real CPU.
+- **Routes need no server at all.** The GPX→OBCR converter is `no_std` Rust, so it compiles to wasm and runs *in the tab* ([`obc-web-convert`](src:apps/obc-web-convert)) — the same routine the device runs, producing the same bytes, held to the [shared fixtures](src:protocol-vectors). Dropping a route on the builder uploads nothing; the same shim also turns a recorded `.obct` ride log back into a GPX. Map building is the part that still needs real CPU.
 
 ### One source, three hosts
 
@@ -644,7 +644,7 @@ Three constraints draw the line between them, and they all point the same way: h
 
 The hosted site is not a crippled demo of the app: it is the whole *"pick a region, pick a style, put a map and a route on the device"* loop, complete, for someone who does not want to install anything. What it cannot do it says so at the moment you reach for it, with the reason — a disabled control next to a sentence, never a hidden feature.
 
-**The packer is a library, not a subprocess.** The dev server spawns `obc-pack` and reads its stdout to guess which stage it is in; the app links the crate and calls [`pipeline::pack`](src:firmware/obc-pack/src/pipeline.rs) — the same function the CLI's `main` calls, which is what makes "the app and the CLI produce the same bytes" a property rather than a hope. Two consequences are visible in the UI. The packer *names* its phases now instead of printing them for something else to match, so the progress bar reads a value; and a build can be **cancelled**, because the flag that stops it is read inside the ingest passes, the land clip, and the per-feature simplify, rather than between them.
+**The packer is a library, not a subprocess.** The dev server spawns `obc-pack` and reads its stdout to guess which stage it is in; the app links the crate and calls [`pipeline::pack`](src:host/obc-pack/src/pipeline.rs) — the same function the CLI's `main` calls, which is what makes "the app and the CLI produce the same bytes" a property rather than a hope. Two consequences are visible in the UI. The packer *names* its phases now instead of printing them for something else to match, so the progress bar reads a value; and a build can be **cancelled**, because the flag that stops it is read inside the ingest passes, the land clip, and the per-feature simplify, rather than between them.
 
 #### Build, plug in, send
 
@@ -801,15 +801,15 @@ let (back, fwd) = if !self.started {
 
 ## Where this lives
 
-- The packer pipeline, end to end and callable from either host: [`obc-pack/src/pipeline.rs`](src:firmware/obc-pack/src/pipeline.rs); the phase vocabulary and the cancel token it carries: [`obc-pack/src/progress.rs`](src:firmware/obc-pack/src/progress.rs); the CLI around it: [`obc-pack/src/main.rs`](src:firmware/obc-pack/src/main.rs)
-- Config + first-match styling: [`obc-pack/src/config.rs`](src:firmware/obc-pack/src/config.rs)
-- The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:firmware/obc-pack/schema/config.schema.json)
-- The builder's Svelte source and its local FastAPI dev host: [`packer/web_builder/`](src:packer/web_builder); the desktop app that links the packer instead of spawning it: [`obc-desktop`](src:firmware/obc-desktop); the browser-side GPX↔OBCR conversion (wasm over `obc-route`): [`obc-web-convert`](src:firmware/obc-web-convert)
-- OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:firmware/obc-pack/src/ingest.rs)
-- The quadtree build: [`obc-pack/src/quadtree.rs`](src:firmware/obc-pack/src/quadtree.rs)
-- Land generation: [`obc-pack/src/land.rs`](src:firmware/obc-pack/src/land.rs)
-- POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:firmware/obc-pack/src/poi.rs)
-- The navigation-graph build (routable filter, junction detection, edge split + dedup): [`obc-pack/src/nav.rs`](src:firmware/obc-pack/src/nav.rs)
+- The packer pipeline, end to end and callable from either host: [`obc-pack/src/pipeline.rs`](src:host/obc-pack/src/pipeline.rs); the phase vocabulary and the cancel token it carries: [`obc-pack/src/progress.rs`](src:host/obc-pack/src/progress.rs); the CLI around it: [`obc-pack/src/main.rs`](src:host/obc-pack/src/main.rs)
+- Config + first-match styling: [`obc-pack/src/config.rs`](src:host/obc-pack/src/config.rs)
+- The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:host/obc-pack/schema/config.schema.json)
+- The builder's Svelte source and its local FastAPI dev host: [`packer/web_builder/`](src:packer/web_builder); the desktop app that links the packer instead of spawning it: [`obc-desktop`](src:apps/obc-desktop); the browser-side GPX↔OBCR conversion (wasm over `obc-route`): [`obc-web-convert`](src:apps/obc-web-convert)
+- OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:host/obc-pack/src/ingest.rs)
+- The quadtree build: [`obc-pack/src/quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
+- Land generation: [`obc-pack/src/land.rs`](src:host/obc-pack/src/land.rs)
+- POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:host/obc-pack/src/poi.rs)
+- The navigation-graph build (routable filter, junction detection, edge split + dedup): [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs)
 - The on-device router (snap + profile-weighted A\* + OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - The route map-matcher: [`obc-route/src/matcher.rs`](src:firmware/obc-route/src/matcher.rs)
 - GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs) — one routine, three hosts (device, simulator, browser)

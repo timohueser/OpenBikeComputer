@@ -20,12 +20,12 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 SIM="${SIM:-$repo_root/target/release/obc-sim}"
-MAP="${MAP:-$repo_root/firmware/obc-sim/assets/grimsel.obcm}"
-GPX="${GPX:-$repo_root/firmware/obc-sim/assets/grimsel-climb.gpx}"
+MAP="${MAP:-$repo_root/apps/obc-sim/assets/grimsel.obcm}"
+GPX="${GPX:-$repo_root/apps/obc-sim/assets/grimsel-climb.gpx}"
 # A second, tiny replay that lies *on* protocol-vectors' `route-waypoints.obcr` ("Vector Loop") — the
 # Grimsel climb GPX above is far off it, so it can't drive the waypoint chip/ticks. Synthetic + its
 # provenance are pinned in the assets README; it stops ~300 m short of the "Pass Summit" waypoint.
-WPTGPX="$repo_root/firmware/obc-sim/assets/vector-loop-replay.gpx"
+WPTGPX="$repo_root/apps/obc-sim/assets/vector-loop-replay.gpx"
 ROUTES="$repo_root/protocol-vectors"
 OUT="${1:-ui-snapshots}"
 
@@ -56,8 +56,8 @@ printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc st
 printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
 cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
-cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
-cp "$repo_root/firmware/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
+cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
+cp "$repo_root/apps/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
@@ -115,7 +115,7 @@ cp "$repo_root/firmware/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # Resupply "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow,
 # and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws
 # once to fill the lazy snapshot, then presses the POI into its detail.
-MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
+MONACO="$repo_root/apps/obc-sim/assets/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p" --png "$OUT/poi-detail.png"
 # The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
@@ -349,7 +349,7 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # so this debug seam opens it. Staged in a temp routes dir (the fixture lives in the sim crate's
 # assets, not protocol-vectors).
 CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$CLIMBROUTES"' EXIT
-cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
+cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 # Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/POIs/Map/Settings,

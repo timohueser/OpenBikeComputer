@@ -4,7 +4,7 @@
 // a Rust function and hands it a serde-shaped argument object, and a mismatch
 // surfaces as "command X not found" or a deserialization error at run time,
 // inside a window, on someone else's machine. So the command names and argument
-// shapes are asserted against what firmware/obc-desktop/src/main.rs declares.
+// shapes are asserted against what apps/obc-desktop/src/main.rs declares.
 
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /** The manifest the real generator writes — the same document web.wire.test.ts
  *  serves, so both hosts are tested against the producer, not a fixture. */
 const EXAMPLE = readFileSync(
-    new URL("../../../../../../firmware/obc-pack/schema/catalog.example.json", import.meta.url),
+    new URL("../../../../../../host/obc-pack/schema/catalog.example.json", import.meta.url),
     "utf8",
 );
 

@@ -45,17 +45,17 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 | `firmware/obc-route/` | `no_std` — the OBCR route reader **and** the GPX → OBCR converter. |
 | `firmware/obc-render/` | `no_std` — the **shared rendering path**: `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering, even-odd scanline polygon fill, weighted polylines, text. Generic over an `embedded-graphics` `DrawTarget` so host and MCU run identical drawing code. |
 | `firmware/obc-app/` | `no_std` — the **application layer**: camera, camera mode (follow-user / free), screen stack, input model, route tracking, plus compatibility re-exports of `obc-ports`. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
-| `firmware/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
-| `firmware/obc-web-demo/` | The website's **live-demo host**: the same shared crates compiled to wasm behind a small `obc_demo_*` API — the landing page's JS owns the frame loop and canvas, no GUI framework in the tree. |
-| `firmware/obc-web-convert/` | The web builder's **conversion bridge**: `obc-route`'s GPX → OBCR and track → GPX compiled to wasm behind two functions and a typed error, so route conversion runs in the visitor's browser instead of on a server. |
-| `firmware/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
-| `firmware/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
+| `apps/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
+| `apps/obc-web-demo/` | The website's **live-demo host**: the same shared crates compiled to wasm behind a small `obc_demo_*` API — the landing page's JS owns the frame loop and canvas, no GUI framework in the tree. |
+| `apps/obc-web-convert/` | The web builder's **conversion bridge**: `obc-route`'s GPX → OBCR and track → GPX compiled to wasm behind two functions and a typed error, so route conversion runs in the visitor's browser instead of on a server. |
+| `host/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
+| `host/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
 | `packer/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
 | `packer/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
 | `packer/web_builder/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
 | `firmware/obc-ble/` | `no_std` — the **BLE data-plane core** (epic #267): the S0 control-plane descriptor codecs, CRC-32, list objects, and the whole-object transfer state machine. Radio-free and host-tested; the board crate drives the L2CAP bytes through it. |
 | `firmware/obc-dfu/` | `no_std` — the **SD-staged DFU core** (epic #615): the `OBCU` update-image container + boot-state page codecs, the bootloader's install engine (verify → flash → readback → trial/rollback), and the app-side armer. Host-tested with mock IO; both `obc-boot` and the board crate are thin drivers over it. |
-| `firmware/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
+| `host/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
 | `firmware/obc-boot/` | The **32 KB nRF54L bootloader** — reads the `BOOT_STATE` page, runs `obc-dfu`'s install engine, flashes the app slot via RRAMC (LED codes, no display). Workspace-excluded + standalone like the board crate; flashed once. |
 | `companion-ios/` | The **iOS companion app** (SwiftUI + the `OBCKit` package): import GPX/TCX, encode OBCR, and sync routes/rides with the device over BLE. |
 | `protocol-vectors/` | Shared binary fixtures pinning the BLE wire contract, the OBCR route format and the recorded-track log + its GPX export — asserted byte-exact by `cargo test`, `swift test`, and the web builder's wasm conversion tests. |
@@ -79,7 +79,7 @@ The nRF54L firmware and the website's
 | :-- | :-- |
 | Building anything Rust | A stable Rust toolchain (`rustup`). |
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`; `tools/install-geos.sh` builds it if your distro's is older) — linked for multipolygon area assembly, and the packer's only native dependency. |
-| The desktop app (`obc-desktop`) | **No GEOS** — it compiles a vendored one into the binary. It wants **CMake** (to build that) and **Node 22+** (it embeds the built frontend) instead. See [its README](firmware/obc-desktop/README.md). |
+| The desktop app (`obc-desktop`) | **No GEOS** — it compiles a vendored one into the binary. It wants **CMake** (to build that) and **Node 22+** (it embeds the built frontend) instead. See [its README](apps/obc-desktop/README.md). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew setup**. |
 | The web builder (optional) | Python 3.13 + the deps in `packer/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `packer/web_builder/frontend/`). |
 | Checking the shared crates build for the device | `rustup target add thumbv8m.main-none-eabihf`. |
@@ -93,7 +93,7 @@ The nRF54L firmware and the website's
 cd firmware && cargo build --release
 ```
 
-This produces, in `firmware/target/release/`:
+This produces, in `target/release/`:
 
 - `obc-sim` — the desktop simulator
 - `obc-pack` — the map packer
@@ -112,7 +112,7 @@ Download an OSM extract (e.g. from [Geofabrik](https://download.geofabrik.de/)),
 then:
 
 ```sh
-firmware/target/release/obc-pack region.osm.pbf packer/presets/default.json region.obcm
+target/release/obc-pack region.osm.pbf packer/presets/default.json region.obcm
 ```
 
 ```
@@ -219,7 +219,7 @@ Downloads, caches, and the build queue are env-configurable (all optional):
 | :-- | :-- | :-- |
 | `OBCM_CACHE_DIR` | `~/.cache/obcm` | Geofabrik index, PBF downloads, land polygons. |
 | `OBCM_OUTPUT_DIR` | `<cache>/builds` | Per-job build outputs, served by the download endpoint. |
-| `OBC_PACK_BIN` | `firmware/target/{release,debug}/obc-pack` | Path to the packer binary. |
+| `OBC_PACK_BIN` | `target/{release,debug}/obc-pack` | Path to the packer binary. |
 | `OBCM_MAX_CONCURRENT_JOBS` | `1` | Parallel packs (obc-pack is memory-hungry). |
 | `OBCM_KEEP_JOBS` | `20` | Finished builds kept before the sweeper evicts by count/age. |
 
@@ -249,7 +249,7 @@ produced by `obc-pack catalog`). Both default to `./data/` beside the app;
     --out packer/web_builder/frontend/public/data
 
 # catalog.json — from a bake tree (OBCC_Spec.md §8), pointed at where it is served
-firmware/target/release/obc-pack catalog <bake-tree> \
+target/release/obc-pack catalog <bake-tree> \
     --base-url http://localhost:5173/data
 
 cd packer/web_builder/frontend && npm run dev -- --mode web
@@ -307,13 +307,13 @@ Maps must be **v5**.
 
 ```sh
 # Interactive, simulating the device (240×320, 64 colors), 3× window scale:
-firmware/target/release/obc-sim region.obcm
+target/release/obc-sim region.obcm
 
 # Larger window / different simulated resolution:
-firmware/target/release/obc-sim region.obcm --size 480x640 --scale 2
+target/release/obc-sim region.obcm --size 480x640 --scale 2
 
 # Full color (skip the 64-color quantization) for comparison:
-firmware/target/release/obc-sim region.obcm --true-color
+target/release/obc-sim region.obcm --true-color
 ```
 
 **Interactive controls:** drag to pan, scroll to zoom, Esc/Q to quit. The
@@ -423,7 +423,7 @@ pipeline) is in the [firmware README](firmware/README.md#firmware-update-images-
 ## Testing
 
 ```sh
-cargo test -p obc-pack --manifest-path firmware/Cargo.toml   # the packer
+cargo test -p obc-pack   # the packer
 cd firmware && cargo test                                    # the whole workspace
 ```
 
@@ -454,7 +454,7 @@ coprocessor with partial / dirty-row updates.
 styling (dashed / two-color lines — a future OBCM v6 — and road casing).
 
 > The packer was originally a Python pipeline; it has been ported to Rust
-> (`firmware/obc-pack`) and the Python pipeline removed. The port's design notes
+> (`host/obc-pack`) and the Python pipeline removed. The port's design notes
 > live in `packer/docs/`.
 
 ---

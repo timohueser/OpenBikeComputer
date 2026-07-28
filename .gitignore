@@ -11,7 +11,7 @@ __pycache__/
 !protocol-vectors/*.obcr
 *.osm.pbf
 # ...except the 735-byte hand-authored fixture the obc-pack ingest test reads
-# (firmware/obc-pack `ingest::tests::tiny_truth_table`). It must ship in-repo so the
+# (host/obc-pack `ingest::tests::tiny_truth_table`). It must ship in-repo so the
 # test actually runs in CI — otherwise it silently reported PASS without ever running
 # (issue #95). Source of truth is the committed tiny/tiny.osm; rebuild via
 # packer/tests/corpus/build_corpus.sh.
@@ -42,7 +42,7 @@ user_config.json
 .DS_Store
 *.gpx
 # ...except the deterministic source the protocol-vector route fixtures regenerate from.
-!firmware/obc-vectors/src/route-source.gpx
+!host/obc-vectors/src/route-source.gpx
 # ...and the checked-in GPX export of the recorded-track vector (A2, #896) — the expected
 # output the wasm bridge is compared against.
 !protocol-vectors/*.gpx

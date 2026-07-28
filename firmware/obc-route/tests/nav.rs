@@ -1003,7 +1003,7 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
 #[cfg_attr(miri, ignore)]
 #[test]
 fn road_vs_mtb_diverge_over_grimsel() {
-    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/grimsel.obcm"))
+    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
         .expect("grimsel.obcm fixture present");
     let from = (8_169_610, 46_694_536);
     let to = (8_217_309, 46_706_261);

@@ -66,6 +66,11 @@ jobs:
           filters: |
             rust:
               - 'firmware/**'
+              # host/ holds the packer, the bench + its golden hashes, and the test oracles
+              # (obcm-testkit, obc-vectors) that firmware crates dev-depend on.
+              - 'host/**'
+              # apps/ holds the four shells: the simulator, both wasm hosts, and the Tauri app.
+              - 'apps/**'
               - 'packer/presets/**'
               # packer/tests/ drives the real obc-pack binary and the builder's pure API
               # endpoints, so the packer, the presets it round-trips, and the server module
@@ -82,6 +87,8 @@ jobs:
               - '.github/workflows/ci.yml'
             wasm:
               - 'firmware/**'
+              - 'host/**'
+              - 'apps/**'
               - 'docs/**'
               # The root cargo config is gone (`MapCache::new_boxed` removed the wasm
               # shadow-stack flag it carried — PRs #661/#666), but rustflags placed there
@@ -95,8 +102,8 @@ jobs:
             desktop:
               # The Tauri shell embeds the built frontend and links obc-pack, so it
               # breaks from either side.
-              - 'firmware/obc-desktop/**'
-              - 'firmware/obc-pack/**'
+              - 'apps/obc-desktop/**'
+              - 'host/obc-pack/**'
               - 'packer/web_builder/frontend/**'
               - 'packer/presets/**'
               # The GEOS smoke test (#907) packs this fixture with that preset and
@@ -113,12 +120,14 @@ jobs:
               # change can move those bytes. Its byte-identity guard reads protocol-vectors/, and
               # the toolchain file picks the compiler that produces the module.
               - 'firmware/**'
+              - 'host/**'
+              - 'apps/**'
               - 'protocol-vectors/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
 
   # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
-  # shared firmware/rustfmt.toml, so the excluded crates inherit it; the virtual workspace
+  # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
   # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
     needs: changes
@@ -142,7 +151,7 @@ jobs:
           cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
           echo "::endgroup::"
           echo "::group::obc-desktop (workspace-excluded)"
-          cargo fmt --check --manifest-path firmware/obc-desktop/Cargo.toml || rc=1
+          cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -194,7 +203,7 @@ jobs:
       # file. Timings are printed to the log but never gated (shared runners are noisy); an
       # intentional rendering change regenerates hashes.txt (--write-hashes) in the same PR.
       - name: obc-bench --check (render pixel-hash tripwire)
-        run: cargo run -p obc-bench --release --locked -- --check firmware/obc-bench/hashes.txt
+        run: cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -384,12 +393,12 @@ jobs:
       # The desktop shell is the one artifact a *user* installs, so its tree is the
       # one where a bad licence or a live advisory matters most.
       - name: cargo-deny (obc-desktop app)
-        run: cargo deny --manifest-path firmware/obc-desktop/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config deny.toml check
 
-  # The web demo (firmware/obc-web-demo) is the firmware's own render path compiled to wasm
+  # The web demo (apps/obc-web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
   # wasm-only breakage — bindgen surface, embedded assets, Trunk config — is caught before merge.
-  # (The `wasm` path filter's firmware/** covers firmware/obc-web-demo/** and every shared crate.)
+  # (The `wasm` path filter's firmware/** covers apps/obc-web-demo/** and every shared crate.)
   wasm:
     needs: changes
     if: needs.changes.outputs.wasm == 'true'
@@ -409,7 +418,7 @@ jobs:
       - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
 
-  # The hosted builder's conversion bridge (firmware/obc-web-convert, #896): the shared obc-route
+  # The hosted builder's conversion bridge (apps/obc-web-convert, #896): the shared obc-route
   # GPX↔OBCR path compiled to wasm so route conversion runs client-side and the hosted tier needs
   # no backend at all. Two things happen here and the order matters:
   #
@@ -439,7 +448,7 @@ jobs:
           tool: wasm-pack@0.15.0
       - name: wasm-pack build (obc-web-convert → wasm)
         run: |
-          wasm-pack build firmware/obc-web-convert --release --target web \
+          wasm-pack build apps/obc-web-convert --release --target web \
             --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg \
             --out-name obc_web_convert
       - name: bundle-size budget
@@ -568,7 +577,7 @@ jobs:
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
 
-  # The Tauri desktop shell (firmware/obc-desktop, #906). Workspace-excluded like the
+  # The Tauri desktop shell (apps/obc-desktop, #906). Workspace-excluded like the
   # board crate and the bootloader, and for the same kind of reason: Tauri drags in
   # wry and a platform webview, and putting WebKitGTK's headers in the way of
   # `cargo test` for the renderer helps nobody.
@@ -634,7 +643,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware/obc-desktop
+          workspaces: apps/obc-desktop
           key: desktop-${{ matrix.slug }}
       # wry's Linux backend. macOS and Windows need nothing extra — which is most of
       # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
@@ -660,16 +669,16 @@ jobs:
           npm ci
           npm run build:desktop
       - name: "obc-desktop: clippy"
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: cargo clippy --release --all-targets --locked -- -D warnings
       # The GEOS smoke test lives here: packs the fixture through the vendored
       # library and asserts the digest. --nocapture so the log records the digest
       # and the linked GEOS version even on a green run.
       - name: "obc-desktop: test (incl. the GEOS smoke test)"
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: cargo test --release --locked -- --nocapture
       - name: "obc-desktop: build (release)"
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: cargo build --release --locked
       # A dynamic reference to libGEOS here would mean the app only works on a
       # machine that already has it — the exact failure D2 exists to remove. On
@@ -677,7 +686,7 @@ jobs:
       # smoke test above could not have run at all.
       - name: "obc-desktop: no dynamic libGEOS"
         if: runner.os != 'Windows'
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: |
           bin="target/release/${{ matrix.exe }}"
           if [ "$RUNNER_OS" = "macOS" ]; then deps=$(otool -L "$bin"); else deps=$(ldd "$bin"); fi
@@ -690,14 +699,14 @@ jobs:
       # +1.2 MB the static GEOS costs is the number the alternative — shipping a
       # dylib beside the app — has to beat.
       - name: "obc-desktop: record the artifact size"
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: |
           bytes=$(wc -c < "target/release/${{ matrix.exe }}")
           echo "| ${{ matrix.slug }} | $bytes bytes |" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: obc-desktop-${{ matrix.slug }}
-          path: firmware/obc-desktop/target/release/${{ matrix.exe }}
+          path: apps/obc-desktop/target/release/${{ matrix.exe }}
           retention-days: 7
       # macOS ships two architectures and this crate is built on the Apple-silicon
       # runner, so the Intel slice is proved by *cross-building* it: enough to know
@@ -706,7 +715,7 @@ jobs:
       # D3's (#908) job, and this step is what keeps that option open.
       - name: "obc-desktop: the macOS Intel slice (build-only)"
         if: runner.os == 'macOS'
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: |
           rustup target add x86_64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin

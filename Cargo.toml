@@ -19,18 +19,18 @@ members = [
     "firmware/obc-ble",
     "firmware/obc-dfu",
     # host/ — tools, shared host glue, and the test oracles. Never on the device.
-    "firmware/obc-host-core",
-    "firmware/obc-pack",
-    "firmware/obc-mkimage",
-    "firmware/obc-bench",
-    "firmware/obc-vectors",
-    "firmware/obcm-testkit",
-    "firmware/obc-replay",
-    "firmware/obc-usb-host",
-    # apps/ — the shells.
-    "firmware/obc-sim",
-    "firmware/obc-web-demo",
-    "firmware/obc-web-convert",
+    "host/obc-host-core",
+    "host/obc-pack",
+    "host/obc-mkimage",
+    "host/obc-bench",
+    "host/obc-vectors",
+    "host/obcm-testkit",
+    "host/obc-replay",
+    "host/obc-usb-host",
+    # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
+    "apps/obc-sim",
+    "apps/obc-web-demo",
+    "apps/obc-web-convert",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its

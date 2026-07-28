@@ -70,7 +70,7 @@ export type { RideListEntry, RideObject, RideScope };
 /**
  * One ride in the library, as the index stores it.
  *
- * Mirrors `rides::LibraryRide` in `firmware/obc-desktop/src/rides.rs` field for field. `present`
+ * Mirrors `rides::LibraryRide` in `apps/obc-desktop/src/rides.rs` field for field. `present`
  * and `gpxPresent` are recomputed against the filesystem on every read there, so they describe the
  * folder now rather than what it looked like when the entry was written.
  */

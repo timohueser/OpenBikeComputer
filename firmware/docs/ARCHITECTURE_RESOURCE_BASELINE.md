@@ -591,7 +591,7 @@ into four platform-layer crates (`obc-display`, `obc-sensors`, `obc-storage`,
 and the narrowed `obc-platform`), adding the consumer edges to the new crates
 (58 -> 64) without introducing any upward edge.
 
-The checker covers the `firmware/Cargo.toml` workspace plus the standalone
+The checker covers the root `Cargo.toml` workspace plus the standalone
 manifests for the excluded `obc-fw-nrf54l` composition root and `obc-boot` boot
 root. Their production edges therefore participate in the same layer graph even
 though both crates remain independently built and linted in CI.

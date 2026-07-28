@@ -3,7 +3,7 @@
 // bundles — the same containment `api/client.ts` has on the dev side.
 //
 // Every function here is one `invoke()`. The names are the Rust command names in
-// firmware/obc-desktop/src/main.rs, and the argument shapes are what serde
+// apps/obc-desktop/src/main.rs, and the argument shapes are what serde
 // deserializes there; that is the whole contract, and it is worth keeping in one
 // file so a rename is one place on each side.
 
@@ -37,7 +37,7 @@ export type BuildEvent =
 // --- USB (D4 #909) ------------------------------------------------------------
 //
 // The Rust side moves bytes and nothing else; the protocol is C3's TS client, the
-// same one the hosted site runs. See firmware/obc-desktop/src/usb/ for the plane
+// same one the hosted site runs. See apps/obc-desktop/src/usb/ for the plane
 // split and why the two binary calls below do not go through JSON.
 
 /** Which endpoint pair a call means — `DeviceLink`'s two members, by name. */
@@ -142,7 +142,7 @@ export const desktop = {
     // `ridesImport` is the one command in this file whose *timing* is part of a
     // contract: it resolves after the ride object, the GPX and the index have
     // each been fsynced, and `pullRides` sends `ackRides` only afterwards. See
-    // firmware/obc-desktop/src/rides.rs.
+    // apps/obc-desktop/src/rides.rs.
 
     ridesIndex: () => invoke<RideIndexView>("rides_index"),
     ridesImport: (request: RideImportRequest) => invoke<RideImported>("rides_import", { request }),
@@ -156,7 +156,7 @@ export const desktop = {
 
 // --- the ride library's payloads ---------------------------------------------
 //
-// Field for field what `serde` reads and writes in firmware/obc-desktop/src/rides.rs.
+// Field for field what `serde` reads and writes in apps/obc-desktop/src/rides.rs.
 // `lib/device/library.ts` owns the app-facing shapes; these are the wire ones, and
 // `lib/desktop/library.ts` is the (thin) translation between them.
 

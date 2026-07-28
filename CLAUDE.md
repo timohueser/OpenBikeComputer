@@ -47,7 +47,7 @@ where it belongs — don't re-explain the architecture in a README.
   [firmware/obc-fw-nrf54l/README.md](firmware/obc-fw-nrf54l/README.md); the
   boot-chain layout + flash-once workflow:
   [firmware/obc-boot/README.md](firmware/obc-boot/README.md); building and running
-  the app: [firmware/obc-desktop/README.md](firmware/obc-desktop/README.md).
+  the app: [apps/obc-desktop/README.md](apps/obc-desktop/README.md).
 - `cargo fmt` is a **four-step**: `cargo fmt --all` for the workspace **plus** a
   separate `cargo fmt` inside each excluded crate (board crate, `obc-boot`,
   `obc-desktop`), or the fmt CI guard fails. (rustfmt config is committed — let it

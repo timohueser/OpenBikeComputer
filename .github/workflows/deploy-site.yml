@@ -134,7 +134,7 @@ jobs:
       # Same invocation as ci.yml's wasm-convert job.
       - name: Build the wasm conversion bridge
         run: |
-          wasm-pack build firmware/obc-web-convert --release --target web \
+          wasm-pack build apps/obc-web-convert --release --target web \
             --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg \
             --out-name obc_web_convert
 

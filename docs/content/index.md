@@ -134,14 +134,14 @@ The whole project is built around two ideas: **compact binary formats a microcon
 
 | Layer | Crate / file | What it does |
 | :-- | :-- | :-- |
-| Map packer | [`obc-pack`](src:firmware/obc-pack) | OSM `.osm.pbf` → `.obcm` (ingest, multipolygon assembly, quadtree build) |
+| Map packer | [`obc-pack`](src:host/obc-pack) | OSM `.osm.pbf` → `.obcm` (ingest, multipolygon assembly, quadtree build) |
 | Map reader | [`obc-reader`](src:firmware/obc-reader) | Parses OBCM directly off bytes — header, styles, LOD table, quadtree, chunk decode |
 | Route reader | [`obc-route`](src:firmware/obc-route) | OBCR reading, GPX → OBCR conversion, map-matching, elevation profile |
 | Renderer | [`obc-render`](src:firmware/obc-render) | The shared draw path — projection, culling, rasterising. `no_std`, zero-alloc |
 | Application | [`obc-app`](src:firmware/obc-app) | Camera, screen stack, input model, ride tracking — one per-frame entry point |
-| Simulator host | [`obc-sim`](src:firmware/obc-sim) | Desktop shell: window, control panel, colour policy, GPX replay, headless capture |
-| Web demo host | [`obc-web-demo`](src:firmware/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:firmware/obc-host-core)) |
-| Conversion bridge | [`obc-web-convert`](src:firmware/obc-web-convert) | The web builder's wasm shim over the same GPX ↔ OBCR routines — route conversion runs in the tab, no server |
+| Simulator host | [`obc-sim`](src:apps/obc-sim) | Desktop shell: window, control panel, colour policy, GPX replay, headless capture |
+| Web demo host | [`obc-web-demo`](src:apps/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:host/obc-host-core)) |
+| Conversion bridge | [`obc-web-convert`](src:apps/obc-web-convert) | The web builder's wasm shim over the same GPX ↔ OBCR routines — route conversion runs in the tab, no server |
 
 > **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then dive into the **[Rendering pipeline](software/rendering/)** — it's the most interesting machinery in the project. The **[data formats](software/formats/)** page is the reference the other two lean on.
 

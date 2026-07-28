@@ -32,4 +32,4 @@ libm = { version = "0.2", default-features = false } # no arch asm: identical co
 [dev-dependencies]
 # The hand-written OBCM v6 byte builder shared by the reader/renderer tests — the POIs-browser
 # integration tests (#425) use `build_poi_map` to synthesise a v6 map with real POIs to snapshot.
-obcm-testkit = { path = "../obcm-testkit" }
+obcm-testkit = { path = "../../host/obcm-testkit" }

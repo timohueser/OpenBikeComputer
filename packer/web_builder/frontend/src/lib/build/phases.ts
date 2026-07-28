@@ -7,7 +7,7 @@
 //
 // Order is the whole mechanism — a phase's *index* is its progress — so this
 // array is the same list, in the same order, as `Phase::ALL` in
-// firmware/obc-pack/src/progress.rs and `_STAGE_MARKERS` in
+// host/obc-pack/src/progress.rs and `_STAGE_MARKERS` in
 // packer/web_builder/jobs.py. `obc-pack`'s
 // `stage_lines_still_match_the_web_builders_markers` is what fails if they drift.
 //
