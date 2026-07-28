@@ -31,7 +31,7 @@ settings = "Settings"
 # --- The mid-ride compass, Waypoints list, and Detour chooser ---
 [ride_menu]
 title = "RIDE MENU"
-waypoints = "Waypoints"
+up_ahead = "Up ahead"
 detour = "Detour"
 inspect_rejoin = "Inspect rejoin"
 main_menu = "Main menu"
@@ -40,8 +40,14 @@ off_route = "Return to route"
 route_end = "Route ends here"
 no_nav = "No routing data"
 
-[waypoints]
-none = "No waypoints"
+# --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
+[up_ahead]
+everything = "Everything"
+filter_title = "SHOW"
+none = "Nothing up ahead"
+none_sub = "No stops on route"
+none_category_sub = "None of this kind"
+no_route_sub = "Load a route first"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
@@ -299,6 +305,16 @@ routing_uses = "Routing uses this profile"
 no_profiles = "No map profiles"
 no_profiles_sub = "Load a map to pick a bike type"
 
+# --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
+# "Up ahead" category picker all draw these ---
+[poi_cat]
+water = "Water"
+campsite = "Campsite"
+accommodation = "Lodging"
+resupply = "Resupply"
+pharmacy = "Pharmacy"
+bike_shop = "Bike shop"
+
 # --- POI category menu ---
 [poi_menu]
 title = "POIS"
@@ -319,6 +335,8 @@ today = "Today"
 open = "OPEN"
 closed = "CLOSED"
 route_here = "Route here"
+side_left = "left"
+side_right = "right"
 
 # --- BLE pairing passkey card ---
 [passkey]

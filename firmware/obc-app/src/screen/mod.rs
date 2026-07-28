@@ -53,6 +53,7 @@ mod route_swap;
 mod settings;
 mod statistics;
 mod trip_delete;
+pub(crate) mod up_ahead;
 mod warning;
 
 pub use climb::ClimbScreen;
@@ -73,7 +74,7 @@ pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
-pub use ride_menu::{RideMenuScreen, RideWaypointsScreen};
+pub use ride_menu::RideMenuScreen;
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
@@ -87,6 +88,7 @@ pub use settings::{
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
+pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
 pub use warning::{WarningFlags, WarningScreen};
 
 /// Maximum overlay depth. The deepest normal path is eight screens
@@ -171,6 +173,14 @@ pub struct Ctx<'a> {
     /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
     /// place `handle` reaches the draw-taken snapshot. Every other screen leaves it untouched.
     pub poi_scratch: &'a PoiScratch,
+    /// The active route's resident waypoint table, **read-only** here — the Up-ahead timeline walks
+    /// it (with [`corridor`](Ctx::corridor)) to resolve its cursor and the pressed row. Empty
+    /// without a route; every other screen leaves it untouched.
+    pub waypoints: &'a [obc_route::WptEntry],
+    /// The App-owned **route-corridor POI snapshot** (epic #946, U2), **read-only** here — the
+    /// other half of the Up-ahead merge, so `handle` sees exactly the rows `draw` drew. Empty until
+    /// a snapshot lands; every other screen leaves it untouched.
+    pub corridor: &'a [obc_reader::CorridorPoi],
     /// The live BLE **sensor scan hits** (epic #707, SE7), read-only here — the scan-list screen's
     /// `Gesture::Press` reads the highlighted hit's address out of it to save + connect. Empty outside
     /// a scan; every other screen leaves it untouched.
@@ -274,6 +284,14 @@ pub struct Render<'a, 'd> {
     /// screen leaves it untouched. Draw is side-effect-free — the acquisition moved out of the draw
     /// path to the pre-draw prepare phase, so `Render` no longer carries mutable POI scratch.
     pub poi_scratch: &'a PoiScratch,
+    /// The frozen **route-corridor POI snapshot** (epic #946, U2) the Up-ahead timeline merges with
+    /// [`waypoints`](Render::waypoints) — ascending by along-route distance, empty until one lands.
+    pub corridor: &'a [obc_reader::CorridorPoi],
+    /// Whether that snapshot has **settled**: taken, or settled empty on a query error (U2). `false`
+    /// only while the query still waits for its inputs (no `Reader` / no route geometry this frame),
+    /// which is what keeps the Up-ahead empty state from flashing an answer the next frame
+    /// contradicts.
+    pub corridor_settled: bool,
     /// The per-slot BLE **sensor status** (epic #707, SE7) — the Sensors settings screen draws the
     /// HR / power / cadence rows' status lines from it. Fed each pass by the host; empty defaults
     /// elsewhere, so the screen indexes it by slot unconditionally.
@@ -678,8 +696,10 @@ screens! {
     Menu(MenuScreen) => Caps::nav().timed(),
     /// The five-station mid-ride compass: Waypoints / Detour / POIs / Routes / Main menu.
     RideMenu(RideMenuScreen) => Caps::nav().timed(),
-    /// The ride menu's route-ordered waypoint plan: distance/climb-to-go with passed rows muted.
-    RideWaypoints(RideWaypointsScreen) => Caps::nav(),
+    /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
+    /// table and the App-owned corridor-POI snapshot, with the Hold category picker as an in-screen
+    /// mode. Reads the snapshot the App arms from its `corridor_key`; holds no rows itself.
+    UpAhead(UpAheadScreen) => Caps::nav(),
     /// Detour chooser (#882): a map base with streamed skipped-stretch ink and an auto-fit camera.
     Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),
     /// Detour preview (#882): the planned detour + cost line over the map; Press commits the splice.
@@ -808,6 +828,19 @@ impl Screen {
     /// Intentionally partial, like [`tick_timers`](Screen::tick_timers) and
     /// [`wants_hold_fill`](Screen::wants_hold_fill): a row that declares no reader need never lands
     /// here.
+    /// The **route-corridor snapshot** this screen wants, if any (epic #946, U3) — the Up-ahead
+    /// timeline's `(filter, anchor)` key, declared rather than queried. Read by
+    /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) whenever the stack
+    /// settles, which is the whole arm/re-arm/disarm lifecycle. Intentionally partial: no other
+    /// screen asks for one, so the App-owned scratch stays disarmed (and the query free) everywhere
+    /// else.
+    pub(crate) fn corridor_request(&self) -> Option<crate::corridor::CorridorKey> {
+        match self {
+            Screen::UpAhead(s) => Some(s.corridor_key()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn prepare(&mut self, px: &mut Prepare) {
         match self {
             Screen::PoiList(s) => s.prepare(px),

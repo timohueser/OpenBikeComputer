@@ -247,6 +247,8 @@ mod tests {
             trips: &[],
             nav_profiles: &crate::NavProfiles::EMPTY,
             poi_scratch: &scratch,
+            waypoints: &[],
+            corridor: &[],
             sensor_scan_hits: &[],
             now_ms: 0,
         };

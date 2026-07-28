@@ -147,26 +147,50 @@ fn render_smoke() {
     }
 }
 
-/// RM2's new empty-state key is translated (not four English placeholders) and its route-less
-/// Waypoints screen renders through each catalog column without a font/buffer failure.
+/// The Up-ahead timeline's own copy (epic #946, U3) is translated — not four English placeholders
+/// — and every one of its states renders through each catalog column without a font/buffer failure:
+/// the route-less empty state, the merged list's title, and the Hold category picker.
 #[test]
-fn waypoint_empty_state_is_localized_and_renders() {
-    assert_eq!(t(Msg::WaypointsNone, Language::En), "No waypoints");
-    assert_eq!(t(Msg::WaypointsNone, Language::De), "Keine Wegpunkte");
-    assert_eq!(t(Msg::WaypointsNone, Language::Fr), "Aucun point de route");
-    assert_eq!(t(Msg::WaypointsNone, Language::Es), "No hay puntos de ruta");
+fn up_ahead_copy_is_localized_and_every_state_renders() {
+    // The station label the ride compass carries, and the empty-state sentence under it.
+    assert_eq!(t(Msg::RideMenuUpAhead, Language::En), "Up ahead");
+    assert_eq!(t(Msg::RideMenuUpAhead, Language::De), "Voraus");
+    assert_eq!(t(Msg::RideMenuUpAhead, Language::Fr), "\u{c0} venir");
+    assert_eq!(t(Msg::RideMenuUpAhead, Language::Es), "Pr\u{f3}ximo");
+    assert_eq!(t(Msg::UpAheadNone, Language::En), "Nothing up ahead");
+    assert_eq!(t(Msg::UpAheadNone, Language::De), "Nichts voraus");
+    assert_eq!(t(Msg::UpAheadEverything, Language::Fr), "Tout");
+    assert_eq!(t(Msg::UpAheadEverything, Language::Es), "Todo");
+
+    // Every key the screen can draw must differ per language — a forgotten translation that
+    // silently ships the English string is exactly what this net is for.
+    for (key, msg) in [
+        ("up_ahead.none", Msg::UpAheadNone),
+        ("up_ahead.none_sub", Msg::UpAheadNoneSub),
+        ("up_ahead.none_category_sub", Msg::UpAheadNoneCategorySub),
+        ("up_ahead.no_route_sub", Msg::UpAheadNoRouteSub),
+        ("up_ahead.filter_title", Msg::UpAheadFilterTitle),
+        ("poi_detail.side_left", Msg::PoiDetailSideLeft),
+        ("poi_detail.side_right", Msg::PoiDetailSideRight),
+    ] {
+        for lang in [Language::De, Language::Fr, Language::Es] {
+            assert_ne!(t(msg, lang), t(msg, Language::En), "`{key}` is still English in {lang:?}");
+        }
+    }
 
     let bytes = build_min_obcm(0xF800);
     for lang in LANGS {
         let mut app = App::new(AppState::new(0, 0, 0.05));
         app.set_settings(Settings { language: lang, ..Default::default() });
-        app.apply_gesture(Gesture::BackHold); // Map → Ride menu
-        app.apply_gesture(Gesture::Press); // default/north station → Waypoints
-        assert!(matches!(app.top_screen(), Screen::RideWaypoints(_)));
+        app.apply_gesture(Gesture::BackHold); // Map -> Ride menu
+        app.apply_gesture(Gesture::Press); // default/north station -> Up ahead
+        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
         let buf = render_120(&mut app, &bytes);
-        assert!(
-            buf.px.iter().any(|&p| p != Rgb888::BLACK),
-            "route-less waypoint empty state rendered blank in {lang:?}"
-        );
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "route-less Up-ahead state rendered blank in {lang:?}");
+
+        app.apply_gesture(Gesture::Hold); // -> the category picker
+        assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "the picker is a mode, not a screen");
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the category picker rendered blank in {lang:?}");
     }
 }
