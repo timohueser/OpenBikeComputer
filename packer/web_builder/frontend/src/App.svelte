@@ -105,22 +105,34 @@
 
     main {
         flex: 1;
+        min-height: 0; /* the classic flex-overflow unlock: without it, children grow main past the viewport */
         width: min(1400px, 100% - 32px);
         margin: 0 auto;
         padding: 18px 0 28px;
         display: flex;
         flex-direction: column;
+        overflow-y: auto; /* every ordinary route scrolls here… */
     }
 
-    /* Fill the viewport so the map (Home's grid) grows into tall screens. */
+    /* …while Home clamps to the viewport: the map pane takes exactly the room
+       the window gives it, and Home's own steps column is what scrolls. */
     .route {
         flex: 1;
+        min-height: 0;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
     }
 
     .route[hidden] {
         display: none;
+    }
+
+    @media (max-width: 940px) {
+        main,
+        .route {
+            overflow: visible;
+        }
     }
 
     footer {
