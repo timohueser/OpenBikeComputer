@@ -2485,10 +2485,13 @@ name = "obc-bench"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
+ "heapless 0.8.0",
  "obc-app",
  "obc-display",
+ "obc-formats",
  "obc-reader",
  "obc-render",
+ "obc-route",
  "obcm-testkit",
 ]
 
@@ -2628,6 +2631,7 @@ dependencies = [
  "obc-pack",
  "obc-ports",
  "obc-reader",
+ "obcm-testkit",
 ]
 
 [[package]]

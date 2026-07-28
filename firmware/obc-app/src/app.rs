@@ -1622,6 +1622,49 @@ impl App {
         self.ui.poi_scratch.len()
     }
 
+    /// Ask for a **route-corridor POI snapshot** (epic #946, U2): the map POIs of `filter` sitting
+    /// within the corridor of the route ahead of `anchor_m`, frozen once taken. The query runs on
+    /// the next rendered frame that carries both a map `Reader` and the streamed route — until then
+    /// [`base_needs_reader`](App::base_needs_reader) keeps asking the host to build the `Reader`.
+    ///
+    /// Re-arming an unchanged `(filter, anchor_m)` is a no-op, so this is safe to call repeatedly;
+    /// a changed filter (or a new anchor) drops the stale rows and re-queries. U3's "Up ahead" list
+    /// calls this on entry and on a filter change; [`clear_corridor`](App::clear_corridor) on exit.
+    pub fn arm_corridor(&mut self, filter: obc_reader::PoiCategorySet, anchor_m: u32) {
+        self.ui.corridor_scratch.arm(crate::corridor::CorridorKey { filter, anchor_m });
+    }
+
+    /// Drop the held corridor snapshot **and** the request — the Up-ahead screen closing. The
+    /// reader-build seam goes quiet again.
+    pub fn clear_corridor(&mut self) {
+        self.ui.corridor_scratch.disarm();
+    }
+
+    /// Drop the held corridor snapshot but keep the request armed, so the next frame with a
+    /// `Reader` re-runs the identical query — the "re-enter refreshes" half of the frozen-snapshot
+    /// contract (#115).
+    pub fn invalidate_corridor(&mut self) {
+        self.ui.corridor_scratch.invalidate();
+    }
+
+    /// The frozen corridor snapshot, ascending by along-route distance — empty until one has been
+    /// taken (and for a genuinely empty corridor). Read-only: U3 draws rows off this, U5 picks the
+    /// nearest entry per category.
+    pub fn corridor_snapshot(&self) -> &[obc_reader::CorridorPoi] {
+        self.ui.corridor_scratch.entries()
+    }
+
+    /// Number of entries in the current corridor snapshot (0 when none has been taken).
+    pub fn corridor_snapshot_len(&self) -> usize {
+        self.ui.corridor_scratch.len()
+    }
+
+    /// Whether a corridor snapshot is armed but not yet taken — the fact
+    /// [`base_needs_reader`](App::base_needs_reader) folds in. A test/introspection hook.
+    pub fn corridor_snapshot_pending(&self) -> bool {
+        self.ui.corridor_scratch.pending()
+    }
+
     /// Re-roll the Home screensaver's contour pattern to `seed`. The app does this itself when the
     /// stack returns to Home; this is the host-facing hook for previewing a specific pattern.
     pub fn reseed_home(&mut self, seed: u32) {

@@ -21,6 +21,7 @@ pub mod app;
 pub mod ble;
 pub mod breadcrumb;
 pub mod catalog_state;
+pub mod corridor;
 pub mod dfu;
 pub mod dirty;
 pub mod fault;
@@ -52,6 +53,7 @@ pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, TrackAc
 pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanAxis, NAV_PREVIEW_MAX};
 pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;
+pub use corridor::{CorridorKey, CorridorScratch};
 pub use dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 pub use dirty::Dirty;
 pub use fault::{draw_boot_fault, BootFault};
