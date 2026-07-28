@@ -212,6 +212,13 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # The Waypoints mode row (epic #523): the Stats settings screen's 4th press-to-cycle row, under
 # Climb. Three extra steps park the amber cursor on it, showing the default `Approach` mode.
 "$SIM" "$MAP" --boot --script "B u p d d d d p d d d" --png "$OUT/settings-stats-waypoints.png"
+# The "Up ahead shows" source row (epic #946, U4): the Ride settings group's 7th row, right under
+# the Waypoints chip. `B u p p` opens Settings -> Ride, five steps park the amber cursor on it
+# (default `Both`), and each extra press cycles it one further round the ring. The unselected face
+# comes free in the frames above/below, which scroll it into view without the cursor.
+"$SIM" "$MAP" --boot --script "B u p p d d d d d"     --png "$OUT/settings-ride-up-ahead.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d d p"   --png "$OUT/settings-ride-up-ahead-waypoints.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d d p p" --png "$OUT/settings-ride-up-ahead-pois.png"
 "$SIM" "$MAP" --boot --script "B u p d d d d p d p" --png "$OUT/fields.png"
 # The 2×3 waypoint list panel placed in the WYSIWYG field editor (epic #523): from the Fields grid,
 # six steps reach the ADD ghost (the six default tiles fill page 1), press to open the picker, then
@@ -384,6 +391,22 @@ UPBASE="p p p p T B w p f"
 "$SIM" "$UPMAP" --boot --script "B d d d w p p p B w p" --png "$OUT/up-ahead-noroute.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --png "$OUT/up-ahead-nothing.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE h d p w f" --png "$OUT/up-ahead-nocategory.png"
+# (f) The Ride-settings **source scope** (U4). `UPSCOPE n` walks Home → Settings → Ride → the Up
+# ahead row, presses it `n` times round the Both → Waypoints → Map POIs ring, and climbs back to
+# Home before the ride flow starts — so the whole thing is one scripted device session, no seam.
+# Waypoints-only must show no map-POI row (every row keeps its amber icon + diamond pip) and
+# Map-POIs-only no waypoint row; each also pins the scope-named empty sub-line on the plain route,
+# where "No stops on route" would be a lie.
+UPSCOPE() { local n=$1 s="p u p p d d d d d"; for _ in $(seq 1 "$n"); do s="$s p"; done; echo "$s b b b"; }
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
+    --script "$(UPSCOPE 1) $UPBASE" --png "$OUT/up-ahead-waypoints-only.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
+    --script "$(UPSCOPE 2) $UPBASE" --png "$OUT/up-ahead-pois-only.png"
+# The two controls composing: waypoints-only + the Water filter = just the rider's own water stops.
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
+    --script "$(UPSCOPE 1) $UPBASE h d p w f" --png "$OUT/up-ahead-waypoints-only-water.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$(UPSCOPE 1) $UPBASE" --png "$OUT/up-ahead-nothing-waypoints.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$(UPSCOPE 2) $UPBASE" --png "$OUT/up-ahead-nothing-pois.png"
 # Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/POIs/Map/Settings,
 # so the Map station is three steps down from the Routes start (`d d d w`). A live `--gpx` fix pins
 # the follow camera + marker so the frames reproduce (no route → no magenta line, no off-route chip).
