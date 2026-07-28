@@ -701,7 +701,7 @@ screens! {
     /// tracking session with no route via [`start_ride_routeless`].
     RideStart(RideStartScreen) => Caps::nav(),
     Menu(MenuScreen) => Caps::nav().timed(),
-    /// The five-station mid-ride compass: Waypoints / Detour / POIs / Routes / Main menu.
+    /// The five-station mid-ride compass: Up ahead / Detour / POIs / Routes / Main menu.
     RideMenu(RideMenuScreen) => Caps::nav().timed(),
     /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
     /// table and the App-owned corridor-POI snapshot, with the Hold category picker as an in-screen

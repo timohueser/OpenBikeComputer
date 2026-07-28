@@ -1162,7 +1162,9 @@ impl RouteReader<'_> {
     /// `min_dist_m` once the rider passes the tail.
     ///
     /// O(waypoints), one small read per record — call on route load (and on re-window), never per
-    /// frame. A v1 route, or a v2 route without waypoints, yields an empty table.
+    /// frame. A route whose waypoint section is empty — or whose every waypoint is unnamed or
+    /// behind `min_dist_m` — yields an empty table. (Pre-v3 files never reach here: the header
+    /// read inside [`for_each_waypoint`] is the version gate and rejects them.)
     pub fn load_waypoints(&self, min_dist_m: u32) -> Waypoints {
         let mut wpts = Waypoints::new();
         // A read error (a torn waypoint section) ends the stream early; the partial table is still
