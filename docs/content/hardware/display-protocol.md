@@ -7,7 +7,7 @@ description: How the firmware drives the LS021B7DD02 reflective memory-in-pixel 
 
 The device's screen is a Sharp **LS021B7DD02** — a 2.13″, **240 × 320** reflective **memory-in-pixel (MIP)** LCD. "Memory-in-pixel" is the whole story: **every subpixel has a 1-bit latch on the glass.** Write a bit and the panel holds that image with *zero* bus traffic — you only spend power when the picture actually changes, which is exactly what an always-on, battery-bound device wants.
 
-Colour is **RGB222** — 2 bits per channel → **64 colours** — and the panel is **normally black** (an unwritten, all-zero panel is dark). Two facts about *how you talk to it* surprise most people and shape everything below:
+Colour is **RGB222** — 2 bits per channel → **64 colours** — and the panel is **normally black** (an unwritten, all-zero panel is dark). Two facts about *how you talk to it* shape everything below:
 
 1. **The interface is parallel, not SPI.** Pixel data goes out on a **6-bit parallel source bus** plus a handful of control lines.
 2. **The stored bits don't drive the liquid crystal directly.** A separate, *continuously running* AC waveform does; the stored bit only chooses which way each subpixel leans.
@@ -35,7 +35,7 @@ The single most useful way to think about this panel is that **two unrelated job
   <text class="d-sub" x="110" y="166" text-anchor="middle">BSP · BCK · R/G/B[0:1]</text>
   <line class="d-flow" x1="190" y1="96" x2="286" y2="122" marker-end="url(#a1)" />
   <line class="d-flow" x1="190" y1="153" x2="286" y2="140" marker-end="url(#a1)" />
-  <text class="d-sub" x="232" y="106" text-anchor="middle">write 1 bit</text>
+  <text class="d-sub" x="232" y="88" text-anchor="middle">write 1 bit</text>
 
   <!-- centre: the latch -->
   <rect class="d-hot" x="290" y="102" width="120" height="74" rx="12" style="fill:#f8efe4" />
@@ -47,14 +47,15 @@ The single most useful way to think about this panel is that **two unrelated job
   <text class="d-sub" x="452" y="154" text-anchor="middle">a rail</text>
 
   <!-- Path B: polarity -->
-  <text class="d-tag" x="500" y="58">Path B · polarity — continuous ~60 Hz</text>
+  <text class="d-tag" x="500" y="58">Path B · polarity — ~60 Hz</text>
   <text class="d-sub" x="500" y="92" text-anchor="start">VCOM</text>
   <path d="M540 80 H566 V96 H600 V80 H634 V96 H668 V80 H694" fill="none" stroke="#3c6b39" stroke-width="1.8" />
   <text class="d-sub" x="500" y="130" text-anchor="start">VB</text>
   <path d="M540 118 H566 V134 H600 V118 H634 V134 H668 V118 H694" fill="none" stroke="#3c6b39" stroke-width="1.8" />
   <text class="d-sub" x="500" y="168" text-anchor="start">VA</text>
   <path d="M540 172 H566 V156 H600 V172 H634 V156 H668 V172 H694" fill="none" stroke="#cf6a2a" stroke-width="1.8" />
-  <text class="d-sub" x="540" y="200" style="font-size:10px">VB in phase with VCOM · VA the exact inverse → drives the LC (never DC)</text>
+  <text class="d-sub" x="500" y="200" style="font-size:10px">VB in phase with VCOM · VA inverse</text>
+  <text class="d-sub" x="500" y="216" style="font-size:10px">→ drives the LC (never DC)</text>
 </svg>
 <figcaption><b>Path A</b> (the gate scan + source shift) pushes one bit per subpixel into the on-glass latches — it runs only while you update the image, then goes quiet and the picture is retained. <b>Path B</b> (<code>VCOM</code>/<code>VA</code>/<code>VB</code>) is a free-running ~60 Hz square wave that physically drives the liquid crystal; the stored bit just routes each subpixel to follow the <code>VA</code> rail (→ white) or the <code>VB</code> rail (→ black).</figcaption>
 </figure>
@@ -131,7 +132,7 @@ So each `BCK` *edge* clocks **one pixel pair** (two columns) — the panel latch
 
 ## One gate line, two area blocks
 
-Here is the part the datasheet hides in its charts, and the key to the whole protocol:
+Here is the key to the whole protocol — easy to miss in the datasheet's timing charts:
 
 > **A pixel row is ONE gate line.** The display has exactly **320 gate lines (`L1…L320`), one per pixel row.** The "three bands" above are the area layout *inside a single cell* — **not** three separate gate lines.
 
