@@ -133,6 +133,14 @@
         if (active) picker?.invalidateSize();
     });
 
+    // The pane is sized by the viewport now (the layout lock), so its box
+    // changes without a window `resize` event Leaflet would catch on its own.
+    $effect(() => {
+        const observer = new ResizeObserver(() => picker?.invalidateSize());
+        observer.observe(mapEl);
+        return () => observer.disconnect();
+    });
+
     function setMode(m: "regions" | "bbox") {
         if (m === mode) return;
         mode = m;
@@ -278,8 +286,18 @@
         position: relative;
         padding: 0;
         overflow: hidden;
-        min-height: 480px;
         height: 100%;
+        /* Wide layouts are viewport-locked: the pane takes exactly what the
+           window gives it, so a floor would push the page into scrolling —
+           the thing the lock exists to prevent. Narrow layouts stack and
+           page-scroll, where a floor is what keeps the map usable. */
+        min-height: 0;
+    }
+
+    @media (max-width: 940px) {
+        .map-wrap {
+            min-height: 480px;
+        }
     }
 
     .map {

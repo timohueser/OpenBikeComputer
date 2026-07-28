@@ -2,6 +2,7 @@
     import { onMount } from "svelte";
     import BuildCard from "../components/BuildCard.svelte";
     import DeviceStep from "../components/device/DeviceStep.svelte";
+    import MapSendStep from "../components/device/MapSendStep.svelte";
     import Gated from "../components/Gated.svelte";
     import MapPanel from "../components/MapPanel.svelte";
     import PresetCards from "../components/PresetCards.svelte";
@@ -13,6 +14,7 @@
     import { artifactFilename } from "../lib/catalog/download";
     import { catalogStore } from "../lib/catalog/store.svelte";
     import { platform } from "../lib/platform";
+    import { available } from "../lib/platform/gating";
     import { isBuildable, type Preset } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
     import type { CatalogHints } from "../lib/map/regionPicker";
@@ -258,13 +260,21 @@
         <section class="card">
             <div class="step-head">
                 <span class="num">4</span>
-                <h3>Device</h3>
+                <h3>{available("deviceDashboard") ? "Send to device" : "Device"}</h3>
             </div>
             <!-- The selected region's artifact, reduced to the four facts a
                  device write turns on. `lib/device/` never imports the catalog:
                  a `.obcm` the rider already has — a desktop build, an older
-                 download — has no manifest behind it and takes the same path. -->
-            <DeviceStep artifact={deviceArtifact} />
+                 download — has no manifest behind it and takes the same path.
+
+                 Two shapes for the same step: where the device has a page of
+                 its own (and the header the chip), only the map leaves from
+                 here; everywhere else the full device step stays. -->
+            {#if available("deviceDashboard")}
+                <MapSendStep artifact={deviceArtifact} />
+            {:else}
+                <DeviceStep artifact={deviceArtifact} />
+            {/if}
         </section>
 
         <!-- Unnumbered, and after the steps: this is not part of making a map,
@@ -278,6 +288,7 @@
 <style>
     .layout {
         flex: 1; /* fills main's column so the map absorbs tall screens */
+        min-height: 0; /* …and never grows past them: the column scrolls instead */
         display: grid;
         grid-template-columns: minmax(0, 1.5fr) minmax(330px, 1fr);
         gap: 14px;
@@ -289,6 +300,10 @@
         flex-direction: column;
         gap: 14px;
         min-width: 0;
+        min-height: 0;
+        overflow-y: auto;
+        /* breathing room so the scrollbar doesn't sit on the cards */
+        padding-right: 4px;
     }
 
     .step-head {
@@ -348,6 +363,11 @@
     @media (max-width: 940px) {
         .layout {
             grid-template-columns: 1fr;
+        }
+
+        .steps {
+            overflow: visible;
+            padding-right: 0;
         }
 
         :global(.map-wrap) {

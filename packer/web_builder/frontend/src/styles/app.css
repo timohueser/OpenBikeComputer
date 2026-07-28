@@ -18,10 +18,21 @@ body {
     line-height: 1.5;
 }
 
+/* The app owns the viewport and the page never scrolls: `main` is the scroll
+   container, and the builder locks itself further so only its steps column
+   moves (Home.svelte). On narrow screens the lock is traded back for ordinary
+   page scrolling — a phone-width window has no room for a fixed map pane. */
 #app {
-    min-height: 100%;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
+}
+
+@media (max-width: 940px) {
+    #app {
+        height: auto;
+        min-height: 100dvh;
+    }
 }
 
 h1,
