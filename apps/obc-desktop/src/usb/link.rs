@@ -2,7 +2,7 @@
 //!
 //! Everything here moves **bytes**. Nothing in this file knows what a transfer descriptor is, what
 //! a status envelope means, or which object an upload belongs to — that is
-//! `packer/web_builder/frontend/src/lib/usb/`, once, for both tiers (see [`super`]).
+//! `builder/app/src/lib/usb/`, once, for both tiers (see [`super`]).
 
 use std::sync::Arc;
 use std::time::Duration;

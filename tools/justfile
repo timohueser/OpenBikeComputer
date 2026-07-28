@@ -147,7 +147,7 @@ rtt:
 # ── Map packing & the web builder ────────────────────────────────────────────
 
 # Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
-# [-- --chunk-size N | --no-land]. Preset defaults to packer/presets/default.json; the
+# [-- --chunk-size N | --no-land]. Preset defaults to builder/presets/default.json; the
 # output defaults to <region>.obcm in the repo root (so `obc sim` picks it up next).
 # Pack an OSM extract to a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
 pack *args:
@@ -158,7 +158,7 @@ pack *args:
     pbf="${_POS[0]:-}"
     [[ -n "$pbf" ]] || { _err "usage: obc pack <region.osm.pbf> [preset.json] [out.obcm]"; exit 1; }
     pbf="$(_abspath "$pbf")"
-    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/packer/presets/default.json}}"; preset="$(_abspath "$preset")"
+    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/builder/presets/default.json}}"; preset="$(_abspath "$preset")"
     out="${_POS[2]:-}"
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
@@ -181,13 +181,13 @@ web *args:
       _say "creating .venv + installing packer deps…"
       _run python3 -m venv .venv
       _run .venv/bin/pip install -q --upgrade pip
-      _run .venv/bin/pip install -q -r packer/requirements.txt
+      _run .venv/bin/pip install -q -r builder/requirements.txt
     fi
     [[ -x "$OBC_PACK_BIN" ]] || { _say "building obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack ); }
-    if [[ ! -d packer/web_builder/static/dist ]]; then
-      _say "building the frontend…"; ( cd packer/web_builder/frontend && _run npm ci && _run npm run build )
+    if [[ ! -d builder/server/static/dist ]]; then
+      _say "building the frontend…"; ( cd builder/app && _run npm ci && _run npm run build )
     fi
-    _run .venv/bin/python -m packer.web_builder "$@"
+    _run .venv/bin/python -m builder.server "$@"
 
 # Run the desktop app (Tauri + obc-pack linked in as a library, #906). The Rust side
 # embeds the built frontend, so the frontend is built first. Opts: dev (live-reload
@@ -208,7 +208,7 @@ desktop *args:
       build|build-only) mode=build ;;
       *) _err "unknown desktop option: '$o'  (want: dev build)"; exit 1 ;;
     esac; done
-    fe="$OBC_ROOT/packer/web_builder/frontend"
+    fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     # The wasm GPX↔OBCR bridge (#896) is imported by the app, and `npm run check`/
     # `test`/`build` all fail without it — build it before anything else needs it.
@@ -244,7 +244,7 @@ site *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     port="${1:-4173}"
-    fe="$OBC_ROOT/packer/web_builder/frontend"
+    fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     [[ -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" ]] || \
       { _say "building the wasm convert bridge…"; ( cd "$fe" && _run npm run build:wasm ); }
@@ -255,11 +255,11 @@ site *args:
       _say "creating .venv + installing packer deps…"
       _run python3 -m venv .venv
       _run .venv/bin/pip install -q --upgrade pip
-      _run .venv/bin/pip install -q -r packer/requirements.txt
+      _run .venv/bin/pip install -q -r builder/requirements.txt
     fi
     # The Geofabrik index the picker draws. The FastAPI host computes it per request;
     # a site with no backend needs it as a file — the deploy runs this same module.
-    _run .venv/bin/python -m packer.web_builder.static_data --out "$fe/dist/web/data"
+    _run .venv/bin/python -m builder.server.static_data --out "$fe/dist/web/data"
     _say "serving http://localhost:$port  (Ctrl-C to stop)"
     # Absolute interpreter + `--directory`, not `cd` + a relative `.venv/bin/python`: the relative
     # form resolved against the *serving* directory and vanished the moment we left the repo root.
@@ -354,7 +354,7 @@ check *args:
     fi
     if want frontend; then
       if command -v npm >/dev/null 2>&1; then
-        fe="$OBC_ROOT/packer/web_builder/frontend"
+        fe="$OBC_ROOT/builder/app"
         pushd "$fe" >/dev/null
         [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
         # Not optional: the TS wrapper imports the generated bindings, so svelte-check
@@ -430,7 +430,7 @@ doctor *args:
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
       cmake)    _err "install cmake via your system package manager (needs sudo)" ;;
-      venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/packer/requirements.txt" ;;
+      venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/builder/requirements.txt" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
     esac; done

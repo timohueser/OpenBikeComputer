@@ -409,4 +409,4 @@ twice over one tree is byte-identical.
 - The OBCM header the version and bbox are read from:
   [`OBCM_Spec.md` §1](OBCM_Spec.md); its code authority
   [`firmware/obc-formats/src/obcm.rs`](firmware/obc-formats/src/obcm.rs)
-- The shipped style presets: [`packer/presets/`](packer/presets)
+- The shipped style presets: [`builder/presets/`](builder/presets)

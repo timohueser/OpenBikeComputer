@@ -25,14 +25,14 @@ fn repo(rel: &str) -> PathBuf {
 }
 
 fn fixture_pbf() -> String {
-    repo("packer/tests/corpus/data/tiny.osm.pbf").to_string_lossy().into_owned()
+    repo("builder/tests/corpus/data/tiny.osm.pbf").to_string_lossy().into_owned()
 }
 
 /// A shipped preset, used exactly as the CLI and the app would use it — the
 /// `_meta` block rides along and is ignored (`config::tests::
 /// unknown_tooling_metadata_remains_compatible`).
 fn preset_path() -> PathBuf {
-    repo("packer/presets/default.json")
+    repo("builder/presets/default.json")
 }
 
 fn out_dir(name: &str) -> PathBuf {
@@ -98,7 +98,7 @@ fn a_run_reports_its_phases_in_order() {
 }
 
 /// The dev server still scrapes these prefixes off the CLI's stdout
-/// (`packer/web_builder/jobs.py`'s `_STAGE_MARKERS`) while the desktop app reads
+/// (`builder/server/jobs.py`'s `_STAGE_MARKERS`) while the desktop app reads
 /// the [`Phase`] beside them. They are the same events, so a renamed stage line
 /// must break here rather than silently freeze one host's progress bar.
 #[test]

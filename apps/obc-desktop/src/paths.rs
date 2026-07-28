@@ -3,7 +3,7 @@
 //! Two decisions worth stating, because both are visible to the user:
 //!
 //! * **The cache is the *shared* one, `~/.cache/obcm`** (overridable with
-//!   `OBCM_CACHE_DIR`, exactly as `packer/web_builder/paths.py` reads it) — not a
+//!   `OBCM_CACHE_DIR`, exactly as `builder/server/paths.py` reads it) — not a
 //!   per-app directory under `~/Library/Caches`. A `.pbf` is hundreds of megabytes
 //!   and the land-polygon dataset is over two gigabytes; a developer who has
 //!   already downloaded Switzerland from the CLI should not download it again

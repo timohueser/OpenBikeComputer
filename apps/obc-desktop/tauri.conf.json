@@ -4,10 +4,10 @@
     "version": "0.1.0",
     "identifier": "de.timohueser.openbikecomputer",
     "build": {
-        "frontendDist": "../../packer/web_builder/frontend/dist/desktop",
+        "frontendDist": "../../builder/app/dist/desktop",
         "devUrl": "http://localhost:5173",
-        "beforeDevCommand": "npm --prefix ../../packer/web_builder/frontend run dev -- --mode desktop",
-        "beforeBuildCommand": "npm --prefix ../../packer/web_builder/frontend run build:desktop"
+        "beforeDevCommand": "npm --prefix ../../builder/app run dev -- --mode desktop",
+        "beforeBuildCommand": "npm --prefix ../../builder/app run build:desktop"
     },
     "app": {
         "windows": [

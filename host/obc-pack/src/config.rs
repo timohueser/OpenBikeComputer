@@ -662,7 +662,7 @@ impl LodDocument {
 // --- routing section (N2): island-pruning threshold + §8.6 bike profiles --------------------
 
 /// The four shipped bike profiles, embedded so `default_profiles` and the parser can't drift. The
-/// presets in `packer/presets/` carry the same numbers verbatim (each preset is a complete config).
+/// presets in `builder/presets/` carry the same numbers verbatim (each preset is a complete config).
 /// Multipliers are "prefer lower": each profile makes its favored way/surface classes ~1.0× and
 /// penalizes the rest; `default` covers unlisted classes; `"forbidden"` excludes a class.
 const DEFAULT_PROFILES_JSON: &str = r#"[
@@ -905,7 +905,7 @@ mod tests {
     }
 
     fn corpus_config() -> Config {
-        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packer/presets/default.json"))
+        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json"))
             .expect("load corpus config")
     }
 
@@ -913,7 +913,7 @@ mod tests {
     fn every_shipped_preset_is_a_complete_cli_config() {
         let presets = ["default.json", "high-detail.json", "minimal.json"];
         for preset in presets {
-            let path = format!("{}/../../packer/presets/{preset}", env!("CARGO_MANIFEST_DIR"));
+            let path = format!("{}/../../builder/presets/{preset}", env!("CARGO_MANIFEST_DIR"));
             let config = Config::load(&path).unwrap_or_else(|error| panic!("{preset} must parse: {error}"));
             assert!(!config.features.is_empty(), "{preset} must carry feature styles");
             assert!(!config.lods.is_empty(), "{preset} must carry an LOD pyramid");

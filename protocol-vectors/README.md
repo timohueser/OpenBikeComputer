@@ -14,10 +14,10 @@ recorded-track log, consumed by **four** implementations:
 - **Browser**: two consumers, for two different reasons.
   - The wasm conversion bridge (`apps/obc-web-convert`, #896) must reproduce
     the route and track fixtures byte-for-byte from the same inputs —
-    `packer/web_builder/frontend/src/lib/convert/bridge.test.ts`. That is what keeps
+    `builder/app/src/lib/convert/bridge.test.ts`. That is what keeps
     client-side conversion honest: the file a visitor downloads is the file the
     device would have written.
-  - The **USB protocol client** (`packer/web_builder/frontend/src/lib/usb/`, #902)
+  - The **USB protocol client** (`builder/app/src/lib/usb/`, #902)
     pins every control-plane and object layout here, and round-trips the object
     fixtures over a loopback transport —
     `.../src/lib/usb/vectors.test.ts`. USB is a second *transport*, not a second

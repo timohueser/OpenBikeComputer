@@ -2,7 +2,7 @@
 //!
 //! The packer has always narrated its own progress — it printed a stage line per
 //! phase and the web builder scraped them off the subprocess's stdout
-//! (`packer/web_builder/jobs.py`). In-process there is no stdout to scrape, so the
+//! (`builder/server/jobs.py`). In-process there is no stdout to scrape, so the
 //! narration becomes a [`Progress`] sink the caller supplies: the CLI's prints the
 //! line, the desktop app's forwards `(phase, line)` to the webview.
 //!
@@ -10,7 +10,7 @@
 //!
 //! - **The phase vocabulary is [`Phase`], and it is closed.** The build UI derives
 //!   a percentage from a phase's index, so a phase is a value with an order, not a
-//!   string someone typed. `packer/web_builder/frontend/src/lib/api/jobs.svelte.ts`
+//!   string someone typed. `builder/app/src/lib/api/jobs.svelte.ts`
 //!   holds the same list; `stage_lines_match_the_web_builders_markers` pins the
 //!   scraped side against this one.
 //! - **The line is still the CLI's line.** Every `progress.stage()` call passes the
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn phase_order_is_the_uis_percentage_scale() {
         let names: Vec<&str> = Phase::ALL.iter().map(|p| p.as_str()).collect();
-        // Mirrors PHASES in packer/web_builder/frontend/src/lib/api/jobs.svelte.ts
+        // Mirrors PHASES in builder/app/src/lib/api/jobs.svelte.ts
         // (minus "downloading", which is the host's own phase — the packer is
         // handed local files and never downloads a source).
         assert_eq!(names, ["merging", "ingest", "bbox", "land", "quadtree", "serialize"]);

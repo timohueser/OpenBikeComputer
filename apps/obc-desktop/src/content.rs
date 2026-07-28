@@ -15,9 +15,9 @@ use serde_json::{json, Value};
 
 include!(concat!(env!("OUT_DIR"), "/presets.rs"));
 
-/// `packer/palette.json` — the LS021B7DD02's 64-color gamut, laid out for the
+/// `builder/palette.json` — the LS021B7DD02's 64-color gamut, laid out for the
 /// picker grid.
-const PALETTE_JSON: &str = include_str!("../../../packer/palette.json");
+const PALETTE_JSON: &str = include_str!("../../../builder/palette.json");
 
 #[derive(Serialize)]
 pub struct Preset {
