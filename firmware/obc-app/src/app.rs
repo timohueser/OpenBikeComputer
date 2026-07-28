@@ -1926,7 +1926,7 @@ impl App {
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
-        let App { state, activity, settings, catalogs, nav_profiles, ui, .. } = self;
+        let App { state, activity, settings, catalogs, nav_profiles, ride, ui, .. } = self;
         let mut cx = Ctx {
             state,
             activity,
@@ -1936,6 +1936,10 @@ impl App {
             trips: catalogs.trips(),
             nav_profiles,
             poi_scratch: &ui.poi_scratch,
+            // The Up-ahead timeline's two source tables, read-only: `handle` must see exactly the
+            // merged rows `draw` drew, or a Press would open the wrong row (epic #946, U3).
+            waypoints: ride.waypoints.as_slice(),
+            corridor: ui.corridor_scratch.entries(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
             now_ms: ui.now_ms,
         };
@@ -1955,6 +1959,13 @@ impl App {
         if self.ui.stack.len() > depth_before && matches!(self.ui.stack.last(), Some(Screen::PoiList(_))) {
             self.ui.poi_scratch.invalidate();
         }
+        // The corridor snapshot follows the stack, not a gesture: whatever Up-ahead screen is on it
+        // declares the `(filter, anchor)` it wants and this arms it — a fresh open additionally
+        // re-takes the identical key, the "re-enter refreshes" half of the frozen-snapshot contract
+        // (epic #946, U2/U3). Nothing on the stack wants one ⇒ the request is dropped and the
+        // reader-build seam goes quiet.
+        let fresh = self.ui.stack.len() > depth_before;
+        self.ui.reconcile_corridor(fresh);
         // Returning to the bare Home root re-opens the screensaver — re-roll its contour seed so the
         // topo peaks drift for this visit. Gated on the *edge* (was deeper, now 1) so it fires once
         // per return; being in `apply_gesture` means a clock/battery re-render (which never touches
@@ -2026,6 +2037,11 @@ impl App {
         if let Some(rem) = self.ui.idle_return_remaining_ms(&self.settings, tracking) {
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(rem, |w| w.min(rem)));
         }
+        // Every sweep above can move the stack (a popup lands, the idle return fires), so re-point
+        // the corridor snapshot at what the stack now wants — a request left armed after the
+        // Up-ahead list was swept away would keep the board building the map `Reader` forever
+        // (epic #946, U3). Never a *fresh* open: only a gesture opens a screen.
+        self.ui.reconcile_corridor(false);
     }
 
     /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in
@@ -2201,6 +2217,8 @@ impl App {
             ride_preview,
             detour_preview,
             poi_scratch: &ui.poi_scratch,
+            corridor: ui.corridor_scratch.entries(),
+            corridor_settled: !ui.corridor_scratch.pending(),
             sensor_status: ui.sensor_status.as_slice(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
             w: w as i32,
