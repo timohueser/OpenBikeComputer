@@ -25,6 +25,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use heapless::Vec;
 
+use crate::corridor::{
+    inflate_bbox, project_onto_chunk, CorridorPoi, PoiCategorySet, RoutePath, CORRIDOR_HALF_WIDTH_M,
+    MAX_CORRIDOR_RESULTS,
+};
 use crate::geo::{cos_lat, ground_dist_m_cl};
 use crate::{BBox, Error, Kind, Style, M_PER_DEG};
 use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
@@ -1129,6 +1133,211 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// The POIs of `cats` sitting within [`CORRIDOR_HALF_WIDTH_M`] of the route **ahead** of
+    /// `progress_m`, ascending by along-route distance, capped at [`MAX_CORRIDOR_RESULTS`] — the
+    /// data source behind the "Up ahead" timeline (epic #946). Fills the caller-owned `out` (cleared
+    /// first). On-demand (a snapshot taken on screen entry / filter change), **never** per frame.
+    ///
+    /// Each result carries where it projects onto the route ([`CorridorPoi::dist_along_m`], on the
+    /// same axis stored waypoints use) and a **signed** lateral offset
+    /// ([`CorridorPoi::offset_m`]: positive = right of the direction of travel).
+    ///
+    /// # The walk
+    ///
+    /// One pass over the route's chunks in route order, driven by [`RoutePath`] — the resident chunk
+    /// index the breadcrumb/progress machinery already holds, so no full-route re-read. For each
+    /// chunk still ahead of `progress_m`:
+    ///
+    /// 1. its bbox is inflated by the corridor half-width ([`inflate_bbox`]) — a tight window, since
+    ///    a route chunk spans a few hundred meters, not the whole route;
+    /// 2. the chunk's polyline is decoded **once** into the path's own scratch;
+    /// 3. each selected category's quadtree is walked over that window (the same
+    ///    [`walk_leaves`](Reader::walk_leaves) the geometry and nearest-N queries use), and every POI
+    ///    record streams through a 512-byte stack scratch exactly as in
+    ///    [`nearest_pois`](Reader::nearest_pois) — no per-leaf buffer, no [`MapCache`] growth;
+    /// 4. each record is projected onto that chunk ([`project_onto_chunk`]) and folded into `out` if
+    ///    it is inside the corridor and at or past `progress_m`.
+    ///
+    /// **Cost bound.** At most one route-chunk decode plus one quadtree descent per (remaining
+    /// chunk × selected non-empty category); an absent or empty category costs nothing. The walk
+    /// **stops early** once `out` is full and the current chunk starts farther along than the
+    /// worst-held result — no POI from there on could displace one — so a POI-dense route pays for
+    /// the first ~16 results, not for its whole length.
+    ///
+    /// **Dedupe.** A POI is keyed by `(lat, lon, subtype)` and appears once, at its nearest
+    /// projection: `project_onto_chunk` already resolves a switchback *within* one chunk, and a POI
+    /// re-found from a later chunk replaces the held entry only when its offset is smaller.
+    /// (Refinement is naturally bounded to the chunks actually walked — the early exit above stops
+    /// at the point where nothing new can enter the list anyway.)
+    ///
+    /// # Reentrancy
+    ///
+    /// Like [`nearest_pois`](Reader::nearest_pois) the quadtree walk streams through the internal
+    /// index cache; legal re-entry returns [`Error::CacheBusy`]. The POI chunk reads go through
+    /// plain stack `read_at`s, so they never nest with it.
+    pub fn corridor_pois(
+        &self,
+        cats: PoiCategorySet,
+        path: &dyn RoutePath,
+        progress_m: u32,
+        out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
+    ) -> Result<(), Error> {
+        out.clear();
+        let dir = &self.tables.pois;
+        // `chunk_size / POI_RECORD_LEN` is the per-chunk record cap; a corrupt 0 would divide by
+        // zero, so treat the whole (unwalkable) section as empty — same guard as `nearest_pois`.
+        if dir.chunk_size < POI_RECORD_LEN || cats.is_empty() {
+            return Ok(());
+        }
+        // Resolve the filter to the directory entries once, dropping absent/empty categories so the
+        // per-chunk loop below never pays for a category this map doesn't carry.
+        let mut entries: Vec<PoiCatEntry, POI_MAX_CATEGORIES> = Vec::new();
+        for cat in cats.iter() {
+            if let Some(e) = dir.entries.iter().find(|e| e.category_id == cat.id() && !e.is_empty()) {
+                let _ = entries.push(*e);
+            }
+        }
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let chunks = path.chunk_count();
+        for k in 0..chunks {
+            let start_m = path.chunk_start_m(k);
+            // The chunk ends where the next one starts; the last chunk runs to the route end.
+            let end_m = if k + 1 < chunks { path.chunk_start_m(k + 1) } else { u32::MAX };
+            if end_m < progress_m {
+                continue; // wholly behind the rider — nothing here can be "ahead"
+            }
+            // Early exit: `out` is sorted ascending and this chunk (and every later one) projects no
+            // nearer than its own start, so a full set whose worst is already nearer is final.
+            if out.len() == MAX_CORRIDOR_RESULTS && start_m >= out[MAX_CORRIDOR_RESULTS - 1].dist_along_m {
+                break;
+            }
+            let search = inflate_bbox(path.chunk_bbox(k), CORRIDOR_HALF_WIDTH_M);
+            let mut scan_error = None;
+            // The chunk's polyline is decoded into the path's scratch and borrowed for this
+            // callback; the quadtree walks run inside it so the geometry is never copied.
+            path.visit_chunk_points(k, &mut |pts| {
+                if pts.len() < 2 || scan_error.is_some() {
+                    return;
+                }
+                for entry in &entries {
+                    if let Err(error) =
+                        self.corridor_scan_category(entry, dir.chunk_size, &search, pts, start_m, progress_m, out)
+                    {
+                        scan_error = Some(error);
+                        return;
+                    }
+                }
+            });
+            if let Some(error) = scan_error {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Walk one category's quadtree over `search` and fold every record that projects inside the
+    /// corridor of `pts` into `out`. The per-leaf chunk decode runs **inside** the walk callback
+    /// (`walk_leaves` has released its index-cache borrow by then) through a plain stack read, so the
+    /// two never nest — the same streaming discipline as [`Reader::poi_scan`].
+    #[allow(clippy::too_many_arguments)]
+    fn corridor_scan_category(
+        &self,
+        entry: &PoiCatEntry,
+        chunk_size: usize,
+        search: &BBox,
+        pts: &[(i32, i32)],
+        chunk_start_m: u32,
+        progress_m: u32,
+        out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
+    ) -> Result<(), Error> {
+        let records_per_chunk = chunk_size / POI_RECORD_LEN;
+        let mut read_error = None;
+        self.walk_leaves(entry, 0, self.bbox, search, 0, &mut |cid, _node| {
+            if read_error.is_some() {
+                return;
+            }
+            let (start, end) = match entry.chunk_range(cid, chunk_size) {
+                Some(r) => r,
+                None => return,
+            };
+            if end > self.src.len() as usize {
+                return;
+            }
+            if let Err(error) =
+                self.scan_corridor_chunk(start as u32, records_per_chunk, pts, chunk_start_m, progress_m, out)
+            {
+                read_error = Some(error);
+            }
+        })
+        .map_err(Error::from)?;
+        if let Some(error) = read_error {
+            return Err(Error::Source(error));
+        }
+        Ok(())
+    }
+
+    /// Stream one POI chunk's records through the shared 512-byte stack window (see
+    /// [`Reader::scan_poi_chunk`]), projecting each valid record onto `pts` and folding the ones
+    /// inside the corridor into `out`. Terminates on the `0xFF` subtype sentinel or after
+    /// `record_cap` records.
+    #[allow(clippy::too_many_arguments)]
+    fn scan_corridor_chunk(
+        &self,
+        start: u32,
+        record_cap: usize,
+        pts: &[(i32, i32)],
+        chunk_start_m: u32,
+        progress_m: u32,
+        out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
+    ) -> Result<(), IoError> {
+        const RECS_PER_WINDOW: usize = POI_SCAN_WINDOW / POI_RECORD_LEN;
+        let mut scratch = [0u8; POI_SCAN_WINDOW];
+        let mut done = 0usize;
+        while done < record_cap {
+            let take = (record_cap - done).min(RECS_PER_WINDOW);
+            let win = &mut scratch[..take * POI_RECORD_LEN];
+            self.src.read_at(start + (done * POI_RECORD_LEN) as u32, win)?;
+            for r in 0..take {
+                let off = r * POI_RECORD_LEN;
+                let subtype = win[off + 8];
+                if subtype == CHUNK_END {
+                    return Ok(()); // end-of-records sentinel — nothing valid follows in this chunk
+                }
+                // Skip an out-of-range subtype (0, or past the table) cleanly — never panic/UB.
+                if obc_formats::obcm::poi_subtype_row(subtype).is_none() {
+                    continue;
+                }
+                let lat = rd_i32(win, off);
+                let lon = rd_i32(win, off + 4);
+                // The corridor half-width is handed to the projection so it can prune segments as it
+                // walks (a chunk is up to 256 points); `None` **is** the outside-the-corridor reject.
+                let Some(proj) = project_onto_chunk(pts, chunk_start_m, (lon, lat), CORRIDOR_HALF_WIDTH_M) else {
+                    continue;
+                };
+                // The route axis is non-negative and the projection is clamped to the chunk, so the
+                // round is a plain truncation; entries behind the rider are dropped here.
+                let dist_along_m = proj.dist_along_m.max(0.0) as u32;
+                if dist_along_m < progress_m {
+                    continue;
+                }
+                let cand = CorridorCand {
+                    lat,
+                    lon,
+                    subtype,
+                    dist_along_m,
+                    offset_m: libm::roundf(proj.offset_m) as i32,
+                    to_go_m: dist_along_m - progress_m,
+                };
+                consider_corridor_poi(out, cand, win, off);
+            }
+            done += take;
+        }
+        Ok(())
+    }
+
     /// The parsed nav directory (spec §8.1). Always present in v9; `is_empty()` for a map with no
     /// routable ways.
     #[inline]
@@ -1698,6 +1907,57 @@ fn consider_poi(out: &mut Vec<Poi, MAX_POI_RESULTS>, cand: PoiCand, buf: &[u8], 
     let poi = Poi { lat, lon, subtype, name: decode_poi_name(buf, off), hours_ref, distance_m };
     // `at` is a valid index in `0..=out.len()` and the set has room now; the insert can't fail.
     let _ = out.insert(at, poi);
+}
+
+/// A projected POI record's scalar fields, before the (lazy) name decode — the value
+/// [`consider_corridor_poi`] folds into the corridor set.
+struct CorridorCand {
+    lat: i32,
+    lon: i32,
+    subtype: u8,
+    dist_along_m: u32,
+    offset_m: i32,
+    /// Along-route distance still to go from the query's progress anchor (what the row shows).
+    to_go_m: u32,
+}
+
+/// Fold one projected record into the along-route-sorted corridor set.
+///
+/// Order of business, cheapest-first but **dedupe before the capacity reject** so a POI already held
+/// can still improve its projection when the set is full:
+///
+/// 1. an already-held `(lat, lon, subtype)` keeps its **nearest** projection — a strictly smaller
+///    `|offset_m|` removes the old entry so the better one re-inserts in its new order slot, an
+///    equal-or-worse one is dropped (this is the switchback dedupe across chunks);
+/// 2. a full set whose farthest entry is already nearer rejects the candidate;
+/// 3. otherwise insert in ascending `dist_along_m`, evicting the farthest when full. Ties keep the
+///    earlier-seen entry, so the order is stable and deterministic.
+///
+/// `buf`/`off` locate the record for the **lazy** name decode, which only runs once the record is
+/// known to belong in the set.
+fn consider_corridor_poi(out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>, cand: CorridorCand, buf: &[u8], off: usize) {
+    let CorridorCand { lat, lon, subtype, dist_along_m, offset_m, to_go_m } = cand;
+    if let Some(at) = out.iter().position(|c| c.poi.lat == lat && c.poi.lon == lon && c.poi.subtype == subtype) {
+        if offset_m.abs() >= out[at].offset_m.abs() {
+            return; // already held at an equal or nearer projection
+        }
+        out.remove(at);
+    }
+    // Cheap rejection: a full set whose farthest entry is already nearer along the route.
+    if out.len() == MAX_CORRIDOR_RESULTS && dist_along_m >= out[MAX_CORRIDOR_RESULTS - 1].dist_along_m {
+        return;
+    }
+    // Insertion index: first slot strictly farther along (equal distances keep insertion order).
+    let at = out.iter().position(|c| c.dist_along_m > dist_along_m).unwrap_or(out.len());
+    if out.len() == MAX_CORRIDOR_RESULTS {
+        let _ = out.pop();
+    }
+    // `hours_ref` at `[off+34 .. off+36]` (§7.3), carried so the detail screen resolves the pooled
+    // schedule without a re-query. The scan window always holds a whole record, so this is in bounds.
+    let hours_ref = rd_u16(buf, off + 34);
+    let poi = Poi { lat, lon, subtype, name: decode_poi_name(buf, off), hours_ref, distance_m: to_go_m };
+    // `at` is a valid index in `0..=out.len()` and the set has room now; the insert can't fail.
+    let _ = out.insert(at, CorridorPoi { poi, dist_along_m, offset_m });
 }
 
 /// Decode a POI record's name (spec §7.3) from `buf` at record offset `off`: `name_len` at `off+9`,
