@@ -89,7 +89,8 @@ struct Args {
     calibrate: bool,
     /// Show the device's 64-color gamut and nothing else. Needs no map.
     palette: bool,
-    /// Initial housing body color: `coral` | `mint` | `mustard` | `slate` (default slate).
+    /// Initial housing colorway: `petrol` | `forest` | `wine` | `aubergine` | `stealth`
+    /// (default forest).
     colorway: Option<String>,
     /// Initial battery charge (0–100 %) shown on the Home gauge; stands in for the not-yet-
     /// wired fuel gauge. Defaults to full.

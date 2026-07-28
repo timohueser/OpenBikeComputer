@@ -137,9 +137,9 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
 /// ([`SimGui::show_device_image`]) and consumed by [`SimGui::apply_device_input`]. Keeps the draw
 /// free of input side effects: it only reports geometry, the caller drives the recognizer.
 struct DeviceHit {
-    /// UP pressed this frame (housing hit-test OR the ↑ key).
+    /// UP pressed this frame (housing hit-test OR the ← key).
     up_down: bool,
-    /// DOWN pressed this frame (housing hit-test OR the ↓ key).
+    /// DOWN pressed this frame (housing hit-test OR the → key).
     down_down: bool,
     /// SELECT pressed this frame (housing hit-test OR the Enter key).
     select_down: bool,
@@ -835,18 +835,19 @@ impl SimGui {
 impl eframe::App for SimGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Read the device-control keyboard shortcuts *first*, before a widget can take focus and
-        // swallow the keys. ↑/↓ are consumed (one step per press, repeating while held through the
+        // swallow the keys. ←/→ are consumed (one step per press, repeating while held through the
         // OS key-repeat — the stand-in for the firmware's auto-repeat); Enter/Backspace carry the
-        // live held state. Applied in `show_device_image`.
+        // live held state. The device's UP/DOWN pads sit on one flank, so the horizontal pair reads
+        // more naturally under a hand than ↑/↓. Applied in `show_device_image`.
         let keys = ctx.input_mut(|i| {
             let mut steps = 0;
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::Period)
             {
                 steps += 1;
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::Comma)
             {
@@ -854,8 +855,8 @@ impl eframe::App for SimGui {
             }
             (
                 steps,
-                i.key_down(egui::Key::ArrowUp),
-                i.key_down(egui::Key::ArrowDown),
+                i.key_down(egui::Key::ArrowLeft),
+                i.key_down(egui::Key::ArrowRight),
                 i.key_down(egui::Key::Enter),
                 i.key_down(egui::Key::Backspace),
             )
