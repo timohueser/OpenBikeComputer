@@ -2696,6 +2696,7 @@ name = "obc-web-convert"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
+ "heapless 0.8.0",
  "js-sys",
  "obc-formats",
  "obc-route",
