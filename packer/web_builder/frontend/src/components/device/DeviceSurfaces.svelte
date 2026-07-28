@@ -7,12 +7,11 @@
   does). Splitting here rather than at `DeviceStep` keeps the connect button and its gate in the
   entry bundle, where they have to be: they are what a visitor sees before any of this is needed.
 
-  This is also the seam where the ride panel's device is narrowed, and the narrowing differs by
-  tier because the *rule* does. A tier with no managed folder gets a `RideSource` — two reads, no
-  ack — so "the browser never acks" is a property of what the panel has rather than of what it
-  remembers not to call (#894, C5 #904). A tier with one gets a `RideSyncSource`: the same two
-  reads plus `ackRides`, and nothing else a client also carries. Which of the two is built is
-  decided by `platform.caps.rideLibrary` right here, once (E2 #912).
+  The ride panel here is always the no-folder one: a `RideSource` — two reads, no ack — so "the
+  browser never acks" is a property of what the panel has rather than of what it remembers not to
+  call (#894, C5 #904). The tier with a managed folder (`caps.rideLibrary`) does not render these
+  surfaces at all any more: its device features live on the Device and Ride-library *pages*, and
+  its builder column keeps only the map send (`MapSendStep`).
 -->
 <script lang="ts">
     import type { ProtocolClient } from "../../lib/usb/client";
@@ -21,8 +20,6 @@
     import type { DeviceInfo } from "../../lib/usb/transport";
     import type { MapArtifact } from "../../lib/device/write";
     import { rideAccess, rideScope } from "../../lib/device/rides";
-    import { rideSyncAccess } from "../../lib/device/library";
-    import { platform } from "../../lib/platform";
     import FirmwareCard from "./FirmwareCard.svelte";
     import MapSend from "./MapSend.svelte";
     import RideExport from "./RideExport.svelte";
@@ -49,35 +46,9 @@
     // `(serial, epoch)` — the id era every ride id is only meaningful inside. A card swap changes
     // it, and anything the page remembered about a ride id becomes a claim about a different ride.
     const scope = $derived(rideScope(info, identity));
-
-    // The library and its panel, on the one tier that has a folder. Both are loaded on demand —
-    // the panel drags in the GPX exporter and the library drags in the Tauri ride commands, and a
-    // window that only sends a map needs neither. `platform.rides` is null wherever
-    // `caps.rideLibrary` is false, so this promise simply never exists there.
-    const managed = platform.caps.rideLibrary && platform.rides ? loadLibrary(platform.rides) : null;
-
-    async function loadLibrary(open: NonNullable<typeof platform.rides>) {
-        const [library, panel] = await Promise.all([open(), import("./RideLibrary.svelte")]);
-        return { library, Panel: panel.default };
-    }
 </script>
 
 <MapSend {client} {artifact} {localFileSource} />
 <RouteDrop {client} />
-
-{#if managed}
-    {#await managed}
-        <p class="small muted">Opening the ride library…</p>
-    {:then { library, Panel }}
-        <Panel rides={rideSyncAccess(client)} {library} {scope} />
-    {:catch reason}
-        <p class="note error small" role="alert">
-            The ride library could not be opened ({reason instanceof Error ? reason.message : reason}).
-            Rides are still on the device and nothing has been changed there.
-        </p>
-    {/await}
-{:else}
-    <RideExport {rides} {scope} />
-{/if}
-
+<RideExport {rides} {scope} />
 <FirmwareCard {client} {info} />

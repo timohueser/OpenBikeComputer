@@ -28,6 +28,7 @@ import type { InitInput } from "./pkg/obc_web_convert.js";
  * - `not-track-log` — an XML document handed to the ride-log direction (usually a GPX).
  * - `track-no-points` — the ride log is shorter than one 20-byte record.
  * - `input-truncated` — a read ran off the end of the file.
+ * - `not-route` — the bytes handed to the route read-back are not an OBCR route.
  * - `internal` — a defect in the bridge, or the module failed to load. The message says so.
  */
 export type ConvertErrorCode =
@@ -38,6 +39,7 @@ export type ConvertErrorCode =
     | "not-track-log"
     | "track-no-points"
     | "input-truncated"
+    | "not-route"
     | "internal";
 
 /** A conversion failure: a stable {@link ConvertErrorCode} plus a message written for a rider. */
@@ -129,6 +131,34 @@ export async function trackToGpx(log: Uint8Array, name: string): Promise<string>
     }
 }
 
+/** One point of a decoded route polyline, degrees and metres. */
+export interface TrackPoint {
+    readonly lat: number;
+    readonly lon: number;
+    readonly ele: number;
+}
+
+/**
+ * Read a `.obcr` route's polyline back out — the preview's direction. The wasm side returns flat
+ * `[lat°, lon°, ele m]` triples in one `Float64Array`; this unpacks them into points.
+ *
+ * @throws {ConvertError} with an actionable message; see {@link ConvertErrorCode}.
+ */
+export async function routeTrack(obcr: Uint8Array): Promise<TrackPoint[]> {
+    const mod = await ensure();
+    let flat: Float64Array;
+    try {
+        flat = mod.obc_convert_obcr_to_track(obcr);
+    } catch (cause) {
+        throw asConvertError(cause);
+    }
+    const points: TrackPoint[] = [];
+    for (let i = 0; i + 2 < flat.length; i += 3) {
+        points.push({ lat: flat[i], lon: flat[i + 1], ele: flat[i + 2] });
+    }
+    return points;
+}
+
 function ensure(): Promise<Bridge> {
     initConvert();
     // `initConvert` always assigns before returning; the assertion just tells TypeScript so.
@@ -143,6 +173,7 @@ const CODES: ReadonlySet<string> = new Set<ConvertErrorCode>([
     "not-track-log",
     "track-no-points",
     "input-truncated",
+    "not-route",
     "internal",
 ]);
 

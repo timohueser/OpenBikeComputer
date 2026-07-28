@@ -19,6 +19,8 @@ obc-route = { path = "../obc-route" }
 # byte authority, imported directly rather than through obc-route's re-export (see obc-route's
 # `pub use obc_formats::io::Error` note).
 obc-formats = { path = "../obc-formats" }
+# `RouteReader::decode_chunk` fills a fixed-capacity buffer; the version tracks obc-route's.
+heapless = "0.8"
 
 # --- Web (wasm32) surface — the only target this crate actually ships on. The conversion core
 # above stays target-independent so `cargo test` exercises it natively in the workspace, exactly
