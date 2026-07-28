@@ -26,8 +26,11 @@ __pycache__/
 !builder/tests/corpus/data/tiny_west.osm.pbf
 !builder/tests/corpus/data/tiny_east.osm.pbf
 # The simulator's default route + track stores (its "SD card") — runtime artifacts.
-firmware/routes/
-firmware/tracks/
+# obc-sim resolves these relative to the working directory, which is the repo root now
+# that the workspace is rooted here (`obc sim` runs cargo from $OBC_ROOT). Root-anchored
+# so they only match the two stores, not a `routes/` anywhere else in the tree.
+/routes/
+/tracks/
 *.obct
 # ...except the shared recorded-track vector (A2, #896): the browser conversion bridge's
 # byte-identity test reads it, so it must ship in-repo like the other protocol vectors.
