@@ -58,7 +58,7 @@ impl Colorway {
     fn body(self) -> Color32 {
         match self {
             Colorway::Petrol => hex("#29465c"),
-            Colorway::Forest => hex("#488781"),
+            Colorway::Forest => hex("#3d736e"),
             Colorway::Wine => hex("#693744"),
             Colorway::Aubergine => hex("#4d3c77"),
             Colorway::Stealth => hex("#1f252c"),
