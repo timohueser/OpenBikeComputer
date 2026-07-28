@@ -40,7 +40,7 @@ mod nav_route;
 mod passkey;
 mod poi_detail;
 mod poi_list;
-mod poi_menu;
+pub(crate) mod poi_menu;
 mod ride_control;
 mod ride_detail;
 mod ride_menu;
@@ -88,6 +88,7 @@ pub use settings::{
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
+pub(crate) use up_ahead::poi_row_name;
 pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
 pub use warning::{WarningFlags, WarningScreen};
 
@@ -292,6 +293,11 @@ pub struct Render<'a, 'd> {
     /// which is what keeps the Up-ahead empty state from flashing an answer the next frame
     /// contradicts.
     pub corridor_settled: bool,
+    /// The App-owned per-category **"next ahead" cache** (epic #946, U5) — the distilled map-POI
+    /// half of the six `Next: <category>` stat tiles, refreshed on the progress-keyed policy in
+    /// [`NextAhead`](crate::next_ahead::NextAhead) rather than per frame. Read-only; only
+    /// [`Readout`](crate::stat_fields::Readout) consumers touch it.
+    pub next_ahead: &'a crate::next_ahead::NextAhead,
     /// The per-slot BLE **sensor status** (epic #707, SE7) — the Sensors settings screen draws the
     /// HR / power / cadence rows' status lines from it. Fed each pass by the host; empty defaults
     /// elsewhere, so the screen indexes it by slot unconditionally.
@@ -362,6 +368,7 @@ impl Render<'_, '_> {
             now: self.now,
             now_ms: self.now_ms,
             language: self.settings.language,
+            next_ahead: self.next_ahead,
         }
     }
 }
@@ -1173,6 +1180,46 @@ pub(crate) fn tile(
     }
 }
 
+/// Left inset of the category icon's centre inside a `Next: <category>` tile — half the ~22 px icon
+/// box plus the tile's own 5 px caption inset, so the glyph sits on the same left margin the plain
+/// tiles' captions do.
+const CATEGORY_TILE_ICON_CX: i32 = 16;
+/// Where a `Next: <category>` tile's caption starts: clear of the icon box, with a hair of air.
+const CATEGORY_TILE_NAME_X: i32 = 31;
+
+/// Draw a **`Next: <category>` tile** (epic #946, U5) — [`tile`]'s wide anatomy with the category's
+/// row icon in front of the caption: `[icon] name` over a right-aligned Display distance. The name
+/// is the nearest entry of that category ahead (a map POI or the rider's own categorized waypoint —
+/// the tile can't tell, and deliberately doesn't say: on a stat page the answer is *how far*, and
+/// provenance is the Up-ahead list's job); `--` when nothing of the kind is ahead, with the caption
+/// falling back to the category's own name so the tile still reads as an answer rather than a blank.
+///
+/// Split out from [`tile`] rather than folded into it as a ninth argument: the icon changes the
+/// caption's *geometry* (its inset and therefore its ellipsis budget), which every other tile would
+/// have to opt out of. Same rounded pane, same caption/value fonts, same vertical centring, so the
+/// two read as one system on the grid.
+pub(crate) fn category_tile(
+    cv: &mut impl Surface,
+    area: Rectangle,
+    cat: obc_reader::PoiCategory,
+    name: &str,
+    value: &str,
+    bg: u16,
+    value_color: u16,
+) {
+    use palette::*;
+    let (x, y) = (area.top_left.x, area.top_left.y);
+    let w = area.size.width as i32;
+    cv.round(area, 5, bg);
+    // The caption/value block, centred in the pane exactly as `tile` centres its own.
+    let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
+    poi_menu::draw_category_icon(cv, cat, Point::new(x + CATEGORY_TILE_ICON_CX, cy + 9), SUBTEXT, bg);
+    let mut buf: heapless::String<24> = heapless::String::new();
+    let name = fit_caption(name, w - CATEGORY_TILE_NAME_X - 5, &mut buf, Font::Label);
+    cv.text(name, Point::new(x + CATEGORY_TILE_NAME_X, cy), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text(value, Point::new(x + w - 8, cy + 18), Font::Display, TextAlign::Right, value_color);
+}
+
 /// Number of waypoint rows the 2×3 panel lists — the next this-many ahead of the rider.
 pub(crate) const WAYPOINT_PANEL_ROWS: usize = 4;
 
@@ -1267,6 +1314,12 @@ fn fit_caption<'b>(label: &str, budget_px: i32, buf: &'b mut heapless::String<24
         if buf.push(ch).is_err() {
             break;
         }
+    }
+    // A cut that lands on a word gap would read as `Fontaine du ...` — the space between the last
+    // word and the ellipsis makes the truncation look like a typo. Drop trailing blanks first (the
+    // budget only ever shrinks, so this can't overflow).
+    while buf.ends_with(' ') {
+        buf.pop();
     }
     let _ = buf.push_str(ELL);
     buf.as_str()
@@ -1592,6 +1645,9 @@ mod tests {
 
     /// A bare metric readout over `activity` + `waypoints`, resolving `next` as the first waypoint
     /// ahead — enough for the panel drawer (which reads only those three).
+    /// An empty per-category cache (U5): the panel drawer never reads it, but `Readout` carries it.
+    static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
+
     fn readout<'a>(
         activity: &'a Activity,
         waypoints: &'a Waypoints,
@@ -1609,6 +1665,7 @@ mod tests {
             now: DateTime::default(),
             now_ms: 0,
             language: crate::settings::Language::En,
+            next_ahead: EMPTY_CACHE,
         }
     }
 
@@ -1705,6 +1762,89 @@ mod tests {
         }
         assert_eq!(Screen::Home(HomeScreen::new()).name(), "Home");
         assert!(Screen::NAMES.contains(&"Home") && Screen::NAMES.contains(&"Map"));
+    }
+
+    /// A draw target that records text **with its anchor** — the `Next: <category>` tile's whole
+    /// point is *where* the two strings land (the caption clear of the icon, the value on the far
+    /// edge), which the font/align-only recorder above can't see. Primitives are counted, since the
+    /// category icon is drawn, not typed.
+    #[derive(Default)]
+    struct PosRec {
+        calls: heapless::Vec<(heapless::String<24>, Point, Font, TextAlign), 8>,
+        primitives: usize,
+    }
+    impl Surface for PosRec {
+        fn clear(&mut self, _: u16) {}
+        fn fill(&mut self, _: Rectangle, _: u16) {
+            self.primitives += 1;
+        }
+        fn round(&mut self, _: Rectangle, _: u32, _: u16) {}
+        fn round_outline(&mut self, _: Rectangle, _: u32, _: u16) {}
+        fn line(&mut self, _: Point, _: Point, _: u16) {
+            self.primitives += 1;
+        }
+        fn triangle(&mut self, _: Point, _: Point, _: Point, _: u16) {
+            self.primitives += 1;
+        }
+        fn disc(&mut self, _: Point, _: u32, _: u16) {
+            self.primitives += 1;
+        }
+        fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, _: u16) -> Point {
+            let mut buf = heapless::String::new();
+            let _ = buf.push_str(s);
+            let _ = self.calls.push((buf, at, font, align));
+            at
+        }
+    }
+
+    /// The `Next: <category>` tile's anatomy (epic #946, U5): the category icon is drawn (not
+    /// typed), the name sits clear of it in `Label`, and the distance hugs the far edge in the big
+    /// `Display` face — the wide next-waypoint tile's shape, plus the glyph.
+    #[test]
+    fn category_tile_draws_icon_name_and_a_right_aligned_distance() {
+        let area = rect(10, 40, 220, 60);
+        let mut cv = PosRec::default();
+        category_tile(
+            &mut cv,
+            area,
+            obc_reader::PoiCategory::Water,
+            "Fontaine",
+            "2.4km",
+            palette::PARCHMENT_SHADE,
+            palette::INK,
+        );
+        assert!(cv.primitives > 0, "the category glyph draws as primitives, not a font char");
+        let (name, name_at, name_font, _) = &cv.calls[0];
+        assert_eq!(name.as_str(), "Fontaine");
+        assert_eq!(*name_font, Font::Label, "the name is a caption, like every other tile's");
+        assert!(name_at.x >= area.top_left.x + CATEGORY_TILE_NAME_X, "…and starts clear of the icon box");
+        let (value, value_at, value_font, value_align) = &cv.calls[1];
+        assert_eq!(value.as_str(), "2.4km");
+        assert_eq!(*value_font, Font::Display, "the distance is the glanceable number");
+        assert_eq!(*value_align, TextAlign::Right);
+        assert_eq!(value_at.x, area.top_left.x + area.size.width as i32 - 8, "anchored on the tile's far edge");
+        assert!(value_at.y > name_at.y, "and below the name, never beside it");
+    }
+
+    /// A name too long for the tile is ellipsized against the **icon-narrowed** budget, and the cut
+    /// never leaves a dangling space before the ellipsis.
+    #[test]
+    fn category_tile_ellipsizes_against_the_icon_narrowed_budget() {
+        let mut cv = PosRec::default();
+        category_tile(
+            &mut cv,
+            rect(10, 40, 220, 60),
+            obc_reader::PoiCategory::Resupply,
+            "Boulangerie du Port Hercule",
+            "1.6km",
+            palette::PARCHMENT_SHADE,
+            palette::INK,
+        );
+        let name = cv.calls[0].0.as_str();
+        assert!(name.ends_with("..."), "an over-long name is cut with the house ellipsis, got {name:?}");
+        assert!(!name.ends_with(" ..."), "…and never with a dangling space before it");
+        let budget = 220 - CATEGORY_TILE_NAME_X - 5;
+        assert!(text_width(name, Font::Label) as i32 <= budget, "the cut stays inside the icon-narrowed budget");
     }
 
     /// A stat tile's caption fits its pixel budget: a short built-in caption passes through verbatim,

@@ -35,6 +35,7 @@ pub mod input;
 pub mod input_plane;
 pub mod map_catalog;
 pub mod nav_profiles;
+pub mod next_ahead;
 pub(crate) mod render_res;
 pub mod retention;
 pub mod ride;
@@ -69,6 +70,7 @@ pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
 pub use map_catalog::{choose_map, MapChoice};
 pub use nav_profiles::NavProfiles;
+pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
 pub use retention::{
     decode_route_retention, encode_route_retention, Retention, RideRetention, RideRetentionRecord, RouteRetentionMeta,
     RouteRetentionStore, ROUTE_RETENTION_MAX_LEN,

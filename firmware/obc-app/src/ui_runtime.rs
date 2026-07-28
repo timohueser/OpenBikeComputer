@@ -26,6 +26,7 @@ use crate::catalog_state::CatalogState;
 use crate::corridor::CorridorScratch;
 use crate::dirty::Dirty;
 use crate::input_plane::InputPlane;
+use crate::next_ahead::NextAhead;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack, WarningFlags};
 use crate::settings::{DateTime, Settings};
 
@@ -129,6 +130,12 @@ pub(crate) struct UiRuntime {
     /// (see [`CorridorScratch`](crate::corridor::CorridorScratch)). Disarmed until a screen asks
     /// for it, so a device that never opens the Up-ahead list never runs the query.
     pub(crate) corridor_scratch: CorridorScratch,
+    /// The per-category **"next ahead" cache** (epic #946, U5) — the distilled map-POI half of the
+    /// six `Next: <category>` stat tiles, harvested out of [`corridor_scratch`](Self::corridor_scratch)
+    /// on its own progress-keyed refresh policy. App-owned for the same #425 reason as the two
+    /// snapshots above (a `Screen` variant is a slot in a `.bss` union), and quiet — asking for
+    /// nothing — unless such a tile is on the grid while the Statistics screen is up.
+    pub(crate) next_ahead: NextAhead,
     /// The live BLE pairing passkey ([`BleStatus::passkey`](crate::BleStatus)), fed by
     /// [`set_ble_status`](App::set_ble_status) and driving the passkey card (P2, #449) via
     /// [`reconcile_passkey_card`](App::reconcile_passkey_card). Held off `AppState` so feeding it
@@ -193,6 +200,7 @@ impl UiRuntime {
             hold_cancel_pending: false,
             poi_scratch: PoiScratch::new(),
             corridor_scratch: CorridorScratch::new(),
+            next_ahead: NextAhead::new(),
             ble_passkey: None,
             sensor_status: [crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS],
             sensor_scan_hits: crate::sensors::SensorScanHits::new(),
@@ -232,6 +240,7 @@ impl UiRuntime {
             addr_of_mut!((*slot).hold_cancel_pending).write(false);
             addr_of_mut!((*slot).poi_scratch).write(PoiScratch::new());
             addr_of_mut!((*slot).corridor_scratch).write(CorridorScratch::new());
+            addr_of_mut!((*slot).next_ahead).write(NextAhead::new());
             addr_of_mut!((*slot).ble_passkey).write(None);
             addr_of_mut!((*slot).sensor_status)
                 .write([crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS]);
@@ -257,6 +266,7 @@ impl UiRuntime {
                 hold_cancel_pending: _,
                 poi_scratch: _,
                 corridor_scratch: _,
+                next_ahead: _,
                 ble_passkey: _,
                 sensor_status: _,
                 sensor_scan_hits: _,
@@ -387,6 +397,14 @@ impl UiRuntime {
         // screen (U3's list and U5's stat fields both read it), so it runs at the boundary rather
         // than inside one screen's `prepare`. A no-op unless a screen armed it.
         self.corridor_scratch.prepare(reader, route);
+        // …and if the snapshot that just landed is the one the `Next: <category>` cache asked for
+        // (U5), distil it here — the one place a fresh snapshot is guaranteed to exist. A no-op
+        // whenever the scratch is serving a screen instead: `harvest` only takes its own key.
+        if let Some(key) = self.next_ahead.request() {
+            if self.corridor_scratch.holds(key) {
+                self.next_ahead.harvest(key, self.corridor_scratch.entries());
+            }
+        }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         if let Some(scr) = self.stack.get_mut(base) {
             let mut px = screen::Prepare {
@@ -421,6 +439,11 @@ impl UiRuntime {
     /// an idempotent `arm`. The **query** still runs only in the pre-draw `prepare` boundary.
     ///
     /// [`MAX_DEPTH`]: crate::screen::MAX_DEPTH
+    /// U5 adds a **second, lower-priority** requester: with no screen asking, the
+    /// [`NextAhead`](crate::next_ahead::NextAhead) cache may want one single-category snapshot to
+    /// refresh a `Next: <category>` tile. A screen always wins — the Up-ahead list is a thing the
+    /// rider is *looking at*, a stat tile's refresh can wait a screen visit — and a cache request
+    /// never counts as a "fresh open" (there is no screen entry to re-take for).
     pub(crate) fn reconcile_corridor(&mut self, fresh_open: bool) {
         match self.stack.iter().rev().find_map(|s| s.corridor_request()) {
             Some(key) => {
@@ -429,8 +452,40 @@ impl UiRuntime {
                     self.corridor_scratch.invalidate();
                 }
             }
-            None => self.corridor_scratch.disarm(),
+            None => match self.next_ahead.request() {
+                Some(key) => self.corridor_scratch.arm(key),
+                None => self.corridor_scratch.disarm(),
+            },
         }
+    }
+
+    /// Re-decide what the `Next: <category>` tiles need (epic #946, U5) and re-point the corridor
+    /// scratch at it. Called once per pass from
+    /// [`advance_animations`](crate::App::advance_animations) — the one hook every host runs — with
+    /// the facts the policy needs: the rider's field selection, the active route, and matched
+    /// progress. Everything else (the triggers, the round-robin, the one-category-per-query rule)
+    /// lives in [`NextAhead::reconcile`](crate::next_ahead::NextAhead).
+    ///
+    /// The tiles only exist on the Statistics grid, so the request is scoped to that screen being
+    /// the one drawn: elsewhere the cache asks for nothing, the scratch disarms, and the reader seam
+    /// is as quiet as before this feature existed.
+    pub(crate) fn reconcile_next_ahead(&mut self, settings: &Settings, active_route: Option<usize>, progress_m: u32) {
+        let mut placed = obc_reader::PoiCategorySet::EMPTY;
+        for f in settings.stat_fields.as_slice() {
+            if let Some(cat) = f.category() {
+                placed = placed.with(cat);
+            }
+        }
+        self.next_ahead.reconcile(placed, self.stats_grid_shown(), active_route, progress_m);
+        self.reconcile_corridor(false);
+    }
+
+    /// Whether the **Statistics** screen — the only place a `Next: <category>` tile draws — is the
+    /// base (lowest opaque) screen this pass. Deliberately not "is anywhere on the stack": a tile
+    /// behind a menu isn't being read, and the query it would keep warm costs a card spin-up.
+    fn stats_grid_shown(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        matches!(self.stack.get(base), Some(Screen::Statistics(_)))
     }
 
     /// Whether the given POI list screen still needs a `Reader` at draw — its category's snapshot
