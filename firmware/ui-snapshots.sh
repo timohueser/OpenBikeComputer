@@ -104,9 +104,11 @@ cp "$repo_root/apps/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # ride route 0 (`p p p p` → Map, riding) **with the GPX replay driving fixes** — the tracking
 # session only starts once positions flow, and `is_tracking` (the hiding predicate) is
 # `session.is_some()`, so without `--gpx` this frame would wrongly show the live delete row. Then
-# BackHold to the Menu (`B`), step to the Rides station (`d w`), press into the detail — the page
-# ends at the stat ledger with NO Delete-ride row at all, and `H` fills nothing.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p p B d w p p H" --png "$OUT/ride-detail-recording.png"
+# out to the main Menu — mid-ride a BackHold opens the RIDE menu (epic #789), whose fifth station
+# is Main menu, so that exit is `B u p` and not a bare `B` — step to the Rides station (`d w`),
+# press into the detail: the page ends at the stat ledger with NO Delete-ride row at all, and `H`
+# fills nothing.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p p B u p d w p p H" --png "$OUT/ride-detail-recording.png"
 "$SIM" "$MAP" --boot --script "B d d w"      --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
@@ -190,41 +192,38 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # trailing `T` re-syncs the route-derived state so the map draws the spliced line.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE B d p d d p f p f T" --png "$OUT/detour-committed.png"
-# The Settings list (Date & Time, Auto-delete, Units, Bike type, Stats, Display, Power, Bluetooth,
-# Sensors, Language, System, Reset — Auto-delete inserted at index 1 by the auto-expiry epic #638 S5,
-# so every row past Date & Time shifts one step further in).
+# --- Settings ------------------------------------------------------------------------------------
+# The Settings list is five themed GROUP rows — Ride / Display / Connections / Power / System — so
+# every settings screen sits two levels down. The shape of every script below is:
+#   B u p        open the Menu, one Up step to the Settings station, press -> the Settings list
+#   d × G        step to group row G (0 Ride, 1 Display, 2 Connections, 3 Power, 4 System)
+#   p            press into the group
+#   d × R  [p]   step to row R inside it, and press if that row opens a page / cycles a value
+# The old flat list (Date & Time, Auto-delete, Units, Bike type, Stats, Display, Power, Bluetooth,
+# Sensors, Language, System, Reset, all straight off the top level) is gone — a leading `d` count is
+# now a *group* index, so the pre-group scripts landed several screens off their frame's name.
 "$SIM" "$MAP" --boot --script "B u p w"      --png "$OUT/settings.png"
-"$SIM" "$MAP" --boot --script "B u p p"      --png "$OUT/datetime.png"
-# The Auto-delete screen (epic #638 S5): the synced-ride retention stepper, defaulting to 1 week.
-# `d` past Date & Time, `p` opens it; then one step to the next value (1 month) for the stepped shot.
-"$SIM" "$MAP" --boot --script "B u p d p"    --png "$OUT/autodelete.png"
-"$SIM" "$MAP" --boot --script "B u p d p d"  --png "$OUT/autodelete-month.png"
-"$SIM" "$MAP" --boot --script "B u p d d p"    --png "$OUT/units.png"
+
+# Ride (group 0) — everything you tune for a ride, in one scrolling seven-row group: Bike type,
+# Data fields, Pages, Climb, Waypoints, Up ahead, Auto-delete. It absorbed the old standalone Stats
+# and Auto-delete screens, so those two names are gone from the sweep. Only four rows fit the panel;
+# the cursor drives the window, so the frames below past row 3 show it scrolled.
+"$SIM" "$MAP" --boot --script "B u p p w"    --png "$OUT/ride-settings.png"
 # Bike type (routing-v2 N5): the map's §8.6 profile names — grimsel ships Road/Gravel/MTB/Touring,
 # each with its own name-matched pixel-art bike (Road/Gravel/MTB/Touring silhouettes). The default
 # selection (Road), then steps cycling through the other three — pinning the name list, the cycle,
 # and each hero sprite.
-"$SIM" "$MAP" --boot --script "B u p d d d p"     --png "$OUT/biketype.png"
-"$SIM" "$MAP" --boot --script "B u p d d d p d"   --png "$OUT/biketype-gravel.png"
-"$SIM" "$MAP" --boot --script "B u p d d d p d d" --png "$OUT/biketype-mtb.png"
-"$SIM" "$MAP" --boot --script "B u p d d d p u"   --png "$OUT/biketype-touring.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d p"  --png "$OUT/stats-settings.png"
-# The Waypoints mode row (epic #523): the Stats settings screen's 4th press-to-cycle row, under
-# Climb. Three extra steps park the amber cursor on it, showing the default `Approach` mode.
-"$SIM" "$MAP" --boot --script "B u p d d d d p d d d" --png "$OUT/settings-stats-waypoints.png"
-# The "Up ahead shows" source row (epic #946, U4): the Ride settings group's 7th row, right under
-# the Waypoints chip. `B u p p` opens Settings -> Ride, five steps park the amber cursor on it
-# (default `Both`), and each extra press cycles it one further round the ring. The unselected face
-# comes free in the frames above/below, which scroll it into view without the cursor.
-"$SIM" "$MAP" --boot --script "B u p p d d d d d"     --png "$OUT/settings-ride-up-ahead.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d d p"   --png "$OUT/settings-ride-up-ahead-waypoints.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d d p p" --png "$OUT/settings-ride-up-ahead-pois.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d p d p" --png "$OUT/fields.png"
+"$SIM" "$MAP" --boot --script "B u p p p"     --png "$OUT/biketype.png"
+"$SIM" "$MAP" --boot --script "B u p p p d"   --png "$OUT/biketype-gravel.png"
+"$SIM" "$MAP" --boot --script "B u p p p d d" --png "$OUT/biketype-mtb.png"
+"$SIM" "$MAP" --boot --script "B u p p p u"   --png "$OUT/biketype-touring.png"
+# Data fields (row 1) — the WYSIWYG grid editor.
+"$SIM" "$MAP" --boot --script "B u p p d p" --png "$OUT/fields.png"
 # The 2×3 waypoint list panel placed in the WYSIWYG field editor (epic #523): from the Fields grid,
 # six steps reach the ADD ghost (the six default tiles fill page 1), press to open the picker, then
 # five steps to `Waypoint list` (the last hidden non-sensor entry) and press. The page-sized panel lands on
 # its own page — the `2 / 3` counter, full-width and three rows tall (`--` with no route loaded).
-"$SIM" "$MAP" --boot --script "B u p d d d d p d p d d d d d d p d d d d d p" --png "$OUT/fields-wpt-panel.png"
+"$SIM" "$MAP" --boot --script "B u p p d p d d d d d d p d d d d d p" --png "$OUT/fields-wpt-panel.png"
 # The six `Next: <category>` fields (epic #946, U5). `B u p p d p` is Home -> Settings -> Ride ->
 # Data fields (the Fields grid). (a) the Add-field picker scrolled onto the new group: six rows
 # wearing the category's own row icon in place of a span badge, directly under `Next waypoint`.
@@ -233,57 +232,90 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # + a per-category sample distance (the editor has no route, so the live cell would read `--`).
 "$SIM" "$MAP" --boot --stat-fields "next-water,next-campsite,next-lodging" \
     --script "B u p p d p" --png "$OUT/fields-next-category.png"
-# The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p"   --png "$OUT/display.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d p" --png "$OUT/power.png"
+# The Waypoints mode row (epic #523): the group's 5th row, under Climb. Four steps park the amber
+# cursor on it, showing the default `Approach` mode.
+"$SIM" "$MAP" --boot --script "B u p p d d d d" --png "$OUT/settings-ride-waypoints.png"
+# The "Up ahead shows" source row (epic #946, U4): the 6th row, right under the Waypoints chip. Five
+# steps park the amber cursor on it (default `Both`), and each extra press cycles it one further
+# round the ring. The unselected face comes free in the frames above/below, which scroll it into
+# view without the cursor.
+"$SIM" "$MAP" --boot --script "B u p p d d d d d"     --png "$OUT/settings-ride-up-ahead.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d d p"   --png "$OUT/settings-ride-up-ahead-waypoints.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d d p p" --png "$OUT/settings-ride-up-ahead-pois.png"
+# The Auto-delete row (epic #638 S5, folded into this group from its old standalone page): the
+# synced-ride retention ring on the last row, defaulting to 1 week. Six steps park the cursor on it;
+# one press cycles to the next value (1 month) for the stepped shot.
+"$SIM" "$MAP" --boot --script "B u p p d d d d d d"   --png "$OUT/settings-ride-autodelete.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d d d p" --png "$OUT/settings-ride-autodelete-month.png"
+
+# Display (group 1): the two Map-overlay toggles + the idle-return picker moved from Power. The
+# picker in its open (editing) state is two rows down, press to open.
+"$SIM" "$MAP" --boot --script "B u p d p"       --png "$OUT/display.png"
+"$SIM" "$MAP" --boot --script "B u p d p d d p" --png "$OUT/display-idle-return.png"
+
+# Connections (group 2): the two radios in one drawer — Phone (Bluetooth) then Sensors.
+"$SIM" "$MAP" --boot --script "B u p d d p"  --png "$OUT/connections.png"
 # Bluetooth screen (#455, Forget restyled to the Pause-menu row family in owner review round 3):
 # the main state (radio on, advertising, a stored bond -> Paired: yes, the Forget row a plain label
 # at the bottom anchor), the row selected (a step puts the shaded guarded base on it), the guarded
 # hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond, so the
 # Forget row isn't drawn at all (the round-1 only-when-possible grammar).
-"$SIM" "$MAP" --boot --ble-paired --script "B u p d d d d d d d p"     --png "$OUT/bluetooth.png"
-"$SIM" "$MAP" --boot --ble-paired --script "B u p d d d d d d d p d"   --png "$OUT/bluetooth-forget-selected.png"
-"$SIM" "$MAP" --boot --ble-paired --script "B u p d d d d d d d p d H" --png "$OUT/bluetooth-forget-hold.png"
-"$SIM" "$MAP" --boot              --script "B u p d d d d d d d p"     --png "$OUT/bluetooth-unpaired.png"
-# Sensors screen (BLE sensors epic #707, SE7) — Settings row 7, just under Bluetooth. `--sensors-screen`
+"$SIM" "$MAP" --boot --ble-paired --script "B u p d d p p"     --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B u p d d p p d"   --png "$OUT/bluetooth-forget-selected.png"
+"$SIM" "$MAP" --boot --ble-paired --script "B u p d d p p d H" --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot              --script "B u p d d p p"     --png "$OUT/bluetooth-unpaired.png"
+# Sensors screen (BLE sensors epic #707, SE7) — the group's second row, under Phone. `--sensors-screen`
 # drives the sim's fake central manager: the three-row list (Heart rate Connected · 78 %, Power
 # Searching, Cadence Not set — the HR row selected, so its hold-to-forget footer shows), and the scan
 # list one press deeper (the HR-filtered discovered sensors, name/address + RSSI). A third run with no
 # fake manager pins the empty `Searching...` state while the scan finds nothing.
-"$SIM" "$MAP" --boot --sensors-screen --script "B u p d d d d d d d d p"   --png "$OUT/sensors.png"
-"$SIM" "$MAP" --boot --sensors-screen --script "B u p d d d d d d d d p p" --png "$OUT/sensors-scan.png"
-"$SIM" "$MAP" --boot                  --script "B u p d d d d d d d d p p" --png "$OUT/sensors-scanning.png"
-# The Language screen (epic #602): the endonym value picker (row 8). The default (English), then two
+"$SIM" "$MAP" --boot --sensors-screen --script "B u p d d p d p"   --png "$OUT/sensors.png"
+"$SIM" "$MAP" --boot --sensors-screen --script "B u p d d p d p p" --png "$OUT/sensors-scan.png"
+"$SIM" "$MAP" --boot                  --script "B u p d d p d p p" --png "$OUT/sensors-scanning.png"
+
+# Power (group 3): the GPS fix-interval stepper + the power-saver toggle.
+"$SIM" "$MAP" --boot --script "B u p d d d p" --png "$OUT/power.png"
+
+# System (group 4) — the device drawer: Units, Date & Time, Language, Firmware, Reset. The menu
+# itself first, then each row's page.
+"$SIM" "$MAP" --boot --script "B u p d d d d p"     --png "$OUT/system.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p p"   --png "$OUT/units.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d p" --png "$OUT/datetime.png"
+# The Language screen (epic #602): the endonym value picker. The default (English), then two
 # steps cycling to Français — pinning the ç glyph the Latin font (#601) adds.
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d p"     --png "$OUT/language.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d p d d" --png "$OUT/language-french.png"
-# Factory Reset is the last row (Sensors inserted at index 7 by epic #707, System at 9), so Reset is
-# now 10 steps from the Date&Time top: `d`x10, press in, arm (press), then partial-hold to fill the bar.
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d d p p H" --png "$OUT/reset-hold.png"
-# System settings screen (epic #615 S5, #620): "Install update from card" (row 9, above Reset).
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p" --png "$OUT/system.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d p"     --png "$OUT/language.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d p d d" --png "$OUT/language-french.png"
+# Factory Reset is the group's last row: four steps in, press to open, arm (press), then a
+# partial-hold to fill the bar.
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d d d p p H" --png "$OUT/reset-hold.png"
+# The Firmware page (epic #615 S5, #620) — System row 3, the SD-sideload door ("Install update from
+# card") over the read-only device-info ledger.
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d d p" --png "$OUT/firmware.png"
 # The row greyed (disabled) while a ride records: ride route 0 (`p p p p`, GPX-driven so the session
-# is live), BackHold to the Menu, into Settings -> System — the row dims + shows the "Recording" cue.
+# is live), out through the ride menu's Main-menu station (`B u p` — see ride-detail-recording
+# above), then Settings -> System -> Firmware. The row loses its amber box and shows the
+# "Recording" cue.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 \
-    --script "p p p p B u p d d d d d d d d d p" --png "$OUT/system-recording.png"
+    --script "p p p p B u p u p d d d d p d d d p" --png "$OUT/firmware-recording.png"
 # The SD-sideload update flow (epic #615 S5, #620). The scan/arm runs board-side; the script leaves
-# the "Checking card..." wait on top (System -> Install), and --dfu-scan / --dfu-error answer it
+# the "Checking card..." wait on top (Firmware -> Install), and --dfu-scan / --dfu-error answer it
 # through the real notify_dfu_scan_result seam (the sim stages a synthetic UPDATE.BIN and runs the
 # real obc-dfu scan). --dfu-progress then presses Install so the "Preparing update..." spinner shows.
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --png "$OUT/dfu-check.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-scan normal --png "$OUT/dfu-confirm.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-scan same   --png "$OUT/dfu-confirm-same.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-scan first  --png "$OUT/dfu-confirm-first.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress.png"
+DFU_PRE="B u p d d d d p d d d p p"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --png "$OUT/dfu-check.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-scan normal --png "$OUT/dfu-confirm.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-scan same   --png "$OUT/dfu-confirm-same.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-scan first  --png "$OUT/dfu-confirm-first.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress.png"
 # The terminal "Installing update" card — the static pre-reset frame the MIP panel holds through
 # the whole bootloader install (no spinner by design: the frame freezes at the reset, and the LED
 # is named as the liveness signal). --dfu-installing runs the board drain's show_dfu_installing swap.
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-scan normal --dfu-progress --dfu-installing --png "$OUT/dfu-installing.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-error notfound   --png "$OUT/dfu-error-notfound.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-error unreadable --png "$OUT/dfu-error-unreadable.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-error damaged    --png "$OUT/dfu-error-damaged.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-error toolarge   --png "$OUT/dfu-error-toolarge.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d d d d d d p p" --dfu-error fragmented --png "$OUT/dfu-error-fragmented.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-scan normal --dfu-progress --dfu-installing --png "$OUT/dfu-installing.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error notfound   --png "$OUT/dfu-error-notfound.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error unreadable --png "$OUT/dfu-error-unreadable.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error damaged    --png "$OUT/dfu-error-damaged.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error toolarge   --png "$OUT/dfu-error-toolarge.png"
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error fragmented --png "$OUT/dfu-error-fragmented.png"
 # The one-time post-update toast, raised through the real notify_update_confirmed seam. A
 # deliberately long git-describe tag exercises the version wrap to a second centred line.
 "$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated.png"
@@ -454,7 +486,11 @@ U5CLIMBOFF="B u p p d d d p b b b"
 # (d) The route-less Statistics page: the "No route loaded" band note over the stat grid, where the
 # route-relative tiles (KM TO GO, TO CLIMB) read "--" and the rest are live.
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d d w p p p b" --png "$OUT/statistics-routeless.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B p d p" --png "$OUT/routeswap.png"
+# The mid-ride "ROUTE ACTIVE" swap card: riding route 0, out to the ride menu's Routes station
+# (`B d d d` — the fourth station along, epic #789) and press, then pick the *other* vector route
+# (`d p`). Choosing a route while a ride is live raises the Swap / Finish & new / Cancel card
+# instead of opening the overview.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B d d d p d p" --png "$OUT/routeswap.png"
 # Pan mode: the pan HUD (chevrons + compass) plus the bottom-left scale bar (visible in pan too);
 # the clock digits are suppressed while panning (the top chevron owns the slot).
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h" --png "$OUT/map-pan.png"
@@ -490,10 +526,8 @@ U5CLIMBOFF="B u p p d d d p b b b"
 "$SIM" "$MAP" --boot --inject-warning gps --png "$OUT/warning-gps.png"
 "$SIM" "$MAP" --boot --inject-warning gps,altimeter,compass,map --png "$OUT/warning-all.png"
 
-# The idle-return picker in its open (editing) state, on the Display page's third row
-# (Home → Menu → Settings → Display, two turns down to Idle, press to open the picker). The idle
-# timeout still works end-to-end: sit in Settings, elapse (`I`), land back on Home.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d p" --png "$OUT/display-idle-return.png"
+# The idle timeout works end-to-end: sit in the Settings list, elapse (`I`), land back on Home. (The
+# picker that configures it is shot with the rest of the Display page, up in the Settings block.)
 "$SIM" "$MAP" --boot --script "B u p I"               --png "$OUT/idle-return-home.png"
 
 # Per-language sweep (epic #602, L5). The i18n catalog (obc-app/i18n/*.toml -> Msg/TABLE) renders
@@ -507,11 +541,14 @@ U5CLIMBOFF="B u p p d d d p b b b"
 for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "B w"           --png "$OUT/menu-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p w"       --png "$OUT/settings-$lang.png"
-    # The Auto-delete screen (epic #638 S5) per-language — eyeball the "SYNCED RIDES" caption + the
-    # value words (Never / 1 day / 1 week / 1 month) for clipping in the longer translations.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d p"     --png "$OUT/autodelete-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d p"     --png "$OUT/units-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p" --png "$OUT/stats-settings-$lang.png"
+    # The Ride group per-language — the longest settings screen there is: seven two-line rows, each
+    # with a right-aligned value on the sub-caption line. Eyeball every label/sub pair against its
+    # ◄value group (the clearance `cycle_row_value_clears_the_sub_caption` pins numerically).
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p w"     --png "$OUT/ride-settings-$lang.png"
+    # The Auto-delete row (epic #638 S5) per-language — eyeball the retention value words
+    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations.
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d d d" --png "$OUT/settings-ride-autodelete-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p p"   --png "$OUT/units-$lang.png"
     # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
     # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
     # and the icon-gutter picker row have to fit whole.
@@ -522,7 +559,7 @@ for lang in de fr es; do
     # Date & Time is the tightest screen per-language: the localized month name fills the fixed
     # month stepper cell (#614 widened it to 70 px for the four-char French months). Eyeball the
     # month glyphs against the active cell's amber border.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p"       --png "$OUT/datetime-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p d p" --png "$OUT/datetime-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p b"    --png "$OUT/statistics-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$CLIMBROUTES" --gpx "$GPX" --at 1500 --open-climb \
@@ -543,10 +580,10 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --inject-upload 0 --png "$OUT/route-received-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p" --inject-upload 1 \
         --png "$OUT/routeswap-received-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p B p d p" --png "$OUT/routeswap-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p B d d d p d p" --png "$OUT/routeswap-$lang.png"
     # The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
     # for a clipped kind label ("Herzfrequenz" / "Fréq. cardiaque" / "Frec. cardíaca") or status line.
-    "$SIM" "$MAP" --boot --lang "$lang" --sensors-screen --script "B u p d d d d d d d d p" --png "$OUT/sensors-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --sensors-screen --script "B u p d d p d p" --png "$OUT/sensors-$lang.png"
     # The ride-start card (T6 #684): the checklist labels/values (GPS/Battery) are the copy to
     # eyeball for clipped rows in the longer translations. --battery 100 pins the widest % value.
     "$SIM" "$MAP" --boot --lang "$lang" --battery 100 --script "B d d d w p p" --png "$OUT/ride-start-$lang.png"
@@ -554,18 +591,22 @@ for lang in de fr es; do
     # clipped line now that the copy is longer.
     "$SIM" "$MAP" --boot --lang "$lang" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "B d d d w p" --png "$OUT/map-browse-$lang.png"
-    # The SD-sideload update flow (epic #615 S5): the System row, the first-install confirm (the
-    # worst case for vertical fit — the two-row version table + the no-undo note, which wraps to two
-    # Label lines in the longer translations), the progress spinner, an error card, and the
+    # The SD-sideload update flow (epic #615 S5): the System menu, the Firmware page (whose "Install
+    # update from card" label wraps to three Label lines in the longer translations), the
+    # first-install confirm (the worst case for vertical fit — the two-row version table + the
+    # no-undo note, which wraps to two Label lines), the progress spinner, an error card, and the
     # post-update toast — the text-heaviest DFU screens, to eyeball for clipped/overflowing copy.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d d d d d d p" --png "$OUT/system-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d d d d d d p p" --dfu-scan first --png "$OUT/dfu-confirm-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d d d d d d p p" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p"         --png "$OUT/system-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p d d d p" --png "$OUT/firmware-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu-scan first --png "$OUT/dfu-confirm-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu-scan normal --dfu-progress --png "$OUT/dfu-progress-$lang.png"
     # The terminal installing card per-language — the wrapped Body headline (two lines in French)
     # + the Label body + the warning line, to eyeball for clipped copy.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d d d d d d p p" --dfu-scan normal --dfu-progress --dfu-installing --png "$OUT/dfu-installing-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d d d d d d p p" --dfu-error fragmented --png "$OUT/dfu-error-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu-scan normal --dfu-progress --dfu-installing --png "$OUT/dfu-installing-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu-error fragmented --png "$OUT/dfu-error-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated-$lang.png"
 done
 
-echo "ui-snapshots: 156 screens rendered into $OUT/"
+# Counted from the directory rather than hand-maintained — the literal that used to live here had
+# drifted 37 frames behind the script.
+echo "ui-snapshots: $(ls "$OUT"/*.png | wc -l | tr -d ' ') screens rendered into $OUT/"
