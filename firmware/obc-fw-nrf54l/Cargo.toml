@@ -91,7 +91,7 @@ com-hw = []
 # Developer/CI-only compile-time allocation report. This adds a self-describing
 # `.obc_resources` table to the ELF so `firmware/tools/resource_guard.py` can read exact
 # target-side `size_of` values without running on a board. Shipping builds never enable it, so the
-# table costs them no flash or RAM. See `firmware/ARCHITECTURE_RESOURCE_BASELINE.md`.
+# table costs them no flash or RAM. See `firmware/docs/ARCHITECTURE_RESOURCE_BASELINE.md`.
 resource-report = []
 
 # The all-features stack (issue #270, epic #267): nrf-sdc/MPSL/TrouBLE folded into `main.rs`.

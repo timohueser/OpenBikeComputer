@@ -4,8 +4,8 @@ This is the reproducible FAR-00 baseline for the firmware refactor epic (#792).
 It records facts that later refactors must preserve or intentionally re-baseline:
 linked memory, named compile-time allocations, rendering output/performance,
 dependency direction, and observable on-glass behavior. The machine-readable
-authority is [`tools/resource_baseline.json`](tools/resource_baseline.json); CI
-enforces it through [`tools/resource_guard.py`](tools/resource_guard.py).
+authority is [`tools/resource_baseline.json`](../tools/resource_baseline.json); CI
+enforces it through [`tools/resource_guard.py`](../tools/resource_guard.py).
 
 The numbers below were captured from source commit
 `fded8d6444bd3e17fae7f916fd10a7eea0611700` with rustc 1.96.0
