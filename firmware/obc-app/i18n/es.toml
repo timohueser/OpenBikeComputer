@@ -15,7 +15,7 @@ pois = "POIs"
 map = "Mapa"
 settings = "Ajustes"
 
-# --- El menú brújula en ruta, la lista de puntos y el selector Saltar tramo ---
+# --- El menú brújula en ruta, la lista Próximo y el selector Saltar tramo ---
 [ride_menu]
 title = "MENÚ DE RUTA"
 up_ahead = "Próximo"

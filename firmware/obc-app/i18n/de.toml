@@ -15,7 +15,7 @@ pois = "POIs"
 map = "Karte"
 settings = "Einstellungen"
 
-# --- Das Kompassmenü während der Fahrt, Wegpunktliste und Vorspringen-Auswahl ---
+# --- Das Kompassmenü während der Fahrt, die Voraus-Liste und die Vorspringen-Auswahl ---
 [ride_menu]
 title = "FAHRTMENÜ"
 up_ahead = "Voraus"

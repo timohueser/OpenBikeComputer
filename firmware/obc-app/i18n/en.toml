@@ -28,7 +28,7 @@ pois = "POIs"
 map = "Map"
 settings = "Settings"
 
-# --- The mid-ride compass, Waypoints list, and Detour chooser ---
+# --- The mid-ride compass, the Up-ahead timeline, and the Detour chooser ---
 [ride_menu]
 title = "RIDE MENU"
 up_ahead = "Up ahead"
