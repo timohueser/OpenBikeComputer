@@ -20,7 +20,7 @@ These pages are a **conceptual companion to the code**, not an API reference. Th
     </marker>
   </defs>
 
-  <text class="d-tag" x="20" y="26">The whole pipeline, one glance</text>
+  <text class="d-tag" x="20" y="26">The whole pipeline</text>
 
   <!-- ingest lane labels -->
   <text class="d-tag" x="20" y="60" style="fill:#6b7758">① Build a map</text>
@@ -90,7 +90,7 @@ These pages are a **conceptual companion to the code**, not an API reference. Th
   <line class="d-flow" x1="759" y1="335" x2="759" y2="309" marker-end="url(#ah)" />
   <text class="d-sub" x="767" y="326" style="font-size:8px;fill:#6b7758">to the app</text>
 </svg>
-<figcaption>Two ingest lanes — <b>maps</b> and <b>routes</b> — are baked into compact binary formats, then fed to <b>one</b> shared application and render path. That same code runs on the desktop simulator, on this site's landing page (the <code>obc-web-demo</code> wasm host — live in your browser today), and on the device, where live sensors — GPS, barometer, compass — feed the same app the other hosts get from a GPX replay.</figcaption>
+<figcaption>Two ingest lanes — <b>maps</b> and <b>routes</b> — are baked into compact binary formats, then fed to <b>one</b> shared application and render path. The same code runs on the desktop simulator, on this site's landing page (the <code>obc-web-demo</code> wasm host), and on the device — where live sensors feed the app the data the other hosts get from a GPX replay.</figcaption>
 </figure>
 
 The whole project is built around two ideas: **compact binary formats a microcontroller can read directly off flash** (no JSON, no reparsing, no heap churn), and **a single rendering path** the simulator and the firmware both run, so the desktop and the device can never drift apart.
@@ -101,7 +101,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
   <a class="doc-card" href="software/rendering/">
     <span class="dc-tag">Software</span>
     <h3>Rendering pipeline</h3>
-    <p>How one map frame is drawn — projection, level-of-detail, the quadtree cull, the stub-select collector, and the polygon/line rasterisers. The deepest page.</p>
+    <p>How one map frame is drawn — projection, level-of-detail, the quadtree cull, the stub-select collector, and the polygon/line rasterisers.</p>
   </a>
   <a class="doc-card" href="software/architecture/">
     <span class="dc-tag">Software</span>
@@ -143,7 +143,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
 | Web demo host | [`obc-web-demo`](src:apps/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:host/obc-host-core)) |
 | Conversion bridge | [`obc-web-convert`](src:apps/obc-web-convert) | The web builder's wasm shim over the same GPX ↔ OBCR routines — route conversion runs in the tab, no server |
 
-> **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then dive into the **[Rendering pipeline](software/rendering/)** — it's the most interesting machinery in the project. The **[data formats](software/formats/)** page is the reference the other two lean on.
+> **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then the **[Rendering pipeline](software/rendering/)**. The **[data formats](software/formats/)** page is the reference the other two lean on.
 
 ## A note on these docs
 

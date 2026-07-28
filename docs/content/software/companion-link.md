@@ -1,6 +1,6 @@
 ---
 title: The companion link
-description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, a whole-object transfer end to end, the device-side upload prompts, the single-channel change-signal sync loop with synced-ride reconciliation, card-borne store epochs that name each id era, proof-only route badges, on-device deletes flowing back, and passkey pairing with reject-when-bonded and silent reconnect.
+description: How the OpenBikeComputer device and its phone companion app talk over Bluetooth Low Energy — the two-plane GATT / L2CAP split, the object model, transfers, the change-signal sync loop, store epochs, and passkey pairing.
 ---
 
 # The companion link
@@ -15,7 +15,7 @@ nothing leaves the two devices.
 This page is the *shape* of that link. The normative, byte-level reference is the
 [BLE interface spec](src:specs/obc-ble-interface-spec.md) (the same tier as the
 [`OBCM`](src:specs/OBCM_Spec.md) / [`OBCR`](src:specs/OBCR_Spec.md) format specs); here we
-cover the design and the *why*. Four ideas run through all of it:
+cover the design and the *why*. Five ideas run through all of it:
 
 - **Two planes.** Small typed control state rides GATT; bulk bytes ride a single
   L2CAP channel. Nothing large ever crosses GATT.
@@ -62,7 +62,7 @@ went*; the CoC carries *the bytes*.
   <rect class="d-panel-2" x="150" y="88" width="420" height="86" rx="10" style="fill:#eef2df" />
   <text class="d-label" x="360" y="112" text-anchor="middle" style="fill:#3c6b39">Control plane · GATT</text>
   <text class="d-sub" x="360" y="132" text-anchor="middle">small, typed state — identity · config · orchestration</text>
-  <text class="d-sub" x="360" y="150" text-anchor="middle">command · status · config · transferControl · psm · protocolVersion</text>
+  <text class="d-sub" x="360" y="150" text-anchor="middle" style="font-size:9.5px">command · status · config · transferControl · psm · protocolVersion</text>
   <text class="d-sub" x="360" y="168" text-anchor="middle" style="fill:#a9501c">≤ 512 bytes per attribute — a hard wall</text>
 
   <!-- data lane -->
@@ -116,9 +116,8 @@ rather than two drifting ones.
 There is one place the two hosts genuinely differ, and it is about size. A
 browser holds a map in a scratch file and streams it through the tab; the desktop
 app hands the *file path* to the transport and the bytes go disk → endpoint
-without ever entering the webview. Copying a few hundred megabytes into
-JavaScript so JavaScript can hand them straight back is the kind of thing that
-works and should still not be done.
+without ever entering the webview — no reason to copy a few hundred megabytes
+through JavaScript just to hand them straight back.
 
 The browser side already **writes** over it: a map, a dropped GPX and a firmware
 image, from the [map builder](https://timohueser.github.io/OpenBikeComputer/)'s
@@ -318,25 +317,18 @@ and back.
 > catalogs right before planning, so a retry sees what actually landed.
 
 > **Answers are bounded — a lost notify never wedges.** Every solicited answer
-> the app waits on — a transfer verdict, a download announce, a command ack —
-> rides the `status` notify, and the device deliberately **abandons** a notify
-> it can't deliver in time rather than stall a plane (a lost notification is the
-> app's to recover by re-reading, never a reason to wedge the link). The app
-> holds the same posture: each of those waits is time-bounded, because they hold
-> the app's single transfer slot — an unbounded wait on one lost verdict would
-> silently wedge every later list read, sync, and upload behind it until the app
-> restarts. The CoC is deliberately unframed, so the slot does not simply free:
-> the app first closes and reopens the channel on a timeout, cancellation,
-> crossed result, or descriptor-open reject. That reset discards raw upload
-> bytes that may already have queued before an asynchronous reject arrived; the
-> device treats the channel drop as an implicit abort and sends no late result.
-> A committed close is correlated by object id **and byte count**, so the 310-byte
-> close of a preceding catalog read can never complete a 9,360-byte upload. A
-> timed-out exchange fails like a drop: the slot then frees, a retry
-> re-sends the whole object, and the convergence rules above absorb the
-> "committed but unheard" case. The same rule covers a data-plane stall under a
-> live link: a CoC that moves no bytes is failed by a watchdog and surfaces as a
-> plain retryable failure, never a progress bar parked at 99 %.
+> the app waits on rides the `status` notify, and the device deliberately
+> **abandons** a notify it can't deliver in time rather than stall a plane — a
+> lost notification is the app's to recover by re-reading. The app holds the
+> same posture: each wait is time-bounded, because it holds the app's single
+> transfer slot, and an unbounded wait on one lost verdict would wedge every
+> later list read, sync, and upload behind it. On a timeout, cancellation, or
+> reject the app closes and reopens the CoC (the channel is unframed, so a
+> reset is what discards queued bytes), and the device treats the drop as an
+> implicit abort. A committed close is correlated by object id **and byte
+> count**, so the close of a preceding catalog read can never complete an
+> upload; a data-plane stall under a live link is failed by a watchdog and
+> surfaces as a plain retryable failure, never a progress bar parked at 99 %.
 
 ### When a route lands — the device's side
 
@@ -399,9 +391,9 @@ something changed.
   <text class="d-sub" x="91" y="116" text-anchor="middle">upload · ride</text>
   <text class="d-sub" x="91" y="132" text-anchor="middle" style="fill:#a9501c">device-side delete</text>
 
-  <rect class="d-panel-2" x="198" y="70" width="150" height="72" rx="10" style="fill:#eef2df" />
+  <rect class="d-panel-2" x="192" y="70" width="162" height="72" rx="10" style="fill:#eef2df" />
   <text class="d-label" x="273" y="98" text-anchor="middle" style="fill:#3c6b39">storeChanged</text>
-  <text class="d-sub" x="273" y="118" text-anchor="middle">names the store · rev ++</text>
+  <text class="d-sub" x="273" y="118" text-anchor="middle" style="font-size:9.5px">names the store · rev ++</text>
   <text class="d-sub" x="273" y="134" text-anchor="middle">notify (status)</text>
 
   <rect class="d-panel" x="380" y="70" width="150" height="72" rx="10" />
@@ -421,7 +413,7 @@ something changed.
 
   <!-- loop back -->
   <path d="M633 142 C 633 190, 91 190, 91 144" fill="none" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#sy-m)" />
-  <text class="d-sub" x="360" y="182" text-anchor="middle" style="fill:#6b7758">on the next change</text>
+  <text class="d-sub" x="360" y="202" text-anchor="middle" style="fill:#6b7758">on the next change</text>
 
   <!-- ackRides reverse lane -->
   <line x1="20" y1="216" x2="700" y2="216" style="stroke:#d6cda8;stroke-width:1" />
@@ -433,7 +425,7 @@ something changed.
   <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
   <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device marks synced</text>
 </svg>
-<figcaption><code>storeChanged</code> is the cheap immediate "did anything change?" signal — one notification per change, naming <em>which</em> store moved so a route upload never triggers a ride re-list. On it (or on connect) the app pulls the relevant <b>list</b> object — a compact catalog of fixed-size entries — then downloads only the objects new to it. Changes that arrive during a list transfer coalesce behind it instead of cancelling the open exchange. Because BLE notifications are best-effort edges, the app also runs a low-cadence 60-second catalog audit; a lost edge can delay a checkmark update, never leave it stale until restart. A change is a change whether the phone caused it or the rider deleted something on the device: both go through the one object store, so both fire the same signal. It shares the <code>status</code> characteristic with every other device → app message, so there is one subscription and one ordering domain. <em>(v1 also carried a separate 10-byte <code>objectStore</code> digest characteristic; v2 drops it as a redundant second signal whose per-boot <code>revision</code> tripped clients that persisted it.)</em> The lower lane runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
+<figcaption><code>storeChanged</code> is the cheap "did anything change?" signal — one notification per change, naming <em>which</em> store moved so a route upload never triggers a ride re-list. On it (or on connect) the app pulls the relevant <b>list</b> object, then downloads only the objects new to it; changes arriving during a list transfer coalesce behind it. Because BLE notifications are best-effort, the app also runs a low-cadence 60-second catalog audit — a lost edge can delay a checkmark, never leave it stale until restart. A change is a change whether the phone caused it or the rider deleted something on the device: both go through the one object store and fire the same signal. The lower lane runs the other way: an <code>ackRides</code> command carries the phone's held ride ids <em>to</em> the device, which marks them synced (below).</figcaption>
 </figure>
 
 The device is the other half of this loop. A change doesn't only come *from* the
@@ -756,9 +748,9 @@ for when the radio comes back.
   <text class="d-sub" x="297" y="206" text-anchor="middle">phone knows</text>
   <text class="d-sub" x="297" y="224" text-anchor="middle">this identity</text>
 
-  <rect class="d-panel-2" x="428" y="180" width="150" height="66" rx="10" style="fill:#eef2df" />
-  <text class="d-sub" x="503" y="202" text-anchor="middle">re-encrypt · stored LTK</text>
-  <text class="d-sub" x="503" y="220" text-anchor="middle">resolve RPA · stored IRK</text>
+  <rect class="d-panel-2" x="424" y="180" width="158" height="66" rx="10" style="fill:#eef2df" />
+  <text class="d-sub" x="503" y="202" text-anchor="middle" style="font-size:9.5px">re-encrypt · stored LTK</text>
+  <text class="d-sub" x="503" y="220" text-anchor="middle" style="font-size:9.5px">resolve RPA · stored IRK</text>
 
   <rect class="d-hot" x="622" y="180" width="82" height="66" rx="10" style="fill:#f8efe4" />
   <text class="d-sub" x="663" y="204" text-anchor="middle">connected</text>
@@ -866,7 +858,7 @@ switch. The whole feature is **BLE-only**; there is no ANT+.
   <line class="d-flow" x1="462" y1="150" x2="564" y2="96" style="stroke:#33575b" marker-end="url(#se-c)" />
   <line class="d-flow" x1="462" y1="170" x2="564" y2="170" style="stroke:#33575b" marker-end="url(#se-c)" />
   <line class="d-flow" x1="462" y1="192" x2="564" y2="244" style="stroke:#33575b" marker-end="url(#se-c)" />
-  <text class="d-sub" x="520" y="143" text-anchor="middle" style="font-size:9px;fill:#33575b">scan · connect · subscribe</text>
+  <text class="d-sub" x="524" y="160" text-anchor="middle" style="font-size:9px;fill:#33575b">scan · connect · subscribe</text>
 
   <!-- bottom band -->
   <rect class="d-panel-2" x="24" y="292" width="680" height="40" rx="9" />
