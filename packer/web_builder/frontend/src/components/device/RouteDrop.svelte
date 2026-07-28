@@ -15,7 +15,22 @@
     import type { ProtocolClient } from "../../lib/usb/client";
     import TransferBar from "./TransferBar.svelte";
 
-    let { client }: { client: ProtocolClient } = $props();
+    let {
+        client,
+        onmultiple = null,
+        serialize = null,
+        onsent = null,
+    }: {
+        client: ProtocolClient;
+        /** Take over when several files land at once (the trip dialog). Null keeps the
+         *  single-file behaviour: extra files are ignored, as they always were. */
+        onmultiple?: ((files: File[]) => void) | null;
+        /** Order this surface's transfers behind a page-owned queue (the device page's
+         *  dashboard chain). Null sends directly, as the builder column always has. */
+        serialize?: (<T>(op: () => Promise<T>) => Promise<T>) | null;
+        /** A route landed — the device page refreshes its lists on this. */
+        onsent?: (() => void) | null;
+    } = $props();
 
     const job = new DeviceJob("route");
     let route = $state<PreparedRoute | null>(null);
@@ -34,25 +49,35 @@
         }
     }
 
+    function take(files: File[]) {
+        if (files.length === 0) return;
+        if (files.length > 1 && onmultiple) {
+            onmultiple(files);
+            return;
+        }
+        void accept(files[0]);
+    }
+
     function onDrop(event: DragEvent) {
         event.preventDefault();
         dragging = false;
-        const file = event.dataTransfer?.files?.[0];
-        if (file) void accept(file);
+        take([...(event.dataTransfer?.files ?? [])]);
     }
 
     function onPick(event: Event) {
         const input = event.currentTarget as HTMLInputElement;
-        const file = input.files?.[0];
+        const files = [...(input.files ?? [])];
         input.value = "";
-        if (file) void accept(file);
+        take(files);
     }
 
     async function send(prepared: PreparedRoute) {
-        await job.run(
-            (ctx) => sendRoute(client, prepared, ctx),
-            (result) => `“${prepared.header.name}” is on the device (route ${result.objectId}).`,
+        const run = serialize ?? (<T,>(op: () => Promise<T>) => op());
+        const result = await job.run(
+            (ctx) => run(() => sendRoute(client, prepared, ctx)),
+            (value) => `“${prepared.header.name}” is on the device (route ${value.objectId}).`,
         );
+        if (result) onsent?.();
     }
 
     const summary = $derived(
@@ -89,12 +114,17 @@
         ondragleave={() => (dragging = false)}
         ondrop={onDrop}
     >
-        <p class="small muted">Drop a GPX file here</p>
-        <button type="button" class="btn" onclick={() => picker?.click()}>Choose a file…</button>
+        <p class="small muted">
+            {onmultiple ? "Drop GPX files here — several at once can become a trip" : "Drop a GPX file here"}
+        </p>
+        <button type="button" class="btn" onclick={() => picker?.click()}>
+            {onmultiple ? "Choose files…" : "Choose a file…"}
+        </button>
         <input
             bind:this={picker}
             type="file"
             accept=".gpx,application/gpx+xml"
+            multiple={onmultiple !== null}
             hidden
             aria-hidden="true"
             tabindex="-1"

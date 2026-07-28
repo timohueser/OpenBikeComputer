@@ -14,19 +14,26 @@
     import FirmwareCard from "../components/device/FirmwareCard.svelte";
     import PreviewModal from "../components/device/PreviewModal.svelte";
     import RidesCard from "../components/device/RidesCard.svelte";
+    import RouteDrop from "../components/device/RouteDrop.svelte";
     import RoutesCard from "../components/device/RoutesCard.svelte";
+    import TransferBar from "../components/device/TransferBar.svelte";
+    import TripDropDialog from "../components/device/TripDropDialog.svelte";
     import { routeTrack } from "../lib/convert/bridge";
     import { dashboard, type TripView } from "../lib/device/dashboard.svelte";
     import type { ProfilePoint } from "../lib/device/elevation";
+    import { pullRide, pullRides, rideSyncAccess, type LibraryView, type RideLibrary } from "../lib/device/library";
     import { addStage, createTrip, moveStage, removeStage, renameRoute, updateTrip } from "../lib/device/manage";
     import { rideDistance, rideDuration, rideScope } from "../lib/device/rides";
+    import type { PreparedRoute } from "../lib/device/route";
     import { deviceHolder } from "../lib/device/session.svelte";
-    import { jobRegistry } from "../lib/device/job.svelte";
+    import { DeviceJob, jobRegistry } from "../lib/device/job.svelte";
     import { formatBytes } from "../lib/format";
+    import { platform } from "../lib/platform";
     import { confirmAction } from "../lib/ui/confirm.svelte";
     import { ObjectType } from "../lib/usb/protocol";
     import type { ProtocolClient } from "../lib/usb/client";
     import { decodeRideObject, type RideListEntry, type RouteListEntry } from "../lib/usb/objects";
+    import { sendRoute } from "../lib/device/write";
 
     const session = $derived(deviceHolder.session);
     const client = $derived(session?.status === "ready" ? session.client : null);
@@ -110,6 +117,97 @@
     function retry() {
         dashboard.clearBusy();
         if (client) void dashboard.refresh(client);
+    }
+
+    /** RouteDrop's transfers ride the page's queue, so a drop cannot collide with a list read. */
+    const serialize: <T>(op: () => Promise<T>) => Promise<T> = (op) => dashboard.enqueue(op);
+
+    // --- several files at once: the trip dialog -----------------------------
+
+    let tripDrop = $state<File[] | null>(null);
+    const dropJob = new DeviceJob("routes");
+
+    async function addRoutes(routes: PreparedRoute[], tripName: string | null) {
+        const c = client;
+        tripDrop = null;
+        if (!c) return;
+        await dropJob.run(
+            async (ctx) => {
+                // Sequential — the wire takes one transfer at a time. The device dedupes a
+                // re-dropped file by CRC and answers with the existing id, so the collected
+                // ids are correct even when half of these were already on the card.
+                const ids: number[] = [];
+                for (const route of routes) {
+                    const { objectId } = await dashboard.enqueue(() => sendRoute(c, route, ctx));
+                    ids.push(objectId);
+                }
+                if (tripName !== null) {
+                    await dashboard.enqueue(() => createTrip(c, tripName, ids, ctx.signal));
+                }
+                return { count: ids.length, tripName };
+            },
+            (r) =>
+                r.tripName !== null
+                    ? `“${r.tripName}” is on the device, ${r.count} stages.`
+                    : `${r.count} routes are on the device.`,
+        );
+        await dashboard.refresh(c);
+    }
+
+    // --- the library's view of the card's rides ------------------------------
+    //
+    // Only for the badges and the pulls: `platform.rides` exists exactly on the tier that also
+    // has the Ride-library page. Loaded once, refreshed after every pull.
+
+    let library = $state<RideLibrary | null>(null);
+    let libraryView = $state<LibraryView | null>(null);
+    const pullJob = new DeviceJob("rides");
+
+    $effect(() => {
+        if (!platform.rides || library) return;
+        void platform.rides().then(async (opened) => {
+            library = opened;
+            libraryView = await opened.view();
+        });
+    });
+
+    /** Ride ids a durable copy of which is in the folder — inverse of the library's own list. */
+    const heldHere = $derived.by(() => {
+        if (!libraryView || scope.epoch === null) return null;
+        return new Set(
+            libraryView.rides
+                .filter((r) => r.present && r.serial === scope.serial && r.epoch === scope.epoch)
+                .map((r) => r.objectId),
+        );
+    });
+
+    async function refreshLibrary() {
+        if (library) libraryView = await library.view();
+    }
+
+    async function pullOne(entry: RideListEntry) {
+        const c = client;
+        const lib = library;
+        if (!c || !lib) return;
+        await pullJob.run(
+            (ctx) => dashboard.enqueue(() => pullRide(rideSyncAccess(c), lib, scope, entry, ctx)),
+            ({ ride }) => `“${ride.name}” is in the library.`,
+        );
+        await refreshLibrary();
+    }
+
+    async function pullAll() {
+        const c = client;
+        const lib = library;
+        if (!c || !lib) return;
+        await pullJob.run(
+            (ctx) => dashboard.enqueue(() => pullRides(rideSyncAccess(c), lib, scope, ctx)),
+            (report) =>
+                report.imported.length === 0 && report.repaired.length === 0
+                    ? `Nothing new — all ${report.listed} rides on the device are already in the library.`
+                    : `Copied ${report.imported.length + report.repaired.length} to the library.`,
+        );
+        await refreshLibrary();
     }
 
     // --- previews: download the object, decode it, show it. Never acks. ----
@@ -225,7 +323,28 @@
             onremovestage={(trip, index) => void doRemoveStage(trip, index)}
             onmovestage={doMoveStage}
         />
-        <RidesCard>
+        <section class="card">
+            <RouteDrop
+                {client}
+                {serialize}
+                onmultiple={(files) => (tripDrop = files)}
+                onsent={() => client && void dashboard.refresh(client)}
+            />
+            <TransferBar job={dropJob} />
+        </section>
+        <RidesCard {heldHere}>
+            {#snippet actions()}
+                {#if library}
+                    <button
+                        type="button"
+                        class="btn primary"
+                        disabled={pullJob.running || dashboard.rides.length === 0}
+                        onclick={() => void pullAll()}
+                    >
+                        Pull all to library
+                    </button>
+                {/if}
+            {/snippet}
             {#snippet row(ride)}
                 <button
                     type="button"
@@ -235,11 +354,32 @@
                 >
                     Preview
                 </button>
+                {#if library}
+                    <button
+                        type="button"
+                        class="btn"
+                        disabled={pullJob.running || (heldHere?.has(ride.objectId) ?? false)}
+                        onclick={() => void pullOne(ride)}
+                    >
+                        Pull
+                    </button>
+                {/if}
             {/snippet}
         </RidesCard>
+        {#if pullJob.running || pullJob.result || pullJob.error}
+            <TransferBar job={pullJob} />
+        {/if}
         <section class="card">
             <FirmwareCard {client} info={session.info} />
         </section>
+
+        {#if tripDrop}
+            <TripDropDialog
+                files={tripDrop}
+                onadd={(routes, tripName) => void addRoutes(routes, tripName)}
+                oncancel={() => (tripDrop = null)}
+            />
+        {/if}
 
         {#if preview}
             {@const open = preview}
