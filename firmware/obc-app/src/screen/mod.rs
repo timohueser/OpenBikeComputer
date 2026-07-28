@@ -833,10 +833,11 @@ impl Screen {
     /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) whenever the stack
     /// settles, which is the whole arm/re-arm/disarm lifecycle. Intentionally partial: no other
     /// screen asks for one, so the App-owned scratch stays disarmed (and the query free) everywhere
-    /// else.
+    /// else — as does an Up-ahead list the rider scoped to **waypoints only** (U4), which declares
+    /// no key at all.
     pub(crate) fn corridor_request(&self) -> Option<crate::corridor::CorridorKey> {
         match self {
-            Screen::UpAhead(s) => Some(s.corridor_key()),
+            Screen::UpAhead(s) => s.corridor_key(),
             _ => None,
         }
     }

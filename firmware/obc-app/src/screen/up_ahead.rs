@@ -28,6 +28,17 @@
 //! cursor; applying a filter changes the key, which is what re-queries. Closing the screen drops
 //! the request and the reader seam goes quiet.
 //!
+//! # The source scope (U4)
+//!
+//! *Who* feeds the list is a stable preference, not a moment-to-moment intent, so it lives in Ride
+//! settings as [`UpAheadSource`] and is read **once, at entry** — the same freeze as the anchor
+//! (the setting can only be edited from a screen this one is not under, so live-reading it would
+//! differ from freezing it only in theory). Under **Waypoints only** the screen declares *no*
+//! corridor key at all: nothing is armed, the query never runs, and
+//! [`base_needs_reader`](crate::App::base_needs_reader) never asks the board to build a map
+//! `Reader` for it — the list costs exactly what the plain waypoint list cost. Under **Map POIs
+//! only** the key is declared as usual and the resident waypoint table is simply not walked.
+//!
 //! # Hold opens the category picker
 //!
 //! `Hold` swaps the list body for a 7-row picker (Everything + the six categories, the POI-menu
@@ -48,7 +59,7 @@ use obc_route::{Profile, WptEntry};
 
 use crate::corridor::CorridorKey;
 use crate::input::Gesture;
-use crate::settings::Units;
+use crate::settings::{Units, UpAheadSource};
 use crate::Msg;
 
 use super::list::{self, ListGeometry, Separators};
@@ -209,6 +220,29 @@ impl<'a> Iterator for Merge<'a> {
     }
 }
 
+/// The waypoint table the list may walk: empty unless a route is loaded **and** the rider's source
+/// scope includes custom waypoints. A route-less ride must never leak the previous route's resident
+/// cache — the empty state covers it.
+fn scoped_waypoints(waypoints: &[WptEntry], source: UpAheadSource, route_loaded: bool) -> &[WptEntry] {
+    if route_loaded && source.shows_waypoints() {
+        waypoints
+    } else {
+        &[]
+    }
+}
+
+/// The corridor snapshot the list may walk — the twin of [`scoped_waypoints`]. Belt-and-braces
+/// under [`WaypointsOnly`](UpAheadSource::WaypointsOnly): the scratch is already disarmed there
+/// (so the slice is empty anyway), but a snapshot another consumer armed must never leak into a
+/// list the rider scoped away from map POIs.
+fn scoped_corridor(corridor: &[CorridorPoi], source: UpAheadSource, route_loaded: bool) -> &[CorridorPoi] {
+    if route_loaded && source.shows_pois() {
+        corridor
+    } else {
+        &[]
+    }
+}
+
 /// Pure route-relative figures for one row. The distance axis is the entry's `dist_along_m` against
 /// matched activity progress. Remaining ascent uses the cached profile's cumulative-ascent curve at
 /// those same two fractions — not entry elevation (which may be absent or off the line), and not
@@ -272,30 +306,37 @@ pub struct UpAheadScreen {
     filter: PoiCategorySet,
     /// Live route progress (m) frozen at entry — the corridor snapshot's anchor.
     anchor_m: u32,
+    /// Which sources feed the list (epic #946, U4), read from Ride settings at entry — see the
+    /// module docs. Also decides whether a corridor snapshot is requested at all.
+    source: UpAheadSource,
     /// The picker's highlighted row while it is open (`0` = Everything, `1..=6` = the categories).
     picker: Option<usize>,
 }
 
 impl UpAheadScreen {
-    /// Open the timeline anchored at `anchor_m` (live progress at entry), unfiltered.
-    pub fn new(anchor_m: u32) -> Self {
-        UpAheadScreen { selected: None, filter: PoiCategorySet::ALL, anchor_m, picker: None }
+    /// Open the timeline anchored at `anchor_m` (live progress at entry), unfiltered, showing the
+    /// sources `source` scopes it to (the rider's Ride-settings preference, frozen here).
+    pub fn new(anchor_m: u32, source: UpAheadSource) -> Self {
+        UpAheadScreen { selected: None, filter: PoiCategorySet::ALL, anchor_m, source, picker: None }
     }
 
     /// What corridor snapshot this screen wants — read by
     /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) whenever the stack
     /// settles. Stable across frames (the anchor is frozen), so re-arming is a no-op until the
-    /// filter changes.
-    pub(crate) fn corridor_key(&self) -> CorridorKey {
-        CorridorKey { filter: self.filter, anchor_m: self.anchor_m }
+    /// filter changes. `None` when the source scope excludes map POIs
+    /// ([`WaypointsOnly`](UpAheadSource::WaypointsOnly)): the scratch then stays **disarmed**, so
+    /// neither the query nor the board's `Reader` build ever runs for this screen.
+    pub(crate) fn corridor_key(&self) -> Option<CorridorKey> {
+        self.source.shows_pois().then_some(CorridorKey { filter: self.filter, anchor_m: self.anchor_m })
     }
 
-    /// The merged rows for this frame's tables, in route order and already filtered.
+    /// The merged rows for this frame's tables, in route order, already source-scoped and filtered.
     fn rows<'a>(&self, waypoints: &'a [WptEntry], corridor: &'a [CorridorPoi], route_loaded: bool) -> Merge<'a> {
-        // A route-less ride must never leak the previous route's resident cache (nor a stale
-        // snapshot) — the empty state covers it.
-        let (wp, poi): (&[WptEntry], &[CorridorPoi]) = if route_loaded { (waypoints, corridor) } else { (&[], &[]) };
-        Merge::new(wp, poi, self.filter)
+        Merge::new(
+            scoped_waypoints(waypoints, self.source, route_loaded),
+            scoped_corridor(corridor, self.source, route_loaded),
+            self.filter,
+        )
     }
 
     /// The effective cursor: the rider's, or — before they've turned — the first row still ahead
@@ -402,10 +443,13 @@ impl UpAheadScreen {
                     none: rx.t(Msg::UpAheadNone),
                     none_sub: rx.t(Msg::UpAheadNoneSub),
                     none_category_sub: rx.t(Msg::UpAheadNoneCategorySub),
+                    none_waypoints_sub: rx.t(Msg::UpAheadNoneWaypointsSub),
+                    none_pois_sub: rx.t(Msg::UpAheadNonePoisSub),
                 },
                 waypoints: rx.waypoints.as_slice(),
                 corridor: rx.corridor,
                 filter: self.filter,
+                source: self.source,
                 route_loaded,
                 settled: rx.corridor_settled,
                 progress_m: rx.activity.progress_m,
@@ -431,6 +475,11 @@ struct EmptyCopy<'a> {
     none: &'a str,
     none_sub: &'a str,
     none_category_sub: &'a str,
+    /// The sub-line under a source scope of "waypoints only" — the generic `none_sub` ("no stops on
+    /// route") would be a **lie** there: the route may be lined with map POIs the rider scoped away.
+    none_waypoints_sub: &'a str,
+    /// The same, the other way round (map POIs only, and the corridor came back empty).
+    none_pois_sub: &'a str,
 }
 
 /// Everything one Up-ahead frame draws from: the two source slices, the filter, the route-relative
@@ -444,6 +493,9 @@ struct View<'a> {
     waypoints: &'a [WptEntry],
     corridor: &'a [CorridorPoi],
     filter: PoiCategorySet,
+    /// The rider's source scope (epic #946, U4) — which of the two slices above may feed the list,
+    /// and which empty-state sub-line tells the truth when it doesn't.
+    source: UpAheadSource,
     route_loaded: bool,
     /// Whether the corridor snapshot has landed (or settled empty on a query error, U2) — `false`
     /// only while the query is still waiting for its inputs.
@@ -458,11 +510,11 @@ struct View<'a> {
 
 impl View<'_> {
     fn rows(&self) -> Merge<'_> {
-        // A route-less ride must never leak the previous route's resident cache (nor a stale
-        // snapshot) — the empty state covers it.
-        let (wp, poi): (&[WptEntry], &[CorridorPoi]) =
-            if self.route_loaded { (self.waypoints, self.corridor) } else { (&[], &[]) };
-        Merge::new(wp, poi, self.filter)
+        Merge::new(
+            scoped_waypoints(self.waypoints, self.source, self.route_loaded),
+            scoped_corridor(self.corridor, self.source, self.route_loaded),
+            self.filter,
+        )
     }
 }
 
@@ -472,19 +524,34 @@ fn draw_list(cv: &mut impl Surface, v: &View) {
     list::list_frame(cv, v.w, v.h, v.title, pos, v.total, geo.visible);
 
     if v.total == 0 {
-        // The three distinct empty states. Order matters: "no route" outranks everything (the list
-        // is route-relative by definition), and a snapshot that hasn't landed yet draws **nothing**
-        // — a transient one-frame state, not an answer. A query that *errored* settles empty (U2),
-        // so it lands on the honest "nothing ahead" rather than spinning forever.
+        // The distinct empty states. Order matters: "no route" outranks everything (the list is
+        // route-relative by definition), and a snapshot that hasn't landed yet draws **nothing** —
+        // a transient one-frame state, not an answer. A query that *errored* settles empty (U2), so
+        // it lands on the honest "nothing ahead" rather than spinning forever. Under "Waypoints
+        // only" nothing is ever armed, so `settled` is true from the first frame and the list
+        // resolves at once.
+        //
+        // Below that, the *category* filter outranks the *source* scope: the filter is what the
+        // rider just did (a Hold, a row, a Press), the scope is a preference they set some other
+        // day — so "None of this kind" is the more immediate truth. With no filter on, the sub-line
+        // names the scope, because the plain "no stops on route" is only true when **both** sources
+        // were allowed to answer (U4).
         if !v.route_loaded {
             empty_state(cv, v.w, v.h, v.copy.no_route, v.copy.no_route_sub);
         } else if !v.settled {
             // Still waiting for the map reader / route geometry — say nothing for the frame or two
             // it takes rather than flashing "nothing ahead" at a list that is about to fill.
-        } else if v.filter == PoiCategorySet::ALL {
-            empty_state(cv, v.w, v.h, v.copy.none, v.copy.none_sub);
         } else {
-            empty_state(cv, v.w, v.h, v.copy.none, v.copy.none_category_sub);
+            let sub = if v.filter != PoiCategorySet::ALL {
+                v.copy.none_category_sub
+            } else {
+                match v.source {
+                    UpAheadSource::Both => v.copy.none_sub,
+                    UpAheadSource::WaypointsOnly => v.copy.none_waypoints_sub,
+                    UpAheadSource::MapPoisOnly => v.copy.none_pois_sub,
+                }
+            };
+            empty_state(cv, v.w, v.h, v.copy.none, sub);
         }
         return;
     }
@@ -801,6 +868,72 @@ mod tests {
         assert_eq!(names(&w, &p, PoiCategorySet::only(PoiCategory::BikeShop)), ["Cycles"]);
     }
 
+    /// The **source scope** (U4) decides which of the two tables the list may walk at all, and the
+    /// category filter still applies *within* whatever is left: Waypoints-only + Water is exactly
+    /// the rider's categorized GPX water stops, with no map fountain in sight.
+    #[test]
+    fn the_source_scope_picks_which_tables_feed_the_list() {
+        let w = wpts(&[(400, "Brunnen", Some(PoiCategory::Water), 0), (900, "Turn left", None, 0)]);
+        let p = corridor(&[(600, "Fountain", WATER, 0), (700, "Cycles", BIKE, 0)]);
+        let listed = |source, filter| {
+            let mut s = UpAheadScreen::new(0, source);
+            s.filter = filter;
+            s.rows(w.as_slice(), &p, true).map(|e| e.name().to_string()).collect::<std::vec::Vec<_>>()
+        };
+
+        assert_eq!(
+            listed(UpAheadSource::Both, PoiCategorySet::ALL),
+            ["Brunnen", "Fountain", "Cycles", "Turn left"],
+            "Both is the merged timeline U3 shipped"
+        );
+        assert_eq!(
+            listed(UpAheadSource::WaypointsOnly, PoiCategorySet::ALL),
+            ["Brunnen", "Turn left"],
+            "Waypoints only drops every map POI, generic waypoints kept"
+        );
+        assert_eq!(
+            listed(UpAheadSource::MapPoisOnly, PoiCategorySet::ALL),
+            ["Fountain", "Cycles"],
+            "Map POIs only drops the whole waypoint plan — the setting's documented trade"
+        );
+
+        // The two controls compose: the scope picks the tables, the filter cuts within them.
+        let water = PoiCategorySet::only(PoiCategory::Water);
+        assert_eq!(listed(UpAheadSource::Both, water), ["Brunnen", "Fountain"]);
+        assert_eq!(listed(UpAheadSource::WaypointsOnly, water), ["Brunnen"]);
+        assert_eq!(listed(UpAheadSource::MapPoisOnly, water), ["Fountain"]);
+
+        // And a route-less ride still shows nothing at all, whatever the scope says.
+        for source in [UpAheadSource::Both, UpAheadSource::WaypointsOnly, UpAheadSource::MapPoisOnly] {
+            let s = UpAheadScreen::new(0, source);
+            assert_eq!(s.rows(w.as_slice(), &p, false).count(), 0, "{source:?}: no route, no rows");
+        }
+    }
+
+    /// The arming decision (U4): **Waypoints only** declares no corridor key at all, so the App-owned
+    /// scratch stays disarmed and the board never builds a map `Reader` for this screen — and a
+    /// snapshot that somehow *is* in the slice still never reaches the list. The other two scopes
+    /// declare the key exactly as U3 did.
+    #[test]
+    fn waypoints_only_never_asks_for_a_corridor_snapshot() {
+        let mut screen = UpAheadScreen::new(1_500, UpAheadSource::WaypointsOnly);
+        assert_eq!(screen.corridor_key(), None, "no key ⇒ nothing armed ⇒ the query never runs");
+        // Even after a filter change (which is what re-keys a snapshot) it keeps asking for nothing.
+        screen.filter = PoiCategorySet::only(PoiCategory::Water);
+        assert_eq!(screen.corridor_key(), None, "a category filter doesn't turn the query back on");
+        // Belt and braces: a stale/foreign snapshot in the slice is not drawn under this scope.
+        let p = corridor(&[(600, "Fountain", WATER, 0)]);
+        assert_eq!(UpAheadScreen::new(0, UpAheadSource::WaypointsOnly).rows(&[], &p, true).count(), 0);
+
+        for source in [UpAheadSource::Both, UpAheadSource::MapPoisOnly] {
+            assert_eq!(
+                UpAheadScreen::new(1_500, source).corridor_key(),
+                Some(CorridorKey { filter: PoiCategorySet::ALL, anchor_m: 1_500 }),
+                "{source:?} still declares the frozen (filter, anchor) key"
+            );
+        }
+    }
+
     /// Passed **waypoints** stay as muted whole-plan context with both figures clamped to zero;
     /// passed **POIs** are absent by construction — the snapshot is anchored at entry progress, so
     /// the query never returns one behind the rider.
@@ -864,11 +997,11 @@ mod tests {
         assert_eq!(UpAheadScreen::filter_of_row(0), PoiCategorySet::ALL);
         for (i, cat) in PoiCategory::ALL.iter().enumerate() {
             assert_eq!(UpAheadScreen::filter_of_row(i + 1), PoiCategorySet::only(*cat));
-            let mut s = UpAheadScreen::new(0);
+            let mut s = UpAheadScreen::new(0, UpAheadSource::Both);
             s.filter = PoiCategorySet::only(*cat);
             assert_eq!(s.picker_row(), i + 1, "the picker opens on the active filter");
         }
-        assert_eq!(UpAheadScreen::new(0).picker_row(), 0, "a fresh list is on Everything");
+        assert_eq!(UpAheadScreen::new(0, UpAheadSource::Both).picker_row(), 0, "a fresh list is on Everything");
     }
 
     // --- Render pins -------------------------------------------------------
@@ -880,6 +1013,8 @@ mod tests {
         none: "Nothing up ahead",
         none_sub: "No stops on route",
         none_category_sub: "None of this kind",
+        none_waypoints_sub: "Waypoints only",
+        none_pois_sub: "Map POIs only",
     };
 
     /// One rendered frame of the list, from plain values — the same shape [`UpAheadScreen::draw`]
@@ -913,6 +1048,7 @@ mod tests {
             waypoints: waypoints.as_slice(),
             corridor: pois,
             filter: screen.filter,
+            source: screen.source,
             route_loaded,
             settled,
             progress_m,
@@ -936,7 +1072,7 @@ mod tests {
     fn render_keeps_route_order_and_mutes_passed_rows() {
         let w = wpts(&[(100, "Behind", None, 0), (1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
-        let rec = render(&UpAheadScreen::new(200), &w, &p, 200);
+        let rec = render(&UpAheadScreen::new(200, UpAheadSource::Both), &w, &p, 200);
         let body = &texts(&rec)[2..]; // title + the pos/total slot
         assert_eq!(&body[..9], ["Behind", "0m", "0m", "Fountain", "400m", "0m", "Pass", "800m", "0m"]);
         assert_eq!(rec.calls[2].color, palette::SUBTEXT, "the passed waypoint's name is muted");
@@ -954,7 +1090,7 @@ mod tests {
     #[test]
     fn the_side_hint_sits_at_the_right_edge_clear_of_the_climb() {
         let w = wpts(&[(2_000, "Spring in the valley", None, -280)]);
-        let rec = render(&UpAheadScreen::new(0), &w, &[], 0);
+        let rec = render(&UpAheadScreen::new(0, UpAheadSource::Both), &w, &[], 0);
         // Line 2 is everything sharing the distance's baseline; draw order is distance, hint, climb.
         let sy = rec.calls[3].at.y;
         let line2: std::vec::Vec<&TextCall> = rec.calls[2..].iter().filter(|c| c.at.y == sy).collect();
@@ -988,7 +1124,7 @@ mod tests {
     fn waypoint_rows_carry_the_amber_icon_and_the_diamond_pip() {
         let w = wpts(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
-        let mut screen = UpAheadScreen::new(0);
+        let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
         screen.selected = Some(0); // the POI row is the cursor, so the waypoint row is unselected
         let rec = render(&screen, &w, &p, 0);
         let amber = rec.triangles.iter().filter(|(c, ..)| *c == palette::AMBER).count();
@@ -1011,16 +1147,16 @@ mod tests {
             rec.calls.iter().map(|c| c.text.clone()).collect::<std::vec::Vec<_>>()
         };
 
-        let route_less = render_with(&UpAheadScreen::new(0), &stale, false, true);
+        let route_less = render_with(&UpAheadScreen::new(0, UpAheadSource::Both), &stale, false, true);
         assert!(route_less.iter().any(|s| s == "No route loaded"));
         assert!(route_less.iter().any(|s| s == "Load a route first"));
         assert!(!route_less.iter().any(|s| s == "Stale"), "a route-less frame never leaks the resident cache");
 
-        let nothing = render_with(&UpAheadScreen::new(0), &none, true, true);
+        let nothing = render_with(&UpAheadScreen::new(0, UpAheadSource::Both), &none, true, true);
         assert!(nothing.iter().any(|s| s == "Nothing up ahead"));
         assert!(nothing.iter().any(|s| s == "No stops on route"));
 
-        let mut filtered = UpAheadScreen::new(0);
+        let mut filtered = UpAheadScreen::new(0, UpAheadSource::Both);
         filtered.filter = PoiCategorySet::only(PoiCategory::Water);
         let none_of_kind = render_with(&filtered, &none, true, true);
         assert!(none_of_kind.iter().any(|s| s == "Nothing up ahead"));
@@ -1028,14 +1164,74 @@ mod tests {
 
         // Not settled yet (no reader / no route geometry this frame) — say nothing at all rather
         // than flash an answer the next frame contradicts.
-        let pending = render_with(&UpAheadScreen::new(0), &none, true, false);
+        let pending = render_with(&UpAheadScreen::new(0, UpAheadSource::Both), &none, true, false);
         assert_eq!(pending.len(), 2, "only the title bar (+ its empty counter slot) draws in flight");
+    }
+
+    /// The rendered list obeys the scope too — not just the merge behind it: a Waypoints-only frame
+    /// draws no POI row and a Map-POIs-only frame draws no waypoint row (nor its amber source pip).
+    #[test]
+    fn the_rendered_list_shows_only_the_scoped_source() {
+        let w = wpts(&[(1_000, "Pass", None, 0), (2_000, "Col", None, 0)]);
+        let p = corridor(&[(600, "Fountain", WATER, 0)]);
+        let drawn = |source| {
+            let rec = render(&UpAheadScreen::new(0, source), &w, &p, 0);
+            (texts(&rec).iter().map(|s| s.to_string()).collect::<std::vec::Vec<_>>(), rec)
+        };
+
+        let (both, _) = drawn(UpAheadSource::Both);
+        assert!(both.iter().any(|s| s == "Fountain") && both.iter().any(|s| s == "Pass"));
+
+        let (wpt_only, rec) = drawn(UpAheadSource::WaypointsOnly);
+        assert!(wpt_only.iter().any(|s| s == "Pass"), "the rider's own plan is all that's left");
+        assert!(!wpt_only.iter().any(|s| s == "Fountain"), "no map POI row under Waypoints only");
+        assert_eq!(wpt_only.len(), 2 + 2 * 3, "two rows' worth of strings (name + distance + climb) past the title");
+        assert!(
+            rec.triangles.iter().any(|(c, ..)| *c == palette::AMBER),
+            "the unselected waypoint row keeps its amber source icon + pip"
+        );
+
+        let (poi_only, rec) = drawn(UpAheadSource::MapPoisOnly);
+        assert!(poi_only.iter().any(|s| s == "Fountain"));
+        assert!(!poi_only.iter().any(|s| s == "Pass"), "the waypoint plan leaves the ride menu entirely");
+        assert!(
+            !rec.triangles.iter().any(|(c, ..)| *c == palette::AMBER),
+            "…taking the amber custom-source cue with it (the cursor's own fill is a round, not a triangle)"
+        );
+    }
+
+    /// A scoped list's empty state stays **truthful**: "no stops on route" is only true when both
+    /// sources were allowed to answer, so a single-source scope names itself instead. A live
+    /// category filter still outranks it — that's the thing the rider just did.
+    #[test]
+    fn the_empty_state_names_the_source_scope() {
+        let none = Waypoints::new();
+        let sub_of = |source, filter| {
+            let mut s = UpAheadScreen::new(0, source);
+            s.filter = filter;
+            let rec = render_frame(&s, &none, &[], 0, true, true);
+            texts(&rec).last().expect("the empty state draws a sub-line").to_string()
+        };
+
+        assert_eq!(sub_of(UpAheadSource::Both, PoiCategorySet::ALL), "No stops on route");
+        assert_eq!(
+            sub_of(UpAheadSource::WaypointsOnly, PoiCategorySet::ALL),
+            "Waypoints only",
+            "a route lined with map POIs must never be called stop-less"
+        );
+        assert_eq!(sub_of(UpAheadSource::MapPoisOnly, PoiCategorySet::ALL), "Map POIs only");
+
+        // The category filter is the more immediate truth — it wins under every scope.
+        let water = PoiCategorySet::only(PoiCategory::Water);
+        for source in [UpAheadSource::Both, UpAheadSource::WaypointsOnly, UpAheadSource::MapPoisOnly] {
+            assert_eq!(sub_of(source, water), "None of this kind", "{source:?}");
+        }
     }
 
     /// The picker draws all seven rows in canonical order, cursor on the active filter.
     #[test]
     fn the_picker_draws_everything_over_the_six_categories() {
-        let mut screen = UpAheadScreen::new(0);
+        let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
         screen.picker = Some(screen.picker_row());
         let rec = render(&screen, &Waypoints::new(), &[], 0);
         let body = texts(&rec);
@@ -1085,7 +1281,7 @@ mod tests {
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
         act.progress_m = 200;
-        let mut screen = UpAheadScreen::new(200);
+        let mut screen = UpAheadScreen::new(200, UpAheadSource::Both);
         let rows = Merge::new(w.as_slice(), &p, PoiCategorySet::ALL);
         assert_eq!(screen.cursor(rows, 200, 3), 1, "row 0 is passed; the Fountain is the first ahead");
 
@@ -1097,7 +1293,7 @@ mod tests {
         // Before the first frame there is no snapshot and (on a fresh route load) no waypoint table
         // either: a turn then leaves the cursor *unresolved*, so the list still opens where it
         // should once the rows arrive.
-        let mut fresh = UpAheadScreen::new(200);
+        let mut fresh = UpAheadScreen::new(200, UpAheadSource::Both);
         fresh.handle(Gesture::Step(1), &mut ctx(&mut act, &Waypoints::new(), &[]));
         assert_eq!(fresh.selected, None, "a step over an empty list keeps the homing");
     }
@@ -1111,7 +1307,7 @@ mod tests {
         let mut act = riding();
         act.start_session();
         let session = act.session;
-        let mut screen = UpAheadScreen::new(0);
+        let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
 
         screen.selected = Some(0); // the Fountain
         match screen.handle(Gesture::Press, &mut ctx(&mut act, &w, &p)) {
@@ -1132,9 +1328,9 @@ mod tests {
         let w = wpts(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[]);
         let mut act = riding();
-        let mut screen = UpAheadScreen::new(4_000);
+        let mut screen = UpAheadScreen::new(4_000, UpAheadSource::Both);
         let before = screen.corridor_key();
-        assert_eq!(before.anchor_m, 4_000, "the key freezes live progress at entry");
+        assert_eq!(before.expect("Both asks for a snapshot").anchor_m, 4_000, "the key freezes progress at entry");
 
         screen.handle(Gesture::Hold, &mut ctx(&mut act, &w, &p));
         assert_eq!(screen.picker, Some(0), "the picker opens on Everything, the active filter");
@@ -1149,7 +1345,7 @@ mod tests {
         assert_eq!(screen.picker, None, "applying returns to the list");
         assert_eq!(
             screen.corridor_key(),
-            CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 4_000 },
+            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 4_000 }),
             "the applied filter re-keys the snapshot (which is what re-queries it)"
         );
         assert_eq!(screen.selected, None, "and the cursor re-homes to the first row ahead");
@@ -1162,7 +1358,7 @@ mod tests {
         let w = wpts(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
-        let mut screen = UpAheadScreen::new(0);
+        let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
         for g in [Gesture::Step(1), Gesture::Back, Gesture::Press, Gesture::BackHold, Gesture::Hold] {
             screen.picker = Some(3);
             assert!(

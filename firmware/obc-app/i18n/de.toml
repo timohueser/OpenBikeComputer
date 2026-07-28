@@ -34,7 +34,14 @@ filter_title = "ANZEIGEN"
 none = "Nichts voraus"
 none_sub = "Keine Stopps"
 none_category_sub = "Nichts dieser Art"
+none_waypoints_sub = "Nur Wegpunkte"
+none_pois_sub = "Nur Karten-POIs"
 no_route_sub = "Erst Route laden"
+
+[up_ahead_source]
+both = "Beides"
+waypoints = "Wegpunkte"
+map_pois = "POIs"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
@@ -200,6 +207,8 @@ climb = "Anstieg"
 climb_sub = "Panel"
 waypoints = "Wegpunkte"
 waypoints_sub = "Chip"
+up_ahead = "Voraus"
+up_ahead_sub = "zeigt"
 autodelete = "Auto-Löschen"
 autodelete_sub = "Fahrten"
 
