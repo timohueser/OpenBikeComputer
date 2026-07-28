@@ -14,7 +14,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { DeviceError } from "./client";
+import { DeviceError, ProtocolClient } from "./client";
 import {
     MockDevice,
     REFERENCE_OBCM_VERSION,
@@ -380,6 +380,111 @@ describe("the pipe", () => {
         await expect(webusb.control.write(new Uint8Array(64))).rejects.toThrow(/does not fit/);
         await webusb.close();
         await link.host.close();
+    });
+
+    /**
+     * A cancelled read, at the pipe seam.
+     *
+     * The fake's `transferIn` parks a reader on the loopback channel, and the channel hands each
+     * new slice to the *longest-waiting* reader — which is exactly how a bulk endpoint serves
+     * queued transfers, and the only reason these three tests say anything about hardware. A
+     * transfer WebUSB will not let us cancel is a transfer that stays in that queue.
+     */
+    describe("after a cancelled read", () => {
+        /** A link with no `MockDevice` on it, so the far end sends only what a test says to. */
+        function bareLink() {
+            const link = loopbackLink();
+            return { link, usbDevice: new FakeUsbDevice(link) };
+        }
+
+        /** Park a bulk read, cancel it, and reset — the client's failure path, one layer down. */
+        async function cancelAParkedRead(webusb: Awaited<ReturnType<typeof openWebUsbLink>>) {
+            const controller = new AbortController();
+            const parked = webusb.bulk.read(controller.signal);
+            controller.abort();
+            await expect(parked).rejects.toMatchObject({ code: "aborted" });
+            await webusb.bulk.reset();
+        }
+
+        it("hands the abandoned transfer to the next reader", async () => {
+            const { link, usbDevice } = bareLink();
+            const webusb = await openWebUsbLink(usbDevice);
+            await cancelAParkedRead(webusb);
+
+            // The next bytes on the endpoint belong to the next object, because §4.2's abort has the
+            // device stop sending for the old one. Submitting a *second* `transferIn` would queue it
+            // behind the abandoned one, and the abandoned one would take this packet and bin it.
+            void link.device.bulk.write(new Uint8Array([1, 2, 3]));
+            expect(await webusb.bulk.read()).toEqual(new Uint8Array([1, 2, 3]));
+            await webusb.close();
+            await link.host.close();
+        });
+
+        it("does not keep a transfer that already took the aborted object's last packet", async () => {
+            // The counterpart of the test above, and the half an earlier draft got wrong in the
+            // other direction. The device only stops when the abort reaches it, so the transfer the
+            // caller walked away from may complete with one last packet of the object being
+            // abandoned. Keeping *that* would prepend a stale packet to the next object — the same
+            // desync as dropping one, arrived at from the opposite side. `reset` runs before the
+            // transfer slot is released, so anything settled by then is stale by construction.
+            const { link, usbDevice } = bareLink();
+            const webusb = await openWebUsbLink(usbDevice);
+            const controller = new AbortController();
+            const parked = webusb.bulk.read(controller.signal);
+            controller.abort();
+            await expect(parked).rejects.toMatchObject({ code: "aborted" });
+            void link.device.bulk.write(new Uint8Array([0xde, 0xad]));
+            // A macrotask boundary, so every microtask between the write and the transfer marking
+            // itself settled has run — the point of the test is what `reset` sees, not a race.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await webusb.bulk.reset();
+
+            void link.device.bulk.write(new Uint8Array([1, 2, 3]));
+            expect(await webusb.bulk.read()).toEqual(new Uint8Array([1, 2, 3]));
+            await webusb.close();
+            await link.host.close();
+        });
+
+        it("leaves the busy half's halt alone", async () => {
+            // `clearHalt` is `CLEAR_FEATURE(ENDPOINT_HALT)`: it resets the endpoint's data toggle,
+            // which must not happen under a live transfer — and the IN half cannot be halted anyway
+            // while one is outstanding, because a stall would have completed it.
+            const { link, usbDevice } = bareLink();
+            const webusb = await openWebUsbLink(usbDevice);
+            await cancelAParkedRead(webusb);
+            expect(usbDevice.halts).toEqual(["out2"]);
+            await webusb.close();
+            await link.host.close();
+        });
+
+        it("does not cost the next object its first packet", async () => {
+            // The consequence, at the object layer: one whole download, on a link a cancel has been
+            // through. Discarding the abandoned transfer instead would have eaten this ride's first
+            // packet — leaving the download one packet short of `total_len` and parked forever on a
+            // read the device had already satisfied.
+            const { link, usbDevice, device } = rig({ bulkPacketSize: 64 });
+            const bytes = Uint8Array.from({ length: 4_096 }, (_, i) => (i * 7) & 0xff);
+            device.seedRide(
+                {
+                    objectId: 1,
+                    byteLen: bytes.length,
+                    startTime: 0,
+                    distanceM: 0,
+                    movingTimeS: 0,
+                    avgSpeedCms: 0,
+                    climbM: 0,
+                    name: "after the cancel",
+                },
+                bytes,
+            );
+            const webusb = await openWebUsbLink(usbDevice);
+            const client = new ProtocolClient(webusb);
+            await cancelAParkedRead(webusb);
+
+            expect(await client.download(ObjectType.Ride, 1)).toEqual(bytes);
+            await client.close();
+            await link.host.close();
+        });
     });
 
     it("absorbs a zero-length packet instead of handing back an empty read", async () => {

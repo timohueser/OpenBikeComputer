@@ -74,7 +74,7 @@ class NativePipe implements BytePipe {
         const release = this.cancelOnAbort(signal, "in");
         try {
             const body = await Promise.race([
-                withAbort(desktop.usbRead(this.handle, this.kind), signal, "the read", () => undefined),
+                withAbort(desktop.usbRead(this.handle, this.kind), signal, "the read"),
                 this.dead(),
             ]);
             // Never empty: the backend absorbs zero-length packets, which are USB-level markers
@@ -101,7 +101,7 @@ class NativePipe implements BytePipe {
         const release = this.cancelOnAbort(signal, "out");
         try {
             await Promise.race([
-                withAbort(desktop.usbWrite(this.handle, this.kind, bytes), signal, "the write", () => undefined),
+                withAbort(desktop.usbWrite(this.handle, this.kind, bytes), signal, "the write"),
                 this.dead(),
             ]);
         } catch (cause) {
