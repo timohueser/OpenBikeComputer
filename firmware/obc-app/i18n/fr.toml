@@ -15,7 +15,7 @@ pois = "POIs"
 map = "Carte"
 settings = "Réglages"
 
-# --- Le menu boussole en sortie, la liste des points et le sélecteur Avancer ---
+# --- Le menu boussole en sortie, la liste À venir et le sélecteur Avancer ---
 [ride_menu]
 title = "MENU SORTIE"
 up_ahead = "À venir"
