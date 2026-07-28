@@ -42,6 +42,9 @@ ui-snapshots/
 .pytest_cache/
 user_config.json
 .worktrees/
+# Claude Code's per-agent worktrees — real git worktrees, so `git add -A` would
+# otherwise record one as a submodule gitlink and break every clone.
+.claude/worktrees/
 .DS_Store
 *.gpx
 # ...except the deterministic source the protocol-vector route fixtures regenerate from.
