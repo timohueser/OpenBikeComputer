@@ -25,7 +25,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { ConvertError, gpxToObcr, initConvert, trackToGpx } from "./bridge";
+import { ConvertError, gpxToObcr, initConvert, routeTrack, trackToGpx } from "./bridge";
 
 /**
  * The OBCR header's name field, and the GPX `<trk><name>`, are inputs to the conversion — so they
@@ -120,6 +120,33 @@ describe("trackToGpx", () => {
         // so text equality here *is* byte equality.
         expect(gpx).toBe(expected);
         expectSameBytes(new TextEncoder().encode(gpx), vector("track-export.gpx"), "track-export.gpx");
+    });
+});
+
+describe("routeTrack", () => {
+    it("reads back the polyline the converter stored, elevation included", async () => {
+        // The fixture's OBCR is byte-pinned above, so the read-back is checked against the same
+        // source of truth: what the GPX said, within the format's microdegree resolution.
+        const points = await routeTrack(vector("route-waypoints.obcr"));
+        expect(points.length).toBeGreaterThan(2);
+        for (const p of points) {
+            expect(p.lat).toBeGreaterThan(-90);
+            expect(p.lat).toBeLessThan(90);
+            expect(p.lon).toBeGreaterThan(-180);
+            expect(p.lon).toBeLessThan(180);
+            expect(Number.isFinite(p.ele)).toBe(true);
+        }
+        // Round-trip a fresh conversion: a stored point count equals the read-back count.
+        const gpx = text("firmware/obc-vectors/src/route-source.gpx");
+        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME);
+        const view = new DataView(obcr.buffer, obcr.byteOffset, obcr.byteLength);
+        expect((await routeTrack(obcr)).length).toBe(view.getUint32(32, true));
+    });
+
+    it("refuses bytes that are not a route, with the stable code", async () => {
+        const failure = await routeTrack(new Uint8Array(200)).catch((e: unknown) => e);
+        expect(failure).toBeInstanceOf(ConvertError);
+        expect((failure as ConvertError).code).toBe("not-route");
     });
 });
 

@@ -7,7 +7,7 @@
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
-use obc_route::{MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
+use obc_route::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
 
 /// Largest point count an `.obcr` can *store*, and therefore the ceiling
 /// [`gpx_to_obcr`] converts up to: every chunk full, consecutive chunks sharing their seam
@@ -62,6 +62,8 @@ pub enum ErrorCode {
     TrackNoPoints,
     /// A read ran past the end of the input: the file is truncated or the upload was cut short.
     InputTruncated,
+    /// The bytes handed to [`obcr_to_track`] are not an OBCR route (bad magic/version/layout).
+    NotRoute,
     /// A defect in this bridge or in the shared converter. The message says so, and says to report it.
     Internal,
 }
@@ -78,6 +80,7 @@ impl ErrorCode {
             ErrorCode::NotTrackLog => "not-track-log",
             ErrorCode::TrackNoPoints => "track-no-points",
             ErrorCode::InputTruncated => "input-truncated",
+            ErrorCode::NotRoute => "not-route",
             ErrorCode::Internal => "internal",
         }
     }
@@ -165,6 +168,64 @@ pub fn track_to_gpx(log: &[u8], name: &str) -> Result<String, ConvertFailure> {
              conversion bridge — please report it.",
         )
     })
+}
+
+/// Decode an `.obcr` route's polyline: flat `[lat°, lon°, ele m]` triples, in route order.
+///
+/// The device-page preview's other direction — reading back what [`gpx_to_obcr`] (or the device)
+/// wrote — through the same [`RouteReader`] the firmware streams its map draw from, so what the
+/// preview traces is what the device will trace. Flat `f64` triples rather than a struct because
+/// this crosses the wasm boundary as one `Float64Array`: no per-point allocation on either side.
+///
+/// Chunks share their seam vertex (chunk `k`'s last point is chunk `k+1`'s anchor), so every
+/// chunk after the first drops its first decoded point — the stored `point_count` is exactly what
+/// comes back.
+pub fn obcr_to_track(obcr: &[u8]) -> Result<Vec<f64>, ConvertFailure> {
+    let src = SliceSource(obcr);
+    // Exhaustive like the other maps in this file: a new seam variant must break this build.
+    let idx = RouteIndex::read(&src).map_err(|e| match e {
+        Error::BadMagic | Error::BadVersion => {
+            ConvertFailure::new(ErrorCode::NotRoute, "These bytes are not an OBCR route this bridge can read.")
+        }
+        Error::BadOffset => ConvertFailure::new(
+            ErrorCode::InputTruncated,
+            "This route file ends mid-structure — the download or copy was cut short.",
+        ),
+        Error::TooLarge => ConvertFailure::new(
+            ErrorCode::NotRoute,
+            "This route's chunk index exceeds the reader's limits — it was not written by this \
+             toolchain.",
+        ),
+        Error::Io | Error::Empty => ConvertFailure::new(
+            ErrorCode::Internal,
+            "Internal error: reading from an in-memory buffer failed. This is a bug in the \
+             conversion bridge — please report it.",
+        ),
+    })?;
+    let reader = RouteReader::new(&idx, &src);
+
+    // Every chunk's bbox lies inside the route's own, so the route bbox visits them all.
+    let mut chunks: Vec<usize> = Vec::new();
+    idx.for_each_visible_chunk(&idx.bbox, |k, _| chunks.push(k));
+    chunks.sort_unstable();
+
+    let mut out: Vec<f64> = Vec::with_capacity(idx.point_count as usize * 3);
+    let mut buf: heapless::Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = heapless::Vec::new();
+    for (i, k) in chunks.iter().enumerate() {
+        reader.decode_chunk(*k, &mut buf).map_err(|_| {
+            ConvertFailure::new(
+                ErrorCode::NotRoute,
+                "A geometry chunk in this route failed to decode — the file is damaged.",
+            )
+        })?;
+        let skip = usize::from(i > 0); // the shared seam vertex
+        for p in buf.iter().skip(skip) {
+            out.push(f64::from(p.lat) * 1e-6);
+            out.push(f64::from(p.lon) * 1e-6);
+            out.push(f64::from(p.ele));
+        }
+    }
+    Ok(out)
 }
 
 /// The bytes after an optional UTF-8 BOM and any leading whitespace.
@@ -314,6 +375,35 @@ mod tests {
 
     fn code_of(r: Result<impl core::fmt::Debug, ConvertFailure>) -> ErrorCode {
         r.expect_err("expected a failure").code
+    }
+
+    /// The read-back direction closes the loop: what `gpx_to_obcr` stored, `obcr_to_track`
+    /// returns — point for point, in order, elevation included.
+    #[test]
+    fn obcr_round_trips_to_the_track_it_stored() {
+        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
+        let flat = obcr_to_track(&obcr).unwrap();
+        assert_eq!(flat.len() % 3, 0);
+        let points: Vec<[f64; 3]> = flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+        // The tiny track survives decimation whole: 3 in, 3 out.
+        assert_eq!(points.len(), 3);
+        let expect = [[48.0000, 7.8200, 236.0], [48.0005, 7.8230, 241.0], [48.0002, 7.8265, 249.5]];
+        for (got, want) in points.iter().zip(expect) {
+            assert!((got[0] - want[0]).abs() < 1e-5, "lat {got:?} vs {want:?}");
+            assert!((got[1] - want[1]).abs() < 1e-5, "lon {got:?} vs {want:?}");
+            assert!((got[2] - want[2]).abs() < 1.0, "ele {got:?} vs {want:?}");
+        }
+    }
+
+    #[test]
+    fn obcr_to_track_refuses_what_is_not_a_route() {
+        // Long enough to read a header out of, wrong magic: not a route.
+        assert_eq!(code_of(obcr_to_track(&[0u8; 200])), ErrorCode::NotRoute);
+        // Too short for even the header — indistinguishable from a cut-off copy.
+        assert_eq!(code_of(obcr_to_track(b"short")), ErrorCode::InputTruncated);
+        // A valid header cut off mid-index reads as truncation too.
+        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
+        assert_eq!(code_of(obcr_to_track(&obcr[..116])), ErrorCode::InputTruncated);
     }
 
     /// The bridge adds nothing to the bytes: its output equals the shared converter's, driven

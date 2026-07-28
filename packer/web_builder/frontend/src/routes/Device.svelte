@@ -12,17 +12,21 @@
 -->
 <script lang="ts">
     import FirmwareCard from "../components/device/FirmwareCard.svelte";
+    import PreviewModal from "../components/device/PreviewModal.svelte";
     import RidesCard from "../components/device/RidesCard.svelte";
     import RoutesCard from "../components/device/RoutesCard.svelte";
+    import { routeTrack } from "../lib/convert/bridge";
     import { dashboard, type TripView } from "../lib/device/dashboard.svelte";
+    import type { ProfilePoint } from "../lib/device/elevation";
     import { addStage, createTrip, moveStage, removeStage, renameRoute, updateTrip } from "../lib/device/manage";
-    import { rideScope } from "../lib/device/rides";
+    import { rideDistance, rideDuration, rideScope } from "../lib/device/rides";
     import { deviceHolder } from "../lib/device/session.svelte";
     import { jobRegistry } from "../lib/device/job.svelte";
+    import { formatBytes } from "../lib/format";
     import { confirmAction } from "../lib/ui/confirm.svelte";
     import { ObjectType } from "../lib/usb/protocol";
     import type { ProtocolClient } from "../lib/usb/client";
-    import type { RouteListEntry } from "../lib/usb/objects";
+    import { decodeRideObject, type RideListEntry, type RouteListEntry } from "../lib/usb/objects";
 
     const session = $derived(deviceHolder.session);
     const client = $derived(session?.status === "ready" ? session.client : null);
@@ -107,6 +111,71 @@
         dashboard.clearBusy();
         if (client) void dashboard.refresh(client);
     }
+
+    // --- previews: download the object, decode it, show it. Never acks. ----
+
+    let preview = $state<{
+        title: string;
+        points: ProfilePoint[];
+        stats: Array<{ label: string; value: string }>;
+        /** Set for routes: the modal's footer offers Delete. */
+        route: RouteListEntry | null;
+    } | null>(null);
+    /** The object a preview download is running for, to mark the busy row. */
+    let previewing = $state<string | null>(null);
+
+    async function previewRoute(route: RouteListEntry) {
+        const c = client;
+        if (!c || previewing) return;
+        previewing = `route-${route.objectId}`;
+        try {
+            const obcr = await dashboard.enqueue(() => c.download(ObjectType.Route, route.objectId));
+            preview = {
+                title: route.name || `Route ${route.objectId}`,
+                points: await routeTrack(obcr),
+                stats: [
+                    { label: "Distance", value: `${(route.distanceM / 1000).toFixed(1)} km` },
+                    { label: "Ascent", value: `${route.ascentM.toLocaleString()} m` },
+                    {
+                        label: "Points · waypoints",
+                        value: `${route.pointCount.toLocaleString()} · ${route.waypointCount}`,
+                    },
+                    { label: "Size on card", value: formatBytes(route.byteLen) },
+                ],
+                route,
+            };
+        } catch (cause) {
+            dashboard.error = cause instanceof Error ? cause.message : String(cause);
+        } finally {
+            previewing = null;
+        }
+    }
+
+    async function previewRide(ride: RideListEntry) {
+        const c = client;
+        if (!c || previewing) return;
+        previewing = `ride-${ride.objectId}`;
+        try {
+            const object = decodeRideObject(
+                await dashboard.enqueue(() => c.download(ObjectType.Ride, ride.objectId)),
+            );
+            preview = {
+                title: ride.name || `Ride ${ride.objectId}`,
+                points: object.points.map((p) => ({ lat: p.lat1e7 / 1e7, lon: p.lon1e7 / 1e7, ele: p.eleM })),
+                stats: [
+                    { label: "Distance", value: rideDistance(ride.distanceM) },
+                    { label: "Moving time", value: rideDuration(ride.movingTimeS) },
+                    { label: "Avg speed", value: `${((ride.avgSpeedCms / 100) * 3.6).toFixed(1)} km/h` },
+                    { label: "Climb", value: `${ride.climbM.toLocaleString()} m` },
+                ],
+                route: null,
+            };
+        } catch (cause) {
+            dashboard.error = cause instanceof Error ? cause.message : String(cause);
+        } finally {
+            previewing = null;
+        }
+    }
 </script>
 
 <article>
@@ -147,6 +216,7 @@
         {/if}
 
         <RoutesCard
+            onpreview={(route) => void previewRoute(route)}
             onrename={doRenameRoute}
             ondelete={(route) => void deleteRoute(route)}
             onaddtotrip={doAddToTrip}
@@ -155,10 +225,47 @@
             onremovestage={(trip, index) => void doRemoveStage(trip, index)}
             onmovestage={doMoveStage}
         />
-        <RidesCard />
+        <RidesCard>
+            {#snippet row(ride)}
+                <button
+                    type="button"
+                    class="btn"
+                    disabled={previewing !== null}
+                    onclick={() => void previewRide(ride)}
+                >
+                    Preview
+                </button>
+            {/snippet}
+        </RidesCard>
         <section class="card">
             <FirmwareCard {client} info={session.info} />
         </section>
+
+        {#if preview}
+            {@const open = preview}
+            <PreviewModal
+                title={open.title}
+                points={open.points}
+                stats={open.stats}
+                onclose={() => (preview = null)}
+            >
+                {#snippet actions()}
+                    {#if open.route}
+                        {@const route = open.route}
+                        <button
+                            type="button"
+                            class="btn ghost"
+                            onclick={() => {
+                                preview = null;
+                                void deleteRoute(route);
+                            }}
+                        >
+                            Delete route…
+                        </button>
+                    {/if}
+                {/snippet}
+            </PreviewModal>
+        {/if}
     {:else}
         <section class="card empty">
             <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
