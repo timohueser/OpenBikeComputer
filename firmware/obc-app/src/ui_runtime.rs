@@ -432,8 +432,11 @@ impl UiRuntime {
     ///   identical key: the "re-enter refreshes" half of the #115 contract);
     /// * **a filter change** — the key changes ⇒ the stale rows drop and the query re-runs;
     /// * **riding on** — the key does *not* change (the anchor is frozen) ⇒ nothing re-runs;
-    /// * **exit** (Back, an idle return, a host-pushed card burying it) — nobody wants a key ⇒
-    ///   disarmed, and the reader-build seam goes quiet.
+    /// * **exit** (Back, or the idle return — both *pop* the list off the stack) — nobody wants a
+    ///   key ⇒ disarmed, and the reader-build seam goes quiet;
+    /// * **buried** — a host-pushed card (a passkey, a warning) on top is *not* an exit: the scan
+    ///   covers the whole stack, so the list's request is still found and the scratch stays armed
+    ///   for the uncover.
     ///
     /// Cheap enough to call whenever the stack may have moved: a scan of ≤ [`MAX_DEPTH`] slots and
     /// an idempotent `arm`. The **query** still runs only in the pre-draw `prepare` boundary.
