@@ -1,27 +1,37 @@
 # OBC firmware (Rust)
 
-The OpenBikeComputer Rust workspace: the device application and a desktop
-simulator share **one** rendering path for `.obcm` maps. This file is the
-**build / test / dev-loop guide** — for *how the system works* (crate graph,
-render pipeline, formats, UI) read the docs site:
+This directory holds the crates the **device image actually reaches** — the
+shared `no_std` render path, the platform adapters, the board crate and the
+bootloader. The device application and a desktop simulator share **one**
+rendering path for `.obcm` maps.
+
+This file is the **build / test / dev-loop guide** for all the Rust in the repo,
+not just this directory — for *how the system works* (crate graph, render
+pipeline, formats, UI) read the docs site:
 <https://timohueser.github.io/OpenBikeComputer/>. Per-crate roles are tabulated
 in the [repo README](../README.md#repository-layout).
 
-The host workspace (`Cargo.toml`, at the repo root) builds the shared `no_std` crates
-(`obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`), the desktop simulator
-(`obc-sim`), the website's wasm demo host (`obc-web-demo`, plus the host glue
-both simulator hosts share in `obc-host-core`), the web builder's wasm
-conversion bridge (`obc-web-convert`), the map packer (`obc-pack`),
-and the test/host helpers.
+The workspace is rooted at the **repo root** (`../Cargo.toml`), and spans three
+trees — one `Cargo.lock`, one `target/`:
 
-Three crates are **`exclude`d** from that workspace and built on their own, each
+| Tree | Holds | Reached by the device image? |
+| :-- | :-- | :-- |
+| `firmware/` | `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
+| `../host/` | the packer (`obc-pack`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
+| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-desktop` | no |
+
+Dev-dependencies cross that boundary on purpose — `obc-render` and `obc-reader`
+test against `obcm-testkit`, `obc-route` against `obc-pack` — because a dev-dep
+never enters the `no_std` build. `cargo test` therefore wants GEOS.
+
+Three crates are **`exclude`d** from the workspace and built on their own, each
 because it drags a toolchain the rest has no use for:
 
 | Crate | Why it stands alone |
 | :-- | :-- |
 | [`obc-fw-nrf54l`](obc-fw-nrf54l/README.md) | the real board: its own MCU target + `.cargo/config.toml` |
 | [`obc-boot`](obc-boot/README.md) | the 32 KB bootloader, same target, its own link script |
-| [`obc-desktop`](obc-desktop/README.md) | the Tauri app: a platform webview (WebKitGTK on Linux) |
+| [`obc-desktop`](../apps/obc-desktop/README.md) | the Tauri app: a platform webview (WebKitGTK on Linux) |
 
 Each has its own `Cargo.lock` and needs its own `fmt` / `clippy` / `test`
 invocation — and its own CI job.
@@ -33,13 +43,14 @@ invocation — and its own CI job.
 | Anything Rust | A stable toolchain (`rustup`). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew**. |
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`) — its only native dependency. Multi-`.pbf` merge, `--bbox` and the land-dataset download all run in-process; no `osmium`, `curl` or `unzip`. |
-| The desktop app (`obc-desktop`) | **Not** GEOS — it builds a vendored copy in, so it needs **CMake** and a C++ compiler instead. Plus Node for the frontend it embeds. Linux also wants WebKitGTK — see [its README](obc-desktop/README.md). |
+| The desktop app (`obc-desktop`) | **Not** GEOS — it builds a vendored copy in, so it needs **CMake** and a C++ compiler instead. Plus Node for the frontend it embeds. Linux also wants WebKitGTK — see [its README](../apps/obc-desktop/README.md). |
 | Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ## Build
 
 ```sh
-# From this directory. Builds the simulator + shared crates + packer for the host.
+# From the repo root (or anywhere inside it — cargo walks up to the workspace).
+# Builds the simulator + shared crates + packer for the host.
 cargo build --release        # → target/release/{obc-sim, obc-pack}
 
 # Confirm the shared stack still compiles for the nRF54L application core:
@@ -52,11 +63,11 @@ discovered from `.cargo/config.toml` by the working directory, not by
 silently targets the host and fails):
 
 ```sh
-cd obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
+cd firmware/obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
 
 # The BLE build (companion-app link): the same firmware with the nrf-sdc + TrouBLE stack
 # folded in. The board crate README has the pins, flashing, and on-glass verify.
-cd obc-fw-nrf54l && cargo build --release --no-default-features --features ble
+cd firmware/obc-fw-nrf54l && cargo build --release --no-default-features --features ble
 ```
 
 The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
@@ -68,7 +79,7 @@ site under [the companion link](https://timohueser.github.io/OpenBikeComputer/so
 
 ```sh
 cargo test            # the whole host workspace
-cargo test -p obc-pack    # just the packer (fixtures under ../builder/tests/corpus/)
+cargo test -p obc-pack    # just the packer (fixtures under builder/tests/corpus/)
 ```
 
 `cargo test` does **not** touch the excluded board crate.
@@ -83,7 +94,7 @@ printed but never gated.
 
 ```sh
 cargo run -p obc-bench --release                                  # the timing/hash table
-cargo run -p obc-bench --release -- --check obc-bench/hashes.txt  # what CI runs
+cargo run -p obc-bench --release -- --check host/obc-bench/hashes.txt  # what CI runs
 cargo run -p obc-bench --release -- --repeat 9                    # stable local timing sample
 ```
 
@@ -91,11 +102,11 @@ A pure refactor must leave the hashes untouched. An **intentional** rendering
 change regenerates the golden file in the same PR (that's the review signal):
 
 ```sh
-cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt
+cargo run -p obc-bench --release -- --write-hashes host/obc-bench/hashes.txt
 ```
 
 One-off runs against a real map:
-`cargo run -p obc-bench --release -- --map ../freiburg.obcm --mpp 4 --heading 35`.
+`cargo run -p obc-bench --release -- --map freiburg.obcm --mpp 4 --heading 35`.
 
 The frozen firmware resource numbers, dependency-direction contract, benchmark
 reference host, and repeatable on-device capture procedure live in
@@ -113,26 +124,26 @@ skipped by `--all` and each needs its own):
 
 ```sh
 cargo fmt --all                                    # the workspace
-cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml # the board crate, separately
-cargo fmt --manifest-path obc-boot/Cargo.toml      # the bootloader, separately
-cargo fmt --manifest-path obc-desktop/Cargo.toml   # the desktop app, separately
+cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml # the board crate, separately
+cargo fmt --manifest-path firmware/obc-boot/Cargo.toml      # the bootloader, separately
+cargo fmt --manifest-path apps/obc-desktop/Cargo.toml       # the desktop app, separately
 ```
 
 ## Run the simulator
 
 `obc-sim` renders `.obcm` maps (which must be **v5**) through the exact code the
-firmware runs. `../freiburg.obcm` is a current sample.
+firmware runs. `freiburg.obcm` in the repo root is a current sample.
 
 ```sh
 # Interactive: device look (240×320, 64 colors), 3× window scale. Drag to pan,
 # scroll to zoom.
-./target/release/obc-sim ../freiburg.obcm
+./target/release/obc-sim freiburg.obcm
 
-./target/release/obc-sim ../freiburg.obcm --size 480x640 --scale 2  # bigger window
-./target/release/obc-sim ../freiburg.obcm --true-color             # skip 64-color quantization
-./target/release/obc-sim ../freiburg.obcm --gpx ../kandel.gpx      # replay a GPX as a fake GPS
-./target/release/obc-sim ../freiburg.obcm --png out.png            # headless one-frame render
-./target/release/obc-sim ../freiburg.obcm --screenshot gui.png     # capture the live GUI's first frame
+./target/release/obc-sim freiburg.obcm --size 480x640 --scale 2  # bigger window
+./target/release/obc-sim freiburg.obcm --true-color             # skip 64-color quantization
+./target/release/obc-sim freiburg.obcm --gpx kandel.gpx            # replay a GPX as a fake GPS
+./target/release/obc-sim freiburg.obcm --png out.png            # headless one-frame render
+./target/release/obc-sim freiburg.obcm --screenshot gui.png     # capture the live GUI's first frame
 ```
 
 Run `obc-sim --help` for the full flag set (routes/tracks folders, `--import`,
@@ -181,7 +192,7 @@ native converter's checked-in output. CI does the same in its `wasm-convert`
 job, which also enforces the bundle-size budget:
 
 ```sh
-python3 tools/wasm_size_guard.py --pkg ../builder/app/src/lib/convert/pkg
+python3 firmware/tools/wasm_size_guard.py   # from the repo root; --pkg overrides the default
 ```
 
 ## Firmware update images (OBCU)
