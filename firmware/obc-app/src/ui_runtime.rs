@@ -403,6 +403,36 @@ impl UiRuntime {
         }
     }
 
+    /// Point the App-owned corridor snapshot at whatever the **stack** currently wants (epic #946,
+    /// U3). The Up-ahead screen never queries anything itself: it declares a
+    /// [`CorridorKey`](crate::corridor::CorridorKey) (its filter + the progress anchor frozen at
+    /// entry) through [`Screen::corridor_request`], and this arms it. Everything the lifecycle needs
+    /// falls out of that one declaration:
+    ///
+    /// * **entry** — a screen appears that wants a key ⇒ armed (and, on a *fresh* open,
+    ///   [`invalidate`](crate::corridor::CorridorScratch::invalidate)d, so re-entering re-takes the
+    ///   identical key: the "re-enter refreshes" half of the #115 contract);
+    /// * **a filter change** — the key changes ⇒ the stale rows drop and the query re-runs;
+    /// * **riding on** — the key does *not* change (the anchor is frozen) ⇒ nothing re-runs;
+    /// * **exit** (Back, an idle return, a host-pushed card burying it) — nobody wants a key ⇒
+    ///   disarmed, and the reader-build seam goes quiet.
+    ///
+    /// Cheap enough to call whenever the stack may have moved: a scan of ≤ [`MAX_DEPTH`] slots and
+    /// an idempotent `arm`. The **query** still runs only in the pre-draw `prepare` boundary.
+    ///
+    /// [`MAX_DEPTH`]: crate::screen::MAX_DEPTH
+    pub(crate) fn reconcile_corridor(&mut self, fresh_open: bool) {
+        match self.stack.iter().rev().find_map(|s| s.corridor_request()) {
+            Some(key) => {
+                self.corridor_scratch.arm(key);
+                if fresh_open {
+                    self.corridor_scratch.invalidate();
+                }
+            }
+            None => self.corridor_scratch.disarm(),
+        }
+    }
+
     /// Whether the given POI list screen still needs a `Reader` at draw — its category's snapshot
     /// hasn't been taken into the shared scratch yet. Drives [`base_needs_reader`](App::base_needs_reader).
     pub(crate) fn poi_snapshot_pending(&self, screen: &crate::screen::PoiListScreen) -> bool {

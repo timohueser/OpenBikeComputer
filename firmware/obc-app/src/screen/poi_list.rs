@@ -161,7 +161,8 @@ impl PoiListScreen {
 
         let geo = ListGeometry::filling_below_title(w, h, ROW_H, 6, 14, Separators::All);
         let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
-        list::list_frame(cv, w, h, self.category.name(), pos, total, geo.visible);
+        let title = rx.t(super::poi_menu::category_msg(self.category));
+        list::list_frame(cv, w, h, title, pos, total, geo.visible);
 
         if total == 0 {
             // "No position" when a snapshot could never be taken (no fix ever); once a query has run
@@ -366,6 +367,8 @@ mod tests {
             trips: &[],
             nav_profiles: &crate::NavProfiles::EMPTY,
             poi_scratch: scratch,
+            waypoints: &[],
+            corridor: &[],
             sensor_scan_hits: &[],
             now_ms: 0,
         };

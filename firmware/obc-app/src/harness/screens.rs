@@ -79,6 +79,8 @@ fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
         trips: &[],
         nav_profiles: leaked_profiles(),
         poi_scratch: leaked_scratch(),
+        waypoints: &[],
+        corridor: &[],
         sensor_scan_hits: &[],
         now_ms: 0,
     }
@@ -95,6 +97,8 @@ fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'
         trips: &[],
         nav_profiles: leaked_profiles(),
         poi_scratch: leaked_scratch(),
+        waypoints: &[],
+        corridor: &[],
         sensor_scan_hits: &[],
         now_ms: 0,
     }
@@ -203,30 +207,37 @@ fn paused_back_hold_opens_the_ride_menu_and_stays_paused() {
     assert_eq!(act.mode, Mode::Paused, "opening the ride menu must not resume a paused session");
 }
 
-/// Whole-App ride-chrome path for RM2: Map → back-hold → Ride menu → press Waypoints; inert row
-/// gestures preserve the tracking session/mode, Back returns one stack level at a time to the exact
-/// riding view that opened the menu.
+/// Whole-App ride-chrome path: Map -> back-hold -> Ride menu -> press **Up ahead** (epic #946, U3);
+/// row gestures preserve the tracking session/mode, and Back returns one stack level at a time to
+/// the exact riding view that opened the menu. Also pins the **corridor-snapshot lifecycle** the
+/// screen drives through the App: armed while the timeline is up, disarmed the moment it isn't.
 #[test]
-fn ride_menu_waypoints_navigation_preserves_session_and_returns_to_map() {
+fn ride_menu_up_ahead_navigation_preserves_session_and_returns_to_map() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
     app.activity.start_session();
+    app.activity.progress_m = 1_500;
     let session = app.activity.session;
     assert_eq!(app.activity.mode, Mode::Riding);
+    assert!(!app.corridor_snapshot_pending(), "nothing asks for a corridor query on the map");
 
     app.apply_gesture(Gesture::BackHold);
     assert!(matches!(app.top_screen(), Screen::RideMenu(_)));
-    app.apply_gesture(Gesture::Press); // north/default station = Waypoints
-    assert!(matches!(app.top_screen(), Screen::RideWaypoints(_)));
+    app.apply_gesture(Gesture::Press); // north/default station = Up ahead
+    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+    assert!(app.corridor_snapshot_pending(), "entering arms the snapshot (and asks for the Reader)");
 
-    for g in [Gesture::Step(1), Gesture::Press, Gesture::Hold, Gesture::BackHold] {
+    // Row gestures and the picker are in-screen: they never move the stack or the session.
+    for g in [Gesture::Step(1), Gesture::Press, Gesture::Hold, Gesture::Step(1), Gesture::Press] {
         app.apply_gesture(g);
-        assert!(matches!(app.top_screen(), Screen::RideWaypoints(_)), "{g:?} stays in the MVP list");
+        assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "{g:?} stays on the timeline");
         assert_eq!(app.activity.mode, Mode::Riding);
         assert_eq!(app.activity.session, session);
     }
+    assert!(app.corridor_snapshot_pending(), "the applied filter re-keyed the snapshot");
 
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::RideMenu(_)));
+    assert!(!app.corridor_snapshot_pending(), "leaving the timeline stops asking for the Reader");
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Map(_)));
     assert_eq!(app.activity.mode, Mode::Riding);

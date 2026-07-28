@@ -15,10 +15,10 @@ pois = "POIs"
 map = "Carte"
 settings = "Réglages"
 
-# --- Le menu boussole en sortie, la liste des points et le sélecteur Avancer ---
+# --- Le menu boussole en sortie, la liste À venir et le sélecteur Avancer ---
 [ride_menu]
 title = "MENU SORTIE"
-waypoints = "Points de route"
+up_ahead = "À venir"
 detour = "Détour"
 inspect_rejoin = "Voir reprise"
 main_menu = "Menu principal"
@@ -27,8 +27,14 @@ off_route = "Rejoignez parcours"
 route_end = "Fin du parcours"
 no_nav = "Pas de données routage"
 
-[waypoints]
-none = "Aucun point de route"
+# --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
+[up_ahead]
+everything = "Tout"
+filter_title = "AFFICHER"
+none = "Rien devant"
+none_sub = "Aucun arrêt prévu"
+none_category_sub = "Rien de ce type"
+no_route_sub = "Chargez une route"
 
 # --- Units: the `Units` enum name + the Units settings screen ---
 [units]
@@ -282,6 +288,16 @@ routing_uses = "Le routage utilise ce profil"
 no_profiles = "Aucun profil"
 no_profiles_sub = "Charger une carte"
 
+# --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
+# "Up ahead" category picker all draw these ---
+[poi_cat]
+water = "Eau"
+campsite = "Camping"
+accommodation = "Hébergement"
+resupply = "Provisions"
+pharmacy = "Pharmacie"
+bike_shop = "Vélociste"
+
 # --- POI category menu ---
 [poi_menu]
 title = "POIS"
@@ -302,6 +318,8 @@ today = "Auj."
 open = "OUVERT"
 closed = "FERMÉ"
 route_here = "Itinéraire ici"
+side_left = "gauche"
+side_right = "droite"
 
 # --- BLE pairing passkey card ---
 [passkey]
